@@ -198,6 +198,14 @@ dependencies = [
 ]
 
 [[package]]
+name = "notist-eval"
+version = "0.1.0"
+dependencies = [
+ "notist-model",
+ "notist-syntax",
+]
+
+[[package]]
 name = "notist-model"
 version = "0.1.0"
 

@@ -1,0 +1,9 @@
+[package]
+name = "notist-eval"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+notist-model.workspace = true
+notist-syntax.workspace = true

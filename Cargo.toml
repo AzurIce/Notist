@@ -14,4 +14,5 @@ codespan-reporting = "0.11"
 dunce = "1"
 notist-model = { path = "crates/notist-model" }
 notist-syntax = { path = "crates/notist-syntax" }
+notist-eval = { path = "crates/notist-eval" }
 notist-analysis = { path = "crates/notist-analysis" }

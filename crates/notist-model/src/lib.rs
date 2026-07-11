@@ -1,14 +1,39 @@
 use std::fmt;
 
+mod content;
+
+pub use content::{
+    Annotation, Block, Content, Element, ElementNode, Metadata, Property, StructuredDocument,
+};
+
+/// A half-open byte range in a source file.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct TextRange {
+    /// The inclusive start byte offset.
     pub start: usize,
+    /// The exclusive end byte offset.
     pub end: usize,
 }
 
 impl TextRange {
+    /// Creates a new half-open byte range.
     pub const fn new(start: usize, end: usize) -> Self {
         Self { start, end }
+    }
+
+    /// Returns the number of bytes covered by this range.
+    pub const fn len(self) -> usize {
+        self.end - self.start
+    }
+
+    /// Returns whether this range contains no bytes.
+    pub const fn is_empty(self) -> bool {
+        self.start == self.end
+    }
+
+    /// Returns a copy shifted forward by the given byte offset.
+    pub const fn shifted(self, offset: usize) -> Self {
+        Self::new(self.start + offset, self.end + offset)
     }
 }
 

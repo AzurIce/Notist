@@ -49,8 +49,8 @@ pub fn parse(source: &str) -> Parse {
             cursor = raw.end;
             continue;
         }
-        if let Some(opaque) = opaque_containing(&result.scopes, start) {
-            cursor = opaque.range.end;
+        if let Some(hidden_end) = hidden_scope_syntax_end(&result.scopes, start) {
+            cursor = hidden_end;
             continue;
         }
         let content_start = start + 2;
@@ -75,10 +75,20 @@ pub fn parse(source: &str) -> Parse {
     result
 }
 
-fn opaque_containing(scopes: &[Scope], position: usize) -> Option<&OpaqueScope> {
+fn hidden_scope_syntax_end(scopes: &[Scope], position: usize) -> Option<usize> {
     scopes.iter().find_map(|scope| match scope {
         Scope::Opaque(opaque) if opaque.range.start <= position && position < opaque.range.end => {
-            Some(opaque)
+            Some(opaque.range.end)
+        }
+        Scope::Transparent(transparent)
+            if transparent.range.start <= position && position < transparent.body_range.start =>
+        {
+            Some(transparent.body_range.start)
+        }
+        Scope::Transparent(transparent)
+            if transparent.body_range.end <= position && position < transparent.range.end =>
+        {
+            Some(transparent.range.end)
         }
         _ => None,
     })
@@ -257,6 +267,17 @@ mod tests {
         assert!(parse.errors.is_empty());
         assert_eq!(parse.links.len(), 2);
         assert_eq!(parse.scopes.len(), 1);
+    }
+
+    #[test]
+    fn transparent_delimiters_do_not_overlap_wiki_reference_markers() {
+        let parse = parse("#[[[self::target]]]@concept");
+        assert!(parse.errors.is_empty());
+        assert_eq!(parse.links.len(), 1);
+        assert_eq!(
+            parse.links[0].target.module,
+            ModuleReference::Relative(vec!["target".into()])
+        );
     }
 
     #[test]
