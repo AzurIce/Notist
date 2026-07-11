@@ -1,0 +1,12 @@
+[package]
+name = "notist-analysis"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+notist-model.workspace = true
+notist-syntax.workspace = true
+
+[dev-dependencies]
+tempfile = "3"

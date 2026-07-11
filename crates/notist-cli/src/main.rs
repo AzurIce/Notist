@@ -1,0 +1,86 @@
+use std::path::PathBuf;
+use std::process::ExitCode;
+
+use clap::{Parser, Subcommand};
+use notist_analysis::Workspace;
+
+#[derive(Debug, Parser)]
+#[command(name = "notist", version, about, arg_required_else_help = true)]
+struct Cli {
+    #[command(subcommand)]
+    command: Command,
+}
+
+#[derive(Debug, Subcommand)]
+enum Command {
+    /// Check module paths and references in a Notist workspace.
+    Check {
+        /// Root directory of the Notist workspace.
+        #[arg(default_value = ".")]
+        root: PathBuf,
+    },
+    /// Print discovered modules and resolved references.
+    Inspect {
+        /// Root directory of the Notist workspace.
+        #[arg(default_value = ".")]
+        root: PathBuf,
+    },
+}
+
+fn main() -> ExitCode {
+    match run(Cli::parse()) {
+        Ok(code) => code,
+        Err(error) => {
+            eprintln!("notist: {error}");
+            ExitCode::FAILURE
+        }
+    }
+}
+
+fn run(cli: Cli) -> Result<ExitCode, Box<dyn std::error::Error>> {
+    match cli.command {
+        Command::Check { root } => {
+            let workspace = Workspace::load(root)?;
+            for diagnostic in workspace.diagnostics() {
+                let path = diagnostic
+                    .source_path
+                    .as_deref()
+                    .unwrap_or(workspace.root())
+                    .display();
+                if let Some(range) = diagnostic.range {
+                    eprintln!(
+                        "{path}:{}..{}: {}",
+                        range.start, range.end, diagnostic.message
+                    );
+                } else {
+                    eprintln!("{path}: {}", diagnostic.message);
+                }
+            }
+            if workspace.diagnostics().is_empty() {
+                println!("checked {} modules", workspace.modules().count());
+                Ok(ExitCode::SUCCESS)
+            } else {
+                Ok(ExitCode::FAILURE)
+            }
+        }
+        Command::Inspect { root } => {
+            let workspace = Workspace::load(root)?;
+            for module in workspace.modules() {
+                match &module.source_path {
+                    Some(path) => println!("{} -> {}", module.logical_path, path.display()),
+                    None => println!("{} -> <virtual>", module.logical_path),
+                }
+            }
+            for reference in workspace.references() {
+                println!(
+                    "{}:{}..{} => {}",
+                    reference.source_module,
+                    reference.range.start,
+                    reference.range.end,
+                    reference.target_module
+                );
+            }
+            Ok(ExitCode::SUCCESS)
+        }
+    }
+}

@@ -1,6 +1,15 @@
-[package]
-name = "notist"
+[workspace]
+resolver = "2"
+members = ["crates/*"]
+default-members = ["crates/notist-cli"]
+
+[workspace.package]
 version = "0.1.0"
 edition = "2024"
+license = "MIT OR Apache-2.0"
 
-[dependencies]
+[workspace.dependencies]
+clap = { version = "4", features = ["derive"] }
+notist-model = { path = "crates/notist-model" }
+notist-syntax = { path = "crates/notist-syntax" }
+notist-analysis = { path = "crates/notist-analysis" }

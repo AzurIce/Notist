@@ -1,0 +1,8 @@
+[package]
+name = "notist-syntax"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+notist-model.workspace = true

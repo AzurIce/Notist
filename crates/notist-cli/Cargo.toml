@@ -1,0 +1,13 @@
+[package]
+name = "notist-cli"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[[bin]]
+name = "notist"
+path = "src/main.rs"
+
+[dependencies]
+clap.workspace = true
+notist-analysis.workspace = true
