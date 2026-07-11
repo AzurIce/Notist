@@ -16,7 +16,7 @@ pub struct Module {
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum DiagnosticKind {
     DuplicateModule,
-    InvalidReference,
+    InvalidSyntax,
     UnresolvedModule,
     UnsupportedLabelReference,
 }
@@ -150,7 +150,7 @@ impl Workspace {
             };
 
             diagnostics.extend(parse.errors.iter().map(|error| Diagnostic {
-                kind: DiagnosticKind::InvalidReference,
+                kind: DiagnosticKind::InvalidSyntax,
                 message: error.message.clone(),
                 source_path: Some(source_path.clone()),
                 range: Some(error.range),

@@ -194,6 +194,7 @@ dependencies = [
  "clap",
  "codespan-reporting",
  "notist-analysis",
+ "notist-syntax",
 ]
 
 [[package]]

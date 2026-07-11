@@ -1,0 +1,3 @@
+# AI 整理文档索引
+
+- [[self::2026-07-11 typst element function and syntax sugar]]：梳理 Typst 如何将 Heading、Strong、ListItem、Reference 等标记语法映射到统一的 Content/Element 模型，区分 Element sugar、结构语法糖、值语法糖和语言级构造，并总结 Notist 可复用的强类型 Element 与函数构造器设计。

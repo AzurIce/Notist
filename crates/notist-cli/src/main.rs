@@ -3,6 +3,7 @@ use std::process::ExitCode;
 
 use clap::{Parser, Subcommand};
 use notist_analysis::Workspace;
+use notist_syntax::Scope;
 
 mod diagnostics;
 
@@ -72,7 +73,39 @@ fn run(cli: Cli) -> Result<ExitCode, Box<dyn std::error::Error>> {
                     reference.target_module
                 );
             }
+            for module in workspace.modules() {
+                let Some(parse) = &module.parse else {
+                    continue;
+                };
+                for scope in &parse.scopes {
+                    match scope {
+                        Scope::Transparent(scope) => println!(
+                            "{}:{}..{} transparent{}",
+                            module.logical_path,
+                            scope.body_range.start,
+                            scope.body_range.end,
+                            format_id(&scope.attributes)
+                        ),
+                        Scope::Opaque(scope) => println!(
+                            "{}:{}..{} opaque {}{}",
+                            module.logical_path,
+                            scope.body_range.start,
+                            scope.body_range.end,
+                            scope.name.value,
+                            format_id(&scope.attributes)
+                        ),
+                    }
+                }
+            }
             Ok(ExitCode::SUCCESS)
         }
     }
+}
+
+fn format_id(attributes: &notist_syntax::Attributes) -> String {
+    attributes
+        .id
+        .as_ref()
+        .map(|id| format!(" @{}", id.value))
+        .unwrap_or_default()
 }
