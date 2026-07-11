@@ -4,9 +4,15 @@ use std::process::ExitCode;
 use clap::{Parser, Subcommand};
 use notist_analysis::Workspace;
 
+mod diagnostics;
+
 #[derive(Debug, Parser)]
 #[command(name = "notist", version, about, arg_required_else_help = true)]
 struct Cli {
+    /// Control colored diagnostic output.
+    #[arg(long, value_enum, default_value_t = clap::ColorChoice::Auto, global = true)]
+    color: clap::ColorChoice,
+
     #[command(subcommand)]
     command: Command,
 }
@@ -41,21 +47,7 @@ fn run(cli: Cli) -> Result<ExitCode, Box<dyn std::error::Error>> {
     match cli.command {
         Command::Check { root } => {
             let workspace = Workspace::load(root)?;
-            for diagnostic in workspace.diagnostics() {
-                let path = diagnostic
-                    .source_path
-                    .as_deref()
-                    .unwrap_or(workspace.root())
-                    .display();
-                if let Some(range) = diagnostic.range {
-                    eprintln!(
-                        "{path}:{}..{}: {}",
-                        range.start, range.end, diagnostic.message
-                    );
-                } else {
-                    eprintln!("{path}: {}", diagnostic.message);
-                }
-            }
+            diagnostics::emit(&workspace, cli.color)?;
             if workspace.diagnostics().is_empty() {
                 println!("checked {} modules", workspace.modules().count());
                 Ok(ExitCode::SUCCESS)

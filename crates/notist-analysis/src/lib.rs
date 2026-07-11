@@ -47,7 +47,7 @@ pub struct Workspace {
 
 impl Workspace {
     pub fn load(root: impl AsRef<Path>) -> io::Result<Self> {
-        let root = fs::canonicalize(root)?;
+        let root = dunce::canonicalize(root)?;
         let mut workspace = Self {
             root: root.clone(),
             modules: BTreeMap::new(),

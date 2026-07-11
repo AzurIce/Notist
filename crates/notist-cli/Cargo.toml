@@ -10,4 +10,5 @@ path = "src/main.rs"
 
 [dependencies]
 clap.workspace = true
+codespan-reporting.workspace = true
 notist-analysis.workspace = true
