@@ -12,7 +12,9 @@ license = "MIT OR Apache-2.0"
 clap = { version = "4", features = ["derive"] }
 codespan-reporting = "0.11"
 dunce = "1"
+percent-encoding = "2"
 notist-model = { path = "crates/notist-model" }
 notist-syntax = { path = "crates/notist-syntax" }
 notist-eval = { path = "crates/notist-eval" }
 notist-analysis = { path = "crates/notist-analysis" }
+notist-html = { path = "crates/notist-html" }

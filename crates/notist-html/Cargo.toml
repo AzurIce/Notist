@@ -1,0 +1,13 @@
+[package]
+name = "notist-html"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+notist-model.workspace = true
+percent-encoding.workspace = true
+
+[dev-dependencies]
+notist-eval.workspace = true
+
