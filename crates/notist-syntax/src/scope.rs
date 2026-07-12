@@ -1,6 +1,6 @@
 use notist_model::TextRange;
 
-use crate::SyntaxError;
+use crate::{Argument, SyntaxError};
 
 /// A `#[...]` scope whose body is parsed as ordinary Notist content.
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -14,12 +14,14 @@ pub struct TransparentScope {
 }
 
 /// A function-style content-producing call.
-#[derive(Clone, Debug, Eq, PartialEq)]
+#[derive(Clone, Debug, PartialEq)]
 pub struct Call {
     /// The qualified function name following `#`.
     pub name: SpannedName,
     /// The argument contents without the surrounding parentheses.
     pub arguments_range: Option<TextRange>,
+    /// Parsed argument expressions in source order.
+    pub arguments: Vec<Argument>,
     /// Whether the body is parsed as Notist content or preserved as raw source.
     pub mode: CallMode,
     /// The body range without the surrounding brackets.
@@ -219,7 +221,7 @@ fn parse_region_at(
     } else {
         CallMode::Content
     };
-    let arguments_range = if bytes.get(cursor) == Some(&b'(') {
+    let (arguments_range, arguments) = if bytes.get(cursor) == Some(&b'(') {
         let close = match find_matching(source, cursor, b'(', b')', raw_ranges) {
             Some(close) => close,
             None => {
@@ -232,9 +234,10 @@ fn parse_region_at(
         };
         let range = TextRange::new(cursor + 1, close);
         cursor = close + 1;
-        Some(range)
+        let arguments = crate::argument::parse_arguments(source, range, errors);
+        (Some(range), arguments)
     } else {
-        None
+        (None, Vec::new())
     };
 
     if bytes.get(cursor) != Some(&b'[') {
@@ -265,6 +268,7 @@ fn parse_region_at(
     Some(Region::Call(Call {
         name,
         arguments_range,
+        arguments,
         mode,
         body_range,
         body_form,

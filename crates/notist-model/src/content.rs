@@ -62,6 +62,8 @@ pub enum Element {
     },
     /// An item that will be grouped with adjacent items during structuring.
     ListItem(Content),
+    /// A block quotation containing evaluated Notist content.
+    Quote(Content),
     /// Raw text that may be inline or block-level.
     Raw {
         /// The original raw text.
@@ -110,7 +112,7 @@ impl Element {
             Self::Raw { block, .. }
             | Self::Custom { block, .. }
             | Self::UnresolvedCall { block, .. } => !block,
-            Self::Parbreak | Self::Heading { .. } | Self::ListItem(_) => false,
+            Self::Parbreak | Self::Heading { .. } | Self::ListItem(_) | Self::Quote(_) => false,
         }
     }
 }

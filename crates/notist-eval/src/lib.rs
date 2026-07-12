@@ -1,8 +1,10 @@
 //! Evaluation and structural normalization for Notist documents.
 
+mod builtin;
 mod function;
 mod lower;
 mod structure;
+mod type_system;
 
 use notist_model::{Annotation, Content, TextRange};
 use notist_syntax::Parse;
@@ -12,6 +14,7 @@ pub use function::{
     RawSource, RegistryError,
 };
 pub use structure::structure;
+pub use type_system::{BoundArguments, DefaultValue, FunctionSignature, Parameter, Type, Value};
 
 /// The result of lowering syntax and evaluating content-producing calls.
 #[derive(Clone, Debug, Default, Eq, PartialEq)]
@@ -44,7 +47,7 @@ pub struct StructuredEvaluation {
 
 /// Evaluates Notist source with an empty function registry.
 pub fn lower(source: &str, parse: &Parse) -> Evaluation {
-    lower::lower_parsed(source, parse, 0, &FunctionRegistry::new(), 0)
+    lower::lower_parsed(source, parse, 0, &FunctionRegistry::with_builtins(), 0)
 }
 
 /// Evaluates Notist source using a configurable function registry.
@@ -76,7 +79,7 @@ impl Evaluator {
 
 impl Default for Evaluator {
     fn default() -> Self {
-        Self::new(FunctionRegistry::new())
+        Self::new(FunctionRegistry::with_builtins())
     }
 }
 
@@ -100,7 +103,15 @@ mod tests {
 
     impl Function for QuoteFunction {
         fn name(&self) -> &str {
-            "quote"
+            "test::quote"
+        }
+
+        fn signature(&self) -> FunctionSignature {
+            FunctionSignature {
+                parameters: Vec::new(),
+                body: Type::Content,
+                result: Type::Content,
+            }
         }
 
         fn call(
@@ -189,7 +200,8 @@ mod tests {
         let mut registry = FunctionRegistry::new();
         registry.register(QuoteFunction).unwrap();
         let evaluator = Evaluator::new(registry);
-        let evaluation = evaluator.evaluate("Before\n\n#quote[Inside [[self::target]].]\n\nAfter");
+        let evaluation =
+            evaluator.evaluate("Before\n\n#test::quote[Inside [[self::target]].]\n\nAfter");
 
         assert!(evaluation.diagnostics.is_empty());
         let structured = structure(evaluation);
@@ -248,7 +260,7 @@ mod tests {
         let mut registry = FunctionRegistry::new();
         registry.register(QuoteFunction).unwrap();
         let error = registry.register(QuoteFunction).unwrap_err();
-        assert_eq!(error.name, "quote");
+        assert_eq!(error.name, "test::quote");
     }
 
     #[test]

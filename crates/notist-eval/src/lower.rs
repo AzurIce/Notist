@@ -6,6 +6,7 @@ use notist_syntax::{
 };
 
 use crate::function::{CallBody, FunctionContext, FunctionInput, FunctionRegistry, RawSource};
+use crate::type_system::bind_arguments;
 use crate::{EvalDiagnostic, Evaluation};
 
 pub(crate) fn lower_parsed(
@@ -113,10 +114,6 @@ impl Lowerer<'_> {
                 range: global_body_range,
             }),
         };
-        let arguments = call
-            .arguments_range
-            .map(|range| &self.source[range.start..range.end]);
-
         let Some(function) = self.registry.get(&call.name.value) else {
             self.diagnostics.push(EvalDiagnostic {
                 message: format!("unknown function `{}`", call.name.value),
@@ -125,7 +122,9 @@ impl Lowerer<'_> {
             content.elements.push(ElementNode {
                 element: Element::UnresolvedCall {
                     name: call.name.value.clone(),
-                    arguments: arguments.map(str::to_owned),
+                    arguments: call
+                        .arguments_range
+                        .map(|range| self.source[range.start..range.end].to_owned()),
                     body: match body {
                         CallBody::Content(content) => UnresolvedCallBody::Content(content),
                         CallBody::Raw(source) => UnresolvedCallBody::Raw(source.text.to_owned()),
@@ -135,6 +134,21 @@ impl Lowerer<'_> {
                 range: global_call_range,
             });
             return;
+        };
+
+        let arguments = match bind_arguments(
+            &function.signature(),
+            &call.arguments,
+            &body,
+            call.name.range,
+            call.body_range,
+            self.base_offset,
+        ) {
+            Ok(arguments) => arguments,
+            Err(diagnostics) => {
+                self.diagnostics.extend(diagnostics);
+                return;
+            }
         };
 
         let context = FunctionContext {

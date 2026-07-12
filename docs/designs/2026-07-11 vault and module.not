@@ -2,7 +2,7 @@
 
 Notist 的模块系统类似于 Rust，只是不需要显示声明，依据目录自动定义：
 
-#raw[
+#raw![
 vault-root/
   ├─submodule2/
   │   ├─subsubmodule.not # vault::submodule2::subsubmodule

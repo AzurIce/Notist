@@ -1,8 +1,10 @@
 use notist_model::{ModuleReference, TextRange, WikiReference};
 
+mod argument;
 mod raw;
 mod scope;
 
+pub use argument::{Argument, Expression, ExpressionKind};
 pub use scope::{
     Attribute, AttributeValue, Attributes, BodyForm, Call, CallMode, SpannedName, TransparentScope,
 };
@@ -26,7 +28,7 @@ pub struct SyntaxError {
 }
 
 /// The syntax information currently extracted from a Notist source file.
-#[derive(Clone, Debug, Default, Eq, PartialEq)]
+#[derive(Clone, Debug, Default, PartialEq)]
 pub struct Parse {
     /// Wiki-style references visible to the host parser.
     pub links: Vec<WikiLink>,

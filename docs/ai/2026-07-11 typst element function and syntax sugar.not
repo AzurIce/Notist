@@ -1,28 +1,30 @@
-# Typst 的 Element Function 与语法糖设计
+#heading(level=1)[Typst 的 Element Function 与语法糖设计]
 
-## 核心结论
+#heading(level=2)[核心结论]
 
 Typst 并不是简单地把所有语法都转换为普通函数调用。更准确的描述是：
 
-> 可展示的内容最终统一表示为 `Content` 和 Element；Element 的构造器同时以函数形式暴露给用户，常用 Element 再提供简洁的标记语法糖。
+#quote[
+可展示的内容最终统一表示为 `Content` 和 Element；Element 的构造器同时以函数形式暴露给用户，常用 Element 再提供简洁的标记语法糖。
+]
 
 例如：
 
-```typst
+#raw!(lang="typst")[
 = Introduction
-```
+]
 
 和：
 
-```typst
+#raw!(lang="typst")[
 #heading(level: 1)[Introduction]
-```
+]
 
 最终都产生 Heading Element。但是 Typst 内部不必先把第一种语法改写成第二种函数调用 AST；解释器可以直接从 Heading 语法节点构造 `HeadingElem`。
 
 Typst 的整体流程可以简化为：
 
-```text
+#raw!(lang="text")[
 源代码
   ↓
 Syntax AST
@@ -32,14 +34,14 @@ Value / Content / Element
 结构组合、set/show 规则
   ↓ layout
 页面布局
-```
+]
 
 - `Value`：字符串、整数、数组、函数、Label 等一般值。
 - `Content`：可展示内容的统一容器，可以包含 Element 序列。
 - `Element`：Text、Heading、Strong、Link 等具体内容节点。
 - Element function：用户可以调用的 Element 构造函数。
 
-## 直接对应 Element 的语法糖
+#heading(level=2)[直接对应 Element 的语法糖]
 
 | 表面语法 | 底层 Element | 大致等价写法 |
 |---|---|---|
@@ -56,67 +58,67 @@ Value / Content / Element
 
 例如 `*Hello*` 在语法层是 Strong 节点：
 
-```text
+#raw!(lang="text")[
 Strong
 └─ Text("Hello")
-```
+]
 
 求值时直接构造：
 
-```text
+#raw!(lang="text")[
 StrongElem {
     body: Content(TextElem("Hello")),
 }
-```
+]
 
 它与调用 `strong` element function 产生相同类型的 Element，因此能被相同的 set/show 规则处理。
 
-## 标题
+#heading(level=2)[标题]
 
-```typst
+#raw!(lang="typst")[
 = First Level
 == Second Level
 === Third Level
-```
+]
 
 Heading 语法节点携带标题深度和正文：
 
-```text
+#raw!(lang="text")[
 Heading
 ├─ depth: 2
 └─ body: Content(...)
-```
+]
 
 求值后得到 `HeadingElem`。标题语法没有产生只能由语法创建的特殊对象，因此以下规则对语法糖和函数调用创建的标题都有效：
 
-```typst
+#raw!(lang="typst")[
 #set heading(numbering: "1.")
 #show heading: it => ...
-```
+]
 
 这是 Typst Element 设计的重要性质：表面语法和显式函数调用最终汇合到相同的内容类型。
 
-## 列表与后续组合
+#heading(level=2)[列表与后续组合]
 
 列表语法并不会立即产生完整列表：
 
-```typst
+#raw!(lang="typst")[
 - Apple
 - Banana
 - Orange
-```
+]
 
 每一行首先产生一个 `ListItem`：
 
-```text
+#raw!(lang="text")[
 ListItem([Apple])
 ListItem([Banana])
 ListItem([Orange])
-```
+]
 
 相邻的 ListItem 在 realization 阶段被组合成：
 
-```text
+#raw!(lang="text")[
 ListElem {
     children: [
         ListItem([Apple]),
@@ -124,220 +126,220 @@ ListElem {
         ListItem([Orange]),
     ],
 }
-```
+]
 
 有序列表类似：
 
-```typst
+#raw!(lang="typst")[
 + First
 + Second
-```
+]
 
 或：
 
-```typst
+#raw!(lang="typst")[
 1. First
 2. Second
-```
+]
 
 首先产生 `EnumItem`，然后组合成 `EnumElem`。显式编号保存在 item 上。
 
 术语列表：
 
-```typst
+#raw!(lang="typst")[
 / Term: Description
-```
+]
 
 产生：
 
-```text
+#raw!(lang="text")[
 TermItem {
     term: Content,
     description: Content,
 }
-```
+]
 
 连续的 TermItem 再组合成 `TermsElem`。
 
 这种设计允许 parser 只识别局部 item，后续阶段再决定列表边界，也允许 show rule 单独匹配 item。
 
-## Label 与引用
+#heading(level=2)[Label 与引用]
 
 Label：
 
-```typst
+#raw!(lang="typst")[
 = Introduction <intro>
-```
+]
 
 `<intro>` 首先产生 `Value::Label("intro")`，随后 markup evaluator 将它附着到前一个可以被标记的 Element：
 
-```text
+#raw!(lang="text")[
 HeadingElem + Label("intro")
              ↓
 HeadingElem { label: "intro" }
-```
+]
 
 因此 Label 是值和附着操作，不是独立的可见 Element。
 
 引用：
 
-```typst
+#raw!(lang="typst")[
 @intro
-```
+]
 
 产生：
 
-```text
+#raw!(lang="text")[
 RefElem {
     target: Label("intro"),
 }
-```
+]
 
 大致对应：
 
-```typst
+#raw!(lang="typst")[
 #ref(<intro>)
-```
+]
 
 引用最终显示为章节号、图号或文献引用，由后续语义分析决定。
 
 这与 Notist 的模块引用接近：
 
-```not
+#raw!(lang="not")[
 [[vault::guide::intro]]
-```
+]
 
 可以降级为：
 
-```text
+#raw!(lang="text")[
 ModuleRefElem {
     target: ModulePath(["guide", "intro"]),
 }
-```
+]
 
 显式函数形式可以设计为：
 
-```not
+#raw!(lang="not")[
 #ref(module("vault::guide::intro"))
-```
+]
 
-## 自动链接与 Raw
+#heading(level=2)[自动链接与 Raw]
 
 直接书写 URL：
 
-```typst
+#raw!(lang="typst")[
 https://typst.app
-```
+]
 
 会产生 `LinkElem`。完整的函数形式还能指定展示内容：
 
-```typst
+#raw!(lang="typst")[
 #link("https://typst.app")[Typst]
-```
+]
 
 这体现了一种通用原则：
 
-```text
+#raw!(lang="text")[
 常见用法：简洁语法
 完整能力：Element function
-```
+]
 
 行内 Raw 和块级 Raw 使用同一个 `RawElem`：
 
-```text
+#raw!(lang="text")[
 RawElem {
     text,
     block,
     lang,
 }
-```
+]
 
 行内和块级主要通过 `block`、`lang` 参数区分，而不是定义完全无关的底层类型。
 
-## 空格、换行和段落
+#heading(level=2)[空格、换行和段落]
 
 Typst 将部分看起来不像 Element 的结构也表示为内容：
 
-```text
+#raw!(lang="text")[
 普通空格     → SpaceElem
 强制换行 `\` → LinebreakElem
 空行         → ParbreakElem
-```
+]
 
 例如：
 
-```typst
+#raw!(lang="typst")[
 Hello \
 World
-```
+]
 
 可以理解为：
 
-```text
+#raw!(lang="text")[
 Content::sequence([
     TextElem("Hello"),
     LinebreakElem,
     TextElem("World"),
 ])
-```
+]
 
 段落、列表等更高层结构可以在后续 realization/layout 阶段形成，而不是全部由 parser 一次决定。
 
-## Content Block 与尾随内容参数
+#heading(level=2)[Content Block 与尾随内容参数]
 
 Typst 中：
 
-```typst
+#raw!(lang="typst")[
 #strong[Hello]
-```
+]
 
 可以理解为：
 
-```typst
+#raw!(lang="typst")[
 #strong([Hello])
-```
+]
 
 `[...]` 创建 Content 值，并作为尾随位置参数传给函数：
 
-```typst
+#raw!(lang="typst")[
 #rect(
   fill: blue,
   inset: 8pt,
 )[Hello]
-```
+]
 
 这种调用形式适合文档语言：
 
-```text
+#raw!(lang="text")[
 函数名
 (配置参数)
 [内容参数]
-```
+]
 
 Notist 未来也可以采用类似形式：
 
-```not
+#raw!(lang="not")[
 #note(kind: warning)[
   This is important.
 ]
-```
+]
 
 底层等价于：
 
-```text
+#raw!(lang="text")[
 note(
     kind = "warning",
     body = Content(...),
 )
-```
+]
 
-## 数学语法
+#heading(level=2)[数学语法]
 
 数学模式不仅是一个字符串节点：
 
-```typst
+#raw!(lang="typst")[
 $ x^2 / 2 $
-```
+]
 
 会继续产生数学 Element：
 
@@ -353,61 +355,61 @@ $ x^2 / 2 $
 
 数学模式还拥有独立的名字解析规则，可以从 math scope 中查找函数和符号。
 
-## 不是普通 Element Function 的语法
+#heading(level=2)[不是普通 Element Function 的语法]
 
 Typst 并非所有语言结构都是 Element function 的糖。
 
-### 变量与控制流
+#heading(level=3)[变量与控制流]
 
-```typst
+#raw!(lang="typst")[
 #let x = 1
 #if condition [...] else [...]
 #for item in items [...]
-```
+]
 
 这些结构控制作用域和求值过程，是语言级构造，不是可展示 Element。
 
-### Set Rule
+#heading(level=3)[Set Rule]
 
-```typst
+#raw!(lang="typst")[
 #set text(size: 12pt)
-```
+]
 
 Set rule 会生成样式设置，并作用于后续内容。它不是普通的 `set(...)` 函数调用。
 
-### Show Rule
+#heading(level=3)[Show Rule]
 
-```typst
+#raw!(lang="typst")[
 #show heading: it => ...
-```
+]
 
 Show rule 注册内容转换规则：
 
-```text
+#raw!(lang="text")[
 HeadingElem
    ↓ show recipe
 New Content
-```
+]
 
 它更接近模式匹配和内容重写系统。
 
-### Import、Include 与 Context
+#heading(level=3)[Import、Include 与 Context]
 
-```typst
+#raw!(lang="typst")[
 #import "utils.typ": foo
 #include "chapter.typ"
 #context counter(heading).display()
-```
+]
 
 这些结构会修改作用域、加载文件或改变求值环境，也不应强行解释为普通 Element function。
 
-## Typst 语法的四种类型
+#heading(level=2)[Typst 语法的四种类型]
 
-### Element Sugar
+#heading(level=3)[Element Sugar]
 
 直接生成可展示 Element：
 
-```text
+#raw!(lang="text")[
 *text*  → strong
 _text_  → emph
 = title → heading
@@ -415,33 +417,33 @@ _text_  → emph
 URL     → link
 @target → ref
 \       → linebreak
-```
+]
 
-### Structural Sugar
+#heading(level=3)[Structural Sugar]
 
 先产生局部结构，后续再组合：
 
-```text
+#raw!(lang="text")[
 - item  → list.item
 + item  → enum.item
 / a: b  → terms.item
 空行     → parbreak
-```
+]
 
-### Value Sugar
+#heading(level=3)[Value Sugar]
 
 产生值而不是独立的可展示 Element：
 
-```text
+#raw!(lang="text")[
 <label> → Label value
 [...]   → Content value
-```
+]
 
-### Language Constructs
+#heading(level=3)[Language Constructs]
 
 控制求值、作用域和样式：
 
-```text
+#raw!(lang="text")[
 let
 if
 for
@@ -452,13 +454,13 @@ import
 include
 context
 return
-```
+]
 
-## 对 Notist 的设计建议
+#heading(level=2)[对 Notist 的设计建议]
 
 Notist 可以先定义一个较小的核心 Element 集合：
 
-```rust
+#raw!(lang="rust")[
 pub enum Element {
     Text(TextElem),
     Paragraph(ParagraphElem),
@@ -468,11 +470,11 @@ pub enum Element {
     ListItem(ListItemElem),
     Code(CodeElem),
 }
-```
+]
 
 每种 Element 都具有概念上的构造函数：
 
-```text
+#raw!(lang="text")[
 text(value)
 paragraph(body)
 heading(level, body)
@@ -480,11 +482,11 @@ ref(target, body?)
 list(children)
 list.item(body)
 code(text, language?, block?)
-```
+]
 
 表面语法映射到这些 Element：
 
-```text
+#raw!(lang="text")[
 [[guide::intro]]
     → ref(module("guide::intro"))
 
@@ -496,62 +498,62 @@ code(text, language?, block?)
 
 - first
     → list.item([first])
-```
+]
 
 模块路径应当是独立值，而不是始终作为未经验证的字符串存在：
 
-```rust
+#raw!(lang="rust")[
 pub struct ModulePath {
     segments: Vec<ModuleSegment>,
 }
-```
+]
 
 引用底层使用：
 
-```text
+#raw!(lang="text")[
 ref(target: ModulePath(["guide", "intro"]))
-```
+]
 
-## 内部不必全部动态化
+#heading(level=2)[内部不必全部动态化]
 
 对用户可以呈现为：
 
-```text
+#raw!(lang="text")[
 heading(level: 1, body: ...)
-```
+]
 
 但 Rust 内部仍适合使用强类型结构：
 
-```rust
+#raw!(lang="rust")[
 pub struct Heading {
     pub level: u8,
     pub body: Content,
     pub span: TextRange,
 }
-```
+]
 
 语法糖可以直接构造：
 
-```rust
+#raw!(lang="rust")[
 Element::Heading(Heading {
     level: 1,
     body,
     span,
 })
-```
+]
 
 不必先构造动态调用：
 
-```rust
+#raw!(lang="rust")[
 Call {
     function: "heading",
     arguments: ...,
 }
-```
+]
 
 Notist 应复用的核心原则是：
 
-```text
+#raw!(lang="text")[
 表面上：
 所有 Element 都能通过函数构造。
 
@@ -560,9 +562,9 @@ Notist 应复用的核心原则是：
 
 不要求：
 所有语法糖必须先改写成字符串形式的函数调用 AST。
-```
+]
 
-## 参考实现位置
+#heading(level=2)[参考实现位置]
 
 - Typst markup 求值：`crates/typst-eval/src/markup.rs`
 - Typst math 求值：`crates/typst-eval/src/math.rs`

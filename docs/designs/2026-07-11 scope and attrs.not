@@ -1,4 +1,4 @@
-# Scope and Attributes
+#heading(level=1)[Scope and Attributes]
 
 Notist 将“为一段内容附加语义”和“调用一个产生内容的函数”视为两件不同的事：
 
@@ -8,38 +8,38 @@ Notist 将“为一段内容附加语义”和“调用一个产生内容的函�
 
 三者都可以在结束后使用 `@...` 附加 ID、Tag、Class 和 key-value Attribute。
 
-## Transparent Scope
+#heading(level=2)[Transparent Scope]
 
 Transparent Scope 是覆盖在普通内容之上的 annotation range：
 
-```not
+#raw!(lang="not")[
 #[important concept]@concept,#knowledge,.highlight,status=draft
-```
+]
 
 它不创建容器 Element，也不改变内部语法。内部的引用、强调、函数调用和嵌套 Scope 都照常解析：
 
-```not
+#raw!(lang="not")[
 #[Read [[self::background]] and #quote[remember *this*.]]@reading
-```
+]
 
 Transparent Scope 可以跨越 inline Element 或 block 边界，因为它描述的是源码范围，而不是内容树的父子关系。它本身不区分 inline 与 block。
 
 Lowering 时，边界标记被移除，内部 Content 保留，同时产生一条 Annotation：
 
-```text
+#raw!(lang="text")[
 #[A [[target]] B]@concept
 
 Content:    Text("A "), Reference("target"), Text(" B")
 Annotation: range(body) + { id: "concept" }
-```
+]
 
 这种正交模型允许同一段内容同时属于多个语义范围，而不必强迫 Element 树表达所有交叠关系。
 
-## Content Call
+#heading(level=2)[Content Call]
 
 普通调用使用 `#name(arguments)[body]`：
 
-```not
+#raw!(lang="not")[
 #heading(level=1)[Notist *Overview*]
 
 #quote[
@@ -47,24 +47,24 @@ The body is ordinary Notist Content.
 
 It may contain [[self::references]] and #heading(level=2)[nested calls].
 ]
-```
+]
 
 宿主 parser 会递归解析 body。Lowering 在执行函数之前先把 body 转换为 `Content`，因此函数直接接收语义内容，不需要自行重新调用 Notist parser。
 
 Content Call 适合 heading、quote、note、link 等以 Notist 内容为输入的构造器。它与普通函数调用属于同一套 callable 模型：函数接收参数和 trailing body，返回 Content。
 
-## Raw Call
+#heading(level=2)[Raw Call]
 
 Raw Call 在函数名后增加 `!`：
 
-```not
+#raw!(lang="not")[
 #raw!(lang="rust")[fn main() { println!("hello"); }]
 
 #diagram!(engine="mermaid")[
 graph TD
     A --> B
 ]
-```
+]
 
 `!` 表示 body 对宿主 Notist parser 不透明。核心只识别调用名称、参数、body 边界和 Attribute，并把 body 作为保留源码范围的 RawSource 交给函数。
 
@@ -72,31 +72,31 @@ graph TD
 
 `!` 只决定 body 的输入形式，不表示宏展开，也不决定结果是 inline 还是 block。函数仍然返回正常的 Content；未来若需要产生源码再重新解析，应单独设计宏系统。
 
-## Body Form
+#heading(level=2)[Body Form]
 
 只有会产生 Element 的 Call 需要记录 body 的 source form。`[` 后立即出现换行时为 Block，否则为 Inline：
 
-```not
+#raw!(lang="not")[
 #raw![inline raw]       // Inline
 
 #raw![                  // Block
 block raw
 ]
-```
+]
 
 该信息记录在 Call 上并传给 Function。它主要服务于 raw、code 等同一函数可产生 inline/block Element 的场景，不改变 Content Call body 的解析方式，也不适用于 Transparent Scope。
 
 Block/Inline 是调用处的形式信息，不等同于函数返回类型。函数签名和类型检查仍需判断这种形式是否合法，例如 heading 可以拒绝 Block form，quote 可以拒绝 Inline form。
 
-## Attributes
+#heading(level=2)[Attributes]
 
 Attribute 位于 Scope 或 Call 结束后的 `@` 列表中：
 
-```not
+#raw!(lang="not")[
 #[content]@id,#tag-a,#tag-b,.class-a,.class-b,key=value,owner="Alice"
 #quote[content]@citation,#source,author="Alice"
 #raw!(lang="rust")[code]@example,#snippet
-```
+]
 
 列表规则如下：
 
@@ -111,44 +111,44 @@ Tag 和 Class 本质上也是可重复属性，但使用前缀提供高频简写
 
 参数与 Attribute 的职责不同：
 
-```not
+#raw!(lang="not")[
 #heading(level=2)[Title]@introduction,#public
-```
+]
 
 - `level=2` 是函数参数，参与调用、类型检查和 Element 构造。
 - `@introduction,#public` 是结果元数据，用于索引、查询、样式或插件分析。
 
-## Parser and Tooling
+#heading(level=2)[Parser and Tooling]
 
 这一区分由语法本身决定，不依赖名称解析或类型信息：
 
-```text
+#raw!(lang="text")[
 #[...]       -> Transparent Scope, parse body as Notist
 #name[...]   -> Content Call, parse body as Notist
 #name![...]  -> Raw Call, keep body as RawSource
-```
+]
 
 因此 Tree-sitter、编辑器高亮和增量 parser 无需先加载插件即可确定语言边界：Content body 使用 Notist 高亮，Raw body 可以保持 raw，或根据函数名/参数注入另一种语言。
 
 核心 parser 应稳定产出：
 
-```text
+#raw!(lang="text")[
 Parse
 ├─ links: Vec<WikiLink>
 ├─ scopes: Vec<TransparentScope>
 ├─ calls: Vec<Call>
 └─ errors: Vec<SyntaxError>
-```
+]
 
 其中 Call 保存 name、CallMode、arguments range、body range、BodyForm、Attributes 和完整 range。Raw Call 是原子区域；Transparent Scope 与 Content Call 的 body 会递归发现内部语法。
 
 插件不能通过注册函数修改宿主 grammar。扩展函数共享通用的 Content Call / Raw Call 语法；高频内置能力可以额外拥有语法糖，但语法糖必须由核心 parser 定义，并 lowering 到同一个 Element 构造逻辑。
 
-## Evaluation Model
+#heading(level=2)[Evaluation Model]
 
 运行时不再把所有调用称为 Processor。统一接口是产生 Content 的 Function：
 
-```text
+#raw!(lang="text")[
 CallBody
 ├─ Content(Content)
 └─ Raw(RawSource)
@@ -161,19 +161,19 @@ FunctionInput
 └─ range
 
 Function::call(context, input) -> FunctionOutput
-```
+]
 
-当前 arguments 仍暂时保留为原始字符串；完整类型系统建立后，参数将依次经过 Expression parsing、名称解析、静态类型检查、求值和 signature binding，再以结构化 Value 传给 Function。
+当前 arguments 已解析为第一阶段 Expression AST，并经过字面量求值、静态类型检查和 signature binding，以结构化 Value 传给 Function。现阶段支持 `none`、Bool、Int、Float 和 String 字面量；名称解析、变量、运算表达式与用户函数将在后续扩展。
 
 未知函数不会破坏整份文档的可恢复性。Lowering 产生 diagnostic，并保存 UnresolvedCall：Content body 保留已经 lowering 的 Content，Raw body 保留原文。
 
-## Summary
+#heading(level=2)[Summary]
 
 Transparent Scope 负责“标注哪一段内容”；Content Call 负责“用 Notist Content 调用函数”；Raw Call 负责“用未经宿主解析的源码调用函数”。Attribute 为 Scope 和 Call 提供统一元数据，`!` 则在纯语法层明确语言边界。这组规则共同构成 Notist 内容模型、编辑器支持和插件扩展的稳定基础。
 
 ---
 
-## Draft
+#heading(level=2)[Draft]
 
 最初的构思在 [[super::rua-markdown-module-scope]] 内。
 
