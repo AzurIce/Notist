@@ -283,7 +283,7 @@ mod tests {
 
     #[test]
     fn parses_links_in_content_calls_but_ignores_them_in_raw_calls() {
-        let parse = parse("[[outside]] #quote[[[inside]]] #code![[[raw]]] [[after]]");
+        let parse = parse("[[outside]] #quote[[[inside]]] #code![[[raw]]]! [[after]]");
         assert!(parse.errors.is_empty());
         assert_eq!(parse.links.len(), 3);
         assert_eq!(parse.calls.len(), 2);
@@ -302,7 +302,7 @@ mod tests {
 
     #[test]
     fn ignores_syntax_inside_raw_content() {
-        let parse = parse("`[[inline]] #[annotation]`\n```not\n#code![[[inside]]]\n```");
+        let parse = parse("`[[inline]] #[annotation]`\n```not\n#code![[[inside]]]!\n```");
         assert!(parse.errors.is_empty());
         assert!(parse.links.is_empty());
         assert!(parse.scopes.is_empty());

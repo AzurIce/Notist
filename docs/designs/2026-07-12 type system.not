@@ -8,19 +8,19 @@ Notist 最终需要完整的静态类型系统，同时保留运行时 Value。�
 
 heading、raw、quote 等“processor”本质上都是 callable function：
 
-#raw!(lang="not")[
+#raw(lang="not")!![
 #heading(level=1)[Introduction]
-#raw!(lang="rust")[fn main() {}]
+#raw(lang="rust")![fn main() {}]!
 #quote[quoted *content*]
-]
+]!!
 
 它们可以具有普通函数签名：
 
-#raw!(lang="text")[
+#raw(lang="text")![
 heading(level: Int = 1, body: Content) -> Content
 raw(lang: String? = none, body: RawSource) -> Content
 quote(body: Content) -> Content
-]
+]!
 
 因此不需要长期维护独立的 Processor type 和 ProcessorRegistry。统一系统包含 Function、FunctionRegistry、FunctionInput、FunctionOutput 和 FunctionContext。
 
@@ -28,17 +28,17 @@ quote(body: Content) -> Content
 
 函数签名声明 body 需要 `Content` 还是 `RawSource`，调用处用 `!` 明确选择解析方式：
 
-#raw!(lang="not")[
+#raw(lang="not")!![
 #heading[Title with *emphasis*]  // body: Content
-#raw![not *parsed*]             // body: RawSource
-]
+#raw![not *parsed*]!             // body: RawSource
+]!!
 
 Parser 不需要先解析名称或读取函数签名即可建立语法树和高亮边界。Type checker 在名称解析后验证模式是否匹配签名：
 
-#raw!(lang="not")[
+#raw(lang="not")!![
 #raw[parsed content]     // type error: expected RawSource, found Content
-#quote![raw source]      // type error: expected Content, found RawSource
-]
+#quote![raw source]!      // type error: expected Content, found RawSource
+]!!
 
 这种分工保证 syntax tooling 是确定的，同时保留强类型检查。
 
@@ -65,7 +65,7 @@ Parser 不需要先解析名称或读取函数签名即可建立语法树和高�
 
 即使拥有静态类型，运行时仍需要 Value：
 
-#raw!(lang="text")[
+#raw(lang="text")![
 Value
 ├─ None
 ├─ Bool(bool)
@@ -77,7 +77,7 @@ Value
 ├─ Array(Vec<Value>)
 ├─ Dict(...)
 └─ Function(...)
-]
+]!
 
 Type 描述表达式“可以产生什么”，Value 表示本次执行“实际产生了什么”。常量求值、默认参数、用户函数和控制流都需要 Value。
 
@@ -85,7 +85,7 @@ Type 描述表达式“可以产生什么”，Value 表示本次执行“实际
 
 函数参数的最终流程：
 
-#raw!(lang="text")[
+#raw(lang="text")![
 source arguments
 -> Expression AST
 -> name resolution
@@ -93,13 +93,13 @@ source arguments
 -> evaluation to Value
 -> signature binding
 -> Function call
-]
+]!
 
 例如：
 
-#raw!(lang="not")[
+#raw(lang="not")![
 #heading(level=1 + depth)[Title]
-]
+]!
 
 parser 产生 Expression AST；analysis 解析 `depth`；type checker 确认表达式为 Int；eval 得到具体 Value；binder 将它绑定到 `level`。
 
@@ -118,7 +118,7 @@ Function Signature 至少描述：
 
 统一 Function 模型后，可以自然支持 Typst 风格的用户函数。建议先采用显式类型：
 
-#raw!(lang="not")[
+#raw(lang="not")![
 #let add(a: Int, b: Int) -> Int = a + b
 
 #let warning(
@@ -128,7 +128,7 @@ Function Signature 至少描述：
     #heading(level=3)[#title]
     #body
 ]
-]
+]!
 
 Function 可以有三种实现来源：
 
@@ -144,13 +144,13 @@ RawSource body 对用户函数是否开放需要谨慎设计，因为它携带�
 
 语法糖由 parser 直接识别，但其语义应归一到内置 Element 构造器：
 
-#raw!(lang="text")[
+#raw(lang="text")![
 = Title
 -> builtin heading constructor
 
 `raw`
 -> builtin raw constructor
-]
+]!
 
 语法糖不能通过动态名称查找改变含义。即使用户定义同名 `heading`，`= Title` 仍表示核心 Heading。显式 `#heading[...]` 是否允许局部遮蔽，则由名称解析规则决定。
 

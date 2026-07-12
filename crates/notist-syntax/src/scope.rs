@@ -24,6 +24,8 @@ pub struct Call {
     pub arguments: Vec<Argument>,
     /// Whether the body is parsed as Notist content or preserved as raw source.
     pub mode: CallMode,
+    /// The number of `!` markers delimiting a raw body, or `None` for Content.
+    pub raw_delimiter_level: Option<usize>,
     /// The body range without the surrounding brackets.
     pub body_range: TextRange,
     /// Whether the body opener is followed immediately by a newline.
@@ -39,7 +41,7 @@ pub struct Call {
 pub enum CallMode {
     /// A normal `#name[...]` body parsed recursively as Notist content.
     Content,
-    /// A `#name![...]` body preserved as raw source.
+    /// A `#name(args)![...]!` body preserved as raw source.
     Raw,
 }
 
@@ -215,12 +217,6 @@ fn parse_region_at(
     }
 
     let (name, mut cursor) = parse_qualified_name(source, after_hash)?;
-    let mode = if bytes.get(cursor) == Some(&b'!') {
-        cursor += 1;
-        CallMode::Raw
-    } else {
-        CallMode::Content
-    };
     let (arguments_range, arguments) = if bytes.get(cursor) == Some(&b'(') {
         let close = match find_matching(source, cursor, b'(', b')', raw_ranges) {
             Some(close) => close,
@@ -240,6 +236,17 @@ fn parse_region_at(
         (None, Vec::new())
     };
 
+    let delimiter_start = cursor;
+    while bytes.get(cursor) == Some(&b'!') {
+        cursor += 1;
+    }
+    let raw_delimiter_level = cursor - delimiter_start;
+    let (mode, raw_delimiter_level) = if raw_delimiter_level == 0 {
+        (CallMode::Content, None)
+    } else {
+        (CallMode::Raw, Some(raw_delimiter_level))
+    };
+
     if bytes.get(cursor) != Some(&b'[') {
         return None;
     }
@@ -252,29 +259,60 @@ fn parse_region_at(
         BodyForm::Inline
     };
 
-    let close = match find_matching(source, cursor, b'[', b']', raw_ranges) {
+    let close = match raw_delimiter_level {
+        Some(level) => find_raw_close(source, cursor + 1, level),
+        None => find_matching(source, cursor, b'[', b']', raw_ranges),
+    };
+    let close = match close {
         Some(close) => close,
         None => {
             errors.push(SyntaxError {
-                message: format!("unclosed body for call `{}`", name.value),
+                message: match raw_delimiter_level {
+                    Some(level) => format!(
+                        "unclosed raw body for call `{}`; expected `]{}`",
+                        name.value,
+                        "!".repeat(level)
+                    ),
+                    None => format!("unclosed body for call `{}`", name.value),
+                },
                 range: TextRange::new(start, source.len()),
             });
             return None;
         }
     };
     let body_range = TextRange::new(cursor + 1, close);
-    let (attributes, end) = parse_attributes(source, close + 1, errors);
+    let delimiter_end = close + 1 + raw_delimiter_level.unwrap_or(0);
+    let (attributes, end) = parse_attributes(source, delimiter_end, errors);
 
     Some(Region::Call(Call {
         name,
         arguments_range,
         arguments,
         mode,
+        raw_delimiter_level,
         body_range,
         body_form,
         attributes,
         range: TextRange::new(start, end),
     }))
+}
+
+fn find_raw_close(source: &str, body_start: usize, delimiter_level: usize) -> Option<usize> {
+    let bytes = source.as_bytes();
+    let mut cursor = body_start;
+    while let Some(relative) = source.get(cursor..)?.find(']') {
+        let close = cursor + relative;
+        let bangs_start = close + 1;
+        let bangs_end = bangs_start + delimiter_level;
+        if bytes
+            .get(bangs_start..bangs_end)
+            .is_some_and(|bangs| bangs.iter().all(|byte| *byte == b'!'))
+        {
+            return Some(close);
+        }
+        cursor = close + 1;
+    }
+    None
 }
 
 fn parse_attributes(
@@ -553,7 +591,7 @@ mod tests {
 
     #[test]
     fn recursively_parses_content_calls_but_keeps_raw_calls_atomic() {
-        let source = "#[outer #[inner]@inner #quote[#[nested] [[visible]]] #code![#[raw] [[ignored]]]]@outer";
+        let source = "#[outer #[inner]@inner #quote[#[nested] [[visible]]] #code![#[raw] [[ignored]]]!]@outer";
         let parse = parse(source);
         assert!(parse.errors.is_empty());
         assert_eq!(parse.scopes.len(), 3);
@@ -566,13 +604,14 @@ mod tests {
     #[test]
     fn parses_raw_call_name_arguments_body_form_and_attributes() {
         let source =
-            "#plugin::code!(lang=\"rust\")[\n[1, 2, 3]\n]@example,#snippet,.wide,status=checked";
+            "#plugin::code(lang=\"rust\")![\n[1, 2, 3]\n]!@example,#snippet,.wide,status=checked";
         let parse = parse(source);
         assert!(parse.errors.is_empty());
         let call = &parse.calls[0];
 
         assert_eq!(call.name.value, "plugin::code");
         assert_eq!(call.mode, CallMode::Raw);
+        assert_eq!(call.raw_delimiter_level, Some(1));
         assert_eq!(call.body_form, BodyForm::Block);
         let arguments = call.arguments_range.unwrap();
         assert_eq!(&source[arguments.start..arguments.end], "lang=\"rust\"");
@@ -587,10 +626,23 @@ mod tests {
 
     #[test]
     fn distinguishes_inline_and_block_call_forms() {
-        let inline = parse("#raw![content]");
-        let block = parse("#raw![\r\ncontent\r\n]");
+        let inline = parse("#raw![content]!");
+        let block = parse("#raw![\r\ncontent\r\n]!");
         assert_eq!(inline.calls[0].body_form, BodyForm::Inline);
         assert_eq!(block.calls[0].body_form, BodyForm::Block);
+    }
+
+    #[test]
+    fn raw_delimiter_level_allows_closing_brackets_in_the_body() {
+        let source = "#raw!![first ]! second ] ordinary]!!";
+        let parse = parse(source);
+        assert!(parse.errors.is_empty(), "{:?}", parse.errors);
+        let call = &parse.calls[0];
+        assert_eq!(call.raw_delimiter_level, Some(2));
+        assert_eq!(
+            &source[call.body_range.start..call.body_range.end],
+            "first ]! second ] ordinary"
+        );
     }
 
     #[test]
@@ -614,6 +666,10 @@ mod tests {
         let unclosed = parse("before #[content");
         assert_eq!(unclosed.errors.len(), 1);
         assert_eq!(unclosed.errors[0].message, "unclosed transparent scope");
+
+        let mismatched_raw = parse("#raw!![body]!");
+        assert_eq!(mismatched_raw.errors.len(), 1);
+        assert!(mismatched_raw.errors[0].message.contains("expected `]!!`"));
     }
 
     #[test]

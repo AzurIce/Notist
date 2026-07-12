@@ -173,7 +173,7 @@ mod tests {
     #[test]
     fn preserves_unknown_calls_with_syntax_selected_bodies() {
         let content = Evaluator::default().evaluate("#missing(x=1)[[[visible]]]");
-        let raw = Evaluator::default().evaluate("#missing![[[ignored]]]");
+        let raw = Evaluator::default().evaluate("#missing![[[ignored]]]!");
 
         assert_eq!(content.diagnostics.len(), 1);
         assert_eq!(content.diagnostics[0].message, "unknown function `missing`");

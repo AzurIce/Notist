@@ -4,10 +4,10 @@ Notist 的内置内容能力与插件能力共享 Function 模型。历史上称
 
 调用有两种 body mode：
 
-#raw!(lang="not")[
+#raw(lang="not")!![
 #name(arguments)[Notist Content]
-#name!(arguments)[raw source]
-]
+#name(arguments)![raw source]!
+]!!
 
 普通调用的 body 在函数执行前已经 lowering 为 Content；带 `!` 的调用收到 RawSource。`!` 选择输入的解析方式，而不是输出的 inline/block 位置。
 
@@ -16,82 +16,82 @@ Notist 的内置内容能力与插件能力共享 Function 模型。历史上称
 | Function | 调用 | Body | 输出 | 语法糖候选 |
 | --- | --- | --- | --- | --- |
 | `heading` | `#heading(level=1)[Title]` | Content | Heading Element | `= Title` |
-| `raw` | `#raw!(lang="rust")[source]` | RawSource | Raw Element | backtick、fenced code |
+| `raw` | `#raw(lang="rust")![source]!` | RawSource | Raw Element | backtick、fenced code |
 | `quote` | `#quote[content]` | Content | Quote/Custom Element | `>` |
 
 #heading(level=2)[heading]
 
-#raw!(lang="not")[
+#raw(lang="not")![
 #heading(level=1)[Introduction]
 #heading(level=2)[Design with *emphasis*]
-]
+]!
 
 建议签名：
 
-#raw!(lang="text")[
+#raw(lang="text")![
 heading(level: Int = 1, body: Content) -> Content
-]
+]!
 
 heading body 是普通 Notist Content，可以包含 emphasis、reference 或其他 inline Element。函数负责校验 level 范围，并产生稳定的 Heading Element。
 
 标题语法糖：
 
-#raw!(lang="not")[
+#raw(lang="not")![
 = Introduction
 == Design
-]
+]!
 
 语法糖由核心 parser 识别，但应直接调用与显式 heading 相同的 Heading 构造逻辑。它不通过可覆盖的 FunctionRegistry 动态查找名称，避免局部函数或插件改变基础语法含义。
 
 #heading(level=2)[raw]
 
-#raw!(lang="not")[
-#raw![ordinary *unparsed* text]
+#raw(lang="not")!![
+#raw![ordinary *unparsed* text]!
 
-#raw!(lang="rust")[
+#raw(lang="rust")![
 fn main() {
     println!("Hello Notist");
 }
-]
-]
+]!
+]!!
 
 建议签名：
 
-#raw!(lang="text")[
+#raw(lang="text")![
 raw(lang: String? = none, body: RawSource) -> Content
-]
+]!
 
 raw 必须使用 Raw Call。body 中的 Notist 标记不被解析，函数直接构造 Raw Element。`lang` 用于语法高亮或后续渲染，不改变宿主 parser 行为。
 
 raw 不需要 `block` 参数。Call 的 BodyForm 由 `[` 后是否立即换行得到：
 
-#raw!(lang="not")[
-#raw![inline raw]
+#raw(lang="not")!![
+#raw![inline raw]!
 
 #raw![
 block raw
-]
-]
+]!
+]!!
 
-BodyForm 会传入 Function，并决定 Raw Element 是否打断 paragraph flow。是否保留开头和结尾换行、如何逃逸 body 中的 `]`，仍需在 raw 语法细节中继续确定。
+BodyForm 会传入 Function，并决定 Raw Element 是否打断 paragraph flow。是否保留开头和结尾换行仍需继续确定；body 中的 `]` 冲突通过增加 delimiter 的 `!` 数量解决，例如 `#raw!![contains ]!]!!`。
 
 Backtick 与 fenced code 可以作为 raw 的语法糖。它们应直接构造同一种 Raw Element，不依赖注册表中的 `raw` 名称。
 
 #heading(level=2)[quote]
 
-#raw!(lang="not")[
+#raw(lang="not")![
 #quote[
 First paragraph with [[self::source]].
 
 Second paragraph with #heading(level=3)[Nested content].
 ]
-]
+]!
 
 建议签名：
 
-#raw!(lang="text")[
+#raw(lang="text")![
 quote(body: Content) -> Content
-]
+]!
 
 quote 使用 Content Call。宿主已经完成 body 的 parsing 和 lowering，quote 函数只需把得到的 Content 包装为 Quote Element；它不应接收 RawSource 后再执行一轮 Notist parser。
 
@@ -99,15 +99,15 @@ quote 使用 Content Call。宿主已经完成 body 的 parsing 和 lowering，q
 
 来源、作者等信息既可以是构造参数，也可以是结果 Attribute，区别取决于它是否改变 Quote Element 本身：
 
-#raw!(lang="not")[
+#raw(lang="not")![
 #quote(source="RFC 123")[content]@citation,#external,author="Alice"
-]
+]!
 
 #heading(level=2)[Typed Arguments]
 
 函数参数不能长期作为字符串由每个 Function 自行解析。完整调用流程应为：
 
-#raw!(lang="text")[
+#raw(lang="text")![
 argument source
 -> Expression AST
 -> name resolution
@@ -115,28 +115,28 @@ argument source
 -> evaluation to Value
 -> signature binding
 -> Function::call
-]
+]!
 
 当前实现已经将参数解析为 Expression，并把 literal Value 按 Function Signature 完成 positional/named binding。Function 读取 `BoundArguments`，不会自行解释参数源码。后续仍需扩展变量、运算表达式、名称解析和更丰富的 Value 类型。
 
 签名同时声明 trailing body 类型：
 
-#raw!(lang="text")[
+#raw(lang="text")![
 heading(level: Int, body: Content) -> Content
 raw(lang: String?, body: RawSource) -> Content
 quote(body: Content) -> Content
-]
+]!
 
-语法模式与签名必须一致：`#raw[...]` 会因提供 Content 而报错，`#quote![...]` 会因提供 RawSource 而报错。Parser 只根据 `!` 建立确定的语法树，type checker 再验证所选模式是否符合函数签名。
+语法模式与签名必须一致：`#raw[...]` 会因提供 Content 而报错，`#quote![...]!` 会因提供 RawSource 而报错。Parser 只根据 `!` 建立确定的语法树，type checker 再验证所选模式是否符合函数签名。
 
 #heading(level=2)[Extension Boundary]
 
 插件函数可以使用统一语法：
 
-#raw!(lang="not")[
+#raw(lang="not")!![
 #plugin::note(kind="warning")[Notist Content]
-#plugin::diagram!(engine="mermaid")[custom language]
-]
+#plugin::diagram(engine="mermaid")![custom language]!
+]!!
 
 插件不能仅通过注册 Function 扩展宿主 grammar，也不能让编辑器在解析后才猜测 body 使用何种语言。Content/Raw 由调用处的 `!` 明确选择。
 

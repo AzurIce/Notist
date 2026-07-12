@@ -143,7 +143,7 @@ mod tests {
             Element::Heading { level: 2, .. }
         ));
 
-        let raw = evaluator.evaluate("#raw!(lang=\"rust\")[fn main() {}]");
+        let raw = evaluator.evaluate("#raw(lang=\"rust\")![fn main() {}]!");
         assert!(raw.diagnostics.is_empty(), "{:?}", raw.diagnostics);
         assert!(matches!(
             &raw.content.elements[0].element,
