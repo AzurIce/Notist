@@ -1,344 +1,175 @@
-# Notist Scope 与 Attribute 系统
+# Scope and Attributes
 
-Scope 是 Notist 用来描述“一段内容范围”的基础机制。它为文档中的任意一段内容建立明确边界，使这段内容可以被命名、分类、附加元数据，或者交给特定的 processor 解析和处理。
+Notist 将“为一段内容附加语义”和“调用一个产生内容的函数”视为两件不同的事：
 
-核心 parser 按照 Scope 对宿主语法是否透明，将其分成两类：
+- Transparent Scope 使用 `#[...]`，只标注源码范围，内部仍是普通 Notist Content。
+- Content Call 使用 `#name[...]`，调用函数，body 由宿主解析为 Notist Content。
+- Raw Call 使用 `#name![...]`，调用函数，body 保持 RawSource，不由宿主解析。
 
-- **Transparent Scope**：内部内容继续作为普通 Notist 源码参与宿主解析；Scope 主要用于附加 ID、Tag、Class 和其他范围标注。
-- **Opaque Scope**：内部内容对宿主 parser 不可见，并以保留源码位置的 RawSource 形式交给指定 processor；processor 决定如何解析并生成内容树。
+三者都可以在结束后使用 `@...` 附加 ID、Tag、Class 和 key-value Attribute。
 
-两类 Scope 使用相似的成对边界，但对 parser 有不同含义：
+## Transparent Scope
 
-```not
-#[annotated content]
-
-#processor[processed content]
-```
-
-`#[...]` 是 Transparent Scope；`#processor[...]` 是 Opaque Scope。这里的 Transparent/Opaque 只描述 body 对宿主 Notist parser 是否可见，不表示 Scope 的最终渲染效果。
-
-## Transparent Scope：透明的内容范围标注
-
-Transparent Scope 使用 `#[...]`：
+Transparent Scope 是覆盖在普通内容之上的 annotation range：
 
 ```not
-这是普通内容，其中 #[这一段内容] 被划定为一个 Scope。
+#[important concept]@concept,#knowledge,.highlight,status=draft
 ```
 
-它的主要用途不是创造新的文档元素，而是记录一个内容范围。去掉 Scope 标记后，内部内容仍然是普通的 Notist 内容，并按照原本的语法参与解析。
-
-例如：
+它不创建容器 Element，也不改变内部语法。内部的引用、强调、函数调用和嵌套 Scope 都照常解析：
 
 ```not
-这是 #[一个需要复习的概念]@#review,#concept,priority=high。
+#[Read [[self::background]] and #quote[remember *this*.]]@reading
 ```
 
-正文仍然按照普通段落解析；除此之外，文档还会记录一条范围标注：
+Transparent Scope 可以跨越 inline Element 或 block 边界，因为它描述的是源码范围，而不是内容树的父子关系。它本身不区分 inline 与 block。
+
+Lowering 时，边界标记被移除，内部 Content 保留，同时产生一条 Annotation：
 
 ```text
-范围：一个需要复习的概念
-Tag：review、concept
-属性：priority = high
+#[A [[target]] B]@concept
+
+Content:    Text("A "), Reference("target"), Text(" B")
+Annotation: range(body) + { id: "concept" }
 ```
 
-Transparent Scope 不需要成为内容树中的父节点。它更像覆盖在内容树之上的标注层：内容树描述文档是什么，Transparent Scope 描述哪些内容范围具有额外语义。
+这种正交模型允许同一段内容同时属于多个语义范围，而不必强迫 Element 树表达所有交叠关系。
 
-因此，Transparent Scope 可以跨越普通元素的边界。例如下面的 Scope 从加粗文本内部开始，在加粗文本结束后继续覆盖普通文本：
+## Content Call
+
+普通调用使用 `#name(arguments)[body]`：
 
 ```not
-*前半段 #[后半段* 和普通文本]@selection,#concept 后续内容
-```
+#heading(level=1)[Notist *Overview*]
 
-去掉 Scope 语法后，正文仍然可以正常解析为加粗内容和普通内容；`selection` 只额外记录对应的文本范围。它不会要求加粗元素成为 Scope 的子节点，也不会改变原有元素结构。
-
-Transparent Scope 也可以覆盖多个 Block，例如一部分段落、标题和后续段落。它表示的是一个语义范围，而不强制把这些 Block 包装成新的容器元素。
-
-## Opaque Scope：由 Processor 拥有原始内容
-
-Opaque Scope 在 `#` 后写明 processor 名称：
-
-```not
-#processor[content]
-```
-
-processor 可以接收参数：
-
-```not
-#processor(argument=value)[content]
-```
-
-与 Transparent Scope 不同，Opaque Scope 是宿主语法树中的原子结构。核心 parser 只识别它的名称、参数、边界和后缀 Attribute，不进入 body 解析普通 Notist 语法。body 始终作为保留 Source ID、源码范围和原始文本的 RawSource 交给对应 processor。
-
-例如，代码处理器可以接收原始文本：
-
-```not
-#code(lang="rust")[
-fn main() {
-    println!("Hello Notist!");
-}
-]
-```
-
-`code` processor 可以直接使用 RawSource，不让 Notist parser 把函数、括号和字符串解释成普通正文，并将其构造成代码元素：
-
-```text
-Code Element
-├─ language: rust
-└─ source: fn main() { ... }
-```
-
-另一类 processor 可以主动调用 Notist parser 解析 RawSource。例如：
-
-```not
 #quote[
-第一段引用内容。
+The body is ordinary Notist Content.
 
-第二段引用内容，其中包含 *强调* 和 [[guide::intro]]。
+It may contain [[self::references]] and #heading(level=2)[nested calls].
 ]
 ```
 
-`quote` processor 可以调用核心提供的 `parse_blocks` 能力，要求 RawSource 能够完整解析为 Notist Block，并输出包含两个段落的 Quote Element。
+宿主 parser 会递归解析 body。Lowering 在执行函数之前先把 body 转换为 `Content`，因此函数直接接收语义内容，不需要自行重新调用 Notist parser。
 
-所有 processor 收到的输入形式相同，都是 RawSource；区别在于 processor 如何使用它：
+Content Call 适合 heading、quote、note、link 等以 Notist 内容为输入的构造器。它与普通函数调用属于同一套 callable 模型：函数接收参数和 trailing body，返回 Content。
 
-- **原样使用**：直接保存或渲染原始文本，适合代码和纯文本区域。
-- **重新调用 Notist parser**：将 RawSource 解析为 Inline 或 Block Content，适合 quote、heading、note 等内置元素。
-- **调用自定义 parser**：按照 Rust、数学、图表或其他嵌入式语言解析原文，并生成插件自己的语法树或 Element。
+## Raw Call
 
-processor 的输出是已经解析完成的 Content 或 Element 树，而不是一段等待核心重新解析的 Notist token。未来如果需要宏展开，可以另行设计生成 token 并再次解析的宏系统；它不属于当前 Opaque Scope 的职责。
-
-## Attribute：描述 Scope 或 Processor 结果
-
-Scope 结束后可以紧跟 `@` 和属性列表：
+Raw Call 在函数名后增加 `!`：
 
 ```not
-#[content]@id,#tag,.class,key=value
-```
+#raw!(lang="rust")[fn main() { println!("hello"); }]
 
-`@` 是 Scope 内容与属性列表之间的分隔符。属性列表包含四种形式：
-
-| 写法 | 含义 | 数量 |
-|---|---|---|
-| `id` | Scope 或 Element 的唯一 ID | 可选，最多一个 |
-| `#tag` | 语义 Tag | 可有多个 |
-| `.class` | 展示或样式 Class | 可有多个 |
-| `key=value` | 结构化属性 | 可有多个 |
-
-完整示例：
-
-```not
-#[关键概念]@intro,#concept,#important,.highlight,priority=high
-```
-
-它表示：
-
-```text
-ID：intro
-Tags：concept、important
-Classes：highlight
-priority：high
-```
-
-ID 位于属性列表的第一个位置，但它是可选的。第一个属性的形式可以直接表明是否存在 ID：
-
-```not
-#[content]@intro
-#[content]@#draft,#concept
-#[content]@.highlight,.lead
-#[content]@status=draft,priority=high
-```
-
-分别表示：
-
-- 只有 ID `intro`；
-- 没有 ID，具有 `draft` 和 `concept` 两个 Tag；
-- 没有 ID，具有 `highlight` 和 `lead` 两个 Class；
-- 没有 ID，具有两个 Key-Value 属性。
-
-除第一个位置的 ID 外，属性之间使用逗号分隔。裸 identifier 只在第一个位置表示 ID；Tag 总是以 `#` 开始，Class 总是以 `.` 开始，普通属性使用 `=`，因此四种形式可以明确区分。
-
-属性后缀必须直接跟在 Scope 的结束 `]` 后面：
-
-```not
-#[content]@intro,#concept
-```
-
-如果 `]` 与 `@` 之间存在空白，`@` 不再属于这个 Scope。这个限制使 parser 能够明确判断属性归属，也避免把后续正文中的 `@` 错认成属性。
-
-## ID、Tag、Class 与普通属性
-
-这四种形式都属于 Attribute 系统，但分别承担不同职责。
-
-### ID
-
-ID 为 Scope 或 processor 产生的 Element 提供稳定身份：
-
-```not
-#[安装说明]@install
-```
-
-同一 Module 内的 ID 应当唯一，可以通过引用语法访问：
-
-```not
-[[#install]]
-[[guide::intro#install]]
-```
-
-ID 是可寻址身份，不应被当作一般分类标签重复使用。
-
-### Tag
-
-Tag 表示与展示无关的语义分类：
-
-```not
-#[某个结论]@#concept,#review
-```
-
-Tag 适合用于搜索、查询、知识图谱、索引、复习状态和插件规则。`#tag` 可以理解为向多值的 Tag 属性集合追加一个值。
-
-### Class
-
-Class 表示展示、样式或布局分类：
-
-```not
-#[需要突出显示的内容]@.highlight,.wide
-```
-
-Class 可以被主题或 renderer 使用，作用类似 CSS class。Tag 说明内容在语义上是什么，Class 说明内容希望怎样展示；二者底层都是可扩展的多值属性，但意图不同。
-
-### Key-Value
-
-Key-Value 用于不能用简单分类表达的结构化元数据：
-
-```not
-#[一个任务]@status=doing,priority=high,owner="Alice"
-```
-
-普通属性的 key 对核心系统是开放的。内置功能或插件可以声明并解释自己认识的属性，未知属性仍应被完整保留，以便其他工具处理。
-
-## Processor 参数与 Attribute 的区别
-
-processor 参数写在内容之前，用来控制“如何解析或构造内容”；Attribute 写在内容之后，用来描述“这段范围或处理结果是什么”。
-
-```not
-#code(lang="rust",line-numbers=true)[
-fn main() {}
-]@example,#snippet,.wide,status=checked
-```
-
-其中：
-
-```text
-lang、line-numbers
-→ code processor 的输入参数
-→ 决定怎样处理内容
-
-example、snippet、wide、status
-→ 处理结果的 Attribute
-→ 用于引用、分类、展示和查询
-```
-
-这种前后分工避免把 processor、Tag、Class 和普通属性混入同一个调用列表，也保证一个 Opaque Scope 只有一个明确的主要处理器。
-
-## Scope 的嵌套与边界
-
-所有 Scope 都使用成对的 `[...]` 边界，因此可以嵌套，但不能相交：
-
-```not
-#[外层内容 #[内层内容]@inner 后续内容]@outer
-```
-
-合法关系是完整包含或完全分离：
-
-```text
-允许：A 包含 B
-允许：A 与 B 分离
-禁止：A 开始 → B 开始 → A 结束 → B 结束
-```
-
-Transparent Scope 可以跨越普通 Notist Element，因为它是独立的标注范围；Opaque Scope 则是宿主 parser 眼中的原子节点和语法岛，必须拥有完整的原始 body 区域。
-
-Transparent Scope 可以完整包含 Opaque Scope：
-
-```not
-#[示例之前
-
-#code(lang="rust")[
-fn main() {}
+#diagram!(engine="mermaid")[
+graph TD
+    A --> B
 ]
-
-示例之后]@example-section,#example
 ```
 
-Opaque Scope 的 body 在第一轮宿主解析中始终保持不透明。内部是否识别嵌套的 Notist Scope，由 processor 决定：quote 等 processor 可以再次调用 Notist parser；code 等 processor 可以将 `#[...]` 和 `#name[...]` 保留为普通原文。
+`!` 表示 body 对宿主 Notist parser 不透明。核心只识别调用名称、参数、body 边界和 Attribute，并把 body 作为保留源码范围的 RawSource 交给函数。
 
-## 核心解析与插件扩展
+因此 Raw body 中的 `[[reference]]`、`#[scope]` 或 `#call[...]` 都只是原文。具体函数可以直接保留它、交给另一种语言的 parser，或在明确需要时通过核心服务再次解析为 Notist。
 
-Scope 和 Processor 是 Notist 扩展能力的基础。核心系统负责所有插件都必须共享的稳定部分：
+`!` 只决定 body 的输入形式，不表示宏展开，也不决定结果是 inline 还是 block。函数仍然返回正常的 Content；未来若需要产生源码再重新解析，应单独设计宏系统。
 
-- 识别 Transparent Scope 与 Opaque Scope；
-- 匹配成对边界并保存源码位置；
-- 解析 processor 名称、参数和后缀 Attribute；
-- 将 Opaque Scope 的 body 保存为带源码位置的 RawSource；
-- 为未知 processor 建立可恢复的语法节点；
-- 为 diagnostic、formatter 和 LSP 维护源码映射。
+## Body Form
 
-核心 parser 不需要执行任意插件代码才能建立基础语法树。无论 processor 是否已安装，下面的内容都可以稳定解析为一个 Opaque Scope：
+只有会产生 Element 的 Call 需要记录 body 的 source form。`[` 后立即出现换行时为 Block，否则为 Inline：
 
 ```not
-#third-party::diagram[...]
+#raw![inline raw]       // Inline
+
+#raw![                  // Block
+block raw
+]
 ```
 
-如果对应插件存在，后续 expansion 阶段调用 processor，并获得解析后的 Content 或 Element；如果插件缺失，原始名称、参数和 body 仍然保留，同时产生“未知 processor”的 diagnostic。
+该信息记录在 Call 上并传给 Function。它主要服务于 raw、code 等同一函数可产生 inline/block Element 的场景，不改变 Content Call body 的解析方式，也不适用于 Transparent Scope。
 
-插件可以在 processor 之外提供其他能力，例如：
+Block/Inline 是调用处的形式信息，不等同于函数返回类型。函数签名和类型检查仍需判断这种形式是否合法，例如 heading 可以拒绝 Block form，quote 可以拒绝 Inline form。
 
-- 对特定 Tag、Class 或 Key-Value 属性进行语义检查；
-- 为 Transparent Scope 建立索引或知识图谱关系；
-- 为自定义 Element 提供渲染逻辑；
-- 提供 Hover、补全、跳转和其他 LSP 能力；
-- 决定自定义内容如何导出为 HTML、纯文本或其他格式。
+## Attributes
 
-因此，插件不是无约束地修改核心 token stream，而是通过稳定的 Scope、Attribute、Processor 和 Element 接口扩展 Notist。
+Attribute 位于 Scope 或 Call 结束后的 `@` 列表中：
 
-## 整体处理流程
+```not
+#[content]@id,#tag-a,#tag-b,.class-a,.class-b,key=value,owner="Alice"
+#quote[content]@citation,#source,author="Alice"
+#raw!(lang="rust")[code]@example,#snippet
+```
 
-一份文档可以按照下面的阶段处理：
+列表规则如下：
+
+- 第一个 bare name 是可选 ID，例如 `@intro`。
+- `#name` 是可重复 Tag。
+- `.name` 是可重复 Class。
+- `key=value` 是可重复 structured property。
+- 可以跳过 ID，直接写 `@#tag`、`@.class` 或 `@key=value`。
+- ID 只能出现一次且必须处于第一个位置。
+
+Tag 和 Class 本质上也是可重复属性，但使用前缀提供高频简写；key-value 则承载一般扩展数据。Attribute 描述的是已经划定的范围或调用结果，不负责选择被调用函数。
+
+参数与 Attribute 的职责不同：
+
+```not
+#heading(level=2)[Title]@introduction,#public
+```
+
+- `level=2` 是函数参数，参与调用、类型检查和 Element 构造。
+- `@introduction,#public` 是结果元数据，用于索引、查询、样式或插件分析。
+
+## Parser and Tooling
+
+这一区分由语法本身决定，不依赖名称解析或类型信息：
 
 ```text
-源文件
-  ↓
-识别 Scope 边界、processor 与 Attribute
-  ↓
-构造宿主 Notist token stream
-  ├─ Transparent Scope：隐藏边界，保留内部内容
-  └─ Opaque Scope：作为独立语法节点并保存 RawSource
-  ↓
-解析普通 Notist 内容
-  ↓
-处理 Opaque Scope
-  ├─ 原样使用 RawSource
-  ├─ 重新解析为 Notist Content
-  └─ 使用自定义 parser 生成插件内容树
-  ↓
-获得 Content / Element 树
-  ↓
-将 Transparent Scope 投影为内容范围标注
-  ↓
-Analysis、LSP、索引、查询与渲染
+#[...]       -> Transparent Scope, parse body as Notist
+#name[...]   -> Content Call, parse body as Notist
+#name![...]  -> Raw Call, keep body as RawSource
 ```
 
-最终文档同时包含两种互补的信息：
+因此 Tree-sitter、编辑器高亮和增量 parser 无需先加载插件即可确定语言边界：Content body 使用 Notist 高亮，Raw body 可以保持 raw，或根据函数名/参数注入另一种语言。
+
+核心 parser 应稳定产出：
 
 ```text
-Element Tree
-→ 描述文档由哪些内容构成
-
-Annotation Layer
-→ 描述哪些内容范围具有哪些属性
+Parse
+├─ links: Vec<WikiLink>
+├─ scopes: Vec<TransparentScope>
+├─ calls: Vec<Call>
+└─ errors: Vec<SyntaxError>
 ```
 
-Opaque Scope 负责把原始内容委托给 processor 并生成 Element，Transparent Scope 负责为任意范围附加语义，Attribute 则为二者提供统一的身份、分类和扩展数据。这三部分共同构成 Notist 内容模型与插件系统的基础。
+其中 Call 保存 name、CallMode、arguments range、body range、BodyForm、Attributes 和完整 range。Raw Call 是原子区域；Transparent Scope 与 Content Call 的 body 会递归发现内部语法。
+
+插件不能通过注册函数修改宿主 grammar。扩展函数共享通用的 Content Call / Raw Call 语法；高频内置能力可以额外拥有语法糖，但语法糖必须由核心 parser 定义，并 lowering 到同一个 Element 构造逻辑。
+
+## Evaluation Model
+
+运行时不再把所有调用称为 Processor。统一接口是产生 Content 的 Function：
+
+```text
+CallBody
+├─ Content(Content)
+└─ Raw(RawSource)
+
+FunctionInput
+├─ name
+├─ arguments
+├─ body
+├─ body_form
+└─ range
+
+Function::call(context, input) -> FunctionOutput
+```
+
+当前 arguments 仍暂时保留为原始字符串；完整类型系统建立后，参数将依次经过 Expression parsing、名称解析、静态类型检查、求值和 signature binding，再以结构化 Value 传给 Function。
+
+未知函数不会破坏整份文档的可恢复性。Lowering 产生 diagnostic，并保存 UnresolvedCall：Content body 保留已经 lowering 的 Content，Raw body 保留原文。
+
+## Summary
+
+Transparent Scope 负责“标注哪一段内容”；Content Call 负责“用 Notist Content 调用函数”；Raw Call 负责“用未经宿主解析的源码调用函数”。Attribute 为 Scope 和 Call 提供统一元数据，`!` 则在纯语法层明确语言边界。这组规则共同构成 Notist 内容模型、编辑器支持和插件扩展的稳定基础。
 
 ---
 
@@ -346,91 +177,8 @@ Opaque Scope 负责把原始内容委托给 processor 并生成 Element，Transp
 
 最初的构思在 [[super::rua-markdown-module-scope]] 内。
 
-Notist 使用一种类似 rust 的域以及宏标注风格来定义 scope 与为 scope 添加属性标注。
+早期方案曾把所有 `#processor[...]` 都视为 Opaque Scope，并让 processor 自行决定是否重新解析 body。当前设计已经改为由 `!` 在语法上明确区分 Content Call 与 Raw Call；以下内容仅保留为历史记录。
 
-属性类型：
-- id: `#xxx`
-- tag/processor: `xxx`、`xxx(arg)`
-- class: `.xxx`
-- key-value: `xxx=xxx`
+最初考虑过使用属性列表同时承担 ID、Tag、Processor、Class 和 key-value，并用 `{}` 或 `[]` 划定范围。后续讨论发现，“范围标注”和“内容构造”需要分开，否则 parser、语法高亮和插件执行的边界都依赖动态 processor 行为。
 
-```not
-这是普通段落，其中 #[#concept,draft,.highlight,priority=high]{关键概念} 需要被标记。
-```
-
-```not
-#[#intro,draft,.lead,status=draft]{
-这是一个 block scope，
-可以跨多行、包含标题、列表、代码块。
-}
-```
-
-属性也可以被拆开：
-
-```not
-#[#intro]
-#[draft]
-#[.lead]
-#[status=draft]
-{
-这是一个 block scope。
-可以跨多行、包含标题、列表、代码块。
-}
-```
-
-这个 scope 系统也是 Notist 扩展能力的核心，计划未来实现插件系统，并支持插件实现对不同 scope（基于属性区分）的特殊处理（或者说 notist 内部的各种元素也是这样做的，即内置插件）：
-
-```not
-#[code,lang="rust"]{
-fn main() {
-    println!("Hello Notist!")
-}
-}
-```
-
-scope 可以嵌套，但是不能相交。（用 `{` 和 `}` 的限制）
-
-## Scope 语法设计思路
-
-首先一定不会用类 markdown 的反引号或者 fence `:::`，因为它们无法区分开始与结束。
-html 的标签语法 `<tag>`、`</tag>` 写起来太麻烦。
-首选是单字符带有 pair 属性的符号，比如 `{}`、`[]`、`()`、`<>`。
-考虑它不应该影响日常内容书写（比如应该还比较常用到 > 和 <，那么就不应该直接以 `<` 作为 scope start，
-可以用 `#<xxxxx>` 这种前面加个额外的 `#` 来进一步约束，或者换成更不容易出现在正文中的 `{}` 类符号）
-
-想了一下上面的或许可以简化为：
-
-```not
-#[inline scope]
-#[
-block scope
-]
-
-#tag[inline scope with tag]
-#tag[inline scope with tag and id]@id
-#tag,.class1,.class2,key=value[inline scope with tag, class and id]@id
-#tag(arg)[inline scope with argumented tag and id]@id
-```
-
-如果思考一下的话，假如我们要插件能够自如处理某个 scope 内部 token 的解析与处理方式的话，
-那么就意味着插件必须在 parse 阶段能够介入，能够对解析出的树产生影响。
-
-那么插件在 token 解析部分的逻辑就是：接收内部的 token 并输出 notist 的 token 树。
-或者可以设计成一些需要延迟处理，比如仅仅是把这部分 token 保留，并做标记，输出的都是 `#raw`？
-或者说我们原本的代码块就是最简单的“escape”一部分 token 跳过处理的逻辑。
-也因此我们其实可以将带 processor 的 scope 作为一个实际存在的节点来解析即可。
-
-processor 就是打包并处理内部 token 的逻辑，然后后续或许每个 Plugin 还会额外有“渲染逻辑”，
-比如如何由 raw 内容去产生视觉的内容，不过那些是之后的设计内容了。
-
-那大概 scope 会分几种（这里命名待定，还没想好）：
-- 无 processor 的，即不被打包为一个 Node 的 AnnotateScope
-- 有 processor 的，会被打包为一个 Node 的 ContentScope
-
-```not
-#[inline scope processed with id, class and kv]@id,.class1,.class2,k1=v1,k2=v2
-#processor[inline scope processed with a processor]
-#processor[inline scope processed with a processor with id]@id
-#processor[inline scope processed with a processor with id, tag, class and kv]@id,#tag1,tag2,.class1,.class2,k1=v1,k2=v2
-#processor(arg)[inline scope with argumented processor and id]@id
-```
+最终保留下来的核心直觉是：Transparent Scope 可以跨 Element，Processor/Function 调用则是实际语法节点；插件通过稳定节点和 Content/RawSource 接口扩展，而不是介入或改写核心 token stream。

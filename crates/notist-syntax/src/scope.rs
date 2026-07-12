@@ -2,41 +2,6 @@ use notist_model::TextRange;
 
 use crate::SyntaxError;
 
-/// A delimited source region classified by its visibility to the host parser.
-#[derive(Clone, Debug, Eq, PartialEq)]
-pub enum Scope {
-    /// A scope whose body remains visible to the host Notist parser.
-    Transparent(TransparentScope),
-    /// A scope whose raw body is owned by a processor and hidden from the host parser.
-    Opaque(OpaqueScope),
-}
-
-impl Scope {
-    /// Returns the full source range, including delimiters and postfix attributes.
-    pub fn range(&self) -> TextRange {
-        match self {
-            Self::Transparent(scope) => scope.range,
-            Self::Opaque(scope) => scope.range,
-        }
-    }
-
-    /// Returns the source range of the scope body without delimiters.
-    pub fn body_range(&self) -> TextRange {
-        match self {
-            Self::Transparent(scope) => scope.body_range,
-            Self::Opaque(scope) => scope.body_range,
-        }
-    }
-
-    /// Returns the postfix attributes attached to the scope.
-    pub fn attributes(&self) -> &Attributes {
-        match self {
-            Self::Transparent(scope) => &scope.attributes,
-            Self::Opaque(scope) => &scope.attributes,
-        }
-    }
-}
-
 /// A `#[...]` scope whose body is parsed as ordinary Notist content.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct TransparentScope {
@@ -48,19 +13,41 @@ pub struct TransparentScope {
     pub range: TextRange,
 }
 
-/// A `#processor(...)[...]` scope whose body is opaque to the host parser.
+/// A function-style content-producing call.
 #[derive(Clone, Debug, Eq, PartialEq)]
-pub struct OpaqueScope {
-    /// The qualified processor name following `#`.
+pub struct Call {
+    /// The qualified function name following `#`.
     pub name: SpannedName,
     /// The argument contents without the surrounding parentheses.
     pub arguments_range: Option<TextRange>,
-    /// The raw body range without the surrounding brackets.
+    /// Whether the body is parsed as Notist content or preserved as raw source.
+    pub mode: CallMode,
+    /// The body range without the surrounding brackets.
     pub body_range: TextRange,
-    /// The postfix attributes attached to the processor result.
+    /// Whether the body opener is followed immediately by a newline.
+    pub body_form: BodyForm,
+    /// The postfix attributes attached to the call result.
     pub attributes: Attributes,
-    /// The complete source range of the scope.
+    /// The complete source range of the call.
     pub range: TextRange,
+}
+
+/// The syntax-selected interpretation of a call body.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum CallMode {
+    /// A normal `#name[...]` body parsed recursively as Notist content.
+    Content,
+    /// A `#name![...]` body preserved as raw source.
+    Raw,
+}
+
+/// The source form of a call body.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum BodyForm {
+    /// The opening bracket is followed directly by body content.
+    Inline,
+    /// The opening bracket is followed immediately by a newline.
+    Block,
 }
 
 /// Postfix metadata introduced by `@` after a scope.
@@ -120,28 +107,31 @@ pub struct SpannedName {
     pub range: TextRange,
 }
 
-pub(crate) fn parse_scopes(
+pub(crate) fn parse_scopes_and_calls(
     source: &str,
     raw_ranges: &[TextRange],
     errors: &mut Vec<SyntaxError>,
-) -> Vec<Scope> {
+) -> (Vec<TransparentScope>, Vec<Call>) {
     let mut scopes = Vec::new();
-    parse_scopes_in(
+    let mut calls = Vec::new();
+    parse_regions_in(
         source,
         TextRange::new(0, source.len()),
         raw_ranges,
         errors,
         &mut scopes,
+        &mut calls,
     );
-    scopes
+    (scopes, calls)
 }
 
-fn parse_scopes_in(
+fn parse_regions_in(
     source: &str,
     search_range: TextRange,
     raw_ranges: &[TextRange],
     errors: &mut Vec<SyntaxError>,
-    scopes: &mut Vec<Scope>,
+    scopes: &mut Vec<TransparentScope>,
+    calls: &mut Vec<Call>,
 ) {
     let bytes = source.as_bytes();
     let mut cursor = search_range.start;
@@ -156,25 +146,30 @@ fn parse_scopes_in(
             continue;
         }
 
-        match parse_scope_at(source, cursor, raw_ranges, errors) {
-            Some(Scope::Transparent(scope)) => {
+        match parse_region_at(source, cursor, raw_ranges, errors) {
+            Some(Region::Transparent(scope)) => {
                 if scope.range.end > search_range.end {
                     cursor += 1;
                     continue;
                 }
                 let body_range = scope.body_range;
                 let end = scope.range.end;
-                scopes.push(Scope::Transparent(scope));
-                parse_scopes_in(source, body_range, raw_ranges, errors, scopes);
+                scopes.push(scope);
+                parse_regions_in(source, body_range, raw_ranges, errors, scopes, calls);
                 cursor = end;
             }
-            Some(Scope::Opaque(scope)) => {
-                if scope.range.end > search_range.end {
+            Some(Region::Call(call)) => {
+                if call.range.end > search_range.end {
                     cursor += 1;
                     continue;
                 }
-                let end = scope.range.end;
-                scopes.push(Scope::Opaque(scope));
+                let body_range = call.body_range;
+                let mode = call.mode;
+                let end = call.range.end;
+                calls.push(call);
+                if mode == CallMode::Content {
+                    parse_regions_in(source, body_range, raw_ranges, errors, scopes, calls);
+                }
                 cursor = end;
             }
             None => cursor += 1,
@@ -182,12 +177,17 @@ fn parse_scopes_in(
     }
 }
 
-fn parse_scope_at(
+enum Region {
+    Transparent(TransparentScope),
+    Call(Call),
+}
+
+fn parse_region_at(
     source: &str,
     start: usize,
     raw_ranges: &[TextRange],
     errors: &mut Vec<SyntaxError>,
-) -> Option<Scope> {
+) -> Option<Region> {
     let bytes = source.as_bytes();
     let after_hash = start + 1;
     let next = *bytes.get(after_hash)?;
@@ -205,7 +205,7 @@ fn parse_scope_at(
         };
         let body_range = TextRange::new(after_hash + 1, close);
         let (attributes, end) = parse_attributes(source, close + 1, errors);
-        return Some(Scope::Transparent(TransparentScope {
+        return Some(Region::Transparent(TransparentScope {
             body_range,
             attributes,
             range: TextRange::new(start, end),
@@ -213,12 +213,18 @@ fn parse_scope_at(
     }
 
     let (name, mut cursor) = parse_qualified_name(source, after_hash)?;
+    let mode = if bytes.get(cursor) == Some(&b'!') {
+        cursor += 1;
+        CallMode::Raw
+    } else {
+        CallMode::Content
+    };
     let arguments_range = if bytes.get(cursor) == Some(&b'(') {
         let close = match find_matching(source, cursor, b'(', b')', raw_ranges) {
             Some(close) => close,
             None => {
                 errors.push(SyntaxError {
-                    message: format!("unclosed argument list for processor `{}`", name.value),
+                    message: format!("unclosed argument list for call `{}`", name.value),
                     range: TextRange::new(start, source.len()),
                 });
                 return None;
@@ -235,11 +241,19 @@ fn parse_scope_at(
         return None;
     }
 
+    let body_form = if bytes.get(cursor + 1) == Some(&b'\n')
+        || bytes.get(cursor + 1..cursor + 3) == Some(b"\r\n")
+    {
+        BodyForm::Block
+    } else {
+        BodyForm::Inline
+    };
+
     let close = match find_matching(source, cursor, b'[', b']', raw_ranges) {
         Some(close) => close,
         None => {
             errors.push(SyntaxError {
-                message: format!("unclosed body for processor `{}`", name.value),
+                message: format!("unclosed body for call `{}`", name.value),
                 range: TextRange::new(start, source.len()),
             });
             return None;
@@ -248,10 +262,12 @@ fn parse_scope_at(
     let body_range = TextRange::new(cursor + 1, close);
     let (attributes, end) = parse_attributes(source, close + 1, errors);
 
-    Some(Scope::Opaque(OpaqueScope {
+    Some(Region::Call(Call {
         name,
         arguments_range,
+        mode,
         body_range,
+        body_form,
         attributes,
         range: TextRange::new(start, end),
     }))
@@ -495,9 +511,7 @@ mod tests {
         let source = "#[重要概念]@intro,#concept,#review,.highlight,priority=high,owner=\"Alice\"";
         let parse = parse(source);
         assert!(parse.errors.is_empty());
-        let Scope::Transparent(scope) = &parse.scopes[0] else {
-            panic!("expected transparent scope");
-        };
+        let scope = &parse.scopes[0];
 
         assert_eq!(
             &source[scope.body_range.start..scope.body_range.end],
@@ -528,42 +542,51 @@ mod tests {
         ] {
             let parse = parse(source);
             assert!(parse.errors.is_empty(), "{source}: {:?}", parse.errors);
-            assert!(parse.scopes[0].attributes().id.is_none());
-            assert_eq!(parse.scopes[0].attributes().items.len(), 2);
+            assert!(parse.scopes[0].attributes.id.is_none());
+            assert_eq!(parse.scopes[0].attributes.items.len(), 2);
         }
     }
 
     #[test]
-    fn parses_nested_transparent_scopes_but_keeps_opaque_scopes_atomic() {
-        let source = "#[outer #[inner]@inner #code[#[raw] [[ignored]]]]@outer";
+    fn recursively_parses_content_calls_but_keeps_raw_calls_atomic() {
+        let source = "#[outer #[inner]@inner #quote[#[nested] [[visible]]] #code![#[raw] [[ignored]]]]@outer";
         let parse = parse(source);
         assert!(parse.errors.is_empty());
         assert_eq!(parse.scopes.len(), 3);
-        assert!(matches!(parse.scopes[0], Scope::Transparent(_)));
-        assert!(matches!(parse.scopes[1], Scope::Transparent(_)));
-        assert!(matches!(parse.scopes[2], Scope::Opaque(_)));
-        assert!(parse.links.is_empty());
+        assert_eq!(parse.calls.len(), 2);
+        assert_eq!(parse.calls[0].mode, CallMode::Content);
+        assert_eq!(parse.calls[1].mode, CallMode::Raw);
+        assert_eq!(parse.links.len(), 1);
     }
 
     #[test]
-    fn parses_opaque_scope_name_arguments_raw_body_and_attributes() {
+    fn parses_raw_call_name_arguments_body_form_and_attributes() {
         let source =
-            "#plugin::code(lang=\"rust\")[[1, 2, 3]]@example,#snippet,.wide,status=checked";
+            "#plugin::code!(lang=\"rust\")[\n[1, 2, 3]\n]@example,#snippet,.wide,status=checked";
         let parse = parse(source);
         assert!(parse.errors.is_empty());
-        let Scope::Opaque(scope) = &parse.scopes[0] else {
-            panic!("expected opaque scope");
-        };
+        let call = &parse.calls[0];
 
-        assert_eq!(scope.name.value, "plugin::code");
-        let arguments = scope.arguments_range.unwrap();
+        assert_eq!(call.name.value, "plugin::code");
+        assert_eq!(call.mode, CallMode::Raw);
+        assert_eq!(call.body_form, BodyForm::Block);
+        let arguments = call.arguments_range.unwrap();
         assert_eq!(&source[arguments.start..arguments.end], "lang=\"rust\"");
         assert_eq!(
-            &source[scope.body_range.start..scope.body_range.end],
-            "[1, 2, 3]"
+            &source[call.body_range.start..call.body_range.end],
+            "\n[1, 2, 3]\n"
         );
-        assert_eq!(scope.attributes.id.as_ref().unwrap().value, "example");
-        assert_eq!(scope.attributes.items.len(), 3);
+        assert_eq!(call.attributes.id.as_ref().unwrap().value, "example");
+        assert_eq!(call.attributes.items.len(), 3);
+        assert_eq!(call.range.end, source.len());
+    }
+
+    #[test]
+    fn distinguishes_inline_and_block_call_forms() {
+        let inline = parse("#raw![content]");
+        let block = parse("#raw![\r\ncontent\r\n]");
+        assert_eq!(inline.calls[0].body_form, BodyForm::Inline);
+        assert_eq!(block.calls[0].body_form, BodyForm::Block);
     }
 
     #[test]
@@ -571,9 +594,7 @@ mod tests {
         let source = "*前半段 #[后半段* 和普通文本]@selection,#concept 后续";
         let parse = parse(source);
         assert!(parse.errors.is_empty());
-        let Scope::Transparent(scope) = &parse.scopes[0] else {
-            panic!("expected transparent scope");
-        };
+        let scope = &parse.scopes[0];
         assert_eq!(
             &source[scope.body_range.start..scope.body_range.end],
             "后半段* 和普通文本"
@@ -596,9 +617,7 @@ mod tests {
         let source = "#[before `]` after]@example";
         let parse = parse(source);
         assert!(parse.errors.is_empty());
-        let Scope::Transparent(scope) = &parse.scopes[0] else {
-            panic!("expected transparent scope");
-        };
+        let scope = &parse.scopes[0];
         assert_eq!(
             &source[scope.body_range.start..scope.body_range.end],
             "before `]` after"

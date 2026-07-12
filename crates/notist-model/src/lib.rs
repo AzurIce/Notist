@@ -4,6 +4,7 @@ mod content;
 
 pub use content::{
     Annotation, Block, Content, Element, ElementNode, Metadata, Property, StructuredDocument,
+    UnresolvedCallBody,
 };
 
 /// A half-open byte range in a source file.

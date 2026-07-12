@@ -1,0 +1,151 @@
+# Builtin Functions and Syntax Sugar
+
+Notist 的内置内容能力与插件能力共享 Function 模型。历史上称为 Processor 的对象，现在统一理解为“接收参数和 trailing body，并产生 Content 的函数”。
+
+调用有两种 body mode：
+
+```not
+#name(arguments)[Notist Content]
+#name!(arguments)[raw source]
+```
+
+普通调用的 body 在函数执行前已经 lowering 为 Content；带 `!` 的调用收到 RawSource。`!` 选择输入的解析方式，而不是输出的 inline/block 位置。
+
+首批内置函数考虑 heading、raw 和 quote：
+
+| Function | 调用 | Body | 输出 | 语法糖候选 |
+| --- | --- | --- | --- | --- |
+| `heading` | `#heading(level=1)[Title]` | Content | Heading Element | `= Title` |
+| `raw` | `#raw!(lang="rust")[source]` | RawSource | Raw Element | backtick、fenced code |
+| `quote` | `#quote[content]` | Content | Quote/Custom Element | `>` |
+
+## heading
+
+```not
+#heading(level=1)[Introduction]
+#heading(level=2)[Design with *emphasis*]
+```
+
+建议签名：
+
+```text
+heading(level: Int = 1, body: Content) -> Content
+```
+
+heading body 是普通 Notist Content，可以包含 emphasis、reference 或其他 inline Element。函数负责校验 level 范围，并产生稳定的 Heading Element。
+
+标题语法糖：
+
+```not
+= Introduction
+== Design
+```
+
+语法糖由核心 parser 识别，但应直接调用与显式 heading 相同的 Heading 构造逻辑。它不通过可覆盖的 FunctionRegistry 动态查找名称，避免局部函数或插件改变基础语法含义。
+
+## raw
+
+```not
+#raw![ordinary *unparsed* text]
+
+#raw!(lang="rust")[
+fn main() {
+    println!("Hello Notist");
+}
+]
+```
+
+建议签名：
+
+```text
+raw(lang: String? = none, body: RawSource) -> Content
+```
+
+raw 必须使用 Raw Call。body 中的 Notist 标记不被解析，函数直接构造 Raw Element。`lang` 用于语法高亮或后续渲染，不改变宿主 parser 行为。
+
+raw 不需要 `block` 参数。Call 的 BodyForm 由 `[` 后是否立即换行得到：
+
+```not
+#raw![inline raw]
+
+#raw![
+block raw
+]
+```
+
+BodyForm 会传入 Function，并决定 Raw Element 是否打断 paragraph flow。是否保留开头和结尾换行、如何逃逸 body 中的 `]`，仍需在 raw 语法细节中继续确定。
+
+Backtick 与 fenced code 可以作为 raw 的语法糖。它们应直接构造同一种 Raw Element，不依赖注册表中的 `raw` 名称。
+
+## quote
+
+```not
+#quote[
+First paragraph with [[self::source]].
+
+Second paragraph with #heading(level=3)[Nested content].
+]
+```
+
+建议签名：
+
+```text
+quote(body: Content) -> Content
+```
+
+quote 使用 Content Call。宿主已经完成 body 的 parsing 和 lowering，quote 函数只需把得到的 Content 包装为 Quote Element；它不应接收 RawSource 后再执行一轮 Notist parser。
+
+如果采用 `>` 语法糖，它需要定义逐行延续、空行、多段内容和嵌套规则。无论是否采用，显式调用和语法糖都必须汇合到相同的 Quote 构造器。
+
+来源、作者等信息既可以是构造参数，也可以是结果 Attribute，区别取决于它是否改变 Quote Element 本身：
+
+```not
+#quote(source="RFC 123")[content]@citation,#external,author="Alice"
+```
+
+## Typed Arguments
+
+函数参数不能长期作为字符串由每个 Function 自行解析。完整调用流程应为：
+
+```text
+argument source
+-> Expression AST
+-> name resolution
+-> static type checking
+-> evaluation to Value
+-> signature binding
+-> Function::call
+```
+
+当前 `FunctionInput.arguments: Option<&str>` 只是 expression parser 尚未完成时的过渡接口。最终函数读取经过 binding 的结构化参数和 Value。
+
+签名同时声明 trailing body 类型：
+
+```text
+heading(level: Int, body: Content) -> Content
+raw(lang: String?, body: RawSource) -> Content
+quote(body: Content) -> Content
+```
+
+语法模式与签名必须一致：`#raw[...]` 会因提供 Content 而报错，`#quote![...]` 会因提供 RawSource 而报错。Parser 只根据 `!` 建立确定的语法树，type checker 再验证所选模式是否符合函数签名。
+
+## Extension Boundary
+
+插件函数可以使用统一语法：
+
+```not
+#plugin::note(kind="warning")[Notist Content]
+#plugin::diagram!(engine="mermaid")[custom language]
+```
+
+插件不能仅通过注册 Function 扩展宿主 grammar，也不能让编辑器在解析后才猜测 body 使用何种语言。Content/Raw 由调用处的 `!` 明确选择。
+
+语法糖属于核心 grammar 的特权，应该只提供给稳定、高频的内置 Element。未来若需要用户可扩展语法，应单独设计受约束的宏或声明式 sugar 系统。
+
+## Implementation Order
+
+1. 确定 Heading、Raw、Quote 的 Element 数据结构。
+2. 实现三个内置 Function 与稳定构造器。
+3. 让已有语法糖 lowering 到同一构造器。
+4. 实现 Expression AST、Value、Function Signature 和参数 binding。
+5. 增加 call-mode mismatch、unknown argument 和 type mismatch diagnostics。

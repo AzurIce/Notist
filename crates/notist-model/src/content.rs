@@ -42,7 +42,7 @@ pub struct ElementNode {
     pub range: TextRange,
 }
 
-/// A semantic element produced by lowering or processor expansion.
+/// A semantic element produced by lowering or function evaluation.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum Element {
     /// Plain text.
@@ -80,17 +80,26 @@ pub enum Element {
         /// Whether the custom element interrupts paragraph flow.
         block: bool,
     },
-    /// An opaque scope for which no processor was registered.
-    UnresolvedProcessor {
-        /// The unresolved processor name.
+    /// A call for which no function was registered.
+    UnresolvedCall {
+        /// The unresolved function name.
         name: String,
         /// The raw argument text, if present.
         arguments: Option<String>,
-        /// The raw scope body.
-        body: String,
-        /// Whether the source body spans multiple lines.
+        /// The body preserved according to the call's syntax mode.
+        body: UnresolvedCallBody,
+        /// Whether the body opener is followed immediately by a newline.
         block: bool,
     },
+}
+
+/// A recoverable unresolved call body.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub enum UnresolvedCallBody {
+    /// A normal call body that was lowered recursively.
+    Content(Content),
+    /// A raw call body preserved exactly as source text.
+    Raw(String),
 }
 
 impl Element {
@@ -100,13 +109,13 @@ impl Element {
             Self::Text(_) | Self::Reference(_) | Self::Strong(_) => true,
             Self::Raw { block, .. }
             | Self::Custom { block, .. }
-            | Self::UnresolvedProcessor { block, .. } => !block,
+            | Self::UnresolvedCall { block, .. } => !block,
             Self::Parbreak | Self::Heading { .. } | Self::ListItem(_) => false,
         }
     }
 }
 
-/// Normalized metadata attached to a source range or processor result.
+/// Normalized metadata attached to a source range or function result.
 #[derive(Clone, Debug, Default, Eq, PartialEq)]
 pub struct Metadata {
     /// The optional stable identifier.
@@ -152,7 +161,7 @@ pub struct Annotation {
 pub struct StructuredDocument {
     /// Top-level document blocks.
     pub blocks: Vec<Block>,
-    /// Source-range annotations preserved from transparent and opaque scopes.
+    /// Source-range annotations preserved from scopes and calls.
     pub annotations: Vec<Annotation>,
 }
 

@@ -1,14 +1,18 @@
-use notist_model::{Annotation, Content, Element, ElementNode, Metadata, Property, TextRange};
-use notist_syntax::{Attribute, Attributes, OpaqueScope, Parse, Scope, TransparentScope, WikiLink};
+use notist_model::{
+    Annotation, Content, Element, ElementNode, Metadata, Property, TextRange, UnresolvedCallBody,
+};
+use notist_syntax::{
+    Attribute, Attributes, BodyForm, Call, CallMode, Parse, TransparentScope, WikiLink,
+};
 
-use crate::processor::{ProcessContext, ProcessorInput, ProcessorRegistry, RawSource};
+use crate::function::{CallBody, FunctionContext, FunctionInput, FunctionRegistry, RawSource};
 use crate::{EvalDiagnostic, Evaluation};
 
 pub(crate) fn lower_parsed(
     source: &str,
     parse: &Parse,
     base_offset: usize,
-    registry: &ProcessorRegistry,
+    registry: &FunctionRegistry,
     depth: usize,
 ) -> Evaluation {
     let mut lowerer = Lowerer {
@@ -39,7 +43,7 @@ struct Lowerer<'a> {
     source: &'a str,
     parse: &'a Parse,
     base_offset: usize,
-    registry: &'a ProcessorRegistry,
+    registry: &'a FunctionRegistry,
     depth: usize,
     annotations: Vec<Annotation>,
     diagnostics: Vec<EvalDiagnostic>,
@@ -56,13 +60,13 @@ impl Lowerer<'_> {
             }
 
             match event {
-                Event::Scope(Scope::Transparent(scope)) => {
+                Event::Scope(scope) => {
                     self.lower_transparent(&scope, &mut content);
                     cursor = scope.range.end;
                 }
-                Event::Scope(Scope::Opaque(scope)) => {
-                    self.lower_opaque(&scope, &mut content);
-                    cursor = scope.range.end;
+                Event::Call(call) => {
+                    self.lower_call(&call, &mut content);
+                    cursor = call.range.end;
                 }
                 Event::Link(link) => {
                     content.elements.push(ElementNode {
@@ -91,54 +95,61 @@ impl Lowerer<'_> {
         content.extend(self.lower_range(scope.body_range));
     }
 
-    fn lower_opaque(&mut self, scope: &OpaqueScope, content: &mut Content) {
-        let metadata = lower_metadata(&scope.attributes);
+    fn lower_call(&mut self, call: &Call, content: &mut Content) {
+        let metadata = lower_metadata(&call.attributes);
         if !metadata.is_empty() {
             self.annotations.push(Annotation {
-                range: scope.body_range.shifted(self.base_offset),
+                range: call.body_range.shifted(self.base_offset),
                 metadata,
             });
         }
 
-        let body_text = &self.source[scope.body_range.start..scope.body_range.end];
-        let arguments = scope
+        let global_body_range = call.body_range.shifted(self.base_offset);
+        let global_call_range = call.range.shifted(self.base_offset);
+        let body = match call.mode {
+            CallMode::Content => CallBody::Content(self.lower_range(call.body_range)),
+            CallMode::Raw => CallBody::Raw(RawSource {
+                text: &self.source[call.body_range.start..call.body_range.end],
+                range: global_body_range,
+            }),
+        };
+        let arguments = call
             .arguments_range
             .map(|range| &self.source[range.start..range.end]);
-        let global_body_range = scope.body_range.shifted(self.base_offset);
-        let global_scope_range = scope.range.shifted(self.base_offset);
 
-        let Some(processor) = self.registry.get(&scope.name.value) else {
+        let Some(function) = self.registry.get(&call.name.value) else {
             self.diagnostics.push(EvalDiagnostic {
-                message: format!("unknown processor `{}`", scope.name.value),
-                range: scope.name.range.shifted(self.base_offset),
+                message: format!("unknown function `{}`", call.name.value),
+                range: call.name.range.shifted(self.base_offset),
             });
             content.elements.push(ElementNode {
-                element: Element::UnresolvedProcessor {
-                    name: scope.name.value.clone(),
+                element: Element::UnresolvedCall {
+                    name: call.name.value.clone(),
                     arguments: arguments.map(str::to_owned),
-                    body: body_text.to_owned(),
-                    block: body_text.contains('\n'),
+                    body: match body {
+                        CallBody::Content(content) => UnresolvedCallBody::Content(content),
+                        CallBody::Raw(source) => UnresolvedCallBody::Raw(source.text.to_owned()),
+                    },
+                    block: call.body_form == BodyForm::Block,
                 },
-                range: global_scope_range,
+                range: global_call_range,
             });
             return;
         };
 
-        let context = ProcessContext {
+        let context = FunctionContext {
             registry: self.registry,
             depth: self.depth,
         };
-        let input = ProcessorInput {
-            name: &scope.name.value,
+        let input = FunctionInput {
+            name: &call.name.value,
             arguments,
-            body: RawSource {
-                text: body_text,
-                range: global_body_range,
-            },
-            range: global_scope_range,
+            body,
+            body_form: call.body_form,
+            range: global_call_range,
         };
 
-        match processor.process(&context, input) {
+        match function.call(&context, input) {
             Ok(output) => {
                 content.extend(output.content);
                 self.annotations.extend(output.annotations);
@@ -199,10 +210,18 @@ impl Lowerer<'_> {
             .parse
             .scopes
             .iter()
-            .filter(|scope| scope.range().start >= cursor && scope.range().end <= end)
-            .min_by_key(|scope| scope.range().start)
+            .filter(|scope| scope.range.start >= cursor && scope.range.end <= end)
+            .min_by_key(|scope| scope.range.start)
             .cloned()
             .map(Event::Scope);
+        let call = self
+            .parse
+            .calls
+            .iter()
+            .filter(|call| call.range.start >= cursor && call.range.end <= end)
+            .min_by_key(|call| call.range.start)
+            .cloned()
+            .map(Event::Call);
         let link = self
             .parse
             .links
@@ -212,30 +231,24 @@ impl Lowerer<'_> {
             .cloned()
             .map(Event::Link);
 
-        match (scope, link) {
-            (Some(scope), Some(link)) => {
-                if scope.start() <= link.start() {
-                    Some(scope)
-                } else {
-                    Some(link)
-                }
-            }
-            (Some(scope), None) => Some(scope),
-            (None, Some(link)) => Some(link),
-            (None, None) => None,
-        }
+        [scope, call, link]
+            .into_iter()
+            .flatten()
+            .min_by_key(Event::start)
     }
 }
 
 enum Event {
-    Scope(Scope),
+    Scope(TransparentScope),
+    Call(Call),
     Link(WikiLink),
 }
 
 impl Event {
     fn start(&self) -> usize {
         match self {
-            Self::Scope(scope) => scope.range().start,
+            Self::Scope(scope) => scope.range.start,
+            Self::Call(call) => call.range.start,
             Self::Link(link) => link.range.start,
         }
     }

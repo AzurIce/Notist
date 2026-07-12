@@ -4,7 +4,7 @@ mod raw;
 mod scope;
 
 pub use scope::{
-    Attribute, AttributeValue, Attributes, OpaqueScope, Scope, SpannedName, TransparentScope,
+    Attribute, AttributeValue, Attributes, BodyForm, Call, CallMode, SpannedName, TransparentScope,
 };
 
 /// A parsed wiki-style module or label reference.
@@ -30,8 +30,10 @@ pub struct SyntaxError {
 pub struct Parse {
     /// Wiki-style references visible to the host parser.
     pub links: Vec<WikiLink>,
-    /// Transparent and opaque scopes discovered in source order.
-    pub scopes: Vec<Scope>,
+    /// Transparent annotation scopes discovered in source order.
+    pub scopes: Vec<TransparentScope>,
+    /// Content and raw calls discovered in source order.
+    pub calls: Vec<Call>,
     /// Recoverable errors produced during parsing.
     pub errors: Vec<SyntaxError>,
 }
@@ -40,7 +42,8 @@ pub struct Parse {
 pub fn parse(source: &str) -> Parse {
     let mut result = Parse::default();
     let raw_ranges = raw::raw_ranges(source);
-    result.scopes = scope::parse_scopes(source, &raw_ranges, &mut result.errors);
+    (result.scopes, result.calls) =
+        scope::parse_scopes_and_calls(source, &raw_ranges, &mut result.errors);
     let mut cursor = 0;
 
     while let Some(relative_start) = source[cursor..].find("[[") {
@@ -49,7 +52,7 @@ pub fn parse(source: &str) -> Parse {
             cursor = raw.end;
             continue;
         }
-        if let Some(hidden_end) = hidden_scope_syntax_end(&result.scopes, start) {
+        if let Some(hidden_end) = hidden_syntax_end(&result, start) {
             cursor = hidden_end;
             continue;
         }
@@ -75,23 +78,38 @@ pub fn parse(source: &str) -> Parse {
     result
 }
 
-fn hidden_scope_syntax_end(scopes: &[Scope], position: usize) -> Option<usize> {
-    scopes.iter().find_map(|scope| match scope {
-        Scope::Opaque(opaque) if opaque.range.start <= position && position < opaque.range.end => {
-            Some(opaque.range.end)
+fn hidden_syntax_end(parse: &Parse, position: usize) -> Option<usize> {
+    let scope_end = parse.scopes.iter().find_map(|scope| {
+        if scope.range.start <= position && position < scope.body_range.start {
+            Some(scope.body_range.start)
+        } else if scope.body_range.end <= position && position < scope.range.end {
+            Some(scope.range.end)
+        } else {
+            None
         }
-        Scope::Transparent(transparent)
-            if transparent.range.start <= position && position < transparent.body_range.start =>
+    });
+    let call_end = parse.calls.iter().find_map(|call| {
+        if call.mode == CallMode::Raw && call.range.start <= position && position < call.range.end {
+            Some(call.range.end)
+        } else if call.mode == CallMode::Content
+            && call.range.start <= position
+            && position < call.body_range.start
         {
-            Some(transparent.body_range.start)
-        }
-        Scope::Transparent(transparent)
-            if transparent.body_range.end <= position && position < transparent.range.end =>
+            Some(call.body_range.start)
+        } else if call.mode == CallMode::Content
+            && call.body_range.end <= position
+            && position < call.range.end
         {
-            Some(transparent.range.end)
+            Some(call.range.end)
+        } else {
+            None
         }
-        _ => None,
-    })
+    });
+    match (scope_end, call_end) {
+        (Some(scope), Some(call)) => Some(scope.min(call)),
+        (Some(end), None) | (None, Some(end)) => Some(end),
+        (None, None) => None,
+    }
 }
 
 /// Parses a wiki reference body without the surrounding `[[` and `]]`.
@@ -262,11 +280,11 @@ mod tests {
     }
 
     #[test]
-    fn ignores_wiki_references_inside_opaque_scopes() {
-        let parse = parse("[[outside]] #code[[[inside]]] [[after]]");
+    fn parses_links_in_content_calls_but_ignores_them_in_raw_calls() {
+        let parse = parse("[[outside]] #quote[[[inside]]] #code![[[raw]]] [[after]]");
         assert!(parse.errors.is_empty());
-        assert_eq!(parse.links.len(), 2);
-        assert_eq!(parse.scopes.len(), 1);
+        assert_eq!(parse.links.len(), 3);
+        assert_eq!(parse.calls.len(), 2);
     }
 
     #[test]
@@ -282,9 +300,10 @@ mod tests {
 
     #[test]
     fn ignores_syntax_inside_raw_content() {
-        let parse = parse("`[[inline]] #[annotation]`\n```not\n#code[[[inside]]]\n```");
+        let parse = parse("`[[inline]] #[annotation]`\n```not\n#code![[[inside]]]\n```");
         assert!(parse.errors.is_empty());
         assert!(parse.links.is_empty());
         assert!(parse.scopes.is_empty());
+        assert!(parse.calls.is_empty());
     }
 }

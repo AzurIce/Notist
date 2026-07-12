@@ -1,271 +1,172 @@
-# Lowering 与 Structuring
+# Lowering and Structuring
 
-Notist 将“理解源码”和“建立最终文档结构”分成三个阶段：
+Notist 使用两步语义管线：Lowering 负责把 syntax 转换为线性的语义 Element sequence，Structuring 再把这条 sequence 组合成 Paragraph、List 和独立 Block。
 
 ```text
-Source
-  ↓ parsing
-Syntax Tree
-  ↓ lowering
-Content Sequence
-  ↓ structuring
-Structured Document
+source
+-> syntax Parse
+-> lowering and function evaluation
+-> flat Content / Element sequence
+-> structuring
+-> StructuredDocument
 ```
 
-三个阶段分别回答不同的问题：
+这两步都属于 `notist-eval`。它们共享 Content 和 Element model，但职责不同：Lowering 理解语法与函数；Structuring 只理解已经产生的 Element 排列。
 
-- **Parsing**：用户具体写了什么？
-- **Lowering**：这些语法实际产生了哪些内容元素？
-- **Structuring**：这些元素最终组成哪些段落、列表和块？
+## Syntax Parse
 
-这种分层使 Notist 可以同时保留准确的源码信息、统一的 Element/Processor 模型，以及便于分析和渲染的文档结构。
+`notist-syntax` 保留源码事实和精确 range，包括：
 
-## Parsing：保留源码形式
+- WikiLink。
+- TransparentScope。
+- Content Call 与 Raw Call。
+- 函数名、原始参数 range、body range、BodyForm 和 Attribute。
+- recoverable SyntaxError。
 
-Parser 产生的 Syntax Tree 描述源文件的具体写法，例如：
+Syntax AST 不尝试成为最终文档结构，也不执行函数。它必须适合 diagnostics、formatter、Tree-sitter/LSP 对齐和增量解析。
+
+## Lowering
+
+Lowering 将 syntax 解释为语义模型：
+
+- 普通文本变为 Text Element。
+- WikiLink 变为 Reference Element。
+- 空行变为 Parbreak。
+- 语法糖变为对应的内置 Element。
+- Transparent Scope 产生 Annotation，并继续 lowering 内部内容。
+- Call 查找 Function，准备 Content 或 RawSource body，并执行函数。
+
+结果是 flat Content：
+
+```text
+Content
+└─ Vec<ElementNode>
+   ├─ Text
+   ├─ Reference
+   ├─ Heading
+   ├─ ListItem
+   ├─ Raw
+   ├─ Custom
+   └─ Parbreak
+```
+
+“flat”只表示顶层按执行顺序存放 Element，不表示 Element 内部不能有树。Heading、Strong、Quote 或 Custom Element 仍然可以拥有嵌套 Content。
+
+## Content Call
 
 ```not
-*important*
-
-#code(lang="rust")[
-fn main() {}
-]
+#quote[Inside [[self::target]] and #heading(level=2)[Title].]
 ```
 
-Syntax Tree 需要保留：
+Content Call 的 body 是普通 Notist。Lowering 先递归得到 Content，再调用函数：
 
-- 标记符和分隔符；
-- 源码范围；
-- Processor 名称、参数和 Raw body；
-- Transparent/Opaque Scope；
-- 不完整语法和错误节点；
-- 用户选择的具体语法糖。
+```text
+Call(mode = Content)
+-> lower body
+-> CallBody::Content(Content)
+-> Function::call
+-> FunctionOutput
+```
 
-这一层主要服务于 formatter、语法高亮、增量解析、diagnostic 和 LSP 源码定位。它还不是最终的文档模型。
+函数不需要自行重新调用 parser。内部产生的 Annotation 和 diagnostics 在同一 lowering 过程中保留。
 
-## Lowering：从语法得到内容
-
-Lowering 将不同的表面写法统一成相同的语义 Element。
-
-例如，未来下面两种写法：
+## Raw Call
 
 ```not
-*important*
-
-#strong[important]
+#raw!(lang="rust")[fn main() {}]
 ```
 
-都应当 lowering 为同一种元素：
+Raw Call 的 body 对宿主 parser 不透明：
 
 ```text
-Strong Element
-└─ Text("important")
+Call(mode = Raw)
+-> RawSource { text, range }
+-> Function::call
+-> FunctionOutput
 ```
 
-Lowering 会处理：
+Function 可以保留源码、交给其他语言 parser，或显式使用 FunctionContext 将它重新解析为 Notist。重新解析是函数主动选择的运行时行为，不是普通 Content Call 的默认路径。
 
-- 将普通文本转换为 Text Element；
-- 将 `[[...]]` 转换为 Reference Element；
-- 将语法糖转换为对应的内置 Element；
-- 将空行转换为 Parbreak Element；
-- 将 Transparent Scope 转换为独立 Annotation，同时继续 lowering 其内部内容；
-- 将 Opaque Scope 的 RawSource 交给 Processor，并接收 Processor 产生的 Content；
-- 保留源码范围并收集 syntax/processor diagnostic。
+如果函数不存在，lowering 产生 unknown function diagnostic，并创建可恢复的 UnresolvedCall：Content mode 保存已经 lowering 的 Content，Raw mode 保存原文。
 
-Lowering 的结果是一个 Content sequence：
-
-```text
-Content [
-    Text("Hello "),
-    Strong(
-        Content [
-            Text("world")
-        ]
-    ),
-    Text("."),
-    Parbreak,
-    ListItem(Content [Text("Apple")]),
-    ListItem(Content [Text("Banana")]),
-]
-```
-
-这里的“sequence”或“扁平”只表示同一级内容暂时按产生顺序排列。Element 自身仍然可以包含子 Content，因此它并不是一张完全没有嵌套关系的平面表。
-
-Lowering 关心的是：
-
-> 执行语法和 Processor 后，依次产生了哪些 Element？
-
-它暂时不决定相邻 Text 是否属于同一个 Paragraph，也不决定相邻 ListItem 是否属于同一个 List。
-
-## Opaque Scope 与 Processor Expansion
-
-Opaque Scope 对宿主 parser 不透明：
+## Transparent Scope
 
 ```not
-#processor(arguments)[raw body]
+Before #[annotated [[self::target]]]@concept,#important after.
 ```
 
-Lowering 会查找对应 Processor，并把 body 作为保留源码位置的 RawSource 传入：
-
-```text
-Opaque Scope
-  ↓ lookup processor
-RawSource
-  ↓ processor
-Content / Element
-```
-
-Processor 可以：
-
-- 原样使用 RawSource，例如代码块；
-- 调用 Notist parser 重新解析 body，例如 quote 或 note；
-- 使用自己的 parser 处理嵌入式语言；
-- 返回一个或多个 Element；
-- 产生带准确源码范围的 diagnostic。
-
-如果 Processor 不存在，lowering 会产生 unknown processor diagnostic，并保留一个可恢复的 UnresolvedProcessor Element，避免丢失原始内容。
-
-## Transparent Scope 与 Annotation
-
-Transparent Scope 不改变内部内容的解析方式：
-
-```not
-#[important *content*]@concept,#review
-```
-
-内部内容照常 lowering：
-
-```text
-Text("important ")
-Strong(Text("content"))
-```
-
-Scope 自身则进入独立的 Annotation layer：
+Lowering 移除 `#[`、`]@...` 语法边界，继续输出内部 Text 和 Reference，同时记录：
 
 ```text
 Annotation {
-    range,
-    id: concept,
-    tags: [review],
+    range: body_range,
+    metadata: { id, tags, classes, properties },
 }
 ```
 
-因此，Content 描述文档中产生了什么，Annotation 描述哪些源码或内容范围具有额外属性。
+Annotation 不必成为 Element 父节点，因此可以跨越 Element 或 block 边界。Structuring 改变 Content 的组合方式时，源码 range annotation 仍保持稳定。
 
-## Structuring：建立文档结构
+## Why Structuring Is Separate
 
-Lowering 完成后，Notist 已经知道所有静态语法和动态 Processor 实际产生的 Element。Structuring 在此基础上，根据 Element 的类型和排列建立 Paragraph、List 和独立 Block。
-
-例如 lowering 结果：
+Lowering 后的 Element 只表达执行顺序：
 
 ```text
-Text("Hello ")
-Strong(Text("world"))
-Text(".")
+Text("Intro")
 Parbreak
-ListItem(Text("Apple"))
-ListItem(Text("Banana"))
-Heading(Text("Next"))
-Text("After heading")
+ListItem("A")
+ListItem("B")
+Heading(level=2, ...)
+Text("After")
 ```
 
-经过 structuring 后得到：
+Structuring 根据 Element 的 inline/block 性质和相邻关系建立文档结构：
 
 ```text
-Document
-├─ Paragraph
-│  ├─ Text("Hello ")
-│  ├─ Strong
-│  │  └─ Text("world")
-│  └─ Text(".")
+StructuredDocument
+├─ Paragraph(Text("Intro"))
 ├─ List
-│  ├─ ListItem("Apple")
-│  └─ ListItem("Banana")
-├─ Heading("Next")
-└─ Paragraph
-   └─ Text("After heading")
+│  ├─ ListItem("A")
+│  └─ ListItem("B")
+├─ Heading(level=2, ...)
+└─ Paragraph(Text("After"))
 ```
 
-Structuring 的主要规则包括：
+如果 parser 直接建立最终 Paragraph/List 树，那么函数、用户代码和未来控制流动态产生 Element 后，还需要复制一套组合规则。两步设计让所有静态语法和动态函数输出都走同一个 structuring pass。
 
-- 连续的 inline Element 组成 Paragraph；
-- Parbreak 结束当前 Paragraph；
-- 相邻 ListItem 组合成 List；
-- Heading、块级 Raw 和块级 Custom Element 中断 Paragraph，并成为独立 Block；
-- Annotation 作为独立信息继续保留；
-- lowering 和 Processor diagnostic 原样传递，不会在 structuring 时丢失。
+## Structuring Rules
 
-Structuring 不会重新读取或解析源码，也不会再次执行 Processor。它只处理已经 lowering 完成的 Element sequence。
+第一阶段规则可以保持简单：
 
-Structuring 关心的是：
+- 连续 inline Element 组成 Paragraph。
+- Parbreak 结束当前 Paragraph，但不进入最终 document。
+- 相邻 ListItem 组成 List。
+- Heading 和 block Raw/Custom 作为独立 Block。
+- block Element 到来前先 flush 当前 Paragraph 或 List。
+- diagnostics 与 Annotation 原样保留。
 
-> 这些已经产生的 Element 应当如何组成可供分析和渲染使用的文档结构？
+Structuring 不重新读取源码、不再次执行 Function，也不负责名称解析或类型检查。它只处理已经 lowering 完成的 Element sequence。
 
-## 为什么不让 Parser 直接建立最终结构
-
-如果内容完全由静态语法决定，parser 可以直接建立 Paragraph 和 List。但 Processor、函数和未来控制流可能动态产生 Element：
-
-```not
-#repeat(count=3)[
-    #list-item[Item]
-]
-```
-
-在执行 `repeat` 之前，parser 不知道这里最终会产生几个 ListItem，也无法确定它们应当组成什么结构。
-
-只有 lowering/expansion 完成后，系统才能看到实际序列：
-
-```text
-ListItem
-ListItem
-ListItem
-```
-
-然后 structuring 将它们组合成一个 List。
-
-因此：
-
-```text
-Parser 负责源码结构
-Lowering 负责内容生成
-Structuring 负责文档组合
-```
-
-## 数据在不同阶段的用途
-
-| 阶段 | 主要数据 | 主要使用者 |
-|---|---|---|
-| Parsing | Syntax Tree | formatter、syntax highlighting、LSP source mapping |
-| Lowering | Content、Element、Annotation | Processor、内容函数、语义转换 |
-| Structuring | Paragraph、List、Block | analysis、索引、renderer、exporter |
-
-Syntax Tree 不会因为 lowering 而被丢弃。LSP 和 formatter 仍然需要 Syntax Tree；analysis 和 renderer 则主要使用 Structured Document。各阶段是同一份文档的不同视图，而不是互相覆盖的临时数据。
-
-## Crate 组织
-
-当前实现使用以下边界：
+## Ownership
 
 ```text
 notist-syntax
-→ parsing 与源码语法结构
+  source ranges, Parse, calls, scopes, syntax errors
 
 notist-model
-→ Content、Element、Annotation、Structured Document
+  Content, Element, Annotation, StructuredDocument
 
 notist-eval
-→ lowering、Processor expansion、structuring
+  Function runtime, lowering, structuring, eval diagnostics
 
 notist-analysis
-→ 模块、引用、ID、工作区语义分析
+  modules, names, types, cross-document semantics
+
+notist-lsp / CLI
+  expose diagnostics and navigation to tools
 ```
 
-目前 structuring 仍是 `notist-eval` 中的一个独立模块，不创建单独的 `notist-realize` crate。只有当结构组合、规则应用或样式系统复杂到需要独立演进时，才考虑进一步拆分。
+Lowering 与 Structuring 暂时放在同一个 `notist-eval` crate 足够。只有当编译时间、依赖边界或复用场景真正要求时，再考虑拆分 crate。
 
-## 名称约定
+## Summary
 
-这两个阶段正式使用以下名称：
-
-- **Lowering**：Syntax Tree → Content sequence。
-- **Structuring**：Content sequence → Structured Document。
-
-不使用 `realization` 作为当前阶段名称。Typst 的 realization 还包含 show rule、样式应用和布局准备等更广泛职责；Notist 当前只需要表达 Element 的文档结构归并，`structuring` 更直接也更准确。
+Lowering 回答“语法和函数按顺序产生了哪些 Element”，Structuring 回答“这些 Element 如何组成可消费的文档块”。Content Call 在 lowering 前递归处理 body，Raw Call 保留 RawSource，Transparent Scope 独立产生 Annotation。这个分层让解析、类型系统、插件执行和最终文档结构各自拥有清晰边界。

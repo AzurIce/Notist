@@ -3,7 +3,7 @@ use std::process::ExitCode;
 
 use clap::{Parser, Subcommand};
 use notist_analysis::Workspace;
-use notist_syntax::Scope;
+use notist_syntax::CallMode;
 
 mod diagnostics;
 
@@ -78,23 +78,27 @@ fn run(cli: Cli) -> Result<ExitCode, Box<dyn std::error::Error>> {
                     continue;
                 };
                 for scope in &parse.scopes {
-                    match scope {
-                        Scope::Transparent(scope) => println!(
-                            "{}:{}..{} transparent{}",
-                            module.logical_path,
-                            scope.body_range.start,
-                            scope.body_range.end,
-                            format_id(&scope.attributes)
-                        ),
-                        Scope::Opaque(scope) => println!(
-                            "{}:{}..{} opaque {}{}",
-                            module.logical_path,
-                            scope.body_range.start,
-                            scope.body_range.end,
-                            scope.name.value,
-                            format_id(&scope.attributes)
-                        ),
-                    }
+                    println!(
+                        "{}:{}..{} transparent{}",
+                        module.logical_path,
+                        scope.body_range.start,
+                        scope.body_range.end,
+                        format_id(&scope.attributes)
+                    );
+                }
+                for call in &parse.calls {
+                    let mode = match call.mode {
+                        CallMode::Content => "content",
+                        CallMode::Raw => "raw",
+                    };
+                    println!(
+                        "{}:{}..{} {mode} call {}{}",
+                        module.logical_path,
+                        call.body_range.start,
+                        call.body_range.end,
+                        call.name.value,
+                        format_id(&call.attributes)
+                    );
                 }
             }
             Ok(ExitCode::SUCCESS)

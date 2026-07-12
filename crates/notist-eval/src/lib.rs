@@ -1,30 +1,30 @@
 //! Evaluation and structural normalization for Notist documents.
 
+mod function;
 mod lower;
-mod processor;
 mod structure;
 
 use notist_model::{Annotation, Content, TextRange};
 use notist_syntax::Parse;
 
-pub use processor::{
-    ProcessContext, Processor, ProcessorInput, ProcessorOutput, ProcessorRegistry, RawSource,
-    RegistryError,
+pub use function::{
+    CallBody, Function, FunctionContext, FunctionInput, FunctionOutput, FunctionRegistry,
+    RawSource, RegistryError,
 };
 pub use structure::structure;
 
-/// The result of lowering syntax and expanding opaque scopes.
+/// The result of lowering syntax and evaluating content-producing calls.
 #[derive(Clone, Debug, Default, Eq, PartialEq)]
 pub struct Evaluation {
     /// Evaluated elements in source order.
     pub content: Content,
-    /// Metadata ranges projected from scopes and processors.
+    /// Metadata ranges projected from scopes and functions.
     pub annotations: Vec<Annotation>,
     /// Recoverable syntax and evaluation diagnostics.
     pub diagnostics: Vec<EvalDiagnostic>,
 }
 
-/// A diagnostic produced while lowering or expanding content.
+/// A diagnostic produced while lowering or evaluating content.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct EvalDiagnostic {
     /// A user-facing diagnostic message.
@@ -38,23 +38,23 @@ pub struct EvalDiagnostic {
 pub struct StructuredEvaluation {
     /// The paragraph, list, and block structure derived from evaluated content.
     pub document: notist_model::StructuredDocument,
-    /// Diagnostics produced before and during processor expansion.
+    /// Diagnostics produced before and during function evaluation.
     pub diagnostics: Vec<EvalDiagnostic>,
 }
 
-/// Evaluates Notist source with an empty processor registry.
+/// Evaluates Notist source with an empty function registry.
 pub fn lower(source: &str, parse: &Parse) -> Evaluation {
-    lower::lower_parsed(source, parse, 0, &ProcessorRegistry::new(), 0)
+    lower::lower_parsed(source, parse, 0, &FunctionRegistry::new(), 0)
 }
 
-/// Evaluates Notist source using a configurable processor registry.
+/// Evaluates Notist source using a configurable function registry.
 pub struct Evaluator {
-    registry: ProcessorRegistry,
+    registry: FunctionRegistry,
 }
 
 impl Evaluator {
-    /// Creates an evaluator using the provided processor registry.
-    pub fn new(registry: ProcessorRegistry) -> Self {
+    /// Creates an evaluator using the provided function registry.
+    pub fn new(registry: FunctionRegistry) -> Self {
         Self { registry }
     }
 
@@ -68,22 +68,22 @@ impl Evaluator {
         lower::lower_parsed(source, parse, 0, &self.registry, 0)
     }
 
-    /// Returns the processor registry used by this evaluator.
-    pub fn registry(&self) -> &ProcessorRegistry {
+    /// Returns the function registry used by this evaluator.
+    pub fn registry(&self) -> &FunctionRegistry {
         &self.registry
     }
 }
 
 impl Default for Evaluator {
     fn default() -> Self {
-        Self::new(ProcessorRegistry::new())
+        Self::new(FunctionRegistry::new())
     }
 }
 
 pub(crate) fn lower_fragment(
     source: &str,
     base_offset: usize,
-    registry: &ProcessorRegistry,
+    registry: &FunctionRegistry,
     depth: usize,
 ) -> Evaluation {
     let parse = notist_syntax::parse(source);
@@ -92,33 +92,38 @@ pub(crate) fn lower_fragment(
 
 #[cfg(test)]
 mod tests {
-    use notist_model::{Block, Content, Element, ElementNode, TextRange};
+    use notist_model::{Block, Content, Element, ElementNode, TextRange, UnresolvedCallBody};
 
     use super::*;
 
-    struct QuoteProcessor;
+    struct QuoteFunction;
 
-    impl Processor for QuoteProcessor {
+    impl Function for QuoteFunction {
         fn name(&self) -> &str {
             "quote"
         }
 
-        fn process(
+        fn call(
             &self,
-            context: &ProcessContext<'_>,
-            input: ProcessorInput<'_>,
-        ) -> Result<ProcessorOutput, Vec<EvalDiagnostic>> {
-            let nested = ProcessorOutput::from_evaluation(context.evaluate(input.body))?;
-            Ok(ProcessorOutput {
+            _context: &FunctionContext<'_>,
+            input: FunctionInput<'_>,
+        ) -> Result<FunctionOutput, Vec<EvalDiagnostic>> {
+            let CallBody::Content(body) = input.body else {
+                return Err(vec![EvalDiagnostic {
+                    message: "quote requires a content body".into(),
+                    range: input.range,
+                }]);
+            };
+            Ok(FunctionOutput {
                 content: Content::single(
                     Element::Custom {
                         name: "quote".into(),
-                        body: nested.content,
+                        body,
                         block: true,
                     },
                     input.range,
                 ),
-                annotations: nested.annotations,
+                annotations: Vec::new(),
             })
         }
     }
@@ -155,26 +160,34 @@ mod tests {
     }
 
     #[test]
-    fn preserves_unknown_opaque_scopes_as_recoverable_elements() {
-        let evaluation = Evaluator::default().evaluate("#missing(x=1)[[[ignored]]]");
+    fn preserves_unknown_calls_with_syntax_selected_bodies() {
+        let content = Evaluator::default().evaluate("#missing(x=1)[[[visible]]]");
+        let raw = Evaluator::default().evaluate("#missing![[[ignored]]]");
 
-        assert_eq!(evaluation.diagnostics.len(), 1);
-        assert_eq!(
-            evaluation.diagnostics[0].message,
-            "unknown processor `missing`"
-        );
-        assert_eq!(evaluation.content.elements.len(), 1);
+        assert_eq!(content.diagnostics.len(), 1);
+        assert_eq!(content.diagnostics[0].message, "unknown function `missing`");
+        assert_eq!(content.content.elements.len(), 1);
         assert!(matches!(
-            &evaluation.content.elements[0].element,
-            Element::UnresolvedProcessor { name, body, .. }
-                if name == "missing" && body == "[[ignored]]"
+            &content.content.elements[0].element,
+            Element::UnresolvedCall {
+                name,
+                body: UnresolvedCallBody::Content(body),
+                ..
+            } if name == "missing" && matches!(body.elements[0].element, Element::Reference(_))
+        ));
+        assert!(matches!(
+            &raw.content.elements[0].element,
+            Element::UnresolvedCall {
+                body: UnresolvedCallBody::Raw(body),
+                ..
+            } if body == "[[ignored]]"
         ));
     }
 
     #[test]
-    fn processors_can_reparse_raw_bodies_as_notist() {
-        let mut registry = ProcessorRegistry::new();
-        registry.register(QuoteProcessor).unwrap();
+    fn content_calls_receive_lowered_notist_content() {
+        let mut registry = FunctionRegistry::new();
+        registry.register(QuoteFunction).unwrap();
         let evaluator = Evaluator::new(registry);
         let evaluation = evaluator.evaluate("Before\n\n#quote[Inside [[self::target]].]\n\nAfter");
 
@@ -231,10 +244,10 @@ mod tests {
     }
 
     #[test]
-    fn registry_rejects_duplicate_processor_names() {
-        let mut registry = ProcessorRegistry::new();
-        registry.register(QuoteProcessor).unwrap();
-        let error = registry.register(QuoteProcessor).unwrap_err();
+    fn registry_rejects_duplicate_function_names() {
+        let mut registry = FunctionRegistry::new();
+        registry.register(QuoteFunction).unwrap();
+        let error = registry.register(QuoteFunction).unwrap_err();
         assert_eq!(error.name, "quote");
     }
 
@@ -245,7 +258,7 @@ mod tests {
         assert_eq!(structured.diagnostics.len(), 1);
         assert_eq!(
             structured.diagnostics[0].message,
-            "unknown processor `missing`"
+            "unknown function `missing`"
         );
     }
 }
