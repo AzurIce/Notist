@@ -1,3 +1,4 @@
+use std::net::IpAddr;
 use std::path::PathBuf;
 use std::process::ExitCode;
 
@@ -7,6 +8,7 @@ use notist_syntax::CallMode;
 
 mod build;
 mod diagnostics;
+mod preview;
 
 #[derive(Debug, Parser)]
 #[command(name = "notist", version, about, arg_required_else_help = true)]
@@ -41,6 +43,21 @@ enum Command {
         /// Directory to write the generated site.
         #[arg(short, long, default_value = "dist")]
         output: PathBuf,
+    },
+    /// Preview a Notist workspace in a local browser with live reload.
+    Preview {
+        /// Root directory of the Notist workspace.
+        #[arg(default_value = ".")]
+        root: PathBuf,
+        /// Network interface on which the preview server listens.
+        #[arg(long, default_value = "127.0.0.1")]
+        host: IpAddr,
+        /// TCP port. Zero asks the operating system for an available port.
+        #[arg(long, default_value_t = 0)]
+        port: u16,
+        /// Do not open the preview URL in the default browser.
+        #[arg(long)]
+        no_open: bool,
     },
 }
 
@@ -114,6 +131,12 @@ fn run(cli: Cli) -> Result<ExitCode, Box<dyn std::error::Error>> {
             Ok(ExitCode::SUCCESS)
         }
         Command::Build { root, output } => build::run(root, output, cli.color),
+        Command::Preview {
+            root,
+            host,
+            port,
+            no_open,
+        } => preview::run(root, host, port, no_open, cli.color),
     }
 }
 

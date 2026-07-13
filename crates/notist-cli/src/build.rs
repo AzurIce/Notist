@@ -28,19 +28,11 @@ const URL_PATH_SEGMENT_ENCODE_SET: &AsciiSet = &CONTROLS
 pub fn run(root: PathBuf, output: PathBuf, color: ColorChoice) -> Result<ExitCode, Box<dyn Error>> {
     let workspace = Workspace::load(root)?;
     let output = prepare_output_root(&output, workspace.root())?;
-    let result = build_site(&workspace, &output)?;
+    let result = build_site(&workspace, &output, SiteOptions::default())?;
 
-    diagnostics::emit(&workspace, color)?;
-    for report in &result.evaluation_reports {
-        diagnostics::emit_evaluation(&report.path, &report.source, &report.diagnostics, color)?;
-    }
+    emit_diagnostics(&workspace, &result, color)?;
 
-    let diagnostic_count = workspace.diagnostics().len()
-        + result
-            .evaluation_reports
-            .iter()
-            .map(|report| report.diagnostics.len())
-            .sum::<usize>();
+    let diagnostic_count = diagnostic_count(&workspace, &result);
     if diagnostic_count == 0 {
         println!(
             "built {} pages -> {}",
@@ -59,20 +51,53 @@ pub fn run(root: PathBuf, output: PathBuf, color: ColorChoice) -> Result<ExitCod
     }
 }
 
-struct BuildResult {
-    page_count: usize,
-    evaluation_reports: Vec<EvaluationReport>,
+#[derive(Clone, Copy, Debug, Default)]
+pub(crate) struct SiteOptions {
+    pub live_reload: bool,
 }
 
-struct EvaluationReport {
-    path: PathBuf,
-    source: String,
-    diagnostics: Vec<EvalDiagnostic>,
+pub(crate) struct BuildResult {
+    pub page_count: usize,
+    pub evaluation_reports: Vec<EvaluationReport>,
 }
 
-fn build_site(workspace: &Workspace, output: &Path) -> Result<BuildResult, Box<dyn Error>> {
+pub(crate) struct EvaluationReport {
+    pub path: PathBuf,
+    pub source: String,
+    pub diagnostics: Vec<EvalDiagnostic>,
+}
+
+pub(crate) fn emit_diagnostics(
+    workspace: &Workspace,
+    result: &BuildResult,
+    color: ColorChoice,
+) -> Result<(), Box<dyn Error>> {
+    diagnostics::emit(workspace, color)?;
+    for report in &result.evaluation_reports {
+        diagnostics::emit_evaluation(&report.path, &report.source, &report.diagnostics, color)?;
+    }
+    Ok(())
+}
+
+pub(crate) fn diagnostic_count(workspace: &Workspace, result: &BuildResult) -> usize {
+    workspace.diagnostics().len()
+        + result
+            .evaluation_reports
+            .iter()
+            .map(|report| report.diagnostics.len())
+            .sum::<usize>()
+}
+
+pub(crate) fn build_site(
+    workspace: &Workspace,
+    output: &Path,
+    options: SiteOptions,
+) -> Result<BuildResult, Box<dyn Error>> {
     fs::create_dir_all(output.join("_notist"))?;
     fs::write(output.join("_notist/style.css"), STYLES)?;
+    if options.live_reload {
+        fs::write(output.join("_notist/reload.js"), LIVE_RELOAD_SCRIPT)?;
+    }
 
     let modules: Vec<_> = workspace.modules().collect();
     let known_modules: BTreeSet<_> = modules
@@ -117,7 +142,13 @@ fn build_site(workspace: &Workspace, output: &Path) -> Result<BuildResult, Box<d
             virtual_module_fragment(&module.logical_path, &modules)
         };
 
-        let html = page_shell(&site_name, &module.logical_path, &modules, &fragment);
+        let html = page_shell(
+            &site_name,
+            &module.logical_path,
+            &modules,
+            &fragment,
+            options,
+        );
         let page_path = module_output_dir(output, &module.logical_path).join("index.html");
         if let Some(parent) = page_path.parent() {
             fs::create_dir_all(parent)?;
@@ -136,6 +167,7 @@ fn page_shell(
     current: &ModulePath,
     modules: &[&notist_analysis::Module],
     fragment: &str,
+    options: SiteOptions,
 ) -> String {
     let mut escaped_site_name = String::new();
     escape_html(&mut escaped_site_name, site_name);
@@ -145,10 +177,17 @@ fn page_shell(
         "{}_notist/style.css",
         "../".repeat(current.segments().len())
     );
+    let reload_script = options.live_reload.then(|| {
+        format!(
+            "<script src=\"{}_notist/reload.js\" defer></script>\n",
+            "../".repeat(current.segments().len())
+        )
+    });
     let navigation = navigation(current, modules, site_name);
 
     format!(
-        "<!doctype html>\n<html>\n<head>\n<meta charset=\"utf-8\">\n<meta name=\"viewport\" content=\"width=device-width, initial-scale=1\">\n<title>{escaped_module} - {escaped_site_name}</title>\n<link rel=\"stylesheet\" href=\"{stylesheet}\">\n</head>\n<body>\n<div class=\"site-layout\">\n{navigation}\n<main class=\"page-main\">\n<header class=\"page-header\"><span>{escaped_module}</span></header>\n<article class=\"notist-document\">{fragment}</article>\n</main>\n</div>\n</body>\n</html>\n"
+        "<!doctype html>\n<html>\n<head>\n<meta charset=\"utf-8\">\n<meta name=\"viewport\" content=\"width=device-width, initial-scale=1\">\n<title>{escaped_module} - {escaped_site_name}</title>\n<link rel=\"stylesheet\" href=\"{stylesheet}\">\n{}</head>\n<body>\n<div class=\"site-layout\">\n{navigation}\n<main class=\"page-main\">\n<header class=\"page-header\"><span>{escaped_module}</span></header>\n<article class=\"notist-document\">{fragment}</article>\n</main>\n</div>\n</body>\n</html>\n",
+        reload_script.as_deref().unwrap_or_default()
     )
 }
 
@@ -433,6 +472,21 @@ pre {
 }
 "#;
 
+const LIVE_RELOAD_SCRIPT: &str = r#"(() => {
+  const eventsUrl = new URL("events", document.currentScript.src);
+  let revision;
+
+  const events = new EventSource(eventsUrl);
+  events.onmessage = (event) => {
+    if (revision !== undefined && revision !== event.data) {
+      location.reload();
+      return;
+    }
+    revision = event.data;
+  };
+})();
+"#;
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -455,7 +509,7 @@ mod tests {
         let workspace = Workspace::load(root.path()).unwrap();
         let output = root.path().join("site");
 
-        let result = build_site(&workspace, &output).unwrap();
+        let result = build_site(&workspace, &output, SiteOptions::default()).unwrap();
 
         assert_eq!(result.page_count, 4);
         assert!(result.evaluation_reports.is_empty());

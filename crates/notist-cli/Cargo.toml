@@ -9,15 +9,22 @@ name = "notist"
 path = "src/main.rs"
 
 [dependencies]
+axum.workspace = true
 clap.workspace = true
 codespan-reporting.workspace = true
 dunce.workspace = true
+notify-debouncer-mini.workspace = true
 notist-analysis.workspace = true
 notist-eval.workspace = true
 notist-html.workspace = true
 notist-model.workspace = true
 notist-syntax.workspace = true
+open.workspace = true
 percent-encoding.workspace = true
+tempfile.workspace = true
+tokio.workspace = true
+tokio-stream.workspace = true
+tower-http.workspace = true
 
 [dev-dependencies]
-tempfile = "3"
+tempfile.workspace = true
