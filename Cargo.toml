@@ -11,10 +11,10 @@ license = "MIT OR Apache-2.0"
 [workspace.dependencies]
 axum = "0.8"
 clap = { version = "4", features = ["derive"] }
-codespan-reporting = "0.11"
+codespan-reporting = "0.13"
 dunce = "1"
-lsp-server = "0.7"
-lsp-types = "0.95.1"
+lsp-server = "0.9"
+lsp-types = "0.97"
 notify-debouncer-mini = "0.7"
 open = "5"
 percent-encoding = "2"

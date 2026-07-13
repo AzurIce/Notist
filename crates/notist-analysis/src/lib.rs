@@ -7,6 +7,9 @@ use std::sync::Arc;
 use notist_model::{ModulePath, TextRange};
 use notist_syntax::{Parse, parse};
 
+/// The marker file whose containing directory is a Notist vault root.
+pub const MANIFEST_FILE: &str = "Notist.toml";
+
 #[derive(Clone, Debug)]
 pub struct Module {
     /// The stable logical path used by Notist references.
@@ -133,6 +136,9 @@ impl Workspace {
                 if entry.file_name().to_string_lossy().starts_with('.') {
                     continue;
                 }
+                if path != self.root && path.join(MANIFEST_FILE).is_file() {
+                    continue;
+                }
                 let child = module_path.child([entry.file_name().to_string_lossy().into_owned()]);
                 if self.scan_directory(&path, &child, overlays)? {
                     self.insert_virtual_module(child);
@@ -197,6 +203,7 @@ impl Workspace {
             if !is_notist_file(path)
                 || !path.starts_with(&self.root)
                 || self.module_for_source(path).is_some()
+                || find_vault_root(path, Some(&self.root))?.is_some_and(|root| root != self.root)
             {
                 continue;
             }
@@ -274,6 +281,117 @@ impl Workspace {
         self.references = references;
         self.diagnostics.extend(diagnostics);
     }
+}
+
+/// Finds the nearest ancestor vault marker for a file or directory.
+///
+/// When a boundary is provided, ancestors above that directory are not considered.
+pub fn find_vault_root(path: &Path, boundary: Option<&Path>) -> io::Result<Option<PathBuf>> {
+    let path = normalize_discovery_path(path)?;
+    let boundary = boundary.map(dunce::canonicalize).transpose()?;
+    let mut directory = if path.is_dir() {
+        path.as_path()
+    } else {
+        path.parent().ok_or_else(|| {
+            io::Error::new(io::ErrorKind::InvalidInput, "source path has no parent")
+        })?
+    };
+
+    loop {
+        if boundary
+            .as_deref()
+            .is_some_and(|boundary| !directory.starts_with(boundary))
+        {
+            return Ok(None);
+        }
+        if directory.join(MANIFEST_FILE).is_file() {
+            return Ok(Some(directory.to_path_buf()));
+        }
+        if boundary.as_deref() == Some(directory) {
+            return Ok(None);
+        }
+        let Some(parent) = directory.parent() else {
+            return Ok(None);
+        };
+        directory = parent;
+    }
+}
+
+/// Discovers all explicitly marked vault roots below a directory.
+pub fn discover_vault_roots(root: &Path) -> io::Result<Vec<PathBuf>> {
+    let root = dunce::canonicalize(root)?;
+    let mut roots = Vec::new();
+    discover_vault_roots_in(&root, &mut roots)?;
+    roots.sort();
+    Ok(roots)
+}
+
+/// Resolves a CLI path to one unambiguous explicit or implicit vault root.
+pub fn resolve_vault_root(path: &Path) -> io::Result<PathBuf> {
+    let path = normalize_discovery_path(path)?;
+    if let Some(root) = find_vault_root(&path, None)? {
+        return Ok(root);
+    }
+
+    let directory = if path.is_dir() {
+        path
+    } else {
+        path.parent()
+            .ok_or_else(|| {
+                io::Error::new(io::ErrorKind::InvalidInput, "source path has no parent")
+            })?
+            .to_path_buf()
+    };
+    let roots = discover_vault_roots(&directory)?;
+    match roots.as_slice() {
+        [] => Ok(directory),
+        [root] => Ok(root.clone()),
+        roots => Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            format!(
+                "multiple Notist vaults found below {}; pass one vault explicitly: {}",
+                directory.display(),
+                roots
+                    .iter()
+                    .map(|root| root.display().to_string())
+                    .collect::<Vec<_>>()
+                    .join(", ")
+            ),
+        )),
+    }
+}
+
+fn discover_vault_roots_in(directory: &Path, roots: &mut Vec<PathBuf>) -> io::Result<()> {
+    if directory.join(MANIFEST_FILE).is_file() {
+        roots.push(directory.to_path_buf());
+    }
+    let mut entries: Vec<_> = fs::read_dir(directory)?.collect::<Result<_, _>>()?;
+    entries.sort_by_key(|entry| entry.file_name());
+    for entry in entries {
+        if !entry.file_type()?.is_dir() {
+            continue;
+        }
+        let name = entry.file_name();
+        let name = name.to_string_lossy();
+        if name.starts_with('.') || matches!(name.as_ref(), "node_modules" | "target") {
+            continue;
+        }
+        discover_vault_roots_in(&entry.path(), roots)?;
+    }
+    Ok(())
+}
+
+fn normalize_discovery_path(path: &Path) -> io::Result<PathBuf> {
+    if path.exists() {
+        return dunce::canonicalize(path);
+    }
+    let parent = path
+        .parent()
+        .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidInput, "path has no parent"))?;
+    let file_name = path
+        .file_name()
+        .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidInput, "path has no file name"))?;
+    Ok(dunce::canonicalize(parent)?.join(file_name))
 }
 
 fn is_notist_file(path: &Path) -> bool {
@@ -466,5 +584,54 @@ mod tests {
                 .as_deref(),
             Some("unsaved")
         );
+    }
+
+    #[test]
+    fn discovers_marked_vaults_from_files_and_parent_directories() {
+        let root = TempDir::new().unwrap();
+        let vault = root.path().join("docs");
+        fs::create_dir_all(vault.join("nested")).unwrap();
+        fs::write(vault.join(MANIFEST_FILE), "").unwrap();
+        let source = vault.join("nested/page.not");
+        fs::write(&source, "").unwrap();
+        let vault = dunce::canonicalize(vault).unwrap();
+
+        assert_eq!(
+            find_vault_root(&source, Some(root.path())).unwrap(),
+            Some(vault.clone())
+        );
+        assert_eq!(resolve_vault_root(root.path()).unwrap(), vault);
+    }
+
+    #[test]
+    fn reports_ambiguous_vault_discovery() {
+        let root = TempDir::new().unwrap();
+        for name in ["docs", "notes"] {
+            fs::create_dir(root.path().join(name)).unwrap();
+            fs::write(root.path().join(name).join(MANIFEST_FILE), "").unwrap();
+        }
+
+        let error = resolve_vault_root(root.path()).unwrap_err();
+
+        assert_eq!(error.kind(), io::ErrorKind::InvalidInput);
+        assert!(error.to_string().contains("multiple Notist vaults"));
+    }
+
+    #[test]
+    fn outer_vault_does_not_include_nested_marked_vaults() {
+        let root = TempDir::new().unwrap();
+        fs::write(root.path().join(MANIFEST_FILE), "").unwrap();
+        fs::write(root.path().join("README.not"), "outer").unwrap();
+        fs::create_dir(root.path().join("nested")).unwrap();
+        fs::write(root.path().join("nested").join(MANIFEST_FILE), "").unwrap();
+        fs::write(root.path().join("nested/README.not"), "inner").unwrap();
+
+        let workspace = Workspace::load(root.path()).unwrap();
+        let modules: Vec<_> = workspace
+            .modules()
+            .map(|module| module.logical_path.to_string())
+            .collect();
+
+        assert_eq!(modules, ["vault"]);
     }
 }

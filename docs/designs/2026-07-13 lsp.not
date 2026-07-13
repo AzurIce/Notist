@@ -4,7 +4,7 @@ Notist 的 LSP 是编辑器与 `notist-analysis` 之间的协议适配层。它�
 
 第一版作为现有 CLI 的子命令发布：
 
-#raw(lang="shell")![
+#raw(lang="bash")![
 notist lsp
 ]!
 
@@ -23,8 +23,10 @@ notist lsp
 - Module 和 builtin Function signature Hover。
 - UTF-8 byte range 与 LSP UTF-16 Position 转换。
 - Zed extension 的 language server adapter。
+- 通过空 Notist.toml marker 发现 vault root。
+- 在同一个 editor worktree 中隔离多个独立 vault。
 
-当前每次文档变化都会同步重建整个 Workspace，并发布完整 diagnostics。DocumentSymbol、文件 watcher、增量 sync、增量 analysis、多 workspace 和插件 schema 尚未实现。
+当前每次文档变化都会同步重建所有已发现 vault 的 Workspace，并发布完整 diagnostics。DocumentSymbol、文件 watcher、增量 sync、增量 analysis、多 LSP workspace folder 和插件 schema 尚未实现。
 
 #heading(level=2)[Ownership]
 
@@ -59,19 +61,33 @@ LSP 层只做机械转换。例如 analysis 返回一个目标文件和 byte ran
 
 Zed extension 后续增加 language server adapter，优先从 PATH 查找 `notist`，并用参数 `lsp` 启动。自动下载和版本管理属于扩展分发问题，不进入 language server 核心。
 
-#heading(level=2)[Workspace and Unsaved Documents]
+#heading(level=2)[Vault Discovery and Unsaved Documents]
 
-当前 `Workspace::load` 直接扫描磁盘并读取文件，无法正确处理编辑器内尚未保存的内容。LSP 实现前，需要将 analysis 改造成可接收 document overlay 的 snapshot：
+编辑器提供的 workspace root 只是 worktree，不一定是 vault。Notist.toml 所在目录才是显式 vault root；配置文件当前可以为空，只承担 marker 作用。
+
+LSP 初始化时在 worktree 内发现所有 marker，并为每个 root 建立独立 Workspace：
+
+#raw(lang="text")![
+editor worktree
+  -> discover Notist.toml markers
+  -> VaultState { root, Workspace }
+  -> BTreeMap<VaultRoot, VaultState>
+]!
+
+一个 source 归属于最近祖先 marker。嵌套 marker 会建立新的 vault，外层 Workspace 扫描到该目录时停止递归。这样同一个 source 不会同时进入两个 Module graph。
+
+如果 worktree 中没有 marker，server 将 worktree root 作为单个 implicit vault，保持轻量用法兼容。有关 marker 与 CLI discovery 的完整规则见 [[vault::designs::2026-07-13 Notist toml]]。
+
+每个 vault 的 Workspace 都接收属于自己的 open document overlays：
 
 #raw(lang="text")![
 filesystem sources
        +
-open document overlays { path -> version + Arc<str> }
+vault overlays { path -> version + Arc<str> }
        |
        v
-WorkspaceSnapshot
-  sources
-  parses
+Workspace snapshot
+  sources and parses
   module index
   resolved references
   diagnostics
@@ -83,10 +99,11 @@ WorkspaceSnapshot
 - `didChange` 更新 overlay，不写入用户文件。
 - `didSave` 可以保留 overlay，直到收到保存后的最终文本或磁盘状态确认。
 - `didClose` 移除 overlay，并重新采用磁盘内容。
+- overlay 只进入 source 所属的最近 vault。
 - snapshot 内的 source、Parse、TextRange、reference 和 diagnostics 必须属于同一 revision。
-- 请求处理只读取完整 snapshot，不观察正在修改的可变 Workspace。
+- definition、references、completion 和 Hover 不跨 vault 查询。
 
-第一版可以在每次文档变化后重建整个 WorkspaceSnapshot。Notist vault 尚小时，全量重建比不完整的增量失效逻辑更可靠。之后再根据性能数据增加按文件 parse 和依赖图失效。
+当前每次文档变化后重建所有已发现的 Workspace。vault 尚小时，全量重建比不完整的增量失效逻辑更可靠；后续再按 vault revision、文件依赖和请求取消做增量优化。
 
 #heading(level=2)[Text Synchronization]
 
@@ -253,13 +270,16 @@ snapshot.document_symbols(file_id)
 
 #heading(level=2)[Implementation Order]
 
-1. 重构 `notist-analysis`，引入 source store、FileId、LineIndex、overlay 和 immutable WorkspaceSnapshot。
-2. 在 `notist-cli` 增加 `notist lsp` stdio server，只实现 initialize、shutdown 和 full document sync。
-3. 接入 syntax 与 analysis diagnostics，并正确清除过期 diagnostics。
-4. 实现 Wiki Reference definition 和 references。
-5. 实现 ModulePath completion 与 Module hover。
-6. 加入 Function signature hover、函数名和参数补全。
-7. 实现 DocumentSymbol，并接入 Zed extension。
-8. 根据性能数据增加 debounce、取消、增量 analysis 和多 workspace 支持。
+已完成的第一阶段包括 full document sync、overlay、diagnostics、Module navigation、completion、Hover、Zed adapter 和基于 Notist.toml 的多 vault discovery。
 
-第一阶段的成功标准不是覆盖全部 LSP 功能，而是让未保存文档上的 diagnostics、Module 跳转、路径补全和 Hover 都由同一个 snapshot 稳定工作。
+后续顺序：
+
+1. 将当前 Workspace 进一步固化为带 FileId、LineIndex 和 revision 的 immutable snapshot。
+2. 增加文件 watcher，在未打开文件和 Notist.toml 变化后刷新 vault 集合。
+3. 实现 DocumentSymbol 和 WorkspaceSymbol。
+4. 加入 debounce、旧 revision 取消和按 vault 重建。
+5. 根据性能数据增加按文件 parse 与依赖图增量 analysis。
+6. 支持插件 schema 提供的 Function、类型、completion 和 Hover。
+7. 处理 LSP workspace folder 动态增删。
+
+多 vault 的核心约束保持不变：每个 source 只属于最近 marker 的 Workspace，未保存 overlay、diagnostics 与所有语义查询都不能越过该边界。

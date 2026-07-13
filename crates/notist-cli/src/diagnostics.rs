@@ -50,7 +50,7 @@ pub fn emit(workspace: &Workspace, color: ClapColorChoice) -> Result<(), Box<dyn
             rendered = rendered.with_notes(vec![format!("at {}", display_path(path))]);
         }
 
-        term::emit(&mut writer, &config, &files, &rendered)?;
+        term::emit_to_write_style(&mut writer, &config, &files, &rendered)?;
     }
 
     Ok(())
@@ -78,7 +78,7 @@ pub fn emit_evaluation(
         let rendered = CodespanDiagnostic::error()
             .with_message(&diagnostic.message)
             .with_labels(vec![Label::primary(file_id, start..end)]);
-        term::emit(&mut writer, &config, &files, &rendered)?;
+        term::emit_to_write_style(&mut writer, &config, &files, &rendered)?;
     }
 
     Ok(())

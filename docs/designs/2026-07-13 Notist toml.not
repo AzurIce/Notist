@@ -1,0 +1,107 @@
+#heading(level=1)[Notist.toml]
+
+Notist.toml 是 vault root marker。文件所在目录就是一个独立 vault 的根目录；它不用于指向另一个内容目录。
+
+当前阶段只识别文件是否存在，不读取任何配置字段。因此一个完全空的 Notist.toml 就是有效配置：
+
+#raw(lang="text")![
+vault/
+├── Notist.toml
+├── README.not
+├── page.not
+└── section/
+    └── README.not
+]!
+
+对应 ModulePath：
+
+- README.not -> vault
+- page.not -> vault::page
+- section/README.not -> vault::section
+
+#heading(level=2)[Why a Marker]
+
+编辑器打开的 worktree 不一定等于 vault。一个代码仓库可以把 Notist 文档放在 docs，也可以同时包含 docs、notes 和 examples 等多个独立 vault。
+
+如果直接使用编辑器的 workspace root，代码、构建目录和其他文档目录都会错误地参与 Module 扫描。显式 marker 让 vault 边界由内容作者声明，而不依赖目录名约定或某个编辑器的项目模型。
+
+#heading(level=2)[Discovery]
+
+对一个 Notist source，归属规则是从文件目录开始向上寻找最近的 Notist.toml。最近 marker 的父目录就是该文件的 vault root。
+
+#raw(lang="text")![
+repository/
+├── docs/
+│   ├── Notist.toml
+│   └── guide.not
+└── notes/
+    ├── Notist.toml
+    └── today.not
+]!
+
+guide.not 属于 docs vault，today.not 属于 notes vault。两个 vault 都拥有自己的 vault ModulePath 根，Reference、completion 和 diagnostics 不跨越边界。
+
+发现算法忽略隐藏目录、target 和 node_modules，避免把构建缓存或依赖树当成项目内容。
+
+#heading(level=2)[Nested Vaults]
+
+marker 可以嵌套：
+
+#raw(lang="text")![
+docs/
+├── Notist.toml
+├── README.not
+└── examples/
+    ├── Notist.toml
+    └── README.not
+]!
+
+examples 是独立 vault。扫描外层 docs 时，遇到 examples/Notist.toml 就停止向该目录递归。否则同一个 source 会同时拥有两个 ModulePath，引用与 diagnostics 也会重复。
+
+从文件反向发现时仍采用最近祖先规则，因此 examples/README.not 只归属于 examples。
+
+#heading(level=2)[CLI Behavior]
+
+CLI 接收的路径先经过 vault discovery：
+
+- 路径位于 marker 内部时，使用最近祖先 marker。
+- 路径自身包含 Notist.toml 时，直接使用该目录。
+- 上层目录下只发现一个 marker 时，自动选择该 vault。
+- 上层目录下发现多个 vault 时，返回歧义错误并要求显式传入其中一个。
+- 完全没有 marker 时，继续把传入目录作为 implicit vault，保持早期用法兼容。
+
+因此在只有 docs/Notist.toml 的 repository root 可以直接运行：
+
+#raw(lang="shell")![
+notist check
+notist build
+notist preview
+]!
+
+#heading(level=2)[LSP Behavior]
+
+Zed 等编辑器通常以整个 worktree 启动一个 Notist language server。LSP 在该 worktree 内发现所有 Notist.toml，并为每个 root 建立独立 Workspace。
+
+#raw(lang="text")![
+ServerState
+├── open documents
+├── docs/  -> Workspace
+├── notes/ -> Workspace
+└── builtin Function registry
+]!
+
+didOpen 和 didChange 的 source overlay 按最近 marker 分配。Definition、references、completion、Hover 和 diagnostics 只查询当前 source 所属的 Workspace。
+
+如果 worktree 中没有任何 marker，LSP 继续把 worktree root 作为单个 implicit vault。
+
+#heading(level=2)[Reserved Configuration]
+
+Notist.toml 的内容目前保留，建议保持为空。未来可以在不改变 vault root 语义的前提下加入：
+
+- vault metadata。
+- enabled plugins 和 Function schema。
+- build 与 preview options。
+- diagnostics policy。
+- language version 或 feature gates。
+
+即使未来增加字段，vault root 仍然始终是 Notist.toml 所在目录，避免配置位置与内容根之间再次产生二义性。

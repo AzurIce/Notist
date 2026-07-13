@@ -2,6 +2,7 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::error::Error;
 use std::path::{Path, PathBuf};
 use std::process::ExitCode;
+use std::str::FromStr;
 use std::sync::Arc;
 
 use lsp_server::{Connection, ErrorCode, Message, Notification, Request, Response};
@@ -19,12 +20,24 @@ use lsp_types::{
     GotoDefinitionParams, GotoDefinitionResponse, Hover, HoverContents, HoverParams,
     HoverProviderCapability, InitializeParams, Location, MarkupContent, MarkupKind, NumberOrString,
     OneOf, Position, PositionEncodingKind, PublishDiagnosticsParams, Range, ReferenceParams,
-    ServerCapabilities, TextDocumentSyncCapability, TextDocumentSyncKind, TextEdit, Url,
+    ServerCapabilities, TextDocumentSyncCapability, TextDocumentSyncKind, TextEdit, Uri,
 };
-use notist_analysis::{DiagnosticKind, SourceOverlays, Workspace};
+use notist_analysis::{DiagnosticKind, SourceOverlays, Workspace, discover_vault_roots};
 use notist_eval::{DefaultValue, Evaluator, FunctionRegistry, FunctionSignature};
 use notist_model::{ModulePath, TextRange};
 use notist_syntax::{CallMode, Parse};
+use percent_encoding::{AsciiSet, CONTROLS, utf8_percent_encode};
+
+const URI_PATH_ENCODE_SET: &AsciiSet = &CONTROLS
+    .add(b' ')
+    .add(b'"')
+    .add(b'#')
+    .add(b'%')
+    .add(b'<')
+    .add(b'>')
+    .add(b'?')
+    .add(b'[')
+    .add(b']');
 
 pub fn run() -> Result<ExitCode, Box<dyn Error>> {
     let (connection, io_threads) = Connection::stdio();
@@ -64,9 +77,7 @@ fn workspace_root(params: &InitializeParams) -> Result<PathBuf, Box<dyn Error>> 
         .map(|folder| &folder.uri)
         .or(params.root_uri.as_ref());
     let root = match uri {
-        Some(uri) => uri
-            .to_file_path()
-            .map_err(|_| format!("workspace URI `{uri}` is not a file URI"))?,
+        Some(uri) => uri_to_file_path(uri)?,
         None => std::env::current_dir()?,
     };
     Ok(dunce::canonicalize(root)?)
@@ -178,21 +189,22 @@ struct OpenDocument {
 struct ServerState {
     root: PathBuf,
     documents: BTreeMap<PathBuf, OpenDocument>,
-    workspace: Workspace,
+    vaults: BTreeMap<PathBuf, Workspace>,
     published_paths: BTreeSet<PathBuf>,
     functions: FunctionRegistry,
 }
 
 impl ServerState {
     fn new(root: PathBuf) -> Result<Self, Box<dyn Error>> {
-        let workspace = Workspace::load(&root)?;
-        Ok(Self {
+        let mut state = Self {
             root,
             documents: BTreeMap::new(),
-            workspace,
+            vaults: BTreeMap::new(),
             published_paths: BTreeSet::new(),
             functions: FunctionRegistry::with_builtins(),
-        })
+        };
+        state.rebuild()?;
+        Ok(state)
     }
 
     fn open(&mut self, params: DidOpenTextDocumentParams) -> Result<(), Box<dyn Error>> {
@@ -251,24 +263,47 @@ impl ServerState {
     }
 
     fn rebuild(&mut self) -> Result<(), Box<dyn Error>> {
-        let overlays: SourceOverlays = self
-            .documents
-            .iter()
-            .map(|(path, document)| (path.clone(), document.source.clone()))
-            .collect();
-        self.workspace = Workspace::load_with_overlays(&self.root, overlays)?;
+        let mut roots = discover_vault_roots(&self.root)?;
+        if roots.is_empty() {
+            roots.push(self.root.clone());
+        }
+
+        let mut vaults = BTreeMap::new();
+        for root in &roots {
+            let overlays: SourceOverlays = self
+                .documents
+                .iter()
+                .filter(|(path, _)| assigned_vault_root(path, &roots) == Some(root))
+                .map(|(path, document)| (path.clone(), document.source.clone()))
+                .collect();
+            vaults.insert(root.clone(), Workspace::load_with_overlays(root, overlays)?);
+        }
+        self.vaults = vaults;
         Ok(())
     }
 
     fn document_version(&self, path: &Path) -> Option<i32> {
         self.documents.get(path).map(|document| document.version)
     }
+
+    fn workspace_for_source(&self, path: &Path) -> Option<&Workspace> {
+        let root = assigned_vault_root(path, self.vaults.keys())?;
+        self.vaults.get(root)
+    }
 }
 
-fn normalize_uri_path(root: &Path, uri: &Url) -> Result<PathBuf, Box<dyn Error>> {
-    let path = uri
-        .to_file_path()
-        .map_err(|_| format!("document URI `{uri}` is not a file URI"))?;
+fn assigned_vault_root<'a>(
+    path: &Path,
+    roots: impl IntoIterator<Item = &'a PathBuf>,
+) -> Option<&'a PathBuf> {
+    roots
+        .into_iter()
+        .filter(|root| path.starts_with(root))
+        .max_by_key(|root| root.components().count())
+}
+
+fn normalize_uri_path(root: &Path, uri: &Uri) -> Result<PathBuf, Box<dyn Error>> {
+    let path = uri_to_file_path(uri)?;
     if path.exists() {
         return Ok(dunce::canonicalize(path)?);
     }
@@ -286,13 +321,50 @@ fn normalize_uri_path(root: &Path, uri: &Url) -> Result<PathBuf, Box<dyn Error>>
     Ok(parent.join(file_name))
 }
 
+fn uri_to_file_path(uri: &Uri) -> Result<PathBuf, Box<dyn Error>> {
+    if uri.scheme().map(|scheme| scheme.as_str()) != Some("file") {
+        return Err(format!("URI {:?} is not a file URI", uri.as_str()).into());
+    }
+    if uri
+        .authority()
+        .is_some_and(|authority| !authority.as_str().is_empty())
+    {
+        return Err(format!("file URI {:?} has an unsupported authority", uri.as_str()).into());
+    }
+    let path = uri.path().as_estr().decode().into_string()?;
+
+    #[cfg(target_os = "windows")]
+    let path = {
+        let path = path
+            .strip_prefix('/')
+            .filter(|path| path.as_bytes().get(1) == Some(&b':'))
+            .unwrap_or(&path);
+        PathBuf::from(path.replace('/', "\\"))
+    };
+    #[cfg(not(target_os = "windows"))]
+    let path = PathBuf::from(path.as_ref());
+
+    Ok(path)
+}
+
+fn file_path_to_uri(path: &Path) -> Result<Uri, String> {
+    let mut path = path.to_string_lossy().replace('\\', "/");
+    if !path.starts_with('/') {
+        path.insert(0, '/');
+    }
+    let path = utf8_percent_encode(&path, URI_PATH_ENCODE_SET);
+    Uri::from_str(&format!("file://{path}"))
+        .map_err(|error| format!("cannot convert {} to a file URI: {error}", path))
+}
+
 fn publish_diagnostics(
     connection: &Connection,
     state: &mut ServerState,
 ) -> Result<(), Box<dyn Error>> {
     let current_paths: BTreeSet<_> = state
-        .workspace
-        .modules()
+        .vaults
+        .values()
+        .flat_map(Workspace::modules)
         .filter_map(|module| module.source_path.clone())
         .collect();
     let paths: BTreeSet<_> = current_paths
@@ -303,8 +375,7 @@ fn publish_diagnostics(
 
     for path in paths {
         let diagnostics = diagnostics_for_path(state, &evaluator, &path);
-        let uri = Url::from_file_path(&path)
-            .map_err(|_| format!("cannot convert `{}` to a file URI", path.display()))?;
+        let uri = file_path_to_uri(&path)?;
         let params = PublishDiagnosticsParams::new(uri, diagnostics, state.document_version(&path));
         connection
             .sender
@@ -322,7 +393,10 @@ fn diagnostics_for_path(
     evaluator: &Evaluator,
     path: &Path,
 ) -> Vec<Diagnostic> {
-    let Some(module) = state.workspace.module_for_source(path) else {
+    let Some(workspace) = state.workspace_for_source(path) else {
+        return Vec::new();
+    };
+    let Some(module) = workspace.module_for_source(path) else {
         return Vec::new();
     };
     let Some(source) = module.source.as_deref() else {
@@ -332,8 +406,7 @@ fn diagnostics_for_path(
     let mut diagnostics = Vec::new();
     let mut seen = BTreeSet::new();
 
-    for diagnostic in state
-        .workspace
+    for diagnostic in workspace
         .diagnostics()
         .iter()
         .filter(|diagnostic| diagnostic.source_path.as_deref() == Some(path))
@@ -397,7 +470,7 @@ fn definition(
     params: GotoDefinitionParams,
 ) -> Result<Option<GotoDefinitionResponse>, String> {
     let position = params.text_document_position_params;
-    let Some((_path, module, offset)) = source_position(state, &position) else {
+    let Some((_path, workspace, module, offset)) = source_position(state, &position) else {
         return Ok(None);
     };
     let Some(link) = module
@@ -410,14 +483,13 @@ fn definition(
     let Some(target) = link.target.module.resolve_from(&module.logical_path) else {
         return Ok(None);
     };
-    let Some(target_module) = state.workspace.module(&target) else {
+    let Some(target_module) = workspace.module(&target) else {
         return Ok(None);
     };
     let Some(target_path) = &target_module.source_path else {
         return Ok(None);
     };
-    let uri = Url::from_file_path(target_path)
-        .map_err(|_| format!("cannot convert `{}` to a file URI", target_path.display()))?;
+    let uri = file_path_to_uri(target_path)?;
     Ok(Some(GotoDefinitionResponse::Scalar(Location::new(
         uri,
         Range::new(Position::new(0, 0), Position::new(0, 0)),
@@ -429,7 +501,7 @@ fn references(
     params: ReferenceParams,
 ) -> Result<Option<Vec<Location>>, String> {
     let position = params.text_document_position;
-    let Some((_path, module, offset)) = source_position(state, &position) else {
+    let Some((_path, workspace, module, offset)) = source_position(state, &position) else {
         return Ok(None);
     };
     let Some(link) = module
@@ -444,34 +516,27 @@ fn references(
     };
     let mut locations = Vec::new();
     if params.context.include_declaration
-        && let Some(target_module) = state.workspace.module(&target)
+        && let Some(target_module) = workspace.module(&target)
         && let Some(path) = &target_module.source_path
     {
-        let uri = Url::from_file_path(path)
-            .map_err(|_| format!("cannot convert `{}` to a file URI", path.display()))?;
+        let uri = file_path_to_uri(path)?;
         locations.push(Location::new(
             uri,
             Range::new(Position::new(0, 0), Position::new(0, 0)),
         ));
     }
-    for reference in state
-        .workspace
+    for reference in workspace
         .references()
         .iter()
         .filter(|reference| reference.target_module == target)
     {
-        let Some(source_module) = state.workspace.module(&reference.source_module) else {
+        let Some(source_module) = workspace.module(&reference.source_module) else {
             continue;
         };
         let Some(source) = source_module.source.as_deref() else {
             continue;
         };
-        let uri = Url::from_file_path(&reference.source_path).map_err(|_| {
-            format!(
-                "cannot convert `{}` to a file URI",
-                reference.source_path.display()
-            )
-        })?;
+        let uri = file_path_to_uri(&reference.source_path)?;
         locations.push(Location::new(
             uri,
             LineIndex::new(source).range(reference.range),
@@ -485,7 +550,7 @@ fn completion(
     params: CompletionParams,
 ) -> Result<Option<CompletionResponse>, String> {
     let position = params.text_document_position;
-    let Some((_path, module, offset)) = source_position(state, &position) else {
+    let Some((_path, workspace, module, offset)) = source_position(state, &position) else {
         return Ok(None);
     };
     let Some(source) = module.source.as_deref() else {
@@ -527,7 +592,7 @@ fn completion(
     }
     if let Some(context) = wiki_completion_context(source, &parse, offset) {
         let mut items = Vec::new();
-        for target in state.workspace.modules().map(|module| &module.logical_path) {
+        for target in workspace.modules().map(|module| &module.logical_path) {
             if target == &module.logical_path {
                 continue;
             }
@@ -575,7 +640,7 @@ fn completion(
 
 fn hover(state: &ServerState, params: HoverParams) -> Result<Option<Hover>, String> {
     let position = params.text_document_position_params;
-    let Some((_path, module, offset)) = source_position(state, &position) else {
+    let Some((_path, workspace, module, offset)) = source_position(state, &position) else {
         return Ok(None);
     };
     let Some(source) = module.source.as_deref() else {
@@ -590,7 +655,7 @@ fn hover(state: &ServerState, params: HoverParams) -> Result<Option<Hover>, Stri
         let Some(target) = link.target.module.resolve_from(&module.logical_path) else {
             return Ok(None);
         };
-        let (kind, path) = match state.workspace.module(&target) {
+        let (kind, path) = match workspace.module(&target) {
             Some(target) => (
                 if target.source_path.is_some() {
                     "source module"
@@ -635,12 +700,13 @@ fn hover(state: &ServerState, params: HoverParams) -> Result<Option<Hover>, Stri
 fn source_position<'a>(
     state: &'a ServerState,
     params: &lsp_types::TextDocumentPositionParams,
-) -> Option<(PathBuf, &'a notist_analysis::Module, usize)> {
+) -> Option<(PathBuf, &'a Workspace, &'a notist_analysis::Module, usize)> {
     let path = normalize_uri_path(&state.root, &params.text_document.uri).ok()?;
-    let module = state.workspace.module_for_source(&path)?;
+    let workspace = state.workspace_for_source(&path)?;
+    let module = workspace.module_for_source(&path)?;
     let source = module.source.as_deref()?;
     let offset = LineIndex::new(source).offset(params.position)?;
-    Some((path, module, offset))
+    Some((path, workspace, module, offset))
 }
 
 fn link_at(parse: &Parse, offset: usize) -> Option<&notist_syntax::WikiLink> {
@@ -924,6 +990,18 @@ mod tests {
     }
 
     #[test]
+    fn converts_file_paths_and_new_uri_type() {
+        let path = dunce::canonicalize(std::env::current_dir().unwrap())
+            .unwrap()
+            .join("space 文档.not");
+        let uri = file_path_to_uri(&path).unwrap();
+
+        assert!(uri.as_str().starts_with("file:///"));
+        assert!(uri.as_str().contains("space%20"));
+        assert_eq!(uri_to_file_path(&uri).unwrap(), path);
+    }
+
+    #[test]
     fn chooses_short_module_references() {
         let current = ModulePath::from_segments(["notes".into(), "today".into()]);
         let child = ModulePath::from_segments(["notes".into(), "today".into(), "details".into()]);
@@ -971,7 +1049,7 @@ mod tests {
             },
         );
         state.rebuild().unwrap();
-        let uri = Url::from_file_path(path).unwrap();
+        let uri = file_path_to_uri(&path).unwrap();
         let params = CompletionParams {
             text_document_position: lsp_types::TextDocumentPositionParams::new(
                 lsp_types::TextDocumentIdentifier::new(uri),
@@ -989,6 +1067,64 @@ mod tests {
     }
 
     #[test]
+    fn keeps_marked_vaults_independent_within_one_worktree() {
+        let root = tempfile::TempDir::new().unwrap();
+        for vault in ["docs", "notes"] {
+            fs::create_dir(root.path().join(vault)).unwrap();
+            fs::write(
+                root.path().join(vault).join(notist_analysis::MANIFEST_FILE),
+                "",
+            )
+            .unwrap();
+            fs::write(root.path().join(vault).join("README.not"), "").unwrap();
+        }
+        fs::write(root.path().join("docs/guide.not"), "guide").unwrap();
+        fs::write(root.path().join("notes/private.not"), "private").unwrap();
+        let root_path = dunce::canonicalize(root.path()).unwrap();
+        let mut state = ServerState::new(root_path).unwrap();
+        let docs_readme = dunce::canonicalize(root.path().join("docs/README.not")).unwrap();
+        let notes_readme = dunce::canonicalize(root.path().join("notes/README.not")).unwrap();
+
+        assert_eq!(state.vaults.len(), 2);
+        let docs = state.workspace_for_source(&docs_readme).unwrap();
+        assert!(
+            docs.module(&ModulePath::from_segments(["guide".into()]))
+                .is_some()
+        );
+        assert!(
+            docs.module(&ModulePath::from_segments(["private".into()]))
+                .is_none()
+        );
+        let notes = state.workspace_for_source(&notes_readme).unwrap();
+        assert!(
+            notes
+                .module(&ModulePath::from_segments(["private".into()]))
+                .is_some()
+        );
+
+        let draft = root.path().join("docs/draft.not");
+        state.documents.insert(
+            draft.clone(),
+            OpenDocument {
+                version: 1,
+                source: Arc::from("draft"),
+            },
+        );
+        state.rebuild().unwrap();
+        let docs = state.workspace_for_source(&draft).unwrap();
+        assert!(
+            docs.module(&ModulePath::from_segments(["draft".into()]))
+                .is_some()
+        );
+        let notes = state.workspace_for_source(&notes_readme).unwrap();
+        assert!(
+            notes
+                .module(&ModulePath::from_segments(["draft".into()]))
+                .is_none()
+        );
+    }
+
+    #[test]
     fn protocol_loop_serves_overlay_diagnostics_completion_hover_and_definition() {
         let root = tempfile::TempDir::new().unwrap();
         fs::write(root.path().join("README.not"), "disk").unwrap();
@@ -996,7 +1132,7 @@ mod tests {
         let root_path = dunce::canonicalize(root.path()).unwrap();
         let readme_path = dunce::canonicalize(root.path().join("README.not")).unwrap();
         let child_path = dunce::canonicalize(root.path().join("child.not")).unwrap();
-        let readme_uri = Url::from_file_path(&readme_path).unwrap();
+        let readme_uri = file_path_to_uri(&readme_path).unwrap();
         let source = "[[child]] #heading[] #missing[]";
         let state = ServerState::new(root_path).unwrap();
         let (server, client) = Connection::memory();
@@ -1062,7 +1198,7 @@ mod tests {
             .unwrap();
         let response = recv_response(&client, &completion_id);
         let completion: Option<CompletionResponse> =
-            serde_json::from_value(response.result.unwrap()).unwrap();
+            serde_json::from_value(response_result(response)).unwrap();
         let Some(CompletionResponse::Array(items)) = completion else {
             panic!("expected completion array");
         };
@@ -1084,7 +1220,7 @@ mod tests {
             )))
             .unwrap();
         let response = recv_response(&client, &hover_id);
-        let hover: Option<Hover> = serde_json::from_value(response.result.unwrap()).unwrap();
+        let hover: Option<Hover> = serde_json::from_value(response_result(response)).unwrap();
         assert!(matches!(
             hover.unwrap().contents,
             HoverContents::Markup(MarkupContent { value, .. }) if value.contains("#heading")
@@ -1108,11 +1244,11 @@ mod tests {
             .unwrap();
         let response = recv_response(&client, &definition_id);
         let definition: Option<GotoDefinitionResponse> =
-            serde_json::from_value(response.result.unwrap()).unwrap();
+            serde_json::from_value(response_result(response)).unwrap();
         assert!(matches!(
             definition,
             Some(GotoDefinitionResponse::Scalar(Location { uri, .. }))
-                if uri == Url::from_file_path(child_path).unwrap()
+                if uri == file_path_to_uri(&child_path).unwrap()
         ));
 
         drop(client);
@@ -1129,6 +1265,15 @@ mod tests {
                 && &response.id == id
             {
                 return response;
+            }
+        }
+    }
+
+    fn response_result(response: Response) -> serde_json::Value {
+        match response.response_kind {
+            lsp_server::ResponseKind::Ok { result } => result,
+            lsp_server::ResponseKind::Err { error } => {
+                panic!("unexpected LSP error response: {}", error.message)
             }
         }
     }

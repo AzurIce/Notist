@@ -3,7 +3,7 @@ use std::path::PathBuf;
 use std::process::ExitCode;
 
 use clap::{Parser, Subcommand};
-use notist_analysis::Workspace;
+use notist_analysis::{Workspace, resolve_vault_root};
 use notist_syntax::CallMode;
 
 mod build;
@@ -78,7 +78,7 @@ fn run(cli: Cli) -> Result<ExitCode, Box<dyn std::error::Error>> {
     match cli.command {
         Command::Lsp => lsp::run(),
         Command::Check { root } => {
-            let workspace = Workspace::load(root)?;
+            let workspace = Workspace::load(resolve_vault_root(&root)?)?;
             diagnostics::emit(&workspace, cli.color)?;
             if workspace.diagnostics().is_empty() {
                 println!("checked {} modules", workspace.modules().count());
@@ -88,7 +88,7 @@ fn run(cli: Cli) -> Result<ExitCode, Box<dyn std::error::Error>> {
             }
         }
         Command::Inspect { root } => {
-            let workspace = Workspace::load(root)?;
+            let workspace = Workspace::load(resolve_vault_root(&root)?)?;
             for module in workspace.modules() {
                 match &module.source_path {
                     Some(path) => println!("{} -> {}", module.logical_path, path.display()),
@@ -134,13 +134,15 @@ fn run(cli: Cli) -> Result<ExitCode, Box<dyn std::error::Error>> {
             }
             Ok(ExitCode::SUCCESS)
         }
-        Command::Build { root, output } => build::run(root, output, cli.color),
+        Command::Build { root, output } => {
+            build::run(resolve_vault_root(&root)?, output, cli.color)
+        }
         Command::Preview {
             root,
             host,
             port,
             no_open,
-        } => preview::run(root, host, port, no_open, cli.color),
+        } => preview::run(resolve_vault_root(&root)?, host, port, no_open, cli.color),
     }
 }
 
