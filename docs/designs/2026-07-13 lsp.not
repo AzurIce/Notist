@@ -1,0 +1,249 @@
+#heading(level=1)[Language Server]
+
+Notist 的 LSP 是编辑器与 `notist-analysis` 之间的协议适配层。它负责文档同步、LSP position 转换、请求路由和结果发布，不负责重新实现 parser、模块解析、类型检查或求值语义。
+
+第一版作为现有 CLI 的子命令发布：
+
+#raw(lang="shell")![
+notist lsp
+]!
+
+这样命令行、Zed、VS Code 和其他编辑器只需要安装一个版本一致的 `notist` 可执行文件。只有当独立发布、daemon 生命周期或依赖体积成为真实问题时，再考虑拆出单独的 `notist-lsp` binary crate。
+
+#heading(level=2)[Ownership]
+
+#raw(lang="text")![
+Editor
+  -> LSP JSON-RPC
+  -> notist-cli::lsp
+       document lifecycle
+       URI and Position conversion
+       capability handlers
+       diagnostics publishing
+  -> notist-analysis
+       workspace snapshot
+       module graph
+       name and reference resolution
+       completion / hover / navigation queries
+  -> notist-syntax / notist-eval / notist-model
+]!
+
+`notist-analysis` 必须保持编辑器和协议无关。它使用 `PathBuf`、`ModulePath`、`TextRange` 和自身的查询结果类型，不应暴露 `lsp_types::Position`、URI 或 CompletionItem。
+
+LSP 层只做机械转换。例如 analysis 返回一个目标文件和 byte range，LSP handler 再将其转换为 `Location`。
+
+#heading(level=2)[Process and Transport]
+
+第一版只支持 stdio transport。编辑器启动 `notist lsp`，server 的 stdin/stdout 专用于 JSON-RPC：
+
+- `stdout` 不能输出日志、进度文字或 diagnostics。
+- 日志只能写入 `stderr` 或显式 log file。
+- 普通 CLI 的彩色输出在 LSP 模式下完全禁用。
+- server 生命周期跟随编辑器创建的进程，不额外启动后台 daemon。
+
+Zed extension 后续增加 language server adapter，优先从 PATH 查找 `notist`，并用参数 `lsp` 启动。自动下载和版本管理属于扩展分发问题，不进入 language server 核心。
+
+#heading(level=2)[Workspace and Unsaved Documents]
+
+当前 `Workspace::load` 直接扫描磁盘并读取文件，无法正确处理编辑器内尚未保存的内容。LSP 实现前，需要将 analysis 改造成可接收 document overlay 的 snapshot：
+
+#raw(lang="text")![
+filesystem sources
+       +
+open document overlays { path -> version + Arc<str> }
+       |
+       v
+WorkspaceSnapshot
+  sources
+  parses
+  module index
+  resolved references
+  diagnostics
+]!
+
+规则如下：
+
+- 已打开文档的 overlay 优先于磁盘内容。
+- `didChange` 更新 overlay，不写入用户文件。
+- `didSave` 可以保留 overlay，直到收到保存后的最终文本或磁盘状态确认。
+- `didClose` 移除 overlay，并重新采用磁盘内容。
+- snapshot 内的 source、Parse、TextRange、reference 和 diagnostics 必须属于同一 revision。
+- 请求处理只读取完整 snapshot，不观察正在修改的可变 Workspace。
+
+第一版可以在每次文档变化后重建整个 WorkspaceSnapshot。Notist vault 尚小时，全量重建比不完整的增量失效逻辑更可靠。之后再根据性能数据增加按文件 parse 和依赖图失效。
+
+#heading(level=2)[Text Synchronization]
+
+第一版声明 `TextDocumentSyncKind::FULL`。每次 `didChange` 接收完整文本，避免在 parser 尚不支持增量更新时维护另一套 range edit 应用逻辑。
+
+这不妨碍未来切换到 incremental sync。届时 document store 先将 LSP range edit 应用到 source，再把新的完整 source 交给 syntax 和 analysis；parser 是否增量解析是内部优化，不应影响 analysis API。
+
+文件系统 watcher 只负责未在编辑器中打开的文件。若客户端已经为 workspace file events 提供可靠通知，可以优先使用 LSP notification；server 自身 watcher 作为客户端能力不足时的补充。
+
+#heading(level=2)[Position Encoding]
+
+Notist 内部的 `TextRange` 使用 UTF-8 byte offset，而 LSP `Position` 通常使用 UTF-16 code unit。两者不能直接互换。
+
+analysis source 应附带统一的 `LineIndex`：
+
+#raw(lang="text")![
+byte offset
+  <-> line number + UTF-8 column
+  <-> LSP line + UTF-16 column
+]!
+
+所有 diagnostics、definition、references、hover range 和 symbol range 都必须经过同一个转换实现。需要覆盖 ASCII、中文、emoji、组合字符、CRLF 和文件末尾位置测试。
+
+如果客户端协商支持 UTF-8 position encoding，可以使用 UTF-8；但 UTF-16 仍必须正确支持，不能假设所有编辑器都使用 byte column。
+
+#heading(level=2)[Capabilities]
+
+#heading(level=3)[Diagnostics]
+
+第一阶段首先提供实时 diagnostics：
+
+- syntax errors。
+- duplicate module。
+- unresolved module reference。
+- unsupported label reference。
+- evaluation 和 builtin function argument diagnostics。
+- 后续的 name resolution 和 type diagnostics。
+
+第一版使用 `textDocument/publishDiagnostics`。每次 snapshot 更新后，为受影响的已知文件发布完整 diagnostics 集合；原有错误消失时必须发布空数组清除客户端状态。
+
+Diagnostic 应包含稳定的 `source = "notist"`、可机器识别的 code、准确 range 和简洁 message。跨文件冲突可以通过 related information 指向另一个定义位置。
+
+#heading(level=3)[Go to Definition]
+
+最先支持 Wiki Reference 的 Module 跳转：
+
+#raw(lang="not")![
+[[notes::today]]
+]!
+
+光标位于 reference path 时，analysis 根据当前 Module 解析目标 ModulePath。目标有 source file 时跳到文件开头；虚拟目录 Module 没有 `README.not` 时，可以返回其目录或第一个真实子模块，但第一版也可以不提供结果。
+
+未来 definition 还包括 block label、函数、变量、类型和插件导出的名称。协议 handler 不应针对每种符号复制逻辑，而应调用统一的 `definition_at(file, offset)` 查询。
+
+#heading(level=3)[Find References]
+
+Module reference 已经形成 workspace 级引用图，因此可以提供：
+
+- 查找指向当前 Module 的所有 Wiki Reference。
+- 在 reference 上查找同一目标的其他引用。
+- 可选地包含 Module 自身的定义位置。
+
+后续 block label 和语言符号也使用统一的 SymbolId，而不是仅按显示文本搜索。
+
+#heading(level=3)[Completion]
+
+Completion 必须由 source context 和语义环境共同决定，不能只做全局字符串列表。
+
+第一阶段支持：
+
+- `[[...]]` 内补全当前可达的 ModulePath。
+- `vault::`、`self::`、`super::` 后补全合法 segment。
+- `#...` 后补全内置 Function 名称。
+- call arguments 中补全 parameter name。
+- 属性列表中补全已知 attribute key。
+
+Module completion 应插入相对于当前 Module 的自然路径，而不总是插入绝对 `vault::...`。结果可以显示目标的逻辑路径、是否为虚拟 Module 和简短文档摘要。
+
+Content body 内继续提供 Notist completion；Raw body 内不提供宿主语言 completion。Raw language injection 由 Tree-sitter query 和对应语言自己的 language server 处理。
+
+Completion query 应返回协议无关的数据：label、insert text、kind、documentation 和 replace byte range。LSP 层再根据客户端 snippet 与 completion capability 生成 CompletionItem。
+
+#heading(level=3)[Hover]
+
+第一阶段 Hover 包括：
+
+- Module reference 的完整逻辑路径和 source path。
+- Module 是否为虚拟目录节点。
+- 内置 Function 的签名、参数类型、默认值和 body mode。
+- Attribute 或未来 Symbol 的类型与定义位置。
+- diagnostics 之外有帮助的简短说明。
+
+LSP Hover 使用 Markdown `MarkupContent`。简单语义信息不需要依赖 `notist-html`；只有未来需要渲染 Content preview 时，才考虑复用 semantic renderer 生成经过清理的片段。
+
+#heading(level=3)[Document Symbols]
+
+Heading 天然适合作为 DocumentSymbol。symbol range 使用整个 Heading，selection range 使用标题 body。未来带 id 的 Annotation、函数和变量定义也可以进入符号树。
+
+Workspace Symbol 可以索引 Module 和带稳定 id 的文档元素，但不应在第一阶段阻塞核心导航能力。
+
+#heading(level=2)[Syntax Source of Truth]
+
+编辑器中的 Tree-sitter grammar 负责即时高亮、折叠和注入；LSP 不使用 Tree-sitter tree 作为语义来源。
+
+LSP server 必须调用主仓库的 `notist-syntax` parser。这样 CLI、build、preview、diagnostics 和编辑器语义共享相同 AST 与错误恢复行为，不会因为 Tree-sitter grammar 更新节奏不同而产生两套语言语义。
+
+Tree-sitter 仍然可以在 server 尚未响应时提供稳定的视觉结构，两者是互补关系。
+
+#heading(level=2)[Evaluation and Safety]
+
+Hover、completion 和 diagnostics 可能需要 Function registry 和类型信息，但语言服务器不应为了普通编辑操作执行具有外部副作用的插件代码。
+
+建议区分：
+
+- builtin 和纯用户定义：允许 analysis/type checking，并在必要时做受控常量求值。
+- plugin schema：读取声明的函数签名、文档和导出符号。
+- plugin runtime：默认不在 LSP 请求路径中执行。
+
+未知或无法执行的 Function 仍可以依据 schema 提供 completion 和 type diagnostics。需要插件生成 Content 才能知道的动态结果，可以降级为 unknown，而不是阻塞整个 workspace analysis。
+
+#heading(level=2)[Concurrency]
+
+Server state 可以维护当前 immutable snapshot 和递增 revision：
+
+#raw(lang="text")![
+didChange(version)
+  -> update overlay
+  -> schedule analysis revision N
+  -> build snapshot N
+  -> publish only if N is still current
+]!
+
+旧 revision 的慢任务完成后不能覆盖更新结果。Hover、completion 等读取请求捕获一个 snapshot 并在其上完成；如果客户端取消请求，应尽快停止昂贵查询。
+
+第一版可以使用单个 analysis worker 串行重建，先保证一致性。并行 parse 和增量依赖失效属于后续优化。
+
+#heading(level=2)[Analysis API Direction]
+
+`notist-analysis` 后续可以形成以下协议无关接口：
+
+#raw(lang="text")![
+WorkspaceSnapshot::build(root, overlays)
+snapshot.source(file_id)
+snapshot.module_at(file_id)
+snapshot.diagnostics(file_id)
+snapshot.definition_at(file_id, byte_offset)
+snapshot.references_at(file_id, byte_offset)
+snapshot.completions_at(file_id, byte_offset)
+snapshot.hover_at(file_id, byte_offset)
+snapshot.document_symbols(file_id)
+]!
+
+查询结果引用稳定的 FileId、SymbolId 和 TextRange。Path、ModulePath 与 display text 是附加信息，不应代替稳定 identity。
+
+#heading(level=2)[Testing]
+
+测试分三层：
+
+- analysis unit tests：直接对 source、ModulePath 和 byte offset 验证查询结果，不涉及 LSP 类型。
+- position tests：验证 byte offset 与 UTF-16 Position 双向转换。
+- protocol integration tests：以内存 connection 发送 initialize、didOpen、didChange 和请求，验证 diagnostics、completion、hover 与 navigation。
+
+至少需要覆盖未保存 overlay、文件关闭后恢复磁盘内容、中文与 emoji range、删除 Module 后清除 diagnostics、快速连续 change 不发布旧 revision 等场景。
+
+#heading(level=2)[Implementation Order]
+
+1. 重构 `notist-analysis`，引入 source store、FileId、LineIndex、overlay 和 immutable WorkspaceSnapshot。
+2. 在 `notist-cli` 增加 `notist lsp` stdio server，只实现 initialize、shutdown 和 full document sync。
+3. 接入 syntax 与 analysis diagnostics，并正确清除过期 diagnostics。
+4. 实现 Wiki Reference definition 和 references。
+5. 实现 ModulePath completion 与 Module hover。
+6. 加入 Function signature hover、函数名和参数补全。
+7. 实现 DocumentSymbol，并接入 Zed extension。
+8. 根据性能数据增加 debounce、取消、增量 analysis 和多 workspace 支持。
+
+第一阶段的成功标准不是覆盖全部 LSP 功能，而是让未保存文档上的 diagnostics、Module 跳转、路径补全和 Hover 都由同一个 snapshot 稳定工作。
