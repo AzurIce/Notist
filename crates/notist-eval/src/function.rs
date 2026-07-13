@@ -120,6 +120,11 @@ impl FunctionRegistry {
     pub fn get(&self, name: &str) -> Option<&dyn Function> {
         self.functions.get(name).map(Arc::as_ref)
     }
+
+    /// Iterates over all registered functions in unspecified order.
+    pub fn functions(&self) -> impl Iterator<Item = &dyn Function> {
+        self.functions.values().map(Arc::as_ref)
+    }
 }
 
 /// An error returned when a function name is registered more than once.

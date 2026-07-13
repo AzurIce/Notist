@@ -8,6 +8,7 @@ use notist_syntax::CallMode;
 
 mod build;
 mod diagnostics;
+mod lsp;
 mod preview;
 
 #[derive(Debug, Parser)]
@@ -23,6 +24,8 @@ struct Cli {
 
 #[derive(Debug, Subcommand)]
 enum Command {
+    /// Run the Notist language server over standard input and output.
+    Lsp,
     /// Check module paths and references in a Notist workspace.
     Check {
         /// Root directory of the Notist workspace.
@@ -73,6 +76,7 @@ fn main() -> ExitCode {
 
 fn run(cli: Cli) -> Result<ExitCode, Box<dyn std::error::Error>> {
     match cli.command {
+        Command::Lsp => lsp::run(),
         Command::Check { root } => {
             let workspace = Workspace::load(root)?;
             diagnostics::emit(&workspace, cli.color)?;

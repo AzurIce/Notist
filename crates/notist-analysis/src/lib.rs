@@ -2,16 +2,25 @@ use std::collections::BTreeMap;
 use std::fs;
 use std::io;
 use std::path::{Path, PathBuf};
+use std::sync::Arc;
 
 use notist_model::{ModulePath, TextRange};
 use notist_syntax::{Parse, parse};
 
 #[derive(Clone, Debug)]
 pub struct Module {
+    /// The stable logical path used by Notist references.
     pub logical_path: ModulePath,
+    /// The backing source file, or `None` for a virtual directory module.
     pub source_path: Option<PathBuf>,
+    /// The immutable source text corresponding exactly to `parse`.
+    pub source: Option<Arc<str>>,
+    /// The parsed source, or `None` for a virtual directory module.
     pub parse: Option<Parse>,
 }
+
+/// Unsaved source texts keyed by their absolute source path.
+pub type SourceOverlays = BTreeMap<PathBuf, Arc<str>>;
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum DiagnosticKind {
@@ -47,7 +56,16 @@ pub struct Workspace {
 
 impl Workspace {
     pub fn load(root: impl AsRef<Path>) -> io::Result<Self> {
+        Self::load_with_overlays(root, SourceOverlays::new())
+    }
+
+    /// Loads a workspace while preferring unsaved source overlays over disk contents.
+    pub fn load_with_overlays(
+        root: impl AsRef<Path>,
+        overlays: SourceOverlays,
+    ) -> io::Result<Self> {
         let root = dunce::canonicalize(root)?;
+        let overlays = normalize_overlays(&root, overlays)?;
         let mut workspace = Self {
             root: root.clone(),
             modules: BTreeMap::new(),
@@ -55,7 +73,8 @@ impl Workspace {
             diagnostics: Vec::new(),
         };
         workspace.insert_virtual_module(ModulePath::root());
-        workspace.scan_directory(&root, &ModulePath::root())?;
+        workspace.scan_directory(&root, &ModulePath::root(), &overlays)?;
+        workspace.insert_overlay_only_modules(&overlays)?;
         workspace.analyze_references();
         Ok(workspace)
     }
@@ -76,7 +95,33 @@ impl Workspace {
         &self.references
     }
 
-    fn scan_directory(&mut self, directory: &Path, module_path: &ModulePath) -> io::Result<bool> {
+    /// Returns a module by its logical path.
+    pub fn module(&self, path: &ModulePath) -> Option<&Module> {
+        self.modules.get(path)
+    }
+
+    /// Returns the source-backed module associated with a filesystem path.
+    pub fn module_for_source(&self, path: &Path) -> Option<&Module> {
+        self.modules
+            .values()
+            .find(|module| module.source_path.as_deref() == Some(path))
+    }
+
+    /// Returns the resolved reference covering the given source byte offset.
+    pub fn reference_at(&self, path: &Path, offset: usize) -> Option<&ResolvedReference> {
+        self.references.iter().find(|reference| {
+            reference.source_path == path
+                && reference.range.start <= offset
+                && offset < reference.range.end
+        })
+    }
+
+    fn scan_directory(
+        &mut self,
+        directory: &Path,
+        module_path: &ModulePath,
+        overlays: &SourceOverlays,
+    ) -> io::Result<bool> {
         let mut entries: Vec<_> = fs::read_dir(directory)?.collect::<Result<_, _>>()?;
         entries.sort_by_key(|entry| entry.file_name());
         let mut contains_notist_file = false;
@@ -89,7 +134,7 @@ impl Workspace {
                     continue;
                 }
                 let child = module_path.child([entry.file_name().to_string_lossy().into_owned()]);
-                if self.scan_directory(&path, &child)? {
+                if self.scan_directory(&path, &child, overlays)? {
                     self.insert_virtual_module(child);
                     contains_notist_file = true;
                 }
@@ -99,7 +144,12 @@ impl Workspace {
                 } else {
                     module_path.child([file_stem(&path)?])
                 };
-                self.insert_source_module(logical_path, path)?;
+                let source = overlays
+                    .get(&path)
+                    .cloned()
+                    .map(Ok)
+                    .unwrap_or_else(|| fs::read_to_string(&path).map(Arc::from))?;
+                self.insert_source_module(logical_path, path, source);
                 contains_notist_file = true;
             }
         }
@@ -110,16 +160,17 @@ impl Workspace {
         self.modules.entry(logical_path.clone()).or_insert(Module {
             logical_path,
             source_path: None,
+            source: None,
             parse: None,
         });
     }
 
-    fn insert_source_module(&mut self, logical_path: ModulePath, path: PathBuf) -> io::Result<()> {
-        let source = fs::read_to_string(&path)?;
+    fn insert_source_module(&mut self, logical_path: ModulePath, path: PathBuf, source: Arc<str>) {
         let parse = parse(&source);
         let module = self.modules.entry(logical_path.clone()).or_insert(Module {
             logical_path: logical_path.clone(),
             source_path: None,
+            source: None,
             parse: None,
         });
 
@@ -136,7 +187,32 @@ impl Workspace {
             });
         } else {
             module.source_path = Some(path);
+            module.source = Some(source);
             module.parse = Some(parse);
+        }
+    }
+
+    fn insert_overlay_only_modules(&mut self, overlays: &SourceOverlays) -> io::Result<()> {
+        for (path, source) in overlays {
+            if !is_notist_file(path)
+                || !path.starts_with(&self.root)
+                || self.module_for_source(path).is_some()
+            {
+                continue;
+            }
+
+            let logical_path = module_path_for_source(&self.root, path)?;
+            let parent_segment_count = if is_readme(path) {
+                logical_path.segments().len()
+            } else {
+                logical_path.segments().len().saturating_sub(1)
+            };
+            for count in 1..=parent_segment_count {
+                self.insert_virtual_module(ModulePath::from_segments(
+                    logical_path.segments()[..count].iter().cloned(),
+                ));
+            }
+            self.insert_source_module(logical_path, path.clone(), source.clone());
         }
         Ok(())
     }
@@ -203,6 +279,51 @@ impl Workspace {
 fn is_notist_file(path: &Path) -> bool {
     path.extension()
         .is_some_and(|extension| extension.eq_ignore_ascii_case("not"))
+}
+
+fn normalize_overlays(root: &Path, overlays: SourceOverlays) -> io::Result<SourceOverlays> {
+    overlays
+        .into_iter()
+        .map(|(path, source)| normalize_source_path(root, &path).map(|path| (path, source)))
+        .collect()
+}
+
+fn normalize_source_path(root: &Path, path: &Path) -> io::Result<PathBuf> {
+    let path = if path.is_absolute() {
+        path.to_path_buf()
+    } else {
+        root.join(path)
+    };
+    if path.exists() {
+        return dunce::canonicalize(path);
+    }
+
+    let parent = path
+        .parent()
+        .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidInput, "source path has no parent"))?;
+    let file_name = path.file_name().ok_or_else(|| {
+        io::Error::new(io::ErrorKind::InvalidInput, "source path has no file name")
+    })?;
+    Ok(dunce::canonicalize(parent)?.join(file_name))
+}
+
+fn module_path_for_source(root: &Path, path: &Path) -> io::Result<ModulePath> {
+    let relative = path.strip_prefix(root).map_err(|_| {
+        io::Error::new(
+            io::ErrorKind::InvalidInput,
+            format!("source path `{}` is outside the workspace", path.display()),
+        )
+    })?;
+    let mut segments: Vec<String> = relative
+        .parent()
+        .into_iter()
+        .flat_map(Path::components)
+        .map(|component| component.as_os_str().to_string_lossy().into_owned())
+        .collect();
+    if !is_readme(path) {
+        segments.push(file_stem(path)?);
+    }
+    Ok(ModulePath::from_segments(segments))
 }
 
 fn is_readme(path: &Path) -> bool {
@@ -300,6 +421,50 @@ mod tests {
                 "vault::notes::nested",
                 "vault::notes::nested::page",
             ]
+        );
+    }
+
+    #[test]
+    fn overlays_replace_disk_sources_without_writing_files() {
+        let root = TempDir::new().unwrap();
+        let source_path = root.path().join("README.not");
+        fs::write(&source_path, "[[missing]]").unwrap();
+        let source_path = dunce::canonicalize(source_path).unwrap();
+        let mut overlays = SourceOverlays::new();
+        overlays.insert(source_path.clone(), Arc::from("[[child]]"));
+        fs::write(root.path().join("child.not"), "child").unwrap();
+
+        let workspace = Workspace::load_with_overlays(root.path(), overlays).unwrap();
+        let module = workspace.module_for_source(&source_path).unwrap();
+
+        assert_eq!(module.source.as_deref(), Some("[[child]]"));
+        assert!(workspace.diagnostics().is_empty());
+        assert_eq!(fs::read_to_string(source_path).unwrap(), "[[missing]]");
+    }
+
+    #[test]
+    fn overlays_add_unsaved_files_to_the_module_graph() {
+        let root = TempDir::new().unwrap();
+        fs::write(root.path().join("README.not"), "[[draft]]").unwrap();
+        let draft_path = root.path().join("draft.not");
+        let mut overlays = SourceOverlays::new();
+        overlays.insert(draft_path.clone(), Arc::from("unsaved"));
+
+        let workspace = Workspace::load_with_overlays(root.path(), overlays).unwrap();
+
+        assert!(workspace.diagnostics().is_empty());
+        assert!(
+            workspace
+                .module(&ModulePath::from_segments(["draft".into()]))
+                .is_some()
+        );
+        assert_eq!(
+            workspace
+                .module(&ModulePath::from_segments(["draft".into()]))
+                .unwrap()
+                .source
+                .as_deref(),
+            Some("unsaved")
         );
     }
 }

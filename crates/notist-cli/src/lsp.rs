@@ -1,0 +1,1135 @@
+use std::collections::{BTreeMap, BTreeSet};
+use std::error::Error;
+use std::path::{Path, PathBuf};
+use std::process::ExitCode;
+use std::sync::Arc;
+
+use lsp_server::{Connection, ErrorCode, Message, Notification, Request, Response};
+use lsp_types::notification::{
+    DidChangeTextDocument, DidCloseTextDocument, DidOpenTextDocument, DidSaveTextDocument,
+    Notification as _, PublishDiagnostics,
+};
+use lsp_types::request::{
+    Completion, GotoDefinition, HoverRequest, References, Request as _, Shutdown,
+};
+use lsp_types::{
+    CompletionItem, CompletionItemKind, CompletionOptions, CompletionParams, CompletionResponse,
+    CompletionTextEdit, Diagnostic, DiagnosticSeverity, DidChangeTextDocumentParams,
+    DidCloseTextDocumentParams, DidOpenTextDocumentParams, DidSaveTextDocumentParams,
+    GotoDefinitionParams, GotoDefinitionResponse, Hover, HoverContents, HoverParams,
+    HoverProviderCapability, InitializeParams, Location, MarkupContent, MarkupKind, NumberOrString,
+    OneOf, Position, PositionEncodingKind, PublishDiagnosticsParams, Range, ReferenceParams,
+    ServerCapabilities, TextDocumentSyncCapability, TextDocumentSyncKind, TextEdit, Url,
+};
+use notist_analysis::{DiagnosticKind, SourceOverlays, Workspace};
+use notist_eval::{DefaultValue, Evaluator, FunctionRegistry, FunctionSignature};
+use notist_model::{ModulePath, TextRange};
+use notist_syntax::{CallMode, Parse};
+
+pub fn run() -> Result<ExitCode, Box<dyn Error>> {
+    let (connection, io_threads) = Connection::stdio();
+    let capabilities = serde_json::to_value(server_capabilities())?;
+    let initialization = connection.initialize(capabilities)?;
+    let initialization: InitializeParams = serde_json::from_value(initialization)?;
+    let root = workspace_root(&initialization)?;
+    let mut state = ServerState::new(root)?;
+
+    main_loop(&connection, &mut state)?;
+    io_threads.join()?;
+    Ok(ExitCode::SUCCESS)
+}
+
+fn server_capabilities() -> ServerCapabilities {
+    ServerCapabilities {
+        position_encoding: Some(PositionEncodingKind::UTF16),
+        text_document_sync: Some(TextDocumentSyncCapability::Kind(TextDocumentSyncKind::FULL)),
+        completion_provider: Some(CompletionOptions {
+            resolve_provider: Some(false),
+            trigger_characters: Some(vec!["[".into(), ":".into(), "#".into()]),
+            ..CompletionOptions::default()
+        }),
+        hover_provider: Some(HoverProviderCapability::Simple(true)),
+        definition_provider: Some(OneOf::Left(true)),
+        references_provider: Some(OneOf::Left(true)),
+        ..ServerCapabilities::default()
+    }
+}
+
+fn workspace_root(params: &InitializeParams) -> Result<PathBuf, Box<dyn Error>> {
+    #[allow(deprecated)]
+    let uri = params
+        .workspace_folders
+        .as_ref()
+        .and_then(|folders| folders.first())
+        .map(|folder| &folder.uri)
+        .or(params.root_uri.as_ref());
+    let root = match uri {
+        Some(uri) => uri
+            .to_file_path()
+            .map_err(|_| format!("workspace URI `{uri}` is not a file URI"))?,
+        None => std::env::current_dir()?,
+    };
+    Ok(dunce::canonicalize(root)?)
+}
+
+fn main_loop(connection: &Connection, state: &mut ServerState) -> Result<(), Box<dyn Error>> {
+    for message in &connection.receiver {
+        match message {
+            Message::Request(request) => {
+                if connection.handle_shutdown(&request)? {
+                    return Ok(());
+                }
+                handle_request(connection, state, request)?;
+            }
+            Message::Notification(notification) => {
+                handle_notification(state, notification)?;
+                publish_diagnostics(connection, state)?;
+            }
+            Message::Response(_) => {}
+        }
+    }
+    Ok(())
+}
+
+fn handle_request(
+    connection: &Connection,
+    state: &ServerState,
+    request: Request,
+) -> Result<(), Box<dyn Error>> {
+    let id = request.id.clone();
+    let result = match request.method.as_str() {
+        GotoDefinition::METHOD => parse_params(request.params)
+            .and_then(|params: GotoDefinitionParams| definition(state, params))
+            .and_then(to_json),
+        References::METHOD => parse_params(request.params)
+            .and_then(|params: ReferenceParams| references(state, params))
+            .and_then(to_json),
+        Completion::METHOD => parse_params(request.params)
+            .and_then(|params: CompletionParams| completion(state, params))
+            .and_then(to_json),
+        HoverRequest::METHOD => parse_params(request.params)
+            .and_then(|params: HoverParams| hover(state, params))
+            .and_then(to_json),
+        Shutdown::METHOD => Ok(serde_json::Value::Null),
+        _ => {
+            connection.sender.send(Message::Response(Response::new_err(
+                id,
+                ErrorCode::MethodNotFound as i32,
+                format!("unsupported request `{}`", request.method),
+            )))?;
+            return Ok(());
+        }
+    };
+
+    let response = match result {
+        Ok(value) => Response::new_ok(id, value),
+        Err(message) => Response::new_err(id, ErrorCode::InvalidParams as i32, message),
+    };
+    connection.sender.send(Message::Response(response))?;
+    Ok(())
+}
+
+fn parse_params<T: serde::de::DeserializeOwned>(value: serde_json::Value) -> Result<T, String> {
+    serde_json::from_value(value).map_err(|error| error.to_string())
+}
+
+fn to_json<T: serde::Serialize>(value: T) -> Result<serde_json::Value, String> {
+    serde_json::to_value(value).map_err(|error| error.to_string())
+}
+
+fn handle_notification(
+    state: &mut ServerState,
+    notification: Notification,
+) -> Result<(), Box<dyn Error>> {
+    let changed = match notification.method.as_str() {
+        DidOpenTextDocument::METHOD => {
+            let params: DidOpenTextDocumentParams = serde_json::from_value(notification.params)?;
+            state.open(params)?;
+            true
+        }
+        DidChangeTextDocument::METHOD => {
+            let params: DidChangeTextDocumentParams = serde_json::from_value(notification.params)?;
+            state.change(params)?
+        }
+        DidSaveTextDocument::METHOD => {
+            let params: DidSaveTextDocumentParams = serde_json::from_value(notification.params)?;
+            state.save(params)?
+        }
+        DidCloseTextDocument::METHOD => {
+            let params: DidCloseTextDocumentParams = serde_json::from_value(notification.params)?;
+            state.close(params)?;
+            true
+        }
+        _ => false,
+    };
+
+    if changed && let Err(error) = state.rebuild() {
+        eprintln!("notist lsp: workspace rebuild failed: {error}");
+    }
+    Ok(())
+}
+
+#[derive(Clone, Debug)]
+struct OpenDocument {
+    version: i32,
+    source: Arc<str>,
+}
+
+struct ServerState {
+    root: PathBuf,
+    documents: BTreeMap<PathBuf, OpenDocument>,
+    workspace: Workspace,
+    published_paths: BTreeSet<PathBuf>,
+    functions: FunctionRegistry,
+}
+
+impl ServerState {
+    fn new(root: PathBuf) -> Result<Self, Box<dyn Error>> {
+        let workspace = Workspace::load(&root)?;
+        Ok(Self {
+            root,
+            documents: BTreeMap::new(),
+            workspace,
+            published_paths: BTreeSet::new(),
+            functions: FunctionRegistry::with_builtins(),
+        })
+    }
+
+    fn open(&mut self, params: DidOpenTextDocumentParams) -> Result<(), Box<dyn Error>> {
+        let path = normalize_uri_path(&self.root, &params.text_document.uri)?;
+        self.documents.insert(
+            path,
+            OpenDocument {
+                version: params.text_document.version,
+                source: Arc::from(params.text_document.text),
+            },
+        );
+        Ok(())
+    }
+
+    fn change(&mut self, params: DidChangeTextDocumentParams) -> Result<bool, Box<dyn Error>> {
+        let path = normalize_uri_path(&self.root, &params.text_document.uri)?;
+        let Some(change) = params.content_changes.last() else {
+            return Ok(false);
+        };
+        if change.range.is_some() {
+            return Err("client sent an incremental edit to a full-sync server".into());
+        }
+        self.documents.insert(
+            path,
+            OpenDocument {
+                version: params.text_document.version,
+                source: Arc::from(change.text.clone()),
+            },
+        );
+        Ok(true)
+    }
+
+    fn save(&mut self, params: DidSaveTextDocumentParams) -> Result<bool, Box<dyn Error>> {
+        let path = normalize_uri_path(&self.root, &params.text_document.uri)?;
+        let Some(source) = params.text else {
+            return Ok(false);
+        };
+        let version = self
+            .documents
+            .get(&path)
+            .map_or(0, |document| document.version);
+        self.documents.insert(
+            path,
+            OpenDocument {
+                version,
+                source: Arc::from(source),
+            },
+        );
+        Ok(true)
+    }
+
+    fn close(&mut self, params: DidCloseTextDocumentParams) -> Result<(), Box<dyn Error>> {
+        let path = normalize_uri_path(&self.root, &params.text_document.uri)?;
+        self.documents.remove(&path);
+        Ok(())
+    }
+
+    fn rebuild(&mut self) -> Result<(), Box<dyn Error>> {
+        let overlays: SourceOverlays = self
+            .documents
+            .iter()
+            .map(|(path, document)| (path.clone(), document.source.clone()))
+            .collect();
+        self.workspace = Workspace::load_with_overlays(&self.root, overlays)?;
+        Ok(())
+    }
+
+    fn document_version(&self, path: &Path) -> Option<i32> {
+        self.documents.get(path).map(|document| document.version)
+    }
+}
+
+fn normalize_uri_path(root: &Path, uri: &Url) -> Result<PathBuf, Box<dyn Error>> {
+    let path = uri
+        .to_file_path()
+        .map_err(|_| format!("document URI `{uri}` is not a file URI"))?;
+    if path.exists() {
+        return Ok(dunce::canonicalize(path)?);
+    }
+    let parent = path
+        .parent()
+        .ok_or_else(|| format!("document path `{}` has no parent", path.display()))?;
+    let file_name = path
+        .file_name()
+        .ok_or_else(|| format!("document path `{}` has no file name", path.display()))?;
+    let parent = if parent.exists() {
+        dunce::canonicalize(parent)?
+    } else {
+        root.to_path_buf()
+    };
+    Ok(parent.join(file_name))
+}
+
+fn publish_diagnostics(
+    connection: &Connection,
+    state: &mut ServerState,
+) -> Result<(), Box<dyn Error>> {
+    let current_paths: BTreeSet<_> = state
+        .workspace
+        .modules()
+        .filter_map(|module| module.source_path.clone())
+        .collect();
+    let paths: BTreeSet<_> = current_paths
+        .union(&state.published_paths)
+        .cloned()
+        .collect();
+    let evaluator = Evaluator::default();
+
+    for path in paths {
+        let diagnostics = diagnostics_for_path(state, &evaluator, &path);
+        let uri = Url::from_file_path(&path)
+            .map_err(|_| format!("cannot convert `{}` to a file URI", path.display()))?;
+        let params = PublishDiagnosticsParams::new(uri, diagnostics, state.document_version(&path));
+        connection
+            .sender
+            .send(Message::Notification(Notification::new(
+                PublishDiagnostics::METHOD.to_owned(),
+                params,
+            )))?;
+    }
+    state.published_paths = current_paths;
+    Ok(())
+}
+
+fn diagnostics_for_path(
+    state: &ServerState,
+    evaluator: &Evaluator,
+    path: &Path,
+) -> Vec<Diagnostic> {
+    let Some(module) = state.workspace.module_for_source(path) else {
+        return Vec::new();
+    };
+    let Some(source) = module.source.as_deref() else {
+        return Vec::new();
+    };
+    let line_index = LineIndex::new(source);
+    let mut diagnostics = Vec::new();
+    let mut seen = BTreeSet::new();
+
+    for diagnostic in state
+        .workspace
+        .diagnostics()
+        .iter()
+        .filter(|diagnostic| diagnostic.source_path.as_deref() == Some(path))
+    {
+        let range = diagnostic.range.unwrap_or(TextRange::new(0, 0));
+        seen.insert((range.start, range.end, diagnostic.message.clone()));
+        diagnostics.push(lsp_diagnostic(
+            &line_index,
+            range,
+            diagnostic_code(&diagnostic.kind),
+            diagnostic.message.clone(),
+        ));
+    }
+
+    if let Some(parse) = &module.parse {
+        for diagnostic in evaluator.evaluate_parsed(source, parse).diagnostics {
+            if seen.insert((
+                diagnostic.range.start,
+                diagnostic.range.end,
+                diagnostic.message.clone(),
+            )) {
+                diagnostics.push(lsp_diagnostic(
+                    &line_index,
+                    diagnostic.range,
+                    "evaluation",
+                    diagnostic.message,
+                ));
+            }
+        }
+    }
+    diagnostics
+}
+
+fn diagnostic_code(kind: &DiagnosticKind) -> &'static str {
+    match kind {
+        DiagnosticKind::DuplicateModule => "duplicate-module",
+        DiagnosticKind::InvalidSyntax => "invalid-syntax",
+        DiagnosticKind::UnresolvedModule => "unresolved-module",
+        DiagnosticKind::UnsupportedLabelReference => "unsupported-label-reference",
+    }
+}
+
+fn lsp_diagnostic(
+    line_index: &LineIndex<'_>,
+    range: TextRange,
+    code: &str,
+    message: String,
+) -> Diagnostic {
+    Diagnostic {
+        range: line_index.range(range),
+        severity: Some(DiagnosticSeverity::ERROR),
+        code: Some(NumberOrString::String(code.into())),
+        source: Some("notist".into()),
+        message,
+        ..Diagnostic::default()
+    }
+}
+
+fn definition(
+    state: &ServerState,
+    params: GotoDefinitionParams,
+) -> Result<Option<GotoDefinitionResponse>, String> {
+    let position = params.text_document_position_params;
+    let Some((_path, module, offset)) = source_position(state, &position) else {
+        return Ok(None);
+    };
+    let Some(link) = module
+        .parse
+        .as_ref()
+        .and_then(|parse| link_at(parse, offset))
+    else {
+        return Ok(None);
+    };
+    let Some(target) = link.target.module.resolve_from(&module.logical_path) else {
+        return Ok(None);
+    };
+    let Some(target_module) = state.workspace.module(&target) else {
+        return Ok(None);
+    };
+    let Some(target_path) = &target_module.source_path else {
+        return Ok(None);
+    };
+    let uri = Url::from_file_path(target_path)
+        .map_err(|_| format!("cannot convert `{}` to a file URI", target_path.display()))?;
+    Ok(Some(GotoDefinitionResponse::Scalar(Location::new(
+        uri,
+        Range::new(Position::new(0, 0), Position::new(0, 0)),
+    ))))
+}
+
+fn references(
+    state: &ServerState,
+    params: ReferenceParams,
+) -> Result<Option<Vec<Location>>, String> {
+    let position = params.text_document_position;
+    let Some((_path, module, offset)) = source_position(state, &position) else {
+        return Ok(None);
+    };
+    let Some(link) = module
+        .parse
+        .as_ref()
+        .and_then(|parse| link_at(parse, offset))
+    else {
+        return Ok(None);
+    };
+    let Some(target) = link.target.module.resolve_from(&module.logical_path) else {
+        return Ok(None);
+    };
+    let mut locations = Vec::new();
+    if params.context.include_declaration
+        && let Some(target_module) = state.workspace.module(&target)
+        && let Some(path) = &target_module.source_path
+    {
+        let uri = Url::from_file_path(path)
+            .map_err(|_| format!("cannot convert `{}` to a file URI", path.display()))?;
+        locations.push(Location::new(
+            uri,
+            Range::new(Position::new(0, 0), Position::new(0, 0)),
+        ));
+    }
+    for reference in state
+        .workspace
+        .references()
+        .iter()
+        .filter(|reference| reference.target_module == target)
+    {
+        let Some(source_module) = state.workspace.module(&reference.source_module) else {
+            continue;
+        };
+        let Some(source) = source_module.source.as_deref() else {
+            continue;
+        };
+        let uri = Url::from_file_path(&reference.source_path).map_err(|_| {
+            format!(
+                "cannot convert `{}` to a file URI",
+                reference.source_path.display()
+            )
+        })?;
+        locations.push(Location::new(
+            uri,
+            LineIndex::new(source).range(reference.range),
+        ));
+    }
+    Ok(Some(locations))
+}
+
+fn completion(
+    state: &ServerState,
+    params: CompletionParams,
+) -> Result<Option<CompletionResponse>, String> {
+    let position = params.text_document_position;
+    let Some((_path, module, offset)) = source_position(state, &position) else {
+        return Ok(None);
+    };
+    let Some(source) = module.source.as_deref() else {
+        return Ok(None);
+    };
+    let parse = module.parse.as_ref().cloned().unwrap_or_default();
+    let line_index = LineIndex::new(source);
+
+    if is_in_raw_body(&parse, offset) {
+        return Ok(None);
+    }
+    if let Some((call, context)) = argument_completion_context(source, &parse, offset)
+        && let Some(function) = state.functions.get(&call.name.value)
+    {
+        let used: BTreeSet<_> = call
+            .arguments
+            .iter()
+            .filter_map(|argument| argument.name.as_ref().map(|name| name.value.as_str()))
+            .collect();
+        let mut items = Vec::new();
+        for parameter in function.signature().parameters {
+            if used.contains(parameter.name)
+                || !starts_with_case_insensitive(parameter.name, &context.prefix)
+            {
+                continue;
+            }
+            items.push(CompletionItem {
+                label: parameter.name.into(),
+                kind: Some(CompletionItemKind::FIELD),
+                detail: Some(parameter.ty.to_string()),
+                text_edit: Some(CompletionTextEdit::Edit(TextEdit {
+                    range: line_index.range(context.replace),
+                    new_text: format!("{}=", parameter.name),
+                })),
+                ..CompletionItem::default()
+            });
+        }
+        return Ok(Some(CompletionResponse::Array(items)));
+    }
+    if let Some(context) = wiki_completion_context(source, &parse, offset) {
+        let mut items = Vec::new();
+        for target in state.workspace.modules().map(|module| &module.logical_path) {
+            if target == &module.logical_path {
+                continue;
+            }
+            let reference =
+                completion_module_reference(&module.logical_path, target, &context.prefix);
+            if !starts_with_case_insensitive(&reference, &context.prefix) {
+                continue;
+            }
+            items.push(CompletionItem {
+                label: reference.clone(),
+                kind: Some(CompletionItemKind::MODULE),
+                detail: Some(target.to_string()),
+                text_edit: Some(CompletionTextEdit::Edit(TextEdit {
+                    range: line_index.range(context.replace),
+                    new_text: reference,
+                })),
+                ..CompletionItem::default()
+            });
+        }
+        items.sort_by(|left, right| left.label.cmp(&right.label));
+        return Ok(Some(CompletionResponse::Array(items)));
+    }
+
+    if let Some(context) = function_completion_context(source, &parse, offset) {
+        let mut functions: Vec<_> = state.functions.functions().collect();
+        functions.sort_by_key(|function| function.name().to_owned());
+        let items = functions
+            .into_iter()
+            .filter(|function| starts_with_case_insensitive(function.name(), &context.prefix))
+            .map(|function| CompletionItem {
+                label: function.name().to_owned(),
+                kind: Some(CompletionItemKind::FUNCTION),
+                detail: Some(format_signature(function.name(), &function.signature())),
+                text_edit: Some(CompletionTextEdit::Edit(TextEdit {
+                    range: line_index.range(context.replace),
+                    new_text: function.name().to_owned(),
+                })),
+                ..CompletionItem::default()
+            })
+            .collect();
+        return Ok(Some(CompletionResponse::Array(items)));
+    }
+    Ok(None)
+}
+
+fn hover(state: &ServerState, params: HoverParams) -> Result<Option<Hover>, String> {
+    let position = params.text_document_position_params;
+    let Some((_path, module, offset)) = source_position(state, &position) else {
+        return Ok(None);
+    };
+    let Some(source) = module.source.as_deref() else {
+        return Ok(None);
+    };
+    let Some(parse) = &module.parse else {
+        return Ok(None);
+    };
+    let line_index = LineIndex::new(source);
+
+    if let Some(link) = link_at(parse, offset) {
+        let Some(target) = link.target.module.resolve_from(&module.logical_path) else {
+            return Ok(None);
+        };
+        let (kind, path) = match state.workspace.module(&target) {
+            Some(target) => (
+                if target.source_path.is_some() {
+                    "source module"
+                } else {
+                    "virtual module"
+                },
+                target
+                    .source_path
+                    .as_ref()
+                    .map(|path| format!("\n\n`{}`", path.display()))
+                    .unwrap_or_default(),
+            ),
+            None => ("unresolved module", String::new()),
+        };
+        return Ok(Some(Hover {
+            contents: HoverContents::Markup(MarkupContent {
+                kind: MarkupKind::Markdown,
+                value: format!("**Module** `{target}`\n\n{kind}{path}"),
+            }),
+            range: Some(line_index.range(link.range)),
+        }));
+    }
+
+    if let Some(call) = parse
+        .calls
+        .iter()
+        .find(|call| contains(call.name.range, offset))
+        && let Some(function) = state.functions.get(&call.name.value)
+    {
+        let signature = format_signature(function.name(), &function.signature());
+        return Ok(Some(Hover {
+            contents: HoverContents::Markup(MarkupContent {
+                kind: MarkupKind::Markdown,
+                value: format!("```notist\n{signature}\n```"),
+            }),
+            range: Some(line_index.range(call.name.range)),
+        }));
+    }
+    Ok(None)
+}
+
+fn source_position<'a>(
+    state: &'a ServerState,
+    params: &lsp_types::TextDocumentPositionParams,
+) -> Option<(PathBuf, &'a notist_analysis::Module, usize)> {
+    let path = normalize_uri_path(&state.root, &params.text_document.uri).ok()?;
+    let module = state.workspace.module_for_source(&path)?;
+    let source = module.source.as_deref()?;
+    let offset = LineIndex::new(source).offset(params.position)?;
+    Some((path, module, offset))
+}
+
+fn link_at(parse: &Parse, offset: usize) -> Option<&notist_syntax::WikiLink> {
+    parse.links.iter().find(|link| contains(link.range, offset))
+}
+
+fn contains(range: TextRange, offset: usize) -> bool {
+    range.start <= offset && offset < range.end
+}
+
+fn is_in_raw_body(parse: &Parse, offset: usize) -> bool {
+    parse
+        .calls
+        .iter()
+        .any(|call| call.mode == CallMode::Raw && contains(call.body_range, offset))
+}
+
+struct CompletionContext {
+    prefix: String,
+    replace: TextRange,
+}
+
+fn wiki_completion_context(
+    source: &str,
+    parse: &Parse,
+    offset: usize,
+) -> Option<CompletionContext> {
+    if let Some(link) = parse.links.iter().find(|link| contains(link.range, offset)) {
+        let start = link.range.start + 2;
+        let content_end = link.range.end.saturating_sub(2);
+        let module_end = source[start..content_end]
+            .find('#')
+            .map_or(content_end, |relative| start + relative);
+        if start <= offset && offset <= module_end {
+            return Some(CompletionContext {
+                prefix: source[start..offset].to_owned(),
+                replace: TextRange::new(start, module_end),
+            });
+        }
+    }
+
+    let before = source.get(..offset)?;
+    let start = before.rfind("[[")? + 2;
+    if before[start..].contains("]]")
+        || before[start..].contains('#')
+        || before[start..].contains('\n')
+    {
+        return None;
+    }
+    Some(CompletionContext {
+        prefix: source[start..offset].to_owned(),
+        replace: TextRange::new(start, offset),
+    })
+}
+
+fn function_completion_context(
+    source: &str,
+    parse: &Parse,
+    offset: usize,
+) -> Option<CompletionContext> {
+    if let Some(call) = parse
+        .calls
+        .iter()
+        .find(|call| contains(call.name.range, offset))
+    {
+        return Some(CompletionContext {
+            prefix: source[call.name.range.start..offset].to_owned(),
+            replace: call.name.range,
+        });
+    }
+    let before = source.get(..offset)?;
+    let hash = before.rfind('#')?;
+    let prefix = &source[hash + 1..offset];
+    if prefix.is_empty() || prefix == "[" {
+        return (prefix != "[").then(|| CompletionContext {
+            prefix: String::new(),
+            replace: TextRange::new(hash + 1, offset),
+        });
+    }
+    if !prefix
+        .chars()
+        .all(|character| character.is_alphanumeric() || matches!(character, '_' | '-' | ':'))
+    {
+        return None;
+    }
+    Some(CompletionContext {
+        prefix: prefix.to_owned(),
+        replace: TextRange::new(hash + 1, offset),
+    })
+}
+
+fn argument_completion_context<'a>(
+    source: &str,
+    parse: &'a Parse,
+    offset: usize,
+) -> Option<(&'a notist_syntax::Call, CompletionContext)> {
+    let call = parse.calls.iter().find(|call| {
+        call.arguments_range
+            .is_some_and(|range| range.start <= offset && offset <= range.end)
+    })?;
+    let range = call.arguments_range?;
+    let mut start = offset;
+    while start > range.start {
+        let character = source[..start].chars().next_back()?;
+        if character.is_alphanumeric() || matches!(character, '_' | '-') {
+            start -= character.len_utf8();
+        } else {
+            break;
+        }
+    }
+    Some((
+        call,
+        CompletionContext {
+            prefix: source[start..offset].to_owned(),
+            replace: TextRange::new(start, offset),
+        },
+    ))
+}
+
+fn starts_with_case_insensitive(value: &str, prefix: &str) -> bool {
+    value
+        .to_lowercase()
+        .starts_with(&prefix.trim().to_lowercase())
+}
+
+fn relative_module_reference(current: &ModulePath, target: &ModulePath) -> String {
+    let current_segments = current.segments();
+    let target_segments = target.segments();
+    let common = current_segments
+        .iter()
+        .zip(target_segments)
+        .take_while(|(left, right)| left == right)
+        .count();
+    let up = current_segments.len() - common;
+    let mut relative = Vec::new();
+    relative.extend(std::iter::repeat_n("super".to_owned(), up));
+    relative.extend(target_segments[common..].iter().cloned());
+    let relative = if relative.is_empty() {
+        "self".into()
+    } else {
+        relative.join("::")
+    };
+    let absolute = target.to_string();
+    if relative.len() <= absolute.len() {
+        relative
+    } else {
+        absolute
+    }
+}
+
+fn completion_module_reference(current: &ModulePath, target: &ModulePath, prefix: &str) -> String {
+    let prefix = prefix.trim_start();
+    if prefix.starts_with("vault") {
+        return target.to_string();
+    }
+    if prefix.starts_with("self") && target.segments().starts_with(current.segments()) {
+        let remainder = &target.segments()[current.segments().len()..];
+        return if remainder.is_empty() {
+            "self".into()
+        } else {
+            format!("self::{}", remainder.join("::"))
+        };
+    }
+    relative_module_reference(current, target)
+}
+
+fn format_signature(name: &str, signature: &FunctionSignature) -> String {
+    let parameters = signature
+        .parameters
+        .iter()
+        .map(|parameter| {
+            let default = parameter
+                .default
+                .as_ref()
+                .map(|default| format!(" = {}", format_default(default)))
+                .unwrap_or_default();
+            format!("{}: {}{default}", parameter.name, parameter.ty)
+        })
+        .collect::<Vec<_>>()
+        .join(", ");
+    let body_marker = if signature.body == notist_eval::Type::RawSource {
+        "![RawSource]!"
+    } else {
+        "[Content]"
+    };
+    format!("#{name}({parameters}){body_marker} -> {}", signature.result)
+}
+
+fn format_default(default: &DefaultValue) -> String {
+    match default {
+        DefaultValue::None => "none".into(),
+        DefaultValue::Bool(value) => value.to_string(),
+        DefaultValue::Int(value) => value.to_string(),
+        DefaultValue::Float(value) => value.to_string(),
+        DefaultValue::String(value) => format!("\"{value}\""),
+    }
+}
+
+struct LineIndex<'a> {
+    source: &'a str,
+    line_starts: Vec<usize>,
+}
+
+impl<'a> LineIndex<'a> {
+    fn new(source: &'a str) -> Self {
+        let mut line_starts = vec![0];
+        line_starts.extend(
+            source
+                .bytes()
+                .enumerate()
+                .filter_map(|(offset, byte)| (byte == b'\n').then_some(offset + 1)),
+        );
+        Self {
+            source,
+            line_starts,
+        }
+    }
+
+    fn position(&self, offset: usize) -> Position {
+        let mut offset = offset.min(self.source.len());
+        while !self.source.is_char_boundary(offset) {
+            offset -= 1;
+        }
+        let line = self
+            .line_starts
+            .partition_point(|start| *start <= offset)
+            .saturating_sub(1);
+        let character = self.source[self.line_starts[line]..offset]
+            .encode_utf16()
+            .count();
+        Position::new(line as u32, character as u32)
+    }
+
+    fn offset(&self, position: Position) -> Option<usize> {
+        let start = *self.line_starts.get(position.line as usize)?;
+        let end = self
+            .line_starts
+            .get(position.line as usize + 1)
+            .copied()
+            .unwrap_or(self.source.len());
+        let line = &self.source[start..end];
+        let mut utf16 = 0u32;
+        for (byte, character) in line.char_indices() {
+            if utf16 >= position.character {
+                return Some(start + byte);
+            }
+            let next = utf16 + character.len_utf16() as u32;
+            if position.character < next {
+                return Some(start + byte);
+            }
+            utf16 = next;
+        }
+        (utf16 == position.character).then_some(end)
+    }
+
+    fn range(&self, range: TextRange) -> Range {
+        Range::new(self.position(range.start), self.position(range.end))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use lsp_server::RequestId;
+    use lsp_types::{
+        CompletionContext, CompletionTriggerKind, GotoDefinitionParams, TextDocumentIdentifier,
+        TextDocumentItem, TextDocumentPositionParams,
+    };
+    use std::fs;
+    use std::time::Duration;
+
+    #[test]
+    fn converts_utf8_offsets_and_utf16_positions() {
+        let source = "a😀中\r\nnext";
+        let index = LineIndex::new(source);
+
+        assert_eq!(index.position("a😀".len()), Position::new(0, 3));
+        assert_eq!(index.position("a😀中\r\n".len()), Position::new(1, 0));
+        assert_eq!(index.offset(Position::new(0, 3)), Some("a😀".len()));
+        assert_eq!(index.offset(Position::new(1, 2)), Some("a😀中\r\nne".len()));
+    }
+
+    #[test]
+    fn chooses_short_module_references() {
+        let current = ModulePath::from_segments(["notes".into(), "today".into()]);
+        let child = ModulePath::from_segments(["notes".into(), "today".into(), "details".into()]);
+        let sibling = ModulePath::from_segments(["notes".into(), "index".into()]);
+
+        assert_eq!(relative_module_reference(&current, &child), "details");
+        assert_eq!(
+            relative_module_reference(&current, &sibling),
+            "super::index"
+        );
+        assert_eq!(
+            completion_module_reference(&current, &child, "self::d"),
+            "self::details"
+        );
+        assert_eq!(
+            completion_module_reference(&current, &sibling, "vault::n"),
+            "vault::notes::index"
+        );
+    }
+
+    #[test]
+    fn completes_empty_builtin_argument_lists() {
+        let source = "#heading()[Title]";
+        let parse = notist_syntax::parse(source);
+        let (call, context) = argument_completion_context(source, &parse, 9).unwrap();
+
+        assert_eq!(call.name.value, "heading");
+        assert_eq!(context.prefix, "");
+        assert_eq!(context.replace, TextRange::new(9, 9));
+    }
+
+    #[test]
+    fn completion_uses_unsaved_workspace_sources() {
+        let root = tempfile::TempDir::new().unwrap();
+        fs::write(root.path().join("README.not"), "[[ch]]").unwrap();
+        fs::write(root.path().join("child.not"), "child").unwrap();
+        let root_path = dunce::canonicalize(root.path()).unwrap();
+        let mut state = ServerState::new(root_path.clone()).unwrap();
+        let path = dunce::canonicalize(root.path().join("README.not")).unwrap();
+        state.documents.insert(
+            path.clone(),
+            OpenDocument {
+                version: 1,
+                source: Arc::from("[[ch]]"),
+            },
+        );
+        state.rebuild().unwrap();
+        let uri = Url::from_file_path(path).unwrap();
+        let params = CompletionParams {
+            text_document_position: lsp_types::TextDocumentPositionParams::new(
+                lsp_types::TextDocumentIdentifier::new(uri),
+                Position::new(0, 4),
+            ),
+            work_done_progress_params: Default::default(),
+            partial_result_params: Default::default(),
+            context: None,
+        };
+
+        let Some(CompletionResponse::Array(items)) = completion(&state, params).unwrap() else {
+            panic!("expected completion items");
+        };
+        assert!(items.iter().any(|item| item.label == "child"));
+    }
+
+    #[test]
+    fn protocol_loop_serves_overlay_diagnostics_completion_hover_and_definition() {
+        let root = tempfile::TempDir::new().unwrap();
+        fs::write(root.path().join("README.not"), "disk").unwrap();
+        fs::write(root.path().join("child.not"), "child").unwrap();
+        let root_path = dunce::canonicalize(root.path()).unwrap();
+        let readme_path = dunce::canonicalize(root.path().join("README.not")).unwrap();
+        let child_path = dunce::canonicalize(root.path().join("child.not")).unwrap();
+        let readme_uri = Url::from_file_path(&readme_path).unwrap();
+        let source = "[[child]] #heading[] #missing[]";
+        let state = ServerState::new(root_path).unwrap();
+        let (server, client) = Connection::memory();
+        let server_thread = std::thread::spawn(move || {
+            let mut state = state;
+            main_loop(&server, &mut state).unwrap();
+        });
+
+        client
+            .sender
+            .send(Message::Notification(Notification::new(
+                DidOpenTextDocument::METHOD.into(),
+                DidOpenTextDocumentParams {
+                    text_document: TextDocumentItem::new(
+                        readme_uri.clone(),
+                        "notist".into(),
+                        1,
+                        source.into(),
+                    ),
+                },
+            )))
+            .unwrap();
+
+        let mut saw_overlay_diagnostic = false;
+        for _ in 0..2 {
+            let Message::Notification(notification) = client
+                .receiver
+                .recv_timeout(Duration::from_secs(2))
+                .unwrap()
+            else {
+                panic!("expected diagnostics notification");
+            };
+            let params: PublishDiagnosticsParams =
+                serde_json::from_value(notification.params).unwrap();
+            if params.uri == readme_uri {
+                saw_overlay_diagnostic = params
+                    .diagnostics
+                    .iter()
+                    .any(|diagnostic| diagnostic.message == "unknown function `missing`");
+            }
+        }
+        assert!(saw_overlay_diagnostic);
+
+        let completion_id = RequestId::from(1);
+        client
+            .sender
+            .send(Message::Request(Request::new(
+                completion_id.clone(),
+                Completion::METHOD.into(),
+                CompletionParams {
+                    text_document_position: TextDocumentPositionParams::new(
+                        TextDocumentIdentifier::new(readme_uri.clone()),
+                        Position::new(0, 15),
+                    ),
+                    work_done_progress_params: Default::default(),
+                    partial_result_params: Default::default(),
+                    context: Some(CompletionContext {
+                        trigger_kind: CompletionTriggerKind::INVOKED,
+                        trigger_character: None,
+                    }),
+                },
+            )))
+            .unwrap();
+        let response = recv_response(&client, &completion_id);
+        let completion: Option<CompletionResponse> =
+            serde_json::from_value(response.result.unwrap()).unwrap();
+        let Some(CompletionResponse::Array(items)) = completion else {
+            panic!("expected completion array");
+        };
+        assert!(items.iter().any(|item| item.label == "heading"));
+
+        let hover_id = RequestId::from(2);
+        client
+            .sender
+            .send(Message::Request(Request::new(
+                hover_id.clone(),
+                HoverRequest::METHOD.into(),
+                HoverParams {
+                    text_document_position_params: TextDocumentPositionParams::new(
+                        TextDocumentIdentifier::new(readme_uri.clone()),
+                        Position::new(0, 12),
+                    ),
+                    work_done_progress_params: Default::default(),
+                },
+            )))
+            .unwrap();
+        let response = recv_response(&client, &hover_id);
+        let hover: Option<Hover> = serde_json::from_value(response.result.unwrap()).unwrap();
+        assert!(matches!(
+            hover.unwrap().contents,
+            HoverContents::Markup(MarkupContent { value, .. }) if value.contains("#heading")
+        ));
+
+        let definition_id = RequestId::from(3);
+        client
+            .sender
+            .send(Message::Request(Request::new(
+                definition_id.clone(),
+                GotoDefinition::METHOD.into(),
+                GotoDefinitionParams {
+                    text_document_position_params: TextDocumentPositionParams::new(
+                        TextDocumentIdentifier::new(readme_uri),
+                        Position::new(0, 3),
+                    ),
+                    work_done_progress_params: Default::default(),
+                    partial_result_params: Default::default(),
+                },
+            )))
+            .unwrap();
+        let response = recv_response(&client, &definition_id);
+        let definition: Option<GotoDefinitionResponse> =
+            serde_json::from_value(response.result.unwrap()).unwrap();
+        assert!(matches!(
+            definition,
+            Some(GotoDefinitionResponse::Scalar(Location { uri, .. }))
+                if uri == Url::from_file_path(child_path).unwrap()
+        ));
+
+        drop(client);
+        server_thread.join().unwrap();
+    }
+
+    fn recv_response(connection: &Connection, id: &RequestId) -> Response {
+        loop {
+            let message = connection
+                .receiver
+                .recv_timeout(Duration::from_secs(2))
+                .unwrap();
+            if let Message::Response(response) = message
+                && &response.id == id
+            {
+                return response;
+            }
+        }
+    }
+}
