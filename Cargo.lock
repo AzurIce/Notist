@@ -193,8 +193,14 @@ version = "0.1.0"
 dependencies = [
  "clap",
  "codespan-reporting",
+ "dunce",
  "notist-analysis",
+ "notist-eval",
+ "notist-html",
+ "notist-model",
  "notist-syntax",
+ "percent-encoding",
+ "tempfile",
 ]
 
 [[package]]

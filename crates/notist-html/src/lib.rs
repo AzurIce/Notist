@@ -8,6 +8,9 @@ use notist_model::{
 };
 use percent_encoding::{NON_ALPHANUMERIC, utf8_percent_encode};
 
+/// Resolves an absolute module target and optional label to an HTML URL.
+pub type ReferenceResolver<'a> = dyn Fn(&ModulePath, Option<&str>) -> Option<String> + 'a;
+
 /// Options that control links produced by the HTML renderer.
 #[derive(Clone, Copy, Debug)]
 pub struct RenderOptions<'a> {
@@ -35,9 +38,29 @@ pub fn render(document: &StructuredDocument) -> String {
 
 /// Renders a structured document as an HTML fragment.
 pub fn render_with_options(document: &StructuredDocument, options: &RenderOptions<'_>) -> String {
+    render_internal(document, options, None)
+}
+
+/// Renders a document using a caller-provided module reference URL resolver.
+///
+/// Returning `None` leaves the reference visible but unclickable.
+pub fn render_with_reference_resolver(
+    document: &StructuredDocument,
+    options: &RenderOptions<'_>,
+    resolver: &ReferenceResolver<'_>,
+) -> String {
+    render_internal(document, options, Some(resolver))
+}
+
+fn render_internal<'a>(
+    document: &StructuredDocument,
+    options: &'a RenderOptions<'a>,
+    resolver: Option<&'a ReferenceResolver<'a>>,
+) -> String {
     let mut renderer = Renderer {
         output: String::new(),
         options,
+        reference_resolver: resolver,
     };
     renderer.document(document);
     renderer.output
@@ -46,6 +69,7 @@ pub fn render_with_options(document: &StructuredDocument, options: &RenderOption
 struct Renderer<'a, 'options> {
     output: String,
     options: &'options RenderOptions<'a>,
+    reference_resolver: Option<&'options ReferenceResolver<'options>>,
 }
 
 impl Renderer<'_, '_> {
@@ -216,26 +240,17 @@ impl Renderer<'_, '_> {
                 .and_then(|current| reference.module.resolve_from(current)),
         };
 
-        if let Some(target) = target.as_ref() {
+        let href = target.as_ref().and_then(|target| {
+            self.reference_resolver.map_or_else(
+                || Some(self.default_reference_href(target, reference.label.as_deref())),
+                |resolver| resolver(target, reference.label.as_deref()),
+            )
+        });
+
+        if let Some(href) = href.as_deref() {
             self.output
                 .push_str("<a class=\"notist-reference\" href=\"");
-            escape_attribute(&mut self.output, self.options.module_url_prefix);
-            let target = target.to_string();
-            write!(
-                self.output,
-                "{}",
-                utf8_percent_encode(&target, NON_ALPHANUMERIC)
-            )
-            .unwrap();
-            if let Some(label) = &reference.label {
-                self.output.push('#');
-                write!(
-                    self.output,
-                    "{}",
-                    utf8_percent_encode(label, NON_ALPHANUMERIC)
-                )
-                .unwrap();
-            }
+            escape_attribute(&mut self.output, href);
             self.output.push('"');
         } else {
             self.output
@@ -246,11 +261,21 @@ impl Renderer<'_, '_> {
         self.output.push('>');
         self.reference_text(reference);
 
-        if target.is_some() {
+        if href.is_some() {
             self.output.push_str("</a>");
         } else {
             self.output.push_str("</span>");
         }
+    }
+
+    fn default_reference_href(&self, target: &ModulePath, label: Option<&str>) -> String {
+        let mut href = self.options.module_url_prefix.to_owned();
+        href.extend(utf8_percent_encode(&target.to_string(), NON_ALPHANUMERIC));
+        if let Some(label) = label {
+            href.push('#');
+            href.extend(utf8_percent_encode(label, NON_ALPHANUMERIC));
+        }
+        href
     }
 
     fn reference_text(&mut self, reference: &WikiReference) {
@@ -484,6 +509,25 @@ mod tests {
 
         assert!(html.contains("notist-reference-unresolved"));
         assert!(html.contains("href=\"?module=vault%3A%3Ashared\""));
+    }
+
+    #[test]
+    fn uses_a_caller_provided_reference_resolver() {
+        let evaluation = Evaluator::default().evaluate("[[child]] [[missing]]");
+        let structured = structure(evaluation);
+        let current = ModulePath::root();
+        let options = RenderOptions {
+            current_module: Some(&current),
+            module_url_prefix: "",
+        };
+        let resolver = |target: &ModulePath, _label: Option<&str>| {
+            (target.segments() == ["child"]).then(|| "child/".into())
+        };
+
+        let html = render_with_reference_resolver(&structured.document, &options, &resolver);
+
+        assert!(html.contains("href=\"child/\""));
+        assert!(html.contains("notist-reference-unresolved"));
     }
 
     #[test]

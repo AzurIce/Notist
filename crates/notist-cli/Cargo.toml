@@ -11,5 +11,13 @@ path = "src/main.rs"
 [dependencies]
 clap.workspace = true
 codespan-reporting.workspace = true
+dunce.workspace = true
 notist-analysis.workspace = true
+notist-eval.workspace = true
+notist-html.workspace = true
+notist-model.workspace = true
 notist-syntax.workspace = true
+percent-encoding.workspace = true
+
+[dev-dependencies]
+tempfile = "3"

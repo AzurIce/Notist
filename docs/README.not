@@ -2,7 +2,7 @@ Note + ist -> notist(also not an ist)
 
 .not
 
-- AI 的一些调查整理 [[ai::designs]]
+- AI 的一些调查整理 [[ai]]
 - 设计记录 [[vault::designs]]
 - 当前语法规范 [[vault::grammar]]
 - 插件系统与可拓展语法 [[vault::designs::rua-markdown-module-scope]]

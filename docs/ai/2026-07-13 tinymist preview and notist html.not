@@ -96,6 +96,26 @@ notist preview . --port 3000 --no-open
 - 页面同时显示 analysis 和 evaluation diagnostics。
 - 只监听 `127.0.0.1`，端口默认使用系统分配的空闲端口。
 
+#heading(level=2)[Notist Build 的静态站点形态]
+
+单文档 `compile` 不符合 Notist 的 vault/module 模型。静态导出应使用 workspace 级 `build` 命令：
+
+#raw(lang="shell")![
+notist build docs -o dist
+]!
+
+构建器遍历整个 Workspace，并把每个模块映射为 clean URL 目录：
+
+- `vault` -> `index.html`
+- `vault::grammar` -> `grammar/index.html`
+- `vault::designs::type system` -> 磁盘上的 `designs/type system/index.html`，对应 URL `/designs/type%20system/`
+
+没有 `README.not` 的虚拟目录模块也生成索引页，因此模块树中的每个节点都有稳定页面。所有页面共享 `_notist/style.css`，并包含整个 vault 的模块导航。
+
+Wiki Reference 必须在构建时解析为从当前页面到目标模块页面的相对 URL。目标不存在时保留可见文本和 unresolved 样式，但不生成可点击链接。构建仍输出可用页面，同时通过 diagnostics 和非零退出码报告语法、求值或引用错误。
+
+第一版 build 不主动清空输出目录，避免误删用户文件。它只创建或覆盖当前 Workspace 对应的页面和自有 `_notist` 资源；未来可增加显式 `--clean`。
+
 #heading(level=2)[建议架构]
 
 #raw(lang="text")![
@@ -216,11 +236,12 @@ filesystem event
 #heading(level=2)[实施顺序]
 
 1. 新增 `notist-html`，覆盖现有 StructuredDocument 和 Element。
-2. 扩展 Workspace snapshot，使 source、Parse 和引用结果保持一致。
-3. 增加 `notist preview` 的单次 HTTP 渲染。
-4. 加入 watcher、debounce、SSE 和浏览器自动打开。
-5. 加入 vault 导航、目录和 diagnostics panel。
-6. 最后实现编辑器光标同步和点击预览跳转源码。
+2. 增加 workspace 级 `notist build`，验证模块路径、引用和多页面 HTML 输出。
+3. 扩展 Workspace snapshot，使 source、Parse 和引用结果保持一致。
+4. 增加 `notist preview` 的单次 HTTP 渲染。
+5. 加入 watcher、debounce、SSE 和浏览器自动打开。
+6. 加入 vault 导航、目录和 diagnostics panel。
+7. 最后实现编辑器光标同步和点击预览跳转源码。
 
 #heading(level=2)[资料]
 
@@ -229,4 +250,3 @@ filesystem event
 - Tinymist preview server: `crates/tinymist/src/tool/preview.rs`
 - Tinymist preview protocol: `crates/typst-preview/src/protocol.rs`
 - tinymist-preview crate: https://crates.io/crates/tinymist-preview
-

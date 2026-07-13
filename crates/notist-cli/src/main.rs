@@ -5,6 +5,7 @@ use clap::{Parser, Subcommand};
 use notist_analysis::Workspace;
 use notist_syntax::CallMode;
 
+mod build;
 mod diagnostics;
 
 #[derive(Debug, Parser)]
@@ -31,6 +32,15 @@ enum Command {
         /// Root directory of the Notist workspace.
         #[arg(default_value = ".")]
         root: PathBuf,
+    },
+    /// Build a Notist workspace as a multi-page static HTML site.
+    Build {
+        /// Root directory of the Notist workspace.
+        #[arg(default_value = ".")]
+        root: PathBuf,
+        /// Directory to write the generated site.
+        #[arg(short, long, default_value = "dist")]
+        output: PathBuf,
     },
 }
 
@@ -103,6 +113,7 @@ fn run(cli: Cli) -> Result<ExitCode, Box<dyn std::error::Error>> {
             }
             Ok(ExitCode::SUCCESS)
         }
+        Command::Build { root, output } => build::run(root, output, cli.color),
     }
 }
 
