@@ -1,109 +1,34 @@
 #heading(level=1)[Notist Grammar]
 
-本文定义当前仓库已经实现的 Notist 语法与直接相关的语义约束。它是 Tree-sitter grammar、formatter、LSP 和其他编辑器工具的共同基线。
+本文严格定义当前实现的 Notist 源文件语法。概念、使用方式和执行模型见 [[vault::intro]]；设计动机见 `designs` 下的记录。
 
-本文只把已经实现的行为定义为规范。尚未实现的 Markdown 风格语法糖、用户函数和完整表达式语言列在文末，不属于当前 grammar。
-
-相关设计背景见 [[vault::designs::2026-07-11 scope and attrs]]、[[vault::designs::2026-07-11 vault and module]]、[[vault::designs::2026-07-12 type system]] 和 [[vault::designs::2026-07-12 lowering and structuring]]。
-
-#heading(level=2)[Notation]
-
-本文使用以下 EBNF 约定：
+#heading(level=2)[记号]
 
 - `"text"` 表示固定字符。
-- `A B` 表示顺序连接。
-- `A | B` 表示选择。
-- `A?` 表示零次或一次。
-- `A*` 表示零次或多次。
-- `A+` 表示一次或多次。
-- 语义条件和无法直接用 EBNF 表达的 delimiter 规则使用正文说明。
+- `A B` 表示顺序连接，`A | B` 表示选择。
+- `A?`、`A*`、`A+` 分别表示零或一次、零或多次、一次或多次。
+- `SameBangs`、括号配对等上下文相关规则由正文定义。
 
-#heading(level=2)[Source and Ranges]
+#heading(level=2)[源文件]
 
-Notist 源文件是 UTF-8 文本。当前 parser 使用半开 byte range：`start` 包含，`end` 不包含。编辑器和 LSP 在映射到 UTF-16 line/character position 时必须通过单独的 LineIndex 转换，不能直接把 byte offset 当作 character offset。
+源文件是 UTF-8 文本，换行符可以是 LF 或 CRLF。源码位置使用半开 byte range：start 包含，end 不包含。
 
-换行可以是 LF 或 CRLF。除参数列表中的 whitespace 外，grammar 中没有标出的空白通常不允许插入。例如以下调用有效：
+#raw(lang="ebnf")![
+Document = (Text | WikiLink | TransparentScope | ContentCall | RawCall)* ;
+]!
 
-#raw(lang="not")!![
-#heading(level=2)[Title]
-#raw(lang="rust")![source]!
-]!!
+未被其他结构占用的源码是 Text。Backtick shield、Raw Call body 内不扫描宿主语法；Transparent Scope 和 Content Call body 内递归扫描。
 
-以下形式当前不属于调用语法：
-
-#raw(lang="not")!![
-# heading[Title]
-#heading (level=2)[Title]
-#heading(level=2) [Title]
-#raw(lang="rust") ![source]!
-]!!
-
-#heading(level=2)[Lexical Elements]
-
-#heading(level=3)[Identifier]
-
-当前 Identifier 由一个或多个 Unicode alphanumeric、`_` 或 `-` 组成。实现尚未要求首字符必须是字母或 `_`，因此数字开头的 Identifier 当前也能被识别。
+#heading(level=2)[标识符与名称]
 
 #raw(lang="ebnf")![
 Identifier = (UnicodeAlphanumeric | "_" | "-")+ ;
 QualifiedName = Identifier ("::" Identifier)* ;
 ]!
 
-QualifiedName 用于 Function 名称，例如：
-
-#raw(lang="not")!![
-#heading[Title]
-#plugin::diagram(engine="mermaid")![graph TD]!
-]!!
-
-`::` 两侧不能插入空白。
-
-#heading(level=3)[Legacy Backtick Shield]
-
-当前 syntax scanner 会把由反引号 run 包围的区域视为词法屏蔽区。开头有 N 个反引号时，后续第一个长度至少为 N 的反引号 run 结束该区域。屏蔽区中的 Wiki Reference、Scope 和 Call 不参与宿主扫描。
-
-该行为同时覆盖 inline backtick 和 Markdown 风格 fenced block，但目前只用于 syntax shielding，不会 lowering 成 Raw Element，也不是推荐的新 Raw Call 语法。
-
-#raw(lang="text")![
-`#[not parsed]`
-
-```not
-#heading[not parsed]
-```
-]!
-
-新的文档和工具应优先使用可变长度 Raw Call delimiter。
-
-#heading(level=2)[Document]
-
-当前 `notist-syntax` 不是完整 CST parser，而是从文档中提取 WikiLink、TransparentScope、Call 和 SyntaxError。未被这些结构占用的源码保留为普通文本。
-
-#raw(lang="ebnf")![
-Document = (Text | WikiLink | TransparentScope | ContentCall | RawCall)* ;
-]!
-
-匹配优先级和递归规则：
-
-- Backtick shield 内不扫描其他宿主语法。
-- Raw Call body 是原子 RawSource，不扫描内部 Notist 语法。
-- Transparent Scope body 和 Content Call body 会递归扫描。
-- 同一 range 中最早开始的 Scope、Call 或 WikiLink 优先参与 lowering。
-- 无法形成完整结构的 `#`、`[` 等字符通常保留为普通文本；已识别但未闭合的结构产生 SyntaxError。
+`::` 两侧不允许空白。当前实现允许 Identifier 以数字开头。
 
 #heading(level=2)[Wiki Reference]
-
-Wiki Reference 使用双层方括号：
-
-#raw(lang="not")![
-[[intro]]
-[[pages::intro]]
-[[self::background]]
-[[super::guide]]
-[[super::super::index]]
-[[vault::designs::index]]
-[[pages::intro#section]]
-[[#local-label]]
-]!
 
 #raw(lang="ebnf")![
 WikiLink = "[[" WikiReferenceBody "]]" ;
@@ -114,84 +39,33 @@ ModuleReference = AbsoluteReference
                 | ParentReference
                 | SelfReference
                 | RelativeReference ;
-
 AbsoluteReference = "vault" ("::" ModuleSegment)* ;
 ParentReference = "super" ("::" "super")* ("::" ModuleSegment)* ;
 SelfReference = "self" ("::" ModuleSegment)* ;
 RelativeReference = ModuleSegment ("::" ModuleSegment)* ;
 ]!
 
-ModulePart 和 Label 两侧会 trim whitespace。一个引用最多只能包含一个 `#`。Label 不能为空；只有存在 Label 时 ModulePart 才能为空。
+ModulePart 和 Label 两侧会 trim whitespace。引用最多包含一个 `#`；Label 不能为空，只有带 Label 时 ModulePart 才能为空。
 
-ModuleSegment 允许普通空格，但不能包含 control character、`/`、`\`、`#`、`[` 或 `]`。按 `::` 分段后，每段会 trim，空 segment 非法。
-
-`vault`、`super` 和 `self` 是保留 segment，只能出现在路径开头：
-
-- `vault` 从 vault root 开始解析。
-- 一个或多个连续 `super` 向父模块移动。
-- `self` 从当前模块开始；单独的 `self` 表示当前模块。
-- 没有前缀的路径是相对当前模块的 child path。
-- `[[#label]]` 指向当前模块中的 Label。
-
-当前 analysis 已实现模块解析，但 Label resolution 仍会产生 unsupported diagnostic。
+ModuleSegment 不能包含 control character、`/`、`\`、`#`、`[` 或 `]`。按 `::` 分段后每段会 trim，空段非法。`vault`、`super`、`self` 是只允许出现在路径开头的保留段。
 
 #heading(level=2)[Transparent Scope]
-
-Transparent Scope 使用 `#[...]`，body 继续作为普通 Notist Content 解析：
-
-#raw(lang="not")![
-#[important content]
-#[content with [[self::reference]] and #quote[nested call]]@concept,#knowledge
-]!
 
 #raw(lang="ebnf")![
 TransparentScope = "#[" ContentBody "]" Attributes? ;
 ]!
 
-ContentBody 的方括号可以嵌套。匹配 delimiter 时：
-
-- 嵌套 `[` 与 `]` 参与 depth 计算。
-- 双引号内的 bracket 不参与匹配。
-- `\` 会跳过紧随其后的字符。
-- Backtick shield 作为整体跳过。
-
-Transparent Scope lowering 后不会产生容器 Element。它继续输出内部 Content，并把 postfix Attributes 投影为覆盖 body range 的 Annotation。它不区分 Inline 与 Block，并允许跨越未来其他 markup Element 的边界。
+ContentBody 的 `[` 与 `]` 可以嵌套。双引号中的 bracket 不参与配对；`\` 跳过紧随其后的字符；Backtick shield 作为整体跳过。
 
 #heading(level=2)[Content Call]
-
-Content Call 调用 Function，并把 body 递归解析和 lowering 为 Content：
-
-#raw(lang="not")![
-#heading[Title]
-#heading(level=2)[Title]
-#quote[
-First paragraph.
-
-Second paragraph with [[self::source]].
-]
-#plugin::note(kind="warning")[Content]
-]!
 
 #raw(lang="ebnf")![
 ContentCall = "#" QualifiedName Arguments? "[" ContentBody "]" Attributes? ;
 ]!
 
-Function 名称、Arguments、`[` 之间当前不能插入空白。Content body 使用与 Transparent Scope 相同的 bracket matching 规则，并递归发现 Scope、Call 和 WikiLink。
-
-未知 Function 产生 diagnostic，但调用会保留为 UnresolvedCall；body 仍保存为已经 lowering 的 Content，以便工具继续工作。
+call head 内不允许额外空白：Function 名称、Arguments 和 `[` 必须相邻。ContentBody 使用 Transparent Scope 的配对规则，并递归解析其中的 Notist 结构。
 
 #heading(level=2)[Raw Call]
-
-Raw Call 在完整 call head 后使用一个或多个 `!`，并在 `]` 后重复相同数量的 `!`：
-
-#raw(lang="not")!!![
-#raw![ordinary raw]!
-#raw(lang="rust")![fn main() {}]!
-
-#raw!![
-This body may contain ]! without closing.
-]!!
-]!!!
 
 #raw(lang="ebnf")![
 RawCall = "#" QualifiedName Arguments? RawOpen RawBody RawClose Attributes? ;
@@ -200,59 +74,42 @@ RawClose = "]" SameBangs ;
 Bangs = "!"+ ;
 ]!
 
-SameBangs 必须与 RawOpen 中 `!` 的数量完全对应。Parser 从 body 开始寻找第一个 `]` 加 N 个 `!` 的序列；Raw body 中的 bracket、quote、backslash、Backtick、WikiLink、Scope 和 Call 都没有宿主语法意义。
+SameBangs 的数量必须与 RawOpen 完全相同。Parser 从 body 起寻找第一个 `]` 加相同数量 `!` 的序列；RawBody 中的所有字符均没有宿主语法意义。
 
-如果 body 包含 `]!`，应使用 `!![...]!!`；如果包含 `]!!`，应使用 `!!![...]!!!`。选择的 delimiter level 应大于 body 中任意 `]` 后连续 `!` 的数量。
+Inline Raw Call 的 body 紧贴 delimiter：
 
-Raw Call 的 `raw_delimiter_level` 保存 N，供 CST、formatter 和源码重写使用。Lowering 只把 body 文本及其 range 作为 RawSource 交给 Function。
+#raw(lang="not")!![
+#raw![text]!
+]!!
 
-未知 Raw Function 产生 diagnostic，并保留包含原始 body 文本的 UnresolvedCall。
+Block Raw Call 的 opening 和 closing delimiter 必须各自位于一行，delimiter 后和 closing delimiter 前的 framing newline 不属于 RawBody：
+
+#raw(lang="not")!![
+#raw(lang="text")![
+line one
+line two
+]!
+]!!
+
+上例的 RawBody 严格等于 `line one\nline two`。LF 和 CRLF 都按同样规则处理。body 若包含 `]!`，必须提高 delimiter level，例如 `#raw!![ ... ]!!`。
 
 #heading(level=2)[Body Form]
 
-所有 Call 都记录 BodyForm。`[` 后立即出现 LF 或 CRLF 时为 Block，否则为 Inline：
+Content Call 或 Raw Call 的 `[` 后立即出现 LF 或 CRLF 时，BodyForm 为 Block，否则为 Inline。Transparent Scope 没有 BodyForm。
 
-#raw(lang="not")!![
-#raw![inline raw]!
-
-#raw![
-block raw
-]!
-]!!
-
-#raw(lang="text")![
-"[" Newline ...  -> Block
-"[" Other ...    -> Inline
-]!
-
-结束 delimiter 是否独占一行不参与 BodyForm 判定。Transparent Scope 没有 BodyForm。
-
-BodyForm 是 source form，不等同于返回类型。当前 raw Function 用它决定 Raw Element 是否打断 paragraph flow；其他 Function 可以进一步验证允许的 form。
+对于 Block Raw Call，parser 在记录 BodyForm 后从 body range 排除 opening 后的一个换行，以及 closing 前的一个换行。其他 block body 不执行该裁剪。
 
 #heading(level=2)[Arguments]
-
-Arguments 位于 Function 名称后、body delimiter 前：
-
-#raw(lang="not")!![
-#heading(level=2)[Title]
-#raw(lang="rust")![source]!
-#example(1, enabled=true, ratio=-1.5, label="demo", missing=none)[body]
-]!!
 
 #raw(lang="ebnf")![
 Arguments = "(" Whitespace* ArgumentList? Whitespace* ")" ;
 ArgumentList = Argument (Whitespace* "," Whitespace* Argument)* ;
 Argument = NamedArgument | PositionalArgument ;
-
 NamedArgument = Identifier Whitespace* "=" Whitespace* Expression ;
 PositionalArgument = Expression ;
 
-Expression = NoneLiteral
-           | BoolLiteral
-           | IntLiteral
-           | FloatLiteral
-           | StringLiteral ;
-
+Expression = NoneLiteral | BoolLiteral | IntLiteral
+           | FloatLiteral | StringLiteral ;
 NoneLiteral = "none" ;
 BoolLiteral = "true" | "false" ;
 IntLiteral = "-"? ASCII_DIGIT+ ;
@@ -260,148 +117,38 @@ FloatLiteral = "-"? ASCII_DIGIT* "." ASCII_DIGIT* ;
 StringLiteral = '"' StringCharacter* '"' ;
 ]!
 
-Float 必须至少包含一个 digit，并且只允许一个 `.`。当前不支持 exponent、正号、字符字面量、变量、运算、数组或字典。
-
-String 支持以下 escape：
-
-#raw(lang="text")![
-\"  quote
-\\  backslash
-\n  newline
-\r  carriage return
-\t  tab
-]!
-
-其他 escape 会产生 diagnostic。Arguments 允许空白和换行，但 trailing comma 当前非法。
-
-Signature binding 规则：
-
-- Positional argument 按参数声明顺序绑定。
-- Named argument 按名称绑定。
-- Named argument 之后不能再出现 positional argument。
-- unknown、duplicate、missing 和 too many argument 都产生 diagnostic。
-- Expression Value 必须满足 Parameter Type。
-- `Int` 可以用于期望 `Float` 的参数。
-- `Optional(T)` 接受 `none` 或 T。
-- CallBody 的 Content/RawSource 类型必须与 Function Signature 匹配。
+Float 必须至少有一个 digit 且只能有一个 `.`。String 支持 `\"`、`\\`、`\n`、`\r`、`\t`。Arguments 允许空白和换行，不允许 trailing comma。Named argument 之后不允许 positional argument。
 
 #heading(level=2)[Attributes]
-
-Attributes 紧跟在 Transparent Scope 或 Call 的完整 closing delimiter 后：
-
-#raw(lang="not")!![
-#[content]@id,#tag-a,#tag-b,.class-a,key=value,owner="Alice"
-#quote[content]@citation,#source,author="Alice"
-#raw(lang="rust")![code]!@example,#snippet,.wide
-]!!
 
 #raw(lang="ebnf")![
 Attributes = "@" FirstAttribute ("," AttributeItem)* ;
 FirstAttribute = Id | AttributeItem ;
 AttributeItem = Tag | Class | KeyValue ;
-
 Id = Identifier ;
 Tag = "#" Identifier ;
 Class = "." Identifier ;
 KeyValue = Identifier "=" AttributeValue ;
-
 AttributeValue = Identifier | QuotedAttributeValue ;
 QuotedAttributeValue = '"' AttributeCharacter* '"' ;
 ]!
 
-当前 Attributes 内不允许插入 whitespace。
+Attributes 中不允许空白。可选 ID 只能是第一个 bare Identifier；Tag、Class、KeyValue 可以重复并保持源码顺序。QuotedAttributeValue 中的 `\` 会跳过下一个字符。
 
-第一个 bare Identifier 是可选 ID。可以跳过 ID，直接以 Tag、Class 或 KeyValue 开始。ID 只能出现一次并且只能位于第一个位置；后续 bare Identifier 非法。
+#heading(level=2)[Backtick Shield]
 
-Tag、Class 和 KeyValue 可以重复并保持源码顺序。QuotedAttributeValue 保留包括 quote 在内的原始文本；`\` 可以避免下一个 `"` 提前结束 value，但 Attribute lowering 当前不会像参数 String 一样执行 unescape。
+开头有 N 个反引号时，后续第一个长度至少为 N 的反引号 run 结束 shield。shield 内不扫描 Wiki Reference、Scope 或 Call。此结构仅用于词法屏蔽，不会 lowering 为 Raw Element。
 
-Attributes 描述 Scope range 或 Function result，不参与 Function 选择。Function 参数必须写在 Arguments 中。
+#heading(level=2)[文本与段落]
 
-#heading(level=2)[Whitespace and Paragraphs]
+普通单换行属于 Text。一个换行后经过零个或多个 space、tab 或 CR，再遇到第二个换行时产生 Parbreak。当前没有独立的 Markdown heading、list、strong、emphasis 或 quote 语法。
 
-未被结构语法占用的源码 lowering 为 Text Element。单个换行仍属于 Text。
+#heading(level=2)[错误与恢复]
 
-一个换行后经过零个或多个 space、tab 或 CR，再遇到第二个换行时，会产生 Parbreak：
+未闭合或非法的 Wiki Reference、Scope、Call body、Arguments、Expression 和 Attributes 产生 SyntaxError。Raw closing delimiter level 不匹配时，错误必须报告期望的 level。
 
-#raw(lang="text")![
-first line
-second line
+未知 Function 不是 syntax error。它在 evaluation 阶段产生 diagnostic，并保留为 UnresolvedCall。类型、参数绑定、模块解析和内置 Function 校验错误同样属于语法之后的 diagnostics。
 
-new paragraph
-]!
+#heading(level=2)[非当前语法]
 
-连续 inline Element 在 Structuring 阶段组成 Paragraph。Parbreak 结束当前 Paragraph，但不作为最终 Block 保留。
-
-当前没有独立的 Markdown heading、list、strong、emphasis 或 block quote grammar；类似字符如果不属于本文定义的结构，就作为普通 Text。
-
-#heading(level=2)[Built-in Functions]
-
-当前默认 FunctionRegistry 注册三个内置 Function。
-
-| Function | Signature | Result |
-| --- | --- | --- |
-| `heading` | `heading(level: Int = 1, body: Content) -> Content` | Heading Element |
-| `raw` | `raw(lang: String? = none, body: RawSource) -> Content` | Raw Element |
-| `quote` | `quote(body: Content) -> Content` | Quote Element |
-
-`heading.level` 必须位于 1 到 6。`raw` 必须使用 Raw Call，`heading` 与 `quote` 必须使用 Content Call。错误 body mode 在 Function 执行前产生 type diagnostic。
-
-#heading(level=2)[Complete Core Grammar]
-
-下面汇总当前 core syntax。RawBody delimiter matching、ContentBody bracket matching、Wiki path validation 和语义 binding 仍以对应章节中的规则为准。
-
-#raw(lang="ebnf")!![
-Document = (Text | WikiLink | TransparentScope | ContentCall | RawCall)* ;
-
-WikiLink = "[[" WikiReferenceBody "]]" ;
-WikiReferenceBody = ModulePart ("#" Label)? ;
-
-TransparentScope = "#[" ContentBody "]" Attributes? ;
-ContentCall = "#" QualifiedName Arguments? "[" ContentBody "]" Attributes? ;
-RawCall = "#" QualifiedName Arguments? Bangs "[" RawBody "]" SameBangs Attributes? ;
-
-QualifiedName = Identifier ("::" Identifier)* ;
-Identifier = (UnicodeAlphanumeric | "_" | "-")+ ;
-Bangs = "!"+ ;
-
-Arguments = "(" Whitespace* ArgumentList? Whitespace* ")" ;
-ArgumentList = Argument (Whitespace* "," Whitespace* Argument)* ;
-Argument = (Identifier Whitespace* "=" Whitespace*)? Expression ;
-Expression = "none" | "true" | "false" | IntLiteral | FloatLiteral | StringLiteral ;
-
-Attributes = "@" FirstAttribute ("," AttributeItem)* ;
-FirstAttribute = Identifier | AttributeItem ;
-AttributeItem = "#" Identifier
-              | "." Identifier
-              | Identifier "=" AttributeValue ;
-AttributeValue = Identifier | QuotedAttributeValue ;
-]!!
-
-#heading(level=2)[Diagnostics and Recovery]
-
-当前 parser 为以下情况产生精确 byte-range SyntaxError：
-
-- 未闭合 Wiki Reference。
-- 空 Wiki Reference、空 module segment、非法 module path 或多个 `#`。
-- 未闭合 Transparent Scope、Arguments、Content body 或 Raw body。
-- Raw closing delimiter level 不匹配。
-- 非法或未闭合参数 literal。
-- 参数之间缺少 comma 或存在 trailing comma。
-- 非法 Attribute、非首位 ID 或未闭合 quoted AttributeValue。
-
-Analysis 和 Evaluation 还会产生 unresolved module/function、unsupported label、argument binding、type mismatch、body mode 和内置 Function validation diagnostics。
-
-Parser 应尽量保留已识别结构和后续文本。未知 Function 不属于 syntax error；它在 evaluation 阶段成为可恢复的 UnresolvedCall。
-
-#heading(level=2)[Reserved for Future Design]
-
-以下能力尚未进入当前 grammar，Tree-sitter 和 LSP 不应把它们当作稳定语法：
-
-- Markdown/Typst 风格 heading、list、strong、emphasis、quote 和 fenced raw 语法糖。
-- 一般 Expression，包括变量、运算、Array、Dict、field access 和 Function Value。
-- `#let`、User Function、控制流、import/include 和宏展开。
-- Label declaration 与完整 Label resolution。
-- 插件定义新的宿主 grammar 或动态语法糖。
-- 完整 lossless CST、formatter trivia model 和增量 parser contract。
-
-未来语法扩展应尽量 lowering 到本文定义的 Content、RawSource、Function 和 Element 模型，而不是为同一语义建立平行执行路径。
+Markdown 风格语法糖、一般表达式、变量、User Function、控制流、import、完整 Label resolution、插件自定义宿主 grammar、formatter trivia model 尚未进入当前规范。

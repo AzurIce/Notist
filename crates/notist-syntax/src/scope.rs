@@ -280,7 +280,10 @@ fn parse_region_at(
             return None;
         }
     };
-    let body_range = TextRange::new(cursor + 1, close);
+    let body_range = match body_form {
+        BodyForm::Inline => TextRange::new(cursor + 1, close),
+        BodyForm::Block => block_body_range(source, cursor + 1, close),
+    };
     let delimiter_end = close + 1 + raw_delimiter_level.unwrap_or(0);
     let (attributes, end) = parse_attributes(source, delimiter_end, errors);
 
@@ -295,6 +298,25 @@ fn parse_region_at(
         attributes,
         range: TextRange::new(start, end),
     }))
+}
+
+fn block_body_range(source: &str, start: usize, end: usize) -> TextRange {
+    let bytes = source.as_bytes();
+    let content_start = if bytes.get(start..start + 2) == Some(b"\r\n") {
+        start + 2
+    } else if bytes.get(start) == Some(&b'\n') {
+        start + 1
+    } else {
+        start
+    };
+    let content_end = if end >= content_start + 2 && bytes.get(end - 2..end) == Some(b"\r\n") {
+        end - 2
+    } else if end > content_start && bytes.get(end - 1) == Some(&b'\n') {
+        end - 1
+    } else {
+        end
+    };
+    TextRange::new(content_start, content_end)
 }
 
 fn find_raw_close(source: &str, body_start: usize, delimiter_level: usize) -> Option<usize> {
@@ -617,7 +639,7 @@ mod tests {
         assert_eq!(&source[arguments.start..arguments.end], "lang=\"rust\"");
         assert_eq!(
             &source[call.body_range.start..call.body_range.end],
-            "\n[1, 2, 3]\n"
+            "[1, 2, 3]"
         );
         assert_eq!(call.attributes.id.as_ref().unwrap().value, "example");
         assert_eq!(call.attributes.items.len(), 3);
@@ -630,6 +652,19 @@ mod tests {
         let block = parse("#raw![\r\ncontent\r\n]!");
         assert_eq!(inline.calls[0].body_form, BodyForm::Inline);
         assert_eq!(block.calls[0].body_form, BodyForm::Block);
+        assert_eq!(
+            &"#raw![\r\ncontent\r\n]!"
+                [block.calls[0].body_range.start..block.calls[0].body_range.end],
+            "content"
+        );
+    }
+
+    #[test]
+    fn excludes_block_raw_framing_newlines_from_an_empty_body() {
+        let source = "#raw![\n]!";
+        let parse = parse(source);
+        assert!(parse.errors.is_empty());
+        assert!(parse.calls[0].body_range.is_empty());
     }
 
     #[test]

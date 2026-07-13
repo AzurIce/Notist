@@ -2,6 +2,7 @@ Note + ist -> notist(also not an ist)
 
 .not
 
+- Notist 介绍与核心概念 [[intro]]
 - AI 的一些调查整理 [[ai]]
 - 设计记录 [[vault::designs]]
 - 当前语法规范 [[vault::grammar]]

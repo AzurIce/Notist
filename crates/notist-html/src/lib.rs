@@ -455,7 +455,7 @@ mod tests {
         assert!(html.contains("<blockquote"));
         assert!(html.contains(">First</span></p><p>"));
         assert!(html.contains("<pre"));
-        assert!(html.contains("<code class=\"language-rust\">\nfn main() {}\n</code></pre>"));
+        assert!(html.contains("<code class=\"language-rust\">fn main() {}</code></pre>"));
     }
 
     #[test]

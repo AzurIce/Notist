@@ -160,6 +160,21 @@ mod tests {
     }
 
     #[test]
+    fn block_raw_excludes_delimiter_line_breaks() {
+        let evaluated =
+            Evaluator::default().evaluate("#raw(lang=\"text\")![\nline one\nline two\n]!");
+        assert!(
+            evaluated.diagnostics.is_empty(),
+            "{:?}",
+            evaluated.diagnostics
+        );
+        assert!(matches!(
+            &evaluated.content.elements[0].element,
+            Element::Raw { text, block: true, .. } if text == "line one\nline two"
+        ));
+    }
+
+    #[test]
     fn reports_signature_and_body_mode_errors_before_calling_builtins() {
         let evaluator = Evaluator::default();
         let wrong_level = evaluator.evaluate("#heading(level=\"two\")[Title]");
