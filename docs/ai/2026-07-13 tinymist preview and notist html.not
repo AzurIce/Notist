@@ -19,21 +19,21 @@ Tinymist 的预览栈包括：
 
 典型调用为：
 
-#raw(lang="shell")![
+```shell
 tinymist preview main.typ
 tinymist preview main.typ --no-open
-]!
+```
 
 其主流程可以概括为：
 
-#raw(lang="text")![
+```text
 tinymist preview
   -> 启动 Typst project/compiler
   -> CompileWatcher 接收编译结果
   -> 增量矢量渲染
   -> WebSocket data plane
   -> 浏览器中的内嵌预览前端
-]!
+```
 
 #heading(level=2)[实现分层]
 

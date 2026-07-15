@@ -2,9 +2,9 @@ use std::collections::HashMap;
 use std::fmt;
 
 use notist_model::{Content, TextRange};
-use notist_syntax::{Argument, Expression, ExpressionKind};
+use notist_syntax::{Argument, Expression, ExpressionKind, StringLiteralForm, StringLiteralStyle};
 
-use crate::{CallBody, EvalDiagnostic, RawSource};
+use crate::EvalDiagnostic;
 
 /// A static type understood by the first-stage Notist type checker.
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -21,8 +21,6 @@ pub enum Type {
     String,
     /// Evaluated Notist content.
     Content,
-    /// Source text intentionally hidden from the Notist parser.
-    RawSource,
     /// Either `none` or a value of the nested type.
     Optional(Box<Type>),
 }
@@ -44,7 +42,6 @@ impl fmt::Display for Type {
             Self::Float => formatter.write_str("Float"),
             Self::String => formatter.write_str("String"),
             Self::Content => formatter.write_str("Content"),
-            Self::RawSource => formatter.write_str("RawSource"),
             Self::Optional(inner) => write!(formatter, "{inner}?"),
         }
     }
@@ -52,7 +49,7 @@ impl fmt::Display for Type {
 
 /// A runtime value produced after expression evaluation.
 #[derive(Clone, Debug, PartialEq)]
-pub enum Value<'a> {
+pub enum Value {
     /// The `none` value.
     None,
     /// A boolean value.
@@ -65,11 +62,9 @@ pub enum Value<'a> {
     String(String),
     /// Evaluated Notist content.
     Content(Content),
-    /// Borrowed raw source.
-    RawSource(RawSource<'a>),
 }
 
-impl Value<'_> {
+impl Value {
     /// Returns the static type of this value.
     pub fn ty(&self) -> Type {
         match self {
@@ -79,9 +74,38 @@ impl Value<'_> {
             Self::Float(_) => Type::Float,
             Self::String(_) => Type::String,
             Self::Content(_) => Type::Content,
-            Self::RawSource(_) => Type::RawSource,
         }
     }
+}
+
+/// Source information retained for a bound value when it came directly from syntax.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum ValueOrigin {
+    /// A signature-provided default value.
+    Default,
+    /// A literal expression written at the call site.
+    Literal {
+        /// The complete literal range in the source document.
+        range: TextRange,
+        /// The String payload range without prefixes or delimiters.
+        payload_range: Option<TextRange>,
+        /// The source form for String literals.
+        string_form: Option<StringLiteralForm>,
+        /// The escape behavior for String literals.
+        string_style: Option<StringLiteralStyle>,
+    },
+    /// A trailing Content literal bound through `#name[...]` syntax.
+    TrailingContent {
+        /// The Content payload range.
+        range: TextRange,
+    },
+}
+
+/// A runtime value together with its call-site origin.
+#[derive(Clone, Debug, PartialEq)]
+struct BoundValue {
+    value: Value,
+    origin: ValueOrigin,
 }
 
 /// A literal default value declared by a native function signature.
@@ -100,7 +124,7 @@ pub enum DefaultValue {
 }
 
 impl DefaultValue {
-    fn to_value(&self) -> Value<'static> {
+    fn to_value(&self) -> Value {
         match self {
             Self::None => Value::None,
             Self::Bool(value) => Value::Bool(*value),
@@ -125,24 +149,29 @@ pub struct Parameter {
 /// The statically checkable interface of a content-producing function.
 #[derive(Clone, Debug, PartialEq)]
 pub struct FunctionSignature {
-    /// Parameters accepted before the trailing body.
+    /// Parameters accepted by the function.
     pub parameters: Vec<Parameter>,
-    /// The required trailing body type.
-    pub body: Type,
+    /// The Content parameter populated by trailing `[...]` syntax, when supported.
+    pub trailing_content: Option<&'static str>,
     /// The function result type.
     pub result: Type,
 }
 
 /// Arguments after positional/named binding and literal evaluation.
 #[derive(Clone, Debug, Default, PartialEq)]
-pub struct BoundArguments<'a> {
-    values: HashMap<&'static str, Value<'a>>,
+pub struct BoundArguments {
+    values: HashMap<&'static str, BoundValue>,
 }
 
-impl<'a> BoundArguments<'a> {
+impl BoundArguments {
     /// Returns a bound value by parameter name.
-    pub fn get(&self, name: &str) -> Option<&Value<'a>> {
-        self.values.get(name)
+    pub fn get(&self, name: &str) -> Option<&Value> {
+        self.values.get(name).map(|bound| &bound.value)
+    }
+
+    /// Returns the call-site origin retained for a bound value.
+    pub fn origin(&self, name: &str) -> Option<ValueOrigin> {
+        self.values.get(name).map(|bound| bound.origin)
     }
 
     /// Returns a required integer after successful signature binding.
@@ -161,16 +190,42 @@ impl<'a> BoundArguments<'a> {
             _ => unreachable!("signature binding guarantees an optional string value"),
         }
     }
+
+    /// Returns a required String after successful signature binding.
+    pub fn string(&self, name: &str) -> &str {
+        match self.get(name) {
+            Some(Value::String(value)) => value,
+            _ => unreachable!("signature binding guarantees a String value"),
+        }
+    }
+
+    /// Returns the literal source form for a directly written String argument.
+    pub fn string_form(&self, name: &str) -> Option<StringLiteralForm> {
+        match self.values.get(name).map(|bound| bound.origin) {
+            Some(ValueOrigin::Literal {
+                string_form: Some(form),
+                ..
+            }) => Some(form),
+            _ => None,
+        }
+    }
+
+    /// Removes and returns a required Content value.
+    pub fn take_content(&mut self, name: &str) -> Content {
+        match self.values.remove(name).map(|bound| bound.value) {
+            Some(Value::Content(content)) => content,
+            _ => unreachable!("signature binding guarantees a Content value"),
+        }
+    }
 }
 
-pub(crate) fn bind_arguments<'a>(
+pub(crate) fn bind_arguments(
     signature: &FunctionSignature,
     arguments: &[Argument],
-    body: &CallBody<'a>,
+    trailing_content: Option<(Content, TextRange)>,
     call_name_range: TextRange,
-    body_range: TextRange,
     base_offset: usize,
-) -> Result<BoundArguments<'a>, Vec<EvalDiagnostic>> {
+) -> Result<BoundArguments, Vec<EvalDiagnostic>> {
     let mut diagnostics = Vec::new();
     let mut values = HashMap::new();
     let mut positional_index = 0usize;
@@ -218,7 +273,7 @@ pub(crate) fn bind_arguments<'a>(
             });
             continue;
         }
-        let value = evaluate_literal(&argument.expression);
+        let (value, origin) = evaluate_literal(&argument.expression, base_offset);
         let actual = value.ty();
         if !parameter.ty.accepts(&actual) {
             diagnostics.push(EvalDiagnostic {
@@ -230,7 +285,53 @@ pub(crate) fn bind_arguments<'a>(
             });
             continue;
         }
-        values.insert(parameter.name, value);
+        values.insert(parameter.name, BoundValue { value, origin });
+    }
+
+    if let Some((content, range)) = trailing_content {
+        let Some(parameter_name) = signature.trailing_content else {
+            diagnostics.push(EvalDiagnostic {
+                message: "function does not accept trailing Content".into(),
+                range: range.shifted(base_offset),
+            });
+            return Err(diagnostics);
+        };
+        let Some(parameter) = signature
+            .parameters
+            .iter()
+            .find(|parameter| parameter.name == parameter_name)
+        else {
+            diagnostics.push(EvalDiagnostic {
+                message: format!(
+                    "invalid function signature: trailing Content parameter `{parameter_name}` does not exist"
+                ),
+                range: call_name_range.shifted(base_offset),
+            });
+            return Err(diagnostics);
+        };
+        if parameter.ty != Type::Content {
+            diagnostics.push(EvalDiagnostic {
+                message: format!(
+                    "invalid function signature: trailing parameter `{parameter_name}` must have type Content"
+                ),
+                range: call_name_range.shifted(base_offset),
+            });
+        } else if values.contains_key(parameter.name) {
+            diagnostics.push(EvalDiagnostic {
+                message: format!("argument `{}` was provided more than once", parameter.name),
+                range: range.shifted(base_offset),
+            });
+        } else {
+            values.insert(
+                parameter.name,
+                BoundValue {
+                    value: Value::Content(content),
+                    origin: ValueOrigin::TrailingContent {
+                        range: range.shifted(base_offset),
+                    },
+                },
+            );
+        }
     }
 
     for parameter in &signature.parameters {
@@ -238,27 +339,19 @@ pub(crate) fn bind_arguments<'a>(
             continue;
         }
         if let Some(default) = &parameter.default {
-            values.insert(parameter.name, default.to_value());
+            values.insert(
+                parameter.name,
+                BoundValue {
+                    value: default.to_value(),
+                    origin: ValueOrigin::Default,
+                },
+            );
         } else {
             diagnostics.push(EvalDiagnostic {
                 message: format!("missing required argument `{}`", parameter.name),
                 range: call_name_range.shifted(base_offset),
             });
         }
-    }
-
-    let actual_body = match body {
-        CallBody::Content(_) => Type::Content,
-        CallBody::Raw(_) => Type::RawSource,
-    };
-    if !signature.body.accepts(&actual_body) {
-        diagnostics.push(EvalDiagnostic {
-            message: format!(
-                "body type mismatch: expected {}, found {}",
-                signature.body, actual_body
-            ),
-            range: body_range.shifted(base_offset),
-        });
     }
 
     if diagnostics.is_empty() {
@@ -268,14 +361,31 @@ pub(crate) fn bind_arguments<'a>(
     }
 }
 
-fn evaluate_literal(expression: &Expression) -> Value<'static> {
-    match &expression.kind {
+fn evaluate_literal(expression: &Expression, base_offset: usize) -> (Value, ValueOrigin) {
+    let value = match &expression.kind {
         ExpressionKind::None => Value::None,
         ExpressionKind::Bool(value) => Value::Bool(*value),
         ExpressionKind::Int(value) => Value::Int(*value),
         ExpressionKind::Float(value) => Value::Float(*value),
-        ExpressionKind::String(value) => Value::String(value.clone()),
-    }
+        ExpressionKind::String(literal) => Value::String(literal.value.clone()),
+    };
+    let (payload_range, string_form, string_style) = match &expression.kind {
+        ExpressionKind::String(literal) => (
+            Some(literal.payload_range.shifted(base_offset)),
+            Some(literal.form),
+            Some(literal.style),
+        ),
+        _ => (None, None, None),
+    };
+    (
+        value,
+        ValueOrigin::Literal {
+            range: expression.range.shifted(base_offset),
+            payload_range,
+            string_form,
+            string_style,
+        },
+    )
 }
 
 #[cfg(test)]
@@ -300,17 +410,21 @@ mod tests {
                     ty: Type::Optional(Box::new(Type::String)),
                     default: Some(DefaultValue::None),
                 },
+                Parameter {
+                    name: "body",
+                    ty: Type::Content,
+                    default: None,
+                },
             ],
-            body: Type::Content,
+            trailing_content: Some("body"),
             result: Type::Content,
         };
-        let body = CallBody::Content(Content::new());
+        let body_range = call.body.as_ref().unwrap().payload_range;
         let bound = bind_arguments(
             &signature,
             &call.arguments,
-            &body,
+            Some((Content::new(), body_range)),
             call.name.range,
-            call.body_range,
             0,
         )
         .unwrap();
@@ -322,9 +436,8 @@ mod tests {
         let diagnostics = bind_arguments(
             &signature,
             &call.arguments,
-            &body,
+            Some((Content::new(), call.body.as_ref().unwrap().payload_range)),
             call.name.range,
-            call.body_range,
             0,
         )
         .unwrap_err();

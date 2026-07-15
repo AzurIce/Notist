@@ -1,11 +1,11 @@
-use notist_model::{
-    Annotation, Content, Element, ElementNode, Metadata, Property, TextRange, UnresolvedCallBody,
-};
+use notist_model::{Annotation, Content, Element, ElementNode, Metadata, Property, TextRange};
 use notist_syntax::{
-    Attribute, Attributes, BodyForm, Call, CallMode, Parse, TransparentScope, WikiLink,
+    Attribute, Attributes, BodyForm, Call, Parse, RawLiteral, RawLiteralForm, TransparentScope,
+    WikiLink,
 };
 
-use crate::function::{CallBody, FunctionContext, FunctionInput, FunctionRegistry, RawSource};
+use crate::builtin::raw_content;
+use crate::function::{FunctionContext, FunctionInput, FunctionRegistry};
 use crate::type_system::bind_arguments;
 use crate::{EvalDiagnostic, Evaluation};
 
@@ -76,6 +76,10 @@ impl Lowerer<'_> {
                     });
                     cursor = link.range.end;
                 }
+                Event::Raw(raw) => {
+                    self.lower_raw_literal(&raw, &mut content);
+                    cursor = raw.range.end;
+                }
             }
         }
 
@@ -99,21 +103,29 @@ impl Lowerer<'_> {
     fn lower_call(&mut self, call: &Call, content: &mut Content) {
         let metadata = lower_metadata(&call.attributes);
         if !metadata.is_empty() {
+            let annotation_range = call
+                .body
+                .as_ref()
+                .map(|body| body.payload_range)
+                .unwrap_or_else(|| {
+                    TextRange::new(
+                        call.range.start,
+                        call.attributes
+                            .range
+                            .map_or(call.range.end, |attributes| attributes.start),
+                    )
+                });
             self.annotations.push(Annotation {
-                range: call.body_range.shifted(self.base_offset),
+                range: annotation_range.shifted(self.base_offset),
                 metadata,
             });
         }
 
-        let global_body_range = call.body_range.shifted(self.base_offset);
         let global_call_range = call.range.shifted(self.base_offset);
-        let body = match call.mode {
-            CallMode::Content => CallBody::Content(self.lower_range(call.body_range)),
-            CallMode::Raw => CallBody::Raw(RawSource {
-                text: &self.source[call.body_range.start..call.body_range.end],
-                range: global_body_range,
-            }),
-        };
+        let trailing = call
+            .body
+            .as_ref()
+            .map(|body| (self.lower_range(body.payload_range), body.payload_range));
         let Some(function) = self.registry.get(&call.name.value) else {
             self.diagnostics.push(EvalDiagnostic {
                 message: format!("unknown function `{}`", call.name.value),
@@ -125,11 +137,11 @@ impl Lowerer<'_> {
                     arguments: call
                         .arguments_range
                         .map(|range| self.source[range.start..range.end].to_owned()),
-                    body: match body {
-                        CallBody::Content(content) => UnresolvedCallBody::Content(content),
-                        CallBody::Raw(source) => UnresolvedCallBody::Raw(source.text.to_owned()),
-                    },
-                    block: call.body_form == BodyForm::Block,
+                    trailing: trailing.map(|(content, _)| content),
+                    block: call
+                        .body
+                        .as_ref()
+                        .is_some_and(|body| body.form == BodyForm::Block),
                 },
                 range: global_call_range,
             });
@@ -139,9 +151,8 @@ impl Lowerer<'_> {
         let arguments = match bind_arguments(
             &function.signature(),
             &call.arguments,
-            &body,
+            trailing,
             call.name.range,
-            call.body_range,
             self.base_offset,
         ) {
             Ok(arguments) => arguments,
@@ -158,8 +169,6 @@ impl Lowerer<'_> {
         let input = FunctionInput {
             name: &call.name.value,
             arguments,
-            body,
-            body_form: call.body_form,
             range: global_call_range,
         };
 
@@ -170,6 +179,17 @@ impl Lowerer<'_> {
             }
             Err(diagnostics) => self.diagnostics.extend(diagnostics),
         }
+    }
+
+    fn lower_raw_literal(&self, raw: &RawLiteral, content: &mut Content) {
+        let text = self.source[raw.payload_range.start..raw.payload_range.end].to_owned();
+        let language = raw.tag.as_ref().map(|tag| tag.value.clone());
+        content.extend(raw_content(
+            text,
+            raw.form == RawLiteralForm::Fenced,
+            language,
+            raw.range.shifted(self.base_offset),
+        ));
     }
 
     fn lower_text(&self, range: TextRange, content: &mut Content) {
@@ -244,8 +264,16 @@ impl Lowerer<'_> {
             .min_by_key(|link| link.range.start)
             .cloned()
             .map(Event::Link);
+        let raw = self
+            .parse
+            .raw_literals
+            .iter()
+            .filter(|raw| raw.range.start >= cursor && raw.range.end <= end)
+            .min_by_key(|raw| raw.range.start)
+            .cloned()
+            .map(Event::Raw);
 
-        [scope, call, link]
+        [scope, call, link, raw]
             .into_iter()
             .flatten()
             .min_by_key(Event::start)
@@ -256,6 +284,7 @@ enum Event {
     Scope(TransparentScope),
     Call(Call),
     Link(WikiLink),
+    Raw(RawLiteral),
 }
 
 impl Event {
@@ -264,6 +293,7 @@ impl Event {
             Self::Scope(scope) => scope.range.start,
             Self::Call(call) => call.range.start,
             Self::Link(link) => link.range.start,
+            Self::Raw(raw) => raw.range.start,
         }
     }
 }

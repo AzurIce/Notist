@@ -1,9 +1,9 @@
 use notist_model::{Content, Element};
-use notist_syntax::BodyForm;
+use notist_syntax::StringLiteralForm;
 
 use crate::{
-    CallBody, DefaultValue, EvalDiagnostic, Function, FunctionContext, FunctionInput,
-    FunctionOutput, FunctionRegistry, FunctionSignature, Parameter, RegistryError, Type,
+    DefaultValue, EvalDiagnostic, Function, FunctionContext, FunctionInput, FunctionOutput,
+    FunctionRegistry, FunctionSignature, Parameter, RegistryError, Type,
 };
 
 pub(crate) fn register_builtins(registry: &mut FunctionRegistry) -> Result<(), RegistryError> {
@@ -22,12 +22,19 @@ impl Function for HeadingFunction {
 
     fn signature(&self) -> FunctionSignature {
         FunctionSignature {
-            parameters: vec![Parameter {
-                name: "level",
-                ty: Type::Int,
-                default: Some(DefaultValue::Int(1)),
-            }],
-            body: Type::Content,
+            parameters: vec![
+                Parameter {
+                    name: "level",
+                    ty: Type::Int,
+                    default: Some(DefaultValue::Int(1)),
+                },
+                Parameter {
+                    name: "body",
+                    ty: Type::Content,
+                    default: None,
+                },
+            ],
+            trailing_content: Some("body"),
             result: Type::Content,
         }
     }
@@ -35,7 +42,7 @@ impl Function for HeadingFunction {
     fn call(
         &self,
         _context: &FunctionContext<'_>,
-        input: FunctionInput<'_>,
+        mut input: FunctionInput<'_>,
     ) -> Result<FunctionOutput, Vec<EvalDiagnostic>> {
         let level = input.arguments.int("level");
         if !(1..=6).contains(&level) {
@@ -44,9 +51,7 @@ impl Function for HeadingFunction {
                 range: input.range,
             }]);
         }
-        let CallBody::Content(body) = input.body else {
-            unreachable!("signature binding guarantees a Content body");
-        };
+        let body = input.arguments.take_content("body");
         Ok(FunctionOutput::content(Content::single(
             Element::Heading {
                 level: level as u8,
@@ -66,12 +71,19 @@ impl Function for RawFunction {
 
     fn signature(&self) -> FunctionSignature {
         FunctionSignature {
-            parameters: vec![Parameter {
-                name: "lang",
-                ty: Type::Optional(Box::new(Type::String)),
-                default: Some(DefaultValue::None),
-            }],
-            body: Type::RawSource,
+            parameters: vec![
+                Parameter {
+                    name: "text",
+                    ty: Type::String,
+                    default: None,
+                },
+                Parameter {
+                    name: "lang",
+                    ty: Type::Optional(Box::new(Type::String)),
+                    default: Some(DefaultValue::None),
+                },
+            ],
+            trailing_content: None,
             result: Type::Content,
         }
     }
@@ -82,15 +94,12 @@ impl Function for RawFunction {
         input: FunctionInput<'_>,
     ) -> Result<FunctionOutput, Vec<EvalDiagnostic>> {
         let language = input.arguments.optional_string("lang").map(str::to_owned);
-        let CallBody::Raw(body) = input.body else {
-            unreachable!("signature binding guarantees a RawSource body");
-        };
-        Ok(FunctionOutput::content(Content::single(
-            Element::Raw {
-                text: body.text.to_owned(),
-                block: input.body_form == BodyForm::Block,
-                language,
-            },
+        let text = input.arguments.string("text").to_owned();
+        let block = input.arguments.string_form("text") == Some(StringLiteralForm::Multiline);
+        Ok(FunctionOutput::content(raw_content(
+            text,
+            block,
+            language,
             input.range,
         )))
     }
@@ -105,8 +114,12 @@ impl Function for QuoteFunction {
 
     fn signature(&self) -> FunctionSignature {
         FunctionSignature {
-            parameters: Vec::new(),
-            body: Type::Content,
+            parameters: vec![Parameter {
+                name: "body",
+                ty: Type::Content,
+                default: None,
+            }],
+            trailing_content: Some("body"),
             result: Type::Content,
         }
     }
@@ -114,16 +127,30 @@ impl Function for QuoteFunction {
     fn call(
         &self,
         _context: &FunctionContext<'_>,
-        input: FunctionInput<'_>,
+        mut input: FunctionInput<'_>,
     ) -> Result<FunctionOutput, Vec<EvalDiagnostic>> {
-        let CallBody::Content(body) = input.body else {
-            unreachable!("signature binding guarantees a Content body");
-        };
+        let body = input.arguments.take_content("body");
         Ok(FunctionOutput::content(Content::single(
             Element::Quote(body),
             input.range,
         )))
     }
+}
+
+pub(crate) fn raw_content(
+    text: String,
+    block: bool,
+    language: Option<String>,
+    range: notist_model::TextRange,
+) -> Content {
+    Content::single(
+        Element::Raw {
+            text,
+            block,
+            language,
+        },
+        range,
+    )
 }
 
 #[cfg(test)]
@@ -143,7 +170,7 @@ mod tests {
             Element::Heading { level: 2, .. }
         ));
 
-        let raw = evaluator.evaluate("#raw(lang=\"rust\")![fn main() {}]!");
+        let raw = evaluator.evaluate("#raw(r#\"fn main() {}\"#, lang=\"rust\")");
         assert!(raw.diagnostics.is_empty(), "{:?}", raw.diagnostics);
         assert!(matches!(
             &raw.content.elements[0].element,
@@ -161,8 +188,8 @@ mod tests {
 
     #[test]
     fn block_raw_excludes_delimiter_line_breaks() {
-        let evaluated =
-            Evaluator::default().evaluate("#raw(lang=\"text\")![\nline one\nline two\n]!");
+        let evaluated = Evaluator::default()
+            .evaluate("#raw(r#\"\"\"\nline one\nline two\n\"\"\"#, lang=\"text\")");
         assert!(
             evaluated.diagnostics.is_empty(),
             "{:?}",
@@ -175,7 +202,21 @@ mod tests {
     }
 
     #[test]
-    fn reports_signature_and_body_mode_errors_before_calling_builtins() {
+    fn raw_triple_quotes_without_an_opening_line_break_stay_inline() {
+        let evaluated = Evaluator::default().evaluate(r####"#raw(r#"""quoted"""#)"####);
+        assert!(
+            evaluated.diagnostics.is_empty(),
+            "{:?}",
+            evaluated.diagnostics
+        );
+        assert!(matches!(
+            &evaluated.content.elements[0].element,
+            Element::Raw { text, block: false, .. } if text == "\"\"quoted\"\""
+        ));
+    }
+
+    #[test]
+    fn reports_signature_and_trailing_content_errors_before_calling_builtins() {
         let evaluator = Evaluator::default();
         let wrong_level = evaluator.evaluate("#heading(level=\"two\")[Title]");
         assert!(
@@ -187,7 +228,7 @@ mod tests {
         let wrong_body = evaluator.evaluate("#raw[parsed]");
         assert_eq!(
             wrong_body.diagnostics[0].message,
-            "body type mismatch: expected RawSource, found Content"
+            "function does not accept trailing Content"
         );
 
         let unknown = evaluator.evaluate("#quote(source=\"book\")[text]");

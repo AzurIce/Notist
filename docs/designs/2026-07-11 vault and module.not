@@ -2,14 +2,14 @@
 
 Notist 的模块系统类似于 Rust，只是不需要显示声明，依据目录自动定义：
 
-#raw![
+```
 vault-root/
   ├─submodule2/
   │   ├─subsubmodule.not # vault::submodule2::subsubmodule
   │   └─README.not       # vault::submodule2
   ├─submoule1.not        # vault::submodule1
   └─README.not           # vault
-]!
+```
 
 `README.not` 的 id 是其父目录路径对应的 id（也因此 `submodule/README.not` 和 `submodule.not` 不能共存）
 

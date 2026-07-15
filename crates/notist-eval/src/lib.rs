@@ -10,11 +10,12 @@ use notist_model::{Annotation, Content, TextRange};
 use notist_syntax::Parse;
 
 pub use function::{
-    CallBody, Function, FunctionContext, FunctionInput, FunctionOutput, FunctionRegistry,
-    RawSource, RegistryError,
+    Function, FunctionContext, FunctionInput, FunctionOutput, FunctionRegistry, RegistryError,
 };
 pub use structure::structure;
-pub use type_system::{BoundArguments, DefaultValue, FunctionSignature, Parameter, Type, Value};
+pub use type_system::{
+    BoundArguments, DefaultValue, FunctionSignature, Parameter, Type, Value, ValueOrigin,
+};
 
 /// The result of lowering syntax and evaluating content-producing calls.
 #[derive(Clone, Debug, Default, Eq, PartialEq)]
@@ -95,7 +96,7 @@ pub(crate) fn lower_fragment(
 
 #[cfg(test)]
 mod tests {
-    use notist_model::{Block, Content, Element, ElementNode, TextRange, UnresolvedCallBody};
+    use notist_model::{Block, Content, Element, ElementNode, TextRange};
 
     use super::*;
 
@@ -108,8 +109,12 @@ mod tests {
 
         fn signature(&self) -> FunctionSignature {
             FunctionSignature {
-                parameters: Vec::new(),
-                body: Type::Content,
+                parameters: vec![Parameter {
+                    name: "body",
+                    ty: Type::Content,
+                    default: None,
+                }],
+                trailing_content: Some("body"),
                 result: Type::Content,
             }
         }
@@ -117,14 +122,9 @@ mod tests {
         fn call(
             &self,
             _context: &FunctionContext<'_>,
-            input: FunctionInput<'_>,
+            mut input: FunctionInput<'_>,
         ) -> Result<FunctionOutput, Vec<EvalDiagnostic>> {
-            let CallBody::Content(body) = input.body else {
-                return Err(vec![EvalDiagnostic {
-                    message: "quote requires a content body".into(),
-                    range: input.range,
-                }]);
-            };
+            let body = input.arguments.take_content("body");
             Ok(FunctionOutput {
                 content: Content::single(
                     Element::Custom {
@@ -171,27 +171,24 @@ mod tests {
     }
 
     #[test]
-    fn preserves_unknown_calls_with_syntax_selected_bodies() {
+    fn preserves_unknown_calls_with_optional_trailing_content() {
         let content = Evaluator::default().evaluate("#missing(x=1)[[[visible]]]");
-        let raw = Evaluator::default().evaluate("#missing![[[ignored]]]!");
+        let bodyless = Evaluator::default().evaluate("#missing(x=1)");
 
         assert_eq!(content.diagnostics.len(), 1);
         assert_eq!(content.diagnostics[0].message, "unknown function `missing`");
         assert_eq!(content.content.elements.len(), 1);
         assert!(matches!(
-            &content.content.elements[0].element,
+        &content.content.elements[0].element,
             Element::UnresolvedCall {
                 name,
-                body: UnresolvedCallBody::Content(body),
+                trailing: Some(body),
                 ..
             } if name == "missing" && matches!(body.elements[0].element, Element::Reference(_))
         ));
         assert!(matches!(
-            &raw.content.elements[0].element,
-            Element::UnresolvedCall {
-                body: UnresolvedCallBody::Raw(body),
-                ..
-            } if body == "[[ignored]]"
+            &bodyless.content.elements[0].element,
+            Element::UnresolvedCall { trailing: None, .. }
         ));
     }
 
@@ -209,6 +206,55 @@ mod tests {
         assert!(matches!(structured.document.blocks[0], Block::Paragraph(_)));
         assert!(matches!(structured.document.blocks[1], Block::Element(_)));
         assert!(matches!(structured.document.blocks[2], Block::Paragraph(_)));
+    }
+
+    #[test]
+    fn lowers_backtick_and_fenced_raw_sugar() {
+        let evaluator = Evaluator::default();
+
+        let inline = evaluator.evaluate("Before `cargo test` after");
+        assert!(inline.diagnostics.is_empty(), "{:?}", inline.diagnostics);
+        assert!(matches!(
+            &inline.content.elements[1].element,
+            Element::Raw {
+                text,
+                block: false,
+                language: None,
+            } if text == "cargo test"
+        ));
+
+        let fenced = evaluator.evaluate("```rust\nfn main() {}\n```");
+        assert!(fenced.diagnostics.is_empty(), "{:?}", fenced.diagnostics);
+        assert!(matches!(
+            &fenced.content.elements[0].element,
+            Element::Raw {
+                text,
+                block: true,
+                language: Some(language),
+            } if text == "fn main() {}" && language == "rust"
+        ));
+
+        let explicit = evaluator.evaluate("#raw(r#\"cargo test\"#)");
+        assert!(
+            explicit.diagnostics.is_empty(),
+            "{:?}",
+            explicit.diagnostics
+        );
+        assert_eq!(
+            inline.content.elements[1].element,
+            explicit.content.elements[0].element
+        );
+
+        let without_builtins = Evaluator::new(FunctionRegistry::new()).evaluate("`core raw`");
+        assert!(
+            without_builtins.diagnostics.is_empty(),
+            "{:?}",
+            without_builtins.diagnostics
+        );
+        assert!(matches!(
+            &without_builtins.content.elements[0].element,
+            Element::Raw { text, .. } if text == "core raw"
+        ));
     }
 
     #[test]

@@ -1,36 +1,36 @@
 #heading(level=1)[Notist Grammar]
 
-本文严格定义当前实现的 Notist 源文件语法。概念、使用方式和执行模型见 [[vault::intro]]；设计动机见 `designs` 下的记录。
+本文严格定义当前目标语法。概念、使用方式和执行模型见 [[vault::intro]]；字符串、Raw 语法与本次迁移的设计动机见 [[vault::designs::2026-07-14 string literals and raw syntax]]。
 
 #heading(level=2)[记号]
 
 - `"text"` 表示固定字符。
 - `A B` 表示顺序连接，`A | B` 表示选择。
 - `A?`、`A*`、`A+` 分别表示零或一次、零或多次、一次或多次。
-- `SameBangs`、括号配对等上下文相关规则由正文定义。
+- `SameHashes`、`SameBackticks` 和括号配对等上下文相关规则由正文定义。
 
 #heading(level=2)[源文件]
 
 源文件是 UTF-8 文本，换行符可以是 LF 或 CRLF。源码位置使用半开 byte range：start 包含，end 不包含。
 
-#raw(lang="ebnf")![
-Document = (Text | WikiLink | TransparentScope | ContentCall | RawCall)* ;
-]!
+```ebnf
+Document = (Text | WikiLink | TransparentScope | Call | RawSyntax)* ;
+```
 
-未被其他结构占用的源码是 Text。Backtick shield、Raw Call body 内不扫描宿主语法；Transparent Scope 和 Content Call body 内递归扫描。
+未被其他结构占用的源码是 Text。RawSyntax 内不扫描宿主语法；Transparent Scope 和 Call 的 trailing Content 内递归扫描。
 
 #heading(level=2)[标识符与名称]
 
-#raw(lang="ebnf")![
+```ebnf
 Identifier = (UnicodeAlphanumeric | "_" | "-")+ ;
 QualifiedName = Identifier ("::" Identifier)* ;
-]!
+```
 
 `::` 两侧不允许空白。当前实现允许 Identifier 以数字开头。
 
 #heading(level=2)[Wiki Reference]
 
-#raw(lang="ebnf")![
+```ebnf
 WikiLink = "[[" WikiReferenceBody "]]" ;
 WikiReferenceBody = ModulePart ("#" Label)? ;
 ModulePart = ModuleReference | EmptyWhenLabelExists ;
@@ -43,7 +43,7 @@ AbsoluteReference = "vault" ("::" ModuleSegment)* ;
 ParentReference = "super" ("::" "super")* ("::" ModuleSegment)* ;
 SelfReference = "self" ("::" ModuleSegment)* ;
 RelativeReference = ModuleSegment ("::" ModuleSegment)* ;
-]!
+```
 
 ModulePart 和 Label 两侧会 trim whitespace。引用最多包含一个 `#`；Label 不能为空，只有带 Label 时 ModulePart 才能为空。
 
@@ -51,59 +51,33 @@ ModuleSegment 不能包含 control character、`/`、`\`、`#`、`[` 或 `]`。�
 
 #heading(level=2)[Transparent Scope]
 
-#raw(lang="ebnf")![
+```ebnf
 TransparentScope = "#[" ContentBody "]" Attributes? ;
-]!
+```
 
-ContentBody 的 `[` 与 `]` 可以嵌套。双引号中的 bracket 不参与配对；`\` 跳过紧随其后的字符；Backtick shield 作为整体跳过。
+ContentBody 的 `[` 与 `]` 可以嵌套。String literal 和 RawSyntax 作为整体跳过，其中的 bracket 不参与配对；`\` 跳过紧随其后的字符。Transparent Scope 不裁剪 framing newline。
 
-#heading(level=2)[Content Call]
+#heading(level=2)[Function Call]
 
-#raw(lang="ebnf")![
-ContentCall = "#" QualifiedName Arguments? "[" ContentBody "]" Attributes? ;
-]!
+```ebnf
+Call = "#" QualifiedName CallTail Attributes? ;
+CallTail = Arguments ContentBlock?
+         | ContentBlock ;
+ContentBlock = "[" ContentBody "]" ;
+```
 
-call head 内不允许额外空白：Function 名称、Arguments 和 `[` 必须相邻。ContentBody 使用 Transparent Scope 的配对规则，并递归解析其中的 Notist 结构。
+`#name(args)` 是完整调用，不要求 trailing Content；`#name(args)[Content]` 和 `#name[Content]` 保留。只有名称而没有 `()` 或 `[]` 的 `#name` 不是 Call。
 
-#heading(level=2)[Raw Call]
+Function 名称、Arguments 和可选 ContentBlock 必须相邻。ContentBlock 内递归解析 Notist；它产生 `Content`，并绑定到 Function signature 指定的 `trailing_content` 参数。它不是普通位置参数，因此可以跟在 named arguments 之后。Parser 不读取 Function signature 来决定 body 的解析模式。
 
-#raw(lang="ebnf")![
-RawCall = "#" QualifiedName Arguments? RawOpen RawBody RawClose Attributes? ;
-RawOpen = Bangs "[" ;
-RawClose = "]" SameBangs ;
-Bangs = "!"+ ;
-]!
-
-SameBangs 的数量必须与 RawOpen 完全相同。Parser 从 body 起寻找第一个 `]` 加相同数量 `!` 的序列；RawBody 中的所有字符均没有宿主语法意义。
-
-Inline Raw Call 的 body 紧贴 delimiter：
-
-#raw(lang="not")!![
-#raw![text]!
-]!!
-
-Block Raw Call 的 opening 和 closing delimiter 必须各自位于一行，delimiter 后和 closing delimiter 前的 framing newline 不属于 RawBody：
-
-#raw(lang="not")!![
-#raw(lang="text")![
-line one
-line two
-]!
-]!!
-
-上例的 RawBody 严格等于 `line one\nline two`。LF 和 CRLF 都按同样规则处理。body 若包含 `]!`，必须提高 delimiter level，例如 `#raw!![ ... ]!!`。
-
-#heading(level=2)[Body Form]
-
-Content Call 或 Raw Call 的 `[` 后立即出现 LF 或 CRLF 时，BodyForm 为 Block，否则为 Inline。Transparent Scope 没有 BodyForm。
-
-对于 Block Raw Call，parser 在记录 BodyForm 后从 body range 排除 opening 后的一个换行，以及 closing 前的一个换行。其他 block body 不执行该裁剪。
+ContentBlock 的 `[` 后立即出现 LF 或 CRLF 时为 Block，否则为 Inline。Block Content 会从 payload range 排除 opening 后和 closing 前各一个 framing newline；Inline Content 不裁剪。Transparent Scope 不具有这一 BodyForm。
 
 #heading(level=2)[Arguments]
 
-#raw(lang="ebnf")![
+```ebnf
 Arguments = "(" Whitespace* ArgumentList? Whitespace* ")" ;
-ArgumentList = Argument (Whitespace* "," Whitespace* Argument)* ;
+ArgumentList = Argument (Whitespace* "," Whitespace* Argument)*
+               (Whitespace* ",")? ;
 Argument = NamedArgument | PositionalArgument ;
 NamedArgument = Identifier Whitespace* "=" Whitespace* Expression ;
 PositionalArgument = Expression ;
@@ -114,14 +88,87 @@ NoneLiteral = "none" ;
 BoolLiteral = "true" | "false" ;
 IntLiteral = "-"? ASCII_DIGIT+ ;
 FloatLiteral = "-"? ASCII_DIGIT* "." ASCII_DIGIT* ;
-StringLiteral = '"' StringCharacter* '"' ;
-]!
+```
 
-Float 必须至少有一个 digit 且只能有一个 `.`。String 支持 `\"`、`\\`、`\n`、`\r`、`\t`。Arguments 允许空白和换行，不允许 trailing comma。Named argument 之后不允许 positional argument。
+Float 必须至少有一个 digit 且只能有一个 `.`。Arguments 允许空白、换行和 trailing comma。Named argument 之后不允许 positional argument；trailing Content 不属于 positional argument，因此可以跟在 named arguments 之后。Backtick 和 fenced code 不是 Expression，不能作为 Function 参数；需要传递源码时使用 String literal。
+
+#heading(level=2)[String Literal]
+
+四种形式都产生同一个 `String` 类型。Inline/Multiline 是 literal provenance，Escaped/Raw 只决定是否处理反斜杠；它们不是四种运行时类型。
+
+```ebnf
+StringLiteral = EscapedInlineString
+              | EscapedMultilineString
+              | RawInlineString
+              | RawMultilineString ;
+
+EscapedInlineString = '"' EscapedInlineCharacter* '"' ;
+EscapedMultilineString = '"""' Newline EscapedMultilineCharacter* '"""' ;
+
+RawInlineString = "r" Hashes '"' RawInlineCharacter* '"' SameHashes ;
+RawMultilineString = "r" Hashes '"""' Newline RawMultilineCharacter* '"""' SameHashes ;
+Hashes = "#"+ ;
+Newline = LF | CRLF ;
+```
+
+Inline String 不允许 LF 或 CRLF；Multiline String 允许换行。只有 triple quote 后立即出现 LF 或 CRLF 时才选择 Multiline form；该 required opening framing newline 不属于 value。Closing delimiter 前若紧邻一个 LF 或 CRLF，也裁掉一个 closing framing newline。除此之外不裁剪空白，也不执行 dedent。Escaped String 支持 `\"`、`\\`、`\n`、`\r`、`\t`，其他或不完整的 escape 产生 SyntaxError。
+
+这条 opening-line-break 规则消除 Raw Inline 与 Raw Multiline 的词法重叠。未紧跟换行时，raw prefix 后的第一个 quote 是 Inline opener，因此 `r#"""#` 是值为 `"` 的 Inline Raw String，`r#"""text"""#` 是值为 `""text""` 的 Inline Raw String。需要 Multiline provenance 时必须实际换行：
+
+```not
+#raw(text=r#"""
+text
+"""#)
+```
+
+Raw String 至少使用一个 `#`，反斜杠和 quote 在 payload 中保持原样。Closing delimiter 必须使用与 opener 完全相同的正数 hash level；更高 level 可容纳较低 level 的 closing-like 文本：
+
+````not
+#raw(text=r##"text containing "# without closing"##)
+
+#raw(
+  text=r##"""
+text containing """# without closing
+"""##,
+  lang="text",
+)
+````
+
+上例中的四种 quote/hash literal 都仍然是 String。`raw` 根据直接传入的 String literal 是 Inline 还是 Multiline 来决定产生 inline 或 block Raw Element。
+
+#heading(level=2)[Inline Raw 与 Fenced Raw]
+
+Backtick syntax 只在宿主 Content 中构造内置 Raw Element，不是 String literal，也不能作为 Function argument expression。
+
+```ebnf
+RawSyntax = InlineRaw | FencedRaw ;
+InlineRaw = Backticks InlineRawBody SameBackticks ;
+FencedRaw = FenceOpen Newline FencedRawBody Newline FenceClose ;
+Backticks = "`"+ ;
+FenceOpen = BackticksAtLeast3 InfoTag? ;
+FenceClose = BackticksAtLeastOpeningLength ;
+```
+
+InlineRaw 使用完全相同长度的 backtick run 关闭；正文需要包含 backtick 时提高 delimiter length：
+
+````text
+`ordinary raw`
+``contains ` inside``
+````
+
+FencedRaw 的 opener 至少三个 backtick。opening fence 后同一行的非空文本经 horizontal trim 后成为 info tag。Closing fence 可以缩进，backtick 数量必须不少于 opener，之后只能有 horizontal whitespace 或行尾。Opening 后和 closing 前各一个 framing newline 不属于 payload。
+
+````not
+```rust
+fn main() {}
+```
+````
+
+宿主中的 inline backtick 直接产生 inline Raw Element；fence 直接产生 block Raw Element，info tag 直接成为该 Element 的 language。它们语义上归一到内置 Raw 构造逻辑，但不经过动态名称 `raw` 的查找或参数绑定。
 
 #heading(level=2)[Attributes]
 
-#raw(lang="ebnf")![
+```ebnf
 Attributes = "@" FirstAttribute ("," AttributeItem)* ;
 FirstAttribute = Id | AttributeItem ;
 AttributeItem = Tag | Class | KeyValue ;
@@ -131,13 +178,9 @@ Class = "." Identifier ;
 KeyValue = Identifier "=" AttributeValue ;
 AttributeValue = Identifier | QuotedAttributeValue ;
 QuotedAttributeValue = '"' AttributeCharacter* '"' ;
-]!
+```
 
 Attributes 中不允许空白。可选 ID 只能是第一个 bare Identifier；Tag、Class、KeyValue 可以重复并保持源码顺序。QuotedAttributeValue 中的 `\` 会跳过下一个字符。
-
-#heading(level=2)[Backtick Shield]
-
-开头有 N 个反引号时，后续第一个长度至少为 N 的反引号 run 结束 shield。shield 内不扫描 Wiki Reference、Scope 或 Call。此结构仅用于词法屏蔽，不会 lowering 为 Raw Element。
 
 #heading(level=2)[文本与段落]
 
@@ -145,10 +188,10 @@ Attributes 中不允许空白。可选 ID 只能是第一个 bare Identifier；T
 
 #heading(level=2)[错误与恢复]
 
-未闭合或非法的 Wiki Reference、Scope、Call body、Arguments、Expression 和 Attributes 产生 SyntaxError。Raw closing delimiter level 不匹配时，错误必须报告期望的 level。
+未闭合或非法的 Wiki Reference、Scope、Call、Arguments、String literal、InlineRaw、FencedRaw 和 Attributes 产生 SyntaxError。Raw syntax 和 String literal 内的宿主标记不会泄漏到外层 parser。
 
 未知 Function 不是 syntax error。它在 evaluation 阶段产生 diagnostic，并保留为 UnresolvedCall。类型、参数绑定、模块解析和内置 Function 校验错误同样属于语法之后的 diagnostics。
 
 #heading(level=2)[非当前语法]
 
-Markdown 风格语法糖、一般表达式、变量、User Function、控制流、import、完整 Label resolution、插件自定义宿主 grammar、formatter trivia model 尚未进入当前规范。
+除 inline backtick 与 fenced raw 外，其他 Markdown 风格语法糖、一般表达式、变量、User Function、控制流、import、完整 Label resolution、插件自定义宿主 grammar、formatter trivia model 尚未进入当前规范。

@@ -12,26 +12,26 @@ Notist 将“为一段内容附加语义”和“调用一个产生内容的函�
 
 Transparent Scope 是覆盖在普通内容之上的 annotation range：
 
-#raw(lang="not")![
+```not
 #[important concept]@concept,#knowledge,.highlight,status=draft
-]!
+```
 
 它不创建容器 Element，也不改变内部语法。内部的引用、强调、函数调用和嵌套 Scope 都照常解析：
 
-#raw(lang="not")![
+```not
 #[Read [[self::background]] and #quote[remember *this*.]]@reading
-]!
+```
 
 Transparent Scope 可以跨越 inline Element 或 block 边界，因为它描述的是源码范围，而不是内容树的父子关系。它本身不区分 inline 与 block。
 
 Lowering 时，边界标记被移除，内部 Content 保留，同时产生一条 Annotation：
 
-#raw(lang="text")![
+```text
 #[A [[target]] B]@concept
 
 Content:    Text("A "), Reference("target"), Text(" B")
 Annotation: range(body) + { id: "concept" }
-]!
+```
 
 这种正交模型允许同一段内容同时属于多个语义范围，而不必强迫 Element 树表达所有交叠关系。
 
@@ -39,7 +39,7 @@ Annotation: range(body) + { id: "concept" }
 
 普通调用使用 `#name(arguments)[body]`：
 
-#raw(lang="not")![
+```not
 #heading(level=1)[Notist *Overview*]
 
 #quote[
@@ -47,7 +47,7 @@ The body is ordinary Notist Content.
 
 It may contain [[self::references]] and #heading(level=2)[nested calls].
 ]
-]!
+```
 
 宿主 parser 会递归解析 body。Lowering 在执行函数之前先把 body 转换为 `Content`，因此函数直接接收语义内容，不需要自行重新调用 Notist parser。
 
@@ -57,14 +57,14 @@ Content Call 适合 heading、quote、note、link 等以 Notist 内容为输入�
 
 Raw Call 在完整 call head，也就是函数名和可选参数之后增加成对的 `!`：
 
-#raw(lang="not")!![
+```not
 #raw(lang="rust")![fn main() { println!("hello"); }]!
 
 #diagram(engine="mermaid")![
 graph TD
     A --> B
 ]!
-]!!
+```
 
 `!` 表示 body 对宿主 Notist parser 不透明。核心只识别调用名称、参数、body 边界和 Attribute，并把 body 作为保留源码范围的 RawSource 交给函数。
 
@@ -74,11 +74,11 @@ graph TD
 
 Raw delimiter 可以通过增加 `!` 数量扩展。开头与结尾必须使用相同数量的 `!`，body 只在遇到 `]` 加对应数量的 `!` 时结束：
 
-#raw(lang="not")!!![
+```not
 #raw![ordinary raw]!
 
 #raw!![body may contain ]! without closing]!!
-]!!!
+```
 
 如果 body 中包含 `]!`，调用使用 `!![...]!!`；如果包含 `]!!`，调用使用 `!!![...]!!!`。Raw body 不需要反斜杠转义，也不需要宿主理解内部语言的括号、字符串或注释规则。
 
@@ -86,13 +86,13 @@ Raw delimiter 可以通过增加 `!` 数量扩展。开头与结尾必须使用�
 
 只有会产生 Element 的 Call 需要记录 body 的 source form。`[` 后立即出现换行时为 Block，否则为 Inline：
 
-#raw(lang="not")!![
+```not
 #raw![inline raw]!       // Inline
 
 #raw![                  // Block
 block raw
 ]!
-]!!
+```
 
 该信息记录在 Call 上并传给 Function。它主要服务于 raw、code 等同一函数可产生 inline/block Element 的场景，不改变 Content Call body 的解析方式，也不适用于 Transparent Scope。
 
@@ -102,11 +102,11 @@ Block/Inline 是调用处的形式信息，不等同于函数返回类型。函�
 
 Attribute 位于 Scope 或 Call 结束后的 `@` 列表中：
 
-#raw(lang="not")!![
+```not
 #[content]@id,#tag-a,#tag-b,.class-a,.class-b,key=value,owner="Alice"
 #quote[content]@citation,#source,author="Alice"
 #raw(lang="rust")![code]!@example,#snippet
-]!!
+```
 
 列表规则如下：
 
@@ -121,9 +121,9 @@ Tag 和 Class 本质上也是可重复属性，但使用前缀提供高频简写
 
 参数与 Attribute 的职责不同：
 
-#raw(lang="not")![
+```not
 #heading(level=2)[Title]@introduction,#public
-]!
+```
 
 - `level=2` 是函数参数，参与调用、类型检查和 Element 构造。
 - `@introduction,#public` 是结果元数据，用于索引、查询、样式或插件分析。
@@ -132,23 +132,23 @@ Tag 和 Class 本质上也是可重复属性，但使用前缀提供高频简写
 
 这一区分由语法本身决定，不依赖名称解析或类型信息：
 
-#raw(lang="text")!![
+```text
 #[...]       -> Transparent Scope, parse body as Notist
 #name[...]   -> Content Call, parse body as Notist
 #name(args)![...]! -> Raw Call, keep body as RawSource
-]!!
+```
 
 因此 Tree-sitter、编辑器高亮和增量 parser 无需先加载插件即可确定语言边界：Content body 使用 Notist 高亮，Raw body 可以保持 raw，或根据函数名/参数注入另一种语言。
 
 核心 parser 应稳定产出：
 
-#raw(lang="text")![
+```text
 Parse
 ├─ links: Vec<WikiLink>
 ├─ scopes: Vec<TransparentScope>
 ├─ calls: Vec<Call>
 └─ errors: Vec<SyntaxError>
-]!
+```
 
 其中 Call 保存 name、CallMode、raw delimiter level、arguments range、body range、BodyForm、Attributes 和完整 range。Raw Call 是原子区域；Transparent Scope 与 Content Call 的 body 会递归发现内部语法。
 
@@ -158,7 +158,7 @@ Parse
 
 运行时不再把所有调用称为 Processor。统一接口是产生 Content 的 Function：
 
-#raw(lang="text")![
+```text
 CallBody
 ├─ Content(Content)
 └─ Raw(RawSource)
@@ -171,7 +171,7 @@ FunctionInput
 └─ range
 
 Function::call(context, input) -> FunctionOutput
-]!
+```
 
 当前 arguments 已解析为第一阶段 Expression AST，并经过字面量求值、静态类型检查和 signature binding，以结构化 Value 传给 Function。现阶段支持 `none`、Bool、Int、Float 和 String 字面量；名称解析、变量、运算表达式与用户函数将在后续扩展。
 

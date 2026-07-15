@@ -88,20 +88,11 @@ pub enum Element {
         name: String,
         /// The raw argument text, if present.
         arguments: Option<String>,
-        /// The body preserved according to the call's syntax mode.
-        body: UnresolvedCallBody,
-        /// Whether the body opener is followed immediately by a newline.
+        /// The optional trailing Content preserved for display and tooling.
+        trailing: Option<Content>,
+        /// Whether the trailing Content uses block source form.
         block: bool,
     },
-}
-
-/// A recoverable unresolved call body.
-#[derive(Clone, Debug, Eq, PartialEq)]
-pub enum UnresolvedCallBody {
-    /// A normal call body that was lowered recursively.
-    Content(Content),
-    /// A raw call body preserved exactly as source text.
-    Raw(String),
 }
 
 impl Element {

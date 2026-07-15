@@ -4,9 +4,9 @@ Notist 的 LSP 是编辑器与 `notist-analysis` 之间的协议适配层。它�
 
 第一版作为现有 CLI 的子命令发布：
 
-#raw(lang="bash")![
+```bash
 notist lsp
-]!
+```
 
 这样命令行、Zed、VS Code 和其他编辑器只需要安装一个版本一致的 `notist` 可执行文件。只有当独立发布、daemon 生命周期或依赖体积成为真实问题时，再考虑拆出单独的 `notist-lsp` binary crate。
 
@@ -30,7 +30,7 @@ notist lsp
 
 #heading(level=2)[Ownership]
 
-#raw(lang="text")![
+```text
 Editor
   -> LSP JSON-RPC
   -> notist-cli::lsp
@@ -44,7 +44,7 @@ Editor
        name and reference resolution
        completion / hover / navigation queries
   -> notist-syntax / notist-eval / notist-model
-]!
+```
 
 `notist-analysis` 必须保持编辑器和协议无关。它使用 `PathBuf`、`ModulePath`、`TextRange` 和自身的查询结果类型，不应暴露 `lsp_types::Position`、URI 或 CompletionItem。
 
@@ -67,12 +67,12 @@ Zed extension 后续增加 language server adapter，优先从 PATH 查找 `noti
 
 LSP 初始化时在 worktree 内发现所有 marker，并为每个 root 建立独立 Workspace：
 
-#raw(lang="text")![
+```text
 editor worktree
   -> discover Notist.toml markers
   -> VaultState { root, Workspace }
   -> BTreeMap<VaultRoot, VaultState>
-]!
+```
 
 一个 source 归属于最近祖先 marker。嵌套 marker 会建立新的 vault，外层 Workspace 扫描到该目录时停止递归。这样同一个 source 不会同时进入两个 Module graph。
 
@@ -80,7 +80,7 @@ editor worktree
 
 每个 vault 的 Workspace 都接收属于自己的 open document overlays：
 
-#raw(lang="text")![
+```text
 filesystem sources
        +
 vault overlays { path -> version + Arc<str> }
@@ -91,7 +91,7 @@ Workspace snapshot
   module index
   resolved references
   diagnostics
-]!
+```
 
 规则如下：
 
@@ -119,11 +119,11 @@ Notist 内部的 `TextRange` 使用 UTF-8 byte offset，而 LSP `Position` 通�
 
 analysis source 应附带统一的 `LineIndex`：
 
-#raw(lang="text")![
+```text
 byte offset
   <-> line number + UTF-8 column
   <-> LSP line + UTF-16 column
-]!
+```
 
 所有 diagnostics、definition、references、hover range 和 symbol range 都必须经过同一个转换实现。需要覆盖 ASCII、中文、emoji、组合字符、CRLF 和文件末尾位置测试。
 
@@ -150,9 +150,9 @@ Diagnostic 应包含稳定的 `source = "notist"`、可机器识别的 code、�
 
 最先支持 Wiki Reference 的 Module 跳转：
 
-#raw(lang="not")![
+```not
 [[notes::today]]
-]!
+```
 
 光标位于 reference path 时，analysis 根据当前 Module 解析目标 ModulePath。目标有 source file 时跳到文件开头；虚拟目录 Module 没有 `README.not` 时，可以返回其目录或第一个真实子模块，但第一版也可以不提供结果。
 
@@ -228,13 +228,13 @@ Hover、completion 和 diagnostics 可能需要 Function registry 和类型信�
 
 Server state 可以维护当前 immutable snapshot 和递增 revision：
 
-#raw(lang="text")![
+```text
 didChange(version)
   -> update overlay
   -> schedule analysis revision N
   -> build snapshot N
   -> publish only if N is still current
-]!
+```
 
 旧 revision 的慢任务完成后不能覆盖更新结果。Hover、completion 等读取请求捕获一个 snapshot 并在其上完成；如果客户端取消请求，应尽快停止昂贵查询。
 
@@ -244,7 +244,7 @@ didChange(version)
 
 `notist-analysis` 后续可以形成以下协议无关接口：
 
-#raw(lang="text")![
+```text
 WorkspaceSnapshot::build(root, overlays)
 snapshot.source(file_id)
 snapshot.module_at(file_id)
@@ -254,7 +254,7 @@ snapshot.references_at(file_id, byte_offset)
 snapshot.completions_at(file_id, byte_offset)
 snapshot.hover_at(file_id, byte_offset)
 snapshot.document_symbols(file_id)
-]!
+```
 
 查询结果引用稳定的 FileId、SymbolId 和 TextRange。Path、ModulePath 与 display text 是附加信息，不应代替稳定 identity。
 

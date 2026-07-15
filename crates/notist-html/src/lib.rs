@@ -4,7 +4,7 @@ use std::fmt::Write;
 
 use notist_model::{
     Block, Content, Element, ElementNode, ModulePath, ModuleReference, StructuredDocument,
-    UnresolvedCallBody, WikiReference,
+    WikiReference,
 };
 use percent_encoding::{NON_ALPHANUMERIC, utf8_percent_encode};
 
@@ -225,9 +225,16 @@ impl Renderer<'_, '_> {
             Element::UnresolvedCall {
                 name,
                 arguments,
-                body,
+                trailing,
                 block,
-            } => self.unresolved_call(name, arguments.as_deref(), body, *block, node, position),
+            } => self.unresolved_call(
+                name,
+                arguments.as_deref(),
+                trailing.as_ref(),
+                *block,
+                node,
+                position,
+            ),
         }
     }
 
@@ -344,7 +351,7 @@ impl Renderer<'_, '_> {
         &mut self,
         name: &str,
         arguments: Option<&str>,
-        body: &UnresolvedCallBody,
+        trailing: Option<&Content>,
         block: bool,
         node: &ElementNode,
         position: RenderPosition,
@@ -364,13 +371,11 @@ impl Renderer<'_, '_> {
         }
         self.range_attributes(node);
         self.output.push('>');
-        match body {
-            UnresolvedCallBody::Content(body) if tag == "div" => self.flow_content(body),
-            UnresolvedCallBody::Content(body) => self.inline_content(body),
-            UnresolvedCallBody::Raw(body) => {
-                self.output.push_str("<code>");
-                escape_text(&mut self.output, body);
-                self.output.push_str("</code>");
+        if let Some(body) = trailing {
+            if tag == "div" {
+                self.flow_content(body);
+            } else {
+                self.inline_content(body);
             }
         }
         write!(self.output, "</{tag}>").unwrap();
@@ -429,7 +434,6 @@ mod tests {
     use notist_eval::{Evaluator, structure};
     use notist_model::{
         Block, Content, Element, ElementNode, ModulePath, StructuredDocument, TextRange,
-        UnresolvedCallBody,
     };
 
     use super::*;
@@ -444,7 +448,7 @@ mod tests {
     #[test]
     fn renders_evaluated_document_structure() {
         let evaluation = Evaluator::default().evaluate(
-            "#heading(level=2)[Title]\n\nBefore after\n\n#quote[First\n\nSecond]\n\n#raw(lang=\"rust\")![\nfn main() {}\n]!",
+            "#heading(level=2)[Title]\n\nBefore after\n\n#quote[First\n\nSecond]\n\n#raw(r#\"\"\"\nfn main() {}\n\"\"\"#, lang=\"rust\")",
         );
         let structured = structure(evaluation);
 
@@ -570,7 +574,7 @@ mod tests {
     }
 
     #[test]
-    fn preserves_unresolved_content_and_raw_bodies() {
+    fn preserves_unresolved_trailing_content_and_bodyless_calls() {
         let document = StructuredDocument {
             blocks: vec![
                 Block::Paragraph(Content {
@@ -578,7 +582,7 @@ mod tests {
                         Element::UnresolvedCall {
                             name: "plugin::inline".into(),
                             arguments: Some("kind=\"tip\"".into()),
-                            body: UnresolvedCallBody::Content(Content::single(
+                            trailing: Some(Content::single(
                                 Element::Text("visible".into()),
                                 TextRange::new(10, 17),
                             )),
@@ -590,9 +594,9 @@ mod tests {
                 }),
                 Block::Element(node(
                     Element::UnresolvedCall {
-                        name: "plugin::raw".into(),
+                        name: "plugin::bodyless".into(),
                         arguments: None,
-                        body: UnresolvedCallBody::Raw("<unsafe>".into()),
+                        trailing: None,
                         block: true,
                     },
                     19,
@@ -608,6 +612,6 @@ mod tests {
         assert!(html.contains("data-notist-arguments=\"kind=&quot;tip&quot;\""));
         assert!(html.contains(">visible</span></span>"));
         assert!(html.contains("<div class=\"notist-unresolved-call\""));
-        assert!(html.contains("<code>&lt;unsafe&gt;</code>"));
+        assert!(html.contains("data-notist-name=\"plugin::bodyless\""));
     }
 }

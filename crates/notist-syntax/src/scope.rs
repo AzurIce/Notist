@@ -1,6 +1,6 @@
 use notist_model::TextRange;
 
-use crate::{Argument, SyntaxError};
+use crate::{Argument, RawLiteral, SyntaxError};
 
 /// A `#[...]` scope whose body is parsed as ordinary Notist content.
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -22,27 +22,21 @@ pub struct Call {
     pub arguments_range: Option<TextRange>,
     /// Parsed argument expressions in source order.
     pub arguments: Vec<Argument>,
-    /// Whether the body is parsed as Notist content or preserved as raw source.
-    pub mode: CallMode,
-    /// The number of `!` markers delimiting a raw body, or `None` for Content.
-    pub raw_delimiter_level: Option<usize>,
-    /// The body range without the surrounding brackets.
-    pub body_range: TextRange,
-    /// Whether the body opener is followed immediately by a newline.
-    pub body_form: BodyForm,
+    /// The optional trailing Content body.
+    pub body: Option<ContentBody>,
     /// The postfix attributes attached to the call result.
     pub attributes: Attributes,
     /// The complete source range of the call.
     pub range: TextRange,
 }
 
-/// The syntax-selected interpretation of a call body.
+/// A trailing `[...]` body parsed recursively as Notist Content.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub enum CallMode {
-    /// A normal `#name[...]` body parsed recursively as Notist content.
-    Content,
-    /// A `#name(args)![...]!` body preserved as raw source.
-    Raw,
+pub struct ContentBody {
+    /// The body payload without the surrounding brackets or framing newlines.
+    pub payload_range: TextRange,
+    /// Whether the body opener is followed immediately by a newline.
+    pub form: BodyForm,
 }
 
 /// The source form of a call body.
@@ -113,7 +107,7 @@ pub struct SpannedName {
 
 pub(crate) fn parse_scopes_and_calls(
     source: &str,
-    raw_ranges: &[TextRange],
+    raw_literals: &[RawLiteral],
     errors: &mut Vec<SyntaxError>,
 ) -> (Vec<TransparentScope>, Vec<Call>) {
     let mut scopes = Vec::new();
@@ -121,7 +115,7 @@ pub(crate) fn parse_scopes_and_calls(
     parse_regions_in(
         source,
         TextRange::new(0, source.len()),
-        raw_ranges,
+        raw_literals,
         errors,
         &mut scopes,
         &mut calls,
@@ -132,7 +126,7 @@ pub(crate) fn parse_scopes_and_calls(
 fn parse_regions_in(
     source: &str,
     search_range: TextRange,
-    raw_ranges: &[TextRange],
+    raw_literals: &[RawLiteral],
     errors: &mut Vec<SyntaxError>,
     scopes: &mut Vec<TransparentScope>,
     calls: &mut Vec<Call>,
@@ -141,8 +135,8 @@ fn parse_regions_in(
     let mut cursor = search_range.start;
 
     while cursor < search_range.end {
-        if let Some(raw) = crate::raw::containing(raw_ranges, cursor) {
-            cursor = raw.end;
+        if let Some(raw) = crate::raw::containing(raw_literals, cursor) {
+            cursor = raw.range.end;
             continue;
         }
         if bytes[cursor] != b'#' {
@@ -150,7 +144,7 @@ fn parse_regions_in(
             continue;
         }
 
-        match parse_region_at(source, cursor, raw_ranges, errors) {
+        match parse_region_at(source, cursor, raw_literals, errors) {
             Some(Region::Transparent(scope)) => {
                 if scope.range.end > search_range.end {
                     cursor += 1;
@@ -159,7 +153,7 @@ fn parse_regions_in(
                 let body_range = scope.body_range;
                 let end = scope.range.end;
                 scopes.push(scope);
-                parse_regions_in(source, body_range, raw_ranges, errors, scopes, calls);
+                parse_regions_in(source, body_range, raw_literals, errors, scopes, calls);
                 cursor = end;
             }
             Some(Region::Call(call)) => {
@@ -167,12 +161,11 @@ fn parse_regions_in(
                     cursor += 1;
                     continue;
                 }
-                let body_range = call.body_range;
-                let mode = call.mode;
+                let body_range = call.body.map(|body| body.payload_range);
                 let end = call.range.end;
                 calls.push(call);
-                if mode == CallMode::Content {
-                    parse_regions_in(source, body_range, raw_ranges, errors, scopes, calls);
+                if let Some(body_range) = body_range {
+                    parse_regions_in(source, body_range, raw_literals, errors, scopes, calls);
                 }
                 cursor = end;
             }
@@ -189,7 +182,7 @@ enum Region {
 fn parse_region_at(
     source: &str,
     start: usize,
-    raw_ranges: &[TextRange],
+    raw_literals: &[RawLiteral],
     errors: &mut Vec<SyntaxError>,
 ) -> Option<Region> {
     let bytes = source.as_bytes();
@@ -197,7 +190,7 @@ fn parse_region_at(
     let next = *bytes.get(after_hash)?;
 
     if next == b'[' {
-        let close = match find_matching(source, after_hash, b'[', b']', raw_ranges) {
+        let close = match find_matching(source, after_hash, b'[', b']', raw_literals) {
             Some(close) => close,
             None => {
                 errors.push(SyntaxError {
@@ -217,8 +210,10 @@ fn parse_region_at(
     }
 
     let (name, mut cursor) = parse_qualified_name(source, after_hash)?;
+    let mut has_call_syntax = false;
     let (arguments_range, arguments) = if bytes.get(cursor) == Some(&b'(') {
-        let close = match find_matching(source, cursor, b'(', b')', raw_ranges) {
+        has_call_syntax = true;
+        let close = match find_matching(source, cursor, b'(', b')', raw_literals) {
             Some(close) => close,
             None => {
                 errors.push(SyntaxError {
@@ -230,71 +225,55 @@ fn parse_region_at(
         };
         let range = TextRange::new(cursor + 1, close);
         cursor = close + 1;
-        let arguments = crate::argument::parse_arguments(source, range, errors);
+        let arguments = crate::argument::parse_arguments(source, range, raw_literals, errors);
         (Some(range), arguments)
     } else {
         (None, Vec::new())
     };
 
-    let delimiter_start = cursor;
-    while bytes.get(cursor) == Some(&b'!') {
-        cursor += 1;
-    }
-    let raw_delimiter_level = cursor - delimiter_start;
-    let (mode, raw_delimiter_level) = if raw_delimiter_level == 0 {
-        (CallMode::Content, None)
+    let body = if bytes.get(cursor) == Some(&b'[') {
+        has_call_syntax = true;
+        let body_form = if bytes.get(cursor + 1) == Some(&b'\n')
+            || bytes.get(cursor + 1..cursor + 3) == Some(b"\r\n")
+        {
+            BodyForm::Block
+        } else {
+            BodyForm::Inline
+        };
+        let close = match find_matching(source, cursor, b'[', b']', raw_literals) {
+            Some(close) => close,
+            None => {
+                errors.push(SyntaxError {
+                    message: format!("unclosed body for call `{}`", name.value),
+                    range: TextRange::new(start, source.len()),
+                });
+                return None;
+            }
+        };
+        let payload_range = match body_form {
+            BodyForm::Inline => TextRange::new(cursor + 1, close),
+            BodyForm::Block => block_body_range(source, cursor + 1, close),
+        };
+        cursor = close + 1;
+        Some(ContentBody {
+            payload_range,
+            form: body_form,
+        })
     } else {
-        (CallMode::Raw, Some(raw_delimiter_level))
+        None
     };
 
-    if bytes.get(cursor) != Some(&b'[') {
+    if !has_call_syntax {
         return None;
     }
 
-    let body_form = if bytes.get(cursor + 1) == Some(&b'\n')
-        || bytes.get(cursor + 1..cursor + 3) == Some(b"\r\n")
-    {
-        BodyForm::Block
-    } else {
-        BodyForm::Inline
-    };
-
-    let close = match raw_delimiter_level {
-        Some(level) => find_raw_close(source, cursor + 1, level),
-        None => find_matching(source, cursor, b'[', b']', raw_ranges),
-    };
-    let close = match close {
-        Some(close) => close,
-        None => {
-            errors.push(SyntaxError {
-                message: match raw_delimiter_level {
-                    Some(level) => format!(
-                        "unclosed raw body for call `{}`; expected `]{}`",
-                        name.value,
-                        "!".repeat(level)
-                    ),
-                    None => format!("unclosed body for call `{}`", name.value),
-                },
-                range: TextRange::new(start, source.len()),
-            });
-            return None;
-        }
-    };
-    let body_range = match body_form {
-        BodyForm::Inline => TextRange::new(cursor + 1, close),
-        BodyForm::Block => block_body_range(source, cursor + 1, close),
-    };
-    let delimiter_end = close + 1 + raw_delimiter_level.unwrap_or(0);
-    let (attributes, end) = parse_attributes(source, delimiter_end, errors);
+    let (attributes, end) = parse_attributes(source, cursor, errors);
 
     Some(Region::Call(Call {
         name,
         arguments_range,
         arguments,
-        mode,
-        raw_delimiter_level,
-        body_range,
-        body_form,
+        body,
         attributes,
         range: TextRange::new(start, end),
     }))
@@ -317,24 +296,6 @@ fn block_body_range(source: &str, start: usize, end: usize) -> TextRange {
         end
     };
     TextRange::new(content_start, content_end)
-}
-
-fn find_raw_close(source: &str, body_start: usize, delimiter_level: usize) -> Option<usize> {
-    let bytes = source.as_bytes();
-    let mut cursor = body_start;
-    while let Some(relative) = source.get(cursor..)?.find(']') {
-        let close = cursor + relative;
-        let bangs_start = close + 1;
-        let bangs_end = bangs_start + delimiter_level;
-        if bytes
-            .get(bangs_start..bangs_end)
-            .is_some_and(|bangs| bangs.iter().all(|byte| *byte == b'!'))
-        {
-            return Some(close);
-        }
-        cursor = close + 1;
-    }
-    None
 }
 
 fn parse_attributes(
@@ -513,7 +474,7 @@ fn find_matching(
     open: usize,
     opening: u8,
     closing: u8,
-    raw_ranges: &[TextRange],
+    raw_literals: &[RawLiteral],
 ) -> Option<usize> {
     let bytes = source.as_bytes();
     let mut depth = 0usize;
@@ -523,9 +484,16 @@ fn find_matching(
 
     while let Some(&byte) = bytes.get(cursor) {
         if cursor != open
-            && let Some(raw) = crate::raw::containing(raw_ranges, cursor)
+            && let Some(raw) = crate::raw::containing(raw_literals, cursor)
         {
-            cursor = raw.end;
+            cursor = raw.range.end;
+            continue;
+        }
+        if cursor != open
+            && matches!(byte, b'"' | b'r')
+            && let Some(string) = crate::argument::string_literal_range_at(source, cursor)
+        {
+            cursor = string.end;
             continue;
         }
         if escaped {
@@ -612,71 +580,99 @@ mod tests {
     }
 
     #[test]
-    fn recursively_parses_content_calls_but_keeps_raw_calls_atomic() {
-        let source = "#[outer #[inner]@inner #quote[#[nested] [[visible]]] #code![#[raw] [[ignored]]]!]@outer";
+    fn recursively_parses_content_calls_but_keeps_raw_literals_atomic() {
+        let source =
+            "#[outer #[inner]@inner #quote[#[nested] [[visible]]] `#[raw] [[ignored]]`]@outer";
         let parse = parse(source);
         assert!(parse.errors.is_empty());
         assert_eq!(parse.scopes.len(), 3);
-        assert_eq!(parse.calls.len(), 2);
-        assert_eq!(parse.calls[0].mode, CallMode::Content);
-        assert_eq!(parse.calls[1].mode, CallMode::Raw);
+        assert_eq!(parse.calls.len(), 1);
+        assert_eq!(parse.raw_literals.len(), 1);
         assert_eq!(parse.links.len(), 1);
     }
 
     #[test]
-    fn parses_raw_call_name_arguments_body_form_and_attributes() {
-        let source =
-            "#plugin::code(lang=\"rust\")![\n[1, 2, 3]\n]!@example,#snippet,.wide,status=checked";
+    fn parses_argument_only_calls_and_attributes() {
+        let source = "#plugin::code(lang=\"rust\")@example,#snippet,.wide,status=checked";
         let parse = parse(source);
         assert!(parse.errors.is_empty());
         let call = &parse.calls[0];
 
         assert_eq!(call.name.value, "plugin::code");
-        assert_eq!(call.mode, CallMode::Raw);
-        assert_eq!(call.raw_delimiter_level, Some(1));
-        assert_eq!(call.body_form, BodyForm::Block);
+        assert!(call.body.is_none());
         let arguments = call.arguments_range.unwrap();
         assert_eq!(&source[arguments.start..arguments.end], "lang=\"rust\"");
-        assert_eq!(
-            &source[call.body_range.start..call.body_range.end],
-            "[1, 2, 3]"
-        );
         assert_eq!(call.attributes.id.as_ref().unwrap().value, "example");
         assert_eq!(call.attributes.items.len(), 3);
         assert_eq!(call.range.end, source.len());
     }
 
     #[test]
-    fn distinguishes_inline_and_block_call_forms() {
-        let inline = parse("#raw![content]!");
-        let block = parse("#raw![\r\ncontent\r\n]!");
-        assert_eq!(inline.calls[0].body_form, BodyForm::Inline);
-        assert_eq!(block.calls[0].body_form, BodyForm::Block);
+    fn supports_each_content_call_shape_but_not_bare_names() {
+        let source = "#ping() #quote[text] #render(mode=\"full\")[body] #bare";
+        let parse = parse(source);
+        assert!(parse.errors.is_empty(), "{:?}", parse.errors);
         assert_eq!(
-            &"#raw![\r\ncontent\r\n]!"
-                [block.calls[0].body_range.start..block.calls[0].body_range.end],
+            parse
+                .calls
+                .iter()
+                .map(|call| call.name.value.as_str())
+                .collect::<Vec<_>>(),
+            ["ping", "quote", "render"]
+        );
+        assert!(parse.calls[0].body.is_none());
+        assert!(parse.calls[1].arguments_range.is_none());
+        assert!(parse.calls[1].body.is_some());
+        assert!(parse.calls[2].arguments_range.is_some());
+        assert!(parse.calls[2].body.is_some());
+    }
+
+    #[test]
+    fn distinguishes_inline_and_block_call_forms() {
+        let inline = parse("#quote[content]");
+        let block = parse("#quote[\r\ncontent\r\n]");
+        assert_eq!(inline.calls[0].body.unwrap().form, BodyForm::Inline);
+        assert_eq!(block.calls[0].body.unwrap().form, BodyForm::Block);
+        let body = block.calls[0].body.unwrap();
+        assert_eq!(
+            &"#quote[\r\ncontent\r\n]"[body.payload_range.start..body.payload_range.end],
             "content"
         );
     }
 
     #[test]
-    fn excludes_block_raw_framing_newlines_from_an_empty_body() {
-        let source = "#raw![\n]!";
+    fn excludes_block_content_framing_newlines_from_an_empty_body() {
+        let source = "#quote[\n]";
         let parse = parse(source);
         assert!(parse.errors.is_empty());
-        assert!(parse.calls[0].body_range.is_empty());
+        assert!(parse.calls[0].body.unwrap().payload_range.is_empty());
     }
 
     #[test]
-    fn raw_delimiter_level_allows_closing_brackets_in_the_body() {
-        let source = "#raw!![first ]! second ] ordinary]!!";
+    fn string_literals_do_not_close_argument_lists_or_content_bodies() {
+        let source = "#render(source=r#\") ] [\"#)[before \" ] \" after]";
         let parse = parse(source);
         assert!(parse.errors.is_empty(), "{:?}", parse.errors);
         let call = &parse.calls[0];
-        assert_eq!(call.raw_delimiter_level, Some(2));
+        let body = call.body.unwrap();
         assert_eq!(
-            &source[call.body_range.start..call.body_range.end],
-            "first ]! second ] ordinary"
+            &source[body.payload_range.start..body.payload_range.end],
+            "before \" ] \" after"
+        );
+    }
+
+    #[test]
+    fn raw_strings_with_backticks_do_not_confuse_argument_matching() {
+        let source = r###"#code(value=r#"`"#)"###;
+        let raw = crate::raw::parse_raw_literals(source);
+        assert!(raw.literals.is_empty());
+        assert_eq!(
+            crate::argument::string_literal_range_at(source, 12),
+            Some(TextRange::new(12, 18))
+        );
+        assert_eq!(
+            find_matching(source, 5, b'(', b')', &raw.literals),
+            Some(18)
         );
     }
 
@@ -702,9 +698,9 @@ mod tests {
         assert_eq!(unclosed.errors.len(), 1);
         assert_eq!(unclosed.errors[0].message, "unclosed transparent scope");
 
-        let mismatched_raw = parse("#raw!![body]!");
-        assert_eq!(mismatched_raw.errors.len(), 1);
-        assert!(mismatched_raw.errors[0].message.contains("expected `]!!`"));
+        let unclosed_call = parse("#quote[body");
+        assert_eq!(unclosed_call.errors.len(), 1);
+        assert!(unclosed_call.errors[0].message.contains("unclosed body"));
     }
 
     #[test]

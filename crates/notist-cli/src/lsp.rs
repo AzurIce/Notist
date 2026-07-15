@@ -25,7 +25,7 @@ use lsp_types::{
 use notist_analysis::{DiagnosticKind, SourceOverlays, Workspace, discover_vault_roots};
 use notist_eval::{DefaultValue, Evaluator, FunctionRegistry, FunctionSignature};
 use notist_model::{ModulePath, TextRange};
-use notist_syntax::{CallMode, Parse};
+use notist_syntax::Parse;
 use percent_encoding::{AsciiSet, CONTROLS, utf8_percent_encode};
 
 const URI_PATH_ENCODE_SET: &AsciiSet = &CONTROLS
@@ -58,7 +58,13 @@ fn server_capabilities() -> ServerCapabilities {
         text_document_sync: Some(TextDocumentSyncCapability::Kind(TextDocumentSyncKind::FULL)),
         completion_provider: Some(CompletionOptions {
             resolve_provider: Some(false),
-            trigger_characters: Some(vec!["[".into(), ":".into(), "#".into()]),
+            trigger_characters: Some(vec![
+                "[".into(),
+                ":".into(),
+                "#".into(),
+                "(".into(),
+                ",".into(),
+            ]),
             ..CompletionOptions::default()
         }),
         hover_provider: Some(HoverProviderCapability::Simple(true)),
@@ -559,24 +565,16 @@ fn completion(
     let parse = module.parse.as_ref().cloned().unwrap_or_default();
     let line_index = LineIndex::new(source);
 
-    if is_in_raw_body(&parse, offset) {
+    if is_in_raw_literal(&parse, offset) {
         return Ok(None);
     }
     if let Some((call, context)) = argument_completion_context(source, &parse, offset)
         && let Some(function) = state.functions.get(&call.name.value)
     {
-        let used: BTreeSet<_> = call
-            .arguments
-            .iter()
-            .filter_map(|argument| argument.name.as_ref().map(|name| name.value.as_str()))
-            .collect();
         let mut items = Vec::new();
-        for parameter in function.signature().parameters {
-            if used.contains(parameter.name)
-                || !starts_with_case_insensitive(parameter.name, &context.prefix)
-            {
-                continue;
-            }
+        let signature = function.signature();
+        let used = used_argument_parameters(&signature, call);
+        for parameter in completable_parameters(&signature, &used, &context.prefix) {
             items.push(CompletionItem {
                 label: parameter.name.into(),
                 kind: Some(CompletionItemKind::FIELD),
@@ -717,11 +715,11 @@ fn contains(range: TextRange, offset: usize) -> bool {
     range.start <= offset && offset < range.end
 }
 
-fn is_in_raw_body(parse: &Parse, offset: usize) -> bool {
-    parse
-        .calls
-        .iter()
-        .any(|call| call.mode == CallMode::Raw && contains(call.body_range, offset))
+fn is_in_raw_literal(parse: &Parse, offset: usize) -> bool {
+    parse.raw_literals.iter().any(|raw| {
+        contains(raw.range, offset)
+            || (raw.payload_range.end == raw.range.end && offset == raw.range.end)
+    })
 }
 
 struct CompletionContext {
@@ -826,6 +824,45 @@ fn argument_completion_context<'a>(
     ))
 }
 
+fn completable_parameters<'a>(
+    signature: &'a FunctionSignature,
+    used: &BTreeSet<&str>,
+    prefix: &str,
+) -> Vec<&'a notist_eval::Parameter> {
+    signature
+        .parameters
+        .iter()
+        .filter(|parameter| {
+            !used.contains(parameter.name)
+                && signature.trailing_content != Some(parameter.name)
+                && starts_with_case_insensitive(parameter.name, prefix)
+        })
+        .collect()
+}
+
+fn used_argument_parameters<'a>(
+    signature: &'a FunctionSignature,
+    call: &'a notist_syntax::Call,
+) -> BTreeSet<&'a str> {
+    let mut used = BTreeSet::new();
+    let mut positional_index = 0usize;
+    let mut saw_named = false;
+
+    for argument in &call.arguments {
+        if let Some(name) = &argument.name {
+            saw_named = true;
+            used.insert(name.value.as_str());
+        } else if !saw_named {
+            if let Some(parameter) = signature.parameters.get(positional_index) {
+                used.insert(parameter.name);
+            }
+            positional_index += 1;
+        }
+    }
+
+    used
+}
+
 fn starts_with_case_insensitive(value: &str, prefix: &str) -> bool {
     value
         .to_lowercase()
@@ -874,9 +911,16 @@ fn completion_module_reference(current: &ModulePath, target: &ModulePath, prefix
 }
 
 fn format_signature(name: &str, signature: &FunctionSignature) -> String {
+    let trailing = signature.trailing_content.and_then(|name| {
+        signature
+            .parameters
+            .iter()
+            .find(|parameter| parameter.name == name)
+    });
     let parameters = signature
         .parameters
         .iter()
+        .filter(|parameter| signature.trailing_content != Some(parameter.name))
         .map(|parameter| {
             let default = parameter
                 .default
@@ -887,12 +931,15 @@ fn format_signature(name: &str, signature: &FunctionSignature) -> String {
         })
         .collect::<Vec<_>>()
         .join(", ");
-    let body_marker = if signature.body == notist_eval::Type::RawSource {
-        "![RawSource]!"
+    let call = if parameters.is_empty() && trailing.is_some() {
+        format!("#{name}")
     } else {
-        "[Content]"
+        format!("#{name}({parameters})")
     };
-    format!("#{name}({parameters}){body_marker} -> {}", signature.result)
+    let trailing = trailing
+        .map(|parameter| format!("[{}: {}]", parameter.name, parameter.ty))
+        .unwrap_or_default();
+    format!("{call}{trailing} -> {}", signature.result)
 }
 
 fn format_default(default: &DefaultValue) -> String {
@@ -1031,6 +1078,69 @@ mod tests {
         assert_eq!(call.name.value, "heading");
         assert_eq!(context.prefix, "");
         assert_eq!(context.replace, TextRange::new(9, 9));
+    }
+
+    #[test]
+    fn omits_trailing_content_from_argument_completion() {
+        let registry = FunctionRegistry::with_builtins();
+        let signature = registry.get("heading").unwrap().signature();
+        let parameters = completable_parameters(&signature, &BTreeSet::new(), "");
+
+        assert_eq!(
+            parameters
+                .into_iter()
+                .map(|parameter| parameter.name)
+                .collect::<Vec<_>>(),
+            ["level"]
+        );
+    }
+
+    #[test]
+    fn omits_parameters_already_filled_positionally_from_completion() {
+        let registry = FunctionRegistry::with_builtins();
+        let signature = registry.get("raw").unwrap().signature();
+        let parse = notist_syntax::parse("#raw(\"code\", )");
+        let used = used_argument_parameters(&signature, &parse.calls[0]);
+        let parameters = completable_parameters(&signature, &used, "");
+
+        assert_eq!(
+            parameters
+                .into_iter()
+                .map(|parameter| parameter.name)
+                .collect::<Vec<_>>(),
+            ["lang"]
+        );
+    }
+
+    #[test]
+    fn detects_complete_and_unclosed_raw_literal_ranges() {
+        let complete = notist_syntax::parse("before `raw` after");
+        let raw = &complete.raw_literals[0];
+        assert!(is_in_raw_literal(&complete, raw.range.start));
+        assert!(is_in_raw_literal(&complete, raw.payload_range.start));
+        assert!(!is_in_raw_literal(&complete, raw.range.end));
+
+        let source = "before `raw";
+        let unclosed = notist_syntax::parse(source);
+        assert!(is_in_raw_literal(&unclosed, source.len()));
+    }
+
+    #[test]
+    fn formats_regular_and_trailing_content_signatures() {
+        let registry = FunctionRegistry::with_builtins();
+
+        assert_eq!(
+            format_signature("heading", &registry.get("heading").unwrap().signature()),
+            "#heading(level: Int = 1)[body: Content] -> Content"
+        );
+        assert_eq!(
+            format_signature("quote", &registry.get("quote").unwrap().signature()),
+            "#quote[body: Content] -> Content"
+        );
+        assert_eq!(
+            format_signature("raw", &registry.get("raw").unwrap().signature()),
+            "#raw(text: String, lang: String? = none) -> Content"
+        );
     }
 
     #[test]

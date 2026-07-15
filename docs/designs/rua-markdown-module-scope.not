@@ -53,7 +53,7 @@
 
 采用 wiki link 扩展：
 
-#raw(lang="markdown")![
+```markdown
 [[intro]]                          # 当前命名空间下的 Module `intro`
 [[#intro]]                         # 当前 Module 内的 block `#intro`
 [[pages]]                          # Module `pages`（即 `/pages/` 目录层级的 README）
@@ -64,7 +64,7 @@
 [[super]]                          # 父模块本身
 [[vault::pages::intro]]            # 绝对路径：仓库根下的 Module `intro`
 [[vault::pages::intro#section]]    # 绝对路径到 block `#section`
-]!
+```
 
 规则：
 
@@ -83,22 +83,22 @@
 
 #heading(level=3)[Inline Scope]
 
-#raw(lang="markdown")![
+```markdown
 这是普通段落，其中 #[#concept,draft,.highlight,priority=high]{关键概念} 需要被标记。
-]!
+```
 
 #heading(level=3)[Block Scope]
 
-#raw(lang="markdown")![
+```markdown
 #[#intro,draft,.lead,status=draft]{
 这是一个 block scope，
 可以跨多行、包含标题、列表、代码块。
 }
-]!
+```
 
 多个属性也可拆成多行（类似 Rust）：
 
-#raw(lang="markdown")![
+```markdown
 #[#intro]
 #[draft]
 #[.lead]
@@ -106,19 +106,19 @@
 {
 这是一个 block scope。
 }
-]!
+```
 
 #heading(level=3)[Page 级属性]
 
 文件顶部使用 `#![...]` 声明整个 Module 的属性：
 
-#raw(lang="markdown")![
+```markdown
 #![#index,math,.public,title=About,status=draft]
 
 # About
 
 正文开始...
-]!
+```
 
 #heading(level=3)[Scope 与 Block 的关系]
 
@@ -131,13 +131,13 @@
 
 属性列表写在 `#[...]` 或 `#![...]` 中，逗号分隔、不加空格。一个 Scope 或 Module 前可连续写多个 `#[...]` / `#![...]`，效果等价于合并属性列表。
 
-#raw(lang="ebnf")![
+```ebnf
 attrs     ::= attr ("," attr)*
 attr      ::= "#" identifier      # label（互斥，一个 scope 只能有一个）
             | identifier          # tag（可多个）
             | "." identifier      # class（可多个）
             | identifier "=" value # key=value 属性
-]!
+```
 
 示例 `#[#intro,draft,.lead,status=draft]{...}`：
 

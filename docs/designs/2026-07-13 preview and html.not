@@ -4,14 +4,14 @@ Notist 的 HTML 能力分为三个层次：`notist-html` 将语义文档渲染�
 
 三者共享同一条语言管线：
 
-#raw(lang="text")![
+```text
 .not source
   -> notist-syntax
   -> notist-eval lowering
   -> structuring
   -> StructuredDocument
   -> notist-html
-]!
+```
 
 HTML 层不重新解释源码。语法、函数、scope 和 reference 的语义只在 syntax、eval 与 analysis 中定义一次，preview 和 build 只是这些结果的不同消费者。
 
@@ -72,9 +72,9 @@ RawSource 和 Custom 内容都不是可信 HTML。未来即使允许插件渲染
 
 语义元素输出其原始 byte range：
 
-#raw(lang="html")![
+```html
 data-notist-start="12" data-notist-end="28"
-]!
+```
 
 这些 metadata 为未来的点击预览跳转源码、Hover fragment 和选择同步保留稳定接口。
 
@@ -84,9 +84,9 @@ Annotation 可能跨越多个 Element 或 block，不能总是直接映射为一
 
 静态导出使用 workspace 级命令：
 
-#raw(lang="shell")![
+```shell
 notist build docs -o dist
-]!
+```
 
 构建器遍历整个 Workspace，并将 ModulePath 映射为 clean URL：
 
@@ -112,11 +112,11 @@ Wiki Reference 在构建时解析：目标存在时输出链接；目标不存�
 
 本地预览复用 static build，不维护独立的动态渲染 API：
 
-#raw(lang="shell")![
+```shell
 notist preview .
 notist preview . --port 3000 --no-open
 notist preview . --host 0.0.0.0 --port 3000
-]!
+```
 
 默认行为：
 
@@ -130,7 +130,7 @@ notist preview . --host 0.0.0.0 --port 3000
 
 当前 preview 结构为：
 
-#raw(lang="text")![
+```text
 filesystem event
   -> debounce
   -> build complete staging site
@@ -138,7 +138,7 @@ filesystem event
   -> increment workspace revision
   -> publish revision over SSE
   -> browser reloads current clean URL
-]!
+```
 
 HTTP 服务只需要两个表面：
 

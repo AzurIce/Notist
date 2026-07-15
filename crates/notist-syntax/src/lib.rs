@@ -4,9 +4,13 @@ mod argument;
 mod raw;
 mod scope;
 
-pub use argument::{Argument, Expression, ExpressionKind};
+pub use argument::{
+    Argument, Expression, ExpressionKind, StringLiteral, StringLiteralForm, StringLiteralStyle,
+};
+pub use raw::{RawLiteral, RawLiteralForm, SpannedText};
 pub use scope::{
-    Attribute, AttributeValue, Attributes, BodyForm, Call, CallMode, SpannedName, TransparentScope,
+    Attribute, AttributeValue, Attributes, BodyForm, Call, ContentBody, SpannedName,
+    TransparentScope,
 };
 
 /// A parsed wiki-style module or label reference.
@@ -34,8 +38,10 @@ pub struct Parse {
     pub links: Vec<WikiLink>,
     /// Transparent annotation scopes discovered in source order.
     pub scopes: Vec<TransparentScope>,
-    /// Content and raw calls discovered in source order.
+    /// Function calls discovered in source order.
     pub calls: Vec<Call>,
+    /// Host-visible inline and fenced raw source literals.
+    pub raw_literals: Vec<RawLiteral>,
     /// Recoverable errors produced during parsing.
     pub errors: Vec<SyntaxError>,
 }
@@ -43,15 +49,32 @@ pub struct Parse {
 /// Parses the supported Notist syntax from a source string.
 pub fn parse(source: &str) -> Parse {
     let mut result = Parse::default();
-    let raw_ranges = raw::raw_ranges(source);
+    let raw_parse = raw::parse_raw_literals(source);
     (result.scopes, result.calls) =
-        scope::parse_scopes_and_calls(source, &raw_ranges, &mut result.errors);
+        scope::parse_scopes_and_calls(source, &raw_parse.literals, &mut result.errors);
+    result.raw_literals = raw_parse
+        .literals
+        .iter()
+        .filter(|literal| {
+            !position_is_in_embedded_value_syntax(
+                &result.scopes,
+                &result.calls,
+                literal.range.start,
+            )
+        })
+        .cloned()
+        .collect();
+    result
+        .errors
+        .extend(raw_parse.errors.into_iter().filter(|error| {
+            !position_is_in_embedded_value_syntax(&result.scopes, &result.calls, error.range.start)
+        }));
     let mut cursor = 0;
 
     while let Some(relative_start) = source[cursor..].find("[[") {
         let start = cursor + relative_start;
-        if let Some(raw) = raw::containing(&raw_ranges, start) {
-            cursor = raw.end;
+        if let Some(raw) = raw::containing(&result.raw_literals, start) {
+            cursor = raw.range.end;
             continue;
         }
         if let Some(hidden_end) = hidden_syntax_end(&result, start) {
@@ -80,6 +103,21 @@ pub fn parse(source: &str) -> Parse {
     result
 }
 
+fn position_is_in_embedded_value_syntax(
+    scopes: &[TransparentScope],
+    calls: &[Call],
+    position: usize,
+) -> bool {
+    let contains = |range: TextRange| range.start <= position && position < range.end;
+    scopes
+        .iter()
+        .any(|scope| scope.attributes.range.is_some_and(contains))
+        || calls.iter().any(|call| {
+            call.arguments_range.is_some_and(contains)
+                || call.attributes.range.is_some_and(contains)
+        })
+}
+
 fn hidden_syntax_end(parse: &Parse, position: usize) -> Option<usize> {
     let scope_end = parse.scopes.iter().find_map(|scope| {
         if scope.range.start <= position && position < scope.body_range.start {
@@ -90,22 +128,15 @@ fn hidden_syntax_end(parse: &Parse, position: usize) -> Option<usize> {
             None
         }
     });
-    let call_end = parse.calls.iter().find_map(|call| {
-        if call.mode == CallMode::Raw && call.range.start <= position && position < call.range.end {
-            Some(call.range.end)
-        } else if call.mode == CallMode::Content
-            && call.range.start <= position
-            && position < call.body_range.start
-        {
-            Some(call.body_range.start)
-        } else if call.mode == CallMode::Content
-            && call.body_range.end <= position
-            && position < call.range.end
-        {
-            Some(call.range.end)
-        } else {
-            None
+    let call_end = parse.calls.iter().find_map(|call| match call.body {
+        Some(body) if call.range.start <= position && position < body.payload_range.start => {
+            Some(body.payload_range.start)
         }
+        Some(body) if body.payload_range.end <= position && position < call.range.end => {
+            Some(call.range.end)
+        }
+        None if call.range.start <= position && position < call.range.end => Some(call.range.end),
+        _ => None,
     });
     match (scope_end, call_end) {
         (Some(scope), Some(call)) => Some(scope.min(call)),
@@ -282,8 +313,9 @@ mod tests {
     }
 
     #[test]
-    fn parses_links_in_content_calls_but_ignores_them_in_raw_calls() {
-        let parse = parse("[[outside]] #quote[[[inside]]] #code![[[raw]]]! [[after]]");
+    fn parses_links_in_content_calls_but_ignores_them_in_call_arguments() {
+        let parse =
+            parse("[[outside]] #quote[[[inside]]] #code(source=r#\"[[[raw]]]\"#) [[after]]");
         assert!(parse.errors.is_empty());
         assert_eq!(parse.links.len(), 3);
         assert_eq!(parse.calls.len(), 2);
@@ -302,10 +334,42 @@ mod tests {
 
     #[test]
     fn ignores_syntax_inside_raw_content() {
-        let parse = parse("`[[inline]] #[annotation]`\n```not\n#code![[[inside]]]!\n```");
+        let parse = parse("`[[inline]] #[annotation]`\n```not\n#code()[[[inside]]]\n```");
         assert!(parse.errors.is_empty());
         assert!(parse.links.is_empty());
         assert!(parse.scopes.is_empty());
         assert!(parse.calls.is_empty());
+        assert_eq!(parse.raw_literals.len(), 2);
+    }
+
+    #[test]
+    fn backticks_inside_string_arguments_are_not_host_raw_literals() {
+        let parse = parse(r###"#code(value=r#"`"#) [[after]]"###);
+        assert!(parse.errors.is_empty(), "{:?}", parse.errors);
+        assert!(parse.raw_literals.is_empty());
+        assert_eq!(parse.links.len(), 1);
+    }
+
+    #[test]
+    fn rejects_backtick_literals_in_argument_expressions() {
+        let parse = parse("#code(value=`text`)");
+        assert_eq!(parse.calls.len(), 1);
+        assert!(parse.raw_literals.is_empty());
+        assert_eq!(parse.errors.len(), 1);
+        assert!(
+            parse.errors[0]
+                .message
+                .contains("not supported in argument expressions")
+        );
+    }
+
+    #[test]
+    fn backticks_inside_transparent_scope_attributes_are_not_host_raw_literals() {
+        let parse = parse("#[body]@title=\"`\",sample=\"`paired`\"");
+
+        assert!(parse.errors.is_empty(), "{:?}", parse.errors);
+        assert!(parse.raw_literals.is_empty());
+        assert_eq!(parse.scopes.len(), 1);
+        assert_eq!(parse.scopes[0].attributes.items.len(), 2);
     }
 }

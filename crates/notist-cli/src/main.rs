@@ -4,7 +4,7 @@ use std::process::ExitCode;
 
 use clap::{Parser, Subcommand};
 use notist_analysis::{Workspace, resolve_vault_root};
-use notist_syntax::CallMode;
+use notist_syntax::RawLiteralForm;
 
 mod build;
 mod diagnostics;
@@ -118,17 +118,32 @@ fn run(cli: Cli) -> Result<ExitCode, Box<dyn std::error::Error>> {
                     );
                 }
                 for call in &parse.calls {
-                    let mode = match call.mode {
-                        CallMode::Content => "content",
-                        CallMode::Raw => "raw",
+                    let (range, kind) = match call.body {
+                        Some(body) => (body.payload_range, "content call"),
+                        None => (call.range, "call"),
                     };
                     println!(
-                        "{}:{}..{} {mode} call {}{}",
+                        "{}:{}..{} {kind} {}{}",
                         module.logical_path,
-                        call.body_range.start,
-                        call.body_range.end,
+                        range.start,
+                        range.end,
                         call.name.value,
                         format_id(&call.attributes)
+                    );
+                }
+                for raw in &parse.raw_literals {
+                    let form = match raw.form {
+                        RawLiteralForm::Inline => "inline raw",
+                        RawLiteralForm::Fenced => "fenced raw",
+                    };
+                    let tag = raw
+                        .tag
+                        .as_ref()
+                        .map(|tag| format!(" {}", tag.value))
+                        .unwrap_or_default();
+                    println!(
+                        "{}:{}..{} {form}{tag}",
+                        module.logical_path, raw.payload_range.start, raw.payload_range.end,
                     );
                 }
             }

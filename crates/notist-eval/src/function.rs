@@ -2,27 +2,8 @@ use std::collections::HashMap;
 use std::sync::Arc;
 
 use notist_model::{Annotation, Content, TextRange};
-use notist_syntax::BodyForm;
 
 use crate::{BoundArguments, EvalDiagnostic, Evaluation, FunctionSignature, lower_fragment};
-
-/// A borrowed source fragment passed unchanged to a function.
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub struct RawSource<'a> {
-    /// The fragment text without the call delimiters.
-    pub text: &'a str,
-    /// The fragment range in the original source file.
-    pub range: TextRange,
-}
-
-/// The evaluated or raw trailing body supplied to a function.
-#[derive(Clone, Debug, Eq, PartialEq)]
-pub enum CallBody<'a> {
-    /// A normal call body lowered recursively as Notist content.
-    Content(Content),
-    /// A raw call body preserved exactly as source text.
-    Raw(RawSource<'a>),
-}
 
 /// The input supplied to a content-producing function.
 #[derive(Clone, Debug, PartialEq)]
@@ -30,11 +11,7 @@ pub struct FunctionInput<'a> {
     /// The function name used at the call site.
     pub name: &'a str,
     /// Arguments after expression evaluation and signature binding.
-    pub arguments: BoundArguments<'a>,
-    /// The syntax-selected trailing body.
-    pub body: CallBody<'a>,
-    /// Whether the body opener is followed immediately by a newline.
-    pub body_form: BodyForm,
+    pub arguments: BoundArguments,
     /// The complete call range.
     pub range: TextRange,
 }
@@ -78,7 +55,7 @@ pub trait Function: Send + Sync {
     /// Returns the statically checkable function signature.
     fn signature(&self) -> FunctionSignature;
 
-    /// Evaluates bound arguments and the syntax-selected body into content.
+    /// Evaluates bound arguments into content.
     fn call(
         &self,
         context: &FunctionContext<'_>,
@@ -141,24 +118,19 @@ pub struct FunctionContext<'a> {
 }
 
 impl FunctionContext<'_> {
-    /// Explicitly parses and lowers raw source as nested Notist content.
-    pub fn evaluate(&self, source: RawSource<'_>) -> Evaluation {
+    /// Explicitly parses and lowers a source fragment as nested Notist content.
+    pub fn evaluate(&self, source: &str, range: TextRange) -> Evaluation {
         const MAX_DEPTH: usize = 64;
         if self.depth >= MAX_DEPTH {
             return Evaluation {
                 diagnostics: vec![EvalDiagnostic {
                     message: "function evaluation exceeded the recursion limit".into(),
-                    range: source.range,
+                    range,
                 }],
                 ..Evaluation::default()
             };
         }
 
-        lower_fragment(
-            source.text,
-            source.range.start,
-            self.registry,
-            self.depth + 1,
-        )
+        lower_fragment(source, range.start, self.registry, self.depth + 1)
     }
 }

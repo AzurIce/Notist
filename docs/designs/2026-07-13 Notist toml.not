@@ -4,14 +4,14 @@ Notist.toml 是 vault root marker。文件所在目录就是一个独立 vault �
 
 当前阶段只识别文件是否存在，不读取任何配置字段。因此一个完全空的 Notist.toml 就是有效配置：
 
-#raw(lang="text")![
+```text
 vault/
 ├── Notist.toml
 ├── README.not
 ├── page.not
 └── section/
     └── README.not
-]!
+```
 
 对应 ModulePath：
 
@@ -29,7 +29,7 @@ vault/
 
 对一个 Notist source，归属规则是从文件目录开始向上寻找最近的 Notist.toml。最近 marker 的父目录就是该文件的 vault root。
 
-#raw(lang="text")![
+```text
 repository/
 ├── docs/
 │   ├── Notist.toml
@@ -37,7 +37,7 @@ repository/
 └── notes/
     ├── Notist.toml
     └── today.not
-]!
+```
 
 guide.not 属于 docs vault，today.not 属于 notes vault。两个 vault 都拥有自己的 vault ModulePath 根，Reference、completion 和 diagnostics 不跨越边界。
 
@@ -47,14 +47,14 @@ guide.not 属于 docs vault，today.not 属于 notes vault。两个 vault 都拥
 
 marker 可以嵌套：
 
-#raw(lang="text")![
+```text
 docs/
 ├── Notist.toml
 ├── README.not
 └── examples/
     ├── Notist.toml
     └── README.not
-]!
+```
 
 examples 是独立 vault。扫描外层 docs 时，遇到 examples/Notist.toml 就停止向该目录递归。否则同一个 source 会同时拥有两个 ModulePath，引用与 diagnostics 也会重复。
 
@@ -72,23 +72,23 @@ CLI 接收的路径先经过 vault discovery：
 
 因此在只有 docs/Notist.toml 的 repository root 可以直接运行：
 
-#raw(lang="shell")![
+```shell
 notist check
 notist build
 notist preview
-]!
+```
 
 #heading(level=2)[LSP Behavior]
 
 Zed 等编辑器通常以整个 worktree 启动一个 Notist language server。LSP 在该 worktree 内发现所有 Notist.toml，并为每个 root 建立独立 Workspace。
 
-#raw(lang="text")![
+```text
 ServerState
 ├── open documents
 ├── docs/  -> Workspace
 ├── notes/ -> Workspace
 └── builtin Function registry
-]!
+```
 
 didOpen 和 didChange 的 source overlay 按最近 marker 分配。Definition、references、completion、Hover 和 diagnostics 只查询当前 source 所属的 Workspace。
 
