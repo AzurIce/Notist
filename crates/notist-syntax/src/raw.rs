@@ -2,11 +2,6 @@ use notist_model::TextRange;
 
 use crate::SyntaxError;
 
-pub(crate) struct RawParse {
-    pub literals: Vec<RawLiteral>,
-    pub errors: Vec<SyntaxError>,
-}
-
 /// A backtick-delimited raw source literal.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct RawLiteral {
@@ -38,79 +33,6 @@ pub struct SpannedText {
     pub value: String,
     /// The source range occupied by the text.
     pub range: TextRange,
-}
-
-pub(crate) fn parse_raw_literals(source: &str) -> RawParse {
-    let bytes = source.as_bytes();
-    let mut literals = Vec::new();
-    let mut errors = Vec::new();
-    let mut cursor = 0;
-    let mut argument_depth = 0usize;
-
-    while cursor < bytes.len() {
-        if argument_depth > 0 {
-            if matches!(bytes[cursor], b'"' | b'r')
-                && let Some(string) = crate::argument::string_literal_range_at(source, cursor)
-            {
-                cursor = string.end;
-                continue;
-            }
-            if bytes[cursor] == b'(' {
-                argument_depth += 1;
-                cursor += 1;
-                continue;
-            }
-            if bytes[cursor] == b')' {
-                argument_depth -= 1;
-                cursor += 1;
-                continue;
-            }
-        } else if bytes[cursor] == b'#'
-            && let Some(open) = call_argument_open_at(source, cursor)
-        {
-            argument_depth = 1;
-            cursor = open + 1;
-            continue;
-        }
-
-        if bytes[cursor] != b'`' {
-            cursor += 1;
-            continue;
-        }
-
-        let (literal, error) = parse_at(source, cursor);
-        cursor = literal.range.end.max(cursor + 1);
-        errors.extend(error);
-        literals.push(literal);
-    }
-
-    RawParse { literals, errors }
-}
-
-fn call_argument_open_at(source: &str, start: usize) -> Option<usize> {
-    let bytes = source.as_bytes();
-    let mut cursor = start + 1;
-    let mut segment_start = cursor;
-
-    loop {
-        while let Some(character) = source.get(cursor..)?.chars().next() {
-            if character.is_alphanumeric() || matches!(character, '_' | '-') {
-                cursor += character.len_utf8();
-            } else {
-                break;
-            }
-        }
-        if cursor == segment_start {
-            return None;
-        }
-        if bytes.get(cursor..cursor + 2) != Some(b"::") {
-            break;
-        }
-        cursor += 2;
-        segment_start = cursor;
-    }
-
-    (bytes.get(cursor) == Some(&b'(')).then_some(cursor)
 }
 
 pub(crate) fn parse_at(source: &str, start: usize) -> (RawLiteral, Option<SyntaxError>) {
@@ -343,28 +265,23 @@ fn trim_framing_newline(bytes: &[u8], end: usize, start: usize) -> usize {
     }
 }
 
-pub(crate) fn containing(literals: &[RawLiteral], position: usize) -> Option<&RawLiteral> {
-    literals
-        .iter()
-        .find(|literal| literal.range.start <= position && position < literal.range.end)
-}
-
-pub(crate) fn starting_at(literals: &[RawLiteral], position: usize) -> Option<&RawLiteral> {
-    literals
-        .iter()
-        .find(|literal| literal.range.start == position)
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
 
+    fn raw_literals(source: &str) -> (Vec<RawLiteral>, Vec<SyntaxError>) {
+        let parse = crate::parse(source);
+        (
+            parse.raw_literals().into_iter().cloned().collect(),
+            parse.errors,
+        )
+    }
+
     #[test]
     fn parses_inline_and_fenced_raw_literals() {
         let source = "before `#[inline]`\n```not\n#code[[[raw]]]\n```\nafter";
-        let parse = parse_raw_literals(source);
-        let literals = parse.literals;
-        assert!(parse.errors.is_empty(), "{:?}", parse.errors);
+        let (literals, errors) = raw_literals(source);
+        assert!(errors.is_empty(), "{:?}", errors);
         assert_eq!(literals.len(), 2);
         assert_eq!(literals[0].form, RawLiteralForm::Inline);
         assert_eq!(
@@ -382,14 +299,9 @@ mod tests {
     #[test]
     fn reports_unclosed_raw_literals_and_keeps_their_ranges_atomic() {
         let source = "before ```rust\nfn main() {}";
-        let parse = parse_raw_literals(source);
-        let literals = parse.literals;
-        assert_eq!(parse.errors.len(), 1);
-        assert!(
-            parse.errors[0]
-                .message
-                .contains("unclosed fenced raw literal")
-        );
+        let (literals, errors) = raw_literals(source);
+        assert_eq!(errors.len(), 1);
+        assert!(errors[0].message.contains("unclosed fenced raw literal"));
         assert_eq!(literals[0].range.end, source.len());
         assert_eq!(literals[0].tag.as_ref().unwrap().value, "rust");
     }
@@ -397,9 +309,8 @@ mod tests {
     #[test]
     fn longer_inline_delimiters_can_contain_shorter_runs() {
         let source = "``one ` two``";
-        let parse = parse_raw_literals(source);
-        let literals = parse.literals;
-        assert!(parse.errors.is_empty());
+        let (literals, errors) = raw_literals(source);
+        assert!(errors.is_empty());
         assert_eq!(literals[0].delimiter_len, 2);
         assert_eq!(
             &source[literals[0].payload_range.start..literals[0].payload_range.end],
@@ -410,17 +321,17 @@ mod tests {
     #[test]
     fn unclosed_inline_literals_stop_at_newlines_and_scanning_continues() {
         let source = "`first\n`second`";
-        let parse = parse_raw_literals(source);
-        assert_eq!(parse.errors.len(), 1);
-        assert_eq!(parse.literals.len(), 2);
-        assert_eq!(parse.literals[0].range, TextRange::new(0, 6));
+        let (literals, errors) = raw_literals(source);
+        assert_eq!(errors.len(), 1);
+        assert_eq!(literals.len(), 2);
+        assert_eq!(literals[0].range, TextRange::new(0, 6));
         assert_eq!(
-            &source[parse.literals[0].payload_range.start..parse.literals[0].payload_range.end],
+            &source[literals[0].payload_range.start..literals[0].payload_range.end],
             "first"
         );
-        assert_eq!(parse.literals[1].form, RawLiteralForm::Inline);
+        assert_eq!(literals[1].form, RawLiteralForm::Inline);
         assert_eq!(
-            &source[parse.literals[1].payload_range.start..parse.literals[1].payload_range.end],
+            &source[literals[1].payload_range.start..literals[1].payload_range.end],
             "second"
         );
     }
@@ -429,11 +340,11 @@ mod tests {
     fn fenced_closer_must_end_its_line() {
         for suffix in [",", ")"] {
             let source = format!("```not\nfirst\n```{suffix}\nsecond\n```\n");
-            let parse = parse_raw_literals(&source);
-            assert!(parse.errors.is_empty(), "{:?}", parse.errors);
-            assert_eq!(parse.literals.len(), 1);
+            let (literals, errors) = raw_literals(&source);
+            assert!(errors.is_empty(), "{:?}", errors);
+            assert_eq!(literals.len(), 1);
             assert_eq!(
-                &source[parse.literals[0].payload_range.start..parse.literals[0].payload_range.end],
+                &source[literals[0].payload_range.start..literals[0].payload_range.end],
                 format!("first\n```{suffix}\nsecond")
             );
         }

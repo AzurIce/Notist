@@ -115,4 +115,4 @@ Second paragraph with [[self::reference]].
 
 `FunctionRegistry::with_builtins()` 注册本文列出的三个名称。显式调用通过 qualified name 查找 Function；未注册的调用会保留为 `UnresolvedCall`，供显示和工具链继续处理。
 
-插件 Function 与内置 Function 共享 signature、binding 和返回模型，但不能重复注册同一个完整名称。新增内置 Function 时，应同时更新注册实现、求值测试、LSP completion/hover 测试和本文档。
+插件 Function 与内置 Function 共享 signature、binding 和返回模型，但不能重复注册同一个完整名称。注册时 Registry 校验 signature：每个 default 必须满足其参数类型，`result` 必须为 `Content`，trailing Content 参数必须已声明且类型为 `Content`。新增内置 Function 时，应同时更新注册实现、求值测试、LSP completion/hover 测试和本文档。

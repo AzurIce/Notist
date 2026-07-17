@@ -6,11 +6,12 @@ mod lower;
 mod structure;
 mod type_system;
 
-use notist_model::{Annotation, Content, TextRange};
+use notist_model::{Content, TextRange};
 use notist_syntax::Parse;
 
 pub use function::{
     Function, FunctionContext, FunctionInput, FunctionOutput, FunctionRegistry, RegistryError,
+    RegistryErrorReason,
 };
 pub use structure::structure;
 pub use type_system::{
@@ -22,8 +23,6 @@ pub use type_system::{
 pub struct Evaluation {
     /// Evaluated elements in source order.
     pub content: Content,
-    /// Metadata ranges projected from scopes and functions.
-    pub annotations: Vec<Annotation>,
     /// Recoverable syntax and evaluation diagnostics.
     pub diagnostics: Vec<EvalDiagnostic>,
 }
@@ -48,7 +47,13 @@ pub struct StructuredEvaluation {
 
 /// Evaluates Notist source with an empty function registry.
 pub fn lower(source: &str, parse: &Parse) -> Evaluation {
-    lower::lower_parsed(source, parse, 0, &FunctionRegistry::with_builtins(), 0)
+    lower::evaluate_markup(
+        source,
+        &parse.root,
+        0,
+        &FunctionRegistry::with_builtins(),
+        0,
+    )
 }
 
 /// Evaluates Notist source using a configurable function registry.
@@ -69,7 +74,7 @@ impl Evaluator {
 
     /// Evaluates an already parsed complete source file.
     pub fn evaluate_parsed(&self, source: &str, parse: &Parse) -> Evaluation {
-        lower::lower_parsed(source, parse, 0, &self.registry, 0)
+        lower::evaluate_markup(source, &parse.root, 0, &self.registry, 0)
     }
 
     /// Returns the function registry used by this evaluator.
@@ -91,7 +96,7 @@ pub(crate) fn lower_fragment(
     depth: usize,
 ) -> Evaluation {
     let parse = notist_syntax::parse(source);
-    lower::lower_parsed(source, &parse, base_offset, registry, depth)
+    lower::evaluate_markup(source, &parse.root, base_offset, registry, depth)
 }
 
 #[cfg(test)]
@@ -134,7 +139,6 @@ mod tests {
                     },
                     input.range,
                 ),
-                annotations: Vec::new(),
             })
         }
     }
@@ -162,17 +166,11 @@ mod tests {
             evaluation.content.elements[2].element,
             Element::Parbreak
         ));
-        assert_eq!(evaluation.annotations.len(), 1);
-        assert_eq!(
-            evaluation.annotations[0].metadata.id.as_deref(),
-            Some("concept")
-        );
-        assert_eq!(evaluation.annotations[0].metadata.tags, ["important"]);
     }
 
     #[test]
     fn preserves_unknown_calls_with_optional_trailing_content() {
-        let content = Evaluator::default().evaluate("#missing(x=1)[[[visible]]]");
+        let content = Evaluator::default().evaluate("#missing(x=1)[[[self::target]]]");
         let bodyless = Evaluator::default().evaluate("#missing(x=1)");
 
         assert_eq!(content.diagnostics.len(), 1);
@@ -309,6 +307,76 @@ mod tests {
         assert_eq!(error.name, "test::quote");
     }
 
+    struct SignatureFunction {
+        signature: FunctionSignature,
+    }
+
+    impl Function for SignatureFunction {
+        fn name(&self) -> &str {
+            "test::custom"
+        }
+
+        fn signature(&self) -> FunctionSignature {
+            self.signature.clone()
+        }
+
+        fn call(
+            &self,
+            _context: &FunctionContext<'_>,
+            _input: FunctionInput<'_>,
+        ) -> Result<FunctionOutput, Vec<EvalDiagnostic>> {
+            Ok(FunctionOutput::default())
+        }
+    }
+
+    #[test]
+    fn registry_validates_signatures_at_registration() {
+        let mut registry = FunctionRegistry::new();
+
+        let value_result = registry.register(SignatureFunction {
+            signature: FunctionSignature {
+                parameters: Vec::new(),
+                trailing_content: None,
+                result: Type::Int,
+            },
+        });
+        assert!(matches!(
+            value_result.unwrap_err().reason,
+            RegistryErrorReason::InvalidSignature(message)
+                if message.contains("result type must be Content")
+        ));
+
+        let mismatched_default = registry.register(SignatureFunction {
+            signature: FunctionSignature {
+                parameters: vec![Parameter {
+                    name: "level",
+                    ty: Type::Int,
+                    default: Some(DefaultValue::String("one")),
+                }],
+                trailing_content: None,
+                result: Type::Content,
+            },
+        });
+        assert!(matches!(
+            mismatched_default.unwrap_err().reason,
+            RegistryErrorReason::InvalidSignature(message)
+                if message.contains("parameter `level`")
+        ));
+
+        let undeclared_trailing = registry.register(SignatureFunction {
+            signature: FunctionSignature {
+                parameters: Vec::new(),
+                trailing_content: Some("body"),
+                result: Type::Content,
+            },
+        });
+        assert!(matches!(
+            undeclared_trailing.unwrap_err().reason,
+            RegistryErrorReason::InvalidSignature(message)
+                if message.contains("trailing Content parameter `body`")
+        ));
+    }
+
     #[test]
     fn structuring_preserves_evaluation_diagnostics() {
         let evaluation = Evaluator::default().evaluate("#missing[body]");
@@ -318,5 +386,84 @@ mod tests {
             structured.diagnostics[0].message,
             "unknown function `missing`"
         );
+    }
+
+    #[test]
+    fn evaluates_markup_with_string_and_content_interpolation() {
+        let evaluation = Evaluator::default().evaluate("a[plain]#\"text\"#[content]z");
+
+        assert!(
+            evaluation.diagnostics.is_empty(),
+            "{:?}",
+            evaluation.diagnostics
+        );
+        let texts: Vec<_> = evaluation
+            .content
+            .elements
+            .iter()
+            .filter_map(|node| match &node.element {
+                Element::Text(text) => Some(text.as_str()),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(texts, ["a[plain]", "text", "content", "z"]);
+    }
+
+    #[test]
+    fn rejects_non_content_values_in_markup_position() {
+        let evaluation = Evaluator::default().evaluate("value: #42");
+
+        assert!(
+            evaluation
+                .diagnostics
+                .iter()
+                .any(|diagnostic| { diagnostic.message.contains("cannot insert Int into Markup") })
+        );
+    }
+
+    #[test]
+    fn ordinary_and_trailing_content_arguments_are_equivalent() {
+        let evaluator = Evaluator::default();
+        let ordinary = evaluator.evaluate("#quote(body=[same])");
+        let trailing = evaluator.evaluate("#quote[same]");
+
+        assert!(
+            ordinary.diagnostics.is_empty(),
+            "{:?}",
+            ordinary.diagnostics
+        );
+        assert!(
+            trailing.diagnostics.is_empty(),
+            "{:?}",
+            trailing.diagnostics
+        );
+        assert!(matches!(
+            &ordinary.content.elements[0].element,
+            Element::Quote(body) if body.elements.len() == 1 && matches!(
+                &body.elements[0].element,
+                Element::Text(text) if text == "same"
+            )
+        ));
+        assert!(matches!(
+            &trailing.content.elements[0].element,
+            Element::Quote(body) if body.elements.len() == 1 && matches!(
+                &body.elements[0].element,
+                Element::Text(text) if text == "same"
+            )
+        ));
+    }
+
+    #[test]
+    fn source_annotations_do_not_change_evaluation() {
+        let evaluator = Evaluator::default();
+        let plain = evaluator.evaluate("#[body]");
+        let annotated = evaluator.evaluate("#[body]@id,#tag,.class,owner=\"Alice\"");
+
+        assert!(
+            annotated.diagnostics.is_empty(),
+            "{:?}",
+            annotated.diagnostics
+        );
+        assert_eq!(plain.content, annotated.content);
     }
 }

@@ -1,9 +1,12 @@
 use std::fmt;
 
 mod content;
+mod signature;
 
-pub use content::{
-    Annotation, Block, Content, Element, ElementNode, Metadata, Property, StructuredDocument,
+pub use content::{Block, Content, Element, ElementNode, StructuredDocument};
+pub use signature::{
+    DefaultValue, FunctionSignature, Parameter, Type, builtin_signatures, heading_signature,
+    quote_signature, raw_signature,
 };
 
 /// A half-open byte range in a source file.

@@ -1,4 +1,5 @@
 #heading(level=1)[AI 整理文档索引]
 
+- [[self::2026-07-17 typed document analysis and lsp migration]]：静态求值模型迁移收尾。记录 mode-aware 语法树之后的五项决策（元素 range 含 `#`、Annotation 移出 evaluator、注册时签名校验、签名数据上移 model、analysis 静态 type checking 与 eval 的错误对齐规则）,LSP 诊断去 runtime 与最内层 call 补全，以及 typst CST/AST 设计对照与遗留事项。
 - [[self::2026-07-13 tinymist preview and notist html]]：调查 Tinymist 如何组合 project/compiler、CompileWatcher、HTTP/WebSocket、增量矢量协议、内嵌前端和 LSP 控制，并说明其分页排版模型的适用边界。Notist 自身的设计见 [[vault::designs::2026-07-13 preview and html]]。
 - [[self::2026-07-11 typst element function and syntax sugar]]：梳理 Typst 如何将 Heading、Strong、ListItem、Reference 等标记语法映射到统一的 Content/Element 模型，区分 Element sugar、结构语法糖、值语法糖和语言级构造，并总结 Notist 可复用的强类型 Element 与函数构造器设计。

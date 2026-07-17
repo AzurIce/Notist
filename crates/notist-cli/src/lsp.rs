@@ -23,7 +23,7 @@ use lsp_types::{
     ServerCapabilities, TextDocumentSyncCapability, TextDocumentSyncKind, TextEdit, Uri,
 };
 use notist_analysis::{DiagnosticKind, SourceOverlays, Workspace, discover_vault_roots};
-use notist_eval::{DefaultValue, Evaluator, FunctionRegistry, FunctionSignature};
+use notist_eval::{DefaultValue, FunctionRegistry, FunctionSignature};
 use notist_model::{ModulePath, TextRange};
 use notist_syntax::Parse;
 use percent_encoding::{AsciiSet, CONTROLS, utf8_percent_encode};
@@ -377,10 +377,8 @@ fn publish_diagnostics(
         .union(&state.published_paths)
         .cloned()
         .collect();
-    let evaluator = Evaluator::default();
-
     for path in paths {
-        let diagnostics = diagnostics_for_path(state, &evaluator, &path);
+        let diagnostics = diagnostics_for_path(state, &path);
         let uri = file_path_to_uri(&path)?;
         let params = PublishDiagnosticsParams::new(uri, diagnostics, state.document_version(&path));
         connection
@@ -394,11 +392,7 @@ fn publish_diagnostics(
     Ok(())
 }
 
-fn diagnostics_for_path(
-    state: &ServerState,
-    evaluator: &Evaluator,
-    path: &Path,
-) -> Vec<Diagnostic> {
+fn diagnostics_for_path(state: &ServerState, path: &Path) -> Vec<Diagnostic> {
     let Some(workspace) = state.workspace_for_source(path) else {
         return Vec::new();
     };
@@ -409,41 +403,20 @@ fn diagnostics_for_path(
         return Vec::new();
     };
     let line_index = LineIndex::new(source);
-    let mut diagnostics = Vec::new();
-    let mut seen = BTreeSet::new();
 
-    for diagnostic in workspace
+    workspace
         .diagnostics()
         .iter()
         .filter(|diagnostic| diagnostic.source_path.as_deref() == Some(path))
-    {
-        let range = diagnostic.range.unwrap_or(TextRange::new(0, 0));
-        seen.insert((range.start, range.end, diagnostic.message.clone()));
-        diagnostics.push(lsp_diagnostic(
-            &line_index,
-            range,
-            diagnostic_code(&diagnostic.kind),
-            diagnostic.message.clone(),
-        ));
-    }
-
-    if let Some(parse) = &module.parse {
-        for diagnostic in evaluator.evaluate_parsed(source, parse).diagnostics {
-            if seen.insert((
-                diagnostic.range.start,
-                diagnostic.range.end,
+        .map(|diagnostic| {
+            lsp_diagnostic(
+                &line_index,
+                diagnostic.range.unwrap_or(TextRange::new(0, 0)),
+                diagnostic_code(&diagnostic.kind),
                 diagnostic.message.clone(),
-            )) {
-                diagnostics.push(lsp_diagnostic(
-                    &line_index,
-                    diagnostic.range,
-                    "evaluation",
-                    diagnostic.message,
-                ));
-            }
-        }
-    }
-    diagnostics
+            )
+        })
+        .collect()
 }
 
 fn diagnostic_code(kind: &DiagnosticKind) -> &'static str {
@@ -452,6 +425,9 @@ fn diagnostic_code(kind: &DiagnosticKind) -> &'static str {
         DiagnosticKind::InvalidSyntax => "invalid-syntax",
         DiagnosticKind::UnresolvedModule => "unresolved-module",
         DiagnosticKind::UnsupportedLabelReference => "unsupported-label-reference",
+        DiagnosticKind::UnknownFunction => "unknown-function",
+        DiagnosticKind::InvalidArguments => "invalid-arguments",
+        DiagnosticKind::TypeMismatch => "type-mismatch",
     }
 }
 
@@ -678,8 +654,8 @@ fn hover(state: &ServerState, params: HoverParams) -> Result<Option<Hover>, Stri
     }
 
     if let Some(call) = parse
-        .calls
-        .iter()
+        .calls()
+        .into_iter()
         .find(|call| contains(call.name.range, offset))
         && let Some(function) = state.functions.get(&call.name.value)
     {
@@ -708,7 +684,10 @@ fn source_position<'a>(
 }
 
 fn link_at(parse: &Parse, offset: usize) -> Option<&notist_syntax::WikiLink> {
-    parse.links.iter().find(|link| contains(link.range, offset))
+    parse
+        .links()
+        .into_iter()
+        .find(|link| contains(link.range, offset))
 }
 
 fn contains(range: TextRange, offset: usize) -> bool {
@@ -716,7 +695,7 @@ fn contains(range: TextRange, offset: usize) -> bool {
 }
 
 fn is_in_raw_literal(parse: &Parse, offset: usize) -> bool {
-    parse.raw_literals.iter().any(|raw| {
+    parse.raw_literals().iter().any(|raw| {
         contains(raw.range, offset)
             || (raw.payload_range.end == raw.range.end && offset == raw.range.end)
     })
@@ -732,7 +711,11 @@ fn wiki_completion_context(
     parse: &Parse,
     offset: usize,
 ) -> Option<CompletionContext> {
-    if let Some(link) = parse.links.iter().find(|link| contains(link.range, offset)) {
+    if let Some(link) = parse
+        .links()
+        .into_iter()
+        .find(|link| contains(link.range, offset))
+    {
         let start = link.range.start + 2;
         let content_end = link.range.end.saturating_sub(2);
         let module_end = source[start..content_end]
@@ -766,8 +749,8 @@ fn function_completion_context(
     offset: usize,
 ) -> Option<CompletionContext> {
     if let Some(call) = parse
-        .calls
-        .iter()
+        .calls()
+        .into_iter()
         .find(|call| contains(call.name.range, offset))
     {
         return Some(CompletionContext {
@@ -801,10 +784,14 @@ fn argument_completion_context<'a>(
     parse: &'a Parse,
     offset: usize,
 ) -> Option<(&'a notist_syntax::Call, CompletionContext)> {
-    let call = parse.calls.iter().find(|call| {
-        call.arguments_range
-            .is_some_and(|range| range.start <= offset && offset <= range.end)
-    })?;
+    let call = parse
+        .calls()
+        .into_iter()
+        .filter(|call| {
+            call.arguments_range
+                .is_some_and(|range| range.start <= offset && offset <= range.end)
+        })
+        .min_by_key(|call| call.range.end - call.range.start)?;
     let range = call.arguments_range?;
     let mut start = offset;
     while start > range.start {
@@ -1081,6 +1068,53 @@ mod tests {
     }
 
     #[test]
+    fn argument_completion_targets_innermost_nested_call() {
+        let source = "#heading(level=raw())";
+        let parse = notist_syntax::parse(source);
+        let offset = source.find(')').unwrap();
+        let (call, context) = argument_completion_context(source, &parse, offset).unwrap();
+
+        assert_eq!(call.name.value, "raw");
+        assert_eq!(context.prefix, "");
+        assert_eq!(context.replace, TextRange::new(offset, offset));
+
+        let registry = FunctionRegistry::with_builtins();
+        let signature = registry.get("raw").unwrap().signature();
+        let used = used_argument_parameters(&signature, call);
+        let parameters = completable_parameters(&signature, &used, &context.prefix);
+        assert_eq!(
+            parameters
+                .into_iter()
+                .map(|parameter| parameter.name)
+                .collect::<Vec<_>>(),
+            ["text", "lang"]
+        );
+    }
+
+    #[test]
+    fn argument_completion_inside_unknown_nested_call_offers_no_outer_parameters() {
+        let root = tempfile::TempDir::new().unwrap();
+        fs::write(root.path().join("README.not"), "#heading(level=missing())").unwrap();
+        let root_path = dunce::canonicalize(root.path()).unwrap();
+        let state = ServerState::new(root_path).unwrap();
+        let path = dunce::canonicalize(root.path().join("README.not")).unwrap();
+        let uri = file_path_to_uri(&path).unwrap();
+        let params = CompletionParams {
+            text_document_position: lsp_types::TextDocumentPositionParams::new(
+                lsp_types::TextDocumentIdentifier::new(uri),
+                Position::new(0, 23),
+            ),
+            work_done_progress_params: Default::default(),
+            partial_result_params: Default::default(),
+            context: None,
+        };
+
+        // `missing` is not a known function, so there are no argument candidates;
+        // crucially the outer `heading`'s `level` must not be offered.
+        assert!(completion(&state, params).unwrap().is_none());
+    }
+
+    #[test]
     fn omits_trailing_content_from_argument_completion() {
         let registry = FunctionRegistry::with_builtins();
         let signature = registry.get("heading").unwrap().signature();
@@ -1100,7 +1134,7 @@ mod tests {
         let registry = FunctionRegistry::with_builtins();
         let signature = registry.get("raw").unwrap().signature();
         let parse = notist_syntax::parse("#raw(\"code\", )");
-        let used = used_argument_parameters(&signature, &parse.calls[0]);
+        let used = used_argument_parameters(&signature, parse.calls()[0]);
         let parameters = completable_parameters(&signature, &used, "");
 
         assert_eq!(
@@ -1115,7 +1149,7 @@ mod tests {
     #[test]
     fn detects_complete_and_unclosed_raw_literal_ranges() {
         let complete = notist_syntax::parse("before `raw` after");
-        let raw = &complete.raw_literals[0];
+        let raw = complete.raw_literals()[0];
         assert!(is_in_raw_literal(&complete, raw.range.start));
         assert!(is_in_raw_literal(&complete, raw.payload_range.start));
         assert!(!is_in_raw_literal(&complete, raw.range.end));

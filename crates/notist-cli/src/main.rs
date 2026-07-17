@@ -108,30 +108,26 @@ fn run(cli: Cli) -> Result<ExitCode, Box<dyn std::error::Error>> {
                 let Some(parse) = &module.parse else {
                     continue;
                 };
-                for scope in &parse.scopes {
+                for annotation in parse.annotations() {
                     println!(
-                        "{}:{}..{} transparent{}",
+                        "{}:{}..{} embedded{}",
                         module.logical_path,
-                        scope.body_range.start,
-                        scope.body_range.end,
-                        format_id(&scope.attributes)
+                        annotation.scope_range.start,
+                        annotation.scope_range.end,
+                        format_id(&annotation.attributes)
                     );
                 }
-                for call in &parse.calls {
-                    let (range, kind) = match call.body {
+                for call in parse.calls() {
+                    let (range, kind) = match call.trailing.first() {
                         Some(body) => (body.payload_range, "content call"),
                         None => (call.range, "call"),
                     };
                     println!(
-                        "{}:{}..{} {kind} {}{}",
-                        module.logical_path,
-                        range.start,
-                        range.end,
-                        call.name.value,
-                        format_id(&call.attributes)
+                        "{}:{}..{} {kind} {}",
+                        module.logical_path, range.start, range.end, call.name.value,
                     );
                 }
-                for raw in &parse.raw_literals {
+                for raw in parse.raw_literals() {
                     let form = match raw.form {
                         RawLiteralForm::Inline => "inline raw",
                         RawLiteralForm::Fenced => "fenced raw",

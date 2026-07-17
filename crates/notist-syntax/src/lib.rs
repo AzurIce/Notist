@@ -1,6 +1,7 @@
 use notist_model::{ModuleReference, TextRange, WikiReference};
 
 mod argument;
+mod parser;
 mod raw;
 mod scope;
 
@@ -8,141 +9,202 @@ pub use argument::{
     Argument, Expression, ExpressionKind, StringLiteral, StringLiteralForm, StringLiteralStyle,
 };
 pub use raw::{RawLiteral, RawLiteralForm, SpannedText};
-pub use scope::{
-    Attribute, AttributeValue, Attributes, BodyForm, Call, ContentBody, SpannedName,
-    TransparentScope,
-};
+pub use scope::{Attribute, AttributeValue, Attributes, BodyForm, SpannedName};
 
 /// A parsed wiki-style module or label reference.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct WikiLink {
-    /// The structured reference target.
     pub target: WikiReference,
-    /// The complete source range including `[[` and `]]`.
     pub range: TextRange,
 }
 
 /// A recoverable syntax error with a precise source range.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct SyntaxError {
-    /// A user-facing description of the syntax error.
     pub message: String,
-    /// The source range associated with the error.
     pub range: TextRange,
 }
 
-/// The syntax information currently extracted from a Notist source file.
+/// A Markup sequence. Document roots and Content literals share this node.
+#[derive(Clone, Debug, PartialEq)]
+pub struct Markup {
+    pub items: Vec<MarkupItem>,
+    pub range: TextRange,
+}
+
+impl Default for Markup {
+    fn default() -> Self {
+        Self {
+            items: Vec::new(),
+            range: TextRange::new(0, 0),
+        }
+    }
+}
+
+/// One source-ordered Markup item.
+#[derive(Clone, Debug, PartialEq)]
+pub enum MarkupItem {
+    Text(SpannedText),
+    Wiki(WikiLink),
+    Raw(RawLiteral),
+    Embedded(EmbeddedExpression),
+}
+
+/// A `#`-prefixed Code expression embedded into Markup.
+#[derive(Clone, Debug, PartialEq)]
+pub struct EmbeddedExpression {
+    pub expression: Expression,
+    /// Source-only metadata. Type checking and evaluation ignore it.
+    pub attributes: Attributes,
+    /// The `#` plus expression, excluding postfix Attributes.
+    pub scope_range: TextRange,
+    /// The complete expression including postfix Attributes.
+    pub range: TextRange,
+}
+
+/// A Code-mode Content literal whose body is parsed as Markup.
+#[derive(Clone, Debug, PartialEq)]
+pub struct ContentBlock {
+    pub markup: Markup,
+    pub payload_range: TextRange,
+    pub form: BodyForm,
+    pub range: TextRange,
+}
+
+/// A Function call expression.
+#[derive(Clone, Debug, PartialEq)]
+pub struct Call {
+    pub name: SpannedName,
+    pub arguments_range: Option<TextRange>,
+    pub arguments: Vec<Argument>,
+    pub trailing: Vec<ContentBlock>,
+    pub range: TextRange,
+}
+
+/// A complete mode-aware syntax tree.
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct Parse {
-    /// Wiki-style references visible to the host parser.
-    pub links: Vec<WikiLink>,
-    /// Transparent annotation scopes discovered in source order.
-    pub scopes: Vec<TransparentScope>,
-    /// Function calls discovered in source order.
-    pub calls: Vec<Call>,
-    /// Host-visible inline and fenced raw source literals.
-    pub raw_literals: Vec<RawLiteral>,
-    /// Recoverable errors produced during parsing.
+    pub root: Markup,
     pub errors: Vec<SyntaxError>,
 }
 
-/// Parses the supported Notist syntax from a source string.
+impl Parse {
+    /// Collects wiki links in source order.
+    pub fn links(&self) -> Vec<&WikiLink> {
+        let mut output = Vec::new();
+        visit_markup(&self.root, &mut |item| {
+            if let MarkupItem::Wiki(link) = item {
+                output.push(link);
+            }
+        });
+        output
+    }
+
+    /// Collects Function calls in source order.
+    pub fn calls(&self) -> Vec<&Call> {
+        let mut output = Vec::new();
+        visit_markup_expressions(&self.root, &mut |expression| {
+            if let ExpressionKind::Call(call) = &expression.kind {
+                output.push(call.as_ref());
+            }
+        });
+        output
+    }
+
+    /// Collects host Raw literals in source order.
+    pub fn raw_literals(&self) -> Vec<&RawLiteral> {
+        let mut output = Vec::new();
+        visit_markup(&self.root, &mut |item| {
+            if let MarkupItem::Raw(raw) = item {
+                output.push(raw);
+            }
+        });
+        output
+    }
+
+    /// Collects annotated embedded expressions in source order.
+    pub fn annotations(&self) -> Vec<&EmbeddedExpression> {
+        let mut output = Vec::new();
+        visit_markup(&self.root, &mut |item| {
+            if let MarkupItem::Embedded(embedded) = item {
+                if embedded.attributes.range.is_some() {
+                    output.push(embedded);
+                }
+            }
+        });
+        output
+    }
+
+    /// Finds the innermost embedded expression containing an offset.
+    pub fn embedded_at(&self, offset: usize) -> Option<&EmbeddedExpression> {
+        let mut found = None;
+        visit_markup(&self.root, &mut |item| {
+            if let MarkupItem::Embedded(embedded) = item {
+                if embedded.range.start <= offset && offset < embedded.range.end {
+                    found = Some(embedded);
+                }
+            }
+        });
+        found
+    }
+}
+
+fn visit_markup<'a>(markup: &'a Markup, visitor: &mut impl FnMut(&'a MarkupItem)) {
+    for item in &markup.items {
+        visitor(item);
+        if let MarkupItem::Embedded(embedded) = item {
+            visit_expression_markup(&embedded.expression, visitor);
+        }
+    }
+}
+
+fn visit_expression_markup<'a>(
+    expression: &'a Expression,
+    visitor: &mut impl FnMut(&'a MarkupItem),
+) {
+    match &expression.kind {
+        ExpressionKind::Content(block) => visit_markup(&block.markup, visitor),
+        ExpressionKind::Call(call) => {
+            for argument in &call.arguments {
+                visit_expression_markup(&argument.expression, visitor);
+            }
+            for block in &call.trailing {
+                visit_markup(&block.markup, visitor);
+            }
+        }
+        ExpressionKind::Parenthesized(inner) => visit_expression_markup(inner, visitor),
+        _ => {}
+    }
+}
+
+fn visit_markup_expressions<'a>(markup: &'a Markup, visitor: &mut impl FnMut(&'a Expression)) {
+    for item in &markup.items {
+        if let MarkupItem::Embedded(embedded) = item {
+            visit_expression(&embedded.expression, visitor);
+        }
+    }
+}
+
+fn visit_expression<'a>(expression: &'a Expression, visitor: &mut impl FnMut(&'a Expression)) {
+    visitor(expression);
+    match &expression.kind {
+        ExpressionKind::Content(block) => visit_markup_expressions(&block.markup, visitor),
+        ExpressionKind::Call(call) => {
+            for argument in &call.arguments {
+                visit_expression(&argument.expression, visitor);
+            }
+            for block in &call.trailing {
+                visit_markup_expressions(&block.markup, visitor);
+            }
+        }
+        ExpressionKind::Parenthesized(inner) => visit_expression(inner, visitor),
+        _ => {}
+    }
+}
+
+/// Parses a complete Notist source as top-level Markup.
 pub fn parse(source: &str) -> Parse {
-    let mut result = Parse::default();
-    let raw_parse = raw::parse_raw_literals(source);
-    (result.scopes, result.calls) =
-        scope::parse_scopes_and_calls(source, &raw_parse.literals, &mut result.errors);
-    result.raw_literals = raw_parse
-        .literals
-        .iter()
-        .filter(|literal| {
-            !position_is_in_embedded_value_syntax(
-                &result.scopes,
-                &result.calls,
-                literal.range.start,
-            )
-        })
-        .cloned()
-        .collect();
-    result
-        .errors
-        .extend(raw_parse.errors.into_iter().filter(|error| {
-            !position_is_in_embedded_value_syntax(&result.scopes, &result.calls, error.range.start)
-        }));
-    let mut cursor = 0;
-
-    while let Some(relative_start) = source[cursor..].find("[[") {
-        let start = cursor + relative_start;
-        if let Some(raw) = raw::containing(&result.raw_literals, start) {
-            cursor = raw.range.end;
-            continue;
-        }
-        if let Some(hidden_end) = hidden_syntax_end(&result, start) {
-            cursor = hidden_end;
-            continue;
-        }
-        let content_start = start + 2;
-        let Some(relative_end) = source[content_start..].find("]]") else {
-            result.errors.push(SyntaxError {
-                message: "unclosed wiki reference".into(),
-                range: TextRange::new(start, source.len()),
-            });
-            break;
-        };
-        let content_end = content_start + relative_end;
-        let end = content_end + 2;
-        let range = TextRange::new(start, end);
-
-        match parse_wiki_reference(&source[content_start..content_end]) {
-            Ok(target) => result.links.push(WikiLink { target, range }),
-            Err(message) => result.errors.push(SyntaxError { message, range }),
-        }
-        cursor = end;
-    }
-
-    result
-}
-
-fn position_is_in_embedded_value_syntax(
-    scopes: &[TransparentScope],
-    calls: &[Call],
-    position: usize,
-) -> bool {
-    let contains = |range: TextRange| range.start <= position && position < range.end;
-    scopes
-        .iter()
-        .any(|scope| scope.attributes.range.is_some_and(contains))
-        || calls.iter().any(|call| {
-            call.arguments_range.is_some_and(contains)
-                || call.attributes.range.is_some_and(contains)
-        })
-}
-
-fn hidden_syntax_end(parse: &Parse, position: usize) -> Option<usize> {
-    let scope_end = parse.scopes.iter().find_map(|scope| {
-        if scope.range.start <= position && position < scope.body_range.start {
-            Some(scope.body_range.start)
-        } else if scope.body_range.end <= position && position < scope.range.end {
-            Some(scope.range.end)
-        } else {
-            None
-        }
-    });
-    let call_end = parse.calls.iter().find_map(|call| match call.body {
-        Some(body) if call.range.start <= position && position < body.payload_range.start => {
-            Some(body.payload_range.start)
-        }
-        Some(body) if body.payload_range.end <= position && position < call.range.end => {
-            Some(call.range.end)
-        }
-        None if call.range.start <= position && position < call.range.end => Some(call.range.end),
-        _ => None,
-    });
-    match (scope_end, call_end) {
-        (Some(scope), Some(call)) => Some(scope.min(call)),
-        (Some(end), None) | (None, Some(end)) => Some(end),
-        (None, None) => None,
-    }
+    parser::parse(source)
 }
 
 /// Parses a wiki reference body without the surrounding `[[` and `]]`.
@@ -264,112 +326,108 @@ mod tests {
     use super::*;
 
     #[test]
-    fn parses_module_references() {
-        let parse = parse("[[intro]] [[pages::intro]] [[super::guide]] [[vault::index]]");
-        assert!(parse.errors.is_empty());
-        assert_eq!(parse.links.len(), 4);
-        assert_eq!(
-            parse.links[2].target.module,
-            ModuleReference::Parent {
-                levels: 1,
-                remainder: vec!["guide".into()],
-            }
-        );
-    }
-
-    #[test]
-    fn parses_module_paths_with_spaces_and_explicit_self() {
-        let reference =
-            parse_wiki_reference("self::2026-07-11 typst element function and syntax sugar")
-                .unwrap();
-        assert_eq!(
-            reference.module,
-            ModuleReference::Relative(vec![
-                "2026-07-11 typst element function and syntax sugar".into()
-            ])
-        );
-
-        let current = parse_wiki_reference("self").unwrap();
-        assert_eq!(current.module, ModuleReference::Relative(Vec::new()));
-    }
-
-    #[test]
-    fn rejects_unsafe_module_path_characters() {
-        for source in ["foo/bar", "foo\\bar", "foo[bar]"] {
-            assert!(parse_wiki_reference(source).is_err(), "{source}");
-        }
-    }
-
-    #[test]
-    fn parses_label_syntax_without_resolving_it() {
-        let reference = parse_wiki_reference("pages::intro#section").unwrap();
-        assert_eq!(reference.label.as_deref(), Some("section"));
-    }
-
-    #[test]
-    fn reports_invalid_paths() {
-        let parse = parse("[[]] [[foo::::bar]] [[foo::super]]");
-        assert_eq!(parse.errors.len(), 3);
-    }
-
-    #[test]
-    fn parses_links_in_content_calls_but_ignores_them_in_call_arguments() {
-        let parse =
-            parse("[[outside]] #quote[[[inside]]] #code(source=r#\"[[[raw]]]\"#) [[after]]");
-        assert!(parse.errors.is_empty());
-        assert_eq!(parse.links.len(), 3);
-        assert_eq!(parse.calls.len(), 2);
-    }
-
-    #[test]
-    fn transparent_delimiters_do_not_overlap_wiki_reference_markers() {
-        let parse = parse("#[[[self::target]]]@concept");
-        assert!(parse.errors.is_empty());
-        assert_eq!(parse.links.len(), 1);
-        assert_eq!(
-            parse.links[0].target.module,
-            ModuleReference::Relative(vec!["target".into()])
-        );
-    }
-
-    #[test]
-    fn ignores_syntax_inside_raw_content() {
-        let parse = parse("`[[inline]] #[annotation]`\n```not\n#code()[[[inside]]]\n```");
-        assert!(parse.errors.is_empty());
-        assert!(parse.links.is_empty());
-        assert!(parse.scopes.is_empty());
-        assert!(parse.calls.is_empty());
-        assert_eq!(parse.raw_literals.len(), 2);
-    }
-
-    #[test]
-    fn backticks_inside_string_arguments_are_not_host_raw_literals() {
-        let parse = parse(r###"#code(value=r#"`"#) [[after]]"###);
+    fn parses_markup_and_code_modes_into_one_tree() {
+        let parse = parse("a[plain]#\"text\"#[content]z");
         assert!(parse.errors.is_empty(), "{:?}", parse.errors);
-        assert!(parse.raw_literals.is_empty());
-        assert_eq!(parse.links.len(), 1);
+        assert_eq!(parse.root.items.len(), 4);
+        assert!(matches!(&parse.root.items[0], MarkupItem::Text(text) if text.value == "a[plain]"));
+        assert!(matches!(
+            &parse.root.items[1],
+            MarkupItem::Embedded(EmbeddedExpression {
+                expression: Expression {
+                    kind: ExpressionKind::String(_),
+                    ..
+                },
+                ..
+            })
+        ));
+        assert!(matches!(
+            &parse.root.items[2],
+            MarkupItem::Embedded(EmbeddedExpression {
+                expression: Expression {
+                    kind: ExpressionKind::Content(_),
+                    ..
+                },
+                ..
+            })
+        ));
+        assert!(matches!(&parse.root.items[3], MarkupItem::Text(text) if text.value == "z"));
     }
 
     #[test]
-    fn rejects_backtick_literals_in_argument_expressions() {
-        let parse = parse("#code(value=`text`)");
-        assert_eq!(parse.calls.len(), 1);
-        assert!(parse.raw_literals.is_empty());
-        assert_eq!(parse.errors.len(), 1);
+    fn parses_content_literals_as_ordinary_and_trailing_arguments() {
+        let parse = parse("#quote(body=[ordinary]) #quote[trailing]");
+        assert!(parse.errors.is_empty(), "{:?}", parse.errors);
+        let calls = parse.calls();
+        assert_eq!(calls.len(), 2);
+        assert!(matches!(
+            calls[0].arguments[0].expression.kind,
+            ExpressionKind::Content(_)
+        ));
+        assert!(calls[0].trailing.is_empty());
+        assert_eq!(calls[1].trailing.len(), 1);
+    }
+
+    #[test]
+    fn nests_annotated_content_without_confusing_later_raw_markup() {
+        let parse = parse("#[outer #[inner]@inner]@outer `real`");
+        assert!(parse.errors.is_empty(), "{:?}", parse.errors);
+        assert_eq!(parse.annotations().len(), 2);
+        let raw = parse.raw_literals();
+        assert_eq!(raw.len(), 1);
+        assert_eq!(
+            parse_source(
+                &parse,
+                raw[0].payload_range,
+                "#[outer #[inner]@inner]@outer `real`"
+            ),
+            "real"
+        );
+    }
+
+    #[test]
+    fn reports_missing_code_expressions_and_accepts_leading_dot_floats() {
+        let parse = parse("#heading(level=)[x] #heading(.5)[x]");
         assert!(
-            parse.errors[0]
-                .message
-                .contains("not supported in argument expressions")
+            parse
+                .errors
+                .iter()
+                .any(|error| error.message.contains("expected Code expression"))
         );
+        let calls = parse.calls();
+        assert!(matches!(
+            calls[1].arguments[0].expression.kind,
+            ExpressionKind::Float(value) if value == 0.5
+        ));
     }
 
     #[test]
-    fn backticks_inside_transparent_scope_attributes_are_not_host_raw_literals() {
-        let parse = parse("#[body]@title=\"`\",sample=\"`paired`\"");
-
+    fn parses_module_references_and_hides_markup_inside_raw() {
+        let parse = parse("[[intro]] `[[hidden]]` #[[[self::target]]]");
         assert!(parse.errors.is_empty(), "{:?}", parse.errors);
-        assert!(parse.raw_literals.is_empty());
-        assert_eq!(parse.scopes.len(), 1);
-        assert_eq!(parse.scopes[0].attributes.items.len(), 2);
+        let links = parse.links();
+        assert_eq!(links.len(), 2);
+        assert_eq!(parse.raw_literals().len(), 1);
+    }
+
+    #[test]
+    fn parses_nested_brackets_as_markup_text_inside_content() {
+        let parse = parse("#[outer [literal] brackets]");
+        assert!(parse.errors.is_empty(), "{:?}", parse.errors);
+        let calls = parse.calls();
+        assert!(calls.is_empty());
+        let MarkupItem::Embedded(embedded) = &parse.root.items[0] else {
+            panic!()
+        };
+        let ExpressionKind::Content(block) = &embedded.expression.kind else {
+            panic!()
+        };
+        assert!(
+            matches!(&block.markup.items[0], MarkupItem::Text(text) if text.value == "outer [literal] brackets")
+        );
+    }
+
+    fn parse_source<'a>(_parse: &Parse, range: TextRange, source: &'a str) -> &'a str {
+        &source[range.start..range.end]
     }
 }

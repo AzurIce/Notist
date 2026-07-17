@@ -370,23 +370,23 @@ Annotation 的 delimiter nesting 属于 syntax well-formedness，而不是类型
 
 当前代码已实现：
 
-- literal Expression。
-- Type、Value、Optional。
+- Markup/Code mode-aware syntax tree 与一般 EmbeddedExpression。
+- literal Expression、Type、Value、Optional。
 - Function signature 与 argument binding。
 - trailing Content lowering。
 - built-in Function 返回 Content。
+- String/None 到 Content 的统一插入检查。
+- Annotation 从 evaluator 完全移出：经 syntax 层 `Parse::annotations()` 暴露，不再进入 `Evaluation` 或 `StructuredDocument`。
+- 注册时 signature 校验：default 满足参数类型、`result == Content`、trailing Content 参数已声明。
+- Document 的静态 `Content` type checking：notist-analysis 的 check pass 做名称解析、argument binding 检查和 Markup 插入检查，不执行 Function runtime；`notist check` 与 LSP 共享这套静态诊断。
 
 但尚未完成目标模型中的：
 
-- Markup/Code mode-aware syntax tree。
-- 一般 EmbeddedExpression。
-- Document 的静态 `Content` type checking。
-- Function result runtime validation。
-- analysis 与 Function runtime 分离。
-- String/None 到 Content 的统一插入检查。
-- Annotation 从 evaluator 中完全移出。
+- 一般 Value-returning Function 及其 result runtime validation（当前 Registry 强制 `result == Content`）。
+- 跨 Module 的 Function name resolution（静态检查目前只解析 built-in 签名）。
+- analysis 侧统一的 Annotation index（目前由 syntax 层按需提供）。
 
-迁移应先建立 mode-aware syntax tree 和显式错误恢复，再将当前 binder 扩展为 Typed Document analysis；不应继续在 flat syntax vectors 上增加新的 Code feature。
+迁移已按"先建立 mode-aware syntax tree 和显式错误恢复，再将 binder 扩展为 Typed Document analysis"完成第一阶段；不应继续在 flat syntax vectors 上增加新的 Code feature。
 
 #heading(level=2)[非本阶段类型系统]
 

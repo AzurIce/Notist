@@ -474,7 +474,6 @@ mod tests {
                 0,
                 5,
             ))],
-            annotations: Vec::new(),
         };
 
         let html = render(&document);
@@ -563,7 +562,6 @@ mod tests {
                     17,
                 )),
             ],
-            annotations: Vec::new(),
         };
 
         let html = render(&document);
@@ -603,7 +601,6 @@ mod tests {
                     40,
                 )),
             ],
-            annotations: Vec::new(),
         };
 
         let html = render(&document);

@@ -1,9 +1,9 @@
 use std::collections::HashMap;
 use std::sync::Arc;
 
-use notist_model::{Annotation, Content, TextRange};
+use notist_model::{Content, TextRange};
 
-use crate::{BoundArguments, EvalDiagnostic, Evaluation, FunctionSignature, lower_fragment};
+use crate::{BoundArguments, EvalDiagnostic, Evaluation, FunctionSignature, Type, lower_fragment};
 
 /// The input supplied to a content-producing function.
 #[derive(Clone, Debug, PartialEq)]
@@ -16,34 +16,17 @@ pub struct FunctionInput<'a> {
     pub range: TextRange,
 }
 
-/// Evaluated content and annotations returned by a function.
+/// Evaluated content returned by a function.
 #[derive(Clone, Debug, Default, Eq, PartialEq)]
 pub struct FunctionOutput {
     /// Content produced by the function.
     pub content: Content,
-    /// Additional annotations produced while evaluating the body.
-    pub annotations: Vec<Annotation>,
 }
 
 impl FunctionOutput {
     /// Creates an output containing only evaluated content.
     pub fn content(content: Content) -> Self {
-        Self {
-            content,
-            annotations: Vec::new(),
-        }
-    }
-
-    /// Converts a nested evaluation into function output.
-    pub fn from_evaluation(evaluation: Evaluation) -> Result<Self, Vec<EvalDiagnostic>> {
-        if evaluation.diagnostics.is_empty() {
-            Ok(Self {
-                content: evaluation.content,
-                annotations: evaluation.annotations,
-            })
-        } else {
-            Err(evaluation.diagnostics)
-        }
+        Self { content }
     }
 }
 
@@ -83,11 +66,18 @@ impl FunctionRegistry {
         registry
     }
 
-    /// Registers a function and rejects duplicate names.
+    /// Registers a function after validating its signature, and rejects duplicate names.
     pub fn register(&mut self, function: impl Function + 'static) -> Result<(), RegistryError> {
         let name = function.name().to_owned();
         if self.functions.contains_key(&name) {
-            return Err(RegistryError { name });
+            return Err(RegistryError {
+                name,
+                reason: RegistryErrorReason::Duplicate,
+            });
+        }
+        let signature = function.signature();
+        if let Some(reason) = validate_signature(&signature) {
+            return Err(RegistryError { name, reason });
         }
         self.functions.insert(name, Arc::new(function));
         Ok(())
@@ -104,11 +94,58 @@ impl FunctionRegistry {
     }
 }
 
-/// An error returned when a function name is registered more than once.
+/// Validates a function signature against the contracts the registry enforces.
+fn validate_signature(signature: &FunctionSignature) -> Option<RegistryErrorReason> {
+    // The current `Function` trait can only produce Content, so the declared
+    // result type must be Content until value-returning functions exist.
+    if signature.result != Type::Content {
+        return Some(RegistryErrorReason::InvalidSignature(format!(
+            "result type must be Content, found {}",
+            signature.result
+        )));
+    }
+    for parameter in &signature.parameters {
+        if let Some(default) = &parameter.default {
+            if !parameter.ty.accepts(&default.ty()) {
+                return Some(RegistryErrorReason::InvalidSignature(format!(
+                    "default value for parameter `{}` is {}, expected {}",
+                    parameter.name,
+                    default.ty(),
+                    parameter.ty
+                )));
+            }
+        }
+    }
+    if let Some(trailing) = signature.trailing_content {
+        let content_parameter = signature
+            .parameters
+            .iter()
+            .find(|parameter| parameter.name == trailing && parameter.ty == Type::Content);
+        if content_parameter.is_none() {
+            return Some(RegistryErrorReason::InvalidSignature(format!(
+                "trailing Content parameter `{trailing}` is not declared as a Content parameter"
+            )));
+        }
+    }
+    None
+}
+
+/// An error returned when a function cannot be registered.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct RegistryError {
-    /// The duplicate function name.
+    /// The name of the function that failed to register.
     pub name: String,
+    /// Why the registration failed.
+    pub reason: RegistryErrorReason,
+}
+
+/// The reason a function registration was rejected.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub enum RegistryErrorReason {
+    /// A function with the same name is already registered.
+    Duplicate,
+    /// The declared signature violates a registry-enforced contract.
+    InvalidSignature(String),
 }
 
 /// Services available while a function is being evaluated.

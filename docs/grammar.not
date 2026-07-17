@@ -4,7 +4,7 @@
 
 #heading(level=2)[规范状态]
 
-本文是后续 parser、analysis 与 evaluator 迁移的目标规范。当前实现已经支持 Function call、trailing Content、String literal、Wiki Reference、Raw syntax 和 Attributes，但仍将 `#[...]` 与 `#name[...]` 作为独立语法结构解析，尚未实现一般的 mode-aware Code expression。实现迁移完成前，命令行实际行为可能与本文的 Mode 章节存在差异。
+本文是 parser、analysis 与 evaluator 的现行规范。当前实现已支持本文描述的 mode-aware syntax tree 与一般 EmbeddedExpression，以及 Function call、trailing Content、String literal、Wiki Reference、Raw syntax 和 Attributes。
 
 本次规范只确定 Markup 与 Code 两种模式，以及当前所需的 Code expression 子集。变量、`let`、一般运算、控制流和 User Function 不属于本阶段；模式边界应允许它们未来加入而无需再次修改 Content literal 与 Function call 的语义。
 

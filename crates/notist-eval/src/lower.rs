@@ -1,164 +1,213 @@
-use notist_model::{Annotation, Content, Element, ElementNode, Metadata, Property, TextRange};
+use notist_model::{Content, Element, ElementNode, TextRange};
 use notist_syntax::{
-    Attribute, Attributes, BodyForm, Call, Parse, RawLiteral, RawLiteralForm, TransparentScope,
-    WikiLink,
+    BodyForm, Call, ContentBlock, EmbeddedExpression, Expression, ExpressionKind, Markup,
+    MarkupItem, RawLiteral, RawLiteralForm,
 };
 
-use crate::builtin::raw_content;
 use crate::function::{FunctionContext, FunctionInput, FunctionRegistry};
-use crate::type_system::bind_arguments;
+use crate::type_system::{Value, ValueOrigin, bind_arguments, evaluate_literal};
 use crate::{EvalDiagnostic, Evaluation};
 
-pub(crate) fn lower_parsed(
+pub(crate) fn evaluate_markup(
     source: &str,
-    parse: &Parse,
+    markup: &Markup,
     base_offset: usize,
     registry: &FunctionRegistry,
     depth: usize,
 ) -> Evaluation {
-    let mut lowerer = Lowerer {
+    let mut state = LowerState {
         source,
-        parse,
         base_offset,
         registry,
         depth,
-        annotations: Vec::new(),
-        diagnostics: parse
-            .errors
-            .iter()
-            .map(|error| EvalDiagnostic {
-                message: error.message.clone(),
-                range: error.range.shifted(base_offset),
-            })
-            .collect(),
+        content: Content::default(),
+        diagnostics: Vec::new(),
     };
-    let content = lowerer.lower_range(TextRange::new(0, source.len()));
+    state.lower_markup(markup);
     Evaluation {
-        content,
-        annotations: lowerer.annotations,
-        diagnostics: lowerer.diagnostics,
+        content: state.content,
+        diagnostics: state.diagnostics,
     }
 }
 
-struct Lowerer<'a> {
+struct LowerState<'a> {
     source: &'a str,
-    parse: &'a Parse,
     base_offset: usize,
     registry: &'a FunctionRegistry,
     depth: usize,
-    annotations: Vec<Annotation>,
+    content: Content,
     diagnostics: Vec<EvalDiagnostic>,
 }
 
-impl Lowerer<'_> {
-    fn lower_range(&mut self, range: TextRange) -> Content {
-        let mut content = Content::new();
-        let mut cursor = range.start;
-
-        while let Some(event) = self.next_event(cursor, range.end) {
-            if cursor < event.start() {
-                self.lower_text(TextRange::new(cursor, event.start()), &mut content);
-            }
-
-            match event {
-                Event::Scope(scope) => {
-                    self.lower_transparent(&scope, &mut content);
-                    cursor = scope.range.end;
+impl LowerState<'_> {
+    fn lower_markup(&mut self, markup: &Markup) {
+        for item in &markup.items {
+            match item {
+                MarkupItem::Text(text) => {
+                    self.push_text_with_parbreaks(text);
                 }
-                Event::Call(call) => {
-                    self.lower_call(&call, &mut content);
-                    cursor = call.range.end;
+                MarkupItem::Wiki(link) => {
+                    self.push_element(
+                        Element::Reference(link.target.clone()),
+                        link.range.shifted(self.base_offset),
+                    );
                 }
-                Event::Link(link) => {
-                    content.elements.push(ElementNode {
-                        element: Element::Reference(link.target),
-                        range: link.range.shifted(self.base_offset),
-                    });
-                    cursor = link.range.end;
-                }
-                Event::Raw(raw) => {
-                    self.lower_raw_literal(&raw, &mut content);
-                    cursor = raw.range.end;
-                }
+                MarkupItem::Raw(raw) => self.lower_raw(raw),
+                MarkupItem::Embedded(embedded) => self.lower_embedded(embedded),
             }
         }
-
-        if cursor < range.end {
-            self.lower_text(TextRange::new(cursor, range.end), &mut content);
-        }
-        content
     }
 
-    fn lower_transparent(&mut self, scope: &TransparentScope, content: &mut Content) {
-        let metadata = lower_metadata(&scope.attributes);
-        if !metadata.is_empty() {
-            self.annotations.push(Annotation {
-                range: scope.body_range.shifted(self.base_offset),
-                metadata,
-            });
-        }
-        content.extend(self.lower_range(scope.body_range));
-    }
-
-    fn lower_call(&mut self, call: &Call, content: &mut Content) {
-        let metadata = lower_metadata(&call.attributes);
-        if !metadata.is_empty() {
-            let annotation_range = call
-                .body
-                .as_ref()
-                .map(|body| body.payload_range)
-                .unwrap_or_else(|| {
-                    TextRange::new(
-                        call.range.start,
-                        call.attributes
-                            .range
-                            .map_or(call.range.end, |attributes| attributes.start),
-                    )
+    fn lower_embedded(&mut self, embedded: &EmbeddedExpression) {
+        let (value, _, mut diagnostics) =
+            self.evaluate_expression(&embedded.expression, embedded.scope_range);
+        self.diagnostics.append(&mut diagnostics);
+        match value {
+            Value::Content(content) => {
+                self.content.elements.extend(content.elements);
+            }
+            Value::String(text) => {
+                self.push_element(
+                    Element::Text(text),
+                    embedded.scope_range.shifted(self.base_offset),
+                );
+            }
+            Value::None => {}
+            other => {
+                self.diagnostics.push(EvalDiagnostic {
+                    message: format!("cannot insert {} into Markup", other.ty()),
+                    range: embedded.expression.range.shifted(self.base_offset),
                 });
-            self.annotations.push(Annotation {
-                range: annotation_range.shifted(self.base_offset),
-                metadata,
-            });
+            }
         }
+    }
 
-        let global_call_range = call.range.shifted(self.base_offset);
-        let trailing = call
-            .body
+    fn lower_raw(&mut self, raw: &RawLiteral) {
+        let payload_range = raw.payload_range.shifted(self.base_offset);
+        let payload = &self.source[payload_range.start..payload_range.end];
+        let block = raw.form == RawLiteralForm::Fenced;
+        let language = raw
+            .tag
             .as_ref()
-            .map(|body| (self.lower_range(body.payload_range), body.payload_range));
-        let Some(function) = self.registry.get(&call.name.value) else {
+            .map(|tag| tag.value.clone())
+            .filter(|v| !v.is_empty());
+        self.push_element(
+            Element::Raw {
+                text: payload.to_owned(),
+                block,
+                language,
+            },
+            raw.range.shifted(self.base_offset),
+        );
+    }
+
+    fn evaluate_expression(
+        &mut self,
+        expression: &Expression,
+        expression_range: TextRange,
+    ) -> (Value, ValueOrigin, Vec<EvalDiagnostic>) {
+        if let Some((value, origin)) = evaluate_literal(expression, self.base_offset) {
+            return (value, origin, Vec::new());
+        }
+        match &expression.kind {
+            ExpressionKind::Content(block) => {
+                let (value, diagnostics) = self.evaluate_content_block(block);
+                (
+                    value,
+                    ValueOrigin::ContentLiteral {
+                        range: block.range.shifted(self.base_offset),
+                    },
+                    diagnostics,
+                )
+            }
+            ExpressionKind::Call(call) => {
+                let (value, diagnostics) = self.evaluate_call(call, expression_range);
+                (value, ValueOrigin::Default, diagnostics)
+            }
+            ExpressionKind::Parenthesized(inner) => self.evaluate_expression(inner, inner.range),
+            ExpressionKind::Error => (Value::None, ValueOrigin::Default, Vec::new()),
+            _ => (
+                Value::None,
+                ValueOrigin::Default,
+                vec![EvalDiagnostic {
+                    message: "unsupported expression in evaluation".into(),
+                    range: expression_range.shifted(self.base_offset),
+                }],
+            ),
+        }
+    }
+
+    fn evaluate_content_block(&mut self, block: &ContentBlock) -> (Value, Vec<EvalDiagnostic>) {
+        let evaluation = evaluate_markup(
+            self.source,
+            &block.markup,
+            self.base_offset,
+            self.registry,
+            self.depth,
+        );
+        let diagnostics = evaluation.diagnostics;
+        (Value::Content(evaluation.content), diagnostics)
+    }
+
+    fn evaluate_call(
+        &mut self,
+        call: &Call,
+        site_range: TextRange,
+    ) -> (Value, Vec<EvalDiagnostic>) {
+        let mut diagnostics = Vec::new();
+        let name = &call.name.value;
+
+        let Some(function) = self.registry.get(name) else {
             self.diagnostics.push(EvalDiagnostic {
-                message: format!("unknown function `{}`", call.name.value),
+                message: format!("unknown function `{name}`"),
                 range: call.name.range.shifted(self.base_offset),
             });
-            content.elements.push(ElementNode {
-                element: Element::UnresolvedCall {
-                    name: call.name.value.clone(),
-                    arguments: call
-                        .arguments_range
-                        .map(|range| self.source[range.start..range.end].to_owned()),
-                    trailing: trailing.map(|(content, _)| content),
-                    block: call
-                        .body
-                        .as_ref()
-                        .is_some_and(|body| body.form == BodyForm::Block),
-                },
-                range: global_call_range,
+            let (trailing, mut trailing_diagnostics) = self.evaluate_trailing(&call.trailing);
+            diagnostics.append(&mut trailing_diagnostics);
+            let arguments = call.arguments_range.map(|range| {
+                let absolute = range.shifted(self.base_offset);
+                self.source[absolute.start..absolute.end].to_owned()
             });
-            return;
+            let block = call
+                .trailing
+                .iter()
+                .any(|block| block.form == BodyForm::Block);
+            let content = Content::single(
+                Element::UnresolvedCall {
+                    name: name.clone(),
+                    arguments,
+                    trailing: trailing.into_iter().map(|(content, _)| content).next(),
+                    block,
+                },
+                site_range.shifted(self.base_offset),
+            );
+            return (Value::Content(content), diagnostics);
         };
 
-        let arguments = match bind_arguments(
-            &function.signature(),
+        let signature = function.signature();
+        let (trailing_content, mut trailing_diagnostics) = self.evaluate_trailing(&call.trailing);
+        diagnostics.append(&mut trailing_diagnostics);
+
+        let bound = match bind_arguments(
+            &signature,
             &call.arguments,
-            trailing,
+            trailing_content,
             call.name.range,
             self.base_offset,
+            |expression| {
+                let (value, origin, diagnostics) =
+                    self.evaluate_expression(expression, expression.range);
+                if diagnostics.is_empty() {
+                    Ok((value, origin))
+                } else {
+                    Err(diagnostics)
+                }
+            },
         ) {
-            Ok(arguments) => arguments,
-            Err(diagnostics) => {
-                self.diagnostics.extend(diagnostics);
-                return;
+            Ok(bound) => bound,
+            Err(mut errors) => {
+                diagnostics.append(&mut errors);
+                return (Value::None, diagnostics);
             }
         };
 
@@ -167,151 +216,93 @@ impl Lowerer<'_> {
             depth: self.depth,
         };
         let input = FunctionInput {
-            name: &call.name.value,
-            arguments,
-            range: global_call_range,
+            name,
+            arguments: bound,
+            range: site_range.shifted(self.base_offset),
         };
-
         match function.call(&context, input) {
-            Ok(output) => {
-                content.extend(output.content);
-                self.annotations.extend(output.annotations);
+            Ok(output) => (Value::Content(output.content), diagnostics),
+            Err(mut errors) => {
+                diagnostics.append(&mut errors);
+                (Value::None, diagnostics)
             }
-            Err(diagnostics) => self.diagnostics.extend(diagnostics),
         }
     }
 
-    fn lower_raw_literal(&self, raw: &RawLiteral, content: &mut Content) {
-        let text = self.source[raw.payload_range.start..raw.payload_range.end].to_owned();
-        let language = raw.tag.as_ref().map(|tag| tag.value.clone());
-        content.extend(raw_content(
-            text,
-            raw.form == RawLiteralForm::Fenced,
-            language,
-            raw.range.shifted(self.base_offset),
-        ));
+    fn evaluate_trailing(
+        &mut self,
+        trailing: &[ContentBlock],
+    ) -> (Vec<(Content, TextRange)>, Vec<EvalDiagnostic>) {
+        let mut result = Vec::new();
+        let mut diagnostics = Vec::new();
+        for block in trailing {
+            let evaluation = evaluate_markup(
+                self.source,
+                &block.markup,
+                self.base_offset,
+                self.registry,
+                self.depth + 1,
+            );
+            diagnostics.extend(evaluation.diagnostics);
+            let range = block.payload_range.shifted(self.base_offset);
+            result.push((evaluation.content, range));
+        }
+        (result, diagnostics)
     }
 
-    fn lower_text(&self, range: TextRange, content: &mut Content) {
-        let bytes = self.source.as_bytes();
-        let mut segment_start = range.start;
-        let mut cursor = range.start;
+    fn push_element(&mut self, element: Element, range: TextRange) {
+        self.content.elements.push(ElementNode { element, range });
+    }
 
-        while cursor < range.end {
-            if bytes[cursor] != b'\n' {
+    fn push_text_with_parbreaks(&mut self, text: &notist_syntax::SpannedText) {
+        let bytes = text.value.as_bytes();
+        let mut segment_start = 0usize;
+        let mut cursor = 0usize;
+
+        while cursor < bytes.len() {
+            let is_line_break = matches!(bytes.get(cursor), Some(b'\n' | b'\r'));
+            if !is_line_break {
                 cursor += 1;
                 continue;
             }
-
-            let mut lookahead = cursor + 1;
-            while lookahead < range.end && matches!(bytes[lookahead], b' ' | b'\t' | b'\r') {
-                lookahead += 1;
+            let line_end = if bytes.get(cursor..cursor + 2) == Some(b"\r\n") {
+                cursor + 2
+            } else {
+                cursor + 1
+            };
+            let mut after = line_end;
+            while after < bytes.len() && bytes[after] == b'\n' {
+                after += 1;
             }
-            if lookahead >= range.end || bytes[lookahead] != b'\n' {
-                cursor += 1;
+            if after == line_end {
+                cursor = line_end;
                 continue;
             }
-
-            self.push_text(TextRange::new(segment_start, cursor), content);
-            let break_end = lookahead + 1;
-            content.elements.push(ElementNode {
-                element: Element::Parbreak,
-                range: TextRange::new(cursor + self.base_offset, break_end + self.base_offset),
-            });
-            cursor = break_end;
-            segment_start = break_end;
+            let text_end = cursor;
+            if segment_start < text_end {
+                self.push_element(
+                    Element::Text(
+                        String::from_utf8_lossy(&bytes[segment_start..text_end]).into_owned(),
+                    ),
+                    TextRange::new(
+                        text.range.start + segment_start,
+                        text.range.start + text_end,
+                    ),
+                );
+            }
+            self.push_element(
+                Element::Parbreak,
+                TextRange::new(text.range.start + text_end, text.range.start + after),
+            );
+            segment_start = after;
+            cursor = after;
         }
 
-        self.push_text(TextRange::new(segment_start, range.end), content);
-    }
-
-    fn push_text(&self, range: TextRange, content: &mut Content) {
-        if range.is_empty() {
-            return;
-        }
-        let text = &self.source[range.start..range.end];
-        if text.is_empty() {
-            return;
-        }
-        content.elements.push(ElementNode {
-            element: Element::Text(text.to_owned()),
-            range: range.shifted(self.base_offset),
-        });
-    }
-
-    fn next_event(&self, cursor: usize, end: usize) -> Option<Event> {
-        let scope = self
-            .parse
-            .scopes
-            .iter()
-            .filter(|scope| scope.range.start >= cursor && scope.range.end <= end)
-            .min_by_key(|scope| scope.range.start)
-            .cloned()
-            .map(Event::Scope);
-        let call = self
-            .parse
-            .calls
-            .iter()
-            .filter(|call| call.range.start >= cursor && call.range.end <= end)
-            .min_by_key(|call| call.range.start)
-            .cloned()
-            .map(Event::Call);
-        let link = self
-            .parse
-            .links
-            .iter()
-            .filter(|link| link.range.start >= cursor && link.range.end <= end)
-            .min_by_key(|link| link.range.start)
-            .cloned()
-            .map(Event::Link);
-        let raw = self
-            .parse
-            .raw_literals
-            .iter()
-            .filter(|raw| raw.range.start >= cursor && raw.range.end <= end)
-            .min_by_key(|raw| raw.range.start)
-            .cloned()
-            .map(Event::Raw);
-
-        [scope, call, link, raw]
-            .into_iter()
-            .flatten()
-            .min_by_key(Event::start)
-    }
-}
-
-enum Event {
-    Scope(TransparentScope),
-    Call(Call),
-    Link(WikiLink),
-    Raw(RawLiteral),
-}
-
-impl Event {
-    fn start(&self) -> usize {
-        match self {
-            Self::Scope(scope) => scope.range.start,
-            Self::Call(call) => call.range.start,
-            Self::Link(link) => link.range.start,
-            Self::Raw(raw) => raw.range.start,
+        if segment_start < bytes.len() {
+            self.push_element(
+                Element::Text(String::from_utf8_lossy(&bytes[segment_start..]).into_owned()),
+                TextRange::new(text.range.start + segment_start, text.range.end),
+            );
         }
     }
-}
-
-fn lower_metadata(attributes: &Attributes) -> Metadata {
-    let mut metadata = Metadata {
-        id: attributes.id.as_ref().map(|id| id.value.clone()),
-        ..Metadata::default()
-    };
-    for attribute in &attributes.items {
-        match attribute {
-            Attribute::Tag(tag) => metadata.tags.push(tag.value.clone()),
-            Attribute::Class(class) => metadata.classes.push(class.value.clone()),
-            Attribute::KeyValue { key, value, .. } => metadata.properties.push(Property {
-                key: key.value.clone(),
-                value: value.raw.clone(),
-            }),
-        }
-    }
-    metadata
 }

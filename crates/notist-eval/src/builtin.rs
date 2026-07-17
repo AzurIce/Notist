@@ -2,8 +2,8 @@ use notist_model::{Content, Element};
 use notist_syntax::StringLiteralForm;
 
 use crate::{
-    DefaultValue, EvalDiagnostic, Function, FunctionContext, FunctionInput, FunctionOutput,
-    FunctionRegistry, FunctionSignature, Parameter, RegistryError, Type,
+    EvalDiagnostic, Function, FunctionContext, FunctionInput, FunctionOutput, FunctionRegistry,
+    FunctionSignature, RegistryError,
 };
 
 pub(crate) fn register_builtins(registry: &mut FunctionRegistry) -> Result<(), RegistryError> {
@@ -21,22 +21,7 @@ impl Function for HeadingFunction {
     }
 
     fn signature(&self) -> FunctionSignature {
-        FunctionSignature {
-            parameters: vec![
-                Parameter {
-                    name: "level",
-                    ty: Type::Int,
-                    default: Some(DefaultValue::Int(1)),
-                },
-                Parameter {
-                    name: "body",
-                    ty: Type::Content,
-                    default: None,
-                },
-            ],
-            trailing_content: Some("body"),
-            result: Type::Content,
-        }
+        notist_model::heading_signature()
     }
 
     fn call(
@@ -70,22 +55,7 @@ impl Function for RawFunction {
     }
 
     fn signature(&self) -> FunctionSignature {
-        FunctionSignature {
-            parameters: vec![
-                Parameter {
-                    name: "text",
-                    ty: Type::String,
-                    default: None,
-                },
-                Parameter {
-                    name: "lang",
-                    ty: Type::Optional(Box::new(Type::String)),
-                    default: Some(DefaultValue::None),
-                },
-            ],
-            trailing_content: None,
-            result: Type::Content,
-        }
+        notist_model::raw_signature()
     }
 
     fn call(
@@ -113,15 +83,7 @@ impl Function for QuoteFunction {
     }
 
     fn signature(&self) -> FunctionSignature {
-        FunctionSignature {
-            parameters: vec![Parameter {
-                name: "body",
-                ty: Type::Content,
-                default: None,
-            }],
-            trailing_content: Some("body"),
-            result: Type::Content,
-        }
+        notist_model::quote_signature()
     }
 
     fn call(

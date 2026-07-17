@@ -31,10 +31,7 @@ pub fn structure(evaluation: Evaluation) -> StructuredEvaluation {
 
     flush_paragraph(&mut paragraph, &mut blocks);
     StructuredEvaluation {
-        document: StructuredDocument {
-            blocks,
-            annotations: evaluation.annotations,
-        },
+        document: StructuredDocument { blocks },
         diagnostics: evaluation.diagnostics,
     }
 }

@@ -7,6 +7,10 @@ use std::sync::Arc;
 use notist_model::{ModulePath, TextRange};
 use notist_syntax::{Parse, parse};
 
+mod check;
+
+pub use check::{CheckDiagnostic, SignatureSet, check_module};
+
 /// The marker file whose containing directory is a Notist vault root.
 pub const MANIFEST_FILE: &str = "Notist.toml";
 
@@ -31,6 +35,9 @@ pub enum DiagnosticKind {
     InvalidSyntax,
     UnresolvedModule,
     UnsupportedLabelReference,
+    UnknownFunction,
+    InvalidArguments,
+    TypeMismatch,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -227,6 +234,7 @@ impl Workspace {
     fn analyze_references(&mut self) {
         let mut diagnostics = Vec::new();
         let mut references = Vec::new();
+        let signatures = SignatureSet::with_builtins();
         for module in self.modules.values() {
             let (Some(source_path), Some(parse)) = (&module.source_path, &module.parse) else {
                 continue;
@@ -239,7 +247,7 @@ impl Workspace {
                 range: Some(error.range),
             }));
 
-            for link in &parse.links {
+            for link in parse.links() {
                 if link.target.label.is_some() {
                     diagnostics.push(Diagnostic {
                         kind: DiagnosticKind::UnsupportedLabelReference,
@@ -277,6 +285,16 @@ impl Workspace {
                     });
                 }
             }
+            diagnostics.extend(
+                check_module(parse, &signatures)
+                    .into_iter()
+                    .map(|diagnostic| Diagnostic {
+                        kind: diagnostic.kind,
+                        message: diagnostic.message,
+                        source_path: Some(source_path.clone()),
+                        range: Some(diagnostic.range),
+                    }),
+            );
         }
         self.references = references;
         self.diagnostics.extend(diagnostics);

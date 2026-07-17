@@ -1,0 +1,51 @@
+#heading(level=1)[静态求值模型迁移与 LSP 去 Runtime]
+
+#heading(level=2)[背景]
+
+语法层从 flat syntax vectors(多个独立扫描器产出的平铺事件数组,靠 range 包含关系互斥与重建结构)迁移到单一 mode-aware 语法树后,静态求值模型仍有若干目标未落地。本文记录 2026-07-17 这次收尾迁移的决策与实现,对应 [[vault::types]] 的"当前迁移边界"章节。
+
+#heading(level=2)[五项核心决策]
+
+#heading(level=3)[元素 range 包含 `#`]
+
+grammar 产生式 `EmbeddedExpression = "#" CodeExpression Attributes?`,`#` 属于 EmbeddedExpression 而非独立 operator。eval 对 markup 位置的插入元素统一使用 `embedded.scope_range`(含 `#`)作为元素 range,与旧模型一致,HTML source map(`data-notist-start`)与 LSP 语义不变。实现上 `evaluate_call` 接收调用方传入的 site range:markup 位置传 `scope_range`,参数内嵌套 call 传自身 `call.range`。
+
+#heading(level=3)[Annotation 从 evaluator 完全移出]
+
+不变量 `eval(erase_annotations(doc)) == eval(doc)` 要求 annotation 不参与求值。核查下游后确认无任何消费者(html 忽略、cli inspect 已用语法层),故直接删除:`Evaluation.annotations`、`FunctionOutput.annotations`、`StructuredDocument.annotations` 及全部收集逻辑。annotation 由 syntax 层 `Parse::annotations()` 按需提供;analysis 侧统一索引待有真实消费者时再建。
+
+#heading(level=3)[注册时签名校验]
+
+`FunctionRegistry::register` 现在校验:每个 parameter 的 default 必须满足其类型、`result == Type::Content`(Content-only trait 阶段由 Registry 强制契约)、`trailing_content` 必须指向已声明的 `Content` 参数。违反返回 `RegistryError { name, reason: InvalidSignature(..) }`。
+
+#heading(level=3)[签名数据上移 notist-model]
+
+`Type`/`DefaultValue`/`Parameter`/`FunctionSignature` 是纯数据,移入 `notist-model::signature`;三个 builtin 签名(`heading_signature`/`raw_signature`/`quote_signature`/`builtin_signatures`)在 model 定义单一事实源,eval 的 builtin 实现引用之,analysis 无需依赖 eval 即可获得签名。eval 保持原 re-export 路径,外部 import 不变。
+
+#heading(level=3)[静态 type checking 落点 notist-analysis]
+
+新增 `notist-analysis::check`(`SignatureSet` + `check_module`):对整棵 Markup 树做名称解析、argument binding 全套规则(unknown argument / positional-after-named / too many positional / duplicate / missing required / trailing 不被接受)与 Markup 插入检查(String→Text、None→空、Content→插入,其余报 `cannot insert {ty} into Markup`),**不执行 Function runtime**。
+
+与 eval 对齐的关键规则:表达式子树有错误(未知函数、binding 失败、语法错误节点)时返回"无类型",跳过上层依赖该值的检查——因此 `#heading(level=missing())[T]` 只报一次 `unknown function`,不会追加 type mismatch。消息文案与 eval 运行时一致,`notist check`、LSP、build 共享同一套静态诊断。
+
+#heading(level=2)[LSP 迁移]
+
+- 诊断路径不再实例化 `Evaluator`,全部来自 `Workspace::diagnostics()`(静态检查已并入);诊断 code 从笼统的 `evaluation` 细分为 `unknown-function`/`invalid-arguments`/`type-mismatch`。
+- 参数补全取最内层 call:新文法允许参数内嵌套 call(Code mode 内写 `name(...)`,不带第二个 `#`),`calls()` 先序遍历改为按 `arguments_range` 包含关系取 range 最小者。回归测试:`#heading(level=missing())` 内层不再给出外层 `level` 候选。
+- hover/completion 仍读 `FunctionRegistry` 签名(静态元数据),build/preview 管线不变(它们本就应执行 runtime)。
+
+#heading(level=2)[typst 设计对照]
+
+typst 验证了单树路线:lossless untyped CST(错误是树内节点)+ 惰性 typed AST 视图 + span 编号(跨编译稳定,服务增量缓存)。Notist 当前选择 typed-only 树 + 直接存 `TextRange`:对 eval/跳转/diagnostic 足够且更简单;若将来 LSP 需要高亮/格式化(token 级信息)或增量重parse,再考虑引入 lossless CST 与 span 编号。
+
+#heading(level=2)[遗留事项]
+
+- 一般 Value-returning Function 及其 result runtime validation(当前强制 `result == Content`)。
+- 跨 Module 的 Function name resolution(静态检查目前只解析 built-in 签名)。
+- analysis 侧统一 Annotation index。
+- `let`/变量/一般运算/控制流/User Function(types.not "非本阶段"清单)。
+
+#heading(level=2)[参考]
+
+- 规范:[[vault::types]]、[[vault::grammar]]、[[vault::functions]]
+- typst 语法树调查:[[vault::ai::2026-07-11 typst element function and syntax sugar]]
