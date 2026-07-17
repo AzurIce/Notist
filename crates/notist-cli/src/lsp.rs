@@ -1414,9 +1414,9 @@ mod tests {
     }
 
     fn response_result(response: Response) -> serde_json::Value {
-        match response.response_kind {
-            lsp_server::ResponseKind::Ok { result } => result,
-            lsp_server::ResponseKind::Err { error } => {
+        match response.response_result {
+            Ok(result) => result,
+            Err(error) => {
                 panic!("unexpected LSP error response: {}", error.message)
             }
         }
