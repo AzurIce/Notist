@@ -1,0 +1,11 @@
+{
+  "servers": {
+    "notist": {
+      "command": "notist",
+      "args": ["lsp"],
+      "fileTypes": [".not"],
+      "rootMarkers": [".git", "Cargo.toml", "Notist.toml"],
+      "warmupTimeoutMs": 10000
+    }
+  }
+}

@@ -1,23 +1,102 @@
 #heading(level=1)[Notist Grammar]
 
-本文严格定义当前目标语法。概念、使用方式和执行模型见 [[vault::intro]]；字符串、Raw 语法与本次迁移的设计动机见 [[vault::designs::2026-07-14 string literals and raw syntax]]。
+本文定义 Notist 的目标语法模型。语言包含 Markup 与 Code 两种模式：文档默认处于 Markup，`#` 将一个 Code expression 嵌入当前内容，Code 中的 `[...]` 创建 Content literal 并暂时切回 Markup。概念说明见 [[vault::intro]]，类型与求值规则见 [[vault::types]]。
+
+#heading(level=2)[规范状态]
+
+本文是后续 parser、analysis 与 evaluator 迁移的目标规范。当前实现已经支持 Function call、trailing Content、String literal、Wiki Reference、Raw syntax 和 Attributes，但仍将 `#[...]` 与 `#name[...]` 作为独立语法结构解析，尚未实现一般的 mode-aware Code expression。实现迁移完成前，命令行实际行为可能与本文的 Mode 章节存在差异。
+
+本次规范只确定 Markup 与 Code 两种模式，以及当前所需的 Code expression 子集。变量、`let`、一般运算、控制流和 User Function 不属于本阶段；模式边界应允许它们未来加入而无需再次修改 Content literal 与 Function call 的语义。
 
 #heading(level=2)[记号]
 
 - `"text"` 表示固定字符。
 - `A B` 表示顺序连接，`A | B` 表示选择。
 - `A?`、`A*`、`A+` 分别表示零或一次、零或多次、一次或多次。
-- `SameHashes`、`SameBackticks` 和括号配对等上下文相关规则由正文定义。
+- SameHashes、SameBackticks 和括号配对等上下文相关规则由正文定义。
 
-#heading(level=2)[源文件]
+#heading(level=2)[源文件与 Document]
 
 源文件是 UTF-8 文本，换行符可以是 LF 或 CRLF。源码位置使用半开 byte range：start 包含，end 不包含。
 
 ```ebnf
-Document = (Text | WikiLink | TransparentScope | Call | RawSyntax)* ;
+Document = Markup ;
+Markup = MarkupItem* ;
+MarkupItem = Text
+           | WikiLink
+           | RawSyntax
+           | EmbeddedExpression ;
 ```
 
-未被其他结构占用的源码是 Text。RawSyntax 内不扫描宿主语法；Transparent Scope 和 Call 的 trailing Content 内递归扫描。
+Document 是一个隐式的 Markup sequence。普通 Markup、Reference、Raw syntax 和 EmbeddedExpression 的输出按源码顺序连接，整篇 Document 的静态类型与求值结果均为 `Content`。
+
+未被其他 Markup 结构占用的源码是 Text。在顶层 Markup 中，普通 `[` 与 `]` 是文字；只有 Code mode 中的 `[` 才开始 Content literal。
+
+#heading(level=2)[Markup 与 Code Mode]
+
+Notist 只有两种语法模式：
+
+| Mode | 作用 | 进入方式 |
+| --- | --- | --- |
+| Markup | 书写普通文档、Reference 和 Raw syntax | Document 默认；Code 中使用 `[...]` |
+| Code | 书写 literal、Function call 和其他 expression | Markup 中使用 `#` |
+
+```ebnf
+EmbeddedExpression = "#" CodeExpression Attributes? ;
+ContentBlock = "[" Markup "]" ;
+
+```
+
+ContentBlock 内未转义的 `]` 结束当前 block；需要文字 `]` 时使用 `\]`。Markup 中由 EmbeddedExpression 引入的嵌套 ContentBlock 按各自 delimiter 正确配对。
+
+`#` 不是一个普通 unary operator。它在 Markup 中开始一个 EmbeddedExpression，使 parser 切换到 Code；expression 结束后恢复 Markup。Code expression 的结果必须能够插入 Content，具体类型规则见 [[vault::types]]。
+
+Code 中的 ContentBlock 使用 `[...]` 创建 `Content` literal。`[` 后进入 Markup，匹配的 `]` 结束该 literal 并恢复外层 Code。
+
+```not
+Plain [brackets] stay markup text.
+
+#[This is a Content literal embedded into the document.]
+
+#quote[The trailing argument is the same kind of Content literal.]
+```
+
+因此 `#[body]` 不再是独立的 TransparentScope grammar。它是 `#` 嵌入一个 ContentBlock；无 Attributes 时，其求值效果等同于直接插入 body Content。有 Attributes 时，它同时建立一个可供 analysis 查询的显式源码 scope。
+
+Mode 可以递归嵌套：
+
+```not
+#[Outer markup with #[inner markup]@inner.]@outer
+```
+
+解析模式依次为 Markup → Code → Markup → Code → Markup。
+
+#heading(level=2)[Code Expression 子集]
+
+本阶段目标 Code grammar 为：
+
+```ebnf
+CodeExpression = NoneLiteral
+               | BoolLiteral
+               | IntLiteral
+               | FloatLiteral
+               | StringLiteral
+               | ContentBlock
+               | CallExpression
+               | ParenthesizedExpression ;
+
+ParenthesizedExpression = "(" CodeExpression ")" ;
+```
+
+`let`、变量访问、一般 binary/unary operator、Array、Dict、控制流和 User Function 将来都可以作为新的 CodeExpression 加入，但不改变 `#` 与 ContentBlock 的模式规则。
+
+在 Code mode 内不重复书写 `#`。例如 Function arguments 本身已经处于 Code：
+
+```not
+#raw(text="cargo test", lang="text")
+```
+
+这里两个 String 都是 Code literal，而不是 Markup text。
 
 #heading(level=2)[标识符与名称]
 
@@ -26,9 +105,101 @@ Identifier = (UnicodeAlphanumeric | "_" | "-")+ ;
 QualifiedName = Identifier ("::" Identifier)* ;
 ```
 
-`::` 两侧不允许空白。当前实现允许 Identifier 以数字开头。
+`::` 两侧不允许空白。当前目标保留 Identifier 可由数字开头的行为；以后引入一般变量与 `let` 前，应重新确认 identifier start 规则，避免数字 literal 与 Name expression 重叠。
+
+#heading(level=2)[Function Call]
+
+Function Call 是 CodeExpression，而不是独立的 Markup 节点：
+
+```ebnf
+CallExpression = QualifiedName (Arguments ContentBlock* | ContentBlock+) ;
+Arguments = "(" Whitespace* ArgumentList? Whitespace* ")" ;
+ArgumentList = Argument (Whitespace* "," Whitespace* Argument)*
+               (Whitespace* ",")? ;
+Argument = NamedArgument | PositionalArgument ;
+NamedArgument = Identifier Whitespace* "=" Whitespace* CodeExpression ;
+PositionalArgument = CodeExpression ;
+```
+
+当前 Function signature 最多声明一个 trailing Content parameter，因此现阶段实现只需接受零或一个 trailing ContentBlock；grammar 使用 `*` 是为了保留一般 Function call 的统一形态，是否允许多个由 signature binding 决定。
+
+由于 ContentBlock 本身是 CodeExpression，Content 也可以显式写在普通 argument list 中：
+
+```not
+#quote(body=[Quoted Content.])
+#heading(level=2, body=[Title])
+```
+
+Trailing ContentBlock 是该普通 Content argument 的紧凑调用形式，不是另一种 body type 或 parser mode。
+
+以下写法共享同一 CallExpression 模型：
+
+```not
+#pagebreak()
+#raw(text="cargo test")
+#quote[Quoted Content.]
+#heading(level=2)[Title]
+```
+
+`#name(args)[body]` 的解析过程是：
+
+```text
+Markup
+-> # enters Code
+-> parse Function Call
+-> parse ordinary arguments in Code
+-> [body] enters Markup and produces Content
+-> bind Content as a trailing argument
+-> insert Function result into outer Markup
+```
+
+Parser 不读取 Function signature 来决定 `[...]` 的语法。它始终是 Content literal；analysis 再检查该 Function 是否接受 trailing Content。
+
+#heading(level=2)[Argument Literal]
+
+```ebnf
+NoneLiteral = "none" ;
+BoolLiteral = "true" | "false" ;
+IntLiteral = "-"? ASCII_DIGIT+ ;
+FloatLiteral = "-"? (ASCII_DIGIT+ "." ASCII_DIGIT*
+                    | ASCII_DIGIT* "." ASCII_DIGIT+) ;
+```
+
+Float 必须包含一个 `.` 且至少包含一个 digit，因此 `1.0`、`1.`、`.5` 和 `-.5` 合法，`.` 与 `-.` 非法。
+
+Arguments 允许空白、换行和 trailing comma。Named argument 之后不允许 positional argument。Trailing ContentBlock 是 Function call 的 trailing argument，不受该限制。
+
+Backtick 与 fenced Raw 属于 Markup syntax，不是 CodeExpression；需要把源码传入 Function 时使用 String literal。
+
+#heading(level=2)[String Literal]
+
+String literal 只在 Code mode 中成立。在 Markup 中，普通 quote 是 Text；例如 `"abc"` 会保留 quote 字符，而 `#"abc"` 会创建 String value 并将其作为文字插入 Content。
+
+四种 String form 都产生同一个 `String` 类型：
+
+```ebnf
+StringLiteral = EscapedInlineString
+              | EscapedMultilineString
+              | RawInlineString
+              | RawMultilineString ;
+
+EscapedInlineString = '"' EscapedInlineCharacter* '"' ;
+EscapedMultilineString = '"""' Newline EscapedMultilineCharacter* '"""' ;
+RawInlineString = "r" Hashes '"' RawInlineCharacter* '"' SameHashes ;
+RawMultilineString = "r" Hashes '"""' Newline RawMultilineCharacter* '"""' SameHashes ;
+Hashes = "#"+ ;
+Newline = LF | CRLF ;
+```
+
+Inline String 不允许 LF 或 CRLF。只有 triple quote 后立即出现 LF 或 CRLF 时才选择 Multiline form；opening framing newline 不属于 value，closing delimiter 前紧邻的一个 LF 或 CRLF 同样被裁掉。除此之外不裁剪空白，也不执行 dedent。
+
+Escaped String 支持 `\"`、`\\`、`\n`、`\r`、`\t`。其他或不完整的 escape 产生 SyntaxError。Raw String 至少包含一个 `#`，不处理反斜杠，closing delimiter 必须使用与 opener 完全相同的 hash count。
+
+Inline/Multiline 与 Escaped/Raw 是 literal provenance，不是不同的公开类型。
 
 #heading(level=2)[Wiki Reference]
+
+Wiki Reference 是 Markup syntax：
 
 ```ebnf
 WikiLink = "[[" WikiReferenceBody "]]" ;
@@ -49,96 +220,9 @@ ModulePart 和 Label 两侧会 trim whitespace。引用最多包含一个 `#`；
 
 ModuleSegment 不能包含 control character、`/`、`\`、`#`、`[` 或 `]`。按 `::` 分段后每段会 trim，空段非法。`vault`、`super`、`self` 是只允许出现在路径开头的保留段。
 
-#heading(level=2)[Transparent Scope]
-
-```ebnf
-TransparentScope = "#[" ContentBody "]" Attributes? ;
-```
-
-ContentBody 的 `[` 与 `]` 可以嵌套。String literal 和 RawSyntax 作为整体跳过，其中的 bracket 不参与配对；`\` 跳过紧随其后的字符。Transparent Scope 不裁剪 framing newline。
-
-#heading(level=2)[Function Call]
-
-```ebnf
-Call = "#" QualifiedName CallTail Attributes? ;
-CallTail = Arguments ContentBlock?
-         | ContentBlock ;
-ContentBlock = "[" ContentBody "]" ;
-```
-
-`#name(args)` 是完整调用，不要求 trailing Content；`#name(args)[Content]` 和 `#name[Content]` 保留。只有名称而没有 `()` 或 `[]` 的 `#name` 不是 Call。
-
-Function 名称、Arguments 和可选 ContentBlock 必须相邻。ContentBlock 内递归解析 Notist；它产生 `Content`，并绑定到 Function signature 指定的 `trailing_content` 参数。它不是普通位置参数，因此可以跟在 named arguments 之后。Parser 不读取 Function signature 来决定 body 的解析模式。
-
-ContentBlock 的 `[` 后立即出现 LF 或 CRLF 时为 Block，否则为 Inline。Block Content 会从 payload range 排除 opening 后和 closing 前各一个 framing newline；Inline Content 不裁剪。Transparent Scope 不具有这一 BodyForm。
-
-#heading(level=2)[Arguments]
-
-```ebnf
-Arguments = "(" Whitespace* ArgumentList? Whitespace* ")" ;
-ArgumentList = Argument (Whitespace* "," Whitespace* Argument)*
-               (Whitespace* ",")? ;
-Argument = NamedArgument | PositionalArgument ;
-NamedArgument = Identifier Whitespace* "=" Whitespace* Expression ;
-PositionalArgument = Expression ;
-
-Expression = NoneLiteral | BoolLiteral | IntLiteral
-           | FloatLiteral | StringLiteral ;
-NoneLiteral = "none" ;
-BoolLiteral = "true" | "false" ;
-IntLiteral = "-"? ASCII_DIGIT+ ;
-FloatLiteral = "-"? ASCII_DIGIT* "." ASCII_DIGIT* ;
-```
-
-Float 必须至少有一个 digit 且只能有一个 `.`。Arguments 允许空白、换行和 trailing comma。Named argument 之后不允许 positional argument；trailing Content 不属于 positional argument，因此可以跟在 named arguments 之后。Backtick 和 fenced code 不是 Expression，不能作为 Function 参数；需要传递源码时使用 String literal。
-
-#heading(level=2)[String Literal]
-
-四种形式都产生同一个 `String` 类型。Inline/Multiline 是 literal provenance，Escaped/Raw 只决定是否处理反斜杠；它们不是四种运行时类型。
-
-```ebnf
-StringLiteral = EscapedInlineString
-              | EscapedMultilineString
-              | RawInlineString
-              | RawMultilineString ;
-
-EscapedInlineString = '"' EscapedInlineCharacter* '"' ;
-EscapedMultilineString = '"""' Newline EscapedMultilineCharacter* '"""' ;
-
-RawInlineString = "r" Hashes '"' RawInlineCharacter* '"' SameHashes ;
-RawMultilineString = "r" Hashes '"""' Newline RawMultilineCharacter* '"""' SameHashes ;
-Hashes = "#"+ ;
-Newline = LF | CRLF ;
-```
-
-Inline String 不允许 LF 或 CRLF；Multiline String 允许换行。只有 triple quote 后立即出现 LF 或 CRLF 时才选择 Multiline form；该 required opening framing newline 不属于 value。Closing delimiter 前若紧邻一个 LF 或 CRLF，也裁掉一个 closing framing newline。除此之外不裁剪空白，也不执行 dedent。Escaped String 支持 `\"`、`\\`、`\n`、`\r`、`\t`，其他或不完整的 escape 产生 SyntaxError。
-
-这条 opening-line-break 规则消除 Raw Inline 与 Raw Multiline 的词法重叠。未紧跟换行时，raw prefix 后的第一个 quote 是 Inline opener，因此 `r#"""#` 是值为 `"` 的 Inline Raw String，`r#"""text"""#` 是值为 `""text""` 的 Inline Raw String。需要 Multiline provenance 时必须实际换行：
-
-```not
-#raw(text=r#"""
-text
-"""#)
-```
-
-Raw String 至少使用一个 `#`，反斜杠和 quote 在 payload 中保持原样。Closing delimiter 必须使用与 opener 完全相同的正数 hash level；更高 level 可容纳较低 level 的 closing-like 文本：
-
-````not
-#raw(text=r##"text containing "# without closing"##)
-
-#raw(
-  text=r##"""
-text containing """# without closing
-"""##,
-  lang="text",
-)
-````
-
-上例中的四种 quote/hash literal 都仍然是 String。`raw` 根据直接传入的 String literal 是 Inline 还是 Multiline 来决定产生 inline 或 block Raw Element。
-
 #heading(level=2)[Inline Raw 与 Fenced Raw]
 
-Backtick syntax 只在宿主 Content 中构造内置 Raw Element，不是 String literal，也不能作为 Function argument expression。
+Backtick syntax 只在 Markup 中构造内置 Raw Element，不是 String，也不是 CodeExpression。
 
 ```ebnf
 RawSyntax = InlineRaw | FencedRaw ;
@@ -149,24 +233,13 @@ FenceOpen = BackticksAtLeast3 InfoTag? ;
 FenceClose = BackticksAtLeastOpeningLength ;
 ```
 
-InlineRaw 使用完全相同长度的 backtick run 关闭；正文需要包含 backtick 时提高 delimiter length：
+InlineRaw 使用完全相同长度的 backtick run 关闭。FencedRaw opener 至少三个 backtick；opening line 的非空文本经 horizontal trim 后成为 info tag。Closing fence 可以缩进，长度不得小于 opener，之后只能有 horizontal whitespace 或行尾。Opening 后和 closing 前各一个 framing newline 不属于 payload。
 
-````text
-`ordinary raw`
-``contains ` inside``
-````
+Raw syntax 内不扫描 Notist Markup 或 Code。即使 payload 包含 `#`、`[[...]]`、`[...]` 或 `@...`，也保持原文。
 
-FencedRaw 的 opener 至少三个 backtick。opening fence 后同一行的非空文本经 horizontal trim 后成为 info tag。Closing fence 可以缩进，backtick 数量必须不少于 opener，之后只能有 horizontal whitespace 或行尾。Opening 后和 closing 前各一个 framing newline 不属于 payload。
+#heading(level=2)[Attributes 与源码 Annotation]
 
-````not
-```rust
-fn main() {}
-```
-````
-
-宿主中的 inline backtick 直接产生 inline Raw Element；fence 直接产生 block Raw Element，info tag 直接成为该 Element 的 language。它们语义上归一到内置 Raw 构造逻辑，但不经过动态名称 `raw` 的查找或参数绑定。
-
-#heading(level=2)[Attributes]
+Attributes 是 EmbeddedExpression 的统一 postfix：
 
 ```ebnf
 Attributes = "@" FirstAttribute ("," AttributeItem)* ;
@@ -180,18 +253,50 @@ AttributeValue = Identifier | QuotedAttributeValue ;
 QuotedAttributeValue = '"' AttributeCharacter* '"' ;
 ```
 
-Attributes 中不允许空白。可选 ID 只能是第一个 bare Identifier；Tag、Class、KeyValue 可以重复并保持源码顺序。QuotedAttributeValue 中的 `\` 会跳过下一个字符。
+Attributes 中不允许空白。可选 ID 只能是第一个 bare Identifier；Tag、Class 和 KeyValue 可以重复并保持源码顺序。
 
-#heading(level=2)[文本与段落]
+所有 Attributes 都只建立独立的 source annotation：
 
-普通单换行属于 Text。一个换行后经过零个或多个 space、tab 或 CR，再遇到第二个换行时产生 Parbreak。当前没有独立的 Markdown heading、list、strong、emphasis 或 quote 语法。
+```not
+#[arbitrary Content]@concept,#knowledge,.highlight
+#quote[quoted Content]@citation,source="book"
+#raw(text="cargo test")@command,#verified
+```
+
+它们统一附着到前一个 EmbeddedExpression 的 source scope，不进入 Function arguments、`Content`、`Value`、静态类型或 FunctionOutput。删除或忽略 Annotation 不得改变 expression 的类型与求值结果：
+
+```text
+eval(erase_annotations(document)) == eval(document)
+```
+
+Annotation scope 与其他显式语法结构必须正确嵌套或分离，不允许两个范围形成非嵌套交叉。一个 Annotation 可以包含多个完整 inline Element、Function Call、Paragraph 或 block，但不能从另一个显式结构内部开始并在其外部结束。
+
+#heading(level=2)[文本、拼接与段落]
+
+Markup 中相邻的 Text、Reference、Raw 和 EmbeddedExpression 输出按源码顺序连接为 Content。实现可以在 lowering 后合并相邻 Text Element，但不得改变 source provenance。
+
+普通单换行属于 Text。一个或多个空行产生 Parbreak；LF 与 CRLF 必须得到相同语义，framing CR 或多余 newline 不进入相邻 Text。
+
+当前目标没有独立的 Markdown heading、list、strong、emphasis 或 quote sugar；这些结构以后加入 Markup 时，必须与 ContentBlock 和 Annotation scope 保持正确嵌套。
 
 #heading(level=2)[错误与恢复]
 
-未闭合或非法的 Wiki Reference、Scope、Call、Arguments、String literal、InlineRaw、FencedRaw 和 Attributes 产生 SyntaxError。Raw syntax 和 String literal 内的宿主标记不会泄漏到外层 parser。
+未闭合或非法的 Wiki Reference、ContentBlock、Arguments、String、Raw syntax 和 Attributes 产生 SyntaxError。Code expression 缺失或无法识别时必须产生 diagnostic，不得静默丢弃后回退到 Function default。
 
-未知 Function 不是 syntax error。它在 evaluation 阶段产生 diagnostic，并保留为 UnresolvedCall。类型、参数绑定、模块解析和内置 Function 校验错误同样属于语法之后的 diagnostics。
+未知 Function 不是 syntax error。analysis 负责名称解析、signature binding 和静态类型诊断；evaluator 可以保留 UnresolvedCall 以支持预览和工具恢复。
 
-#heading(level=2)[非当前语法]
+Markup、Code 和 Raw 的边界必须由 parser 在本地确定，不依赖 Function registry 或插件 runtime。
 
-除 inline backtick 与 fenced raw 外，其他 Markdown 风格语法糖、一般表达式、变量、User Function、控制流、import、完整 Label resolution、插件自定义宿主 grammar、formatter trivia model 尚未进入当前规范。
+#heading(level=2)[非本阶段语法]
+
+以下能力不属于当前双 Mode 迁移：
+
+- `let` 与变量访问。
+- 一般 unary/binary expression。
+- Array、Dict、record 和 Function value。
+- User Function、控制流与 import。
+- 插件修改宿主 grammar。
+- Annotation 任意非嵌套交叉。
+- 完整 formatter trivia model。
+
+这些能力以后应扩展 CodeExpression 或 analysis，而不是改变 `#`、ContentBlock 与 Markup 的基本模式语义。

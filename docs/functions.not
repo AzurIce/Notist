@@ -1,0 +1,118 @@
+#heading(level=1)[Built-in Functions]
+
+本文定义当前 Notist 运行时提供的内置 Function。语法规则见 [[vault::grammar]]，Function、Content 与 Element 的整体模型见 [[vault::intro]]。`designs/2026-07-12 builtin processors` 记录早期设计过程，其中的 Raw Call、`RawSource` 和旧签名已经过时，不作为当前行为依据。
+
+#heading(level=2)[共同模型]
+
+内置 Function 与插件 Function 使用同一套调用、类型检查和参数绑定模型。当前内置 Function 都返回 `Content`：
+
+```text
+heading(level: Int = 1, body: Content) -> Content
+raw(text: String, lang: String? = none) -> Content
+quote(body: Content) -> Content
+```
+
+圆括号中的 positional argument 按签名顺序绑定，named argument 按名称绑定。`heading.body` 和 `quote.body` 是 trailing Content 参数，因此写在调用后的 `[...]` 中；它们不是普通 positional argument。`raw` 不接受 trailing Content，源码必须通过 `String` 参数传入。
+
+调用完成后，末尾的 Attributes 附着到返回 Content 对应的源范围，不属于 Function 参数：
+
+```not
+#heading(level=2)[Design]@section,#public
+#raw(text="cargo test")@command,#verified
+```
+
+#heading(level=2)[heading]
+
+```text
+heading(level: Int = 1, body: Content) -> Content
+```
+
+`heading` 产生一个 block `Heading` Element。
+
+- `level` 必须在 `1..=6` 范围内，默认值为 `1`。
+- `body` 是必需的 trailing Content，在调用点使用 `[...]` 传入。
+- body 会先按普通 Notist Content 解析和求值，可以包含引用、Raw Element 和嵌套 Function 调用。
+
+```not
+#heading[Introduction]
+#heading(level=2)[Design with [[self::references]]]
+```
+
+`#heading()` 没有提供 `body`，是参数绑定错误；`#heading(level="2")[Title]` 是类型错误；超出 `1..=6` 的 level 会在调用时产生诊断。
+
+#heading(level=2)[raw]
+
+```text
+raw(text: String, lang: String? = none) -> Content
+```
+
+`raw` 产生一个 `Raw` Element，正文不再作为 Notist Content 解析。
+
+- `text` 是必需的 String。
+- `lang` 是可选的语言标识，默认值为 `none`。
+- 直接传入的 Inline String literal 产生 inline Raw Element。
+- 直接传入的 Multiline String literal 产生 block Raw Element。
+- Escaped/Raw 只决定 String 的转义方式，不决定 inline/block。
+
+```not
+#raw(text="cargo test")
+#raw(text=r#"fn main() {}"#, lang="rust")
+#raw(
+  text=r#"""
+fn main() {}
+"""#,
+  lang="rust",
+)
+```
+
+Multiline String 的 opening framing newline 和紧邻 closing delimiter 的一个 framing newline 不属于 `text`。除此之外 `raw` 不裁剪空白，也不执行 dedent。
+
+`raw` 不接受 trailing Content，因此 `#raw[content]` 是类型错误。已经删除的 `#raw![source]!` 和可升级 `!` delimiter 不是当前语法。
+
+#heading(level=3)[Raw 语法糖]
+
+Inline backtick 与 fenced raw 是宿主 Content 语法，不是对动态名称 `raw` 的普通调用：
+
+````not
+`inline raw`
+
+```rust
+fn main() {}
+```
+````
+
+它们绕过 FunctionRegistry 的名称查找，但与 `raw` 共享底层 Raw Element 构造逻辑。即使将来注册了另一个同名 Function，也不会改变 backtick 或 fence 的含义。Backtick 和 fence 也不是 Expression，不能直接作为 Function argument。
+
+#heading(level=2)[quote]
+
+```text
+quote(body: Content) -> Content
+```
+
+`quote` 产生一个 block `Quote` Element。
+
+- `body` 是必需的 trailing Content，在调用点使用 `[...]` 传入。
+- body 会先按普通 Notist Content 解析和求值。
+- `quote` 当前没有其他参数。
+
+```not
+#quote[Quoted content.]
+
+#quote[
+First paragraph.
+
+Second paragraph with [[self::reference]].
+]
+```
+
+`#quote(source="book")[text]` 会产生 unknown argument 诊断。引用来源等语义信息应使用 Attributes 表达，而不是未定义的 Function 参数：
+
+```not
+#quote[Quoted content.]@citation,#external,source="book"
+```
+
+#heading(level=2)[名称解析与扩展]
+
+`FunctionRegistry::with_builtins()` 注册本文列出的三个名称。显式调用通过 qualified name 查找 Function；未注册的调用会保留为 `UnresolvedCall`，供显示和工具链继续处理。
+
+插件 Function 与内置 Function 共享 signature、binding 和返回模型，但不能重复注册同一个完整名称。新增内置 Function 时，应同时更新注册实现、求值测试、LSP completion/hover 测试和本文档。

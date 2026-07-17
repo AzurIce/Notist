@@ -6,4 +6,6 @@ Note + ist -> notist(also not an ist)
 - AI 的一些调查整理 [[ai]]
 - 设计记录 [[vault::designs]]
 - 当前语法规范 [[vault::grammar]]
+- 当前内置函数 [[vault::functions]]
+- 当前类型系统 [[vault::types]]
 - 插件系统与可拓展语法 [[vault::designs::rua-markdown-module-scope]]
