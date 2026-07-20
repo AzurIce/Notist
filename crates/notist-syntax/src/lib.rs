@@ -126,10 +126,10 @@ impl Parse {
     pub fn annotations(&self) -> Vec<&EmbeddedExpression> {
         let mut output = Vec::new();
         visit_markup(&self.root, &mut |item| {
-            if let MarkupItem::Embedded(embedded) = item {
-                if embedded.attributes.range.is_some() {
-                    output.push(embedded);
-                }
+            if let MarkupItem::Embedded(embedded) = item
+                && embedded.attributes.range.is_some()
+            {
+                output.push(embedded);
             }
         });
         output
@@ -139,10 +139,11 @@ impl Parse {
     pub fn embedded_at(&self, offset: usize) -> Option<&EmbeddedExpression> {
         let mut found = None;
         visit_markup(&self.root, &mut |item| {
-            if let MarkupItem::Embedded(embedded) = item {
-                if embedded.range.start <= offset && offset < embedded.range.end {
-                    found = Some(embedded);
-                }
+            if let MarkupItem::Embedded(embedded) = item
+                && embedded.range.start <= offset
+                && offset < embedded.range.end
+            {
+                found = Some(embedded);
             }
         });
         found

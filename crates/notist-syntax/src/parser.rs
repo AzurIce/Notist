@@ -506,15 +506,14 @@ fn trim_trailing_framing_newline(
     } else {
         end
     };
-    if trimmed != end {
-        if let Some(MarkupItem::Text(text)) = markup.items.last_mut() {
-            if text.range.end == end {
-                text.range.end = trimmed;
-                text.value.truncate(trimmed - text.range.start);
-                if text.value.is_empty() {
-                    markup.items.pop();
-                }
-            }
+    if trimmed != end
+        && let Some(MarkupItem::Text(text)) = markup.items.last_mut()
+        && text.range.end == end
+    {
+        text.range.end = trimmed;
+        text.value.truncate(trimmed - text.range.start);
+        if text.value.is_empty() {
+            markup.items.pop();
         }
     }
     trimmed

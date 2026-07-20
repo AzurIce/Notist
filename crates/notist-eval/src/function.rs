@@ -105,15 +105,15 @@ fn validate_signature(signature: &FunctionSignature) -> Option<RegistryErrorReas
         )));
     }
     for parameter in &signature.parameters {
-        if let Some(default) = &parameter.default {
-            if !parameter.ty.accepts(&default.ty()) {
-                return Some(RegistryErrorReason::InvalidSignature(format!(
-                    "default value for parameter `{}` is {}, expected {}",
-                    parameter.name,
-                    default.ty(),
-                    parameter.ty
-                )));
-            }
+        if let Some(default) = &parameter.default
+            && !parameter.ty.accepts(&default.ty())
+        {
+            return Some(RegistryErrorReason::InvalidSignature(format!(
+                "default value for parameter `{}` is {}, expected {}",
+                parameter.name,
+                default.ty(),
+                parameter.ty
+            )));
         }
     }
     if let Some(trailing) = signature.trailing_content {

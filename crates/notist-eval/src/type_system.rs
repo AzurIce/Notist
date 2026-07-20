@@ -192,10 +192,10 @@ pub(crate) fn bind_arguments(
             });
             continue;
         }
-        if parameter.ty == Type::Float {
-            if let Value::Int(integer) = value {
-                value = Value::Float(integer as f64);
-            }
+        if parameter.ty == Type::Float
+            && let Value::Int(integer) = value
+        {
+            value = Value::Float(integer as f64);
         }
         values.insert(parameter.name, BoundValue { value, origin });
     }
@@ -252,10 +252,10 @@ pub(crate) fn bind_arguments(
         }
         if let Some(default) = &parameter.default {
             let mut value = default_to_value(default);
-            if parameter.ty == Type::Float {
-                if let Value::Int(integer) = value {
-                    value = Value::Float(integer as f64);
-                }
+            if parameter.ty == Type::Float
+                && let Value::Int(integer) = value
+            {
+                value = Value::Float(integer as f64);
             }
             values.insert(
                 parameter.name,

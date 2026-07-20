@@ -4,6 +4,7 @@ use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 use std::str::FromStr;
 use std::sync::Arc;
+use std::time::Duration;
 
 use lsp_server::{Connection, ErrorCode, Message, Notification, Request, Response};
 use lsp_types::notification::{
@@ -11,17 +12,22 @@ use lsp_types::notification::{
     Notification as _, PublishDiagnostics,
 };
 use lsp_types::request::{
-    Completion, GotoDefinition, HoverRequest, References, Request as _, Shutdown,
+    Completion, DocumentSymbolRequest, GotoDefinition, HoverRequest, References, Request as _,
+    Shutdown, WorkspaceSymbolRequest,
 };
 use lsp_types::{
     CompletionItem, CompletionItemKind, CompletionOptions, CompletionParams, CompletionResponse,
     CompletionTextEdit, Diagnostic, DiagnosticSeverity, DidChangeTextDocumentParams,
     DidCloseTextDocumentParams, DidOpenTextDocumentParams, DidSaveTextDocumentParams,
-    GotoDefinitionParams, GotoDefinitionResponse, Hover, HoverContents, HoverParams,
-    HoverProviderCapability, InitializeParams, Location, MarkupContent, MarkupKind, NumberOrString,
-    OneOf, Position, PositionEncodingKind, PublishDiagnosticsParams, Range, ReferenceParams,
-    ServerCapabilities, TextDocumentSyncCapability, TextDocumentSyncKind, TextEdit, Uri,
+    DocumentSymbol, DocumentSymbolParams, DocumentSymbolResponse, GotoDefinitionParams,
+    GotoDefinitionResponse, Hover, HoverContents, HoverParams, HoverProviderCapability,
+    InitializeParams, Location, MarkupContent, MarkupKind, NumberOrString, OneOf, Position,
+    PositionEncodingKind, PublishDiagnosticsParams, Range, ReferenceParams, ServerCapabilities,
+    SymbolKind, TextDocumentSyncCapability, TextDocumentSyncKind, TextEdit, Uri,
+    WorkspaceSymbolParams, WorkspaceSymbolResponse,
 };
+use notify_debouncer_mini::notify::RecursiveMode;
+use notify_debouncer_mini::{DebounceEventResult, new_debouncer};
 use notist_analysis::{DiagnosticKind, SourceOverlays, Workspace, discover_vault_roots};
 use notist_eval::{DefaultValue, FunctionRegistry, FunctionSignature};
 use notist_model::{ModulePath, TextRange};
@@ -39,6 +45,8 @@ const URI_PATH_ENCODE_SET: &AsciiSet = &CONTROLS
     .add(b'[')
     .add(b']');
 
+const WORKSPACE_CHANGED_NOTIFICATION: &str = "notist/workspaceChanged";
+
 pub fn run() -> Result<ExitCode, Box<dyn Error>> {
     let (connection, io_threads) = Connection::stdio();
     let capabilities = serde_json::to_value(server_capabilities())?;
@@ -46,8 +54,26 @@ pub fn run() -> Result<ExitCode, Box<dyn Error>> {
     let initialization: InitializeParams = serde_json::from_value(initialization)?;
     let root = workspace_root(&initialization)?;
     let mut state = ServerState::new(root)?;
+    let watcher_sender = connection.sender.clone();
+    let mut watcher = new_debouncer(
+        Duration::from_millis(250),
+        move |result: DebounceEventResult| {
+            if let Ok(events) = result
+                && !events.is_empty()
+            {
+                let _ = watcher_sender.send(Message::Notification(Notification::new(
+                    WORKSPACE_CHANGED_NOTIFICATION.into(),
+                    serde_json::Value::Null,
+                )));
+            }
+        },
+    )?;
+    watcher
+        .watcher()
+        .watch(&state.root, RecursiveMode::Recursive)?;
 
     main_loop(&connection, &mut state)?;
+    drop(watcher);
     io_threads.join()?;
     Ok(ExitCode::SUCCESS)
 }
@@ -70,6 +96,8 @@ fn server_capabilities() -> ServerCapabilities {
         hover_provider: Some(HoverProviderCapability::Simple(true)),
         definition_provider: Some(OneOf::Left(true)),
         references_provider: Some(OneOf::Left(true)),
+        document_symbol_provider: Some(OneOf::Left(true)),
+        workspace_symbol_provider: Some(OneOf::Left(true)),
         ..ServerCapabilities::default()
     }
 }
@@ -127,6 +155,12 @@ fn handle_request(
         HoverRequest::METHOD => parse_params(request.params)
             .and_then(|params: HoverParams| hover(state, params))
             .and_then(to_json),
+        DocumentSymbolRequest::METHOD => parse_params(request.params)
+            .and_then(|params: DocumentSymbolParams| document_symbols(state, params))
+            .and_then(to_json),
+        WorkspaceSymbolRequest::METHOD => parse_params(request.params)
+            .and_then(|params: WorkspaceSymbolParams| workspace_symbols(state, params))
+            .and_then(to_json),
         Shutdown::METHOD => Ok(serde_json::Value::Null),
         _ => {
             connection.sender.send(Message::Response(Response::new_err(
@@ -177,6 +211,7 @@ fn handle_notification(
             state.close(params)?;
             true
         }
+        WORKSPACE_CHANGED_NOTIFICATION => true,
         _ => false,
     };
 
@@ -198,6 +233,7 @@ struct ServerState {
     vaults: BTreeMap<PathBuf, Workspace>,
     published_paths: BTreeSet<PathBuf>,
     functions: FunctionRegistry,
+    revision: u64,
 }
 
 impl ServerState {
@@ -208,6 +244,7 @@ impl ServerState {
             vaults: BTreeMap::new(),
             published_paths: BTreeSet::new(),
             functions: FunctionRegistry::with_builtins(),
+            revision: 0,
         };
         state.rebuild()?;
         Ok(state)
@@ -269,6 +306,7 @@ impl ServerState {
     }
 
     fn rebuild(&mut self) -> Result<(), Box<dyn Error>> {
+        let revision = self.revision.wrapping_add(1);
         let mut roots = discover_vault_roots(&self.root)?;
         if roots.is_empty() {
             roots.push(self.root.clone());
@@ -282,9 +320,13 @@ impl ServerState {
                 .filter(|(path, _)| assigned_vault_root(path, &roots) == Some(root))
                 .map(|(path, document)| (path.clone(), document.source.clone()))
                 .collect();
-            vaults.insert(root.clone(), Workspace::load_with_overlays(root, overlays)?);
+            vaults.insert(
+                root.clone(),
+                Workspace::load_with_overlays_at_revision(root, overlays, revision)?,
+            );
         }
         self.vaults = vaults;
+        self.revision = revision;
         Ok(())
     }
 
@@ -296,6 +338,76 @@ impl ServerState {
         let root = assigned_vault_root(path, self.vaults.keys())?;
         self.vaults.get(root)
     }
+}
+
+#[allow(deprecated)]
+fn document_symbols(
+    state: &ServerState,
+    params: DocumentSymbolParams,
+) -> Result<Option<DocumentSymbolResponse>, String> {
+    let path = normalize_uri_path(&state.root, &params.text_document.uri)
+        .map_err(|error| error.to_string())?;
+    let Some(workspace) = state.workspace_for_source(&path) else {
+        return Ok(None);
+    };
+    let Some(module) = workspace.module_for_source(&path) else {
+        return Ok(None);
+    };
+    let Some(source) = module.source.as_deref() else {
+        return Ok(Some(DocumentSymbolResponse::Nested(Vec::new())));
+    };
+    let line_index = LineIndex::new(source);
+    let symbols = module
+        .parse
+        .as_ref()
+        .into_iter()
+        .flat_map(Parse::calls)
+        .map(|call| {
+            let range = line_index.range(call.range);
+            DocumentSymbol {
+                name: format!("#{}", call.name.value),
+                detail: Some("Notist function".into()),
+                kind: SymbolKind::FUNCTION,
+                tags: None,
+                deprecated: None,
+                range,
+                selection_range: line_index.range(call.name.range),
+                children: None,
+            }
+        })
+        .collect();
+    Ok(Some(DocumentSymbolResponse::Nested(symbols)))
+}
+
+#[allow(deprecated)]
+fn workspace_symbols(
+    state: &ServerState,
+    params: WorkspaceSymbolParams,
+) -> Result<Option<WorkspaceSymbolResponse>, String> {
+    let query = params.query.to_lowercase();
+    let mut symbols = Vec::new();
+    for workspace in state.vaults.values() {
+        for module in workspace.modules() {
+            let name = module.logical_path.to_string();
+            if !name.to_lowercase().contains(&query) {
+                continue;
+            }
+            let Some(path) = &module.source_path else {
+                continue;
+            };
+            let uri = file_path_to_uri(path)?;
+            symbols.push(lsp_types::SymbolInformation {
+                name,
+                kind: SymbolKind::FILE,
+                tags: None,
+                deprecated: None,
+                location: Location::new(uri, Range::new(Position::new(0, 0), Position::new(0, 0))),
+                container_name: Some("Notist vault".into()),
+            });
+        }
+    }
+    symbols.sort_by(|left, right| left.name.cmp(&right.name));
+    Ok(Some(WorkspaceSymbolResponse::Flat(symbols)))
 }
 
 fn assigned_vault_root<'a>(
@@ -1006,8 +1118,9 @@ mod tests {
     use super::*;
     use lsp_server::RequestId;
     use lsp_types::{
-        CompletionContext, CompletionTriggerKind, GotoDefinitionParams, TextDocumentIdentifier,
-        TextDocumentItem, TextDocumentPositionParams,
+        CompletionContext, CompletionTriggerKind, GotoDefinitionParams, PartialResultParams,
+        TextDocumentIdentifier, TextDocumentItem, TextDocumentPositionParams,
+        WorkDoneProgressParams,
     };
     use std::fs;
     use std::time::Duration;
@@ -1033,6 +1146,48 @@ mod tests {
         assert!(uri.as_str().starts_with("file:///"));
         assert!(uri.as_str().contains("space%20"));
         assert_eq!(uri_to_file_path(&uri).unwrap(), path);
+    }
+
+    #[test]
+    fn exposes_document_and_workspace_symbols() {
+        let root = tempfile::TempDir::new().unwrap();
+        fs::write(root.path().join("README.not"), "#heading[Title]").unwrap();
+        fs::write(root.path().join("child.not"), "child").unwrap();
+        let root_path = dunce::canonicalize(root.path()).unwrap();
+        let readme_path = dunce::canonicalize(root.path().join("README.not")).unwrap();
+        let state = ServerState::new(root_path).unwrap();
+        let uri = file_path_to_uri(&readme_path).unwrap();
+
+        let document = document_symbols(
+            &state,
+            DocumentSymbolParams {
+                text_document: TextDocumentIdentifier { uri: uri.clone() },
+                work_done_progress_params: WorkDoneProgressParams::default(),
+                partial_result_params: PartialResultParams::default(),
+            },
+        )
+        .unwrap()
+        .unwrap();
+        let DocumentSymbolResponse::Nested(document) = document else {
+            panic!("expected nested document symbols");
+        };
+        assert_eq!(document[0].name, "#heading");
+
+        let workspace = workspace_symbols(
+            &state,
+            WorkspaceSymbolParams {
+                query: "child".into(),
+                work_done_progress_params: WorkDoneProgressParams::default(),
+                partial_result_params: PartialResultParams::default(),
+            },
+        )
+        .unwrap()
+        .unwrap();
+        let WorkspaceSymbolResponse::Flat(workspace) = workspace else {
+            panic!("expected flat workspace symbols");
+        };
+        assert_eq!(workspace.len(), 1);
+        assert_eq!(workspace[0].name, "vault::child");
     }
 
     #[test]

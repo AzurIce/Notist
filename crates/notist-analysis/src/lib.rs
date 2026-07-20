@@ -56,12 +56,13 @@ pub struct ResolvedReference {
     pub target_module: ModulePath,
 }
 
-#[derive(Debug)]
+#[derive(Clone, Debug)]
 pub struct Workspace {
     root: PathBuf,
     modules: BTreeMap<ModulePath, Module>,
     references: Vec<ResolvedReference>,
     diagnostics: Vec<Diagnostic>,
+    revision: u64,
 }
 
 impl Workspace {
@@ -74,6 +75,18 @@ impl Workspace {
         root: impl AsRef<Path>,
         overlays: SourceOverlays,
     ) -> io::Result<Self> {
+        Self::load_with_overlays_at_revision(root, overlays, 0)
+    }
+
+    /// Loads a complete immutable workspace snapshot at a caller-assigned revision.
+    ///
+    /// The analysis data is still rebuilt in one pass. The revision lets consumers
+    /// reject results that were produced for an older document state.
+    pub fn load_with_overlays_at_revision(
+        root: impl AsRef<Path>,
+        overlays: SourceOverlays,
+        revision: u64,
+    ) -> io::Result<Self> {
         let root = dunce::canonicalize(root)?;
         let overlays = normalize_overlays(&root, overlays)?;
         let mut workspace = Self {
@@ -81,6 +94,7 @@ impl Workspace {
             modules: BTreeMap::new(),
             references: Vec::new(),
             diagnostics: Vec::new(),
+            revision,
         };
         workspace.insert_virtual_module(ModulePath::root());
         workspace.scan_directory(&root, &ModulePath::root(), &overlays)?;
@@ -91,6 +105,11 @@ impl Workspace {
 
     pub fn root(&self) -> &Path {
         &self.root
+    }
+
+    /// Returns the document revision represented by this snapshot.
+    pub fn revision(&self) -> u64 {
+        self.revision
     }
 
     pub fn modules(&self) -> impl Iterator<Item = &Module> {
@@ -602,6 +621,18 @@ mod tests {
                 .as_deref(),
             Some("unsaved")
         );
+    }
+
+    #[test]
+    fn snapshots_preserve_the_assigned_revision() {
+        let root = TempDir::new().unwrap();
+        fs::write(root.path().join("README.not"), "content").unwrap();
+
+        let workspace =
+            Workspace::load_with_overlays_at_revision(root.path(), SourceOverlays::new(), 42)
+                .unwrap();
+
+        assert_eq!(workspace.revision(), 42);
     }
 
     #[test]

@@ -26,7 +26,7 @@ notist lsp
 - 通过空 Notist.toml marker 发现 vault root。
 - 在同一个 editor worktree 中隔离多个独立 vault。
 
-当前每次文档变化都会同步重建所有已发现 vault 的 Workspace，并发布完整 diagnostics。DocumentSymbol、文件 watcher、增量 sync、增量 analysis、多 LSP workspace folder 和插件 schema 尚未实现。
+当前每次文档变化都会同步重建所有已发现 vault 的 Workspace，并发布完整 diagnostics。Workspace snapshot 带有单调 revision；LSP 已支持文件 watcher、DocumentSymbol 和 WorkspaceSymbol。增量 sync、增量 analysis、多 LSP workspace folder 和插件 schema 尚未实现。
 
 #heading(level=2)[Ownership]
 
@@ -276,10 +276,9 @@ snapshot.document_symbols(file_id)
 
 1. 将当前 Workspace 进一步固化为带 FileId、LineIndex 和 revision 的 immutable snapshot。
 2. 增加文件 watcher，在未打开文件和 Notist.toml 变化后刷新 vault 集合。
-3. 实现 DocumentSymbol 和 WorkspaceSymbol。
-4. 加入 debounce、旧 revision 取消和按 vault 重建。
-5. 根据性能数据增加按文件 parse 与依赖图增量 analysis。
-6. 支持插件 schema 提供的 Function、类型、completion 和 Hover。
-7. 处理 LSP workspace folder 动态增删。
+3. 加入旧 revision 取消和按 vault 重建；当前 debounce 已由文件 watcher 提供。
+4. 根据性能数据增加按文件 parse 与依赖图增量 analysis。
+5. 支持插件 schema 提供的 Function、类型、completion 和 Hover。
+6. 处理 LSP workspace folder 动态增删。
 
 多 vault 的核心约束保持不变：每个 source 只属于最近 marker 的 Workspace，未保存 overlay、diagnostics 与所有语义查询都不能越过该边界。
