@@ -29,8 +29,8 @@ use lsp_types::{
 use notify_debouncer_mini::notify::RecursiveMode;
 use notify_debouncer_mini::{DebounceEventResult, new_debouncer};
 use notist_analysis::{DiagnosticKind, SourceOverlays, Workspace, discover_vault_roots};
-use notist_eval::{DefaultValue, FunctionRegistry, FunctionSignature};
-use notist_model::{ModulePath, TextRange};
+use notist_eval::{DefaultValue, Evaluator, FunctionRegistry, FunctionSignature};
+use notist_model::{Content, Element, ModulePath, TextRange};
 use notist_syntax::Parse;
 use percent_encoding::{AsciiSet, CONTROLS, utf8_percent_encode};
 
@@ -357,26 +357,94 @@ fn document_symbols(
         return Ok(Some(DocumentSymbolResponse::Nested(Vec::new())));
     };
     let line_index = LineIndex::new(source);
-    let symbols = module
-        .parse
-        .as_ref()
-        .into_iter()
-        .flat_map(Parse::calls)
-        .map(|call| {
-            let range = line_index.range(call.range);
-            DocumentSymbol {
-                name: format!("#{}", call.name.value),
-                detail: Some("Notist function".into()),
-                kind: SymbolKind::FUNCTION,
-                tags: None,
-                deprecated: None,
-                range,
-                selection_range: line_index.range(call.name.range),
-                children: None,
-            }
+    let evaluation = Evaluator::default().evaluate(source);
+    let symbols = evaluation
+        .content
+        .elements
+        .iter()
+        .filter_map(|node| {
+            let Element::Heading { level, body } = &node.element else {
+                return None;
+            };
+            let name = content_plain_text(body);
+            let range = line_index.range(node.range);
+            let name = if name.trim().is_empty() {
+                "Untitled heading".into()
+            } else {
+                name.trim().to_owned()
+            };
+            Some((
+                *level,
+                DocumentSymbol {
+                    name,
+                    detail: Some(format!("Heading {level}")),
+                    kind: SymbolKind::NAMESPACE,
+                    tags: None,
+                    deprecated: None,
+                    range,
+                    selection_range: range,
+                    children: None,
+                },
+            ))
         })
         .collect();
-    Ok(Some(DocumentSymbolResponse::Nested(symbols)))
+    Ok(Some(DocumentSymbolResponse::Nested(nest_heading_symbols(
+        symbols,
+    ))))
+}
+
+fn nest_heading_symbols(symbols: Vec<(u8, DocumentSymbol)>) -> Vec<DocumentSymbol> {
+    fn finish_one(stack: &mut Vec<(u8, DocumentSymbol)>, roots: &mut Vec<DocumentSymbol>) {
+        let (_, symbol) = stack.pop().unwrap();
+        if let Some((_, parent)) = stack.last_mut() {
+            parent.children.get_or_insert_with(Vec::new).push(symbol);
+        } else {
+            roots.push(symbol);
+        }
+    }
+
+    let mut roots = Vec::new();
+    let mut stack: Vec<(u8, DocumentSymbol)> = Vec::new();
+    for (level, symbol) in symbols {
+        while stack
+            .last()
+            .is_some_and(|(parent_level, _)| *parent_level >= level)
+        {
+            finish_one(&mut stack, &mut roots);
+        }
+        stack.push((level, symbol));
+    }
+    while !stack.is_empty() {
+        finish_one(&mut stack, &mut roots);
+    }
+    roots
+}
+
+fn content_plain_text(content: &Content) -> String {
+    let mut output = String::new();
+    for node in &content.elements {
+        match &node.element {
+            Element::Text(text) | Element::Raw { text, .. } => output.push_str(text),
+            Element::Strong(body)
+            | Element::Emph(body)
+            | Element::Strike(body)
+            | Element::Insert(body)
+            | Element::Spoiler(body)
+            | Element::Highlight(body)
+            | Element::Underline(body)
+            | Element::Keyboard(body)
+            | Element::Sample(body)
+            | Element::Super(body)
+            | Element::Sub(body)
+            | Element::Footnote(body)
+            | Element::Paragraph(body) => output.push_str(&content_plain_text(body)),
+            Element::Link { body, .. } | Element::Time { body, .. } => {
+                output.push_str(&content_plain_text(body));
+            }
+            _ => {}
+        }
+    }
+    output
 }
 
 #[allow(deprecated)]
@@ -1144,7 +1212,11 @@ mod tests {
     #[test]
     fn exposes_document_and_workspace_symbols() {
         let root = tempfile::TempDir::new().unwrap();
-        fs::write(root.path().join("README.not"), "#heading[Title]").unwrap();
+        fs::write(
+            root.path().join("README.not"),
+            "= Surface title\n== Nested title\n\n```not\n= Hidden example\n```\n\n#heading[Explicit title]\n#code(text=\"fn main() {}\", lang=\"rust\", block=true)",
+        )
+        .unwrap();
         fs::write(root.path().join("child.not"), "child").unwrap();
         let root_path = dunce::canonicalize(root.path()).unwrap();
         let readme_path = dunce::canonicalize(root.path().join("README.not")).unwrap();
@@ -1164,7 +1236,17 @@ mod tests {
         let DocumentSymbolResponse::Nested(document) = document else {
             panic!("expected nested document symbols");
         };
-        assert_eq!(document[0].name, "#heading");
+        assert_eq!(
+            document
+                .iter()
+                .map(|symbol| symbol.name.as_str())
+                .collect::<Vec<_>>(),
+            ["Surface title", "Explicit title"]
+        );
+        assert_eq!(
+            document[0].children.as_ref().unwrap()[0].name,
+            "Nested title"
+        );
 
         let workspace = workspace_symbols(
             &state,
