@@ -1,5 +1,9 @@
 = Typst 的 Element Function 与语法糖设计
 
+#callout(kind="note", title=[文档定位])[
+本文是 Typst 机制调查，Typst 示例不等于 Notist 语法。文末的 Notist 建议已按当前实现校正；完整现行规则以 [[vault::cheatsheet]]、[[vault::functions]] 和 [[vault::grammar]] 为准。
+]
+
 == 核心结论
 
 Typst 并不是简单地把所有语法都转换为普通函数调用。更准确的描述是：
@@ -458,7 +462,7 @@ return
 
 == 对 Notist 的设计建议
 
-Notist 可以先定义一个较小的核心 Element 集合：
+Notist 当前已经采用统一 `Content`/`Element` 模型。以下是与本文讨论直接相关的核心子集；完整枚举还包含 Table、Task、Callout、Details、Image 等节点：
 
 ```rust
 pub enum Element {
@@ -468,7 +472,7 @@ pub enum Element {
     Reference(ReferenceElem),
     List(ListElem),
     ListItem(ListItemElem),
-    Code(CodeElem),
+    Raw(RawElem),
 }
 ```
 
@@ -478,10 +482,11 @@ pub enum Element {
 text(value)
 paragraph(body)
 heading(level, body)
-ref(target, body?)
-list(children)
-list.item(body)
-code(text, language?, block?)
+ref(target)
+list(body)
+list::item(body)
+raw(text, lang?)
+code(text, lang?, block?)
 ```
 
 表面语法映射到这些 Element：
@@ -491,13 +496,13 @@ code(text, language?, block?)
     → ref(module("guide::intro"))
 
 = Introduction
-    → heading(level: 1, [Introduction])
+    → heading(level=1, body=[Introduction])
 
 *important*
     → strong([important])
 
 - first
-    → list.item([first])
+    → list::item([first])
 ```
 
 模块路径应当是独立值，而不是始终作为未经验证的字符串存在：
@@ -511,7 +516,7 @@ pub struct ModulePath {
 引用底层使用：
 
 ```text
-ref(target: ModulePath(["guide", "intro"]))
+ref(target="guide::intro")
 ```
 
 == 内部不必全部动态化
@@ -519,7 +524,7 @@ ref(target: ModulePath(["guide", "intro"]))
 对用户可以呈现为：
 
 ```text
-heading(level: 1, body: ...)
+heading(level=1, body=...)
 ```
 
 但 Rust 内部仍适合使用强类型结构：

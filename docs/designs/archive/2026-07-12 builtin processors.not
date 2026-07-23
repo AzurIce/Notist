@@ -1,5 +1,9 @@
 = Builtin Functions and Syntax Sugar
 
+#callout(kind="warning", title=[已归档])[
+本文记录早期 Processor 与 Raw Call 方案。当前 Built-in Function 集合与签名以 [[vault::functions]] 为准；Raw Call 已由 [[vault::designs::2026-07-14 string literals and raw syntax]] 取代。
+]
+
 Notist 的内置内容能力与插件能力共享 Function 模型。历史上称为 Processor 的对象，现在统一理解为“接收参数和 trailing body，并产生 Content 的函数”。
 
 调用有两种 body mode：
@@ -153,6 +157,6 @@ quote(attribution: Content? = none, body: Content) -> Content
 
 后续工作：
 
-1. 扩展 Expression AST、名称解析和完整静态类型检查。
-2. 增加变量、运算、数组、字典与用户函数。
-3. 让 heading、raw、quote 的语法糖 lowering 到相同构造器。
++ 扩展 Expression AST、名称解析和完整静态类型检查。
++ 增加变量、运算、数组、字典与用户函数。
++ 让 heading、raw、quote 的语法糖 lowering 到相同构造器。

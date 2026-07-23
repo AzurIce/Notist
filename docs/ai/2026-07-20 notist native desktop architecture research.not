@@ -445,12 +445,12 @@ save -> atomic replace
 
 当前不应直接提交到某个 GUI 框架的大规模实现。先以以下顺序决策：
 
-1. 接受“编辑器 native、阅读视图 WebView、复杂 inline 内容按需弹出”的产品边界。
-2. 用 Floem/editor-core 做编辑器 spike，同时保留 CodeMirror `EditorPort`。
-3. 用 Wry 做一个 pane 级 WebView；Windows/macOS 是首要路径，Linux Wayland 单独验收。
-4. 保持现有 Notist core 独立，引入 snapshot、render model、typed command/event，而不是把业务逻辑写进 UI callback。
-5. 插件默认使用 Wasmtime/WASI Component + capability model；复杂 renderer 使用受限 web bundle。
-6. 若 Floem 稳定性或 WebView 集成不达标，优先切换 Qt 6，而不是把核心和权限模型一并改成纯 Web。
++ 接受“编辑器 native、阅读视图 WebView、复杂 inline 内容按需弹出”的产品边界。
++ 用 Floem/editor-core 做编辑器 spike，同时保留 CodeMirror `EditorPort`。
++ 用 Wry 做一个 pane 级 WebView；Windows/macOS 是首要路径，Linux Wayland 单独验收。
++ 保持现有 Notist core 独立，引入 snapshot、render model、typed command/event，而不是把业务逻辑写进 UI callback。
++ 插件默认使用 Wasmtime/WASI Component + capability model；复杂 renderer 使用受限 web bundle。
++ 若 Floem 稳定性或 WebView 集成不达标，优先切换 Qt 6，而不是把核心和权限模型一并改成纯 Web。
 
 这个方案不会把未来锁死：native editor 可以替换为 CodeMirror，Floem shell 可以替换为 Slint/Qt，系统 WebView 可以替换为 CEF，但 `WorkspaceSnapshot`、`EditorPort`、`RenderNode`、WIT plugin API 和 capability model 可以保持稳定。
 

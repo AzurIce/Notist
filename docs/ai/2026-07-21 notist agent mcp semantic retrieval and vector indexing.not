@@ -93,12 +93,12 @@ Notist 的目标不是让模型读懂一种更漂亮的 Markdown，而是把文�
 
 用户问 LSP 快照为什么需要 revision 时，理想流程不是返回若干相似段落，而是：
 
-1. 根据权限和 vault 范围过滤候选模块。
-2. 先用 ModulePath、标题、标签和精确词项找候选。
-3. 再用 dense embedding 找概念相近但用词不同的章节。
-4. 沿显式 Wiki Reference 或 backlink 做有限扩展。
-5. 按来源、revision 和结构范围排序，返回短的上下文窗口。
-6. 让 Agent 的答案逐条带 citation，用户可以跳回 source range。
++ 根据权限和 vault 范围过滤候选模块。
++ 先用 ModulePath、标题、标签和精确词项找候选。
++ 再用 dense embedding 找概念相近但用词不同的章节。
++ 沿显式 Wiki Reference 或 backlink 做有限扩展。
++ 按来源、revision 和结构范围排序，返回短的上下文窗口。
++ 让 Agent 的答案逐条带 citation，用户可以跳回 source range。
 
 返回结果应至少包含：
 
@@ -514,11 +514,11 @@ WorkspaceSnapshot N
 
 增量更新策略：
 
-1. Snapshot builder 产生 Added/Changed/Removed Module、Element 和 Edge。
-2. lexical index 立即更新或写入短队列。
-3. embedding/summary 异步处理 Changed records，删除用 tombstone。
-4. 所有任务完成或达到可接受水位后，生成新的 index manifest。
-5. 查询返回 snapshot/index revision；若 query 要求 read-your-write，优先对当前 snapshot 做 exact/lexical fallback。
++ Snapshot builder 产生 Added/Changed/Removed Module、Element 和 Edge。
++ lexical index 立即更新或写入短队列。
++ embedding/summary 异步处理 Changed records，删除用 tombstone。
++ 所有任务完成或达到可接受水位后，生成新的 index manifest。
++ 查询返回 snapshot/index revision；若 query 要求 read-your-write，优先对当前 snapshot 做 exact/lexical fallback。
 
 不要在后台任务中直接修改当前全局 index。使用 generation/epoch 和原子 swap，避免旧任务完成后覆盖新结果。
 
@@ -544,13 +544,13 @@ Query {
 
 执行顺序：
 
-1. 规范化 query，识别可能的 ModulePath、函数名、标签和精确短语。
-2. 应用 vault/module/ACL/type filter。
-3. 运行 lexical 和 dense candidate retrieval。
-4. 根据明确 Reference、parent/child 和 backlink 做有限 graph expansion。
-5. RRF/MMR 合并，去掉同一 parent 下的过量重复。
-6. 可选 reranker。
-7. 按 token 预算组装 context，并保留 citations。
++ 规范化 query，识别可能的 ModulePath、函数名、标签和精确短语。
++ 应用 vault/module/ACL/type filter。
++ 运行 lexical 和 dense candidate retrieval。
++ 根据明确 Reference、parent/child 和 backlink 做有限 graph expansion。
++ RRF/MMR 合并，去掉同一 parent 下的过量重复。
++ 可选 reranker。
++ 按 token 预算组装 context，并保留 citations。
 
 === 10.2 再引入 query rewriting
 
@@ -738,13 +738,13 @@ BEIR 和 MTEB 可以提供通用参考，但不能替代 Notist 自己的 corpus
 
 不要先实现完整 Agent。建议做一个窄的 vertical slice：
 
-1. 在 notist-analysis 或新的 notist-app-core 中定义 stable IDs、snapshot query 和 citation JSON。
-2. 建一个 notist-index，先用 SQLite/Tantivy 或 FTS5 保存 Module、Heading、Annotation、reference 和全文。
-3. 实现 notist-mcp stdio，只暴露 list_modules、search、get_context、get_references、check。
-4. 为当前 docs/ 建 100 到 300 条人工标注 query，记录正确 Element 和允许 citation。
-5. 加一个 exact vector backend，使用两种代表性 multilingual embedding 做离线对比，不立刻引入 ANN。
-6. 用 MCP Inspector 和至少一个真实 Host 测试 tool description、结构化 output、token 截断和错误恢复。
-7. 只有在 hybrid 的 Recall/nDCG 或用户体验显著提升后，才选 HNSW/Qdrant Edge/LanceDB 等持久化方案。
++ 在 notist-analysis 或新的 notist-app-core 中定义 stable IDs、snapshot query 和 citation JSON。
++ 建一个 notist-index，先用 SQLite/Tantivy 或 FTS5 保存 Module、Heading、Annotation、reference 和全文。
++ 实现 notist-mcp stdio，只暴露 list_modules、search、get_context、get_references、check。
++ 为当前 docs/ 建 100 到 300 条人工标注 query，记录正确 Element 和允许 citation。
++ 加一个 exact vector backend，使用两种代表性 multilingual embedding 做离线对比，不立刻引入 ANN。
++ 用 MCP Inspector 和至少一个真实 Host 测试 tool description、结构化 output、token 截断和错误恢复。
++ 只有在 hybrid 的 Recall/nDCG 或用户体验显著提升后，才选 HNSW/Qdrant Edge/LanceDB 等持久化方案。
 
 这个实验会在很小的成本下回答三个关键问题：Notist 的语义 chunk 是否比 Markdown 窗口更好；Agent 是否真的需要结构化查询而不只是 grep；向量是否带来足够收益来支付模型、索引和隐私成本。
 

@@ -1,4 +1,4 @@
-最初的构思在 [[super::rua-markdown-module-scope]] 内。
+最初的构思见历史记录 [[vault::designs::archive::rua-markdown-module-scope]]。
 
 Notist 的模块系统类似于 Rust，只是不需要显示声明，依据目录自动定义：
 

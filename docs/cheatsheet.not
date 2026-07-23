@@ -1,10 +1,10 @@
 = Notist Cheatsheet
 
-这份文档用于确定 Notist 的最小宿主语法。语法糖只解决高频书写中 Function call 过于繁琐的问题；低频、特定领域或特定 renderer 的能力应由显式 Function 或未来 plugin 提供。
+这份文档汇总 Notist 当前的最小宿主语法。语法糖只解决高频书写中 Function call 过于繁琐的问题；低频、特定领域或特定 renderer 的能力由显式 Function 或未来 plugin 提供。精确规则以 [[vault::grammar]] 为准。
 
-== 当前建议保留的宿主语法
+== 当前 Core 宿主语法
 
-| 能力 | 建议语法 | 对应语义 | 理由 |
+| 能力 | 现行语法 | 对应语义 | 理由 |
 | --- | --- | --- | --- |
 | 普通文本 | 直接书写 | `text` | 文档基础 |
 | 段落 | 空行分段 | `paragraph` / `parbreak` | 高频且无法合理改成 Function call |
@@ -27,7 +27,7 @@
 | 单行注释 | `// comment` | 不生成 Content | 属于 lexer/parser，不需要 Comment Element |
 | 块注释 | `/* comment */` | 不生成 Content | 可跨行，适合临时隐藏一段源码 |
 
-`kbd` 建议保留为 built-in，但不需要额外语法糖：`#kbd[Ctrl + S]` 已经足够简洁。
+`kbd` 是 built-in，但不需要额外语法糖：`#kbd[Ctrl + S]` 已经足够简洁。
 
 == Quote、Callout 与 Details
 
@@ -155,9 +155,9 @@ Pipe table 暂时保留，因为它比显式 cell Function 更容易阅读和维
 
 复杂的 `colspan`、`rowspan` 或动态表格仍可使用显式 `#table(...)`，不需要继续扩张 Pipe table 语法。
 
-== Rule 是否保留
+== Rule
 
-候选语法：
+下面的 Markdown 写法只是反例，不是 Notist 语法：
 
 ```not
 ---
@@ -167,11 +167,11 @@ Pipe table 暂时保留，因为它比显式 cell Function 更容易阅读和维
 
 #rule()
 
-保留它的理由是分隔线较常用，而 `#rule()` 会打断纯文本书写；移除它的理由是 `---` 容易与其他标记语法冲突，而且 `#rule()` 已经很短。当前标记为待决定。
+Notist 当前只提供显式 `#rule()`。`---`、`***` 和 `___` 都保持为普通文本，避免继续扩张宿主语法并与其他标记产生歧义。
 
 == 已确认移出 Core
 
-| 能力 | 当前实现 | 去向 |
+| 能力 | 旧语法 / Element | 去向 |
 | --- | --- | --- |
 | 上标 | `^super^` / `super` | 移除；math 或 typography plugin |
 | 下标 | `~sub~` / `sub` | 移除；math 或 typography plugin |
@@ -185,7 +185,7 @@ Pipe table 暂时保留，因为它比显式 cell Function 更容易阅读和维
 
 == 后续 Plugin 候选
 
-| 能力 | 当前实现 | Plugin 方向 |
+| 能力 | 旧语法 / Element | Plugin 方向 |
 | --- | --- | --- |
 | Footnote | `^[...]` / `footnote` | publishing plugin |
 | Citation | `[@key]` / `cite` | bibliography plugin |

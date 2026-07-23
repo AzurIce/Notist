@@ -66,7 +66,7 @@ Notist 的基本单位是 vault/module，而不是孤立文件。因此 HTML 输
 - `Custom` -> 带 `data-notist-name` 的 `span` 或 `div`
 - `UnresolvedCall` -> 保留函数名与 body 的降级容器
 
-RawSource 和 Custom 内容都不是可信 HTML。未来即使允许插件渲染 HTML，也必须增加显式的 trusted renderer 边界，不能让 Raw 内容绕过转义。
+Raw Element 的文本和 Custom 内容都不是可信 HTML。未来即使允许插件渲染 HTML，也必须增加显式的 trusted renderer 边界，不能让 Raw 内容绕过转义。
 
 === Source Range
 
@@ -178,11 +178,11 @@ Parse 的 byte range、源码文本和分析结果必须来自同一个 Workspac
 
 在当前全量静态重建方案稳定后，再按实际性能需求增加：
 
-1. Preview 页面内 diagnostics，而不仅是 CLI 输出。
-2. Module 删除后的导航 fallback。
-3. 点击预览定位源码与编辑器光标同步。
-4. 基于依赖图的受影响 Module 增量构建。
-5. Annotation 到合法 DOM range 的投影。
-6. 插件 Element 的显式 renderer registry。
++ Preview 页面内 diagnostics，而不仅是 CLI 输出。
++ Module 删除后的导航 fallback。
++ 点击预览定位源码与编辑器光标同步。
++ 基于依赖图的受影响 Module 增量构建。
++ Annotation 到合法 DOM range 的投影。
++ 插件 Element 的显式 renderer registry。
 
 增量构建和细粒度前端更新都只是优化。无论如何演进，HTML 必须继续消费统一的 `StructuredDocument` 和 analysis 结果，不能成为第二套语言实现。

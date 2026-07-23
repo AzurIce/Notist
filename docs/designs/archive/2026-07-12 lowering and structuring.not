@@ -1,5 +1,9 @@
 = Lowering and Structuring
 
+#callout(kind="warning", title=[已归档])[
+本文保留早期 Content Call/Raw Call lowering 设计。当前调用只接受显式参数和 trailing Content，Raw source 通过 String 或 backtick syntax 表达；替代设计见 [[vault::designs::2026-07-14 string literals and raw syntax]]。
+]
+
 Notist 使用两步语义管线：Lowering 负责把 syntax 转换为线性的语义 Element sequence，Structuring 再把这条 sequence 组合成 Paragraph、List 和独立 Block。
 
 ```text

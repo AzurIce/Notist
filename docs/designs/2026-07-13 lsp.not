@@ -182,7 +182,7 @@ Completion 必须由 source context 和语义环境共同决定，不能只做�
 
 Module completion 应插入相对于当前 Module 的自然路径，而不总是插入绝对 `vault::...`。结果可以显示目标的逻辑路径、是否为虚拟 Module 和简短文档摘要。
 
-Content body 内继续提供 Notist completion；Raw body 内不提供宿主语言 completion。Raw language injection 由 Tree-sitter query 和对应语言自己的 language server 处理。
+Content body 内继续提供 Notist completion；String literal 与 fenced Raw 的 language injection 由 Tree-sitter query 和对应语言自己的 language server 处理。当前语法不存在 Raw Call body。
 
 Completion query 应返回协议无关的数据：label、insert text、kind、documentation 和 replace byte range。LSP 层再根据客户端 snippet 与 completion capability 生成 CompletionItem。
 
@@ -192,7 +192,7 @@ Completion query 应返回协议无关的数据：label、insert text、kind、d
 
 - Module reference 的完整逻辑路径和 source path。
 - Module 是否为虚拟目录节点。
-- 内置 Function 的签名、参数类型、默认值和 body mode。
+- 内置 Function 的签名、参数类型、默认值和 trailing Content 绑定。
 - Attribute 或未来 Symbol 的类型与定义位置。
 - diagnostics 之外有帮助的简短说明。
 
@@ -200,7 +200,7 @@ LSP Hover 使用 Markdown `MarkupContent`。简单语义信息不需要依赖 `n
 
 === Document Symbols
 
-Heading 天然适合作为 DocumentSymbol。symbol range 使用整个 Heading，selection range 使用标题 body。未来带 id 的 Annotation、函数和变量定义也可以进入符号树。
+宿主 `= Heading` 与显式 `#heading[...]` 都进入 DocumentSymbol。名称来自求值后的标题 Content，symbol range 当前使用整个 Heading；symbol 按 level 组成父子层级。Fenced Raw 中的示例标题和注入语言符号不进入 LSP DocumentSymbol。未来带 id 的 Annotation、函数和变量定义也可以进入符号树。
 
 Workspace Symbol 可以索引 Module 和带稳定 id 的文档元素，但不应在第一阶段阻塞核心导航能力。
 
@@ -270,15 +270,14 @@ snapshot.document_symbols(file_id)
 
 == Implementation Order
 
-已完成的第一阶段包括 full document sync、overlay、diagnostics、Module navigation、completion、Hover、Zed adapter 和基于 Notist.toml 的多 vault discovery。
+已完成的第一阶段包括 full document sync、overlay、diagnostics、Module navigation、completion、Hover、文件 watcher、DocumentSymbol、WorkspaceSymbol、Zed adapter 和基于 Notist.toml 的多 vault discovery。
 
 后续顺序：
 
-1. 将当前 Workspace 进一步固化为带 FileId、LineIndex 和 revision 的 immutable snapshot。
-2. 增加文件 watcher，在未打开文件和 Notist.toml 变化后刷新 vault 集合。
-3. 加入旧 revision 取消和按 vault 重建；当前 debounce 已由文件 watcher 提供。
-4. 根据性能数据增加按文件 parse 与依赖图增量 analysis。
-5. 支持插件 schema 提供的 Function、类型、completion 和 Hover。
-6. 处理 LSP workspace folder 动态增删。
++ 将当前 Workspace 进一步固化为带 FileId、LineIndex 和 revision 的 immutable snapshot。
++ 加入旧 revision 取消和按 vault 重建；当前文件 watcher 已提供 debounce 与全量刷新。
++ 根据性能数据增加按文件 parse 与依赖图增量 analysis。
++ 支持插件 schema 提供的 Function、类型、completion 和 Hover。
++ 处理 LSP workspace folder 动态增删。
 
 多 vault 的核心约束保持不变：每个 source 只属于最近 marker 的 Workspace，未保存 overlay、diagnostics 与所有语义查询都不能越过该边界。

@@ -1,5 +1,9 @@
 = Scope and Attributes
 
+#callout(kind="warning", title=[已归档])[
+本文保留早期 Raw Call/RawSource 方案的设计过程，不描述当前语法。该方案已由 [[vault::designs::2026-07-14 string literals and raw syntax]] 取代；当前 Function 与 Attribute 规则见 [[vault::functions]] 和 [[vault::grammar]]。
+]
+
 Notist 将“为一段内容附加语义”和“调用一个产生内容的函数”视为两件不同的事：
 
 - Transparent Scope 使用 `#[...]`，只标注源码范围，内部仍是普通 Notist Content。
@@ -181,11 +185,11 @@ Function::call(context, input) -> FunctionOutput
 
 Transparent Scope 负责“标注哪一段内容”；Content Call 负责“用 Notist Content 调用函数”；Raw Call 负责“用未经宿主解析的源码调用函数”。Attribute 为 Scope 和 Call 提供统一元数据，`!` 则在纯语法层明确语言边界。这组规则共同构成 Notist 内容模型、编辑器支持和插件扩展的稳定基础。
 
----
+#rule()
 
 == Draft
 
-最初的构思在 [[super::rua-markdown-module-scope]] 内。
+最初的构思见 [[vault::designs::archive::rua-markdown-module-scope]]。
 
 早期方案曾把所有 `#processor[...]` 都视为 Opaque Scope，并让 processor 自行决定是否重新解析 body。当前设计已经改为由 `!` 在语法上明确区分 Content Call 与 Raw Call；以下内容仅保留为历史记录。
 

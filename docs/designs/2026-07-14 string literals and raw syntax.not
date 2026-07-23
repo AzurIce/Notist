@@ -21,7 +21,7 @@ Notist 采用一个普通 Function call 模型：
 例如：
 
 ```not
-#quote(kind="warning")[Content]
+#callout(kind="warning")[Content]
 
 #raw(text=r#"fn main() {}"#, lang="rust")
 

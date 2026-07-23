@@ -24,7 +24,7 @@ grammar 产生式 `EmbeddedExpression = "#" CodeExpression Attributes?`,`#` 属�
 
 === 静态 type checking 落点 notist-analysis
 
-新增 `notist-analysis::check`(`SignatureSet` + `check_module`):对整棵 Markup 树做名称解析、argument binding 全套规则(unknown argument / positional-after-named / too many positional / duplicate / missing required / trailing 不被接受)与 Markup 插入检查(String→Text、None→空、Content→插入,其余报 `cannot insert {ty} into Markup`),**不执行 Function runtime**。
+新增 `notist-analysis::check`(`SignatureSet` + `check_module`):对整棵 Markup 树做名称解析、argument binding 全套规则(unknown argument / positional-after-named / too many positional / duplicate / missing required / trailing 不被接受)与 Markup 插入检查(String→Text、None→空、Content→插入,其余报 `cannot insert {ty} into Markup`),*不执行 Function runtime*。
 
 与 eval 对齐的关键规则:表达式子树有错误(未知函数、binding 失败、语法错误节点)时返回"无类型",跳过上层依赖该值的检查——因此 `#heading(level=missing())[T]` 只报一次 `unknown function`,不会追加 type mismatch。消息文案与 eval 运行时一致,`notist check`、LSP、build 共享同一套静态诊断。
 

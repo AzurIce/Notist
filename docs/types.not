@@ -1,6 +1,6 @@
 = Type System
 
-本文定义 Markup/Code 双 Mode 目标下的类型与求值模型。精确语法见 [[vault::grammar]]，内置 Function 签名见 [[vault::functions]]。本文是后续 syntax、analysis 和 evaluator 迁移的目标规范；当前实现仍以 literal argument binding 为主，尚未建立完整的 mode-aware typed IR。
+本文定义 Markup/Code 双 Mode 下现行的类型与求值模型。精确语法见 [[vault::grammar]]，内置 Function 签名见 [[vault::functions]]。当前实现已经具备 mode-aware syntax tree、Function signature、argument binding 与 Document 静态检查；尚未完成的 typed IR 和 Value-returning Function 边界见“当前迁移边界”。
 
 == 核心判断
 
@@ -269,14 +269,14 @@ count() -> Int    // #count() 是 Content-position type error
 
 参数按以下规则绑定：
 
-1. Positional argument 按 parameter 顺序绑定。
-2. Named argument 按名称绑定。
-3. 第一个 named argument 后不能再出现 positional argument。
-4. Trailing Content literal 绑定到 signature 指定的 Content parameter。
-5. 同一个 parameter 不能由 positional、named 或 trailing argument 重复提供。
-6. 未提供的 parameter 使用 default；无 default 则产生 missing argument diagnostic。
-7. 所有 Value 必须满足 parameter Type。
-8. Default 本身必须在 Function 注册时满足 parameter Type。
++ Positional argument 按 parameter 顺序绑定。
++ Named argument 按名称绑定。
++ 第一个 named argument 后不能再出现 positional argument。
++ Trailing Content literal 绑定到 signature 指定的 Content parameter。
++ 同一个 parameter 不能由 positional、named 或 trailing argument 重复提供。
++ 未提供的 parameter 使用 default；无 default 则产生 missing argument diagnostic。
++ 所有 Value 必须满足 parameter Type。
++ Default 本身必须在 Function 注册时满足 parameter Type。
 
 Binding 在 Function 执行前报告：
 

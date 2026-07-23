@@ -1,5 +1,9 @@
 = Type System
 
+#callout(kind="warning", title=[已归档])[
+本文是早期类型系统阶段记录，其中 RawSource/Raw Call 已被移除。当前公开类型、绑定和检查规则以 [[vault::types]] 为准。
+]
+
 Notist 最终需要完整的静态类型系统，同时保留运行时 Value。静态类型负责在执行前验证表达式和函数调用；Value 负责承载已经求值的数据，并交给 native、user 或 plugin function 执行。
 
 实现可以分阶段推进，但 Function API 应从一开始朝结构化参数设计，避免每个函数长期自行解释字符串。
@@ -182,10 +186,10 @@ Type checking 不执行 Function。这样 LSP 可以快速、确定地分析未�
 
 后续顺序建议为：
 
-1. 扩展 Expression AST，支持名称、运算、数组与字典。
-2. 实现 lexical scope 和 name resolution。
-3. 将当前 literal checking 扩展为一般 Expression type checking。
-4. 实现变量、`#let` 和 User Function。
-5. 扩展 Function、Array、Dict 与用户定义类型对应的 Value。
++ 扩展 Expression AST，支持名称、运算、数组与字典。
++ 实现 lexical scope 和 name resolution。
++ 将当前 literal checking 扩展为一般 Expression type checking。
++ 实现变量、`#let` 和 User Function。
++ 扩展 Function、Array、Dict 与用户定义类型对应的 Value。
 
 当前 native Function 已经只接收完成 binding 的 `BoundArguments`；后续扩展可以保持这一运行时边界不变，只增强 binding 之前的 analysis 与 evaluation。
