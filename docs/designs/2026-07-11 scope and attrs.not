@@ -1,4 +1,4 @@
-#heading(level=1)[Scope and Attributes]
+= Scope and Attributes
 
 Notist 将“为一段内容附加语义”和“调用一个产生内容的函数”视为两件不同的事：
 
@@ -8,7 +8,7 @@ Notist 将“为一段内容附加语义”和“调用一个产生内容的函�
 
 三者都可以在结束后使用 `@...` 附加 ID、Tag、Class 和 key-value Attribute。
 
-#heading(level=2)[Transparent Scope]
+== Transparent Scope
 
 Transparent Scope 是覆盖在普通内容之上的 annotation range：
 
@@ -35,7 +35,7 @@ Annotation: range(body) + { id: "concept" }
 
 这种正交模型允许同一段内容同时属于多个语义范围，而不必强迫 Element 树表达所有交叠关系。
 
-#heading(level=2)[Content Call]
+== Content Call
 
 普通调用使用 `#name(arguments)[body]`：
 
@@ -53,7 +53,7 @@ It may contain [[self::references]] and #heading(level=2)[nested calls].
 
 Content Call 适合 heading、quote、note、link 等以 Notist 内容为输入的构造器。它与普通函数调用属于同一套 callable 模型：函数接收参数和 trailing body，返回 Content。
 
-#heading(level=2)[Raw Call]
+== Raw Call
 
 Raw Call 在完整 call head，也就是函数名和可选参数之后增加成对的 `!`：
 
@@ -82,7 +82,7 @@ Raw delimiter 可以通过增加 `!` 数量扩展。开头与结尾必须使用�
 
 如果 body 中包含 `]!`，调用使用 `!![...]!!`；如果包含 `]!!`，调用使用 `!!![...]!!!`。Raw body 不需要反斜杠转义，也不需要宿主理解内部语言的括号、字符串或注释规则。
 
-#heading(level=2)[Body Form]
+== Body Form
 
 只有会产生 Element 的 Call 需要记录 body 的 source form。`[` 后立即出现换行时为 Block，否则为 Inline：
 
@@ -98,7 +98,7 @@ block raw
 
 Block/Inline 是调用处的形式信息，不等同于函数返回类型。函数签名和类型检查仍需判断这种形式是否合法，例如 heading 可以拒绝 Block form，quote 可以拒绝 Inline form。
 
-#heading(level=2)[Attributes]
+== Attributes
 
 Attribute 位于 Scope 或 Call 结束后的 `@` 列表中：
 
@@ -128,7 +128,7 @@ Tag 和 Class 本质上也是可重复属性，但使用前缀提供高频简写
 - `level=2` 是函数参数，参与调用、类型检查和 Element 构造。
 - `@introduction,#public` 是结果元数据，用于索引、查询、样式或插件分析。
 
-#heading(level=2)[Parser and Tooling]
+== Parser and Tooling
 
 这一区分由语法本身决定，不依赖名称解析或类型信息：
 
@@ -154,7 +154,7 @@ Parse
 
 插件不能通过注册函数修改宿主 grammar。扩展函数共享通用的 Content Call / Raw Call 语法；高频内置能力可以额外拥有语法糖，但语法糖必须由核心 parser 定义，并 lowering 到同一个 Element 构造逻辑。
 
-#heading(level=2)[Evaluation Model]
+== Evaluation Model
 
 运行时不再把所有调用称为 Processor。统一接口是产生 Content 的 Function：
 
@@ -177,13 +177,13 @@ Function::call(context, input) -> FunctionOutput
 
 未知函数不会破坏整份文档的可恢复性。Lowering 产生 diagnostic，并保存 UnresolvedCall：Content body 保留已经 lowering 的 Content，Raw body 保留原文。
 
-#heading(level=2)[Summary]
+== Summary
 
 Transparent Scope 负责“标注哪一段内容”；Content Call 负责“用 Notist Content 调用函数”；Raw Call 负责“用未经宿主解析的源码调用函数”。Attribute 为 Scope 和 Call 提供统一元数据，`!` 则在纯语法层明确语言边界。这组规则共同构成 Notist 内容模型、编辑器支持和插件扩展的稳定基础。
 
 ---
 
-#heading(level=2)[Draft]
+== Draft
 
 最初的构思在 [[super::rua-markdown-module-scope]] 内。
 

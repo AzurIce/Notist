@@ -92,6 +92,32 @@ pub struct FunctionSignature {
     pub result: Type,
 }
 
+/// The signature of the built-in `text` function.
+pub fn text_signature() -> FunctionSignature {
+    FunctionSignature {
+        parameters: vec![Parameter {
+            name: "value",
+            ty: Type::String,
+            default: None,
+        }],
+        trailing_content: None,
+        result: Type::Content,
+    }
+}
+
+/// The signature of the built-in `ref` function.
+pub fn ref_signature() -> FunctionSignature {
+    FunctionSignature {
+        parameters: vec![Parameter {
+            name: "target",
+            ty: Type::String,
+            default: None,
+        }],
+        trailing_content: None,
+        result: Type::Content,
+    }
+}
+
 /// The signature of the built-in `heading` function.
 pub fn heading_signature() -> FunctionSignature {
     FunctionSignature {
@@ -108,6 +134,19 @@ pub fn heading_signature() -> FunctionSignature {
             },
         ],
         trailing_content: Some("body"),
+        result: Type::Content,
+    }
+}
+
+/// The signature of the built-in `outline` function.
+pub fn outline_signature() -> FunctionSignature {
+    FunctionSignature {
+        parameters: vec![Parameter {
+            name: "depth",
+            ty: Type::Int,
+            default: Some(DefaultValue::Int(3)),
+        }],
+        trailing_content: None,
         result: Type::Content,
     }
 }
@@ -132,8 +171,103 @@ pub fn raw_signature() -> FunctionSignature {
     }
 }
 
+/// The signature of the built-in `code` function.
+pub fn code_signature() -> FunctionSignature {
+    FunctionSignature {
+        parameters: vec![
+            Parameter {
+                name: "text",
+                ty: Type::String,
+                default: None,
+            },
+            Parameter {
+                name: "lang",
+                ty: Type::Optional(Box::new(Type::String)),
+                default: Some(DefaultValue::None),
+            },
+            Parameter {
+                name: "block",
+                ty: Type::Bool,
+                default: Some(DefaultValue::Bool(false)),
+            },
+        ],
+        trailing_content: None,
+        result: Type::Content,
+    }
+}
+
 /// The signature of the built-in `quote` function.
 pub fn quote_signature() -> FunctionSignature {
+    FunctionSignature {
+        parameters: vec![
+            Parameter {
+                name: "attribution",
+                ty: Type::Optional(Box::new(Type::Content)),
+                default: Some(DefaultValue::None),
+            },
+            Parameter {
+                name: "body",
+                ty: Type::Content,
+                default: None,
+            },
+        ],
+        trailing_content: Some("body"),
+        result: Type::Content,
+    }
+}
+
+/// The signature of the built-in `callout` function.
+pub fn callout_signature() -> FunctionSignature {
+    FunctionSignature {
+        parameters: vec![
+            Parameter {
+                name: "kind",
+                ty: Type::String,
+                default: Some(DefaultValue::String("note")),
+            },
+            Parameter {
+                name: "title",
+                ty: Type::Optional(Box::new(Type::Content)),
+                default: Some(DefaultValue::None),
+            },
+            Parameter {
+                name: "body",
+                ty: Type::Content,
+                default: None,
+            },
+        ],
+        trailing_content: Some("body"),
+        result: Type::Content,
+    }
+}
+
+/// The signature of the built-in `details` function.
+pub fn details_signature() -> FunctionSignature {
+    FunctionSignature {
+        parameters: vec![
+            Parameter {
+                name: "summary",
+                ty: Type::Optional(Box::new(Type::Content)),
+                default: Some(DefaultValue::None),
+            },
+            Parameter {
+                name: "open",
+                ty: Type::Bool,
+                default: Some(DefaultValue::Bool(false)),
+            },
+            Parameter {
+                name: "body",
+                ty: Type::Content,
+                default: None,
+            },
+        ],
+        trailing_content: Some("body"),
+        result: Type::Content,
+    }
+}
+
+/// The signature shared by inline content wrappers such as `strong` and `emph`.
+pub fn inline_body_signature() -> FunctionSignature {
     FunctionSignature {
         parameters: vec![Parameter {
             name: "body",
@@ -145,11 +279,413 @@ pub fn quote_signature() -> FunctionSignature {
     }
 }
 
+/// The signature of the built-in `math` function.
+pub fn math_signature() -> FunctionSignature {
+    FunctionSignature {
+        parameters: vec![
+            Parameter {
+                name: "text",
+                ty: Type::String,
+                default: None,
+            },
+            Parameter {
+                name: "block",
+                ty: Type::Bool,
+                default: Some(DefaultValue::Bool(false)),
+            },
+        ],
+        trailing_content: None,
+        result: Type::Content,
+    }
+}
+
+/// The signature of the built-in `abbr` function.
+pub fn abbr_signature() -> FunctionSignature {
+    FunctionSignature {
+        parameters: vec![
+            Parameter {
+                name: "term",
+                ty: Type::String,
+                default: None,
+            },
+            Parameter {
+                name: "expansion",
+                ty: Type::String,
+                default: None,
+            },
+        ],
+        trailing_content: None,
+        result: Type::Content,
+    }
+}
+
+/// The signature of the built-in `time` function.
+pub fn time_signature() -> FunctionSignature {
+    FunctionSignature {
+        parameters: vec![
+            Parameter {
+                name: "datetime",
+                ty: Type::String,
+                default: None,
+            },
+            Parameter {
+                name: "body",
+                ty: Type::Content,
+                default: None,
+            },
+        ],
+        trailing_content: Some("body"),
+        result: Type::Content,
+    }
+}
+
+/// The signature of the built-in `cite` function.
+pub fn cite_signature() -> FunctionSignature {
+    FunctionSignature {
+        parameters: vec![
+            Parameter {
+                name: "key",
+                ty: Type::String,
+                default: None,
+            },
+            Parameter {
+                name: "locator",
+                ty: Type::Optional(Box::new(Type::String)),
+                default: Some(DefaultValue::None),
+            },
+        ],
+        trailing_content: None,
+        result: Type::Content,
+    }
+}
+
+/// The signature of the built-in `link` function.
+pub fn link_signature() -> FunctionSignature {
+    FunctionSignature {
+        parameters: vec![
+            Parameter {
+                name: "destination",
+                ty: Type::String,
+                default: None,
+            },
+            Parameter {
+                name: "title",
+                ty: Type::Optional(Box::new(Type::String)),
+                default: Some(DefaultValue::None),
+            },
+            Parameter {
+                name: "body",
+                ty: Type::Content,
+                default: None,
+            },
+        ],
+        trailing_content: Some("body"),
+        result: Type::Content,
+    }
+}
+
+/// The signature of the built-in `image` function.
+pub fn image_signature() -> FunctionSignature {
+    FunctionSignature {
+        parameters: vec![
+            Parameter {
+                name: "source",
+                ty: Type::String,
+                default: None,
+            },
+            Parameter {
+                name: "alt",
+                ty: Type::String,
+                default: Some(DefaultValue::String("")),
+            },
+            Parameter {
+                name: "title",
+                ty: Type::Optional(Box::new(Type::String)),
+                default: Some(DefaultValue::None),
+            },
+            Parameter {
+                name: "width",
+                ty: Type::Optional(Box::new(Type::Int)),
+                default: Some(DefaultValue::None),
+            },
+            Parameter {
+                name: "height",
+                ty: Type::Optional(Box::new(Type::Int)),
+                default: Some(DefaultValue::None),
+            },
+        ],
+        trailing_content: None,
+        result: Type::Content,
+    }
+}
+
+/// The signature of the built-in `figure` function.
+pub fn figure_signature() -> FunctionSignature {
+    FunctionSignature {
+        parameters: vec![
+            Parameter {
+                name: "source",
+                ty: Type::String,
+                default: None,
+            },
+            Parameter {
+                name: "alt",
+                ty: Type::String,
+                default: Some(DefaultValue::String("")),
+            },
+            Parameter {
+                name: "title",
+                ty: Type::Optional(Box::new(Type::String)),
+                default: Some(DefaultValue::None),
+            },
+            Parameter {
+                name: "caption",
+                ty: Type::Content,
+                default: None,
+            },
+        ],
+        trailing_content: Some("caption"),
+        result: Type::Content,
+    }
+}
+
+/// The signature of the built-in `video` function.
+pub fn video_signature() -> FunctionSignature {
+    FunctionSignature {
+        parameters: vec![
+            Parameter {
+                name: "source",
+                ty: Type::String,
+                default: None,
+            },
+            Parameter {
+                name: "poster",
+                ty: Type::Optional(Box::new(Type::String)),
+                default: Some(DefaultValue::None),
+            },
+            Parameter {
+                name: "controls",
+                ty: Type::Bool,
+                default: Some(DefaultValue::Bool(true)),
+            },
+        ],
+        trailing_content: None,
+        result: Type::Content,
+    }
+}
+
+/// The signature of the built-in `audio` function.
+pub fn audio_signature() -> FunctionSignature {
+    FunctionSignature {
+        parameters: vec![
+            Parameter {
+                name: "source",
+                ty: Type::String,
+                default: None,
+            },
+            Parameter {
+                name: "controls",
+                ty: Type::Bool,
+                default: Some(DefaultValue::Bool(true)),
+            },
+            Parameter {
+                name: "loop",
+                ty: Type::Bool,
+                default: Some(DefaultValue::Bool(false)),
+            },
+        ],
+        trailing_content: None,
+        result: Type::Content,
+    }
+}
+
+/// The signature shared by argument-free content constructors.
+pub fn empty_content_signature() -> FunctionSignature {
+    FunctionSignature {
+        parameters: Vec::new(),
+        trailing_content: None,
+        result: Type::Content,
+    }
+}
+
+/// The signature of the built-in unordered `list::item` function.
+pub fn list_item_signature() -> FunctionSignature {
+    FunctionSignature {
+        parameters: vec![Parameter {
+            name: "body",
+            ty: Type::Content,
+            default: None,
+        }],
+        trailing_content: Some("body"),
+        result: Type::Content,
+    }
+}
+
+/// The signature shared by the built-in `list` and `enum` container functions.
+pub fn list_signature() -> FunctionSignature {
+    FunctionSignature {
+        parameters: vec![Parameter {
+            name: "body",
+            ty: Type::Content,
+            default: None,
+        }],
+        trailing_content: Some("body"),
+        result: Type::Content,
+    }
+}
+
+/// The signature of the built-in ordered `enum::item` function.
+pub fn enum_item_signature() -> FunctionSignature {
+    FunctionSignature {
+        parameters: vec![
+            Parameter {
+                name: "value",
+                ty: Type::Optional(Box::new(Type::Int)),
+                default: Some(DefaultValue::None),
+            },
+            Parameter {
+                name: "body",
+                ty: Type::Content,
+                default: None,
+            },
+        ],
+        trailing_content: Some("body"),
+        result: Type::Content,
+    }
+}
+
+/// The signature of the built-in `terms::item` function.
+pub fn terms_item_signature() -> FunctionSignature {
+    FunctionSignature {
+        parameters: vec![
+            Parameter {
+                name: "term",
+                ty: Type::Content,
+                default: None,
+            },
+            Parameter {
+                name: "description",
+                ty: Type::Content,
+                default: None,
+            },
+        ],
+        trailing_content: Some("description"),
+        result: Type::Content,
+    }
+}
+
+/// The signature of the built-in `task::item` function.
+pub fn task_item_signature() -> FunctionSignature {
+    FunctionSignature {
+        parameters: vec![
+            Parameter {
+                name: "checked",
+                ty: Type::Bool,
+                default: Some(DefaultValue::Bool(false)),
+            },
+            Parameter {
+                name: "body",
+                ty: Type::Content,
+                default: None,
+            },
+        ],
+        trailing_content: Some("body"),
+        result: Type::Content,
+    }
+}
+
+/// The signature of the built-in `table::cell` function.
+pub fn table_cell_signature() -> FunctionSignature {
+    FunctionSignature {
+        parameters: vec![
+            Parameter {
+                name: "colspan",
+                ty: Type::Int,
+                default: Some(DefaultValue::Int(1)),
+            },
+            Parameter {
+                name: "rowspan",
+                ty: Type::Int,
+                default: Some(DefaultValue::Int(1)),
+            },
+            Parameter {
+                name: "body",
+                ty: Type::Content,
+                default: None,
+            },
+        ],
+        trailing_content: Some("body"),
+        result: Type::Content,
+    }
+}
+
+/// The signature of the built-in `table` function.
+pub fn table_signature() -> FunctionSignature {
+    FunctionSignature {
+        parameters: vec![
+            Parameter {
+                name: "columns",
+                ty: Type::Int,
+                default: None,
+            },
+            Parameter {
+                name: "header",
+                ty: Type::Bool,
+                default: Some(DefaultValue::Bool(false)),
+            },
+            Parameter {
+                name: "align",
+                ty: Type::Optional(Box::new(Type::String)),
+                default: Some(DefaultValue::None),
+            },
+            Parameter {
+                name: "caption",
+                ty: Type::Optional(Box::new(Type::Content)),
+                default: Some(DefaultValue::None),
+            },
+            Parameter {
+                name: "body",
+                ty: Type::Content,
+                default: None,
+            },
+        ],
+        trailing_content: Some("body"),
+        result: Type::Content,
+    }
+}
+
 /// The names and signatures of all built-in functions.
-pub fn builtin_signatures() -> [(&'static str, FunctionSignature); 3] {
+pub fn builtin_signatures() -> [(&'static str, FunctionSignature); 30] {
     [
+        ("text", text_signature()),
+        ("paragraph", inline_body_signature()),
+        ("ref", ref_signature()),
         ("heading", heading_signature()),
         ("raw", raw_signature()),
+        ("code", code_signature()),
         ("quote", quote_signature()),
+        ("callout", callout_signature()),
+        ("details", details_signature()),
+        ("list", list_signature()),
+        ("enum", list_signature()),
+        ("list::item", list_item_signature()),
+        ("enum::item", enum_item_signature()),
+        ("task", list_signature()),
+        ("task::item", task_item_signature()),
+        ("table::cell", table_cell_signature()),
+        ("table", table_signature()),
+        ("strong", inline_body_signature()),
+        ("emph", inline_body_signature()),
+        ("strike", inline_body_signature()),
+        ("underline", inline_body_signature()),
+        ("kbd", inline_body_signature()),
+        ("math", math_signature()),
+        ("link", link_signature()),
+        ("image", image_signature()),
+        ("figure", figure_signature()),
+        ("linebreak", empty_content_signature()),
+        ("parbreak", empty_content_signature()),
+        ("rule", empty_content_signature()),
+        ("pagebreak", empty_content_signature()),
     ]
 }

@@ -57,6 +57,48 @@ impl Parser<'_> {
                 continue;
             }
 
+            if self.source.as_bytes().get(self.cursor..self.cursor + 2) == Some(b"//")
+                && !self.inside_http_url()
+            {
+                self.push_text(&mut items, text_start, self.cursor);
+                self.cursor += 2;
+                while self.cursor < self.end && !matches!(self.byte(), Some(b'\r' | b'\n')) {
+                    self.cursor = self.next_char_end(self.cursor);
+                }
+                text_start = self.cursor;
+                continue;
+            }
+
+            if self.source.as_bytes().get(self.cursor..self.cursor + 2) == Some(b"/*")
+                && !self.inside_http_url()
+            {
+                self.push_text(&mut items, text_start, self.cursor);
+                let comment_start = self.cursor;
+                self.cursor += 2;
+                let mut depth = 1usize;
+                while self.cursor < self.end && depth > 0 {
+                    match self.source.as_bytes().get(self.cursor..self.cursor + 2) {
+                        Some(b"/*") => {
+                            depth += 1;
+                            self.cursor += 2;
+                        }
+                        Some(b"*/") => {
+                            depth -= 1;
+                            self.cursor += 2;
+                        }
+                        _ => self.cursor = self.next_char_end(self.cursor),
+                    }
+                }
+                if depth > 0 {
+                    self.errors.push(SyntaxError {
+                        message: "unclosed block comment".into(),
+                        range: TextRange::new(comment_start, self.end),
+                    });
+                }
+                text_start = self.cursor;
+                continue;
+            }
+
             if self.source.as_bytes().get(self.cursor..self.cursor + 2) == Some(b"[[") {
                 self.push_text(&mut items, text_start, self.cursor);
                 self.parse_wiki_link(&mut items);
@@ -96,6 +138,18 @@ impl Parser<'_> {
             },
             !stop_at_bracket,
         )
+    }
+
+    fn inside_http_url(&self) -> bool {
+        let bytes = self.source.as_bytes();
+        let mut start = self.cursor;
+        while start > 0 && !bytes[start - 1].is_ascii_whitespace() {
+            start -= 1;
+        }
+        let prefix = &self.source[start..self.cursor];
+        matches!(prefix, "http:" | "http:/" | "https:" | "https:/")
+            || prefix.starts_with("http://")
+            || prefix.starts_with("https://")
     }
 
     fn parse_wiki_link(&mut self, items: &mut Vec<MarkupItem>) {

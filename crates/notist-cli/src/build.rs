@@ -8,8 +8,8 @@ use std::process::ExitCode;
 use clap::ColorChoice;
 use notist_analysis::Workspace;
 use notist_eval::{EvalDiagnostic, Evaluator, structure};
-use notist_html::{RenderOptions, render_with_reference_resolver};
-use notist_model::ModulePath;
+use notist_html::{RenderOptions, render_with_resolvers};
+use notist_model::{ModulePath, TextRange};
 use percent_encoding::{AsciiSet, CONTROLS, NON_ALPHANUMERIC, utf8_percent_encode};
 
 use crate::diagnostics;
@@ -122,13 +122,35 @@ pub(crate) fn build_site(
                     .contains(target)
                     .then(|| module_href(current, target, label))
             };
-            let fragment = render_with_reference_resolver(
+            let source_ids: Vec<_> = module
+                .parse
+                .as_ref()
+                .into_iter()
+                .flat_map(|parse| parse.annotations())
+                .filter_map(|annotation| {
+                    annotation
+                        .attributes
+                        .id
+                        .as_ref()
+                        .map(|id| (annotation.scope_range, id.value.clone()))
+                })
+                .collect();
+            let source_id_resolver = |range: TextRange| {
+                source_ids
+                    .iter()
+                    .find(|(scope_range, _)| {
+                        scope_range.start <= range.start && range.end <= scope_range.end
+                    })
+                    .map(|(_, id)| id.clone())
+            };
+            let fragment = render_with_resolvers(
                 &structured.document,
                 &RenderOptions {
                     current_module: Some(current),
                     module_url_prefix: "",
                 },
                 &resolver,
+                &source_id_resolver,
             );
             if !structured.diagnostics.is_empty() {
                 evaluation_reports.push(EvaluationReport {
@@ -421,7 +443,125 @@ h1, h2, h3, h4, h5, h6 {
   line-height: 1.25;
 }
 h1:first-child, h2:first-child, h3:first-child { margin-top: 0; }
-p, ul, blockquote, pre { margin: 0 0 1em; }
+p, ul, ol, dl, blockquote, pre { margin: 0 0 1em; }
+dt { font-weight: 700; }
+dd { margin: 0 0 0.75em 1.5em; }
+.notist-task-list { padding-left: 0; list-style: none; }
+.notist-task-item {
+  display: grid;
+  grid-template-columns: 18px minmax(0, 1fr);
+  gap: 8px;
+  align-items: start;
+}
+.notist-task-item > input { margin: 0.42em 0 0; }
+.notist-task-item > p { margin-bottom: 0.5em; }
+.notist-image {
+  max-width: 100%;
+  height: auto;
+  vertical-align: middle;
+}
+.notist-figure { margin: 1.25em 0; }
+.notist-figure figcaption { margin-top: 0.45em; color: var(--muted, #666); text-align: center; }
+.notist-video { display: block; width: 100%; max-width: 100%; margin: 1.25em 0; }
+.notist-audio { display: block; width: 100%; margin: 1em 0; }
+.notist-math { font-family: "Cambria Math", "STIX Two Math", serif; }
+div.notist-math { margin: 1em 0; overflow-x: auto; text-align: center; }
+.notist-content abbr { text-decoration: underline dotted; text-underline-offset: 0.16em; cursor: help; }
+.notist-citation { font-style: normal; white-space: nowrap; }
+.notist-keyboard {
+  padding: 0.08em 0.38em;
+  border: 1px solid var(--border, #d0d7de);
+  border-bottom-width: 2px;
+  border-radius: 0.28em;
+  background: var(--surface, #f6f8fa);
+  font: 0.88em/1.35 ui-monospace, SFMono-Regular, Consolas, monospace;
+  white-space: nowrap;
+}
+.notist-sample { font-family: ui-monospace, SFMono-Regular, Consolas, monospace; }
+.notist-outline { margin: 1.2em 0; padding: 0.85em 1em; border-left: 3px solid var(--border, #d0d7de); background: var(--surface, #f6f8fa); }
+.notist-outline ol { margin: 0; padding-left: 1.35em; }
+.notist-outline li + li { margin-top: 0.25em; }
+.notist-outline-level-2 { margin-left: 0.8em; }
+.notist-outline-level-3 { margin-left: 1.6em; }
+.notist-outline-level-4 { margin-left: 2.4em; }
+.notist-outline-level-5 { margin-left: 3.2em; }
+.notist-outline-level-6 { margin-left: 4em; }
+.notist-spoiler {
+  padding: 0 0.18em;
+  border-radius: 0.18em;
+  color: transparent;
+  background: var(--text, #24292f);
+  cursor: pointer;
+  box-decoration-break: clone;
+  -webkit-box-decoration-break: clone;
+}
+.notist-spoiler:hover, .notist-spoiler:focus {
+  color: inherit;
+  background: color-mix(in srgb, var(--text, #24292f) 12%, transparent);
+  outline: 1px solid var(--border, #d0d7de);
+}
+.notist-callout {
+  margin: 1em 0;
+  padding: 0.75em 1em;
+  border-inline-start: 0.28rem solid var(--accent, #4f46e5);
+  border-radius: 0.25rem;
+  background: color-mix(in srgb, var(--accent, #4f46e5) 8%, transparent);
+}
+.notist-callout-title { margin-bottom: 0.4em; font-weight: 600; }
+.notist-callout > :last-child { margin-bottom: 0; }
+.notist-details { margin: 1em 0; padding: 0.65em 0.85em; border: 1px solid var(--border); border-radius: 0.25rem; }
+.notist-details summary { cursor: pointer; font-weight: 600; }
+.notist-details > :last-child { margin-bottom: 0; }
+.notist-footnote-ref { margin-inline: 0.12em; }
+.notist-footnote-ref a { text-decoration: none; }
+.notist-footnotes {
+  margin-top: 2rem;
+  padding-top: 0.75rem;
+  border-top: 1px solid var(--border);
+  font-size: 0.9em;
+}
+.notist-footnote-backref { margin-inline-start: 0.45em; }
+.notist-table-wrapper {
+  max-width: 100%;
+  margin: 0 0 1em;
+  overflow-x: auto;
+}
+.notist-content table {
+  width: 100%;
+  border-collapse: collapse;
+  border-spacing: 0;
+}
+.notist-content th,
+.notist-content td {
+  min-width: 6rem;
+  padding: 0.5em 0.7em;
+  border: 1px solid var(--border, #d0d7de);
+  vertical-align: top;
+  text-align: start;
+}
+.notist-content th {
+  background: var(--surface, #f6f8fa);
+  font-weight: 600;
+}
+.notist-content th > :first-child,
+.notist-content td > :first-child { margin-top: 0; }
+.notist-content th > :last-child,
+.notist-content td > :last-child { margin-bottom: 0; }
+.notist-table-align-left { text-align: left; }
+.notist-content table caption { padding: 0 0 0.5em; font-weight: 600; text-align: start; }
+.notist-table-align-center { text-align: center; }
+.notist-table-align-right { text-align: right; }
+.notist-rule {
+  margin: 1.75em 0;
+  border: 0;
+  border-top: 1px solid #c4c7c5;
+}
+.notist-pagebreak {
+  margin: 1.75em 0;
+  border: 0;
+  border-top: 1px dashed #9aa0a6;
+  break-after: page;
+}
 a {
   color: #1769aa;
   text-decoration-thickness: 1px;
@@ -469,6 +609,15 @@ pre {
   a { color: #8ab4f8; }
   blockquote { color: #bdc1c6; border-left-color: #80868b; }
   pre { background: #292a2d; border-color: #5f6368; }
+  .notist-rule { border-top-color: #5f6368; }
+  .notist-pagebreak { border-top-color: #80868b; }
+}
+@media print {
+  .notist-pagebreak {
+    visibility: hidden;
+    margin: 0;
+    break-after: page;
+  }
 }
 "#;
 
@@ -521,6 +670,31 @@ mod tests {
         assert!(notes.contains("href=\"../notes/chapter%20one/\""));
         assert!(output.join("notes/chapter one/index.html").is_file());
         assert!(output.join("_notist/style.css").is_file());
+    }
+
+    #[test]
+    fn builds_annotation_ids_as_label_targets() {
+        let root = tempfile::TempDir::new().unwrap();
+        fs::write(
+            root.path().join("README.not"),
+            "[[guide#intro]]\n\n#heading[Home]@home",
+        )
+        .unwrap();
+        fs::write(
+            root.path().join("guide.not"),
+            "#heading[Introduction]@intro",
+        )
+        .unwrap();
+        let workspace = Workspace::load(root.path()).unwrap();
+        let output = root.path().join("site");
+
+        build_site(&workspace, &output, SiteOptions::default()).unwrap();
+
+        let home = fs::read_to_string(output.join("index.html")).unwrap();
+        let guide = fs::read_to_string(output.join("guide/index.html")).unwrap();
+        assert!(home.contains("href=\"guide/#intro\""));
+        assert!(home.contains("id=\"home\""));
+        assert!(guide.contains("id=\"intro\""));
     }
 
     #[test]

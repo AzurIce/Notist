@@ -1,8 +1,8 @@
-#heading(level=1)[Type System]
+= Type System
 
 本文定义 Markup/Code 双 Mode 目标下的类型与求值模型。精确语法见 [[vault::grammar]]，内置 Function 签名见 [[vault::functions]]。本文是后续 syntax、analysis 和 evaluator 迁移的目标规范；当前实现仍以 literal argument binding 为主，尚未建立完整的 mode-aware typed IR。
 
-#heading(level=2)[核心判断]
+== 核心判断
 
 Notist Document 是一个隐式 Markup expression。整篇文档具有静态类型 `Content`，求值结果也是 `Content`：
 
@@ -24,7 +24,7 @@ source Document
 
 其中 Annotation 是独立的 source span metadata，不参与上述类型判断和求值关系。
 
-#heading(level=2)[Markup 与 Code 的类型边界]
+== Markup 与 Code 的类型边界
 
 Document 默认处于 Markup。Markup 中的普通文字和宿主语法直接产生 Content：
 
@@ -46,7 +46,7 @@ Markup:  Before #expr after
 
 `#` 不是运行时 unary operator，也不改变 expression 自身的类型。它是语法 mode switch 和插值边界。
 
-#heading(level=2)[Content Literal]
+== Content Literal
 
 Code mode 中的 `[...]` 是 Content literal。方括号内部切回 Markup，因此可以包含 Text、Reference、Raw、Function Call 和嵌套 EmbeddedExpression。
 
@@ -82,7 +82,7 @@ Code mode 中的 `[...]` 是 Content literal。方括号内部切回 Markup，�
 
 `let` 本身不属于当前阶段，但不需要为它重新设计 Content literal。
 
-#heading(level=2)[Content 插入规则]
+== Content 插入规则
 
 EmbeddedExpression 的结果必须能够进入外层 Content。本阶段定义三个允许的结果：
 
@@ -117,7 +117,7 @@ Bool、Int、Float 和其他未来 Value 不自动 stringify；直接插入时�
 #42         // type error in Markup position
 ```
 
-#heading(level=2)[Static Type]
+== Static Type
 
 本阶段静态类型集合为：
 
@@ -134,7 +134,7 @@ Type
 
 `Type` 描述 CodeExpression、Function parameter 和 Function result 可以产生或接受的值。显示名称使用 `None`、`Bool`、`Int`、`Float`、`String`、`Content`；`Optional<T>` 显示为 `T?`。
 
-#heading(level=3)[None 与 Optional]
+=== None 与 Optional
 
 `None` 是 literal `none` 的类型。`T?` 接受 `none` 或 `T`，不是独立运行时容器：
 
@@ -152,7 +152,7 @@ lang: String? = none
 
 `String?` 允许显式传入 `none`，`= none` 允许完全省略 `lang`。
 
-#heading(level=3)[数值兼容]
+=== 数值兼容
 
 Int 和 Float 是不同类型。Binding 允许 Int 实参用于 Float parameter，但不允许 Float 用于 Int parameter：
 
@@ -165,7 +165,7 @@ Int rejects Float
 
 兼容绑定必须明确定义运行时行为。目标实现应在绑定时把 Int widening 为 `Value::Float`，或者为 Function API 暴露统一的 checked numeric accessor；不能让 signature 声明 Float、实际却在无约定的情况下传入 Int variant。
 
-#heading(level=2)[Runtime Value]
+== Runtime Value
 
 CodeExpression 求值产生 Value：
 
@@ -183,7 +183,7 @@ Optional 没有对应 Value variant；运行时使用 `Value::None` 或具体 Va
 
 Content 是有顺序的语义 Element sequence，不是 String，也不是待重新解析的源码。Content literal 内的 Markup 在产生 `Value::Content` 前已经完成递归 parse、analysis 和 evaluation。
 
-#heading(level=2)[String 与 Markup Text]
+== String 与 Markup Text
 
 String literal 只存在于 Code mode：
 
@@ -210,7 +210,7 @@ Inline/Multiline 与 Escaped/Raw 是 literal provenance，不是不同类型。B
 
 这些信息不改变 String 类型，但 `raw` 等 native Function 可以读取。默认值和未来计算产生的 String 不保证具有 literal provenance。
 
-#heading(level=2)[Function Signature]
+== Function Signature
 
 Function signature 包含：
 
@@ -219,12 +219,14 @@ Function signature 包含：
 - trailing Content parameter binding。
 - result Type。
 
-当前内置 Function：
+部分内置 Function：
 
 ```text
 heading(level: Int = 1, body: Content) -> Content
 raw(text: String, lang: String? = none) -> Content
-quote(body: Content) -> Content
+quote(attribution: Content? = none, body: Content) -> Content
+callout(kind: String = "note", title: Content? = none, body: Content) -> Content
+details(summary: Content? = none, open: Bool = false, body: Content) -> Content
 ```
 
 Function Call 是 CodeExpression。普通 arguments 在 Code mode 中解析；紧随调用的 `[...]` 是普通 Content literal，并作为 trailing argument 参与 signature binding：
@@ -238,12 +240,12 @@ Function Call 是 CodeExpression。普通 arguments 在 Code mode 中解析；�
 
 ```text
 heading(level=2, body=[Title])
-quote(body=[Quoted Content])
+quote(attribution=none, body=[Quoted Content])
 ```
 
 Parser 不根据 Function name 或 signature 改变 `[...]` 的语法。Analysis 负责确认 trailing Content 能绑定到哪个 parameter。
 
-#heading(level=2)[Function Result]
+== Function Result
 
 Function result Type 必须是真实契约，而不能只用于 Hover 显示：
 
@@ -263,7 +265,7 @@ count() -> Int    // #count() 是 Content-position type error
 
 如果第一阶段继续使用只返回 FunctionOutput/Content 的 trait，则 Registry 必须强制 `result == Content`；等一般 Value-returning Function 实现后，再把 runtime API 扩展为返回 Value。
 
-#heading(level=2)[Argument Binding]
+== Argument Binding
 
 参数按以下规则绑定：
 
@@ -289,7 +291,7 @@ Binding 在 Function 执行前报告：
 
 任何 binding diagnostic 都会阻止 Function 执行。Parser 遇到缺失或非法 CodeExpression 时必须先产生 syntax diagnostic，不能静默丢弃 argument 后让 default 掩盖错误。
 
-#heading(level=2)[Document 的类型与求值]
+== Document 的类型与求值
 
 Markup sequence 的组合规则是 Content concatenation：
 
@@ -328,7 +330,7 @@ Source
 
 静态 analysis 不执行 Function runtime。LSP diagnostics 应使用 resolved signatures 和 typed tree；只有 preview/build 等 evaluation 路径执行 native、user 或 plugin Function。
 
-#heading(level=2)[错误恢复与 Partial Content]
+== 错误恢复与 Partial Content
 
 Syntax、name resolution 或 type diagnostic 不应让整篇文档不可分析。实现可以保留 Error/Unknown typed node，并在 evaluation 或 preview 中产生可恢复的 UnresolvedCall。
 
@@ -341,7 +343,7 @@ Syntax、name resolution 或 type diagnostic 不应让整篇文档不可分析�
 
 Evaluation 可以同时返回 partial Content 和 diagnostics，但成功状态由 diagnostics 决定，不得因为存在 partial Content 就报告检查成功。
 
-#heading(level=2)[Annotation 不属于类型与求值]
+== Annotation 不属于类型与求值
 
 `@...` 是 EmbeddedExpression source scope 上的独立 metadata。它不属于：
 
@@ -366,7 +368,7 @@ eval(erase_annotations(document)) == eval(document)
 
 Annotation 的 delimiter nesting 属于 syntax well-formedness，而不是类型兼容规则。
 
-#heading(level=2)[当前迁移边界]
+== 当前迁移边界
 
 当前代码已实现：
 
@@ -388,7 +390,7 @@ Annotation 的 delimiter nesting 属于 syntax well-formedness，而不是类型
 
 迁移已按"先建立 mode-aware syntax tree 和显式错误恢复，再将 binder 扩展为 Typed Document analysis"完成第一阶段；不应继续在 flat syntax vectors 上增加新的 Code feature。
 
-#heading(level=2)[非本阶段类型系统]
+== 非本阶段类型系统
 
 以下能力不属于当前双 Mode 规范：
 

@@ -534,9 +534,10 @@ fn diagnostics_for_path(state: &ServerState, path: &Path) -> Vec<Diagnostic> {
 fn diagnostic_code(kind: &DiagnosticKind) -> &'static str {
     match kind {
         DiagnosticKind::DuplicateModule => "duplicate-module",
+        DiagnosticKind::DuplicateLabel => "duplicate-label",
         DiagnosticKind::InvalidSyntax => "invalid-syntax",
         DiagnosticKind::UnresolvedModule => "unresolved-module",
-        DiagnosticKind::UnsupportedLabelReference => "unsupported-label-reference",
+        DiagnosticKind::UnresolvedLabel => "unresolved-label",
         DiagnosticKind::UnknownFunction => "unknown-function",
         DiagnosticKind::InvalidArguments => "invalid-arguments",
         DiagnosticKind::TypeMismatch => "type-mismatch",
@@ -564,29 +565,24 @@ fn definition(
     params: GotoDefinitionParams,
 ) -> Result<Option<GotoDefinitionResponse>, String> {
     let position = params.text_document_position_params;
-    let Some((_path, workspace, module, offset)) = source_position(state, &position) else {
+    let Some((path, workspace, _module, offset)) = source_position(state, &position) else {
         return Ok(None);
     };
-    let Some(link) = module
-        .parse
-        .as_ref()
-        .and_then(|parse| link_at(parse, offset))
+    let Some(reference) = workspace.reference_at(&path, offset) else {
+        return Ok(None);
+    };
+    let Some(target_module) = workspace.module(&reference.target_module) else {
+        return Ok(None);
+    };
+    let (Some(target_path), Some(target_source)) =
+        (&target_module.source_path, &target_module.source)
     else {
-        return Ok(None);
-    };
-    let Some(target) = link.target.module.resolve_from(&module.logical_path) else {
-        return Ok(None);
-    };
-    let Some(target_module) = workspace.module(&target) else {
-        return Ok(None);
-    };
-    let Some(target_path) = &target_module.source_path else {
         return Ok(None);
     };
     let uri = file_path_to_uri(target_path)?;
     Ok(Some(GotoDefinitionResponse::Scalar(Location::new(
         uri,
-        Range::new(Position::new(0, 0), Position::new(0, 0)),
+        LineIndex::new(target_source).range(reference.target_range.unwrap_or(TextRange::new(0, 0))),
     ))))
 }
 
@@ -595,35 +591,32 @@ fn references(
     params: ReferenceParams,
 ) -> Result<Option<Vec<Location>>, String> {
     let position = params.text_document_position;
-    let Some((_path, workspace, module, offset)) = source_position(state, &position) else {
+    let Some((path, workspace, _module, offset)) = source_position(state, &position) else {
         return Ok(None);
     };
-    let Some(link) = module
-        .parse
-        .as_ref()
-        .and_then(|parse| link_at(parse, offset))
-    else {
-        return Ok(None);
-    };
-    let Some(target) = link.target.module.resolve_from(&module.logical_path) else {
+    let Some(target_reference) = workspace.reference_at(&path, offset) else {
         return Ok(None);
     };
     let mut locations = Vec::new();
     if params.context.include_declaration
-        && let Some(target_module) = workspace.module(&target)
+        && let Some(target_module) = workspace.module(&target_reference.target_module)
         && let Some(path) = &target_module.source_path
+        && let Some(source) = &target_module.source
     {
         let uri = file_path_to_uri(path)?;
         locations.push(Location::new(
             uri,
-            Range::new(Position::new(0, 0), Position::new(0, 0)),
+            LineIndex::new(source).range(
+                target_reference
+                    .target_range
+                    .unwrap_or(TextRange::new(0, 0)),
+            ),
         ));
     }
-    for reference in workspace
-        .references()
-        .iter()
-        .filter(|reference| reference.target_module == target)
-    {
+    for reference in workspace.references().iter().filter(|reference| {
+        reference.target_module == target_reference.target_module
+            && reference.target_label == target_reference.target_label
+    }) {
         let Some(source_module) = workspace.module(&reference.source_module) else {
             continue;
         };
@@ -1324,7 +1317,7 @@ mod tests {
         );
         assert_eq!(
             format_signature("quote", &registry.get("quote").unwrap().signature()),
-            "#quote[body: Content] -> Content"
+            "#quote(attribution: Content? = none)[body: Content] -> Content"
         );
         assert_eq!(
             format_signature("raw", &registry.get("raw").unwrap().signature()),

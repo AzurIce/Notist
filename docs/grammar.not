@@ -1,21 +1,21 @@
-#heading(level=1)[Notist Grammar]
+= Notist Grammar
 
 本文定义 Notist 的目标语法模型。语言包含 Markup 与 Code 两种模式：文档默认处于 Markup，`#` 将一个 Code expression 嵌入当前内容，Code 中的 `[...]` 创建 Content literal 并暂时切回 Markup。概念说明见 [[vault::intro]]，类型与求值规则见 [[vault::types]]。
 
-#heading(level=2)[规范状态]
+== 规范状态
 
 本文是 parser、analysis 与 evaluator 的现行规范。当前实现已支持本文描述的 mode-aware syntax tree 与一般 EmbeddedExpression，以及 Function call、trailing Content、String literal、Wiki Reference、Raw syntax 和 Attributes。
 
 本次规范只确定 Markup 与 Code 两种模式，以及当前所需的 Code expression 子集。变量、`let`、一般运算、控制流和 User Function 不属于本阶段；模式边界应允许它们未来加入而无需再次修改 Content literal 与 Function call 的语义。
 
-#heading(level=2)[记号]
+== 记号
 
 - `"text"` 表示固定字符。
 - `A B` 表示顺序连接，`A | B` 表示选择。
 - `A?`、`A*`、`A+` 分别表示零或一次、零或多次、一次或多次。
 - SameHashes、SameBackticks 和括号配对等上下文相关规则由正文定义。
 
-#heading(level=2)[源文件与 Document]
+== 源文件与 Document
 
 源文件是 UTF-8 文本，换行符可以是 LF 或 CRLF。源码位置使用半开 byte range：start 包含，end 不包含。
 
@@ -32,7 +32,7 @@ Document 是一个隐式的 Markup sequence。普通 Markup、Reference、Raw sy
 
 未被其他 Markup 结构占用的源码是 Text。在顶层 Markup 中，普通 `[` 与 `]` 是文字；只有 Code mode 中的 `[` 才开始 Content literal。
 
-#heading(level=2)[Markup 与 Code Mode]
+== Markup 与 Code Mode
 
 Notist 只有两种语法模式：
 
@@ -71,7 +71,7 @@ Mode 可以递归嵌套：
 
 解析模式依次为 Markup → Code → Markup → Code → Markup。
 
-#heading(level=2)[Code Expression 子集]
+== Code Expression 子集
 
 本阶段目标 Code grammar 为：
 
@@ -98,7 +98,7 @@ ParenthesizedExpression = "(" CodeExpression ")" ;
 
 这里两个 String 都是 Code literal，而不是 Markup text。
 
-#heading(level=2)[标识符与名称]
+== 标识符与名称
 
 ```ebnf
 Identifier = (UnicodeAlphanumeric | "_" | "-")+ ;
@@ -107,7 +107,7 @@ QualifiedName = Identifier ("::" Identifier)* ;
 
 `::` 两侧不允许空白。当前目标保留 Identifier 可由数字开头的行为；以后引入一般变量与 `let` 前，应重新确认 identifier start 规则，避免数字 literal 与 Name expression 重叠。
 
-#heading(level=2)[Function Call]
+== Function Call
 
 Function Call 是 CodeExpression，而不是独立的 Markup 节点：
 
@@ -155,7 +155,7 @@ Markup
 
 Parser 不读取 Function signature 来决定 `[...]` 的语法。它始终是 Content literal；analysis 再检查该 Function 是否接受 trailing Content。
 
-#heading(level=2)[Argument Literal]
+== Argument Literal
 
 ```ebnf
 NoneLiteral = "none" ;
@@ -171,7 +171,7 @@ Arguments 允许空白、换行和 trailing comma。Named argument 之后不允�
 
 Backtick 与 fenced Raw 属于 Markup syntax，不是 CodeExpression；需要把源码传入 Function 时使用 String literal。
 
-#heading(level=2)[String Literal]
+== String Literal
 
 String literal 只在 Code mode 中成立。在 Markup 中，普通 quote 是 Text；例如 `"abc"` 会保留 quote 字符，而 `#"abc"` 会创建 String value 并将其作为文字插入 Content。
 
@@ -197,7 +197,7 @@ Escaped String 支持 `\"`、`\\`、`\n`、`\r`、`\t`。其他或不完整的 e
 
 Inline/Multiline 与 Escaped/Raw 是 literal provenance，不是不同的公开类型。
 
-#heading(level=2)[Wiki Reference]
+== Wiki Reference
 
 Wiki Reference 是 Markup syntax：
 
@@ -220,7 +220,9 @@ ModulePart 和 Label 两侧会 trim whitespace。引用最多包含一个 `#`；
 
 ModuleSegment 不能包含 control character、`/`、`\`、`#`、`[` 或 `]`。按 `::` 分段后每段会 trim，空段非法。`vault`、`super`、`self` 是只允许出现在路径开头的保留段。
 
-#heading(level=2)[Inline Raw 与 Fenced Raw]
+显式 `ref(target: String)` 使用同一个 `parse_wiki_reference` 入口，target 不包含外围 `[[` / `]]`。因此 `[[vault::guide]]` 与 `#ref("vault::guide")` 直接产生同一种 Reference Element；analysis 也会索引 String literal 形式的显式调用。
+
+== Inline Raw 与 Fenced Raw
 
 Backtick syntax 只在 Markup 中构造内置 Raw Element，不是 String，也不是 CodeExpression。
 
@@ -237,7 +239,19 @@ InlineRaw 使用完全相同长度的 backtick run 关闭。FencedRaw opener 至
 
 Raw syntax 内不扫描 Notist Markup 或 Code。即使 payload 包含 `#`、`[[...]]`、`[...]` 或 `@...`，也保持原文。
 
-#heading(level=2)[Attributes 与源码 Annotation]
+== 源码注释
+
+注释是 lexer/parser trivia，不产生 Content，也不通过 FunctionRegistry 解析：
+
+```ebnf
+Comment = LineComment | BlockComment ;
+LineComment = "//" LineCharacter* ;
+BlockComment = "/*" (BlockComment | BlockCommentCharacter)* "*/" ;
+```
+
+BlockComment 可以嵌套。Raw syntax 和 String literal 内不识别注释；Markup 中 URL 的 `https://` 也不能把其中的 `//` 误判为 LineComment。
+
+== Attributes 与源码 Annotation
 
 Attributes 是 EmbeddedExpression 的统一 postfix：
 
@@ -269,25 +283,33 @@ Attributes 中不允许空白。可选 ID 只能是第一个 bare Identifier；T
 eval(erase_annotations(document)) == eval(document)
 ```
 
+第一个 bare ID 同时声明该 module 内的 label；它仍然不改变求值结果。`[[#id]]` 指向当前 module，`[[path#id]]` 指向目标 module，`#ref("#id")` 与 `#ref("path#id")` 完全等价。analysis 会索引 declaration、报告重复或未解析的 label，并为跳转提供 ID 的源码范围；站点构建把声明 ID 赋给其 scope 中第一个 HTML semantic element，使 module URL 的 `#id` fragment 可导航。
+
 Annotation scope 与其他显式语法结构必须正确嵌套或分离，不允许两个范围形成非嵌套交叉。一个 Annotation 可以包含多个完整 inline Element、Function Call、Paragraph 或 block，但不能从另一个显式结构内部开始并在其外部结束。
 
-#heading(level=2)[文本、拼接与段落]
+== 文本、拼接与段落
 
-Markup 中相邻的 Text、Reference、Raw 和 EmbeddedExpression 输出按源码顺序连接为 Content。实现可以在 lowering 后合并相邻 Text Element，但不得改变 source provenance。
+Markup 中相邻的 Text、Reference、Raw 和 EmbeddedExpression 输出按源码顺序连接为 Content。普通文本直接生成与 `text(value)` 函数相同的 Text Element；实现可以在 lowering 后合并相邻 Text Element，但不得改变 source provenance。
 
-普通单换行属于 Text。一个或多个空行产生 Parbreak；LF 与 CRLF 必须得到相同语义，framing CR 或多余 newline 不进入相邻 Text。
+普通单换行属于 Text。一个或多个空行产生 Parbreak；structuring 将 Parbreak 之间相邻的 inline Element 组合成与 `paragraph(body)` 相同的 Paragraph Element。LF 与 CRLF 必须得到相同语义，framing CR 或多余 newline 不进入相邻 Text。
 
-当前目标没有独立的 Markdown heading、list、strong、emphasis 或 quote sugar；这些结构以后加入 Markup 时，必须与 ContentBlock 和 Annotation scope 保持正确嵌套。
+当前核心 Markup sugar 为：`= heading`、`- list item`、`+ enum item`、`- [ ] task`、inline/fenced backtick、`$math$`、`*strong*`、`_emphasis_`、`__underline__`、`~~strike~~`、Wiki Reference、裸 HTTP(S) URL、bare email、管道表格和行末反斜线换行。Quote、Callout 与 Details 只使用显式 Function。图片、命名链接、分隔线和分页同样使用显式 Function。
 
-#heading(level=2)[错误与恢复]
+这些语法在 lowering 阶段产生统一的 Content/Element。Backtick/fence 与显式 `code` 共享 Raw Element；相邻的普通、有序或任务 item 分别组合成与显式 `list`、`enum`、`task` 相同的容器 Element。管道表格允许单元格包含 Raw、Wiki Reference 与 EmbeddedExpression；分隔器扫描会跳过反引号、String、括号和 Content block 内部的 `|`。每个语法糖 TableCell 使用 `colspan=1`、`rowspan=1`，跨列或跨行通过显式 `table::cell` 表达，并与显式表格共享 rowspan-aware 网格算法。
+
+`> quote`、`!!! callout`、`??? details`、定义列表、footnote、citation、abbreviation、insert、spoiler、highlight、super/sub、video/audio 和 `%% comment %%` 均不是当前宿主语法。Setext 标题、`* item`、数字列表、Markdown `[label](URL)`、`![alt](source)` 与 `---` thematic break 也保持普通文本。
+
+== 错误与恢复
 
 未闭合或非法的 Wiki Reference、ContentBlock、Arguments、String、Raw syntax 和 Attributes 产生 SyntaxError。Code expression 缺失或无法识别时必须产生 diagnostic，不得静默丢弃后回退到 Function default。
 
 未知 Function 不是 syntax error。analysis 负责名称解析、signature binding 和静态类型诊断；evaluator 可以保留 UnresolvedCall 以支持预览和工具恢复。
 
+Markup 中的 `\` 后接 ASCII punctuation 时，二者共同产生一个 literal punctuation Text；该 punctuation 不再参与 inline delimiter、URL、表格 cell separator 等识别。`\` 后紧接单个 newline 的既有含义不变，产生强制 line break。管道表格按未转义的 `|` 分列，因此 `\|` 留在当前 cell 并按该 escaping 规则显示为 `|`；偶数个连续反斜线会使之后的 `|` 再次成为分隔符。
+
 Markup、Code 和 Raw 的边界必须由 parser 在本地确定，不依赖 Function registry 或插件 runtime。
 
-#heading(level=2)[非本阶段语法]
+== 非本阶段语法
 
 以下能力不属于当前双 Mode 迁移：
 

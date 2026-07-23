@@ -1,8 +1,8 @@
-#heading(level=1)[String Literals and Raw Syntax]
+= String Literals and Raw Syntax
 
 本文记录 2026-07-14 对 Notist Function call、String literal 与 Raw syntax 的统一设计。它取代旧的 `#name![...]!` Raw Call；现行严格规则见 [[vault::grammar]]，面向写作者的说明见 [[vault::intro]]。
 
-#heading(level=2)[最终决定]
+== 最终决定
 
 Notist 采用一个普通 Function call 模型：
 
@@ -36,7 +36,7 @@ graph TD
 
 Parser 不根据 Function 名称或签名切换 body grammar。它只建立普通 arguments、可选 trailing Content 和稳定的 literal range；analysis 再完成名称解析、类型检查与 signature binding。
 
-#heading(level=2)[String Literal Matrix]
+== String Literal Matrix
 
 四种 literal 都产生 `String`：
 
@@ -88,7 +88,7 @@ r#"""text"""# -> Inline, value = "\"\"text\"\""
 
 Form/style/range 是 literal provenance，不是公开的细分类型。Raw String 与 escaped String 可以绑定到同一个 String parameter，也不能按 form/style 做普通 Function overload。
 
-#heading(level=2)[Explicit Raw Function]
+== Explicit Raw Function
 
 显式构造器签名：
 
@@ -112,7 +112,7 @@ block raw
 
 Escaped/Raw style 只控制 String 解码，不控制 Element layout。Literal provenance 可以保存在 Expression 或 BoundArgument 中，不需要把它加入 `Value::String` 的类型身份。
 
-#heading(level=2)[Built-in Backtick and Fence]
+== Built-in Backtick and Fence
 
 日常写作中的 backtick 与 fence 是 host Content syntax：
 
@@ -139,7 +139,7 @@ Inline payload 需要包含 backtick 时，提高相同 delimiter run 的长度�
 
 Fence opener 至少三个 backtick；closing fence 至少与 opener 一样长。Opening 后和 closing 前的一对 framing newline 不属于 payload。
 
-#heading(level=2)[Why Remove Raw Call]
+== Why Remove Raw Call
 
 旧方案写成：
 
@@ -158,7 +158,7 @@ Fence opener 至少三个 backtick；closing fence 至少与 opener 一样长。
 
 把 `!` 挪到方括号内部，例如 `[!raw!]` 或使用 `[``raw``]`，虽然更容易输入，却会抢占合法 Content body 的开头，迫使 parser 根据 Function signature 或向后搜索消歧。这与 unknown Function、插件 schema、增量解析和稳定语言注入冲突。
 
-#heading(level=2)[Language References]
+== Language References
 
 本次设计吸收了几类成熟做法：
 
@@ -173,7 +173,7 @@ Fence opener 至少三个 backtick；closing fence 至少与 opener 一样长。
 
 Notist 额外要求 triple opener 后立即换行。原因不是沿用某一门语言的表面写法，而是 `r#"..."#` 已允许未转义 quote：若同一行的 `r#"""text"""#` 同时表示 Multiline，就会与值为 `""text""` 的 Inline Raw String 重叠。把 line break 纳入 opener 可以在局部前瞻内稳定消歧，并保留 raw inline 的完整表达能力。
 
-#heading(level=2)[Migration]
+== Migration
 
 旧 inline raw：
 
@@ -216,7 +216,7 @@ graph TD
 
 如果目标只是展示代码，优先改为裸 fence，而不是显式 `raw` Function。
 
-#heading(level=2)[Tooling Consequences]
+== Tooling Consequences
 
 - Syntax parser 不需要 Function registry 即可识别 Call、String、Content 与 Raw syntax 边界。
 - Completion 在 arguments 中依据 signature 提供参数名；trailing Content 内继续提供 Notist completion。
@@ -225,7 +225,7 @@ graph TD
 - Hover 展示 `trailing_content` 绑定目标，而不再展示 Raw/Content body mode。
 - UnresolvedCall 保存 arguments、可选 trailing Content、Attributes 与 range，不再保存 RawSource 分支。
 
-#heading(level=2)[Remaining Decision]
+== Remaining Decision
 
 当前 `raw` 可以从 direct String literal 的 Inline/Multiline provenance 决定布局。等 Expression 支持变量、拼接和函数返回后，需要明确 computed String 的布局来源。候选方案包括给 `raw` 增加显式 `block` 参数、提供 `raw.inline` / `raw.block` 构造器，或规定非 literal String 的默认 form；在此之前不应把布局偷偷加入 String 的公开类型身份。
 

@@ -1,4 +1,4 @@
-#heading(level=1)[Lowering and Structuring]
+= Lowering and Structuring
 
 Notist 使用两步语义管线：Lowering 负责把 syntax 转换为线性的语义 Element sequence，Structuring 再把这条 sequence 组合成 Paragraph、List 和独立 Block。
 
@@ -13,7 +13,7 @@ source
 
 这两步都属于 `notist-eval`。它们共享 Content 和 Element model，但职责不同：Lowering 理解语法与函数；Structuring 只理解已经产生的 Element 排列。
 
-#heading(level=2)[Syntax Parse]
+== Syntax Parse
 
 `notist-syntax` 保留源码事实和精确 range，包括：
 
@@ -25,7 +25,7 @@ source
 
 Syntax AST 不尝试成为最终文档结构，也不执行函数。它必须适合 diagnostics、formatter、Tree-sitter/LSP 对齐和增量解析。
 
-#heading(level=2)[Lowering]
+== Lowering
 
 Lowering 将 syntax 解释为语义模型：
 
@@ -52,7 +52,7 @@ Content
 
 “flat”只表示顶层按执行顺序存放 Element，不表示 Element 内部不能有树。Heading、Strong、Quote 或 Custom Element 仍然可以拥有嵌套 Content。
 
-#heading(level=2)[Content Call]
+== Content Call
 
 ```not
 #quote[Inside [[self::target]] and #heading(level=2)[Title].]
@@ -70,7 +70,7 @@ Call(mode = Content)
 
 函数不需要自行重新调用 parser。内部产生的 Annotation 和 diagnostics 在同一 lowering 过程中保留。
 
-#heading(level=2)[Raw Call]
+== Raw Call
 
 ```not
 #raw(lang="rust")![fn main() {}]!
@@ -89,7 +89,7 @@ Function 可以保留源码、交给其他语言 parser，或显式使用 Functi
 
 如果函数不存在，lowering 产生 unknown function diagnostic，并创建可恢复的 UnresolvedCall：Content mode 保存已经 lowering 的 Content，Raw mode 保存原文。
 
-#heading(level=2)[Transparent Scope]
+== Transparent Scope
 
 ```not
 Before #[annotated [[self::target]]]@concept,#important after.
@@ -106,7 +106,7 @@ Annotation {
 
 Annotation 不必成为 Element 父节点，因此可以跨越 Element 或 block 边界。Structuring 改变 Content 的组合方式时，源码 range annotation 仍保持稳定。
 
-#heading(level=2)[Why Structuring Is Separate]
+== Why Structuring Is Separate
 
 Lowering 后的 Element 只表达执行顺序：
 
@@ -133,7 +133,7 @@ StructuredDocument
 
 如果 parser 直接建立最终 Paragraph/List 树，那么函数、用户代码和未来控制流动态产生 Element 后，还需要复制一套组合规则。两步设计让所有静态语法和动态函数输出都走同一个 structuring pass。
 
-#heading(level=2)[Structuring Rules]
+== Structuring Rules
 
 第一阶段规则可以保持简单：
 
@@ -146,7 +146,7 @@ StructuredDocument
 
 Structuring 不重新读取源码、不再次执行 Function，也不负责名称解析或类型检查。它只处理已经 lowering 完成的 Element sequence。
 
-#heading(level=2)[Ownership]
+== Ownership
 
 ```text
 notist-syntax
@@ -167,6 +167,6 @@ notist-lsp / CLI
 
 Lowering 与 Structuring 暂时放在同一个 `notist-eval` crate 足够。只有当编译时间、依赖边界或复用场景真正要求时，再考虑拆分 crate。
 
-#heading(level=2)[Summary]
+== Summary
 
 Lowering 回答“语法和函数按顺序产生了哪些 Element”，Structuring 回答“这些 Element 如何组成可消费的文档块”。Content Call 在 lowering 前递归处理 body，Raw Call 保留 RawSource，Transparent Scope 独立产生 Annotation。这个分层让解析、类型系统、插件执行和最终文档结构各自拥有清晰边界。

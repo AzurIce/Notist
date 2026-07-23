@@ -1,0 +1,865 @@
+= Notist 与 Agent / MCP：语义文档库、检索和向量索引综述
+
+本文讨论一个长期方向：Notist 不只是把 Markdown 换成另一种标记语法，而是成为 Agent 可以安全读写、查询、引用和维护的结构化知识库。文章从 Notist 当前实现出发，介绍 MCP、全文检索、向量化、混合检索、图检索、RAG、记忆和事务化编辑，再给出一条可以逐步验证的工程路线。
+
+资料和判断截至 2026-07-21。模型、向量数据库、MCP 扩展和 SDK 都在快速变化；文中把稳定抽象、当前可用的代表性实现和实验性路线分开，落地时仍需固定版本、核对许可证并建立自己的基准集。
+
+== 先给结论
+
+最重要的结论有五个：
+
+1. Notist 的源文件和语义快照必须是唯一真相；全文索引、向量、图、摘要和 Agent 记忆都只能是可重建的派生数据。
+2. MCP 应该是 application core 的协议适配层，不应该直接读取文件、遍历 parser 私有结构或把任意 Function 暴露成工具。
+3. 最有效的检索不是只做向量搜索，而是 metadata/权限过滤、BM25 或 FTS、dense vector、引用图扩展、reranker 和引用校验的组合。
+4. Notist 的 Module、Heading、Annotation、Element 和 source range 让语义切块、图边和引用天然比固定字符切块更可靠；这正是它可能比 Markdown 更适合作为 Agent 文档库的核心原因。
+5. 实现顺序应是稳定身份和 snapshot -> 结构/全文索引 -> 只读 MCP -> dense hybrid -> 图和层级检索 -> 带 revision 的安全写入，而不是一开始接入向量数据库或自动 Agent loop。
+
+== 读者需要知道的词
+
+本文中几个词的含义如下：
+
+- MCP（Model Context Protocol）是 AI Host 与外部 Server 交换 resources、tools、prompts 等上下文和操作的 JSON-RPC 协议，不是 Agent 本身，也不规定模型如何思考。
+- RAG（Retrieval-Augmented Generation）是先从外部索引取回证据，再把证据交给生成模型。
+- Embedding 是把文本或其他对象映射为向量的模型输出；相似向量通常表示相似语义，但不保证精确匹配、事实正确或权限安全。
+- Dense retrieval 使用连续稠密向量；sparse retrieval 使用词项或稀疏神经权重；BM25 是经典的稀疏词项检索。
+- ANN（Approximate Nearest Neighbor）是近似最近邻索引，例如 HNSW、IVF、PQ 和 DiskANN，用少量召回损失换取速度或内存。
+- Reranker 通常是看到 query 和候选全文的 cross-encoder，负责对较小候选集重新排序。
+- Late interaction（例如 ColBERT）为 query 和文档保留多个 token 向量，在检索时做细粒度匹配，介于单向量和完整 cross-encoder 之间。
+- Snapshot 是某个 revision 下 source、parse、analysis、reference 和 diagnostics 的一致视图。
+- Citation 是带 module、element、source range、quote hash 和 revision 的可验证来源，不等同于一个搜索分数。
+
+== 一、Notist 想解决什么问题
+
+=== 1.1 从文档到 Agent 知识库
+
+传统 Markdown 主要解决人类阅读和简单版本控制。Agent 文档库还要回答：
+
+- Agent 能否找到概念的精确位置，而不是只得到一段相似文字？
+- Agent 能否知道两个页面之间是引用、父子章节、标签还是偶然的同名词？
+- Agent 修改文档后，系统能否检查语法、类型、引用和冲突，而不是盲目覆盖字符串？
+- 检索结果能否说明来自哪个 revision、哪个范围、哪个 vault，并在内容变化后失效？
+- 文档中的自然语言能否被视为不可信数据，而不是偷偷变成 Agent 的系统指令？
+- 索引、摘要、embedding 和 Agent 记忆是否能删除、重建、迁移和审计？
+
+Notist 的目标不是让模型读懂一种更漂亮的 Markdown，而是把文档变成一种可查询、可验证、可引用、可编辑的 typed document program。
+
+=== 1.2 Notist 当前已经具备的基础
+
+当前仓库已经有一条清晰的语义管线：
+
+~~~~text
+.not source
+  -> mode-aware syntax tree
+  -> module and wiki reference resolution
+  -> function signature and static type checking
+  -> evaluation to Content
+  -> lowering and structuring
+  -> StructuredDocument
+  -> HTML, build, preview, LSP
+~~~~
+
+这条管线为 Agent 集成提供了几项重要基础：
+
+- Notist.toml、Vault 和 ModulePath 提供知识边界和模块层级。
+- Wiki Reference 已经成为 resolved graph edge，而不是只能做字符串搜索的链接。
+- Function、参数、类型和 Content 让元素可以带结构化 kind 和 schema。
+- Annotation 有 label、tag、class、key-value 等 metadata，适合过滤和索引，但不应该改变正文的类型语义。
+- ElementNode 和 diagnostics 保留 source byte range，能够把搜索结果、预览和 Agent 修改指回源文档。
+- LSP 已经支持 open-document overlay、vault 隔离、revision 和 watcher，这为统一的 DocumentSession 提供了实际经验。
+- StructuredDocument 是语义和 HTML/桌面 renderer 之间的稳定边界，也适合成为 Agent 的结构化输出视图。
+
+当前仍缺少的部分也很明确：FileId/ModuleId/ElementId 等稳定身份、协议无关的查询 API、WorkspaceDelta、索引 revision、异步索引生命周期和带前置 revision 的编辑事务。
+
+=== 1.3 为什么可能比 Markdown 更适合 Agent
+
+这不是因为向量模型会偏爱 .not 后缀，而是因为 Notist 可以提供 Markdown 通常没有的约束：
+
+| 能力 | 普通 Markdown 常见状态 | Notist 可提供的语义 |
+| --- | --- | --- |
+| 文档边界 | 文件和目录约定，常靠工具猜测 | Vault、ModulePath、marker 和独立 Workspace |
+| 标题/章节 | AST 依赖具体 Markdown 方言 | Heading/Content 是语言模型的一部分 |
+| 链接 | URL 或 wiki 扩展字符串 | Resolved ModulePath 和 source range |
+| metadata | front matter、HTML 注释、插件约定 | Annotation 的 label/tag/class/key-value |
+| 元素类型 | 主要靠 HTML 或扩展语法 | Typed Function、Content、Element、Block |
+| 编辑 | 文本 patch，容易覆盖冲突 | 未来可用 Element/Module 操作和 CAS revision |
+| 验证 | lint 和渲染器各自解释 | syntax、static check、eval、diagnostics 共用管线 |
+| 引用 | 常只能给文件或行号 | Module/Element/range/quote/revision 组合引用 |
+
+这并不意味着 Notist 自动拥有正确知识。结构化语言会提高检索和编辑的可验证性，但仍需要高质量内容、权限、评测、引用和拒答策略。
+
+== 二、Agent 集成的目标体验
+
+=== 2.1 读：从问题到证据
+
+用户问 LSP 快照为什么需要 revision 时，理想流程不是返回若干相似段落，而是：
+
+1. 根据权限和 vault 范围过滤候选模块。
+2. 先用 ModulePath、标题、标签和精确词项找候选。
+3. 再用 dense embedding 找概念相近但用词不同的章节。
+4. 沿显式 Wiki Reference 或 backlink 做有限扩展。
+5. 按来源、revision 和结构范围排序，返回短的上下文窗口。
+6. 让 Agent 的答案逐条带 citation，用户可以跳回 source range。
+
+返回结果应至少包含：
+
+~~~~text
+SearchResult {
+  module_id
+  module_path
+  element_id
+  kind
+  title_path
+  snippet
+  source_range
+  quote_hash
+  snapshot_revision
+  index_revision
+  retrieval_methods
+  score_breakdown
+}
+~~~~
+
+=== 2.2 写：从自然语言意图到可验证变更
+
+Agent 说把这条决定移到架构文档并加一个标签时，推荐的协议序列是：
+
+~~~~text
+search/context
+  -> propose_edit(base_revision)
+  -> parse + static check + reference check
+  -> return diff + affected IDs + diagnostics + plan_hash
+  -> user consent
+  -> apply_edit(expected_revision, plan_hash, idempotency_key)
+  -> new snapshot + WorkspaceDelta + index update
+~~~~
+
+不要把首个写入工具设计成任意 write_file(path, text)。原始文本写入可以作为低层内部实现，但 Agent 面向的接口应优先是 InsertAfter、ReplaceElement、SetAnnotation、RenameModule 等 typed edit；每个操作都要有 base revision 和冲突结果。
+
+=== 2.3 维护：索引和知识的生命周期
+
+长期使用时，Agent 还会需要：
+
+- 找出没有引用的模块和过期内容。
+- 识别同一概念的重复章节，但不自动合并未经确认的事实。
+- 根据文档变更更新全文、embedding、graph 和摘要索引。
+- 记录某个摘要或 embedding 是由哪个 source revision 和模型版本产生的。
+- 删除文档时同时删除所有派生数据，避免幽灵记忆。
+
+这些任务要求索引是可重建、可观测、可回滚的工程组件，而不是一个藏在 MCP handler 里的缓存。
+
+== 三、MCP 到底是什么，以及 Notist 应如何使用
+
+=== 3.1 当前协议状态
+
+截至本文日期，MCP 官网的 canonical stable specification 仍是 2025-11-25。MCP 有两个层次：
+
+- Data layer：基于 JSON-RPC 2.0 的 lifecycle、capability negotiation、tools、resources、prompts、notifications、progress 等。
+- Transport layer：本地 stdio 和远程 Streamable HTTP，以及相应的 framing、授权和会话行为。
+
+Host 是 AI 应用，通常为每个 MCP Server 建立独立 Client；Server 提供上下文和操作。MCP 本身不规定模型如何规划、如何生成答案或如何实现 RAG，这些属于 Host 和应用层。
+
+官方生态在继续演进：Tasks、MCP Apps、OAuth client credentials、elicitation URL mode 等已有规范或扩展；同时部分旧的 Roots、Sampling、Logging 能力已有弃用方向。Notist 的核心不能依赖任何仍在变动的可选扩展，必须先依靠稳定的 resources/tools 和自己的 revision/权限模型。
+
+=== 3.2 三种 Server primitive 的职责
+
+Resources 是适合被读取和引用的稳定数据。Notist 可以把 module source、structured document、outline、element、diagnostics 和 graph view 暴露为 resource。资源 URI 应使用 opaque ID 和 revision，而不是只把绝对文件路径拼进 URI：
+
+~~~~text
+notist://vault/{vault_id}/module/{module_id}?rev={revision}&view=structured
+notist://vault/{vault_id}/element/{element_id}?rev={revision}
+notist://vault/{vault_id}/diagnostics?rev={revision}
+~~~~
+
+Tools 是由模型决定调用的操作。搜索、resolve、context、check、propose_edit 可以是工具；工具必须有明确的 JSON Schema、outputSchema、错误分类和截断标记。
+
+Prompts 是用户选择的模板，例如研究一个主题并给出 citations 或审查当前模块的孤立引用。Prompt 不应偷偷扩大权限，也不应把文档正文中的指令提升为 system prompt。
+
+工具 annotations 中的 readOnlyHint、destructiveHint、idempotentHint 和 openWorldHint 有助于 Host 展示风险，但官方明确它们不是安全边界；服务端仍必须自己执行授权、确认和审计。
+
+=== 3.3 Notist 首版 MCP surface
+
+建议第一版只读能力如下：
+
+~~~~text
+notist.list_modules
+notist.get_module
+notist.get_outline
+notist.get_element
+notist.search
+notist.get_context
+notist.resolve_module
+notist.get_references
+notist.get_backlinks
+notist.check
+~~~~
+
+统一输出结构：
+
+~~~~text
+QueryResponse {
+  snapshot_revision
+  index_version
+  results
+  citations
+  warnings
+  truncated
+  stale
+}
+~~~~
+
+首版应该采用本地 stdio，单个 MCP 进程绑定一个明确的 vault 或 vault 集合。未来需要远程共享时再支持 Streamable HTTP、TLS、OAuth、租户隔离和限流；不要因为协议支持远程就默认把本地文件系统暴露到网络。
+
+=== 3.4 MCP 安全不能替代应用安全
+
+文档正文、标签、标题、搜索结果和 tool description 都是不可信输入。主要风险包括：
+
+- indirect prompt injection：正文诱导 Agent 调用外部工具、泄露秘密或修改其他模块。
+- retrieval poisoning：恶意或低质量内容通过 embedding/摘要污染召回。
+- path、URI、symlink escape：请求越过当前 vault 根目录。
+- stale TOCTOU：Agent 根据旧 snapshot 写入新内容。
+- cross-vault 或 cross-server exfiltration：一个请求把不应共享的内容带给另一个服务。
+- 本地 MCP 二进制和远程 HTTP session 的权限扩大、SSRF、session hijacking。
+
+Notist 应采用默认最小权限：vault.read、search、graph.read、diagnostics.read；写入、重建索引、插件执行、网络 embedding 和跨 vault 查询都要单独授权。Roots 只是边界提示，不是身份或授权替代。远程 HTTP 必须校验 Origin、token audience、TLS、session 随机性和 OAuth scope；session ID 绝不能充当 authentication。
+
+== 四、检索技术的学术地图
+
+=== 4.1 词项检索：BM25 仍然是必要基线
+
+BM25 及其变体根据词频、逆文档频率和文档长度计算相关性。它对 ModulePath、函数名、标签、错误消息、数字、版本号和专有名词尤其可靠；这些内容往往是 dense embedding 的弱项。
+
+Notist 的 lexical index 至少应支持 token normalization、中文分词策略、英文和代码 token、精确字段、path/title/tag 字段、phrase 查询、过滤和高亮。BM25 不是过时方案，而是 hybrid retrieval 的不可缺少一条通道。
+
+经典参考：Robertson and Zaragoza, The Probabilistic Relevance Framework: BM25 and Beyond（2009）。
+
+=== 4.2 Dense bi-encoder
+
+DPR（Dense Passage Retrieval）和 Sentence-BERT 代表了把 query 与 passage 分别编码，再用 dot product 或 cosine 检索的路线。它能找到语义相近但没有共享词面的内容，适合自然语言问题和同义表达，但会丢掉精确符号、否定、数字和稀有标识符。
+
+RAG 将参数化语言模型和外部 non-parametric index 结合起来。对 Notist 而言，index 返回的不是无来源文本，而是带 source range/revision 的证据对象；生成模型永远不能把向量相似度当成事实证明。
+
+代表论文：Sentence-BERT（2019）、DPR（2020）、RAG（2020）。
+
+=== 4.3 神经稀疏检索
+
+SPLADE 等模型学习稀疏词项权重，在保留倒排索引效率的同时扩展同义词和语义表达。它适合需要精确词项过滤、可解释匹配和大规模 inverted index 的场景，也可能带来词表膨胀、索引体积和模型部署成本。
+
+Notist 可以把神经稀疏检索作为 BM25 的增强通道，但不应在早期同时维护太多复杂模型。先用 BM25 建立可解释基线，再用离线 benchmark 判断 SPLADE 是否改善中文概念、同义短语和跨语言查询。
+
+=== 4.4 Late interaction 和多向量
+
+ColBERT 为 query 和 document 保存多个 token embedding，用 MaxSim 等操作做细粒度匹配。它通常比单向量更能处理长文和局部证据，但索引体积、查询计算和存储复杂度显著上升。
+
+Qdrant 等现代引擎已经支持 multivector/late interaction；这是一条有价值的后续路线，尤其适合长的 Notist section 或 code/document 混合内容。但在个人 vault 的第一版中，单向量加 reranker 通常更容易验证和维护。
+
+ColBERTv2 使用残差压缩和去噪监督降低多向量体积；PLAID 通过 centroid interaction 和 pruning 降低查询成本。MUVERA（2024，论文在 2026 仍有修订）尝试把 multi-vector similarity 近似为 fixed-dimensional encoding，从而复用单向量 MIPS/ANN。2026 年关于 multi-vector 表达能力的预印本进一步说明，在固定表示预算下，多向量不能总被同等大小单向量无损替代。这些工作支持一条长期判断：Notist 不应把索引 API 永久限定为每个 Element 一个向量，但也不构成第一版就部署 ColBERT 的理由。
+
+实际采用门槛应是：BM25 + 单向量 + cross-encoder 在 hard set 上仍持续漏掉长段落中的细粒度组合证据。可以先让 multi-vector 只负责困难候选的 rerank，再决定是否承担完整 multi-vector ANN、过滤和增量更新成本。
+
+=== 4.5 混合检索和结果融合
+
+BM25、dense、sparse neural、graph 和 metadata 查询的分数不在同一个尺度，不能简单相加。常用策略包括：
+
+- Reciprocal Rank Fusion（RRF）：只使用各通道排名，稳健且易于调参。
+- 归一化加权融合：保留每个分数并通过验证集学习权重。
+- 学习排序：使用 query、candidate、field 和用户反馈训练 ranker。
+- MMR：在相关性和结果多样性之间平衡，避免返回同一章节的十个近重复 chunk。
+
+推荐默认顺序是 ACL/metadata filter -> lexical candidates -> dense candidates -> graph expansion -> RRF/MMR -> cross-encoder rerank -> context packing。
+
+=== 4.6 Reranker
+
+Cross-encoder 一次看到 query 和候选文本，精度通常优于单独 embedding，但每个候选都要运行模型，因此只适合对几十个而不是几万个结果重排。monoBERT、monoT5 和现代 multilingual reranker 展示了这条路线的效果。
+
+工程上可以先取 BM25 top 50 与 dense top 50，合并去重后 rerank top 100，再返回 top 8 到 20 个有结构多样性的证据。Reranker 不是事实检查器，仍需要 citation validation 和 diagnostics。
+
+=== 4.7 Query transformation 和 Agentic RAG
+
+HyDE 让模型先生成一个假设答案或文档，再用其 embedding 查询；multi-query 会把一个问题改写成多个视角；query decomposition 会把跨模块问题拆成子问题。它们可能提升召回，但会增加模型调用、延迟和错误传播。
+
+ReAct、Self-RAG 和 CRAG 代表了更主动的路线：Agent 判断是否检索、评估召回质量、扩大或修正查询，并在必要时拒答。Notist 的第一版不应把这种 loop 固化在 Server 内；MCP Server 提供可组合的 search/context/graph/check 工具，由 Host 控制预算和审批。
+
+=== 4.8 长文、层级和图检索
+
+固定窗口切块会丢失标题、父子关系和跨段语境。RAPTOR 递归聚类并生成多层摘要；GraphRAG 先构造实体/关系图和社区摘要，用于全局问题；HippoRAG 和 LightRAG 结合图传播与向量召回，试图降低多跳查询成本。
+
+Notist 不需要先抽取一个完全由 LLM 猜出的知识图谱。它已经有高精度的显式边：Module parent/child、Wiki Reference、Annotation、Heading hierarchy。应优先使用这些边；LLM 推断的 alias、entity、summary edge 必须标记为 derived、confidence 和 source revision，永远不能覆盖源文档。
+
+GraphRAG 的收益具有任务条件：它更适合 corpus-level sensemaking、全局总结和复杂多跳，不保证普通局部事实问答优于 vanilla hybrid RAG。近期 benchmark 和安全研究还提示，共享的派生关系图可能放大 poisoning。图扩展必须执行 vault/ACL filter、hop/node/token budget，并保留每条 derived edge 的来源和提取模型。
+
+=== 4.9 记忆系统和文档库的边界
+
+Generative Agents、MemGPT、MemoryBank、A-MEM 和 Mem0 等工作探索 observation stream、分层上下文、reflection、重要性和动态链接。它们解决的是 Agent session memory 或用户偏好记忆，不等同于用户 authored knowledge base。
+
+Notist 应把三种数据分开：
+
+- authored source：用户明确写入的 .not，是真相和意图的最终来源。
+- derived index：全文、向量、图、摘要、社区、实体别名，可删除和重建。
+- agent memory：某个 Agent/user/session 的观察、偏好、待办和置信度，必须有 owner、时间、来源和过期策略。
+
+Agent memory 只能通过显式 proposal 进入 authored source，不能静默把模型推断写成永久知识。
+
+== 五、向量化到底在做什么
+
+=== 5.1 Embedding 不是知识压缩的同义词
+
+Embedding 模型把输入文本投射到有限维空间。相似度高表示训练目标下的语义接近，不表示：
+
+- 文本中的数字、代码标识符和否定被精确保留。
+- 两个陈述都是真的。
+- 结果属于当前用户有权访问的 vault。
+- 模型没有受到文档中的 prompt injection 影响。
+- 新 revision 的结果仍适用于旧 embedding。
+
+因此每个向量记录必须附带 metadata、权限和 provenance，搜索前先过滤，不能先召回再在应用层猜测哪些结果可以显示。
+
+=== 5.2 输入文本应如何构造
+
+不要直接把原始 source 的任意字符窗口送进 embedding。为每个语义单元构造两份文本：
+
+~~~~text
+source_text       = 可精确引用的原始片段
+embedding_text    = 用于语义匹配的规范化文本
+~~~~
+
+embedding_text 可以包含：
+
+~~~~text
+Vault: project
+Module: designs::lsp
+Heading path: Language Server / Concurrency
+Tags: architecture, lsp
+Element kind: paragraph
+Body: ...
+~~~~
+
+这些前缀必须稳定、可版本化，并避免过多路径 token 造成语义偏移。原始片段仍单独保存，引用和 UI 使用 source range，不使用模型输入的拼接文本作为唯一来源。
+
+=== 5.3 模型选择维度
+
+截至本文日期，可评估的代表性模型族包括：
+
+| 模型族 | 适合方向 | 需要验证的点 |
+| --- | --- | --- |
+| BGE-M3 | 多语言、dense/sparse/multi-vector 一体化 | 模型体积、中文和代码召回、部署许可 |
+| multilingual-e5 系列 | 多语言 query/document 对齐，instruction 形式 | 输入前缀、长度限制、领域迁移 |
+| Jina embeddings v3 系列 | 长上下文、多语言、任务适配 | 商业许可、远程/本地部署和维度选择 |
+| GTE multilingual 系列 | 多语言通用语义检索 | 长文、中文、代码和模型更新策略 |
+| Qwen3 Embedding / Reranker 系列 | 多语言、代码、embedding 与 rerank 同族模型 | 参数规模、本地推理成本、真实领域泛化 |
+| Nomic 或其他 Matryoshka 模型 | 可裁剪维度、英文本地部署 | 多语言能力和量化后的召回 |
+| 云端 embedding API | 低运维、快速试验 | 隐私、费用、网络、模型锁定和数据出境 |
+
+这不是推荐清单。真正的选择应由 Notist benchmark 决定，至少测试中文、英文、代码/函数名、ModulePath、短问题、长问题、跨模块问题和新旧版本。必须把 model id、revision、embedding dimension、distance metric、normalization 和 license 写入 index manifest。
+
+=== 5.4 本地推理和远程推理
+
+本地路线可以使用 ONNX Runtime、Candle、fastembed、llama.cpp 或其他模型运行时；远程路线可以使用供应商 API。选择时比较延迟和批处理吞吐、CPU/GPU/内存占用、中文英文代码质量、隐私、离线能力、网络失败行为、模型许可证和商业分发。
+
+EmbeddingProvider 应是 application core 之外的可替换接口。离线模式不能因网络 embedding 失败而破坏源文件或基本 lexical/MCP 能力。
+
+== 六、语义切块：Notist 最有差异化的地方
+
+=== 6.1 固定字符窗口的优点和问题
+
+固定 token 或字符窗口容易实现、适合快速原型，但会把标题和正文拆开，把引用的来源与解释分到不同 chunk，把一个 Function/Raw/Quote 切成不可解析的半个结构，并造成相邻 chunk 高度重复。它可以作为 fallback，但不应成为 Notist 的默认抽象。
+
+同时也不能把语义切块当成已被学术界普遍证明的银弹。2024 至 2026 的多组实验对 semantic/query-adaptive chunking 得出依赖语料和任务的混合结果；额外的模型切分成本并不总能换来稳定召回提升。Notist 的优势是 parser 已经免费提供结构边界，不需要先调用 LLM 猜分段。
+
+更稳妥的设计是把检索单元和上下文组装单元分开：索引较小、稳定的 Element/Block；命中后再扩展父 Heading、相邻 Element、所在 section 和显式引用目标。Contextual Retrieval 的工程思路也可以低成本复用：用 ModulePath、HeadingPath 和 kind 构造稳定前缀，而不是为每个 chunk 在线生成一段不可验证的上下文。
+
+=== 6.2 分层语义索引
+
+建议同时建立多个粒度：
+
+~~~~text
+Vault summary
+  -> Module summary
+      -> Heading/section
+          -> paragraph/list/quote/element
+              -> source span / annotation / reference
+~~~~
+
+每层都有 parent_id 和 child_ids。检索时可以先命中 section，再取相邻或子元素；回答全局问题时使用 module/社区摘要，回答精确问题时回到 leaf source。
+
+一个 IndexElement 可以包含：
+
+~~~~text
+ElementId              stable logical identity
+ElementVersion         source revision + content hash
+ModuleId / ModulePath  opaque identity + display path
+Kind                   heading, paragraph, quote, list, raw, custom
+HeadingPath            ancestor heading IDs
+Annotations            labels, tags, classes, key-values
+PlainText              normalized lexical text
+EmbeddingText          model input text
+SourceRange            byte range and optional line/column projection
+OutgoingReferences     explicit graph edges
+ParentId / ChildIds    hierarchy
+VisibilityPolicy       vault/module ACL metadata
+~~~~
+
+=== 6.3 稳定身份和版本必须分开
+
+ModulePath 会因 rename 改变，TextRange 会因前文编辑移动，内容 hash 会因正文变化改变；它们不能单独充当稳定 identity。建议区分：
+
+~~~~text
+VaultId / FileId / ModuleId / ElementId
+  = 逻辑身份，尽量跨 revision 保持
+
+ElementVersionId
+  = hash(ElementId, source_revision, canonical_content)
+
+EmbeddingKey
+  = hash(ElementVersionId, chunker_version, model_id, model_revision, dimensions)
+~~~~
+
+没有显式 annotation id 的元素可以用结构路径、kind、邻接关系和匹配算法维护 provisional identity；不要承诺仅靠内容 hash 在所有编辑场景下稳定。
+
+== 七、ANN、量化和向量索引算法
+
+=== 7.1 Exact scan 不是幼稚方案
+
+对个人 vault 或几万条 chunk，内存中的 exact cosine/dot-product scan 可能已经足够快，且没有 ANN 的召回近似误差。它是最好的第一基线：实现简单、结果可解释、方便验证 embedding 是否真的有用。
+
+例如 100,000 条 768 维 float32 向量约占 307 MB；转成 int8 约 77 MB，实际内存还要加 metadata 和索引。真正的瓶颈应通过 query latency、并发和内存测量决定，而不是预先假定必须部署向量数据库。
+
+=== 7.2 HNSW
+
+HNSW 是分层小世界图，搜索速度和召回通常很好，更新相对方便，适合在线查询和中小规模数据。关键参数包括 M、ef_construction 和 ef_search；更高参数通常增加内存和延迟。
+
+HNSW 的注意事项：过滤条件可能导致有效邻居不足；删除通常需要 tombstone 或重建；高更新率和磁盘持久化需要验证；不同实现的结果和参数不能直接比较。
+
+=== 7.3 IVF、PQ 和 ScaNN
+
+IVF 先把向量分到 coarse centroid，再只搜索部分列表；PQ 将向量分块量化，显著降低存储和内存。它们适合大规模批量数据，但需要训练、选择分区和管理重建。
+
+ScaNN 使用 partitioning、quantization 和 asymmetric scoring；DiskANN 通过磁盘友好的图结构支持很大规模。对于 Notist 的本地个人库，这些方法通常是后期规模化路线，而不是第一版依赖。
+
+FreshDiskANN 研究持续插入和删除下的磁盘图更新；Filtered-DiskANN、ACORN 等工作研究带 metadata/ACL predicate 的 ANN。过滤是实际系统中的关键难点：pre-filter 可能让图中可达邻居不足，post-filter 又可能返回不够 top-k。早期应以 exact scan 或 oversampling + filter 建立基线，只有真实过滤选择性和规模造成问题时再采用专门 filtered ANN。
+
+=== 7.4 量化和可变维度
+
+常见压缩方式包括 float16、int8 scalar quantization、binary/bit quantization 和 PQ。它们可以大幅降低内存和 IO，但会影响长尾查询和细粒度 rerank。Matryoshka Representation Learning 允许截取前若干维进行不同成本的检索，但必须用目标模型和数据验证截断后的质量。
+
+推荐流程：保留一个 exact float 或高精度离线基线，先测 int8/float16，再测 ANN；任何压缩方案都报告 Recall@k、nDCG、内存和 p95 latency，而不是只报告吞吐。
+
+== 八、工程索引路线和选型
+
+=== 8.1 代表性组件比较
+
+| 组件 | 主要能力 | 适合 Notist 的位置 | 主要代价 |
+| --- | --- | --- | --- |
+| SQLite + FTS5 | 嵌入式 metadata、事务和全文检索 | 本地 catalog、全文和 revision 状态 | 向量能力需要扩展或外部实现 |
+| Tantivy | Rust 原生倒排/BM25、字段和 segment | 桌面/CLI lexical index | 不负责完整事务和向量服务 |
+| sqlite-vec 等 SQLite 扩展 | 本地 SQL 中保存和查询向量 | 小型单机原型 | 扩展 ABI、平台打包和生态成熟度需锁定 |
+| FAISS | 高性能 ANN 算法库 | 离线实验和大批量基准 | C++ 依赖、没有 Notist metadata/权限层 |
+| usearch/hnsw 类库 | 嵌入式 ANN | 轻量本地 vector backend | 持久化、过滤和版本迁移要自己做 |
+| LanceDB | 嵌入式/表格式向量和列式数据 | 中等规模本地或对象存储 | Rust API、事务语义和桌面包体需验证 |
+| Qdrant Edge | Rust 进程内 vector shard、payload/filter、量化 | 希望复用 Qdrant 语义的本地应用 | Edge API、版本、许可和升级路径需固定 |
+| Qdrant Server | HNSW、payload filter、dense/sparse/multivector、hybrid | 远程或大规模服务 | 独立服务、运维和权限部署 |
+| pgvector | PostgreSQL 内的 vector、HNSW、IVF | 已有 Postgres 的团队服务 | 不适合默认单机离线应用 |
+| Milvus | 分布式向量数据库 | 很大规模、多租户、专门平台 | 运维组件较多，个人 vault 过重 |
+| Elasticsearch/OpenSearch | 传统 search、dense vector、RRF/过滤 | 已有搜索平台和复杂 ranking | JVM/运维成本、模型管线复杂 |
+| Vespa | schema、近邻检索、rank profile、在线学习 | 需要完整搜索平台和复杂 ranking | 学习曲线和部署成本高 |
+
+这些组件不是互相替代的同一层。Tantivy/FTS 是 lexical engine，FAISS/usearch 是 algorithm library，Qdrant/pgvector/Milvus 是 data service；Notist 仍需要自己定义 source identity、ACL、revision、citation 和 delta。
+
+=== 8.2 推荐的 Rust 形态
+
+先定义稳定的 notist-index 协议无关接口：
+
+~~~~text
+IndexCatalog
+  upsert_records(snapshot_revision, records)
+  tombstone(ids, source_revision)
+  search_lexical(query, filters)
+  search_dense(vector, filters)
+  search_graph(seed_ids, relation, depth)
+  commit_epoch(manifest)
+  open_epoch(index_version)
+~~~~
+
+首个实现可以是 SQLite metadata + Tantivy/FTS5 + exact vectors。等 benchmark 证明需要 ANN 后，再把 vector backend 换成 HNSW、Qdrant Edge 或其他实现；MCP 和 application core 不应知道底层数据库名称。
+
+推荐的默认决策：
+
+- 默认桌面/CLI：嵌入式、离线可用、没有外部服务依赖。
+- 中型本地库：先 exact，再根据 p95 和内存选择 HNSW/Qdrant Edge/LanceDB。
+- 远程团队库：Qdrant、pgvector、Vespa 或已有 Elasticsearch 平台，依据过滤、租户、运维团队和查询复杂度选择。
+- 大规模向量平台：只有在数据量、并发或多租户已经证明需要时才引入 Milvus 等分布式系统。
+
+=== 8.3 为什么不能只选一个最好的向量数据库
+
+检索质量主要由切块、embedding 输入、权限过滤、融合、rerank 和数据质量决定；数据库主要解决存储、近邻搜索、更新和运维。换数据库往往不能修复错误的 semantic unit 或缺少 citation。
+
+还要考虑离线运行、Windows/macOS/Linux 打包、数据文件迁移、崩溃恢复、增量删除、schema evolution、模型升级、备份和加密。Notist 是桌面优先的 Rust 项目，默认部署一个外部服务会直接破坏易用性和离线能力。
+
+== 九、从 source 到可查询索引的完整管线
+
+推荐的异步管线如下：
+
+~~~~text
+WorkspaceSnapshot N
+  -> WorkspaceDelta N-1 -> N
+  -> extract Modules / Elements / Annotations / References
+  -> semantic chunking and canonicalization
+  -> lexical postings + metadata tables + explicit graph edges
+  -> optional summaries and embedding jobs
+  -> validation and index manifest
+  -> atomic index epoch N
+  -> MCP resource/list_changed or resource updated notification
+~~~~
+
+每个派生记录都要保存 source revision、content hash、parser/chunker version、embedding model/version、index version 和生成时间。索引任务失败时，旧 epoch 可以继续服务，但响应必须标记 stale；不能让新 source 和旧 vector 看起来像同一个一致状态。
+
+增量更新策略：
+
+1. Snapshot builder 产生 Added/Changed/Removed Module、Element 和 Edge。
+2. lexical index 立即更新或写入短队列。
+3. embedding/summary 异步处理 Changed records，删除用 tombstone。
+4. 所有任务完成或达到可接受水位后，生成新的 index manifest。
+5. 查询返回 snapshot/index revision；若 query 要求 read-your-write，优先对当前 snapshot 做 exact/lexical fallback。
+
+不要在后台任务中直接修改当前全局 index。使用 generation/epoch 和原子 swap，避免旧任务完成后覆盖新结果。
+
+== 十、查询规划：从简单 search 到 Agentic RAG
+
+=== 10.1 第一版 deterministic planner
+
+首个 planner 不需要让 LLM 自由编写查询程序。可用规则和结构化参数：
+
+~~~~text
+Query {
+  text
+  vault_scope
+  module_scope
+  kinds
+  tags
+  include_graph
+  top_k
+  max_context_tokens
+  consistency: latest | snapshot(revision)
+}
+~~~~
+
+执行顺序：
+
+1. 规范化 query，识别可能的 ModulePath、函数名、标签和精确短语。
+2. 应用 vault/module/ACL/type filter。
+3. 运行 lexical 和 dense candidate retrieval。
+4. 根据明确 Reference、parent/child 和 backlink 做有限 graph expansion。
+5. RRF/MMR 合并，去掉同一 parent 下的过量重复。
+6. 可选 reranker。
+7. 按 token 预算组装 context，并保留 citations。
+
+=== 10.2 再引入 query rewriting
+
+当 benchmark 显示召回不足时，再加入 multi-query、HyDE 或 query decomposition。每次改写都保存原 query、改写文本、模型版本和预算；改写失败时回退原 query。不要让生成的假设答案混入 source citation。
+
+=== 10.3 再引入 graph/global planner
+
+局部问题通常只需要 section 和一两条引用；全局问题才需要 module summary、community summary、PageRank 或多跳路径。GraphRAG/RAPTOR 风格的摘要应是有版本的 derived artifact，并且最终回答仍回到 leaf source 进行引用。
+
+=== 10.4 再引入 Agent loop
+
+Agent 可以在 Host 层执行 search -> inspect -> search refinement -> synthesize -> check citations。每一步都应有最大调用次数、token/时间预算和可观察 trace。MCP Server 不应私自启动无限 loop，也不应因为有 Sampling 能力就拥有任意模型和其他 Server 的上下文。
+
+== 十一、输出、引用和可信度
+
+一个好的 Agent 文档响应至少有三层：
+
+~~~~text
+answer text
+  + evidence list
+      + source URI
+      + module/element IDs
+      + source range
+      + quote and quote hash
+      + snapshot/index revision
+  + uncertainty/warnings
+~~~~
+
+生成摘要必须标记为 summary，不得伪装成原文。引用校验可以检查 quote hash 是否仍匹配当前 snapshot、source range 是否落在相同 Element/Module、回答中的关键断言是否有充分相关来源、召回结果是否来自允许的 vault/module/ACL，以及 index 是否 stale。
+
+评估答案正确不能只看语言流畅度。至少同时报告 citation precision、citation recall、faithfulness、answer completeness 和 abstention quality。
+
+== 十二、写入、冲突和审计
+
+=== 12.1 Optimistic CAS
+
+写操作必须采用 compare-and-swap：
+
+~~~~text
+propose_edit(base_revision, operations)
+  -> validate + diff + plan_hash
+
+apply_edit(expected_revision, plan_hash, idempotency_key)
+  -> commit or conflict
+~~~~
+
+如果 source revision、content hash 或受影响的 ElementId 已经变化，返回 conflict，禁止静默覆盖。单文件使用 temp + fsync + rename；多文件使用 journal/WAL 或 staged directory + commit marker；Git 可以辅助 undo 和审计，但不应是唯一事务机制。
+
+=== 12.2 工具拆分
+
+建议拆成：
+
+- notist.propose_edit：只读，返回 patch、diagnostics、affected IDs 和 plan hash。
+- notist.apply_edit：需要用户 consent、expected revision 和 idempotency key。
+- notist.create_module、rename_module、delete_module：单独声明风险。
+- notist.reindex：长任务或后台任务，不应阻塞普通 search。
+
+一个任意 execute_code 或 write_file 工具会绕过 Notist 的类型、权限和可审计边界，默认不提供。
+
+=== 12.3 审计事件
+
+审计记录应包含 actor/user/server/client/session/correlation、tool 名称、参数摘要或 hash、base/new revision、影响的 file/module/element IDs、权限和 consent 决策、diagnostics/outcome、index/model version 和 timestamp。默认不把完整秘密或整篇正文写进日志。
+
+== 十三、安全、隐私和模型风险
+
+=== 13.1 文档是数据，不是指令
+
+检索到的 Notist 内容必须进入明确的 evidence/data 区域。标题、Annotation、Raw、代码和引用文本都可能包含忽略系统提示或调用某个工具等恶意文本。Agent Host 应有清晰的 instruction/data 分层；MCP Server 不能保证模型一定遵守这一层，因此写入和外部网络操作仍需 consent。
+
+=== 13.2 向量和摘要也有泄露风险
+
+Embedding 可能暴露语义、受到 membership/inversion 类攻击，也可能把本来不应共同检索的内容聚到一起。ACL 必须在 candidate generation 之前生效；不能先从全库召回，再在回答阶段过滤。远程 embedding 要单独显示数据出境和网络权限，索引文件需要访问控制、加密和删除策略。
+
+=== 13.3 多租户和远程 MCP
+
+未来远程服务需要 tenant/vault/module 级 scope、token audience 校验、OAuth、TLS、Origin 校验、路径 canonicalization、symlink 防护、限流和审计。MCP session ID 不是认证凭证；Streamable HTTP 的会话和异步通知不能被另一个用户猜测或复用。
+
+== 十四、评测方法：先建 Notist benchmark
+
+在选择模型或数据库前建立固定、可版本化的评测集。每条 query 包含目标 Module/Element、允许的 citation、难度和权限上下文。
+
+建议覆盖：
+
+- 精确 ModulePath、函数名、标签和错误消息查询。
+- 中文/英文同义表达和跨语言查询。
+- 长 section、嵌套 quote、raw/code 和 custom element。
+- 跨 Module 的多跳 reference/backlink 问题。
+- 全 vault 的主题总结和冲突事实。
+- 新增、修改、删除之后的 stale index 和 read-your-write。
+- 注入文本、恶意 URI、越权 module 和冲突写入。
+
+指标分层：
+
+| 层 | 指标 |
+| --- | --- |
+| lexical/dense retrieval | Recall@k、MRR、nDCG、MAP、过滤正确率、p50/p95 latency |
+| provenance | citation precision/recall、quote match、staleness rate |
+| answer | faithfulness、completeness、abstention、人工 pairwise preference |
+| Agent loop | success rate、tool calls、steps、tokens、cost、latency、recovery rate |
+| write path | check/type pass、conflict/no-op、rollback、越权和注入测试 |
+| operations | index build time、incremental lag、RAM/disk、rebuild/migration success |
+
+BEIR 和 MTEB 可以提供通用参考，但不能替代 Notist 自己的 corpus。用户的查询习惯、中文/英文混合、Module graph 和结构化引用必须在本地 benchmark 中体现。
+
+评测还要拆开检索和生成，避免一个总分掩盖问题来源：
+
+- KILT 强调统一知识源和 provenance，可借鉴其 evidence-first 数据设计。
+- ALCE 直接评估带引用长答案的正确性、流畅性和 citation quality，揭示 citation completeness 往往是薄弱环节。
+- RAGAS 提供 context relevance、faithfulness、answer relevance 等自动指标，适合回归但依赖 LLM judge。
+- ARES 使用合成数据、轻量 judge 和少量人工标注做 prediction-powered evaluation。
+- RAGChecker 把 retrieval 与 generation 细分为更可诊断的 claim-level 指标。
+- RAGTruth、CRAG benchmark 和 MultiHop-RAG 可补充 hallucination、动态事实和多跳场景。
+
+任何 LLM judge 都要用人工标注校准。Notist benchmark 应把每条 query 标成 answerable/unanswerable，并记录 direct、derived、multi-hop 等支持关系；Agent 必须在证据不足、来源冲突或 revision 过期时选择 abstain。
+
+== 十五、渐进路线：每次引入什么、改善什么、下一步为什么必要
+
+=== 阶段 0：application core 和数据契约
+
+引入：VaultId、FileId、ModuleId、ElementId、immutable WorkspaceSnapshot、DocumentSession、WorkspaceDelta、citation schema 和结构化序列化。
+
+改善：LSP、Preview、桌面 UI、索引和 MCP 能看到同一个 revision，并能精确引用。
+
+验收：同一 snapshot 的 source/parse/diagnostics/reference 一致；rename、overlay、删除和冲突有明确 identity。
+
+如果跳过：所有后续索引都会把 path 或 byte range 当成身份，编辑后很容易产生 stale citation 和幽灵向量。
+
+=== 阶段 1：结构和全文索引，不引入 embedding
+
+引入：Module/Heading/Element/Annotation catalog、reference/backlink tables、SQLite FTS5 或 Tantivy、确定性的 query API。
+
+改善：精确名称、标签、数字、函数、路径和中文词项可检索；Agent 有低延迟、可解释、离线的只读能力。
+
+验收：增量 delta、tombstone、filter、outline、backlink 和 citation 测试；没有 embedding 也能完成基本 MCP search。
+
+=== 阶段 2：只读本地 MCP
+
+引入：Rust rmcp 作为 adapter，stdio transport，resources、search/get/context/reference/check tools，MCP Inspector/conformance 测试。
+
+改善：真实 Agent 可以使用 Notist，快速暴露查询粒度、token 预算和工具命名问题；不需要先承担向量部署成本。
+
+验收：所有结果带 snapshot/index revision 和 citation；vault scope、prompt injection 和资源 URI 测试通过。
+
+=== 阶段 3：dense embedding 和 exact hybrid
+
+引入：EmbeddingProvider、模型 manifest、semantic chunk、exact vector scan；BM25+dense 用 RRF/MMR 融合。
+
+改善：同义词、自然语言概念和跨语言问题召回提升。
+
+验收：在 Notist benchmark 上比较 lexical-only、dense-only、hybrid；若 dense 没提升，不继续增加向量数据库复杂度。
+
+=== 阶段 4：ANN、reranker 和模型生命周期
+
+引入：HNSW 或其他 ANN、int8/float16/PQ、cross-encoder reranker、后台 embedding queue、index epoch 和迁移命令。
+
+改善：数据量和并发提高后仍能保持 p95 latency，候选精度和多样性更好。
+
+验收：报告 Recall@k 与 exact baseline 的差距、内存、构建时间、增量延迟和模型升级回滚。
+
+=== 阶段 5：层级摘要和显式图检索
+
+引入：Module/section summary tree、reference graph、backlink expansion、有限 PageRank/社区摘要；必要时试验 RAPTOR/GraphRAG/LightRAG 风格的 derived index。
+
+改善：长文、全局问题和跨模块推理能在 token 预算内获得结构化上下文。
+
+验收：所有 LLM 推断边和摘要有 confidence/source revision；最终回答仍引用 leaf source；图扩展不应显著增加越权或幻觉。
+
+=== 阶段 6：带保护的 Agent 写入
+
+引入：typed edit、proposal/apply、CAS revision、plan hash、idempotency、事务 journal、consent 和 audit。
+
+改善：Agent 可以真正维护知识库，而不是只能建议文本；冲突和失败可恢复。
+
+验收：快速连续编辑、外部修改、崩溃恢复、重复调用、恶意正文和权限越界测试通过。
+
+=== 阶段 7：远程、多用户和可选协议扩展
+
+引入：Streamable HTTP、OAuth、tenant isolation、encrypted index、远程 embedding、MCP subscriptions/tasks/elicitation 等可选能力。
+
+改善：团队共享、长时间 reindex/import、外部数据连接和受控 UI 体验。
+
+前提：本地单用户 core 的身份、revision、权限、审计和索引 epoch 已稳定；核心读写不能依赖 Roots、Sampling 或 Tasks 这些仍在演进的扩展。
+
+== 十六、建议的第一个可执行实验
+
+不要先实现完整 Agent。建议做一个窄的 vertical slice：
+
+1. 在 notist-analysis 或新的 notist-app-core 中定义 stable IDs、snapshot query 和 citation JSON。
+2. 建一个 notist-index，先用 SQLite/Tantivy 或 FTS5 保存 Module、Heading、Annotation、reference 和全文。
+3. 实现 notist-mcp stdio，只暴露 list_modules、search、get_context、get_references、check。
+4. 为当前 docs/ 建 100 到 300 条人工标注 query，记录正确 Element 和允许 citation。
+5. 加一个 exact vector backend，使用两种代表性 multilingual embedding 做离线对比，不立刻引入 ANN。
+6. 用 MCP Inspector 和至少一个真实 Host 测试 tool description、结构化 output、token 截断和错误恢复。
+7. 只有在 hybrid 的 Recall/nDCG 或用户体验显著提升后，才选 HNSW/Qdrant Edge/LanceDB 等持久化方案。
+
+这个实验会在很小的成本下回答三个关键问题：Notist 的语义 chunk 是否比 Markdown 窗口更好；Agent 是否真的需要结构化查询而不只是 grep；向量是否带来足够收益来支付模型、索引和隐私成本。
+
+== 十七、明确的非目标和设计纪律
+
+- MCP 不等于 Agent framework；不要把规划、长期记忆和模型选择塞进 Notist Server。
+- 向量索引不是真相源；任何向量、摘要、实体图和 memory 都必须可删除、可重建、带版本。
+- 长上下文不等于正确检索；不能因为模型能接收更多 token 就省略结构、权限和 citation。
+- GraphRAG 不等于把所有自然语言猜成图；优先使用 Notist 已有显式边，推断边必须降级为 derived。
+- Tool annotations 不是授权；scope、consent、CAS 和 audit 必须在 server 内强制。
+- 不要先做 WYSIWYG、插件市场或无限 Agent loop，再回来补 source identity 和事务。
+- 不要为了全功能同时引入多个向量数据库、多个 embedding provider 和多个 reranker；每次只引入能验证一个假设的组件。
+
+== 十八、参考资料
+
+=== MCP 规范和工程资料
+
+- MCP Architecture overview：https://modelcontextprotocol.io/docs/learn/architecture.md
+- MCP Specification 2025-11-25：https://modelcontextprotocol.io/specification/2025-11-25
+- Resources：https://modelcontextprotocol.io/specification/2025-11-25/server/resources.md
+- Tools：https://modelcontextprotocol.io/specification/2025-11-25/server/tools.md
+- Prompts：https://modelcontextprotocol.io/specification/2025-11-25/server/prompts.md
+- Transports：https://modelcontextprotocol.io/specification/2025-11-25/basic/transports.md
+- Authorization：https://modelcontextprotocol.io/specification/2025-11-25/basic/authorization.md
+- Security best practices：https://modelcontextprotocol.io/docs/tutorials/security/security_best_practices.md
+- MCP SDK tiering and official SDK list：https://modelcontextprotocol.io/docs/sdk
+- Official Rust SDK rmcp：https://github.com/modelcontextprotocol/rust-sdk
+- MCP Inspector：https://github.com/modelcontextprotocol/inspector
+- MCP feature lifecycle and deprecation policy：https://modelcontextprotocol.io/community/feature-lifecycle.md
+- SEP-2577 deprecating Roots, Sampling and Logging：https://modelcontextprotocol.io/seps/2577-deprecate-roots-sampling-and-logging.md
+- Tasks extension：https://modelcontextprotocol.io/extensions/tasks/overview.md
+
+=== 检索、向量和 RAG 论文
+
+- Robertson and Zaragoza, BM25 and Beyond（2009）：https://doi.org/10.1561/1500000019
+- Jégou et al., Product Quantization（2011）：https://doi.org/10.1109/TPAMI.2010.57
+- Johnson, Douze and Jégou, FAISS（2017）：https://arxiv.org/abs/1702.08734
+- Malkov and Yashunin, HNSW（2018）：https://arxiv.org/abs/1603.09320
+- Reimers and Gurevych, Sentence-BERT（2019）：https://arxiv.org/abs/1908.10084
+- Subramanya et al., DiskANN（2019）：https://www.vldb.org/pvldb/vol12/p1493-subramanya.pdf
+- Karpukhin et al., Dense Passage Retrieval（2020）：https://arxiv.org/abs/2004.04906
+- Lewis et al., Retrieval-Augmented Generation（2020）：https://arxiv.org/abs/2005.11401
+- Khattab and Zaharia, ColBERT（2020）：https://arxiv.org/abs/2004.12832
+- Santhanam et al., ColBERTv2（2022）：https://arxiv.org/abs/2112.01488
+- Santhanam et al., PLAID（2022）：https://arxiv.org/abs/2205.09707
+- Nogueira et al., monoT5（2020）：https://arxiv.org/abs/2003.06713
+- Guo et al., ScaNN（2020）：https://arxiv.org/abs/1908.10396
+- Formal et al., SPLADE（2021）：https://arxiv.org/abs/2107.05720
+- Thakur et al., BEIR benchmark（2021）：https://arxiv.org/abs/2104.08663
+- Muennighoff et al., MTEB benchmark（2022）：https://arxiv.org/abs/2210.07316
+- Kusupati et al., Matryoshka Representation Learning（2022）：https://arxiv.org/abs/2205.13147
+- Yao et al., ReAct（2022）：https://arxiv.org/abs/2210.03629
+- Gao et al., HyDE（2022）：https://arxiv.org/abs/2212.10496
+- Liu et al., Lost in the Middle（2023）：https://arxiv.org/abs/2307.03172
+- Es et al., RAGAS（2023）：https://arxiv.org/abs/2309.15217
+- Asai et al., Self-RAG（2023）：https://arxiv.org/abs/2310.11511
+- Chen et al., Dense X Retrieval（2023）：https://arxiv.org/abs/2312.06648
+- Sarthi et al., RAPTOR（2024）：https://arxiv.org/abs/2401.18059
+- Yan et al., Corrective RAG（2024）：https://arxiv.org/abs/2401.15884
+- Edge et al., GraphRAG（2024）：https://arxiv.org/abs/2404.16130
+- Gutner et al., HippoRAG（2024）：https://arxiv.org/abs/2405.14831
+- Dhulipala et al., MUVERA（2024/2026 revision）：https://arxiv.org/abs/2405.19504
+- Guo et al., LightRAG（2024）：https://arxiv.org/abs/2410.05779
+- Su et al., BRIGHT reasoning-intensive retrieval benchmark（2025）：https://arxiv.org/abs/2407.12883
+- Wang et al., E5 text embeddings（2022）：https://arxiv.org/abs/2212.03533
+- Chen et al., BGE-M3（2024）：https://arxiv.org/abs/2402.03216
+- Sturua et al., jina-embeddings-v3（2024）：https://arxiv.org/abs/2409.10173
+- Qwen3 Embedding and Reranker（2025）：https://arxiv.org/abs/2506.05176
+- Qu, Tu and Bao, semantic chunking cost study（2024）：https://arxiv.org/abs/2410.13070
+- Anthropic, Contextual Retrieval（engineering report, 2024）：https://www.anthropic.com/news/contextual-retrieval
+- FreshDiskANN（2021）：https://arxiv.org/abs/2105.09613
+- Filtered-DiskANN（2023）：https://doi.org/10.1145/3543507.3583552
+- Cormack, Clarke and Buettcher, Reciprocal Rank Fusion（2009）：https://doi.org/10.1145/1571941.1572114
+- Trivedi et al., IRCoT multi-hop retrieval（2023）：https://arxiv.org/abs/2212.10509
+- Jeong et al., Adaptive-RAG（2024）：https://arxiv.org/abs/2403.14403
+- Agentic RAG survey（2025/2026 revision）：https://arxiv.org/abs/2501.09136
+- A-MEM（2025）：https://arxiv.org/abs/2502.12110
+- Mem0（2025）：https://arxiv.org/abs/2504.19413
+- KILT provenance benchmark：https://arxiv.org/abs/2009.02252
+- ALCE citation evaluation：https://arxiv.org/abs/2305.14627
+- ARES RAG evaluation：https://arxiv.org/abs/2311.09476
+- RAGChecker：https://arxiv.org/abs/2408.08067
+- RAGTruth：https://arxiv.org/abs/2401.00396
+- CRAG benchmark：https://arxiv.org/abs/2406.04744
+- MultiHop-RAG：https://arxiv.org/abs/2401.15391
+
+=== 工程组件和模型资料
+
+- SQLite FTS5：https://sqlite.org/fts5.html
+- Tantivy：https://github.com/quickwit-oss/tantivy
+- sqlite-vec：https://github.com/asg017/sqlite-vec
+- FAISS：https://github.com/facebookresearch/faiss
+- USearch：https://github.com/unum-cloud/usearch
+- Qdrant and Qdrant Edge：https://github.com/qdrant/qdrant
+- Qdrant hybrid, multivector and quantization docs：https://qdrant.tech/documentation/
+- LanceDB：https://lancedb.com/
+- pgvector：https://github.com/pgvector/pgvector
+- Milvus：https://milvus.io/docs
+- Vespa nearest-neighbor and ranking：https://docs.vespa.ai/en/nearest-neighbor-search.html
+- Elasticsearch hybrid search and RRF：https://www.elastic.co/guide/en/elasticsearch/reference/current/semantic-text.html
+- ONNX Runtime：https://onnxruntime.ai/
+- Candle：https://github.com/huggingface/candle
+- BGE-M3 model card：https://huggingface.co/BAAI/bge-m3
+- multilingual-e5 model family：https://huggingface.co/intfloat/multilingual-e5-large-instruct
+- Jina embeddings model family：https://huggingface.co/jinaai/jina-embeddings-v3
+- GTE multilingual model family：https://huggingface.co/Alibaba-NLP/gte-multilingual-base
+- MTEB leaderboard：https://huggingface.co/spaces/mteb/leaderboard
+
+=== 本仓库相关设计
+
+- [[vault::designs::2026-07-13 lsp]]：Workspace revision、overlay、LSP 查询和后续 snapshot 方向。
+- [[vault::designs::2026-07-13 preview and html]]：StructuredDocument、HTML、source range 和 preview consistency。
+- [[vault::types]]：Content、Type、Annotation 与 typed document 边界。
+- [[vault::ai::2026-07-20 notist native desktop architecture research]]：application core、native editor、WebView、插件 capability 和 WorkspaceSnapshot 设计。
+
+== 结语
+
+Notist 最值得尝试的不是给 Markdown 加一个向量搜索按钮，而是把文档语言、语义分析、引用图、索引和受控编辑统一在一个 revision-aware core 之上。先让 Agent 能可靠地找到并引用一个 typed Element，再让它提出经过检查的 patch，最后才让它在权限和事务约束内自动维护知识库。这个顺序会让每一个新技术都有可测量的收益，也保留在模型、向量引擎和 MCP 生态变化时替换实现的空间。

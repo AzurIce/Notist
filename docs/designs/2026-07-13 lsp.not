@@ -1,4 +1,4 @@
-#heading(level=1)[Language Server]
+= Language Server
 
 Notist 的 LSP 是编辑器与 `notist-analysis` 之间的协议适配层。它负责文档同步、LSP position 转换、请求路由和结果发布，不负责重新实现 parser、模块解析、类型检查或求值语义。
 
@@ -10,7 +10,7 @@ notist lsp
 
 这样命令行、Zed、VS Code 和其他编辑器只需要安装一个版本一致的 `notist` 可执行文件。只有当独立发布、daemon 生命周期或依赖体积成为真实问题时，再考虑拆出单独的 `notist-lsp` binary crate。
 
-#heading(level=2)[Current Status]
+== Current Status
 
 第一阶段已经实现：
 
@@ -28,7 +28,7 @@ notist lsp
 
 当前每次文档变化都会同步重建所有已发现 vault 的 Workspace，并发布完整 diagnostics。Workspace snapshot 带有单调 revision；LSP 已支持文件 watcher、DocumentSymbol 和 WorkspaceSymbol。增量 sync、增量 analysis、多 LSP workspace folder 和插件 schema 尚未实现。
 
-#heading(level=2)[Ownership]
+== Ownership
 
 ```text
 Editor
@@ -50,7 +50,7 @@ Editor
 
 LSP 层只做机械转换。例如 analysis 返回一个目标文件和 byte range，LSP handler 再将其转换为 `Location`。
 
-#heading(level=2)[Process and Transport]
+== Process and Transport
 
 第一版只支持 stdio transport。编辑器启动 `notist lsp`，server 的 stdin/stdout 专用于 JSON-RPC：
 
@@ -61,7 +61,7 @@ LSP 层只做机械转换。例如 analysis 返回一个目标文件和 byte ran
 
 Zed extension 后续增加 language server adapter，优先从 PATH 查找 `notist`，并用参数 `lsp` 启动。自动下载和版本管理属于扩展分发问题，不进入 language server 核心。
 
-#heading(level=2)[Vault Discovery and Unsaved Documents]
+== Vault Discovery and Unsaved Documents
 
 编辑器提供的 workspace root 只是 worktree，不一定是 vault。Notist.toml 所在目录才是显式 vault root；配置文件当前可以为空，只承担 marker 作用。
 
@@ -105,7 +105,7 @@ Workspace snapshot
 
 当前每次文档变化后重建所有已发现的 Workspace。vault 尚小时，全量重建比不完整的增量失效逻辑更可靠；后续再按 vault revision、文件依赖和请求取消做增量优化。
 
-#heading(level=2)[Text Synchronization]
+== Text Synchronization
 
 第一版声明 `TextDocumentSyncKind::FULL`。每次 `didChange` 接收完整文本，避免在 parser 尚不支持增量更新时维护另一套 range edit 应用逻辑。
 
@@ -113,7 +113,7 @@ Workspace snapshot
 
 文件系统 watcher 只负责未在编辑器中打开的文件。若客户端已经为 workspace file events 提供可靠通知，可以优先使用 LSP notification；server 自身 watcher 作为客户端能力不足时的补充。
 
-#heading(level=2)[Position Encoding]
+== Position Encoding
 
 Notist 内部的 `TextRange` 使用 UTF-8 byte offset，而 LSP `Position` 通常使用 UTF-16 code unit。两者不能直接互换。
 
@@ -129,9 +129,9 @@ byte offset
 
 如果客户端协商支持 UTF-8 position encoding，可以使用 UTF-8；但 UTF-16 仍必须正确支持，不能假设所有编辑器都使用 byte column。
 
-#heading(level=2)[Capabilities]
+== Capabilities
 
-#heading(level=3)[Diagnostics]
+=== Diagnostics
 
 第一阶段首先提供实时 diagnostics：
 
@@ -146,7 +146,7 @@ byte offset
 
 Diagnostic 应包含稳定的 `source = "notist"`、可机器识别的 code、准确 range 和简洁 message。跨文件冲突可以通过 related information 指向另一个定义位置。
 
-#heading(level=3)[Go to Definition]
+=== Go to Definition
 
 最先支持 Wiki Reference 的 Module 跳转：
 
@@ -158,7 +158,7 @@ Diagnostic 应包含稳定的 `source = "notist"`、可机器识别的 code、�
 
 未来 definition 还包括 block label、函数、变量、类型和插件导出的名称。协议 handler 不应针对每种符号复制逻辑，而应调用统一的 `definition_at(file, offset)` 查询。
 
-#heading(level=3)[Find References]
+=== Find References
 
 Module reference 已经形成 workspace 级引用图，因此可以提供：
 
@@ -168,7 +168,7 @@ Module reference 已经形成 workspace 级引用图，因此可以提供：
 
 后续 block label 和语言符号也使用统一的 SymbolId，而不是仅按显示文本搜索。
 
-#heading(level=3)[Completion]
+=== Completion
 
 Completion 必须由 source context 和语义环境共同决定，不能只做全局字符串列表。
 
@@ -186,7 +186,7 @@ Content body 内继续提供 Notist completion；Raw body 内不提供宿主语�
 
 Completion query 应返回协议无关的数据：label、insert text、kind、documentation 和 replace byte range。LSP 层再根据客户端 snippet 与 completion capability 生成 CompletionItem。
 
-#heading(level=3)[Hover]
+=== Hover
 
 第一阶段 Hover 包括：
 
@@ -198,13 +198,13 @@ Completion query 应返回协议无关的数据：label、insert text、kind、d
 
 LSP Hover 使用 Markdown `MarkupContent`。简单语义信息不需要依赖 `notist-html`；只有未来需要渲染 Content preview 时，才考虑复用 semantic renderer 生成经过清理的片段。
 
-#heading(level=3)[Document Symbols]
+=== Document Symbols
 
 Heading 天然适合作为 DocumentSymbol。symbol range 使用整个 Heading，selection range 使用标题 body。未来带 id 的 Annotation、函数和变量定义也可以进入符号树。
 
 Workspace Symbol 可以索引 Module 和带稳定 id 的文档元素，但不应在第一阶段阻塞核心导航能力。
 
-#heading(level=2)[Syntax Source of Truth]
+== Syntax Source of Truth
 
 编辑器中的 Tree-sitter grammar 负责即时高亮、折叠和注入；LSP 不使用 Tree-sitter tree 作为语义来源。
 
@@ -212,7 +212,7 @@ LSP server 必须调用主仓库的 `notist-syntax` parser。这样 CLI、build�
 
 Tree-sitter 仍然可以在 server 尚未响应时提供稳定的视觉结构，两者是互补关系。
 
-#heading(level=2)[Evaluation and Safety]
+== Evaluation and Safety
 
 Hover、completion 和 diagnostics 可能需要 Function registry 和类型信息，但语言服务器不应为了普通编辑操作执行具有外部副作用的插件代码。
 
@@ -224,7 +224,7 @@ Hover、completion 和 diagnostics 可能需要 Function registry 和类型信�
 
 未知或无法执行的 Function 仍可以依据 schema 提供 completion 和 type diagnostics。需要插件生成 Content 才能知道的动态结果，可以降级为 unknown，而不是阻塞整个 workspace analysis。
 
-#heading(level=2)[Concurrency]
+== Concurrency
 
 Server state 可以维护当前 immutable snapshot 和递增 revision：
 
@@ -240,7 +240,7 @@ didChange(version)
 
 第一版可以使用单个 analysis worker 串行重建，先保证一致性。并行 parse 和增量依赖失效属于后续优化。
 
-#heading(level=2)[Analysis API Direction]
+== Analysis API Direction
 
 `notist-analysis` 后续可以形成以下协议无关接口：
 
@@ -258,7 +258,7 @@ snapshot.document_symbols(file_id)
 
 查询结果引用稳定的 FileId、SymbolId 和 TextRange。Path、ModulePath 与 display text 是附加信息，不应代替稳定 identity。
 
-#heading(level=2)[Testing]
+== Testing
 
 测试分三层：
 
@@ -268,7 +268,7 @@ snapshot.document_symbols(file_id)
 
 至少需要覆盖未保存 overlay、文件关闭后恢复磁盘内容、中文与 emoji range、删除 Module 后清除 diagnostics、快速连续 change 不发布旧 revision 等场景。
 
-#heading(level=2)[Implementation Order]
+== Implementation Order
 
 已完成的第一阶段包括 full document sync、overlay、diagnostics、Module navigation、completion、Hover、Zed adapter 和基于 Notist.toml 的多 vault discovery。
 

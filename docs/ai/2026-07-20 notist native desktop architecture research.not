@@ -1,4 +1,4 @@
-#heading(level=1)[Notist 原生桌面笔记应用技术方案调研]
+= Notist 原生桌面笔记应用技术方案调研
 
 本文调研面向一个类似 Obsidian、但以 Notist 语言和 vault/module 模型为核心的桌面笔记应用。目标不是简单寻找一个“Rust GUI 框架”，而是同时满足：
 
@@ -10,7 +10,7 @@
 
 调研时间为 2026-07-20。外部项目仍在快速演进，落地时应固定依赖版本，并通过小型技术验证确认平台行为。
 
-#heading(level=2)[结论]
+== 结论
 
 推荐采用“原生编辑工作台 + 受控 Web surface + WASM 插件宿主”的分层架构：
 
@@ -43,7 +43,7 @@ Notist Desktop
 
 不建议第一版直接追求所见即所得。先做可靠的 native source editor、同步预览和结构化导航，再逐步增加 inline decoration、folding、inlay 和局部交互预览。富文本编辑器本身的复杂度远高于窗口和控件框架。
 
-#heading(level=2)[“Native”需要拆成多个维度]
+== “Native”需要拆成多个维度
 
 “native 应用”常混合了几个不同概念：
 
@@ -55,7 +55,7 @@ Notist Desktop
 
 对 Notist 来说，最有价值的是 native core、native editor 和 platform integration。是否每个按钮都是真正的系统控件，收益远小于跨平台开发成本。Slint、Floem、GPUI、Iced 等属于 native compiled/native rendered，但通常不是三套系统控件的统一封装。
 
-#heading(level=2)[候选总体比较]
+== 候选总体比较
 
 下表中的成熟度是针对“构建长期维护的桌面笔记/编辑器产品”，不是判断项目本身好坏。
 
@@ -70,9 +70,9 @@ Notist Desktop
 | Tauri 2 + CodeMirror 6 | 核心 native，UI 为 Web | 非常成熟 | 天然 | 高 | 主要 UI 不是 native，系统 WebView 差异 | 最快交付的保底方案 |
 | Electron + Monaco/CodeMirror | UI 为 Web | 成熟 | 天然 | 高 | 资源占用和 Chromium 包体 | 不符合当前目标 |
 
-#heading(level=2)[Native UI 框架分析]
+== Native UI 框架分析
 
-#heading(level=3)[Floem]
+=== Floem
 
 Floem 是 Lapce 团队维护的 native Rust UI，使用细粒度响应式模型，支持 Windows、macOS 和 Linux，并提供 GPU/CPU renderer。其仓库内还有 `floem-editor-core`，依赖 `lapce-xi-rope`，至少能复用 selection、cursor、motion、edit command 等编辑器基础模型。
 
@@ -91,7 +91,7 @@ Floem 是 Lapce 团队维护的 native Rust UI，使用细粒度响应式模型�
 
 建议：做一个 1 到 2 周 spike，不先写完整应用。验证大文件编辑、中文/日文 IME、emoji、组合字符、多光标、软换行、accessibility 和 Wry preview pane。
 
-#heading(level=3)[Slint]
+=== Slint
 
 Slint 有稳定 1.x API、声明式 UI、Rust 集成和 AccessKit 支持。其 `raw-window-handle-06` feature 可以暴露 window/display handle，Winit backend 也提供 Windows、macOS、X11、Wayland 支持，因此从接口上可以与 Wry 建立连接。
 
@@ -99,13 +99,13 @@ Slint 有稳定 1.x API、声明式 UI、Rust 集成和 AccessKit 支持。其 `
 
 如果最终决定中央编辑器使用 CodeMirror WebView，而 native 部分只负责 shell，Slint 会比 Floem 更有吸引力；如果坚持 native editor，Floem 的领域匹配更好。
 
-#heading(level=3)[GPUI]
+=== GPUI
 
 GPUI 是 Zed 使用的 GPU UI 框架，Windows 使用 Win32/DirectWrite，macOS 使用 Metal，Linux 支持 Wayland/X11。Zed 已经证明它能够承载高性能编辑器。
 
 但 GPUI 仍是 pre-1.0，文档明确建议从 Zed 源码学习，API 会随 Zed 高频演进。直接复用 Zed 编辑器代码还要单独核对模块边界和许可证，不能假定 `gpui` 依赖自动带来一个可嵌入的 Zed editor。它更适合愿意长期跟进上游、能够维护较多底层代码的团队。
 
-#heading(level=3)[Iced、egui、Xilem]
+=== Iced、egui、Xilem
 
 这些框架都能构建 native compiled UI，但当前不优先：
 
@@ -115,15 +115,15 @@ GPUI 是 Zed 使用的 GPU UI 框架，Windows 使用 Win32/DirectWrite，macOS 
 
 它们可以用于小工具或开发者面板，不应仅因为“纯 Rust”就承担 Notist 的长期主编辑器。
 
-#heading(level=3)[Qt 6]
+=== Qt 6
 
 Qt 是需要认真保留的备选，而不是因为 Rust 偏好直接排除。Qt Widgets/QML、Qt WebEngine、dock、菜单、输入法、accessibility 和跨平台部署都经历过大量桌面产品验证。
 
 代价是 C++/Rust 边界、构建系统、包体，以及 LGPL/GPL/commercial 许可合规。可以通过 CXX、CXX-Qt 或窄 C ABI 让 Qt UI 调用 Rust core。如果 native Rust UI 的 IME、WebView 或 accessibility spike 失败，Qt 往往比退回 Electron 更符合原始目标。
 
-#heading(level=2)[WebView 方案]
+== WebView 方案
 
-#heading(level=3)[Wry 与系统 WebView]
+=== Wry 与系统 WebView
 
 Wry 是 Tauri 底层的跨平台 WebView library：
 
@@ -136,7 +136,7 @@ Wry 是 Tauri 底层的跨平台 WebView library：
 
 系统 WebView 的优势是包体较小、系统安全更新及时。代价是各平台引擎版本和 CSS/JS 细节不完全一致，Linux 还要处理 WebKitGTK 安装和打包。
 
-#heading(level=3)[为什么不能每个 Element 一个 WebView]
+=== 为什么不能每个 Element 一个 WebView
 
 文章中一个复杂 Element 对应一个 WebView 看似模块化，实际会带来：
 
@@ -153,13 +153,13 @@ Wry 是 Tauri 底层的跨平台 WebView library：
 - native 编辑器中的复杂 inline element：先显示 native placeholder、静态快照或摘要；聚焦后在 popover/side pane 中打开 WebView。
 - 真正需要 inline 交互时，优先在同一个文档 WebView 内由 custom element renderer 处理，不创建新的系统 WebView。
 
-#heading(level=3)[何时考虑 CEF 或 Qt WebEngine]
+=== 何时考虑 CEF 或 Qt WebEngine
 
 如果后期必须保证三平台完全一致的 Chromium 行为、需要更强的多进程隔离或复杂 DevTools，可以评估 CEF/Chromium 或 Qt WebEngine。代价是明显更大的包体、更新和安全维护责任。第一版没有必要为一致性预付这笔成本。
 
-#heading(level=2)[编辑器方案]
+== 编辑器方案
 
-#heading(level=3)[第一阶段：原生源码编辑器]
+=== 第一阶段：原生源码编辑器
 
 Notist 当前是显式语法语言，已有 parser、byte range、analysis、completion、hover 和 definition。最合适的第一阶段是 Obsidian source mode 类体验：
 
@@ -172,7 +172,7 @@ Notist 当前是显式语法语言，已有 parser、byte range、analysis、com
 
 必须尽早验证的文本问题包括 UTF-8 byte offset 与 UTF-16/视觉位置转换、grapheme cluster、emoji、CJK IME、bidi、tab、软换行、超长行和多光标。现有 `LineIndex` 已经处理 LSP UTF-16，但 UI 还需要 grapheme 和 glyph layout 层。
 
-#heading(level=3)[CodeMirror 6 作为保底]
+=== CodeMirror 6 作为保底
 
 若 native editor spike 无法在可接受时间内达到 IME、selection 和大文件要求，可以只把 editor pane 替换为 CodeMirror 6 WebView，Rust core、vault tree、命令、索引和插件权限仍保持 native。CodeMirror 6 模块化、扩展机制成熟，并比 Monaco 更容易为 Notist 定制 language package。
 
@@ -189,7 +189,7 @@ trait EditorPort
 
 接口必须传递 revision 和结构化 edit，不能用“整篇 HTML/整篇字符串 + 任意 JS”作为协议。
 
-#heading(level=2)[渲染架构]
+== 渲染架构
 
 当前 `Element::Custom { name, body, block }` 和 `notist-html` 的安全 fallback 是一个良好起点。建议把 renderer registry 明确放在语义模型之后：
 
@@ -224,9 +224,9 @@ RendererDescriptor {
 
 建议定义独立、可版本化的 `notist-render-model` crate，例如支持 Text、Stack、Grid、Image、Code、Link、Button、Table、CanvasHost 等有限节点。这样简单插件可同时获得 native 和 HTML renderer，而复杂插件再选择 web bundle。
 
-#heading(level=2)[插件系统]
+== 插件系统
 
-#heading(level=3)[插件类别]
+=== 插件类别
 
 不要让所有扩展都变成同一种 JavaScript 插件。建议分为：
 
@@ -236,7 +236,7 @@ RendererDescriptor {
 - Import/export plugin：读取显式授权的输入，输出文件或数据流。
 - Theme plugin：只提供 tokens、icons 和受限样式，不执行任意主进程代码。
 
-#heading(level=3)[WASM/WASI 作为默认执行格式]
+=== WASM/WASI 作为默认执行格式
 
 Wasmtime 适合 Rust 主程序嵌入，支持 WASI 和 Component Model。建议用 WIT 定义 ABI，而不是直接暴露 Rust trait ABI：
 
@@ -262,11 +262,11 @@ world notist-plugin-v1 {
 
 但 WASM 不是完整安全边界：宿主函数设计错误仍可泄露权限，CPU/内存耗尽也需显式限制。对来源不可信或高风险插件，可以让 Wasmtime 运行在单独的 plugin-host 进程，主进程通过版本化 IPC 通信。
 
-#heading(level=3)[为什么不默认支持 native dynamic library]
+=== 为什么不默认支持 native dynamic library
 
 Rust 动态库没有稳定 ABI，插件与主程序的 compiler/crate version 会紧密耦合；更重要的是 native library 与主进程权限相同，崩溃和内存错误会直接影响应用。第一阶段不应把 `.dll/.dylib/.so` 作为公开插件格式。内部或官方高性能扩展可以静态编译进发行版。
 
-#heading(level=3)[Capability 模型]
+=== Capability 模型
 
 `Notist.toml` 后续可以声明 enabled plugins 和授权：
 
@@ -296,7 +296,7 @@ permissions = [
 
 权限由 host call 检查，而不只是安装时弹窗。Vault 级授权不能自动扩展到其他 vault。
 
-#heading(level=2)[Web renderer 安全边界]
+== Web renderer 安全边界
 
 文档预览包含用户内容和第三方 renderer，必须按“不可信前端”设计：
 
@@ -311,7 +311,7 @@ permissions = [
 
 需要注意：在同一个 WebView 文档中运行多个第三方 renderer 时，DOM 级隔离有限。第一阶段宜只允许可信/审核过的 renderer；真正开放插件市场前，再增加 iframe/独立 origin、进程隔离或严格的 renderer worker 模型。
 
-#heading(level=2)[与现有 Notist 架构的衔接]
+== 与现有 Notist 架构的衔接
 
 现有仓库已经具备以下正确基础：
 
@@ -346,30 +346,30 @@ DocumentSession
 
 这与现有 preview 文档中提出的 Workspace consistency 完全一致，也能避免后台分析结果覆盖更新后的编辑内容。
 
-#heading(level=2)[平台与打包注意事项]
+== 平台与打包注意事项
 
-#heading(level=3)[Windows]
+=== Windows
 
 - Wry 使用 WebView2。应检测 Evergreen Runtime，并按 Microsoft 建议选择 bootstrapper 或 fixed runtime 策略。
 - 验证 WebView2 child window 与 GPU native surface 的 z-order、DPI、IME、触摸板和 accessibility。
 - 文件关联、Jump List、系统菜单等通过 `windows` crate 后续接入。
 
-#heading(level=3)[macOS]
+=== macOS
 
 - WKWebView 是系统组件，包体较小。
 - 菜单、快捷键、窗口 tab、sandbox entitlement、拖放和 App Store 限制需单独验证。
 - Wry 的某些 devtools/transparent/fullscreen feature 涉及 private API，不应在 App Store release 中误启用。
 
-#heading(level=3)[Linux]
+=== Linux
 
 - Wry 依赖 WebKitGTK，发行包需要处理不同发行版的动态依赖。
 - X11 child webview 路径相对直接；Wayland 需要 GTK container 和事件循环集成。
 - 不应在没有验证的情况下承诺 X11/Wayland 行为一致。
 - 可采用 Windows/macOS 先行，Linux X11 preview 先行，Wayland 作为明确 milestone；或者在 Linux 上暂时将 preview 放到独立窗口。
 
-#heading(level=2)[建议的验证顺序]
+== 建议的验证顺序
 
-#heading(level=3)[Spike A：native editor，最高优先级]
+=== Spike A：native editor，最高优先级
 
 用 Floem 做一个只有编辑器的程序，验证：
 
@@ -381,7 +381,7 @@ DocumentSession
 
 失败条件：关键 IME/selection bug 无法在可接受成本内修复。失败时切换 `EditorPort` 到 CodeMirror 6，不推倒 core。
 
-#heading(level=3)[Spike B：Floem/Slint + Wry]
+=== Spike B：Floem/Slint + Wry
 
 同一窗口左侧 native tree，右侧 WebView，验证：
 
@@ -392,7 +392,7 @@ DocumentSession
 
 失败条件：目标平台无法稳定组合 child webview。替代路径是独立 preview window、全 pane web shell，或 Qt WebEngine。
 
-#heading(level=3)[Spike C：WASM plugin]
+=== Spike C：WASM plugin
 
 实现一个最小 diagram 插件：
 
@@ -401,7 +401,7 @@ DocumentSession
 - 无网络权限时访问失败；授予单一 origin 后成功。
 - fuel、memory、timeout 和 plugin crash 能被 host 捕获并显示 fallback。
 
-#heading(level=3)[Spike D：端到端 document session]
+=== Spike D：端到端 document session
 
 在未保存编辑状态下完成：
 
@@ -414,9 +414,9 @@ save -> atomic replace
 
 只有 A 到 D 都通过，才应确定 UI 框架并开始完整产品界面。
 
-#heading(level=2)[分阶段产品路线]
+== 分阶段产品路线
 
-#heading(level=3)[阶段 1：可用笔记应用]
+=== 阶段 1：可用笔记应用
 
 - Vault tree、tabs、native source editor。
 - 打开、保存、外部变化检测、session restore。
@@ -425,7 +425,7 @@ save -> atomic replace
 - command palette 和基础快捷键。
 - 暂不开放第三方插件安装，只内置 renderer registry。
 
-#heading(level=3)[阶段 2：内置扩展模型]
+=== 阶段 2：内置扩展模型
 
 - `notist-render-model` 和 renderer registry。
 - 内置 diagram、math、table、code renderer。
@@ -433,7 +433,7 @@ save -> atomic replace
 - backlinks、search index、graph 等基于 WorkspaceSnapshot 的 native 面板。
 - Wasmtime plugin-host 原型和 capability model。
 
-#heading(level=3)[阶段 3：第三方插件]
+=== 阶段 3：第三方插件
 
 - 稳定 WIT API、manifest、版本协商和迁移策略。
 - 插件包校验、来源标识、权限 UI、禁用和 crash quarantine。
@@ -441,7 +441,7 @@ save -> atomic replace
 - 插件开发工具、日志和测试 harness。
 - 在安全模型验证之前不开放 native dynamic library。
 
-#heading(level=2)[最终决策建议]
+== 最终决策建议
 
 当前不应直接提交到某个 GUI 框架的大规模实现。先以以下顺序决策：
 
@@ -454,7 +454,7 @@ save -> atomic replace
 
 这个方案不会把未来锁死：native editor 可以替换为 CodeMirror，Floem shell 可以替换为 Slint/Qt，系统 WebView 可以替换为 CEF，但 `WorkspaceSnapshot`、`EditorPort`、`RenderNode`、WIT plugin API 和 capability model 可以保持稳定。
 
-#heading(level=2)[外部资料]
+== 外部资料
 
 - Wry README：cross-platform engine、child webview、Linux GTK/Wayland 注意事项和 feature flags。https://github.com/tauri-apps/wry
 - Slint README 与 Rust crate features：stable 1.x、renderer、accessibility、raw-window-handle、Winit/Qt backend 和许可。https://github.com/slint-ui/slint

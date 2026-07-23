@@ -1,6 +1,6 @@
-#heading(level=1)[Typst 的 Element Function 与语法糖设计]
+= Typst 的 Element Function 与语法糖设计
 
-#heading(level=2)[核心结论]
+== 核心结论
 
 Typst 并不是简单地把所有语法都转换为普通函数调用。更准确的描述是：
 
@@ -41,7 +41,7 @@ Value / Content / Element
 - `Element`：Text、Heading、Strong、Link 等具体内容节点。
 - Element function：用户可以调用的 Element 构造函数。
 
-#heading(level=2)[直接对应 Element 的语法糖]
+== 直接对应 Element 的语法糖
 
 | 表面语法 | 底层 Element | 大致等价写法 |
 |---|---|---|
@@ -73,7 +73,7 @@ StrongElem {
 
 它与调用 `strong` element function 产生相同类型的 Element，因此能被相同的 set/show 规则处理。
 
-#heading(level=2)[标题]
+== 标题
 
 ```typst
 = First Level
@@ -98,7 +98,7 @@ Heading
 
 这是 Typst Element 设计的重要性质：表面语法和显式函数调用最终汇合到相同的内容类型。
 
-#heading(level=2)[列表与后续组合]
+== 列表与后续组合
 
 列表语法并不会立即产生完整列表：
 
@@ -163,7 +163,7 @@ TermItem {
 
 这种设计允许 parser 只识别局部 item，后续阶段再决定列表边界，也允许 show rule 单独匹配 item。
 
-#heading(level=2)[Label 与引用]
+== Label 与引用
 
 Label：
 
@@ -223,7 +223,7 @@ ModuleRefElem {
 #ref(module("vault::guide::intro"))
 ```
 
-#heading(level=2)[自动链接与 Raw]
+== 自动链接与 Raw
 
 直接书写 URL：
 
@@ -256,7 +256,7 @@ RawElem {
 
 行内和块级主要通过 `block`、`lang` 参数区分，而不是定义完全无关的底层类型。
 
-#heading(level=2)[空格、换行和段落]
+== 空格、换行和段落
 
 Typst 将部分看起来不像 Element 的结构也表示为内容：
 
@@ -285,7 +285,7 @@ Content::sequence([
 
 段落、列表等更高层结构可以在后续 realization/layout 阶段形成，而不是全部由 parser 一次决定。
 
-#heading(level=2)[Content Block 与尾随内容参数]
+== Content Block 与尾随内容参数
 
 Typst 中：
 
@@ -333,7 +333,7 @@ note(
 )
 ```
 
-#heading(level=2)[数学语法]
+== 数学语法
 
 数学模式不仅是一个字符串节点：
 
@@ -355,11 +355,11 @@ $ x^2 / 2 $
 
 数学模式还拥有独立的名字解析规则，可以从 math scope 中查找函数和符号。
 
-#heading(level=2)[不是普通 Element Function 的语法]
+== 不是普通 Element Function 的语法
 
 Typst 并非所有语言结构都是 Element function 的糖。
 
-#heading(level=3)[变量与控制流]
+=== 变量与控制流
 
 ```typst
 #let x = 1
@@ -369,7 +369,7 @@ Typst 并非所有语言结构都是 Element function 的糖。
 
 这些结构控制作用域和求值过程，是语言级构造，不是可展示 Element。
 
-#heading(level=3)[Set Rule]
+=== Set Rule
 
 ```typst
 #set text(size: 12pt)
@@ -377,7 +377,7 @@ Typst 并非所有语言结构都是 Element function 的糖。
 
 Set rule 会生成样式设置，并作用于后续内容。它不是普通的 `set(...)` 函数调用。
 
-#heading(level=3)[Show Rule]
+=== Show Rule
 
 ```typst
 #show heading: it => ...
@@ -393,7 +393,7 @@ New Content
 
 它更接近模式匹配和内容重写系统。
 
-#heading(level=3)[Import、Include 与 Context]
+=== Import、Include 与 Context
 
 ```typst
 #import "utils.typ": foo
@@ -403,9 +403,9 @@ New Content
 
 这些结构会修改作用域、加载文件或改变求值环境，也不应强行解释为普通 Element function。
 
-#heading(level=2)[Typst 语法的四种类型]
+== Typst 语法的四种类型
 
-#heading(level=3)[Element Sugar]
+=== Element Sugar
 
 直接生成可展示 Element：
 
@@ -419,7 +419,7 @@ URL     → link
 \       → linebreak
 ```
 
-#heading(level=3)[Structural Sugar]
+=== Structural Sugar
 
 先产生局部结构，后续再组合：
 
@@ -430,7 +430,7 @@ URL     → link
 空行     → parbreak
 ```
 
-#heading(level=3)[Value Sugar]
+=== Value Sugar
 
 产生值而不是独立的可展示 Element：
 
@@ -439,7 +439,7 @@ URL     → link
 [...]   → Content value
 ```
 
-#heading(level=3)[Language Constructs]
+=== Language Constructs
 
 控制求值、作用域和样式：
 
@@ -456,7 +456,7 @@ context
 return
 ```
 
-#heading(level=2)[对 Notist 的设计建议]
+== 对 Notist 的设计建议
 
 Notist 可以先定义一个较小的核心 Element 集合：
 
@@ -514,7 +514,7 @@ pub struct ModulePath {
 ref(target: ModulePath(["guide", "intro"]))
 ```
 
-#heading(level=2)[内部不必全部动态化]
+== 内部不必全部动态化
 
 对用户可以呈现为：
 
@@ -564,7 +564,7 @@ Notist 应复用的核心原则是：
 所有语法糖必须先改写成字符串形式的函数调用 AST。
 ```
 
-#heading(level=2)[参考实现位置]
+== 参考实现位置
 
 - Typst markup 求值：`crates/typst-eval/src/markup.rs`
 - Typst math 求值：`crates/typst-eval/src/math.rs`

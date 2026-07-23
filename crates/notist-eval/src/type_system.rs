@@ -81,6 +81,13 @@ impl BoundArguments {
         }
     }
 
+    pub fn bool(&self, name: &str) -> bool {
+        match self.get(name) {
+            Some(Value::Bool(value)) => *value,
+            _ => unreachable!("signature binding guarantees a boolean value"),
+        }
+    }
+
     pub fn float(&self, name: &str) -> f64 {
         match self.get(name) {
             Some(Value::Float(value)) => *value,
@@ -93,6 +100,15 @@ impl BoundArguments {
             Some(Value::None) => None,
             Some(Value::String(value)) => Some(value),
             _ => unreachable!("signature binding guarantees an optional string value"),
+        }
+    }
+
+    /// Returns an optional integer argument after signature validation.
+    pub fn optional_int(&self, name: &str) -> Option<i64> {
+        match self.get(name) {
+            Some(Value::None) => None,
+            Some(Value::Int(value)) => Some(*value),
+            _ => unreachable!("signature binding guarantees an optional integer value"),
         }
     }
 
@@ -117,6 +133,15 @@ impl BoundArguments {
         match self.values.remove(name).map(|bound| bound.value) {
             Some(Value::Content(content)) => content,
             _ => unreachable!("signature binding guarantees a Content value"),
+        }
+    }
+
+    /// Removes and returns an optional Content argument after signature validation.
+    pub fn take_optional_content(&mut self, name: &str) -> Option<Content> {
+        match self.values.remove(name).map(|bound| bound.value) {
+            Some(Value::None) => None,
+            Some(Value::Content(content)) => Some(content),
+            _ => unreachable!("signature binding guarantees an optional Content value"),
         }
     }
 }

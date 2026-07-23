@@ -1,0 +1,221 @@
+= Notist Cheatsheet
+
+这份文档用于确定 Notist 的最小宿主语法。语法糖只解决高频书写中 Function call 过于繁琐的问题；低频、特定领域或特定 renderer 的能力应由显式 Function 或未来 plugin 提供。
+
+== 当前建议保留的宿主语法
+
+| 能力 | 建议语法 | 对应语义 | 理由 |
+| --- | --- | --- | --- |
+| 普通文本 | 直接书写 | `text` | 文档基础 |
+| 段落 | 空行分段 | `paragraph` / `parbreak` | 高频且无法合理改成 Function call |
+| 标题 | `= Heading`、`== Heading` | `heading` | 高频，显式 level 调用繁琐 |
+| 加粗 | `*bold*` | `strong` | 笔记中高频；界面称“加粗”即可 |
+| 斜体 | `_italic_` | `emph` | 笔记中高频，Function call 会打断书写 |
+| 下划线 | `__underline__` | `underline` | 笔记中高频，显式调用明显更繁琐 |
+| 删除线 | `~~strike~~` | `strike` | 常用于保留已作废内容及其上下文 |
+| 行内 Raw | `` `raw` `` | `raw` | 代码、标识符和原样文本高频 |
+| Raw block | fenced backticks | `Raw` Element（`block=true`） | 显式 String 写多行代码过于繁琐 |
+| 无序列表 | `- item` | `list::item` | 高频，Function 嵌套明显过长 |
+| 有序列表 | `+ item` | `enum::item` | 与 Typst 一致且足够小巧 |
+| Task | `- [ ] item`、`- [x] item` | `task` / `task::item` | 状态标记高频，显式嵌套 Function 过长 |
+| Math | `$x^2$` | `math` | 公式需要轻量且明确的内容边界 |
+| 引用 | — | `quote` | 使用显式 Function，保留真实引用的语义 |
+| Wiki 引用 | `[[module#label]]` | `ref` | Notist 知识库的核心能力 |
+| 自动链接 | 裸 HTTP(S) URL | `link` | 高频且目标文本通常就是 URL |
+| 强制换行 | 行末 `\` | `linebreak` | Function 会打断自然书写 |
+| Pipe table | `| A | B |` | `table` / `table::cell` | 比大量 `#table::cell` 更易读 |
+| 单行注释 | `// comment` | 不生成 Content | 属于 lexer/parser，不需要 Comment Element |
+| 块注释 | `/* comment */` | 不生成 Content | 可跨行，适合临时隐藏一段源码 |
+
+`kbd` 建议保留为 built-in，但不需要额外语法糖：`#kbd[Ctrl + S]` 已经足够简洁。
+
+== Quote、Callout 与 Details
+
+三者都使用显式 Function call。它们可能共用块级样式的实现，但语义和可用参数不同，不能把 Callout 当成一种 Quote。
+
+| Function | 签名 | 用途 |
+| --- | --- | --- |
+| `quote` | `quote(attribution: Content? = none, body: Content) -> Content` | 转述或摘录他人的原话 |
+| `callout` | `callout(kind: String = "note", title: Content? = none, body: Content) -> Content` | 作者的提示性内容 |
+| `details` | `details(summary: Content? = none, open: Bool = false, body: Content) -> Content` | 可折叠内容 |
+
+签名中的 `body: Content` 是尾随 Content 参数，实际调用时写成尾随 `[body]`。其他参数使用 `name=value` 传入；这让多段内容、列表和嵌套结构都不必塞进字符串参数里。
+
+```not
+#quote(attribution=[Francis Bacon])[
+  Knowledge is power.
+]
+
+#callout(kind="warning", title=[风险说明])[
+  保存前请检查配置。
+]
+
+#details(summary=[查看详情])[
+  这里是折叠内容。
+]
+```
+
+=== 普通 Quote
+
+```not
+#quote[Knowledge is power]
+
+#quote(attribution=[Francis Bacon])[
+  Knowledge is power.
+]
+```
+
+`quote` 只表示真实引用，不提供 `>` 简写。这也与 Typst 的 `quote` Function 一致。
+
+=== Callout
+
+```not
+#callout(kind="warning", title=[保存前检查])[
+  保存前请检查配置。
+]
+```
+
+`kind` 是面向语义、主题和导出的稳定分类；core 只约定常用的 `note`、`tip`、`important`、`warning`、`caution`，其他 kind 可由 plugin 或 theme 解释。`title` 未提供时不生成标题，避免暗中把 kind 变成可见文案。
+
+=== Details
+
+```not
+#details(summary=[点击展开])[
+  这里是折叠内容。
+]
+```
+
+`details` 只负责展开状态，不引入 `kind`。`summary` 为 `none` 时使用渲染器的通用折叠标题。需要“可折叠的警告”时，让 Callout 提供外层语义和样式：
+
+```not
+#callout(kind="warning", title=[风险说明])[
+  #details(summary=[查看详情])[
+    这里是折叠的警告内容。
+  ]
+]
+```
+
+== Inline 效果与去留
+
+=== 建议保留
+
+| 能力 | 源码或 Function | 实际效果 | HTML 语义 |
+| --- | --- | --- | --- |
+| 加粗 | `*重要*` | *重要* | `<strong>` |
+| 斜体 | `_现在_` | _现在_ | `<em>` |
+| 下划线 | `__标注__` | __标注__ | `<u>` |
+| 删除线 | `~~旧内容~~` | ~~旧内容~~ | `<s>` |
+| Raw | `` `let x = 1` `` | `let x = 1` | `<code>` |
+| Keyboard | `#kbd[Ctrl + S]` | #kbd[Ctrl + S] | `<kbd>` |
+| 自动链接 | `https://example.com` | https://example.com | `<a>` |
+
+`strong` 表示重要性，`emph` 表示语气重读；但面向笔记作者时可以直接称为“加粗”和“斜体”，不要求用户先理解这组排版术语。
+
+=== 源码注释
+
+注释由 parser 直接跳过，不产生 `Comment` Element，也不进入 HTML：
+
+```not
+// 单行注释到本行结束
+
+/*
+这是一段块注释，
+可以跨越多行。
+*/
+```
+
+与 Typst 一样，块注释支持嵌套：`/* 外层 /* 内层 */ 外层继续 */`。实现时应确保 URL 中的 `https://` 不会被误识别成注释。
+
+=== Insert 与 Underline
+
+两者默认都显示为下划线，但含义不同：
+
+| Element | 实际效果 | 原本语义 | 建议 |
+| --- | --- | --- | --- |
+| `insert` | `#insert[新增内容]` | 修订中新增的内容，HTML `<ins>` | 移入未来 revision plugin |
+| `underline` | #underline[带下划线内容] | 作者主动添加的常用下划线，HTML `<u>` | 保留为 core，简写为 `__...__` |
+
+普通下划线是高频排版操作；`insert` 则只有在修订追踪中才有独立价值。因此 core 只保留 `underline`，不同时保留视觉效果相近的 `insert`。
+
+== Table 效果
+
+Pipe table 暂时保留，因为它比显式 cell Function 更容易阅读和维护：
+
+```not
+| Name | Value |
+| --- | ---: |
+| one | 1 |
+| two | 2 |
+```
+
+| Name | Value |
+| --- | ---: |
+| one | 1 |
+| two | 2 |
+
+复杂的 `colspan`、`rowspan` 或动态表格仍可使用显式 `#table(...)`，不需要继续扩张 Pipe table 语法。
+
+== Rule 是否保留
+
+候选语法：
+
+```not
+---
+```
+
+实际效果：
+
+#rule()
+
+保留它的理由是分隔线较常用，而 `#rule()` 会打断纯文本书写；移除它的理由是 `---` 容易与其他标记语法冲突，而且 `#rule()` 已经很短。当前标记为待决定。
+
+== 已确认移出 Core
+
+| 能力 | 当前实现 | 去向 |
+| --- | --- | --- |
+| 上标 | `^super^` / `super` | 移除；math 或 typography plugin |
+| 下标 | `~sub~` / `sub` | 移除；math 或 typography plugin |
+| 高亮 | `==highlight==` / `highlight` | 移除；typography plugin |
+| Terms | `/ Term: Description` / `terms` | 移除；低频且 `/` 不直观 |
+| Sample | `samp` | 移除；低频 |
+| Time | `time` | 移除；低频或 metadata plugin |
+| Video | `!video(...)` / `video` | 移除；media plugin |
+| Audio | `!audio(...)` / `audio` | 移除；media plugin |
+| Outline | `outline` | 移除；navigation/renderer plugin |
+
+== 后续 Plugin 候选
+
+| 能力 | 当前实现 | Plugin 方向 |
+| --- | --- | --- |
+| Footnote | `^[...]` / `footnote` | publishing plugin |
+| Citation | `[@key]` / `cite` | bibliography plugin |
+| Abbreviation | `*[HTML]: ...` / `abbr` | glossary/semantic HTML plugin |
+| Insert | `++...++` / `insert` | revision plugin |
+| Spoiler | `>!...!<` / `spoiler` | interactive HTML plugin |
+
+== 最小示例
+
+```not
+= 项目标题
+
+这是一段包含 *重点*、_斜体_、__下划线__、~~已作废内容~~、`inline raw` 和 [[另一个页面]] 的正文。
+
+// 这是源码注释，不进入文档内容。
+
+/*
+这是一段多行源码注释。
+*/
+
+- 第一项
+- 第二项
+
+#callout(kind="warning", title=[保存前检查])[
+  请确认配置已经写入磁盘。
+]
+
+| Name | Value |
+| --- | --- |
+| one | two |
+```
+
+当前完整 Function 签名见 [[vault::functions]]，语法规则见 [[vault::grammar]]。

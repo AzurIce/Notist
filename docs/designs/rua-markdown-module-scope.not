@@ -1,7 +1,7 @@
 {这个文件是早期以 Markdown 超集为目标设计的“模块系统”与“scope属性标注系统”的设计，能反映一定的思想，但是不是最终设计}
-#heading(level=1)[Rua Markdown 模块系统与语义标注设计]
+= Rua Markdown 模块系统与语义标注设计
 
-#heading(level=2)[设计目标]
+== 设计目标
 
 为个人知识库（PKM）在 Markdown 之上建立一套**逻辑表示层**，使其具备类似编程语言模块系统的层级组织、命名引用和元信息标注能力，同时保持 Markdown 的人类可读性与生态兼容性。
 
@@ -12,7 +12,7 @@
 3. **轻量标注**：通过 Rust-like 的 `#[...]{}` attribute 语法为内容块附加机器可解析的元信息。
 4. **LSP 原生**：模块解析、跳转、补全、诊断由 Rua 核心 / LSP 提供，不依赖特定编辑器。
 
-#heading(level=2)[核心概念]
+== 核心概念
 
 | 概念            | 说明                                       | 示例                                        |
 | ------------- | ---------------------------------------- | ----------------------------------------- |
@@ -25,9 +25,9 @@
 | **Class**     | 展示/样式类，可多个                               | `.highlight`                              |
 | **Attribute** | 键值对元信息                                   | `status=draft`                            |
 
-#heading(level=2)[模块系统]
+== 模块系统
 
-#heading(level=3)[文件系统 ↔ 逻辑模块映射]
+=== 文件系统 ↔ 逻辑模块映射
 
 规则：
 
@@ -49,7 +49,7 @@
 注意：`/pages.md` 与 `/pages/README.md` 不能同时存在，因为二者都映射到 `vault::pages`。
 ]
 
-#heading(level=3)[引用语法]
+=== 引用语法
 
 采用 wiki link 扩展：
 
@@ -75,19 +75,19 @@
 - `[[intro]]` 与 block label 冲突时，优先解析为 Module。
 - 同一 Module 内 label 不允许重复；重复时 LSP 报 diagnostic 错误。
 
-#heading(level=3)[不支持的扩展]
+=== 不支持的扩展
 
 - `self::`：当前模块显式引用。暂不提供，因为 `[[xxx]]` 已可引用当前模块下的子模块，`[[#xxx]]` 已可引用当前模块内的 block label。
 
-#heading(level=2)[Scope 与属性标注]
+== Scope 与属性标注
 
-#heading(level=3)[Inline Scope]
+=== Inline Scope
 
 ```markdown
 这是普通段落，其中 #[#concept,draft,.highlight,priority=high]{关键概念} 需要被标记。
 ```
 
-#heading(level=3)[Block Scope]
+=== Block Scope
 
 ```markdown
 #[#intro,draft,.lead,status=draft]{
@@ -108,7 +108,7 @@
 }
 ```
 
-#heading(level=3)[Page 级属性]
+=== Page 级属性
 
 文件顶部使用 `#![...]` 声明整个 Module 的属性：
 
@@ -120,14 +120,14 @@
 正文开始...
 ```
 
-#heading(level=3)[Scope 与 Block 的关系]
+=== Scope 与 Block 的关系
 
 - **Scope** 是语义标注层概念，由用户通过 `#[...]{}` 显式定义。
 - **Block** 是索引/向量化层概念，由解析器按 Markdown 结构隐式切分（段落、章节、代码块、列表等）。
 - 两者是**平行关系**：一个 Scope 可以包含多个 Block，一个 Block 也可以包含多个 inline Scope。
 - 用户显式标注的 block Scope 优先作为一个独立索引单元；未标注内容按默认 Block 切分。
 
-#heading(level=3)[属性语法]
+=== 属性语法
 
 属性列表写在 `#[...]` 或 `#![...]` 中，逗号分隔、不加空格。一个 Scope 或 Module 前可连续写多个 `#[...]` / `#![...]`，效果等价于合并属性列表。
 
@@ -146,7 +146,7 @@ attr      ::= "#" identifier      # label（互斥，一个 scope 只能有一�
 - `.lead`：class
 - `status=draft`：attribute
 
-#heading(level=3)[解析边界]
+=== 解析边界
 
 Scope 的 `{}` 匹配需满足：
 
@@ -154,7 +154,7 @@ Scope 的 `{}` 匹配需满足：
 2. 结束 `}` 建议位于行首（或仅前导空白），降低与普通文本中 `}` 的歧义；inline scope 的 `}` 紧跟内容即可。
 3. 支持嵌套 scope，解析器按括号层级计数。
 
-#heading(level=2)[LSP 集成]
+== LSP 集成
 
 Rua 核心通过 LSP 提供以下能力：
 
@@ -165,20 +165,20 @@ Rua 核心通过 LSP 提供以下能力：
 - **Diagnostics**：未解析引用、重复 label、循环引用等错误。
 - **Hover Info**：显示逻辑路径与属性。
 
-#heading(level=2)[与现有 Markdown / Obsidian 的关系]
+== 与现有 Markdown / Obsidian 的关系
 
 - Rua 的 `.md` 文件仍可在 Obsidian、VS Code 等编辑器中打开和编辑。
 - `[[vault::pages::intro]]`、`#[#label]{...}`、`#![...}` 等新语法在 Obsidian 中不会被识别为 Rua 语义，但也不会破坏文件读取。
 - YAML frontmatter 作为标准 Markdown/Obsidian 元数据保留，不属于 Rua 语义标注系统；Rua 的 `#![...]` 等标记属于正文范围。
 - Rua 提供独立的渲染/预览层来解析这些扩展。
 
-#heading(level=2)[未决问题]
+== 未决问题
 
 1. Module 的可见性机制：暂不设计，默认全部公开。
 
 ---
 
-#heading(level=2)[2026-07-04 初始设计 (claude-code, kimi-for-coding)]
+== 2026-07-04 初始设计 (claude-code, kimi-for-coding)
 
 通过讨论确定以下转向：
 

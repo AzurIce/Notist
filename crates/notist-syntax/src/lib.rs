@@ -428,6 +428,34 @@ mod tests {
         );
     }
 
+    #[test]
+    fn skips_line_and_nested_block_comments_without_treating_urls_as_comments() {
+        let source = "before // hidden\nafter /* outer /* nested */ hidden */ https://example.test/a/*path*/";
+        let parse = parse(source);
+        assert!(parse.errors.is_empty(), "{:?}", parse.errors);
+        let visible = parse
+            .root
+            .items
+            .iter()
+            .filter_map(|item| match item {
+                MarkupItem::Text(text) => Some(text.value.as_str()),
+                _ => None,
+            })
+            .collect::<String>();
+        assert_eq!(visible, "before \nafter  https://example.test/a/*path*/");
+    }
+
+    #[test]
+    fn reports_unclosed_block_comments() {
+        let parse = parse("visible /* hidden");
+        assert!(
+            parse
+                .errors
+                .iter()
+                .any(|error| error.message == "unclosed block comment")
+        );
+    }
+
     fn parse_source<'a>(_parse: &Parse, range: TextRange, source: &'a str) -> &'a str {
         &source[range.start..range.end]
     }

@@ -3,10 +3,18 @@ use std::fmt;
 mod content;
 mod signature;
 
-pub use content::{Block, Content, Element, ElementNode, StructuredDocument};
+pub use content::{
+    Block, Content, Element, ElementNode, StructuredDocument, TableAlignment, TableCellPlacement,
+    TableLayoutError, table_layout,
+};
 pub use signature::{
-    DefaultValue, FunctionSignature, Parameter, Type, builtin_signatures, heading_signature,
-    quote_signature, raw_signature,
+    DefaultValue, FunctionSignature, Parameter, Type, abbr_signature, audio_signature,
+    builtin_signatures, callout_signature, cite_signature, code_signature, details_signature,
+    empty_content_signature, enum_item_signature, figure_signature, heading_signature,
+    image_signature, inline_body_signature, link_signature, list_item_signature, list_signature,
+    math_signature, outline_signature, quote_signature, raw_signature, ref_signature,
+    table_cell_signature, table_signature, task_item_signature, terms_item_signature,
+    text_signature, time_signature, video_signature,
 };
 
 /// A half-open byte range in a source file.

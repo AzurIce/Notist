@@ -1,4 +1,4 @@
-#heading(level=1)[Notist.toml]
+= Notist.toml
 
 Notist.toml 是 vault root marker。文件所在目录就是一个独立 vault 的根目录；它不用于指向另一个内容目录。
 
@@ -19,13 +19,13 @@ vault/
 - page.not -> vault::page
 - section/README.not -> vault::section
 
-#heading(level=2)[Why a Marker]
+== Why a Marker
 
 编辑器打开的 worktree 不一定等于 vault。一个代码仓库可以把 Notist 文档放在 docs，也可以同时包含 docs、notes 和 examples 等多个独立 vault。
 
 如果直接使用编辑器的 workspace root，代码、构建目录和其他文档目录都会错误地参与 Module 扫描。显式 marker 让 vault 边界由内容作者声明，而不依赖目录名约定或某个编辑器的项目模型。
 
-#heading(level=2)[Discovery]
+== Discovery
 
 对一个 Notist source，归属规则是从文件目录开始向上寻找最近的 Notist.toml。最近 marker 的父目录就是该文件的 vault root。
 
@@ -43,7 +43,7 @@ guide.not 属于 docs vault，today.not 属于 notes vault。两个 vault 都拥
 
 发现算法忽略隐藏目录、target 和 node_modules，避免把构建缓存或依赖树当成项目内容。
 
-#heading(level=2)[Nested Vaults]
+== Nested Vaults
 
 marker 可以嵌套：
 
@@ -60,7 +60,7 @@ examples 是独立 vault。扫描外层 docs 时，遇到 examples/Notist.toml �
 
 从文件反向发现时仍采用最近祖先规则，因此 examples/README.not 只归属于 examples。
 
-#heading(level=2)[CLI Behavior]
+== CLI Behavior
 
 CLI 接收的路径先经过 vault discovery：
 
@@ -78,7 +78,7 @@ notist build
 notist preview
 ```
 
-#heading(level=2)[LSP Behavior]
+== LSP Behavior
 
 Zed 等编辑器通常以整个 worktree 启动一个 Notist language server。LSP 在该 worktree 内发现所有 Notist.toml，并为每个 root 建立独立 Workspace。
 
@@ -94,7 +94,7 @@ didOpen 和 didChange 的 source overlay 按最近 marker 分配。Definition、
 
 如果 worktree 中没有任何 marker，LSP 继续把 worktree root 作为单个 implicit vault。
 
-#heading(level=2)[Reserved Configuration]
+== Reserved Configuration
 
 Notist.toml 的内容目前保留，建议保持为空。未来可以在不改变 vault root 语义的前提下加入：
 

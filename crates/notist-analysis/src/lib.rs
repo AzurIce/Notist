@@ -4,8 +4,8 @@ use std::io;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
-use notist_model::{ModulePath, TextRange};
-use notist_syntax::{Parse, parse};
+use notist_model::{ModulePath, TextRange, WikiReference};
+use notist_syntax::{Call, Expression, ExpressionKind, Parse, parse, parse_wiki_reference};
 
 mod check;
 
@@ -32,9 +32,10 @@ pub type SourceOverlays = BTreeMap<PathBuf, Arc<str>>;
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum DiagnosticKind {
     DuplicateModule,
+    DuplicateLabel,
     InvalidSyntax,
     UnresolvedModule,
-    UnsupportedLabelReference,
+    UnresolvedLabel,
     UnknownFunction,
     InvalidArguments,
     TypeMismatch,
@@ -54,12 +55,24 @@ pub struct ResolvedReference {
     pub source_path: PathBuf,
     pub range: TextRange,
     pub target_module: ModulePath,
+    pub target_label: Option<String>,
+    pub target_range: Option<TextRange>,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct LabelDefinition {
+    pub module: ModulePath,
+    pub source_path: PathBuf,
+    pub name: String,
+    pub range: TextRange,
+    pub scope_range: TextRange,
 }
 
 #[derive(Clone, Debug)]
 pub struct Workspace {
     root: PathBuf,
     modules: BTreeMap<ModulePath, Module>,
+    labels: Vec<LabelDefinition>,
     references: Vec<ResolvedReference>,
     diagnostics: Vec<Diagnostic>,
     revision: u64,
@@ -92,6 +105,7 @@ impl Workspace {
         let mut workspace = Self {
             root: root.clone(),
             modules: BTreeMap::new(),
+            labels: Vec::new(),
             references: Vec::new(),
             diagnostics: Vec::new(),
             revision,
@@ -122,6 +136,16 @@ impl Workspace {
 
     pub fn references(&self) -> &[ResolvedReference] {
         &self.references
+    }
+
+    pub fn labels(&self) -> &[LabelDefinition] {
+        &self.labels
+    }
+
+    pub fn label(&self, module: &ModulePath, name: &str) -> Option<&LabelDefinition> {
+        self.labels
+            .iter()
+            .find(|label| &label.module == module && label.name == name)
     }
 
     /// Returns a module by its logical path.
@@ -252,8 +276,40 @@ impl Workspace {
 
     fn analyze_references(&mut self) {
         let mut diagnostics = Vec::new();
+        let mut labels = Vec::new();
+        let mut label_indexes = BTreeMap::new();
         let mut references = Vec::new();
         let signatures = SignatureSet::with_builtins();
+
+        for module in self.modules.values() {
+            let (Some(source_path), Some(parse)) = (&module.source_path, &module.parse) else {
+                continue;
+            };
+            for annotation in parse.annotations() {
+                let Some(id) = &annotation.attributes.id else {
+                    continue;
+                };
+                let key = (module.logical_path.clone(), id.value.clone());
+                if label_indexes.contains_key(&key) {
+                    diagnostics.push(Diagnostic {
+                        kind: DiagnosticKind::DuplicateLabel,
+                        message: format!("duplicate label `{}`", id.value),
+                        source_path: Some(source_path.clone()),
+                        range: Some(id.range),
+                    });
+                    continue;
+                }
+                label_indexes.insert(key, labels.len());
+                labels.push(LabelDefinition {
+                    module: module.logical_path.clone(),
+                    source_path: source_path.clone(),
+                    name: id.value.clone(),
+                    range: id.range,
+                    scope_range: annotation.scope_range,
+                });
+            }
+        }
+
         for module in self.modules.values() {
             let (Some(source_path), Some(parse)) = (&module.source_path, &module.parse) else {
                 continue;
@@ -266,24 +322,32 @@ impl Workspace {
                 range: Some(error.range),
             }));
 
-            for link in parse.links() {
-                if link.target.label.is_some() {
-                    diagnostics.push(Diagnostic {
-                        kind: DiagnosticKind::UnsupportedLabelReference,
-                        message: "block label references are reserved but not implemented yet"
-                            .into(),
-                        source_path: Some(source_path.clone()),
-                        range: Some(link.range),
-                    });
-                    continue;
+            let mut module_references: Vec<_> = parse
+                .links()
+                .into_iter()
+                .map(|link| (link.target.clone(), link.range))
+                .collect();
+            for call in parse.calls() {
+                if let Some(reference) = explicit_ref_target(call) {
+                    match reference {
+                        Ok(reference) => module_references.push((reference, call.range)),
+                        Err(message) => diagnostics.push(Diagnostic {
+                            kind: DiagnosticKind::InvalidArguments,
+                            message,
+                            source_path: Some(source_path.clone()),
+                            range: Some(call.range),
+                        }),
+                    }
                 }
+            }
 
-                let Some(target) = link.target.module.resolve_from(&module.logical_path) else {
+            for (reference, range) in module_references {
+                let Some(target) = reference.module.resolve_from(&module.logical_path) else {
                     diagnostics.push(Diagnostic {
                         kind: DiagnosticKind::UnresolvedModule,
                         message: "module path escapes above `vault`".into(),
                         source_path: Some(source_path.clone()),
-                        range: Some(link.range),
+                        range: Some(range),
                     });
                     continue;
                 };
@@ -293,16 +357,36 @@ impl Workspace {
                         kind: DiagnosticKind::UnresolvedModule,
                         message: format!("unresolved module `{target}`"),
                         source_path: Some(source_path.clone()),
-                        range: Some(link.range),
+                        range: Some(range),
                     });
-                } else {
-                    references.push(ResolvedReference {
-                        source_module: module.logical_path.clone(),
-                        source_path: source_path.clone(),
-                        range: link.range,
-                        target_module: target,
-                    });
+                    continue;
                 }
+
+                let target_definition = reference.label.as_ref().and_then(|label| {
+                    label_indexes
+                        .get(&(target.clone(), label.clone()))
+                        .map(|index| &labels[*index])
+                });
+                if let Some(label) = &reference.label
+                    && target_definition.is_none()
+                {
+                    diagnostics.push(Diagnostic {
+                        kind: DiagnosticKind::UnresolvedLabel,
+                        message: format!("unresolved label `{label}` in module `{target}`"),
+                        source_path: Some(source_path.clone()),
+                        range: Some(range),
+                    });
+                    continue;
+                }
+
+                references.push(ResolvedReference {
+                    source_module: module.logical_path.clone(),
+                    source_path: source_path.clone(),
+                    range,
+                    target_module: target,
+                    target_label: reference.label,
+                    target_range: target_definition.map(|definition| definition.range),
+                });
             }
             diagnostics.extend(
                 check_module(parse, &signatures)
@@ -315,8 +399,33 @@ impl Workspace {
                     }),
             );
         }
+        self.labels = labels;
         self.references = references;
         self.diagnostics.extend(diagnostics);
+    }
+}
+
+fn explicit_ref_target(call: &Call) -> Option<Result<WikiReference, String>> {
+    if call.name.value != "ref" || !call.trailing.is_empty() || call.arguments.len() != 1 {
+        return None;
+    }
+    let argument = &call.arguments[0];
+    if argument
+        .name
+        .as_ref()
+        .is_some_and(|name| name.value != "target")
+    {
+        return None;
+    }
+    let value = string_expression(&argument.expression)?;
+    Some(parse_wiki_reference(value))
+}
+
+fn string_expression(expression: &Expression) -> Option<&str> {
+    match &expression.kind {
+        ExpressionKind::String(literal) => Some(&literal.value),
+        ExpressionKind::Parenthesized(inner) => string_expression(inner),
+        _ => None,
     }
 }
 
@@ -520,6 +629,37 @@ mod tests {
     }
 
     #[test]
+    fn indexes_explicit_ref_calls_and_reports_invalid_targets() {
+        let root = TempDir::new().unwrap();
+        fs::create_dir(root.path().join("pages")).unwrap();
+        fs::write(
+            root.path().join("README.not"),
+            "#ref(\"pages\") #ref(\"missing\") #ref(\"vault::::bad\")",
+        )
+        .unwrap();
+        fs::write(root.path().join("pages/README.not"), "Target").unwrap();
+
+        let workspace = Workspace::load(root.path()).unwrap();
+        assert_eq!(workspace.references().len(), 1);
+        assert_eq!(
+            workspace.references()[0].target_module,
+            ModulePath::from_segments(["pages".into()])
+        );
+        assert!(workspace.diagnostics().iter().any(|diagnostic| {
+            diagnostic.kind == DiagnosticKind::UnresolvedModule
+                && diagnostic.message.contains("missing")
+        }));
+        assert!(
+            workspace.diagnostics().iter().any(|diagnostic| {
+                diagnostic.kind == DiagnosticKind::InvalidArguments
+                    && diagnostic.message.contains("empty segment")
+            }),
+            "{:?}",
+            workspace.diagnostics()
+        );
+    }
+
+    #[test]
     fn reports_file_and_readme_module_collisions() {
         let root = TempDir::new().unwrap();
         fs::create_dir(root.path().join("pages")).unwrap();
@@ -534,7 +674,7 @@ mod tests {
     }
 
     #[test]
-    fn reports_missing_modules_and_labels_as_unsupported() {
+    fn reports_missing_modules_and_unresolved_labels() {
         let root = TempDir::new().unwrap();
         fs::write(root.path().join("README.not"), "[[missing]] [[#label]]").unwrap();
 
@@ -550,7 +690,70 @@ mod tests {
             workspace
                 .diagnostics()
                 .iter()
-                .any(|diagnostic| diagnostic.kind == DiagnosticKind::UnsupportedLabelReference)
+                .any(|diagnostic| diagnostic.kind == DiagnosticKind::UnresolvedLabel)
+        );
+    }
+
+    #[test]
+    fn resolves_module_and_local_labels_from_source_annotations() {
+        let root = TempDir::new().unwrap();
+        fs::create_dir(root.path().join("pages")).unwrap();
+        fs::write(
+            root.path().join("README.not"),
+            "[[pages::guide#intro]] [[#here]] #[Here]@here",
+        )
+        .unwrap();
+        fs::write(
+            root.path().join("pages/guide.not"),
+            "#heading[Introduction]@intro",
+        )
+        .unwrap();
+
+        let workspace = Workspace::load(root.path()).unwrap();
+        assert!(
+            workspace.diagnostics().is_empty(),
+            "{:?}",
+            workspace.diagnostics()
+        );
+        assert_eq!(workspace.labels().len(), 2);
+        assert_eq!(workspace.references().len(), 2);
+        assert!(
+            workspace
+                .references()
+                .iter()
+                .any(|reference| reference.target_label.as_deref() == Some("here"))
+        );
+        assert!(
+            workspace
+                .references()
+                .iter()
+                .any(|reference| reference.target_label.as_deref() == Some("intro"))
+        );
+        assert!(
+            workspace
+                .references()
+                .iter()
+                .all(|reference| reference.target_range.is_some())
+        );
+    }
+
+    #[test]
+    fn reports_duplicate_labels_without_hiding_the_first_definition() {
+        let root = TempDir::new().unwrap();
+        fs::write(
+            root.path().join("README.not"),
+            "#[one]@same #[two]@same [[#same]]",
+        )
+        .unwrap();
+
+        let workspace = Workspace::load(root.path()).unwrap();
+        assert_eq!(workspace.labels().len(), 1);
+        assert_eq!(workspace.references().len(), 1);
+        assert!(
+            workspace
+                .diagnostics()
+                .iter()
+                .any(|diagnostic| diagnostic.kind == DiagnosticKind::DuplicateLabel)
         );
     }
 

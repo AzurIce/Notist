@@ -7,5 +7,6 @@ Note + ist -> notist(also not an ist)
 - 设计记录 [[vault::designs]]
 - 当前语法规范 [[vault::grammar]]
 - 当前内置函数 [[vault::functions]]
+- 日常语法速查 [[vault::cheatsheet]]
 - 当前类型系统 [[vault::types]]
 - 插件系统与可拓展语法 [[vault::designs::rua-markdown-module-scope]]

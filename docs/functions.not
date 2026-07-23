@@ -1,77 +1,83 @@
-#heading(level=1)[Built-in Functions]
+= Built-in Functions
 
-本文定义当前 Notist 运行时提供的内置 Function。语法规则见 [[vault::grammar]]，Function、Content 与 Element 的整体模型见 [[vault::intro]]。`designs/2026-07-12 builtin processors` 记录早期设计过程，其中的 Raw Call、`RawSource` 和旧签名已经过时，不作为当前行为依据。
+本文记录当前 core `FunctionRegistry` 实际注册的 Function。未列出的名称不是 built-in，调用时会产生 unknown function 诊断。
 
-#heading(level=2)[共同模型]
-
-内置 Function 与插件 Function 使用同一套调用、类型检查和参数绑定模型。当前内置 Function 都返回 `Content`：
+== 签名总览
 
 ```text
+text(value: String) -> Content
+paragraph(body: Content) -> Content
+ref(target: String) -> Content
 heading(level: Int = 1, body: Content) -> Content
 raw(text: String, lang: String? = none) -> Content
-quote(body: Content) -> Content
+code(text: String, lang: String? = none, block: Bool = false) -> Content
+quote(attribution: Content? = none, body: Content) -> Content
+callout(kind: String = "note", title: Content? = none, body: Content) -> Content
+details(summary: Content? = none, open: Bool = false, body: Content) -> Content
+list(body: Content) -> Content
+enum(body: Content) -> Content
+list::item(body: Content) -> Content
+enum::item(value: Int? = none, body: Content) -> Content
+task(body: Content) -> Content
+task::item(checked: Bool = false, body: Content) -> Content
+table::cell(colspan: Int = 1, rowspan: Int = 1, body: Content) -> Content
+table(columns: Int, header: Bool = false, align: String? = none, caption: Content? = none, body: Content) -> Content
+strong(body: Content) -> Content
+emph(body: Content) -> Content
+strike(body: Content) -> Content
+underline(body: Content) -> Content
+kbd(body: Content) -> Content
+math(text: String, block: Bool = false) -> Content
+link(destination: String, title: String? = none, body: Content) -> Content
+image(source: String, alt: String = "", title: String? = none, width: Int? = none, height: Int? = none) -> Content
+figure(source: String, alt: String = "", title: String? = none, caption: Content) -> Content
+linebreak() -> Content
+parbreak() -> Content
+rule() -> Content
+pagebreak() -> Content
 ```
 
-圆括号中的 positional argument 按签名顺序绑定，named argument 按名称绑定。`heading.body` 和 `quote.body` 是 trailing Content 参数，因此写在调用后的 `[...]` 中；它们不是普通 positional argument。`raw` 不接受 trailing Content，源码必须通过 `String` 参数传入。
-
-调用完成后，末尾的 Attributes 附着到返回 Content 对应的源范围，不属于 Function 参数：
+签名中的 `body: Content` 通常是 trailing Content 参数，因此在调用末尾写成 `[...]`。命名参数使用 `name=value`：
 
 ```not
-#heading(level=2)[Design]@section,#public
-#raw(text="cargo test")@command,#verified
+#heading(level=2)[标题]
+#link(destination="https://example.com", title="示例站点")[打开]
 ```
 
-#heading(level=2)[heading]
+== 文本、段落与引用
 
-```text
-heading(level: Int = 1, body: Content) -> Content
-```
-
-`heading` 产生一个 block `Heading` Element。
-
-- `level` 必须在 `1..=6` 范围内，默认值为 `1`。
-- `body` 是必需的 trailing Content，在调用点使用 `[...]` 传入。
-- body 会先按普通 Notist Content 解析和求值，可以包含引用、Raw Element 和嵌套 Function 调用。
+`text` 构造不会再次解析 Markup 的普通文本。`paragraph` 显式构造只包含 inline Content 的段落。普通文本和空行分别是它们更自然的宿主写法。
 
 ```not
-#heading[Introduction]
-#heading(level=2)[Design with [[self::references]]]
+普通文本会自然组成段落。
+
+#paragraph[显式段落可以包含 *加粗* 与 _斜体_。]
+#text("*这里的星号保持原样*")
 ```
 
-`#heading()` 没有提供 `body`，是参数绑定错误；`#heading(level="2")[Title]` 是类型错误；超出 `1..=6` 的 level 会在调用时产生诊断。
-
-#heading(level=2)[raw]
-
-```text
-raw(text: String, lang: String? = none) -> Content
-```
-
-`raw` 产生一个 `Raw` Element，正文不再作为 Notist Content 解析。
-
-- `text` 是必需的 String。
-- `lang` 是可选的语言标识，默认值为 `none`。
-- 直接传入的 Inline String literal 产生 inline Raw Element。
-- 直接传入的 Multiline String literal 产生 block Raw Element。
-- Escaped/Raw 只决定 String 的转义方式，不决定 inline/block。
+`ref` 指向 Module 或 label。Wiki Reference 是知识库书写时的语法糖：
 
 ```not
-#raw(text="cargo test")
-#raw(text=r#"fn main() {}"#, lang="rust")
-#raw(
-  text=r#"""
-fn main() {}
-"""#,
-  lang="rust",
-)
+[[guide::intro#overview]]
+#ref("guide::intro#overview")
 ```
 
-Multiline String 的 opening framing newline 和紧邻 closing delimiter 的一个 framing newline 不属于 `text`。除此之外 `raw` 不裁剪空白，也不执行 dedent。
+== Heading
 
-`raw` 不接受 trailing Content，因此 `#raw[content]` 是类型错误。已经删除的 `#raw![source]!` 和可升级 `!` delimiter 不是当前语法。
+`heading` 的 `level` 必须位于 `1..=6`。标题属于高频块结构，因此保留 Typst 风格的 `=` 语法：
 
-#heading(level=3)[Raw 语法糖]
+```not
+= 一级标题
+== 二级标题
 
-Inline backtick 与 fenced raw 是宿主 Content 语法，不是对动态名称 `raw` 的普通调用：
+#heading(level=3)[三级标题]
+```
+
+不支持 Markdown Setext 标题。
+
+== Raw 与 Code
+
+`raw` 和 `code` 都保存未经 Markup 解析的 String。`code.block` 显式选择 inline 或 block 输出；`lang` 是可选语言标识。
 
 ````not
 `inline raw`
@@ -79,40 +85,218 @@ Inline backtick 与 fenced raw 是宿主 Content 语法，不是对动态名称 
 ```rust
 fn main() {}
 ```
+
+#code(text="let answer = 42", lang="rust")
+#code(text="fn main() {}", lang="rust", block=true)
 ````
 
-它们绕过 FunctionRegistry 的名称查找，但与 `raw` 共享底层 Raw Element 构造逻辑。即使将来注册了另一个同名 Function，也不会改变 backtick 或 fence 的含义。Backtick 和 fence 也不是 Expression，不能直接作为 Function argument。
+Backtick 与 fenced Raw 是宿主语法。`raw` 和 `code` 不接受 trailing Content，源码必须作为 String 参数传入。
 
-#heading(level=2)[quote]
+== Quote
 
-```text
-quote(body: Content) -> Content
-```
-
-`quote` 产生一个 block `Quote` Element。
-
-- `body` 是必需的 trailing Content，在调用点使用 `[...]` 传入。
-- body 会先按普通 Notist Content 解析和求值。
-- `quote` 当前没有其他参数。
+`quote` 表示真正的转述或摘录。`attribution` 接受可选 Content，因此可以包含格式或引用：
 
 ```not
-#quote[Quoted content.]
-
 #quote[
-First paragraph.
+  Knowledge is power.
+]
 
-Second paragraph with [[self::reference]].
+#quote(attribution=[Francis Bacon])[
+  Knowledge is power.
 ]
 ```
 
-`#quote(source="book")[text]` 会产生 unknown argument 诊断。引用来源等语义信息应使用 Attributes 表达，而不是未定义的 Function 参数：
+Quote 不提供 `>` 语法糖；`>` 保持为普通文本。
+
+== Callout 与 Details
+
+`callout` 表示作者自己的提示性内容。`kind` 是供主题和导出使用的稳定分类，默认为 `note`；`title` 是可选 Content。
 
 ```not
-#quote[Quoted content.]@citation,#external,source="book"
+#callout[
+  这是一条普通提示。
+]
+
+#callout(kind="warning", title=[保存前检查])[
+  请确认配置已经写入磁盘。
+]
 ```
 
-#heading(level=2)[名称解析与扩展]
+`details` 只负责折叠状态。`summary` 是可选 Content，`open` 默认为 `false`；HTML renderer 在 summary 为 `none` 时使用通用的 `Details` 标题。
 
-`FunctionRegistry::with_builtins()` 注册本文列出的三个名称。显式调用通过 qualified name 查找 Function；未注册的调用会保留为 `UnresolvedCall`，供显示和工具链继续处理。
+```not
+#details(summary=[查看详情])[
+  默认折叠的内容。
+]
 
-插件 Function 与内置 Function 共享 signature、binding 和返回模型，但不能重复注册同一个完整名称。注册时 Registry 校验 signature：每个 default 必须满足其参数类型，`result` 必须为 `Content`，trailing Content 参数必须已声明且类型为 `Content`。新增内置 Function 时，应同时更新注册实现、求值测试、LSP completion/hover 测试和本文档。
+#details(open=true)[
+  初始展开的内容。
+]
+```
+
+可折叠 Callout 由外层 Callout 提供语义和样式，内层 Details 控制展开：
+
+```not
+#callout(kind="warning", title=[风险说明])[
+  #details(summary=[查看详情])[
+    这里是折叠的警告内容。
+  ]
+]
+```
+
+Callout 与 Details 都不提供 `!!!`、`???` 或 `>` 简写。
+
+== Inline Content
+
+常用 inline Function 与宿主语法如下：
+
+| 效果 | Function | 宿主语法 |
+| --- | --- | --- |
+| 加粗 | `strong(body: Content)` | `*重要*` |
+| 斜体 | `emph(body: Content)` | `_强调_` |
+| 下划线 | `underline(body: Content)` | `__术语__` |
+| 删除线 | `strike(body: Content)` | `~~作废~~` |
+| 键盘输入 | `kbd(body: Content)` | 无 |
+
+```not
+这段文字包含 *加粗*、_斜体_、__下划线__ 和 ~~删除线~~。
+
+按下 #kbd[Ctrl + S] 保存。
+```
+
+`kbd` 的显式调用已经足够简洁，因此不增加定界符。
+
+== List、Enum 与 Task
+
+显式容器只接受对应的 item Element：
+
+```not
+#list[
+  #list::item[Alpha]
+  #list::item[Beta]
+]
+
+#enum[
+  #enum::item[First]
+  #enum::item[Second]
+]
+
+#task[
+  #task::item[待处理]
+  #task::item(checked=true)[已完成]
+]
+```
+
+日常书写使用更紧凑的宿主语法：
+
+```not
+- Alpha
+- Beta
+
++ First
++ Second
+
+- [ ] 待处理
+- [x] 已完成
+```
+
+缩进可以构造嵌套列表或 Task。
+
+== Math
+
+`math` 保存公式源码，`block` 决定 inline 或 block。`$...$` 与 `$$...$$` 是高频公式的宿主语法：
+
+```not
+行内公式 $x^2 + y^2$。
+
+$$
+E = mc^2
+$$
+
+#math("x^2 + y^2")
+#math("E = mc^2", block=true)
+```
+
+== Link、Image 与 Figure
+
+`link` 使用 trailing Content 作为可见文本。裸 HTTP(S) URL 会自动产生 Link；Markdown 的 `[label](url)` 不是 Notist 语法。
+
+```not
+https://example.com
+#link("https://example.com")[示例站点]
+```
+
+图片和图注使用显式 Function：
+
+```not
+#image(source="images/flow.png", alt="流程图", width=640)
+
+#figure(source="images/flow.png", alt="流程图")[
+  构建流程
+]
+```
+
+Video 与 Audio 不属于 core，后续由 media plugin 提供。
+
+== Table
+
+显式 Table 适合动态构造，Pipe Table 适合直接阅读和维护：
+
+```not
+#table(columns=2, header=true, align="left,right", caption=[库存])[
+  #table::cell[名称]
+  #table::cell[数量]
+  #table::cell[Apple]
+  #table::cell[2]
+]
+
+| 名称 | 数量 |
+| --- | ---: |
+| Apple | 2 |
+```
+
+`colspan` 与 `rowspan` 必须是正整数。`align` 是与列数相同的逗号分隔列表，成员为 `left`、`center`、`right` 或 `default`。
+
+== Break
+
+```not
+第一行\
+仍在同一段落。
+
+#linebreak()
+#parbreak()
+#rule()
+#pagebreak()
+```
+
+行末反斜线是 `linebreak` 的高频语法糖。`rule` 当前只提供显式 Function，不把 Markdown 的 `---`、`***` 或 `___` 识别为分隔线。
+
+== 源码注释
+
+注释属于 lexer/parser trivia，不是 Element，也没有 `comment` Function：
+
+```not
+可见内容。 // 单行注释
+
+/*
+  块注释可以跨行。
+  /* 也可以嵌套。 */
+*/
+```
+
+URL 中的 `https://` 不会被误识别为单行注释。
+
+== Plugin 边界
+
+以下能力已经移出 core，不再注册 Function，也不再识别旧语法糖：
+
+| 能力 | 后续方向 |
+| --- | --- |
+| Footnote、Citation | publishing / bibliography plugin |
+| Abbreviation | glossary plugin |
+| Insert | revision plugin |
+| Spoiler | interactive plugin |
+| Highlight、Super、Sub | typography / math plugin |
+| Terms、Outline | semantic list / navigation plugin |
+| Sample、Time | semantic metadata plugin |
+| Video、Audio | media plugin |

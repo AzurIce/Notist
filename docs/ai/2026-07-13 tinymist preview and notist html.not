@@ -1,8 +1,8 @@
-#heading(level=1)[Tinymist Preview 调查]
+= Tinymist Preview 调查
 
 本文调查 Tinymist 的预览能力和实现分层。调查基于 Tinymist 官方仓库 2026-07-12 的主分支代码和 crates.io 上的 `0.15.2` 版本。Notist 自身的设计记录在 [[vault::designs::2026-07-13 preview and html]]。
 
-#heading(level=2)[结论]
+== 结论
 
 Tinymist 自带完整预览能力。它不是只通过编辑器扩展调用外部编译器，而是在默认 CLI 构建中启用 `preview` feature，并提供 `tinymist preview` 子命令。
 
@@ -35,31 +35,31 @@ tinymist preview
   -> 浏览器中的内嵌预览前端
 ```
 
-#heading(level=2)[实现分层]
+== 实现分层
 
 Tinymist 没有让浏览器直接解释 Typst 源码。预览首先启动 Typst project 和增量编译服务，`CompileWatcher` 消费编译结果，再把排版文档转换为适合浏览器增量更新的矢量表示。
 
 预览 CLI、编译服务、预览服务器和前端是分离的组件，但通过默认 `preview` feature 一起进入 Tinymist CLI 构建。用户不需要额外安装独立的 preview server。
 
-#heading(level=2)[传输与前端]
+== 传输与前端
 
 Tinymist 使用 HTTP 提供预览前端和相关资源，使用 WebSocket 作为 data plane。协议传输的是 Typst 文档的增量矢量更新及控制消息，而不是原始 `.typ` 文本。
 
 预览前端资源被嵌入 CLI 二进制，运行时不依赖额外的静态资源目录。浏览器连接后接收完整或增量文档状态，并负责页面、幻灯片模式和交互控制。
 
-#heading(level=2)[编辑器集成]
+== 编辑器集成
 
 Tinymist 的 LSP 可以启动和停止 preview，并向预览端发送滚动、定位等控制。源码位置和排版文档中的 span 映射使双向定位成为可能：编辑器位置可以驱动预览滚动，预览中的点击也可以返回源码位置。
 
 这说明 Tinymist 的 preview 不是 LSP 的渲染结果。LSP 是生命周期和交互控制入口，实际文档仍来自共享的 project/compiler 管线。
 
-#heading(level=2)[网络与错误处理]
+== 网络与错误处理
 
 本地预览默认绑定 `127.0.0.1`，并对 WebSocket Origin 进行检查。这样可以降低其他网页直接连接本地预览服务的风险，但预览内容本身仍应被视为本地敏感数据。
 
 编辑过程中的短暂编译错误不会要求整个 preview 进程退出。编译状态和可显示的文档结果被分别处理，使前端能够继续工作并报告错误。
 
-#heading(level=2)[适用边界]
+== 适用边界
 
 `tinymist-preview` 的输入是 Typst 已排版文档，输出包含页面、帧坐标、部分渲染、增量矢量内容和 Typst source span 映射。它服务的是分页排版预览，而不是通用 HTML 文档渲染。
 
@@ -73,7 +73,7 @@ Tinymist 的 LSP 可以启动和停止 preview，并向预览端发送滚动、�
 
 Notist 对这些原则的具体取舍见 [[vault::designs::2026-07-13 preview and html]]。
 
-#heading(level=2)[资料]
+== 资料
 
 - Tinymist repository: https://github.com/Myriad-Dreamin/tinymist
 - Tinymist preview CLI: `crates/tinymist-cli/src/cmd/preview.rs`

@@ -101,7 +101,7 @@ pub(crate) fn lower_fragment(
 
 #[cfg(test)]
 mod tests {
-    use notist_model::{Block, Content, Element, ElementNode, TextRange};
+    use notist_model::{Block, Content, Element, ElementNode, TableAlignment, TextRange};
 
     use super::*;
 
@@ -201,9 +201,42 @@ mod tests {
         assert!(evaluation.diagnostics.is_empty());
         let structured = structure(evaluation);
         assert_eq!(structured.document.blocks.len(), 3);
-        assert!(matches!(structured.document.blocks[0], Block::Paragraph(_)));
+        assert!(matches!(
+            &structured.document.blocks[0],
+            Block::Element(node) if matches!(node.element, Element::Paragraph(_))
+        ));
         assert!(matches!(structured.document.blocks[1], Block::Element(_)));
-        assert!(matches!(structured.document.blocks[2], Block::Paragraph(_)));
+        assert!(matches!(
+            &structured.document.blocks[2],
+            Block::Element(node) if matches!(node.element, Element::Paragraph(_))
+        ));
+    }
+
+    #[test]
+    fn plain_markup_and_text_function_share_the_text_element() {
+        let evaluator = Evaluator::default();
+        let plain = evaluator.evaluate("plain text");
+        let explicit = evaluator.evaluate("#text(\"plain text\")");
+        assert!(plain.diagnostics.is_empty());
+        assert!(explicit.diagnostics.is_empty());
+        assert_eq!(
+            plain.content.elements[0].element,
+            explicit.content.elements[0].element
+        );
+    }
+
+    #[test]
+    fn structuring_unifies_plain_and_explicit_paragraphs() {
+        let evaluator = Evaluator::default();
+        for source in ["plain *content*", "#paragraph[plain *content*]"] {
+            let structured = structure(evaluator.evaluate(source));
+            assert!(matches!(
+                structured.document.blocks.as_slice(),
+                [Block::Element(node)]
+                    if matches!(&node.element, Element::Paragraph(body)
+                        if body.elements.iter().any(|child| matches!(child.element, Element::Strong(_))))
+            ));
+        }
     }
 
     #[test]
@@ -232,6 +265,18 @@ mod tests {
             } if text == "fn main() {}" && language == "rust"
         ));
 
+        let explicit_inline = evaluator.evaluate("#code(\"cargo test\")");
+        assert_eq!(
+            explicit_inline.content.elements[0].element,
+            inline.content.elements[1].element
+        );
+        let explicit_block =
+            evaluator.evaluate("#code(\"fn main() {}\", lang=\"rust\", block=true)");
+        assert_eq!(
+            explicit_block.content.elements[0].element,
+            fenced.content.elements[0].element
+        );
+
         let explicit = evaluator.evaluate("#raw(r#\"cargo test\"#)");
         assert!(
             explicit.diagnostics.is_empty(),
@@ -252,6 +297,714 @@ mod tests {
         assert!(matches!(
             &without_builtins.content.elements[0].element,
             Element::Raw { text, .. } if text == "core raw"
+        ));
+    }
+
+    #[test]
+    fn lowers_list_and_table_surface_sugar() {
+        let evaluator = Evaluator::default();
+        let lists = evaluator.evaluate("- first\n- second\n+ third\n+ fourth");
+        assert!(lists.diagnostics.is_empty(), "{:?}", lists.diagnostics);
+        assert!(matches!(
+            lists.content.elements[0].element,
+            Element::ListItem(_)
+        ));
+        assert!(matches!(
+            lists.content.elements[1].element,
+            Element::ListItem(_)
+        ));
+        assert!(matches!(
+            lists.content.elements[2].element,
+            Element::EnumItem { .. }
+        ));
+        assert!(matches!(
+            lists.content.elements[3].element,
+            Element::EnumItem { .. }
+        ));
+        assert!(matches!(
+            lists.content.elements[3].element,
+            Element::EnumItem { value: None, .. }
+        ));
+
+        let table = evaluator.evaluate("| A | B |\n| C | D |\n");
+        assert!(table.diagnostics.is_empty(), "{:?}", table.diagnostics);
+        assert!(matches!(
+            &table.content.elements[0].element,
+            Element::Table { columns: 2, header: false, cells, .. } if cells.len() == 4
+        ));
+
+        let header_table = evaluator.evaluate("| Name | Value |\n| :--- | ---: |\n| one | two |");
+        assert!(
+            header_table.diagnostics.is_empty(),
+            "{:?}",
+            header_table.diagnostics
+        );
+        assert!(matches!(
+            &header_table.content.elements[0].element,
+            Element::Table { columns: 2, header: true, alignments, cells, .. }
+                if cells.len() == 4
+                    && alignments == &[TableAlignment::Left, TableAlignment::Right]
+        ));
+
+        let caption_table = evaluator.evaluate("| A | B |\n| C | D |\n: *Inventory*");
+        assert!(
+            caption_table.diagnostics.is_empty(),
+            "{:?}",
+            caption_table.diagnostics
+        );
+        assert!(matches!(
+            &caption_table.content.elements[0].element,
+            Element::Table { caption: Some(caption), .. }
+                if matches!(&caption.elements[0].element, Element::Strong(_))
+        ));
+
+        let escaped_pipe = evaluator.evaluate("| A \\| B | C |");
+        assert!(
+            escaped_pipe.diagnostics.is_empty(),
+            "{:?}",
+            escaped_pipe.diagnostics
+        );
+        assert!(matches!(
+            &escaped_pipe.content.elements[0].element,
+            Element::Table { columns: 2, cells, .. }
+                if matches!(&cells[0].element, Element::TableCell { body, .. }
+                    if body.elements.iter().map(|node| match &node.element {
+                        Element::Text(value) => value.as_str(),
+                        _ => "",
+                    }).collect::<String>() == "A | B")
+        ));
+    }
+
+    #[test]
+    fn lowers_rich_content_inside_pipe_table_cells() {
+        let evaluated = Evaluator::default().evaluate(
+            "| Code | Reference | Content |\n| --- | --- | --- |\n| `a|b` | [[guide]] | #strong[x | y] |",
+        );
+        assert!(
+            evaluated.diagnostics.is_empty(),
+            "{:?}",
+            evaluated.diagnostics
+        );
+        assert!(matches!(
+            &evaluated.content.elements[0].element,
+            Element::Table { columns: 3, header: true, cells, .. }
+                if matches!(&cells[3].element, Element::TableCell { body, .. }
+                    if matches!(&body.elements[0].element, Element::Raw { text, block: false, .. } if text == "a|b"))
+                && matches!(&cells[4].element, Element::TableCell { body, .. }
+                    if matches!(body.elements[0].element, Element::Reference(_)))
+                && matches!(&cells[5].element, Element::TableCell { body, .. }
+                    if matches!(body.elements[0].element, Element::Strong(_)))
+        ));
+    }
+
+    #[test]
+    fn lowers_headings_and_tables_inside_long_form_markup() {
+        let evaluated = Evaluator::default()
+            .evaluate("= Title\n\nIntro\n\n| A | B |\n| --- | --- |\n| one | two |\n\nOutro");
+        assert!(
+            evaluated.diagnostics.is_empty(),
+            "{:?}",
+            evaluated.diagnostics
+        );
+        assert!(matches!(
+            evaluated.content.elements.first().map(|node| &node.element),
+            Some(Element::Heading { level: 1, .. })
+        ));
+        assert!(
+            evaluated
+                .content
+                .elements
+                .iter()
+                .any(|node| matches!(node.element, Element::Table { header: true, .. }))
+        );
+        assert!(
+            evaluated
+                .content
+                .elements
+                .iter()
+                .any(|node| matches!(&node.element, Element::Text(text) if text.contains("Outro")))
+        );
+    }
+
+    #[test]
+    fn lowers_indented_mixed_nested_lists() {
+        let evaluated =
+            Evaluator::default().evaluate("- parent\n  + first child\n  + second child\n- sibling");
+        assert!(
+            evaluated.diagnostics.is_empty(),
+            "{:?}",
+            evaluated.diagnostics
+        );
+        assert!(matches!(
+            evaluated.content.elements.as_slice(),
+            [ElementNode { element: Element::ListItem(parent), .. }, ElementNode { element: Element::ListItem(_), .. }]
+                if matches!(parent.elements[1].element, Element::EnumItem { .. })
+                    && matches!(parent.elements[2].element, Element::EnumItem { .. })
+        ));
+        let structured = structure(evaluated);
+        assert!(matches!(
+            &structured.document.blocks[0],
+            Block::Element(ElementNode {
+                element: Element::List { ordered: false, items },
+                ..
+            }) if items.len() == 2
+        ));
+    }
+
+    #[test]
+    fn reserves_asterisks_for_inline_strong() {
+        let evaluated = Evaluator::default().evaluate("* item");
+        assert!(
+            evaluated.diagnostics.is_empty(),
+            "{:?}",
+            evaluated.diagnostics
+        );
+        assert!(
+            !evaluated
+                .content
+                .elements
+                .iter()
+                .any(|node| matches!(node.element, Element::ListItem(_)))
+        );
+
+        let inline = Evaluator::default().evaluate("*strong*");
+        assert!(matches!(
+            inline.content.elements.as_slice(),
+            [ElementNode {
+                element: Element::Strong(_),
+                ..
+            }]
+        ));
+    }
+
+    #[test]
+    fn lowers_escaped_inline_punctuation_as_literal_text() {
+        let evaluated = Evaluator::default().evaluate("\\*not strong\\* and \\|pipe\\|");
+        assert!(
+            evaluated.diagnostics.is_empty(),
+            "{:?}",
+            evaluated.diagnostics
+        );
+        assert!(
+            !evaluated
+                .content
+                .elements
+                .iter()
+                .any(|node| matches!(node.element, Element::Strong(_)))
+        );
+        assert_eq!(
+            evaluated
+                .content
+                .elements
+                .iter()
+                .filter_map(|node| match &node.element {
+                    Element::Text(value) => Some(value.as_str()),
+                    _ => None,
+                })
+                .collect::<String>(),
+            "*not strong* and |pipe|"
+        );
+    }
+
+    #[test]
+    fn numbered_markdown_lists_remain_text() {
+        let evaluated = Evaluator::default().evaluate("3) third\n  7) nested\n9) ninth");
+        assert!(
+            evaluated.diagnostics.is_empty(),
+            "{:?}",
+            evaluated.diagnostics
+        );
+        assert!(
+            !evaluated
+                .content
+                .elements
+                .iter()
+                .any(|node| matches!(node.element, Element::EnumItem { .. }))
+        );
+    }
+
+    #[test]
+    fn lowers_indented_nested_task_lists() {
+        let evaluated = Evaluator::default().evaluate("- [ ] Parent\n  - [x] Child\n- [x] Sibling");
+        assert!(
+            evaluated.diagnostics.is_empty(),
+            "{:?}",
+            evaluated.diagnostics
+        );
+        assert!(matches!(
+            evaluated.content.elements.as_slice(),
+            [ElementNode { element: Element::TaskItem { body: parent_body, .. }, .. },
+             ElementNode { element: Element::TaskItem { checked: true, .. }, .. }]
+                if matches!(parent_body.elements[1].element, Element::TaskItem { checked: true, .. })
+        ));
+    }
+
+    #[test]
+    #[ignore = "legacy feature moved to plugin"]
+    fn lowers_indented_nested_definition_lists() {
+        let evaluated =
+            Evaluator::default().evaluate("/ API: Interface\n  / HTTP: Transport\n/ URL: Address");
+        assert!(
+            evaluated.diagnostics.is_empty(),
+            "{:?}",
+            evaluated.diagnostics
+        );
+        assert!(matches!(
+            evaluated.content.elements.as_slice(),
+            [ElementNode { element: Element::TermItem { description: parent_description, .. }, .. },
+             ElementNode { element: Element::TermItem { .. }, .. }]
+                if matches!(parent_description.elements[1].element, Element::TermItem { .. })
+        ));
+    }
+
+    #[test]
+    fn lowers_inline_surface_sugar() {
+        let evaluated =
+            Evaluator::default().evaluate("*bold* _slanted_ https://example.test/page.\\\nnext");
+        assert!(
+            evaluated.diagnostics.is_empty(),
+            "{:?}",
+            evaluated.diagnostics
+        );
+        assert!(matches!(
+            evaluated.content.elements[0].element,
+            Element::Strong(_)
+        ));
+        assert!(matches!(
+            evaluated.content.elements[1].element,
+            Element::Text(_)
+        ));
+        assert!(matches!(
+            evaluated.content.elements[2].element,
+            Element::Emph(_)
+        ));
+        assert!(matches!(
+            evaluated.content.elements[3].element,
+            Element::Text(_)
+        ));
+        assert!(matches!(
+            evaluated.content.elements[4].element,
+            Element::Link { .. }
+        ));
+        assert!(
+            evaluated
+                .content
+                .elements
+                .iter()
+                .any(|node| matches!(node.element, Element::Linebreak))
+        );
+        assert!(
+            evaluated
+                .content
+                .elements
+                .iter()
+                .any(|node| matches!(&node.element, Element::Text(text) if text == "next"))
+        );
+    }
+
+    #[test]
+    fn markdown_image_syntax_remains_text() {
+        let evaluated = Evaluator::default().evaluate("![Flow diagram](images/flow.png)");
+        assert!(
+            evaluated.diagnostics.is_empty(),
+            "{:?}",
+            evaluated.diagnostics
+        );
+        assert!(
+            !evaluated
+                .content
+                .elements
+                .iter()
+                .any(|node| matches!(node.element, Element::Image { .. } | Element::Figure { .. }))
+        );
+    }
+
+    #[test]
+    #[ignore = "legacy feature moved to plugin"]
+    fn lowers_video_surface_sugar() {
+        let evaluated = Evaluator::default().evaluate("!video(media/demo.mp4)");
+        assert!(
+            evaluated.diagnostics.is_empty(),
+            "{:?}",
+            evaluated.diagnostics
+        );
+        assert!(matches!(
+            &evaluated.content.elements[0].element,
+            Element::Video { source, poster: None, controls: true }
+                if source == "media/demo.mp4"
+        ));
+    }
+
+    #[test]
+    #[ignore = "legacy feature moved to plugin"]
+    fn lowers_audio_surface_sugar() {
+        let evaluated = Evaluator::default().evaluate("!audio(media/theme.ogg)");
+        assert!(
+            evaluated.diagnostics.is_empty(),
+            "{:?}",
+            evaluated.diagnostics
+        );
+        assert!(matches!(
+            &evaluated.content.elements[0].element,
+            Element::Audio { source, controls: true, looping: false } if source == "media/theme.ogg"
+        ));
+    }
+
+    #[test]
+    fn markdown_named_link_syntax_remains_text() {
+        let evaluated = Evaluator::default().evaluate("[Notist](docs/index.html)");
+        assert!(
+            evaluated.diagnostics.is_empty(),
+            "{:?}",
+            evaluated.diagnostics
+        );
+        assert!(
+            !evaluated
+                .content
+                .elements
+                .iter()
+                .any(|node| matches!(node.element, Element::Link { .. }))
+        );
+    }
+
+    #[test]
+    fn lowers_bare_email_addresses_as_mailto_links() {
+        let evaluated = Evaluator::default().evaluate("Write hello+docs@example.test.");
+        assert!(
+            evaluated.diagnostics.is_empty(),
+            "{:?}",
+            evaluated.diagnostics
+        );
+        assert!(matches!(
+            &evaluated.content.elements[1].element,
+            Element::Link { destination, body, .. }
+                if destination == "mailto:hello+docs@example.test"
+                    && matches!(&body.elements[0].element, Element::Text(value) if value == "hello+docs@example.test")
+        ));
+
+        let malformed = Evaluator::default().evaluate("not-an-address@invalid");
+        assert!(matches!(
+            &malformed.content.elements[0].element,
+            Element::Text(value) if value == "not-an-address@invalid"
+        ));
+    }
+
+    #[test]
+    fn evaluates_explicit_callout_function() {
+        let evaluated =
+            Evaluator::default().evaluate("#callout(kind=\"warning\")[*Check* the configuration]");
+        assert!(
+            evaluated.diagnostics.is_empty(),
+            "{:?}",
+            evaluated.diagnostics
+        );
+        assert!(matches!(
+            &evaluated.content.elements[0].element,
+            Element::Callout { kind, body, .. }
+                if kind == "warning" && matches!(body.elements[0].element, Element::Strong(_))
+        ));
+    }
+
+    #[test]
+    fn evaluates_explicit_details_function() {
+        let evaluated =
+            Evaluator::default().evaluate("#details(summary=[*More*])[Hidden _content_]");
+        assert!(
+            evaluated.diagnostics.is_empty(),
+            "{:?}",
+            evaluated.diagnostics
+        );
+        assert!(matches!(
+            &evaluated.content.elements[0].element,
+            Element::Details { summary: Some(summary), open: false, body }
+                if matches!(summary.elements[0].element, Element::Strong(_))
+                    && body.elements.iter().any(|node| matches!(node.element, Element::Emph(_)))
+        ));
+    }
+
+    #[test]
+    fn lowers_strike_surface_sugar() {
+        let evaluated = Evaluator::default().evaluate("Before ~~old *value*~~ after");
+        assert!(
+            evaluated.diagnostics.is_empty(),
+            "{:?}",
+            evaluated.diagnostics
+        );
+        assert!(matches!(
+            &evaluated.content.elements[1].element,
+            Element::Strike(body)
+                if body.elements.iter().any(|node| matches!(node.element, Element::Strong(_)))
+        ));
+
+        let unclosed = Evaluator::default().evaluate("keep ~~literal");
+        assert!(matches!(
+            &unclosed.content.elements[0].element,
+            Element::Text(text) if text == "keep ~~literal"
+        ));
+        let empty = Evaluator::default().evaluate("keep ~~~~ literal");
+        assert!(matches!(
+            &empty.content.elements[0].element,
+            Element::Text(text) if text == "keep ~~~~ literal"
+        ));
+    }
+
+    #[test]
+    #[ignore = "legacy feature moved to plugin"]
+    fn lowers_insert_surface_sugar() {
+        let evaluated = Evaluator::default().evaluate("Before ++new *value*++ after");
+        assert!(
+            evaluated.diagnostics.is_empty(),
+            "{:?}",
+            evaluated.diagnostics
+        );
+        assert!(matches!(
+            &evaluated.content.elements[1].element,
+            Element::Insert(body)
+                if body.elements.iter().any(|node| matches!(node.element, Element::Strong(_)))
+        ));
+
+        let unclosed = Evaluator::default().evaluate("keep ++literal");
+        assert!(matches!(
+            &unclosed.content.elements[0].element,
+            Element::Text(text) if text == "keep ++literal"
+        ));
+        let empty = Evaluator::default().evaluate("keep ++++ literal");
+        assert!(matches!(
+            &empty.content.elements[0].element,
+            Element::Text(text) if text == "keep ++++ literal"
+        ));
+    }
+
+    #[test]
+    #[ignore = "legacy feature moved to plugin"]
+    fn lowers_spoiler_surface_sugar() {
+        let evaluated = Evaluator::default().evaluate("Reveal >!hidden *ending*!< later");
+        assert!(
+            evaluated.diagnostics.is_empty(),
+            "{:?}",
+            evaluated.diagnostics
+        );
+        assert!(matches!(
+            &evaluated.content.elements[1].element,
+            Element::Spoiler(body)
+                if body.elements.iter().any(|node| matches!(node.element, Element::Strong(_)))
+        ));
+
+        let unclosed = Evaluator::default().evaluate("keep >!hidden");
+        assert!(matches!(
+            &unclosed.content.elements[0].element,
+            Element::Text(text) if text == "keep >!hidden"
+        ));
+        let empty = Evaluator::default().evaluate("keep >!!< literal");
+        assert!(matches!(
+            &empty.content.elements[0].element,
+            Element::Text(text) if text == "keep >!!< literal"
+        ));
+    }
+
+    #[test]
+    fn lowers_heading_and_quote_surface_sugar() {
+        let evaluator = Evaluator::default();
+        let evaluated = evaluator.evaluate("= Title\n== Subtitle");
+        assert!(
+            evaluated.diagnostics.is_empty(),
+            "{:?}",
+            evaluated.diagnostics
+        );
+        assert!(matches!(
+            evaluated.content.elements[0].element,
+            Element::Heading { level: 1, .. }
+        ));
+        assert!(matches!(
+            evaluated.content.elements[1].element,
+            Element::Heading { level: 2, .. }
+        ));
+        let quoted = evaluator.evaluate("> Quoted");
+        assert!(quoted.diagnostics.is_empty(), "{:?}", quoted.diagnostics);
+        assert!(
+            !quoted
+                .content
+                .elements
+                .iter()
+                .any(|node| matches!(node.element, Element::Quote { .. }))
+        );
+
+        let setext = evaluator.evaluate("Main *title*\n==========\n\nSubtitle\n--------");
+        assert!(setext.diagnostics.is_empty(), "{:?}", setext.diagnostics);
+        assert!(
+            !setext
+                .content
+                .elements
+                .iter()
+                .any(|node| matches!(node.element, Element::Heading { .. }))
+        );
+    }
+
+    #[test]
+    fn evaluates_quote_attribution_function() {
+        let evaluated = Evaluator::default()
+            .evaluate("#quote(attribution=[Francis Bacon])[Knowledge is power]");
+        assert!(
+            evaluated.diagnostics.is_empty(),
+            "{:?}",
+            evaluated.diagnostics
+        );
+        assert!(matches!(
+            &evaluated.content.elements[0].element,
+            Element::Quote { attribution: Some(attribution), body }
+                if matches!(&attribution.elements[0].element, Element::Text(text) if text == "Francis Bacon")
+                    && matches!(&body.elements[0].element, Element::Text(text) if text == "Knowledge is power")
+        ));
+    }
+
+    #[test]
+    fn does_not_lower_quote_marker_sugar() {
+        let evaluated = Evaluator::default().evaluate("> > Nested *quotation*");
+        assert!(
+            evaluated.diagnostics.is_empty(),
+            "{:?}",
+            evaluated.diagnostics
+        );
+        assert!(
+            !evaluated
+                .content
+                .elements
+                .iter()
+                .any(|node| matches!(node.element, Element::Quote { .. }))
+        );
+    }
+
+    #[test]
+    fn markdown_thematic_breaks_remain_text() {
+        let evaluated = Evaluator::default().evaluate("---\n***\n___");
+        assert!(
+            evaluated.diagnostics.is_empty(),
+            "{:?}",
+            evaluated.diagnostics
+        );
+        assert!(
+            !evaluated
+                .content
+                .elements
+                .iter()
+                .any(|node| matches!(node.element, Element::Rule))
+        );
+    }
+
+    #[test]
+    #[ignore = "legacy feature moved to plugin"]
+    fn lowers_and_groups_definition_list_sugar() {
+        let evaluated = Evaluator::default()
+            .evaluate("/ *API*: Application interface\n/ URL: https://example.test");
+        assert!(
+            evaluated.diagnostics.is_empty(),
+            "{:?}",
+            evaluated.diagnostics
+        );
+        assert!(matches!(
+            &evaluated.content.elements[0].element,
+            Element::TermItem { term, description }
+                if matches!(term.elements[0].element, Element::Strong(_))
+                && matches!(description.elements[0].element, Element::Text(_))
+        ));
+        assert!(matches!(
+            &evaluated.content.elements[1].element,
+            Element::TermItem { description, .. }
+                if matches!(description.elements[0].element, Element::Link { .. })
+        ));
+        let structured = structure(evaluated);
+        assert!(matches!(
+            &structured.document.blocks[0],
+            Block::Element(ElementNode {
+                element: Element::Terms { items },
+                ..
+            }) if items.len() == 2
+        ));
+        let explicit = structure(Evaluator::default().evaluate(
+            "#terms[#terms::item(term=[API])[Interface]#terms::item(term=[URL])[Address]]",
+        ));
+        assert!(matches!(
+            explicit.document.blocks.as_slice(),
+            [Block::Element(ElementNode {
+                element: Element::Terms { items },
+                ..
+            })] if items.len() == 2
+        ));
+    }
+
+    #[test]
+    fn lowers_and_groups_task_list_sugar() {
+        let evaluated = Evaluator::default()
+            .evaluate("- [ ] *Write* tests\n- [x] Run workspace checks\n- [X] Ship");
+        assert!(
+            evaluated.diagnostics.is_empty(),
+            "{:?}",
+            evaluated.diagnostics
+        );
+        assert!(matches!(
+            &evaluated.content.elements[0].element,
+            Element::TaskItem { checked: false, body }
+                if matches!(body.elements[0].element, Element::Strong(_))
+        ));
+        assert!(matches!(
+            evaluated.content.elements[1].element,
+            Element::TaskItem { checked: true, .. }
+        ));
+        assert!(matches!(
+            evaluated.content.elements[2].element,
+            Element::TaskItem { checked: true, .. }
+        ));
+        let structured = structure(evaluated);
+        assert!(matches!(
+            &structured.document.blocks[0],
+            Block::Element(ElementNode {
+                element: Element::Tasks { items },
+                ..
+            }) if items.len() == 3
+        ));
+        let explicit = structure(
+            Evaluator::default()
+                .evaluate("#task[#task::item[First]#task::item(checked=true)[Second]]"),
+        );
+        assert!(matches!(
+            explicit.document.blocks.as_slice(),
+            [Block::Element(ElementNode {
+                element: Element::Tasks { items },
+                ..
+            })] if items.len() == 2
+        ));
+    }
+
+    #[test]
+    fn lowers_inline_content_inside_block_sugar() {
+        let evaluator = Evaluator::default();
+
+        let heading = evaluator.evaluate("= *Important _note_* ");
+        assert!(matches!(
+            &heading.content.elements[0].element,
+            Element::Heading { body, .. }
+                if matches!(&body.elements[0].element, Element::Strong(strong)
+                    if strong.elements.iter().any(|node| matches!(node.element, Element::Emph(_))))
+        ));
+
+        let list = evaluator.evaluate("- *bold*\n- _slanted_");
+        assert!(matches!(
+            &list.content.elements[0].element,
+            Element::ListItem(body) if matches!(body.elements[0].element, Element::Strong(_))
+        ));
+        assert!(matches!(
+            &list.content.elements[1].element,
+            Element::ListItem(body) if matches!(body.elements[0].element, Element::Emph(_))
+        ));
+
+        let table = evaluator.evaluate("| *Name* | https://example.test |");
+        assert!(matches!(
+            &table.content.elements[0].element,
+            Element::Table { cells, .. }
+                if matches!(&cells[0].element, Element::TableCell { body, .. }
+                    if matches!(body.elements[0].element, Element::Strong(_)))
+                && matches!(&cells[1].element, Element::TableCell { body, .. }
+                    if matches!(body.elements[0].element, Element::Link { .. }))
         ));
     }
 
@@ -293,10 +1046,76 @@ mod tests {
 
         let structured = structure(evaluation);
         assert_eq!(structured.document.blocks.len(), 4);
-        assert!(matches!(structured.document.blocks[0], Block::Paragraph(_)));
-        assert!(matches!(&structured.document.blocks[1], Block::List(items) if items.len() == 2));
+        assert!(matches!(
+            &structured.document.blocks[0],
+            Block::Element(node) if matches!(node.element, Element::Paragraph(_))
+        ));
+        assert!(matches!(
+            &structured.document.blocks[1],
+            Block::Element(ElementNode {
+                element: Element::List { ordered: false, items },
+                ..
+            }) if items.len() == 2
+        ));
         assert!(matches!(structured.document.blocks[2], Block::Element(_)));
-        assert!(matches!(structured.document.blocks[3], Block::Paragraph(_)));
+        assert!(matches!(
+            &structured.document.blocks[3],
+            Block::Element(node) if matches!(node.element, Element::Paragraph(_))
+        ));
+    }
+
+    #[test]
+    fn structuring_unifies_list_sugar_and_container_functions() {
+        let evaluator = Evaluator::default();
+        for source in ["- One\n- Two", "#list[#list::item[One]#list::item[Two]]"] {
+            let structured = structure(evaluator.evaluate(source));
+            assert!(matches!(
+                structured.document.blocks.as_slice(),
+                [Block::Element(ElementNode {
+                    element: Element::List { ordered: false, items },
+                    ..
+                })] if items.len() == 2
+            ));
+        }
+        for source in [
+            "+ Three\n+ Four",
+            "#enum[#enum::item(value=3)[Three]#enum::item(value=4)[Four]]",
+        ] {
+            let structured = structure(evaluator.evaluate(source));
+            assert!(matches!(
+                structured.document.blocks.as_slice(),
+                [Block::Element(ElementNode {
+                    element: Element::List { ordered: true, items },
+                    ..
+                })] if items.len() == 2
+            ));
+        }
+    }
+
+    #[test]
+    fn structuring_groups_ordered_items_separately() {
+        let evaluation = Evaluator::default()
+            .evaluate("#enum::item[First]\n#enum::item[Second]\n#list::item[Other]");
+        assert!(
+            evaluation.diagnostics.is_empty(),
+            "{:?}",
+            evaluation.diagnostics
+        );
+        let structured = structure(evaluation);
+        assert!(matches!(
+            &structured.document.blocks[0],
+            Block::Element(ElementNode {
+                element: Element::List { ordered: true, items },
+                ..
+            }) if items.len() == 2
+        ));
+        assert!(matches!(
+            &structured.document.blocks[1],
+            Block::Element(ElementNode {
+                element: Element::List { ordered: false, items },
+                ..
+            }) if items.len() == 1
+        ));
     }
 
     #[test]
@@ -439,14 +1258,14 @@ mod tests {
         );
         assert!(matches!(
             &ordinary.content.elements[0].element,
-            Element::Quote(body) if body.elements.len() == 1 && matches!(
+            Element::Quote { body, .. } if body.elements.len() == 1 && matches!(
                 &body.elements[0].element,
                 Element::Text(text) if text == "same"
             )
         ));
         assert!(matches!(
             &trailing.content.elements[0].element,
-            Element::Quote(body) if body.elements.len() == 1 && matches!(
+            Element::Quote { body, .. } if body.elements.len() == 1 && matches!(
                 &body.elements[0].element,
                 Element::Text(text) if text == "same"
             )
@@ -465,5 +1284,280 @@ mod tests {
             annotated.diagnostics
         );
         assert_eq!(plain.content, annotated.content);
+    }
+
+    #[test]
+    #[ignore = "legacy feature moved to plugin"]
+    fn lowers_additional_inline_sugar_with_delimiter_precedence() {
+        let evaluation = Evaluator::default().evaluate("==*marked*==__under__^2^~i~");
+        assert!(
+            evaluation.diagnostics.is_empty(),
+            "{:?}",
+            evaluation.diagnostics
+        );
+        assert!(matches!(
+            evaluation.content.elements.as_slice(),
+            [
+                ElementNode { element: Element::Highlight(marked), .. },
+                ElementNode { element: Element::Underline(_), .. },
+                ElementNode { element: Element::Super(_), .. },
+                ElementNode { element: Element::Sub(_), .. },
+            ] if matches!(marked.elements[0].element, Element::Strong(_))
+        ));
+
+        let literal = Evaluator::default().evaluate("==open __open ^open ~open");
+        assert!(matches!(
+            &literal.content.elements[0].element,
+            Element::Text(text) if text == "==open __open ^open ~open"
+        ));
+    }
+
+    #[test]
+    fn evaluates_keyboard_input_as_a_semantic_inline_element() {
+        let evaluation = Evaluator::default().evaluate("Press #kbd[Ctrl + *S*] to save.");
+        assert!(
+            evaluation.diagnostics.is_empty(),
+            "{:?}",
+            evaluation.diagnostics
+        );
+        assert!(matches!(
+            &evaluation.content.elements[1].element,
+            Element::Keyboard(body) if matches!(body.elements[1].element, Element::Strong(_))
+        ));
+    }
+
+    #[test]
+    #[ignore = "legacy feature moved to plugin"]
+    fn evaluates_sample_output_as_a_semantic_inline_element() {
+        let evaluation = Evaluator::default().evaluate("Output: #samp[Saved *3* files]");
+        assert!(
+            evaluation.diagnostics.is_empty(),
+            "{:?}",
+            evaluation.diagnostics
+        );
+        assert!(matches!(
+            &evaluation.content.elements[1].element,
+            Element::Sample(body) if body.elements.iter().any(|node| matches!(node.element, Element::Strong(_)))
+        ));
+    }
+
+    #[test]
+    #[ignore = "legacy feature moved to plugin"]
+    fn evaluates_machine_readable_time_content() {
+        let evaluation =
+            Evaluator::default().evaluate("Published #time(\"2026-07-21\")[July *21*].");
+        assert!(
+            evaluation.diagnostics.is_empty(),
+            "{:?}",
+            evaluation.diagnostics
+        );
+        assert!(matches!(
+            &evaluation.content.elements[1].element,
+            Element::Time { datetime, body }
+                if datetime == "2026-07-21"
+                    && body.elements.iter().any(|node| matches!(node.element, Element::Strong(_)))
+        ));
+    }
+
+    #[test]
+    #[ignore = "legacy feature moved to plugin"]
+    fn lowers_inline_footnote_sugar() {
+        let evaluated = Evaluator::default().evaluate("Claim^[Source with *detail*].");
+        assert!(
+            evaluated.diagnostics.is_empty(),
+            "{:?}",
+            evaluated.diagnostics
+        );
+        assert!(matches!(
+            &evaluated.content.elements[1].element,
+            Element::Footnote(body)
+                if body.elements.iter().any(|node| matches!(node.element, Element::Strong(_)))
+        ));
+
+        let unclosed = Evaluator::default().evaluate("Claim^[source");
+        assert!(matches!(
+            &unclosed.content.elements[0].element,
+            Element::Text(text) if text == "Claim^[source"
+        ));
+    }
+
+    #[test]
+    #[ignore = "legacy feature moved to plugin"]
+    fn lowers_comment_sugar() {
+        let evaluated = Evaluator::default().evaluate("Visible %%author *note*%% text");
+        assert!(
+            evaluated.diagnostics.is_empty(),
+            "{:?}",
+            evaluated.diagnostics
+        );
+        assert!(matches!(
+            &evaluated.content.elements[1].element,
+            Element::Comment(body)
+                if body.elements.iter().any(|node| matches!(node.element, Element::Strong(_)))
+        ));
+        let unclosed = Evaluator::default().evaluate("%%author note");
+        assert!(
+            matches!(&unclosed.content.elements[0].element, Element::Text(text) if text == "%%author note")
+        );
+    }
+
+    #[test]
+    fn lowers_math_sugar() {
+        let evaluated = Evaluator::default().evaluate("Inline $x + y$ and $$a < b$$");
+        assert!(
+            evaluated.diagnostics.is_empty(),
+            "{:?}",
+            evaluated.diagnostics
+        );
+        assert!(evaluated.content.elements.iter().any(
+            |node| matches!(&node.element, Element::Math { text, block: false } if text == "x + y")
+        ));
+        assert!(evaluated.content.elements.iter().any(
+            |node| matches!(&node.element, Element::Math { text, block: true } if text == "a < b")
+        ));
+    }
+
+    #[test]
+    #[ignore = "legacy feature moved to plugin"]
+    fn lowers_abbreviation_sugar() {
+        let evaluated = Evaluator::default().evaluate("*[HTML]: HyperText Markup Language");
+        assert!(
+            evaluated.diagnostics.is_empty(),
+            "{:?}",
+            evaluated.diagnostics
+        );
+        assert!(matches!(
+            &evaluated.content.elements[0].element,
+            Element::Abbr { term, expansion }
+                if term == "HTML" && expansion == "HyperText Markup Language"
+        ));
+
+        let invalid = Evaluator::default().evaluate("*[HTML]: ");
+        assert!(matches!(
+            &invalid.content.elements[0].element,
+            Element::Text(_)
+        ));
+    }
+
+    #[test]
+    #[ignore = "legacy feature moved to plugin"]
+    fn lowers_citation_sugar() {
+        let evaluated = Evaluator::default().evaluate("See [@doe2024, pp. 17-19] and [@roe2025].");
+        assert!(
+            evaluated.diagnostics.is_empty(),
+            "{:?}",
+            evaluated.diagnostics
+        );
+        assert!(evaluated.content.elements.iter().any(|node| {
+            matches!(
+                &node.element,
+                Element::Citation { key, locator }
+                    if key == "doe2024" && locator.as_deref() == Some("pp. 17-19")
+            )
+        }));
+        assert!(evaluated.content.elements.iter().any(|node| {
+            matches!(
+                &node.element,
+                Element::Citation { key, locator }
+                    if key == "roe2025" && locator.is_none()
+            )
+        }));
+
+        let invalid = Evaluator::default().evaluate("Keep [@two words] literal");
+        assert!(matches!(
+            &invalid.content.elements[0].element,
+            Element::Text(text) if text == "Keep [@two words] literal"
+        ));
+    }
+
+    #[test]
+    fn omits_source_comments_from_evaluated_content() {
+        let evaluated = Evaluator::default()
+            .evaluate("Visible // line comment\ntext /* outer /* nested */ block */ after");
+        assert!(
+            evaluated.diagnostics.is_empty(),
+            "{:?}",
+            evaluated.diagnostics
+        );
+        let visible = evaluated
+            .content
+            .elements
+            .iter()
+            .filter_map(|node| match &node.element {
+                Element::Text(text) => Some(text.as_str()),
+                _ => None,
+            })
+            .collect::<String>();
+        assert_eq!(visible, "Visible \ntext  after");
+    }
+
+    #[test]
+    fn keeps_rich_content_inside_surface_lists_and_tasks() {
+        let evaluated = Evaluator::default().evaluate(
+            "- open `config.toml`\n- see [[vault::grammar]]\n- press #kbd[Ctrl + S]\n\n- [ ] check [[target]]",
+        );
+        assert!(
+            evaluated.diagnostics.is_empty(),
+            "{:?}",
+            evaluated.diagnostics
+        );
+        let list_items = evaluated
+            .content
+            .elements
+            .iter()
+            .filter_map(|node| match &node.element {
+                Element::ListItem(body) => Some(body),
+                _ => None,
+            })
+            .collect::<Vec<_>>();
+        assert_eq!(list_items.len(), 3);
+        assert!(
+            list_items[0]
+                .elements
+                .iter()
+                .any(|node| matches!(node.element, Element::Raw { .. }))
+        );
+        assert!(
+            list_items[1]
+                .elements
+                .iter()
+                .any(|node| matches!(node.element, Element::Reference(_)))
+        );
+        assert!(
+            list_items[2]
+                .elements
+                .iter()
+                .any(|node| matches!(node.element, Element::Keyboard(_)))
+        );
+        assert!(evaluated.content.elements.iter().any(|node| {
+            matches!(&node.element, Element::TaskItem { body, .. }
+                if body.elements.iter().any(|child| matches!(child.element, Element::Reference(_))))
+        }));
+    }
+
+    #[test]
+    fn escaped_closing_delimiters_remain_literal_inline_content() {
+        let evaluated = Evaluator::default().evaluate("*left \\* middle* __left \\__ middle__");
+        assert!(
+            evaluated.diagnostics.is_empty(),
+            "{:?}",
+            evaluated.diagnostics
+        );
+        assert!(matches!(
+            &evaluated.content.elements[0].element,
+            Element::Strong(body)
+                if body.elements.iter().filter_map(|node| match &node.element {
+                    Element::Text(text) => Some(text.as_str()),
+                    _ => None,
+                }).collect::<String>() == "left * middle"
+        ));
+        assert!(evaluated.content.elements.iter().any(|node| matches!(
+            &node.element,
+            Element::Underline(body)
+                if body.elements.iter().filter_map(|node| match &node.element {
+                    Element::Text(text) => Some(text.as_str()),
+                    _ => None,
+                }).collect::<String>() == "left __ middle"
+        )));
     }
 }

@@ -1,4 +1,4 @@
-#heading(level=1)[Preview and HTML]
+= Preview and HTML
 
 Notist 的 HTML 能力分为三个层次：`notist-html` 将语义文档渲染为 HTML fragment，`notist build` 将整个 vault 构建为静态站点，`notist preview` 在本地持续构建并提供浏览器预览。
 
@@ -15,7 +15,7 @@ Notist 的 HTML 能力分为三个层次：`notist-html` 将语义文档渲染�
 
 HTML 层不重新解释源码。语法、函数、scope 和 reference 的语义只在 syntax、eval 与 analysis 中定义一次，preview 和 build 只是这些结果的不同消费者。
 
-#heading(level=2)[产品模型]
+== 产品模型
 
 Notist 的基本单位是 vault/module，而不是孤立文件。因此 HTML 输出也以整个 Workspace 为单位：
 
@@ -27,7 +27,7 @@ Notist 的基本单位是 vault/module，而不是孤立文件。因此 HTML 输
 
 `build` 负责可部署的静态结果，`preview` 负责编辑期间的快速反馈。二者不应发展出两套渲染语义。
 
-#heading(level=2)[notist-html]
+== notist-html
 
 `notist-html` 是纯渲染 crate。它接收 `StructuredDocument`，输出可嵌入页面的 semantic HTML fragment。
 
@@ -49,7 +49,7 @@ Notist 的基本单位是 vault/module，而不是孤立文件。因此 HTML 输
 
 保持 fragment renderer 的边界，可以让静态构建、preview、测试以及未来的编辑器 Hover 复用同一层。
 
-#heading(level=3)[HTML 映射]
+=== HTML 映射
 
 当前核心映射为：
 
@@ -68,7 +68,7 @@ Notist 的基本单位是 vault/module，而不是孤立文件。因此 HTML 输
 
 RawSource 和 Custom 内容都不是可信 HTML。未来即使允许插件渲染 HTML，也必须增加显式的 trusted renderer 边界，不能让 Raw 内容绕过转义。
 
-#heading(level=3)[Source Range]
+=== Source Range
 
 语义元素输出其原始 byte range：
 
@@ -80,7 +80,7 @@ data-notist-start="12" data-notist-end="28"
 
 Annotation 可能跨越多个 Element 或 block，不能总是直接映射为一个合法嵌套的 DOM 节点。当前只保留 Element range；未来需要通过 range events 切分 Content，再生成正确嵌套的 annotated spans。
 
-#heading(level=2)[Static Build]
+== Static Build
 
 静态导出使用 workspace 级命令：
 
@@ -108,7 +108,7 @@ Wiki Reference 在构建时解析：目标存在时输出链接；目标不存�
 
 默认构建不清空整个输出目录，避免误删用户文件。它只创建或覆盖本次 Workspace 对应的页面和 `_notist` 资源；未来可以增加显式 `--clean`。
 
-#heading(level=2)[Local Preview]
+== Local Preview
 
 本地预览复用 static build，不维护独立的动态渲染 API：
 
@@ -147,7 +147,7 @@ HTTP 服务只需要两个表面：
 
 页面中的 `_notist/reload.js` 使用 EventSource 订阅 revision。连接建立和重连时先收到当前值，因此浏览器可以发现断线期间错过的构建。第一版不需要 WebSocket、DOM diff 或自定义文档协议。
 
-#heading(level=3)[Atomic Rebuild]
+=== Atomic Rebuild
 
 文件变化后先在 staging 目录生成完整站点，成功后再替换当前服务目录。文件读取或构建过程出现致命错误时，旧站点继续可见，并在 CLI 输出 rebuild failed。
 
@@ -155,13 +155,13 @@ HTTP 服务只需要两个表面：
 
 当前目录替换已经保证浏览器不会读到只写了一半的页面集合。未来若要支持更严格的跨平台原子切换，可以让服务状态持有不可变 generation 目录，而不是原地删除后 rename。
 
-#heading(level=3)[Network Boundary]
+=== Network Boundary
 
 Preview 会暴露用户正在编辑的文档内容，因此默认只能监听 loopback。显式使用非 loopback 地址时必须显示警告。
 
 如果未来加入源码读取、编辑操作或远程共享功能，应增加随机访问 token、Origin 检查和更清晰的授权边界。当前只读静态页面与 revision stream 不应被自然扩展成无认证的编辑 API。
 
-#heading(level=2)[Workspace Consistency]
+== Workspace Consistency
 
 Parse 的 byte range、源码文本和分析结果必须来自同一个 Workspace snapshot。不能在 analysis 完成后，再由 renderer 重新读取可能已经变化的文件。
 
@@ -174,7 +174,7 @@ Parse 的 byte range、源码文本和分析结果必须来自同一个 Workspac
 
 这一改造也将服务 LSP。Preview、diagnostics、Hover 和 definition 应共享同一个文档版本，而不是分别读取磁盘。
 
-#heading(level=2)[Future Direction]
+== Future Direction
 
 在当前全量静态重建方案稳定后，再按实际性能需求增加：
 
