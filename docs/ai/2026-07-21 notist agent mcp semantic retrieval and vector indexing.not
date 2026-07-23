@@ -8,11 +8,11 @@
 
 最重要的结论有五个：
 
-1. Notist 的源文件和语义快照必须是唯一真相；全文索引、向量、图、摘要和 Agent 记忆都只能是可重建的派生数据。
-2. MCP 应该是 application core 的协议适配层，不应该直接读取文件、遍历 parser 私有结构或把任意 Function 暴露成工具。
-3. 最有效的检索不是只做向量搜索，而是 metadata/权限过滤、BM25 或 FTS、dense vector、引用图扩展、reranker 和引用校验的组合。
-4. Notist 的 Module、Heading、Annotation、Element 和 source range 让语义切块、图边和引用天然比固定字符切块更可靠；这正是它可能比 Markdown 更适合作为 Agent 文档库的核心原因。
-5. 实现顺序应是稳定身份和 snapshot -> 结构/全文索引 -> 只读 MCP -> dense hybrid -> 图和层级检索 -> 带 revision 的安全写入，而不是一开始接入向量数据库或自动 Agent loop。
++ Notist 的源文件和语义快照必须是唯一真相；全文索引、向量、图、摘要和 Agent 记忆都只能是可重建的派生数据。
++ MCP 应该是 application core 的协议适配层，不应该直接读取文件、遍历 parser 私有结构或把任意 Function 暴露成工具。
++ 最有效的检索不是只做向量搜索，而是 metadata/权限过滤、BM25 或 FTS、dense vector、引用图扩展、reranker 和引用校验的组合。
++ Notist 的 Module、Heading、Annotation、Element 和 source range 让语义切块、图边和引用天然比固定字符切块更可靠；这正是它可能比 Markdown 更适合作为 Agent 文档库的核心原因。
++ 实现顺序应是稳定身份和 snapshot -> 结构/全文索引 -> 只读 MCP -> dense hybrid -> 图和层级检索 -> 带 revision 的安全写入，而不是一开始接入向量数据库或自动 Agent loop。
 
 == 读者需要知道的词
 
@@ -47,7 +47,7 @@ Notist 的目标不是让模型读懂一种更漂亮的 Markdown，而是把文�
 
 当前仓库已经有一条清晰的语义管线：
 
-~~~~text
+```text
 .not source
   -> mode-aware syntax tree
   -> module and wiki reference resolution
@@ -56,7 +56,7 @@ Notist 的目标不是让模型读懂一种更漂亮的 Markdown，而是把文�
   -> lowering and structuring
   -> StructuredDocument
   -> HTML, build, preview, LSP
-~~~~
+```
 
 这条管线为 Agent 集成提供了几项重要基础：
 
@@ -102,7 +102,7 @@ Notist 的目标不是让模型读懂一种更漂亮的 Markdown，而是把文�
 
 返回结果应至少包含：
 
-~~~~text
+```text
 SearchResult {
   module_id
   module_path
@@ -117,13 +117,13 @@ SearchResult {
   retrieval_methods
   score_breakdown
 }
-~~~~
+```
 
 === 2.2 写：从自然语言意图到可验证变更
 
 Agent 说把这条决定移到架构文档并加一个标签时，推荐的协议序列是：
 
-~~~~text
+```text
 search/context
   -> propose_edit(base_revision)
   -> parse + static check + reference check
@@ -131,7 +131,7 @@ search/context
   -> user consent
   -> apply_edit(expected_revision, plan_hash, idempotency_key)
   -> new snapshot + WorkspaceDelta + index update
-~~~~
+```
 
 不要把首个写入工具设计成任意 write_file(path, text)。原始文本写入可以作为低层内部实现，但 Agent 面向的接口应优先是 InsertAfter、ReplaceElement、SetAnnotation、RenameModule 等 typed edit；每个操作都要有 base revision 和冲突结果。
 
@@ -164,11 +164,11 @@ Host 是 AI 应用，通常为每个 MCP Server 建立独立 Client；Server 提
 
 Resources 是适合被读取和引用的稳定数据。Notist 可以把 module source、structured document、outline、element、diagnostics 和 graph view 暴露为 resource。资源 URI 应使用 opaque ID 和 revision，而不是只把绝对文件路径拼进 URI：
 
-~~~~text
+```text
 notist://vault/{vault_id}/module/{module_id}?rev={revision}&view=structured
 notist://vault/{vault_id}/element/{element_id}?rev={revision}
 notist://vault/{vault_id}/diagnostics?rev={revision}
-~~~~
+```
 
 Tools 是由模型决定调用的操作。搜索、resolve、context、check、propose_edit 可以是工具；工具必须有明确的 JSON Schema、outputSchema、错误分类和截断标记。
 
@@ -180,7 +180,7 @@ Prompts 是用户选择的模板，例如研究一个主题并给出 citations �
 
 建议第一版只读能力如下：
 
-~~~~text
+```text
 notist.list_modules
 notist.get_module
 notist.get_outline
@@ -191,11 +191,11 @@ notist.resolve_module
 notist.get_references
 notist.get_backlinks
 notist.check
-~~~~
+```
 
 统一输出结构：
 
-~~~~text
+```text
 QueryResponse {
   snapshot_revision
   index_version
@@ -205,7 +205,7 @@ QueryResponse {
   truncated
   stale
 }
-~~~~
+```
 
 首版应该采用本地 stdio，单个 MCP 进程绑定一个明确的 vault 或 vault 集合。未来需要远程共享时再支持 Streamable HTTP、TLS、OAuth、租户隔离和限流；不要因为协议支持远程就默认把本地文件系统暴露到网络。
 
@@ -317,21 +317,21 @@ Embedding 模型把输入文本投射到有限维空间。相似度高表示训�
 
 不要直接把原始 source 的任意字符窗口送进 embedding。为每个语义单元构造两份文本：
 
-~~~~text
+```text
 source_text       = 可精确引用的原始片段
 embedding_text    = 用于语义匹配的规范化文本
-~~~~
+```
 
 embedding_text 可以包含：
 
-~~~~text
+```text
 Vault: project
 Module: designs::lsp
 Heading path: Language Server / Concurrency
 Tags: architecture, lsp
 Element kind: paragraph
 Body: ...
-~~~~
+```
 
 这些前缀必须稳定、可版本化，并避免过多路径 token 造成语义偏移。原始片段仍单独保存，引用和 UI 使用 source range，不使用模型输入的拼接文本作为唯一来源。
 
@@ -371,19 +371,19 @@ EmbeddingProvider 应是 application core 之外的可替换接口。离线模�
 
 建议同时建立多个粒度：
 
-~~~~text
+```text
 Vault summary
   -> Module summary
       -> Heading/section
           -> paragraph/list/quote/element
               -> source span / annotation / reference
-~~~~
+```
 
 每层都有 parent_id 和 child_ids。检索时可以先命中 section，再取相邻或子元素；回答全局问题时使用 module/社区摘要，回答精确问题时回到 leaf source。
 
 一个 IndexElement 可以包含：
 
-~~~~text
+```text
 ElementId              stable logical identity
 ElementVersion         source revision + content hash
 ModuleId / ModulePath  opaque identity + display path
@@ -396,13 +396,13 @@ SourceRange            byte range and optional line/column projection
 OutgoingReferences     explicit graph edges
 ParentId / ChildIds    hierarchy
 VisibilityPolicy       vault/module ACL metadata
-~~~~
+```
 
 === 6.3 稳定身份和版本必须分开
 
 ModulePath 会因 rename 改变，TextRange 会因前文编辑移动，内容 hash 会因正文变化改变；它们不能单独充当稳定 identity。建议区分：
 
-~~~~text
+```text
 VaultId / FileId / ModuleId / ElementId
   = 逻辑身份，尽量跨 revision 保持
 
@@ -411,7 +411,7 @@ ElementVersionId
 
 EmbeddingKey
   = hash(ElementVersionId, chunker_version, model_id, model_revision, dimensions)
-~~~~
+```
 
 没有显式 annotation id 的元素可以用结构路径、kind、邻接关系和匹配算法维护 provisional identity；不要承诺仅靠内容 hash 在所有编辑场景下稳定。
 
@@ -468,7 +468,7 @@ FreshDiskANN 研究持续插入和删除下的磁盘图更新；Filtered-DiskANN
 
 先定义稳定的 notist-index 协议无关接口：
 
-~~~~text
+```text
 IndexCatalog
   upsert_records(snapshot_revision, records)
   tombstone(ids, source_revision)
@@ -477,7 +477,7 @@ IndexCatalog
   search_graph(seed_ids, relation, depth)
   commit_epoch(manifest)
   open_epoch(index_version)
-~~~~
+```
 
 首个实现可以是 SQLite metadata + Tantivy/FTS5 + exact vectors。等 benchmark 证明需要 ANN 后，再把 vector backend 换成 HNSW、Qdrant Edge 或其他实现；MCP 和 application core 不应知道底层数据库名称。
 
@@ -498,7 +498,7 @@ IndexCatalog
 
 推荐的异步管线如下：
 
-~~~~text
+```text
 WorkspaceSnapshot N
   -> WorkspaceDelta N-1 -> N
   -> extract Modules / Elements / Annotations / References
@@ -508,7 +508,7 @@ WorkspaceSnapshot N
   -> validation and index manifest
   -> atomic index epoch N
   -> MCP resource/list_changed or resource updated notification
-~~~~
+```
 
 每个派生记录都要保存 source revision、content hash、parser/chunker version、embedding model/version、index version 和生成时间。索引任务失败时，旧 epoch 可以继续服务，但响应必须标记 stale；不能让新 source 和旧 vector 看起来像同一个一致状态。
 
@@ -528,7 +528,7 @@ WorkspaceSnapshot N
 
 首个 planner 不需要让 LLM 自由编写查询程序。可用规则和结构化参数：
 
-~~~~text
+```text
 Query {
   text
   vault_scope
@@ -540,7 +540,7 @@ Query {
   max_context_tokens
   consistency: latest | snapshot(revision)
 }
-~~~~
+```
 
 执行顺序：
 
@@ -568,7 +568,7 @@ Agent 可以在 Host 层执行 search -> inspect -> search refinement -> synthes
 
 一个好的 Agent 文档响应至少有三层：
 
-~~~~text
+```text
 answer text
   + evidence list
       + source URI
@@ -577,7 +577,7 @@ answer text
       + quote and quote hash
       + snapshot/index revision
   + uncertainty/warnings
-~~~~
+```
 
 生成摘要必须标记为 summary，不得伪装成原文。引用校验可以检查 quote hash 是否仍匹配当前 snapshot、source range 是否落在相同 Element/Module、回答中的关键断言是否有充分相关来源、召回结果是否来自允许的 vault/module/ACL，以及 index 是否 stale。
 
@@ -589,13 +589,13 @@ answer text
 
 写操作必须采用 compare-and-swap：
 
-~~~~text
+```text
 propose_edit(base_revision, operations)
   -> validate + diff + plan_hash
 
 apply_edit(expected_revision, plan_hash, idempotency_key)
   -> commit or conflict
-~~~~
+```
 
 如果 source revision、content hash 或受影响的 ElementId 已经变化，返回 conflict，禁止静默覆盖。单文件使用 temp + fsync + rename；多文件使用 journal/WAL 或 staged directory + commit marker；Git 可以辅助 undo 和审计，但不应是唯一事务机制。
 
