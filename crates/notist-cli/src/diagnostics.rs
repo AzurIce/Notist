@@ -9,10 +9,10 @@ use codespan_reporting::diagnostic::{Diagnostic as CodespanDiagnostic, Label};
 use codespan_reporting::files::SimpleFiles;
 use codespan_reporting::term;
 use codespan_reporting::term::termcolor::{ColorChoice, StandardStream};
-use notist_analysis::Workspace;
+use notist_analysis::WorkspaceSnapshot;
 use notist_eval::EvalDiagnostic;
 
-pub fn emit(workspace: &Workspace, color: ClapColorChoice) -> Result<(), Box<dyn Error>> {
+pub fn emit(workspace: &WorkspaceSnapshot, color: ClapColorChoice) -> Result<(), Box<dyn Error>> {
     let mut files = SimpleFiles::new();
     let mut file_ids = HashMap::<PathBuf, usize>::new();
 

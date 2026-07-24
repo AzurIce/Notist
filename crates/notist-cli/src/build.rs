@@ -6,8 +6,8 @@ use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 
 use clap::ColorChoice;
-use notist_analysis::Workspace;
-use notist_eval::{EvalDiagnostic, Evaluator, structure};
+use notist_analysis::{VaultEngine, WorkspaceSnapshot};
+use notist_eval::EvalDiagnostic;
 use notist_html::{RenderOptions, render_with_resolvers};
 use notist_model::{ModulePath, TextRange};
 use percent_encoding::{AsciiSet, CONTROLS, NON_ALPHANUMERIC, utf8_percent_encode};
@@ -26,7 +26,8 @@ const URL_PATH_SEGMENT_ENCODE_SET: &AsciiSet = &CONTROLS
     .add(b'"');
 
 pub fn run(root: PathBuf, output: PathBuf, color: ColorChoice) -> Result<ExitCode, Box<dyn Error>> {
-    let workspace = Workspace::load(root)?;
+    let engine = VaultEngine::open(root)?;
+    let workspace = engine.disk_view()?.snapshot();
     let output = prepare_output_root(&output, workspace.root())?;
     let result = build_site(&workspace, &output, SiteOptions::default())?;
 
@@ -68,7 +69,7 @@ pub(crate) struct EvaluationReport {
 }
 
 pub(crate) fn emit_diagnostics(
-    workspace: &Workspace,
+    workspace: &WorkspaceSnapshot,
     result: &BuildResult,
     color: ColorChoice,
 ) -> Result<(), Box<dyn Error>> {
@@ -79,7 +80,7 @@ pub(crate) fn emit_diagnostics(
     Ok(())
 }
 
-pub(crate) fn diagnostic_count(workspace: &Workspace, result: &BuildResult) -> usize {
+pub(crate) fn diagnostic_count(workspace: &WorkspaceSnapshot, result: &BuildResult) -> usize {
     workspace.diagnostics().len()
         + result
             .evaluation_reports
@@ -89,7 +90,7 @@ pub(crate) fn diagnostic_count(workspace: &Workspace, result: &BuildResult) -> u
 }
 
 pub(crate) fn build_site(
-    workspace: &Workspace,
+    workspace: &WorkspaceSnapshot,
     output: &Path,
     options: SiteOptions,
 ) -> Result<BuildResult, Box<dyn Error>> {
@@ -112,10 +113,12 @@ pub(crate) fn build_site(
     let mut evaluation_reports = Vec::new();
 
     for module in &modules {
-        let fragment = if let Some(source_path) = &module.source_path {
-            let source = fs::read_to_string(source_path)?;
-            let evaluation = Evaluator::default().evaluate(&source);
-            let structured = structure(evaluation);
+        let fragment = if let (Some(source_path), Some(source)) =
+            (&module.source_path, module.source.as_deref())
+        {
+            let structured = workspace
+                .structured_module(module.id)
+                .expect("source-backed modules have structured results");
             let current = &module.logical_path;
             let resolver = |target: &ModulePath, label: Option<&str>| {
                 known_modules
@@ -155,7 +158,7 @@ pub(crate) fn build_site(
             if !structured.diagnostics.is_empty() {
                 evaluation_reports.push(EvaluationReport {
                     path: source_path.clone(),
-                    source,
+                    source: source.to_owned(),
                     diagnostics: structured.diagnostics,
                 });
             }
@@ -655,7 +658,7 @@ mod tests {
         )
         .unwrap();
         fs::write(root.path().join("notes/chapter one.not"), "#heading[One]").unwrap();
-        let workspace = Workspace::load(root.path()).unwrap();
+        let workspace = WorkspaceSnapshot::load(root.path()).unwrap();
         let output = root.path().join("site");
 
         let result = build_site(&workspace, &output, SiteOptions::default()).unwrap();
@@ -685,7 +688,7 @@ mod tests {
             "#heading[Introduction]@intro",
         )
         .unwrap();
-        let workspace = Workspace::load(root.path()).unwrap();
+        let workspace = WorkspaceSnapshot::load(root.path()).unwrap();
         let output = root.path().join("site");
 
         build_site(&workspace, &output, SiteOptions::default()).unwrap();

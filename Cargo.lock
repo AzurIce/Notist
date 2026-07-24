@@ -596,6 +596,7 @@ name = "notist-analysis"
 version = "0.1.0"
 dependencies = [
  "dunce",
+ "notist-eval",
  "notist-model",
  "notist-syntax",
  "tempfile",

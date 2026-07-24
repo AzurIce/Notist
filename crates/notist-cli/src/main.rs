@@ -3,7 +3,7 @@ use std::path::PathBuf;
 use std::process::ExitCode;
 
 use clap::{Parser, Subcommand};
-use notist_analysis::{Workspace, resolve_vault_root};
+use notist_analysis::{VaultEngine, resolve_vault_root};
 use notist_syntax::RawLiteralForm;
 
 mod build;
@@ -78,7 +78,8 @@ fn run(cli: Cli) -> Result<ExitCode, Box<dyn std::error::Error>> {
     match cli.command {
         Command::Lsp => lsp::run(),
         Command::Check { root } => {
-            let workspace = Workspace::load(resolve_vault_root(&root)?)?;
+            let engine = VaultEngine::open(resolve_vault_root(&root)?)?;
+            let workspace = engine.disk_view()?.snapshot();
             diagnostics::emit(&workspace, cli.color)?;
             if workspace.diagnostics().is_empty() {
                 println!("checked {} modules", workspace.modules().count());
@@ -88,7 +89,8 @@ fn run(cli: Cli) -> Result<ExitCode, Box<dyn std::error::Error>> {
             }
         }
         Command::Inspect { root } => {
-            let workspace = Workspace::load(resolve_vault_root(&root)?)?;
+            let engine = VaultEngine::open(resolve_vault_root(&root)?)?;
+            let workspace = engine.disk_view()?.snapshot();
             for module in workspace.modules() {
                 match &module.source_path {
                     Some(path) => println!("{} -> {}", module.logical_path, path.display()),

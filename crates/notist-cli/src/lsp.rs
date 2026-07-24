@@ -28,10 +28,16 @@ use lsp_types::{
 };
 use notify_debouncer_mini::notify::RecursiveMode;
 use notify_debouncer_mini::{DebounceEventResult, new_debouncer};
-use notist_analysis::{DiagnosticKind, SourceOverlays, Workspace, discover_vault_roots};
-use notist_eval::{DefaultValue, Evaluator, FunctionRegistry, FunctionSignature};
-use notist_model::{Content, Element, ModulePath, TextRange};
-use notist_syntax::Parse;
+use notist_analysis::{
+    AnalyzerView, CompletionKind, DiagnosticKind, DocumentVersions, SourceInput, SourceOverlays,
+    VaultEngine, WorkspaceSnapshot, discover_vault_roots,
+};
+use notist_model::TextRange;
+
+#[cfg(test)]
+use notist_analysis::LineIndex;
+#[cfg(test)]
+use notist_model::ModulePath;
 use percent_encoding::{AsciiSet, CONTROLS, utf8_percent_encode};
 
 const URI_PATH_ENCODE_SET: &AsciiSet = &CONTROLS
@@ -230,10 +236,8 @@ struct OpenDocument {
 struct ServerState {
     root: PathBuf,
     documents: BTreeMap<PathBuf, OpenDocument>,
-    vaults: BTreeMap<PathBuf, Workspace>,
+    vaults: BTreeMap<PathBuf, AnalyzerView>,
     published_paths: BTreeSet<PathBuf>,
-    functions: FunctionRegistry,
-    revision: u64,
 }
 
 impl ServerState {
@@ -243,8 +247,6 @@ impl ServerState {
             documents: BTreeMap::new(),
             vaults: BTreeMap::new(),
             published_paths: BTreeSet::new(),
-            functions: FunctionRegistry::with_builtins(),
-            revision: 0,
         };
         state.rebuild()?;
         Ok(state)
@@ -306,12 +308,12 @@ impl ServerState {
     }
 
     fn rebuild(&mut self) -> Result<(), Box<dyn Error>> {
-        let revision = self.revision.wrapping_add(1);
         let mut roots = discover_vault_roots(&self.root)?;
         if roots.is_empty() {
             roots.push(self.root.clone());
         }
 
+        let mut previous = std::mem::take(&mut self.vaults);
         let mut vaults = BTreeMap::new();
         for root in &roots {
             let overlays: SourceOverlays = self
@@ -320,13 +322,21 @@ impl ServerState {
                 .filter(|(path, _)| assigned_vault_root(path, &roots) == Some(root))
                 .map(|(path, document)| (path.clone(), document.source.clone()))
                 .collect();
-            vaults.insert(
-                root.clone(),
-                Workspace::load_with_overlays_at_revision(root, overlays, revision)?,
-            );
+            let document_versions: DocumentVersions = self
+                .documents
+                .iter()
+                .filter(|(path, _)| assigned_vault_root(path, &roots) == Some(root))
+                .map(|(path, document)| (path.clone(), i64::from(document.version)))
+                .collect();
+            let view = if let Some(mut view) = previous.remove(root) {
+                view.replace_inputs(overlays, document_versions)?;
+                view
+            } else {
+                VaultEngine::open(root)?.view_with_versions(overlays, document_versions)?
+            };
+            vaults.insert(root.clone(), view);
         }
         self.vaults = vaults;
-        self.revision = revision;
         Ok(())
     }
 
@@ -334,9 +344,9 @@ impl ServerState {
         self.documents.get(path).map(|document| document.version)
     }
 
-    fn workspace_for_source(&self, path: &Path) -> Option<&Workspace> {
+    fn workspace_for_source(&self, path: &Path) -> Option<&WorkspaceSnapshot> {
         let root = assigned_vault_root(path, self.vaults.keys())?;
-        self.vaults.get(root)
+        self.vaults.get(root).map(AnalyzerView::current)
     }
 }
 
@@ -350,34 +360,28 @@ fn document_symbols(
     let Some(workspace) = state.workspace_for_source(&path) else {
         return Ok(None);
     };
-    let Some(module) = workspace.module_for_source(&path) else {
+    let Some(file_id) = workspace.file_id(&path) else {
         return Ok(None);
     };
-    let Some(source) = module.source.as_deref() else {
+    let Some(source) = workspace.source(file_id) else {
         return Ok(Some(DocumentSymbolResponse::Nested(Vec::new())));
     };
-    let line_index = LineIndex::new(source);
-    let evaluation = Evaluator::default().evaluate(source);
-    let symbols = evaluation
-        .content
-        .elements
-        .iter()
-        .filter_map(|node| {
-            let Element::Heading { level, body } = &node.element else {
-                return None;
-            };
-            let name = content_plain_text(body);
-            let range = line_index.range(node.range);
+    let symbols = workspace
+        .document_symbols(file_id)
+        .into_iter()
+        .map(|symbol| {
+            let range = lsp_range(source, symbol.range);
+            let name = symbol.name;
             let name = if name.trim().is_empty() {
                 "Untitled heading".into()
             } else {
                 name.trim().to_owned()
             };
-            Some((
-                *level,
+            (
+                symbol.level,
                 DocumentSymbol {
                     name,
-                    detail: Some(format!("Heading {level}")),
+                    detail: Some(format!("Heading {}", symbol.level)),
                     kind: SymbolKind::NAMESPACE,
                     tags: None,
                     deprecated: None,
@@ -385,7 +389,7 @@ fn document_symbols(
                     selection_range: range,
                     children: None,
                 },
-            ))
+            )
         })
         .collect();
     Ok(Some(DocumentSymbolResponse::Nested(nest_heading_symbols(
@@ -420,52 +424,21 @@ fn nest_heading_symbols(symbols: Vec<(u8, DocumentSymbol)>) -> Vec<DocumentSymbo
     roots
 }
 
-fn content_plain_text(content: &Content) -> String {
-    let mut output = String::new();
-    for node in &content.elements {
-        match &node.element {
-            Element::Text(text) | Element::Raw { text, .. } => output.push_str(text),
-            Element::Strong(body)
-            | Element::Emph(body)
-            | Element::Strike(body)
-            | Element::Insert(body)
-            | Element::Spoiler(body)
-            | Element::Highlight(body)
-            | Element::Underline(body)
-            | Element::Keyboard(body)
-            | Element::Sample(body)
-            | Element::Super(body)
-            | Element::Sub(body)
-            | Element::Footnote(body)
-            | Element::Paragraph(body) => output.push_str(&content_plain_text(body)),
-            Element::Link { body, .. } | Element::Time { body, .. } => {
-                output.push_str(&content_plain_text(body));
-            }
-            _ => {}
-        }
-    }
-    output
-}
-
 #[allow(deprecated)]
 fn workspace_symbols(
     state: &ServerState,
     params: WorkspaceSymbolParams,
 ) -> Result<Option<WorkspaceSymbolResponse>, String> {
-    let query = params.query.to_lowercase();
     let mut symbols = Vec::new();
-    for workspace in state.vaults.values() {
-        for module in workspace.modules() {
-            let name = module.logical_path.to_string();
-            if !name.to_lowercase().contains(&query) {
-                continue;
-            }
-            let Some(path) = &module.source_path else {
+    for view in state.vaults.values() {
+        let snapshot = view.current();
+        for symbol in snapshot.workspace_symbols(&params.query) {
+            let Some(source) = snapshot.source(symbol.file_id) else {
                 continue;
             };
-            let uri = file_path_to_uri(path)?;
+            let uri = file_path_to_uri(&source.canonical_path)?;
             symbols.push(lsp_types::SymbolInformation {
-                name,
+                name: symbol.name,
                 kind: SymbolKind::FILE,
                 tags: None,
                 deprecated: None,
@@ -550,7 +523,7 @@ fn publish_diagnostics(
     let current_paths: BTreeSet<_> = state
         .vaults
         .values()
-        .flat_map(Workspace::modules)
+        .flat_map(|view| view.current().modules())
         .filter_map(|module| module.source_path.clone())
         .collect();
     let paths: BTreeSet<_> = current_paths
@@ -579,18 +552,18 @@ fn diagnostics_for_path(state: &ServerState, path: &Path) -> Vec<Diagnostic> {
     let Some(module) = workspace.module_for_source(path) else {
         return Vec::new();
     };
-    let Some(source) = module.source.as_deref() else {
+    let Some(file_id) = module.file_id else {
         return Vec::new();
     };
-    let line_index = LineIndex::new(source);
+    let Some(source) = workspace.source(file_id) else {
+        return Vec::new();
+    };
 
     workspace
-        .diagnostics()
-        .iter()
-        .filter(|diagnostic| diagnostic.source_path.as_deref() == Some(path))
+        .diagnostics_for(file_id)
         .map(|diagnostic| {
             lsp_diagnostic(
-                &line_index,
+                source,
                 diagnostic.range.unwrap_or(TextRange::new(0, 0)),
                 diagnostic_code(&diagnostic.kind),
                 diagnostic.message.clone(),
@@ -613,13 +586,13 @@ fn diagnostic_code(kind: &DiagnosticKind) -> &'static str {
 }
 
 fn lsp_diagnostic(
-    line_index: &LineIndex<'_>,
+    source: &SourceInput,
     range: TextRange,
     code: &str,
     message: String,
 ) -> Diagnostic {
     Diagnostic {
-        range: line_index.range(range),
+        range: lsp_range(source, range),
         severity: Some(DiagnosticSeverity::ERROR),
         code: Some(NumberOrString::String(code.into())),
         source: Some("notist".into()),
@@ -633,24 +606,26 @@ fn definition(
     params: GotoDefinitionParams,
 ) -> Result<Option<GotoDefinitionResponse>, String> {
     let position = params.text_document_position_params;
-    let Some((path, workspace, _module, offset)) = source_position(state, &position) else {
-        return Ok(None);
-    };
-    let Some(reference) = workspace.reference_at(&path, offset) else {
-        return Ok(None);
-    };
-    let Some(target_module) = workspace.module(&reference.target_module) else {
-        return Ok(None);
-    };
-    let (Some(target_path), Some(target_source)) =
-        (&target_module.source_path, &target_module.source)
+    let Some((_path, workspace, file_id, _module, offset)) = source_position(state, &position)
     else {
         return Ok(None);
     };
-    let uri = file_path_to_uri(target_path)?;
+    let Some(definition) = workspace.definition_at(file_id, offset) else {
+        return Ok(None);
+    };
+    let Some(target_file_id) = definition.file_id else {
+        return Ok(None);
+    };
+    let Some(target_source) = workspace.source(target_file_id) else {
+        return Ok(None);
+    };
+    let uri = file_path_to_uri(&target_source.canonical_path)?;
     Ok(Some(GotoDefinitionResponse::Scalar(Location::new(
         uri,
-        LineIndex::new(target_source).range(reference.target_range.unwrap_or(TextRange::new(0, 0))),
+        lsp_range(
+            target_source,
+            definition.range.unwrap_or(TextRange::new(0, 0)),
+        ),
     ))))
 }
 
@@ -659,43 +634,43 @@ fn references(
     params: ReferenceParams,
 ) -> Result<Option<Vec<Location>>, String> {
     let position = params.text_document_position;
-    let Some((path, workspace, _module, offset)) = source_position(state, &position) else {
+    let Some((_path, workspace, file_id, _module, offset)) = source_position(state, &position)
+    else {
         return Ok(None);
     };
-    let Some(target_reference) = workspace.reference_at(&path, offset) else {
+    let Some(target) = workspace.reference_target_at(file_id, offset) else {
         return Ok(None);
     };
     let mut locations = Vec::new();
-    if params.context.include_declaration
-        && let Some(target_module) = workspace.module(&target_reference.target_module)
-        && let Some(path) = &target_module.source_path
-        && let Some(source) = &target_module.source
-    {
-        let uri = file_path_to_uri(path)?;
-        locations.push(Location::new(
-            uri,
-            LineIndex::new(source).range(
-                target_reference
-                    .target_range
-                    .unwrap_or(TextRange::new(0, 0)),
-            ),
-        ));
+    if params.context.include_declaration {
+        let declaration = target
+            .annotation
+            .as_ref()
+            .and_then(|annotation| {
+                workspace.label(
+                    &workspace.module_by_id(annotation.module_id)?.logical_path,
+                    &annotation.name,
+                )
+            })
+            .map(|label| (label.file_id, label.range))
+            .or_else(|| {
+                let module = workspace.module_by_id(target.module_id)?;
+                Some((module.file_id?, TextRange::new(0, 0)))
+            });
+        if let Some((declaration_file, range)) = declaration
+            && let Some(source) = workspace.source(declaration_file)
+        {
+            let uri = file_path_to_uri(&source.canonical_path)?;
+            locations.push(Location::new(uri, lsp_range(source, range)));
+        }
     }
-    for reference in workspace.references().iter().filter(|reference| {
-        reference.target_module == target_reference.target_module
-            && reference.target_label == target_reference.target_label
-    }) {
-        let Some(source_module) = workspace.module(&reference.source_module) else {
-            continue;
-        };
-        let Some(source) = source_module.source.as_deref() else {
+    for result in workspace.references_for_target(&target) {
+        let reference = result.value;
+        let Some(source) = workspace.source(reference.source_file_id) else {
             continue;
         };
         let uri = file_path_to_uri(&reference.source_path)?;
-        locations.push(Location::new(
-            uri,
-            LineIndex::new(source).range(reference.range),
-        ));
+        locations.push(Location::new(uri, lsp_range(source, reference.range)));
     }
     Ok(Some(locations))
 }
@@ -705,473 +680,91 @@ fn completion(
     params: CompletionParams,
 ) -> Result<Option<CompletionResponse>, String> {
     let position = params.text_document_position;
-    let Some((_path, workspace, module, offset)) = source_position(state, &position) else {
+    let Some((_path, workspace, file_id, _module, offset)) = source_position(state, &position)
+    else {
         return Ok(None);
     };
-    let Some(source) = module.source.as_deref() else {
+    let Some(source_input) = workspace.source(file_id) else {
         return Ok(None);
     };
-    let parse = module.parse.as_ref().cloned().unwrap_or_default();
-    let line_index = LineIndex::new(source);
-
-    if is_in_raw_literal(&parse, offset) {
-        return Ok(None);
-    }
-    if let Some((call, context)) = argument_completion_context(source, &parse, offset)
-        && let Some(function) = state.functions.get(&call.name.value)
-    {
-        let mut items = Vec::new();
-        let signature = function.signature();
-        let used = used_argument_parameters(&signature, call);
-        for parameter in completable_parameters(&signature, &used, &context.prefix) {
-            items.push(CompletionItem {
-                label: parameter.name.into(),
-                kind: Some(CompletionItemKind::FIELD),
-                detail: Some(parameter.ty.to_string()),
-                text_edit: Some(CompletionTextEdit::Edit(TextEdit {
-                    range: line_index.range(context.replace),
-                    new_text: format!("{}=", parameter.name),
-                })),
-                ..CompletionItem::default()
-            });
-        }
-        return Ok(Some(CompletionResponse::Array(items)));
-    }
-    if let Some(context) = wiki_completion_context(source, &parse, offset) {
-        let mut items = Vec::new();
-        for target in workspace.modules().map(|module| &module.logical_path) {
-            if target == &module.logical_path {
-                continue;
-            }
-            let reference =
-                completion_module_reference(&module.logical_path, target, &context.prefix);
-            if !starts_with_case_insensitive(&reference, &context.prefix) {
-                continue;
-            }
-            items.push(CompletionItem {
-                label: reference.clone(),
-                kind: Some(CompletionItemKind::MODULE),
-                detail: Some(target.to_string()),
-                text_edit: Some(CompletionTextEdit::Edit(TextEdit {
-                    range: line_index.range(context.replace),
-                    new_text: reference,
-                })),
-                ..CompletionItem::default()
-            });
-        }
-        items.sort_by(|left, right| left.label.cmp(&right.label));
-        return Ok(Some(CompletionResponse::Array(items)));
-    }
-
-    if let Some(context) = function_completion_context(source, &parse, offset) {
-        let mut functions: Vec<_> = state.functions.functions().collect();
-        functions.sort_by_key(|function| function.name().to_owned());
-        let items = functions
-            .into_iter()
-            .filter(|function| starts_with_case_insensitive(function.name(), &context.prefix))
-            .map(|function| CompletionItem {
-                label: function.name().to_owned(),
-                kind: Some(CompletionItemKind::FUNCTION),
-                detail: Some(format_signature(function.name(), &function.signature())),
-                text_edit: Some(CompletionTextEdit::Edit(TextEdit {
-                    range: line_index.range(context.replace),
-                    new_text: function.name().to_owned(),
-                })),
-                ..CompletionItem::default()
-            })
-            .collect();
-        return Ok(Some(CompletionResponse::Array(items)));
-    }
-    Ok(None)
+    let items = workspace
+        .completions_at(file_id, offset)
+        .into_iter()
+        .map(|candidate| CompletionItem {
+            label: candidate.label,
+            kind: Some(match candidate.kind {
+                CompletionKind::Module => CompletionItemKind::MODULE,
+                CompletionKind::Function => CompletionItemKind::FUNCTION,
+                CompletionKind::Parameter => CompletionItemKind::FIELD,
+            }),
+            detail: Some(candidate.detail),
+            text_edit: Some(CompletionTextEdit::Edit(TextEdit {
+                range: lsp_range(source_input, candidate.replacement),
+                new_text: candidate.insert_text,
+            })),
+            ..CompletionItem::default()
+        })
+        .collect::<Vec<_>>();
+    Ok((!items.is_empty()).then_some(CompletionResponse::Array(items)))
 }
 
 fn hover(state: &ServerState, params: HoverParams) -> Result<Option<Hover>, String> {
     let position = params.text_document_position_params;
-    let Some((_path, workspace, module, offset)) = source_position(state, &position) else {
+    let Some((_path, workspace, file_id, _module, offset)) = source_position(state, &position)
+    else {
         return Ok(None);
     };
-    let Some(source) = module.source.as_deref() else {
+    let Some(source_input) = workspace.source(file_id) else {
         return Ok(None);
     };
-    let Some(parse) = &module.parse else {
+    let Some(hover) = workspace.hover_at(file_id, offset) else {
         return Ok(None);
     };
-    let line_index = LineIndex::new(source);
-
-    if let Some(link) = link_at(parse, offset) {
-        let Some(target) = link.target.module.resolve_from(&module.logical_path) else {
-            return Ok(None);
-        };
-        let (kind, path) = match workspace.module(&target) {
-            Some(target) => (
-                if target.source_path.is_some() {
-                    "source module"
-                } else {
-                    "virtual module"
-                },
-                target
-                    .source_path
-                    .as_ref()
-                    .map(|path| format!("\n\n`{}`", path.display()))
-                    .unwrap_or_default(),
-            ),
-            None => ("unresolved module", String::new()),
-        };
-        return Ok(Some(Hover {
-            contents: HoverContents::Markup(MarkupContent {
-                kind: MarkupKind::Markdown,
-                value: format!("**Module** `{target}`\n\n{kind}{path}"),
-            }),
-            range: Some(line_index.range(link.range)),
-        }));
-    }
-
-    if let Some(call) = parse
-        .calls()
-        .into_iter()
-        .find(|call| contains(call.name.range, offset))
-        && let Some(function) = state.functions.get(&call.name.value)
-    {
-        let signature = format_signature(function.name(), &function.signature());
-        return Ok(Some(Hover {
-            contents: HoverContents::Markup(MarkupContent {
-                kind: MarkupKind::Markdown,
-                value: format!("```notist\n{signature}\n```"),
-            }),
-            range: Some(line_index.range(call.name.range)),
-        }));
-    }
-    Ok(None)
+    Ok(Some(Hover {
+        contents: HoverContents::Markup(MarkupContent {
+            kind: MarkupKind::Markdown,
+            value: hover.contents,
+        }),
+        range: Some(lsp_range(source_input, hover.range)),
+    }))
 }
 
 fn source_position<'a>(
     state: &'a ServerState,
     params: &lsp_types::TextDocumentPositionParams,
-) -> Option<(PathBuf, &'a Workspace, &'a notist_analysis::Module, usize)> {
+) -> Option<(
+    PathBuf,
+    &'a WorkspaceSnapshot,
+    notist_analysis::FileId,
+    &'a notist_analysis::Module,
+    usize,
+)> {
     let path = normalize_uri_path(&state.root, &params.text_document.uri).ok()?;
     let workspace = state.workspace_for_source(&path)?;
     let module = workspace.module_for_source(&path)?;
-    let source = module.source.as_deref()?;
-    let offset = LineIndex::new(source).offset(params.position)?;
-    Some((path, workspace, module, offset))
+    let file_id = module.file_id?;
+    let source = workspace.source(file_id)?;
+    let offset = source.line_index.offset_utf16(
+        &source.text,
+        params.position.line,
+        params.position.character,
+    )?;
+    Some((path, workspace, file_id, module, offset))
 }
 
-fn link_at(parse: &Parse, offset: usize) -> Option<&notist_syntax::WikiLink> {
-    parse
-        .links()
-        .into_iter()
-        .find(|link| contains(link.range, offset))
+fn lsp_position(source: &SourceInput, offset: usize) -> Position {
+    let (line, character) = source
+        .line_index
+        .utf16_position(&source.text, offset)
+        .unwrap_or((0, 0));
+    Position::new(line, character)
 }
 
-fn contains(range: TextRange, offset: usize) -> bool {
-    range.start <= offset && offset < range.end
-}
-
-fn is_in_raw_literal(parse: &Parse, offset: usize) -> bool {
-    parse.raw_literals().iter().any(|raw| {
-        contains(raw.range, offset)
-            || (raw.payload_range.end == raw.range.end && offset == raw.range.end)
-    })
-}
-
-struct CompletionContext {
-    prefix: String,
-    replace: TextRange,
-}
-
-fn wiki_completion_context(
-    source: &str,
-    parse: &Parse,
-    offset: usize,
-) -> Option<CompletionContext> {
-    if let Some(link) = parse
-        .links()
-        .into_iter()
-        .find(|link| contains(link.range, offset))
-    {
-        let start = link.range.start + 2;
-        let content_end = link.range.end.saturating_sub(2);
-        let module_end = source[start..content_end]
-            .find('#')
-            .map_or(content_end, |relative| start + relative);
-        if start <= offset && offset <= module_end {
-            return Some(CompletionContext {
-                prefix: source[start..offset].to_owned(),
-                replace: TextRange::new(start, module_end),
-            });
-        }
-    }
-
-    let before = source.get(..offset)?;
-    let start = before.rfind("[[")? + 2;
-    if before[start..].contains("]]")
-        || before[start..].contains('#')
-        || before[start..].contains('\n')
-    {
-        return None;
-    }
-    Some(CompletionContext {
-        prefix: source[start..offset].to_owned(),
-        replace: TextRange::new(start, offset),
-    })
-}
-
-fn function_completion_context(
-    source: &str,
-    parse: &Parse,
-    offset: usize,
-) -> Option<CompletionContext> {
-    if let Some(call) = parse
-        .calls()
-        .into_iter()
-        .find(|call| contains(call.name.range, offset))
-    {
-        return Some(CompletionContext {
-            prefix: source[call.name.range.start..offset].to_owned(),
-            replace: call.name.range,
-        });
-    }
-    let before = source.get(..offset)?;
-    let hash = before.rfind('#')?;
-    let prefix = &source[hash + 1..offset];
-    if prefix.is_empty() || prefix == "[" {
-        return (prefix != "[").then(|| CompletionContext {
-            prefix: String::new(),
-            replace: TextRange::new(hash + 1, offset),
-        });
-    }
-    if !prefix
-        .chars()
-        .all(|character| character.is_alphanumeric() || matches!(character, '_' | '-' | ':'))
-    {
-        return None;
-    }
-    Some(CompletionContext {
-        prefix: prefix.to_owned(),
-        replace: TextRange::new(hash + 1, offset),
-    })
-}
-
-fn argument_completion_context<'a>(
-    source: &str,
-    parse: &'a Parse,
-    offset: usize,
-) -> Option<(&'a notist_syntax::Call, CompletionContext)> {
-    let call = parse
-        .calls()
-        .into_iter()
-        .filter(|call| {
-            call.arguments_range
-                .is_some_and(|range| range.start <= offset && offset <= range.end)
-        })
-        .min_by_key(|call| call.range.end - call.range.start)?;
-    let range = call.arguments_range?;
-    let mut start = offset;
-    while start > range.start {
-        let character = source[..start].chars().next_back()?;
-        if character.is_alphanumeric() || matches!(character, '_' | '-') {
-            start -= character.len_utf8();
-        } else {
-            break;
-        }
-    }
-    Some((
-        call,
-        CompletionContext {
-            prefix: source[start..offset].to_owned(),
-            replace: TextRange::new(start, offset),
-        },
-    ))
-}
-
-fn completable_parameters<'a>(
-    signature: &'a FunctionSignature,
-    used: &BTreeSet<&str>,
-    prefix: &str,
-) -> Vec<&'a notist_eval::Parameter> {
-    signature
-        .parameters
-        .iter()
-        .filter(|parameter| {
-            !used.contains(parameter.name)
-                && signature.trailing_content != Some(parameter.name)
-                && starts_with_case_insensitive(parameter.name, prefix)
-        })
-        .collect()
-}
-
-fn used_argument_parameters<'a>(
-    signature: &'a FunctionSignature,
-    call: &'a notist_syntax::Call,
-) -> BTreeSet<&'a str> {
-    let mut used = BTreeSet::new();
-    let mut positional_index = 0usize;
-    let mut saw_named = false;
-
-    for argument in &call.arguments {
-        if let Some(name) = &argument.name {
-            saw_named = true;
-            used.insert(name.value.as_str());
-        } else if !saw_named {
-            if let Some(parameter) = signature.parameters.get(positional_index) {
-                used.insert(parameter.name);
-            }
-            positional_index += 1;
-        }
-    }
-
-    used
-}
-
-fn starts_with_case_insensitive(value: &str, prefix: &str) -> bool {
-    value
-        .to_lowercase()
-        .starts_with(&prefix.trim().to_lowercase())
-}
-
-fn relative_module_reference(current: &ModulePath, target: &ModulePath) -> String {
-    let current_segments = current.segments();
-    let target_segments = target.segments();
-    let common = current_segments
-        .iter()
-        .zip(target_segments)
-        .take_while(|(left, right)| left == right)
-        .count();
-    let up = current_segments.len() - common;
-    let mut relative = Vec::new();
-    relative.extend(std::iter::repeat_n("super".to_owned(), up));
-    relative.extend(target_segments[common..].iter().cloned());
-    let relative = if relative.is_empty() {
-        "self".into()
-    } else {
-        relative.join("::")
-    };
-    let absolute = target.to_string();
-    if relative.len() <= absolute.len() {
-        relative
-    } else {
-        absolute
-    }
-}
-
-fn completion_module_reference(current: &ModulePath, target: &ModulePath, prefix: &str) -> String {
-    let prefix = prefix.trim_start();
-    if prefix.starts_with("vault") {
-        return target.to_string();
-    }
-    if prefix.starts_with("self") && target.segments().starts_with(current.segments()) {
-        let remainder = &target.segments()[current.segments().len()..];
-        return if remainder.is_empty() {
-            "self".into()
-        } else {
-            format!("self::{}", remainder.join("::"))
-        };
-    }
-    relative_module_reference(current, target)
-}
-
-fn format_signature(name: &str, signature: &FunctionSignature) -> String {
-    let trailing = signature.trailing_content.and_then(|name| {
-        signature
-            .parameters
-            .iter()
-            .find(|parameter| parameter.name == name)
-    });
-    let parameters = signature
-        .parameters
-        .iter()
-        .filter(|parameter| signature.trailing_content != Some(parameter.name))
-        .map(|parameter| {
-            let default = parameter
-                .default
-                .as_ref()
-                .map(|default| format!(" = {}", format_default(default)))
-                .unwrap_or_default();
-            format!("{}: {}{default}", parameter.name, parameter.ty)
-        })
-        .collect::<Vec<_>>()
-        .join(", ");
-    let call = if parameters.is_empty() && trailing.is_some() {
-        format!("#{name}")
-    } else {
-        format!("#{name}({parameters})")
-    };
-    let trailing = trailing
-        .map(|parameter| format!("[{}: {}]", parameter.name, parameter.ty))
-        .unwrap_or_default();
-    format!("{call}{trailing} -> {}", signature.result)
-}
-
-fn format_default(default: &DefaultValue) -> String {
-    match default {
-        DefaultValue::None => "none".into(),
-        DefaultValue::Bool(value) => value.to_string(),
-        DefaultValue::Int(value) => value.to_string(),
-        DefaultValue::Float(value) => value.to_string(),
-        DefaultValue::String(value) => format!("\"{value}\""),
-    }
-}
-
-struct LineIndex<'a> {
-    source: &'a str,
-    line_starts: Vec<usize>,
-}
-
-impl<'a> LineIndex<'a> {
-    fn new(source: &'a str) -> Self {
-        let mut line_starts = vec![0];
-        line_starts.extend(
-            source
-                .bytes()
-                .enumerate()
-                .filter_map(|(offset, byte)| (byte == b'\n').then_some(offset + 1)),
-        );
-        Self {
-            source,
-            line_starts,
-        }
-    }
-
-    fn position(&self, offset: usize) -> Position {
-        let mut offset = offset.min(self.source.len());
-        while !self.source.is_char_boundary(offset) {
-            offset -= 1;
-        }
-        let line = self
-            .line_starts
-            .partition_point(|start| *start <= offset)
-            .saturating_sub(1);
-        let character = self.source[self.line_starts[line]..offset]
-            .encode_utf16()
-            .count();
-        Position::new(line as u32, character as u32)
-    }
-
-    fn offset(&self, position: Position) -> Option<usize> {
-        let start = *self.line_starts.get(position.line as usize)?;
-        let end = self
-            .line_starts
-            .get(position.line as usize + 1)
-            .copied()
-            .unwrap_or(self.source.len());
-        let line = &self.source[start..end];
-        let mut utf16 = 0u32;
-        for (byte, character) in line.char_indices() {
-            if utf16 >= position.character {
-                return Some(start + byte);
-            }
-            let next = utf16 + character.len_utf16() as u32;
-            if position.character < next {
-                return Some(start + byte);
-            }
-            utf16 = next;
-        }
-        (utf16 == position.character).then_some(end)
-    }
-
-    fn range(&self, range: TextRange) -> Range {
-        Range::new(self.position(range.start), self.position(range.end))
-    }
+fn lsp_range(source: &SourceInput, range: TextRange) -> Range {
+    Range::new(
+        lsp_position(source, range.start),
+        lsp_position(source, range.end),
+    )
 }
 
 #[cfg(test)]
@@ -1191,10 +784,13 @@ mod tests {
         let source = "a😀中\r\nnext";
         let index = LineIndex::new(source);
 
-        assert_eq!(index.position("a😀".len()), Position::new(0, 3));
-        assert_eq!(index.position("a😀中\r\n".len()), Position::new(1, 0));
-        assert_eq!(index.offset(Position::new(0, 3)), Some("a😀".len()));
-        assert_eq!(index.offset(Position::new(1, 2)), Some("a😀中\r\nne".len()));
+        assert_eq!(index.utf16_position(source, "a😀".len()), Some((0, 3)));
+        assert_eq!(
+            index.utf16_position(source, "a😀中\r\n".len()),
+            Some((1, 0))
+        );
+        assert_eq!(index.offset_utf16(source, 0, 3), Some("a😀".len()));
+        assert_eq!(index.offset_utf16(source, 1, 2), Some("a😀中\r\nne".len()));
     }
 
     #[test]
@@ -1266,62 +862,6 @@ mod tests {
     }
 
     #[test]
-    fn chooses_short_module_references() {
-        let current = ModulePath::from_segments(["notes".into(), "today".into()]);
-        let child = ModulePath::from_segments(["notes".into(), "today".into(), "details".into()]);
-        let sibling = ModulePath::from_segments(["notes".into(), "index".into()]);
-
-        assert_eq!(relative_module_reference(&current, &child), "details");
-        assert_eq!(
-            relative_module_reference(&current, &sibling),
-            "super::index"
-        );
-        assert_eq!(
-            completion_module_reference(&current, &child, "self::d"),
-            "self::details"
-        );
-        assert_eq!(
-            completion_module_reference(&current, &sibling, "vault::n"),
-            "vault::notes::index"
-        );
-    }
-
-    #[test]
-    fn completes_empty_builtin_argument_lists() {
-        let source = "#heading()[Title]";
-        let parse = notist_syntax::parse(source);
-        let (call, context) = argument_completion_context(source, &parse, 9).unwrap();
-
-        assert_eq!(call.name.value, "heading");
-        assert_eq!(context.prefix, "");
-        assert_eq!(context.replace, TextRange::new(9, 9));
-    }
-
-    #[test]
-    fn argument_completion_targets_innermost_nested_call() {
-        let source = "#heading(level=raw())";
-        let parse = notist_syntax::parse(source);
-        let offset = source.find(')').unwrap();
-        let (call, context) = argument_completion_context(source, &parse, offset).unwrap();
-
-        assert_eq!(call.name.value, "raw");
-        assert_eq!(context.prefix, "");
-        assert_eq!(context.replace, TextRange::new(offset, offset));
-
-        let registry = FunctionRegistry::with_builtins();
-        let signature = registry.get("raw").unwrap().signature();
-        let used = used_argument_parameters(&signature, call);
-        let parameters = completable_parameters(&signature, &used, &context.prefix);
-        assert_eq!(
-            parameters
-                .into_iter()
-                .map(|parameter| parameter.name)
-                .collect::<Vec<_>>(),
-            ["text", "lang"]
-        );
-    }
-
-    #[test]
     fn argument_completion_inside_unknown_nested_call_offers_no_outer_parameters() {
         let root = tempfile::TempDir::new().unwrap();
         fs::write(root.path().join("README.not"), "#heading(level=missing())").unwrap();
@@ -1342,69 +882,6 @@ mod tests {
         // `missing` is not a known function, so there are no argument candidates;
         // crucially the outer `heading`'s `level` must not be offered.
         assert!(completion(&state, params).unwrap().is_none());
-    }
-
-    #[test]
-    fn omits_trailing_content_from_argument_completion() {
-        let registry = FunctionRegistry::with_builtins();
-        let signature = registry.get("heading").unwrap().signature();
-        let parameters = completable_parameters(&signature, &BTreeSet::new(), "");
-
-        assert_eq!(
-            parameters
-                .into_iter()
-                .map(|parameter| parameter.name)
-                .collect::<Vec<_>>(),
-            ["level"]
-        );
-    }
-
-    #[test]
-    fn omits_parameters_already_filled_positionally_from_completion() {
-        let registry = FunctionRegistry::with_builtins();
-        let signature = registry.get("raw").unwrap().signature();
-        let parse = notist_syntax::parse("#raw(\"code\", )");
-        let used = used_argument_parameters(&signature, parse.calls()[0]);
-        let parameters = completable_parameters(&signature, &used, "");
-
-        assert_eq!(
-            parameters
-                .into_iter()
-                .map(|parameter| parameter.name)
-                .collect::<Vec<_>>(),
-            ["lang"]
-        );
-    }
-
-    #[test]
-    fn detects_complete_and_unclosed_raw_literal_ranges() {
-        let complete = notist_syntax::parse("before `raw` after");
-        let raw = complete.raw_literals()[0];
-        assert!(is_in_raw_literal(&complete, raw.range.start));
-        assert!(is_in_raw_literal(&complete, raw.payload_range.start));
-        assert!(!is_in_raw_literal(&complete, raw.range.end));
-
-        let source = "before `raw";
-        let unclosed = notist_syntax::parse(source);
-        assert!(is_in_raw_literal(&unclosed, source.len()));
-    }
-
-    #[test]
-    fn formats_regular_and_trailing_content_signatures() {
-        let registry = FunctionRegistry::with_builtins();
-
-        assert_eq!(
-            format_signature("heading", &registry.get("heading").unwrap().signature()),
-            "#heading(level: Int = 1)[body: Content] -> Content"
-        );
-        assert_eq!(
-            format_signature("quote", &registry.get("quote").unwrap().signature()),
-            "#quote(attribution: Content? = none)[body: Content] -> Content"
-        );
-        assert_eq!(
-            format_signature("raw", &registry.get("raw").unwrap().signature()),
-            "#raw(text: String, lang: String? = none) -> Content"
-        );
     }
 
     #[test]

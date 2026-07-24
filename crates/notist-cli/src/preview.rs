@@ -15,7 +15,7 @@ use axum::routing::get;
 use clap::ColorChoice;
 use notify_debouncer_mini::notify::RecursiveMode;
 use notify_debouncer_mini::{DebounceEventResult, new_debouncer};
-use notist_analysis::Workspace;
+use notist_analysis::VaultEngine;
 use tokio::sync::broadcast;
 use tokio_stream::wrappers::BroadcastStream;
 use tokio_stream::{StreamExt, once};
@@ -36,7 +36,9 @@ pub fn run(
     let revision = Arc::new(AtomicU64::new(1));
     let (updates, _) = broadcast::channel(16);
 
-    let diagnostics = rebuild_preview_site(&root, &site, color)?;
+    let engine = VaultEngine::open(&root)?;
+    let mut view = engine.disk_view()?;
+    let diagnostics = rebuild_preview_site(view.current(), &site, color)?;
     print_rebuild_status(1, diagnostics);
 
     let (event_tx, event_rx) = mpsc::sync_channel(1);
@@ -52,7 +54,6 @@ pub fn run(
     )?;
     debouncer.watcher().watch(&root, RecursiveMode::Recursive)?;
 
-    let rebuild_root = root.clone();
     let rebuild_site = site.clone();
     let rebuild_revision = revision.clone();
     let rebuild_updates = updates.clone();
@@ -61,7 +62,11 @@ pub fn run(
         .spawn(move || {
             while event_rx.recv().is_ok() {
                 while event_rx.try_recv().is_ok() {}
-                match rebuild_preview_site(&rebuild_root, &rebuild_site, color) {
+                match view
+                    .reload()
+                    .map_err(Into::into)
+                    .and_then(|snapshot| rebuild_preview_site(&snapshot, &rebuild_site, color))
+                {
                     Ok(diagnostics) => {
                         let revision = rebuild_revision.fetch_add(1, Ordering::SeqCst) + 1;
                         let _ = rebuild_updates.send(revision);
@@ -86,7 +91,7 @@ pub fn run(
 }
 
 fn rebuild_preview_site(
-    root: &Path,
+    workspace: &notist_analysis::WorkspaceSnapshot,
     site: &Path,
     color: ColorChoice,
 ) -> Result<usize, Box<dyn Error>> {
@@ -96,15 +101,14 @@ fn rebuild_preview_site(
     }
     fs::create_dir_all(&staging)?;
 
-    let workspace = Workspace::load(root)?;
-    let result = build_site(&workspace, &staging, SiteOptions { live_reload: true })?;
-    let diagnostics = diagnostic_count(&workspace, &result);
+    let result = build_site(workspace, &staging, SiteOptions { live_reload: true })?;
+    let diagnostics = diagnostic_count(workspace, &result);
 
     if site.exists() {
         fs::remove_dir_all(site)?;
     }
     fs::rename(&staging, site)?;
-    emit_diagnostics(&workspace, &result, color)?;
+    emit_diagnostics(workspace, &result, color)?;
     Ok(diagnostics)
 }
 
@@ -190,8 +194,10 @@ mod tests {
         let output = tempfile::TempDir::new().unwrap();
         let site = output.path().join("site");
         fs::write(root.path().join("README.not"), "#heading[First]").unwrap();
+        let engine = VaultEngine::open(root.path()).unwrap();
+        let mut view = engine.disk_view().unwrap();
 
-        let diagnostics = rebuild_preview_site(root.path(), &site, ColorChoice::Never).unwrap();
+        let diagnostics = rebuild_preview_site(view.current(), &site, ColorChoice::Never).unwrap();
 
         assert_eq!(diagnostics, 0);
         assert!(site.join("_notist/reload.js").is_file());
@@ -201,7 +207,8 @@ mod tests {
         assert!(first.contains("_notist/reload.js"));
 
         fs::write(root.path().join("README.not"), "#heading[Second]").unwrap();
-        rebuild_preview_site(root.path(), &site, ColorChoice::Never).unwrap();
+        let snapshot = view.reload().unwrap();
+        rebuild_preview_site(&snapshot, &site, ColorChoice::Never).unwrap();
         let second = fs::read_to_string(site.join("index.html")).unwrap();
         assert!(second.contains(">Second</span>"));
         assert!(!second.contains(">First</span>"));

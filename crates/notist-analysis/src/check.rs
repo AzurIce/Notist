@@ -30,6 +30,13 @@ impl SignatureSet {
     pub fn get(&self, name: &str) -> Option<&FunctionSignature> {
         self.signatures.get(name)
     }
+
+    /// Iterates over all statically visible function signatures.
+    pub fn iter(&self) -> impl Iterator<Item = (&str, &FunctionSignature)> {
+        self.signatures
+            .iter()
+            .map(|(name, signature)| (name.as_str(), signature))
+    }
 }
 
 /// A diagnostic produced by static checking without executing functions.
