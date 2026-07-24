@@ -1,8 +1,8 @@
-= Notist.toml
+= D0007: Notist.toml
 
 Notist.toml 是 vault root marker。文件所在目录就是一个独立 vault 的根目录；它不用于指向另一个内容目录。
 
-当前阶段只识别文件是否存在，不读取任何配置字段。因此一个完全空的 Notist.toml 就是有效配置：
+Notist.toml 可以为空；文件存在本身就足以声明 vault root。配置字段不能改变内容根的位置，因此一个完全空的 Notist.toml 是有效配置：
 
 ```text
 vault/
@@ -80,23 +80,23 @@ notist preview
 
 == LSP Behavior
 
-Zed 等编辑器通常以整个 worktree 启动一个 Notist language server。LSP 在该 worktree 内发现所有 Notist.toml，并为每个 root 建立独立 Workspace。
+Zed 等编辑器通常以整个 worktree 启动一个 Notist language server。LSP 在该 worktree 内发现所有 Notist.toml，并为每个 root 打开独立 VaultEngine 上的 Analyzer View。
 
 ```text
 ServerState
 ├── open documents
-├── docs/  -> Workspace
-├── notes/ -> Workspace
+├── docs/  -> ViewHandle
+├── notes/ -> ViewHandle
 └── builtin Function registry
 ```
 
-didOpen 和 didChange 的 source overlay 按最近 marker 分配。Definition、references、completion、Hover 和 diagnostics 只查询当前 source 所属的 Workspace。
+didOpen 和 didChange 的 source overlay 按最近 marker 分配。Definition、references、completion、Hover 和 diagnostics 只查询当前 source 所属的 Analyzer View。
 
 如果 worktree 中没有任何 marker，LSP 继续把 worktree root 作为单个 implicit vault。
 
 == Reserved Configuration
 
-Notist.toml 的内容目前保留，建议保持为空。未来可以在不改变 vault root 语义的前提下加入：
+Notist.toml 的配置空间可以在不改变 vault root 语义的前提下承载：
 
 - vault metadata。
 - enabled plugins 和 Function schema。
@@ -104,4 +104,4 @@ Notist.toml 的内容目前保留，建议保持为空。未来可以在不改�
 - diagnostics policy。
 - language version 或 feature gates。
 
-即使未来增加字段，vault root 仍然始终是 Notist.toml 所在目录，避免配置位置与内容根之间再次产生二义性。
+无论启用哪些字段，vault root 始终是 Notist.toml 所在目录，避免配置位置与内容根之间再次产生二义性。

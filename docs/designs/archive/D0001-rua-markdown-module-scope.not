@@ -1,7 +1,7 @@
-= Rua Markdown 模块系统与语义标注设计
+= D0001: Rua Markdown 模块系统与语义标注设计 (Historical)
 
 #callout(kind="warning", title=[历史设计])[
-本文记录早期以 Markdown 超集和 Rua 为目标的模块/scope 方案，不描述当前 Notist 语法。当前模块规则见 [[vault::designs::2026-07-11 vault and module]]，当前语法见 [[vault::grammar]]。
+本文记录早期以 Markdown 超集和 Rua 为目标的模块/scope 方案，不描述当前 Notist 语法。当前设计见 [[vault::designs::D0002-scope-and-attrs]]、[[vault::designs::D0003-vault-and-module]] 和 [[vault::designs::D0007-notist-toml]]，当前语法见 [[vault::grammar]]。
 ]
 
 == 设计目标

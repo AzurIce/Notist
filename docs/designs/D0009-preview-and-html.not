@@ -1,4 +1,4 @@
-= Preview and HTML
+= D0009: Preview and HTML
 
 Notist 的 HTML 能力分为三个层次：`notist-html` 将语义文档渲染为 HTML fragment，`notist build` 将整个 vault 构建为静态站点，`notist preview` 在本地持续构建并提供浏览器预览。
 
@@ -51,7 +51,7 @@ Notist 的基本单位是 vault/module，而不是孤立文件。因此 HTML 输
 
 === HTML 映射
 
-当前核心映射为：
+核心映射为：
 
 - `Block::Paragraph` -> `p`
 - `Block::List` -> `ul` 和 `li`
@@ -66,7 +66,7 @@ Notist 的基本单位是 vault/module，而不是孤立文件。因此 HTML 输
 - `Custom` -> 带 `data-notist-name` 的 `span` 或 `div`
 - `UnresolvedCall` -> 保留函数名与 body 的降级容器
 
-Raw Element 的文本和 Custom 内容都不是可信 HTML。未来即使允许插件渲染 HTML，也必须增加显式的 trusted renderer 边界，不能让 Raw 内容绕过转义。
+Raw Element 的文本和 Custom 内容都不是可信 HTML。插件渲染 HTML 时必须经过显式的 trusted renderer 边界，不能让 Raw 内容绕过转义。
 
 === Source Range
 
@@ -78,7 +78,7 @@ data-notist-start="12" data-notist-end="28"
 
 这些 metadata 为未来的点击预览跳转源码、Hover fragment 和选择同步保留稳定接口。
 
-Annotation 可能跨越多个 Element 或 block，不能总是直接映射为一个合法嵌套的 DOM 节点。当前只保留 Element range；未来需要通过 range events 切分 Content，再生成正确嵌套的 annotated spans。
+Annotation 可能跨越多个 Element 或 block，不能总是直接映射为一个合法嵌套的 DOM 节点。Element range 可以直接进入 metadata；需要可视化 Annotation 时，通过 range events 切分 Content，再生成正确嵌套的 annotated spans。
 
 == Static Build
 
@@ -106,7 +106,7 @@ Wiki Reference 在构建时解析：目标存在时输出链接；目标不存�
 - 虚拟目录模块页面。
 - ModulePath 到输出目录与相对 URL 的映射。
 
-默认构建不清空整个输出目录，避免误删用户文件。它只创建或覆盖本次 Workspace 对应的页面和 `_notist` 资源；未来可以增加显式 `--clean`。
+默认构建不清空整个输出目录，避免误删用户文件。它只创建或覆盖本次 Workspace 对应的页面和 `_notist` 资源；删除旧产物必须由显式 `--clean` 请求触发。
 
 == Local Preview
 
@@ -120,23 +120,24 @@ notist preview . --host 0.0.0.0 --port 3000
 
 默认行为：
 
-- 加载整个 Workspace。
+- 通过 [[vault::designs::D0012-daemon-and-client-interfaces]] 的 daemon 或 embedded service 打开 disk View。
 - 打开根模块 `vault`。
-- 监听 `.not` 文件变化并 debounce。
+- 观察 disk View 的 snapshot publication 并 debounce。
 - 重新构建带 live reload 资源的完整站点。
 - 使用系统分配的空闲端口并自动打开浏览器。
 - analysis 和 evaluation diagnostics 输出到 CLI。
 - 默认只监听 `127.0.0.1`。
 
-当前 preview 结构为：
+Preview 结构为：
 
 ```text
-filesystem event
-  -> debounce
+filesystem event or explicit rebuild
+  -> VaultEngine / Analyzer View
+  -> publish WorkspaceSnapshot
+  -> debounce snapshot generation
   -> build complete staging site
   -> replace served site
-  -> increment workspace revision
-  -> publish revision over SSE
+  -> publish preview generation over SSE
   -> browser reloads current clean URL
 ```
 
@@ -145,7 +146,7 @@ HTTP 服务只需要两个表面：
 - `GET /` 和各 Module clean URL：由静态目录服务返回页面。
 - `GET /_notist/events`：发送当前 revision 和后续 revision 更新。
 
-页面中的 `_notist/reload.js` 使用 EventSource 订阅 revision。连接建立和重连时先收到当前值，因此浏览器可以发现断线期间错过的构建。第一版不需要 WebSocket、DOM diff 或自定义文档协议。
+页面中的 `_notist/reload.js` 使用 EventSource 订阅 revision。连接建立和重连时先收到当前值，因此浏览器可以发现断线期间错过的构建。完整页面 reload 不需要 WebSocket、DOM diff 或自定义文档协议。
 
 === Atomic Rebuild
 
@@ -153,36 +154,25 @@ HTTP 服务只需要两个表面：
 
 可恢复的 syntax、analysis 和 evaluation diagnostics 不属于构建基础设施失败。页面仍可使用降级语义生成，同时 diagnostics 在终端报告。
 
-当前目录替换已经保证浏览器不会读到只写了一半的页面集合。未来若要支持更严格的跨平台原子切换，可以让服务状态持有不可变 generation 目录，而不是原地删除后 rename。
+目录替换必须保证浏览器不会读到只写了一半的页面集合。需要更严格的跨平台原子切换时，服务状态持有不可变 generation 目录，而不是让请求观察原地删除后 rename 的中间状态。
 
 === Network Boundary
 
 Preview 会暴露用户正在编辑的文档内容，因此默认只能监听 loopback。显式使用非 loopback 地址时必须显示警告。
 
-如果未来加入源码读取、编辑操作或远程共享功能，应增加随机访问 token、Origin 检查和更清晰的授权边界。当前只读静态页面与 revision stream 不应被自然扩展成无认证的编辑 API。
+源码读取、编辑操作或远程共享需要随机访问 token、Origin 检查和独立授权边界。只读静态页面与 revision stream 不应被自然扩展成无认证的编辑 API。
 
 == Workspace Consistency
 
 Parse 的 byte range、源码文本和分析结果必须来自同一个 Workspace snapshot。不能在 analysis 完成后，再由 renderer 重新读取可能已经变化的文件。
 
-当前 build 仍会根据 Module 的 source path 再次读取源码。后续应让 analysis 提供稳定 snapshot：
+Snapshot 的构造、revision、identity 与发布规则见 [[vault::designs::D0011-analyzer-and-workspace-snapshot]]；本文只规定 build 和 preview 如何消费捕获后的 snapshot。
+
+Analysis 提供稳定 snapshot：
 
 - Module 保存 `Arc<str>` 或等价的不可变 source。
 - 提供按 ModulePath 查询 Module 的公开接口。
 - source、Parse、resolved references 和 diagnostics 属于同一 revision。
 - reload 完整构造新 snapshot，完成后整体替换旧 snapshot。
 
-这一改造也将服务 LSP。Preview、diagnostics、Hover 和 definition 应共享同一个文档版本，而不是分别读取磁盘。
-
-== Future Direction
-
-在当前全量静态重建方案稳定后，再按实际性能需求增加：
-
-+ Preview 页面内 diagnostics，而不仅是 CLI 输出。
-+ Module 删除后的导航 fallback。
-+ 点击预览定位源码与编辑器光标同步。
-+ 基于依赖图的受影响 Module 增量构建。
-+ Annotation 到合法 DOM range 的投影。
-+ 插件 Element 的显式 renderer registry。
-
-增量构建和细粒度前端更新都只是优化。无论如何演进，HTML 必须继续消费统一的 `StructuredDocument` 和 analysis 结果，不能成为第二套语言实现。
+Preview、diagnostics、Hover 和 definition 共享同一个文档版本，而不是分别读取磁盘。

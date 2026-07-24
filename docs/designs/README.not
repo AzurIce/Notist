@@ -1,0 +1,21 @@
+= Design Records
+
+这里的活动设计记录使用稳定的 `Dxxxx` 编号。每篇文档围绕自己的问题展开：先给出读者能操作的模型和例子，再解释为什么选择它、它与相邻主题怎样衔接。文档不采用统一章节模板，也不记录实现进度或开发任务；语法细节以 [[vault::grammar]] 为准，内置函数签名以 [[vault::functions]] 为准，类型细节以 [[vault::types]] 为准。
+
+== 当前设计
+
+- [[self::D0002-scope-and-attrs]]：EmbeddedExpression 的 source scope、Attributes、Annotation identity 与求值正交性。
+- [[self::D0003-vault-and-module]]：Vault、ModulePath、文件映射、Virtual Module 与 reference identity。
+- [[self::D0004-builtin-processors]]：统一 Function 模型、Builtin 与宿主 syntax sugar 的特权边界。
+- [[self::D0005-lowering-and-structuring]]：从 syntax/FunctionOutput 到 ordered Content，再到 StructuredDocument 的两步语义管线。
+- [[self::D0006-type-system]]：Type、Value、Content insertion、signature checking、binding 与 partial semantics。
+- [[self::D0007-notist-toml]]：显式 Vault marker、nested roots、CLI discovery 与 editor root assignment。
+- [[self::D0008-language-server]]：analysis/LSP 分层、overlay、snapshot revision、position projection 与插件执行安全。
+- [[self::D0009-preview-and-html]]：StructuredDocument renderer、静态站点、preview generation 与网络安全边界。
+- [[self::D0010-string-literals-and-raw-syntax]]：统一 String 类型、literal provenance、宿主 Raw syntax 与取消 Raw Call 的理由。
+- [[self::D0011-analyzer-and-workspace-snapshot]]：Analyzer 的输入与发布职责、不可变 WorkspaceSnapshot、revision/identity、query 与 delta 边界。
+- [[self::D0012-daemon-and-client-interfaces]]：类似 ADB 的本地 daemon、共享 VaultEngine、隔离 Analyzer View，以及 CLI/LSP/MCP client interface。
+
+== 历史记录
+
+只有中心哲学或基础假设已经被替换的设计才进入 [[self::archive]]。内容需要随实现演进但核心模型仍成立时，继续更新原 ID，而不是用一份摘要取代它。

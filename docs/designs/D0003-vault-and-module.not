@@ -1,0 +1,22 @@
+= D0003: Vault and Module
+
+最初的构思见历史记录 [[vault::designs::archive::D0001-rua-markdown-module-scope]]。
+
+Notist 的模块系统类似 Rust：作者使用稳定的逻辑路径引用内容，不直接把操作系统路径写进语言；区别是 Module 不需要显式声明，而由 Vault 内的目录和 .not source 推导。
+
+```text
+vault-root/
+├─ README.not                 # vault
+├─ submodule1.not             # vault::submodule1
+└─ submodule2/
+   ├─ README.not              # vault::submodule2
+   └─ subsubmodule.not        # vault::submodule2::subsubmodule
+```
+
+普通文件名成为最后一个 ModulePath segment；README.not 表示它所在的目录。因此 submodule.not 与 submodule/README.not 都映射到 vault::submodule，不能共存。一个逻辑 Module 最多有一个 source，这让 definition、reference 和输出路径都具有单一身份。
+
+目录本身仍可以成为 virtual Module。只要它的子树中存在 .not source，就需要这个中间节点来承载后代的 ModulePath；完全不含 .not 文件的目录不进入 Module tree。于是 guide/setup.not 可以定义 vault::guide::setup，即使 guide/README.not 不存在，但 assets/ 之类的普通目录不会制造无用模块。
+
+Reference 解析针对 ModulePath 与可选的 module-local Annotation ID，而不是磁盘路径。移动 source 会改变默认 ModulePath，因此是逻辑重命名；renderer 和 indexer 应从同一 module graph 派生链接，不能各自扫描目录猜测身份。
+
+Vault 决定这棵树的根、发现边界和名称解析上下文。根标记、nested Vault 与 CLI/LSP 的 root resolution 由 [[vault::designs::D0007-notist-toml]] 继续定义；本文只说明一个已选定 Vault 内部如何从 source tree 得到 Module tree。

@@ -855,8 +855,8 @@ BEIR 和 MTEB 可以提供通用参考，但不能替代 Notist 自己的 corpus
 
 === 本仓库相关设计
 
-- [[vault::designs::2026-07-13 lsp]]：Workspace revision、overlay、LSP 查询和后续 snapshot 方向。
-- [[vault::designs::2026-07-13 preview and html]]：StructuredDocument、HTML、source range 和 preview consistency。
+- [[vault::designs::D0008-language-server]]：Workspace revision、overlay、LSP 查询和 snapshot 边界。
+- [[vault::designs::D0009-preview-and-html]]：StructuredDocument、HTML、source range 和 preview consistency。
 - [[vault::types]]：Content、Type、Annotation 与 typed document 边界。
 - [[vault::ai::2026-07-20 notist native desktop architecture research]]：application core、native editor、WebView、插件 capability 和 WorkspaceSnapshot 设计。
 

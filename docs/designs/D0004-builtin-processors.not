@@ -1,0 +1,110 @@
+= D0004: Builtin Functions and Syntax Sugar
+
+
+Notist 的内置内容能力与扩展能力共享 Function 模型。历史上称为 Processor 的对象，现在统一理解为“接收已经求值并完成 binding 的参数，产生 Content 的函数”。
+
+调用只有一种语义路径。普通参数可以包含 String、Int 或其他 Value，trailing [...] 是 Content literal 的紧凑写法。Raw 文本通过 String、backtick 或 fenced syntax 显式产生，而不是另一种动态 body mode。
+
+首批内置函数包括 heading、raw 和 quote：
+
+| Function | 典型调用 | 输出 | 语法糖 |
+| --- | --- | --- | --- |
+| heading | #heading(level=1)[Title] | Heading Element | = Title |
+| raw | #raw(text="source", lang="rust") | Raw Element | backtick、fenced raw |
+| quote | #quote[content] | Quote Element | > |
+
+== heading
+
+```not
+#heading(level=1)[Introduction]
+#heading(level=2)[Design with *emphasis*]
+```
+
+建议签名：
+
+```text
+heading(level: Int = 1, body: Content) -> Content
+```
+
+heading body 是普通 Notist Content，可以包含 emphasis、reference 或其他 inline Element。函数负责校验 level 范围，并产生稳定的 Heading Element。
+
+标题语法糖：
+
+```not
+= Introduction
+== Design
+```
+
+语法糖由核心 parser 识别，但应直接调用与显式 heading 相同的 Heading 构造逻辑。它不通过可覆盖的 FunctionRegistry 动态查找名称，避免局部函数或插件改变基础语法含义。
+
+== raw
+
+```not
+#raw(text="ordinary *unparsed* text")
+#raw(text=r#"fn main() { println!(\"Hello Notist\"); }"#, lang="rust")
+```
+
+公开签名是：
+
+```text
+raw(text: String, lang: String? = none) -> Content
+```
+
+raw 接收已经求值的 String，构造 Raw Element。Notist 标记是否被解析由字符串或 host raw syntax 在调用前决定，Function 不接收 RawSource，也不需要 BodyForm。Inline backtick 与 fenced raw 直接构造同一种 Raw Element；它们是核心 grammar 的语法糖，不依赖 registry 中是否存在名为 raw 的函数。
+
+== quote
+
+```not
+#quote[
+First paragraph with [[self::source]].
+
+Second paragraph with #heading(level=3)[Nested content].
+]
+```
+
+建议签名：
+
+```text
+quote(attribution: Content? = none, body: Content) -> Content
+```
+
+quote 接收 trailing Content。宿主已经完成 body 的 parsing 和 lowering，quote 函数只需把得到的 Content 包装为 Quote Element；它不应接收 RawSource 后再执行一轮 Notist parser。
+
+如果采用 `>` 语法糖，它需要定义逐行延续、空行、多段内容和嵌套规则。无论是否采用，显式调用和语法糖都必须汇合到相同的 Quote 构造器。
+
+来源、作者等信息既可以是构造参数，也可以是结果 Attribute，区别取决于它是否改变 Quote Element 本身：
+
+```not
+#quote(attribution=[RFC 123])[content]@citation,#external,author="Alice"
+```
+
+== Typed Arguments
+
+函数参数不能长期作为字符串由每个 Function 自行解析。完整调用流程应为：
+
+```text
+argument source
+-> Expression AST
+-> name resolution
+-> static type checking
+-> evaluation to Value
+-> signature binding
+-> Function::call
+```
+
+参数解析为 Expression，并把求值得到的 Value 按 Function Signature 完成 positional/named binding。Function 读取 `BoundArguments`，不会自行解释参数源码。变量、运算表达式、名称解析和更丰富的 Value 类型都沿用这条 binding 路径。
+
+签名也声明 trailing Content 参数，使 binder 能把紧凑的 [...] 与普通 named argument 归一到同一 Value。Parser 只建立确定的 Code expression；type checker 再验证参数和返回类型。
+
+== Extension Boundary
+
+插件函数使用与 builtin 相同的普通调用语法：
+
+```not
+#plugin::note(kind="warning")[Notist Content]
+#plugin::diagram(engine="mermaid", source=r#"graph TD; A --> B"#)
+```
+
+插件不能仅通过注册 Function 扩展宿主 grammar，也不能让 editor 在名称解析后才猜测语言边界。Content 与 raw String 都由一般 expression 明确产生。
+
+语法糖属于核心 grammar 的特权，应该只提供给稳定、高频的内置 Element。未来若需要用户可扩展语法，应单独设计受约束的宏或声明式 sugar 系统。

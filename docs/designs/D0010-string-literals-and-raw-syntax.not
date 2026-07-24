@@ -1,4 +1,4 @@
-= String Literals and Raw Syntax
+= D0010: String Literals and Raw Syntax
 
 本文记录 2026-07-14 对 Notist Function call、String literal 与 Raw syntax 的统一设计。它取代旧的 `#name![...]!` Raw Call；现行严格规则见 [[vault::grammar]]，面向写作者的说明见 [[vault::intro]]。
 
@@ -173,48 +173,6 @@ Fence opener 至少三个 backtick；closing fence 至少与 opener 一样长。
 
 Notist 额外要求 triple opener 后立即换行。原因不是沿用某一门语言的表面写法，而是 `r#"..."#` 已允许未转义 quote：若同一行的 `r#"""text"""#` 同时表示 Multiline，就会与值为 `""text""` 的 Inline Raw String 重叠。把 line break 纳入 opener 可以在局部前瞻内稳定消歧，并保留 raw inline 的完整表达能力。
 
-== Migration
-
-旧 inline raw：
-
-```text
-#raw![cargo test]!
-```
-
-日常展示改为：
-
-```not
-`cargo test`
-```
-
-显式调用改为：
-
-```not
-#raw(text=r#"cargo test"#)
-```
-
-旧 block raw 或 diagram body：
-
-```text
-#diagram(engine="mermaid")![
-graph TD
-    A --> B
-]!
-```
-
-改为普通参数：
-
-```not
-#diagram(
-  engine="mermaid",
-  source=r#"""
-graph TD
-    A --> B
-"""#,
-)
-```
-
-如果目标只是展示代码，优先改为裸 fence，而不是显式 `raw` Function。
 
 == Tooling Consequences
 
@@ -225,8 +183,8 @@ graph TD
 - Hover 展示 `trailing_content` 绑定目标，而不再展示 Raw/Content body mode。
 - UnresolvedCall 保存 arguments、可选 trailing Content、Attributes 与 range，不再保存 RawSource 分支。
 
-== Remaining Decision
+== Computed String 的布局
 
-当前 `raw` 可以从 direct String literal 的 Inline/Multiline provenance 决定布局。等 Expression 支持变量、拼接和函数返回后，需要明确 computed String 的布局来源。候选方案包括给 `raw` 增加显式 `block` 参数、提供 `raw.inline` / `raw.block` 构造器，或规定非 literal String 的默认 form；在此之前不应把布局偷偷加入 String 的公开类型身份。
+raw 可以从 direct String literal 的 Inline/Multiline provenance 决定布局；computed String 没有这样的 source form。未来的选择可以是显式 block 参数、raw.inline / raw.block 构造器，或为非 literal String 定义默认 form。无论选择哪一种，布局都不应偷偷成为 String 的公开类型身份，因为相同字符串值不该仅因求值来源不同而具有不同类型。
 
 此外，裸 Raw syntax 是否可以直接附加 Attributes、String multiline 是否未来增加可选 dedent，均应作为独立语法提案处理，不影响本次核心模型。

@@ -1,32 +1,17 @@
-= Language Server
+= D0008: Language Server
 
 Notist 的 LSP 是编辑器与 `notist-analysis` 之间的协议适配层。它负责文档同步、LSP position 转换、请求路由和结果发布，不负责重新实现 parser、模块解析、类型检查或求值语义。
 
-第一版作为现有 CLI 的子命令发布：
+Analyzer 的输入、revision 发布、不可变 WorkspaceSnapshot 与核心 query identity 由 [[vault::designs::D0011-analyzer-and-workspace-snapshot]] 定义；本文只说明 LSP 如何提供输入并消费这些查询。
+
+Language server 作为现有 CLI 的子命令发布：
 
 ```bash
 notist lsp
 ```
 
-这样命令行、Zed、VS Code 和其他编辑器只需要安装一个版本一致的 `notist` 可执行文件。只有当独立发布、daemon 生命周期或依赖体积成为真实问题时，再考虑拆出单独的 `notist-lsp` binary crate。
+这样命令行、Zed、VS Code 和其他编辑器只需要安装一个版本一致的 `notist` 可执行文件。`notist lsp` 是跟随编辑器生命周期的协议 adapter；共享 VaultEngine、daemon discovery 与 embedded fallback 由 [[vault::designs::D0012-daemon-and-client-interfaces]] 定义。
 
-== Current Status
-
-第一阶段已经实现：
-
-- `notist lsp` stdio server 与 full document sync。
-- open document overlay，包括尚未写入磁盘的新 Module。
-- syntax、analysis 和 builtin evaluation diagnostics。
-- Wiki Module definition 与 references。
-- 相对、`self::` 和 `vault::` ModulePath completion。
-- builtin Function name 与 parameter completion。
-- Module 和 builtin Function signature Hover。
-- UTF-8 byte range 与 LSP UTF-16 Position 转换。
-- Zed extension 的 language server adapter。
-- 通过空 Notist.toml marker 发现 vault root。
-- 在同一个 editor worktree 中隔离多个独立 vault。
-
-当前每次文档变化都会同步重建所有已发现 vault 的 Workspace，并发布完整 diagnostics。Workspace snapshot 带有单调 revision；LSP 已支持文件 watcher、DocumentSymbol 和 WorkspaceSymbol。增量 sync、增量 analysis、多 LSP workspace folder 和插件 schema 尚未实现。
 
 == Ownership
 
@@ -38,6 +23,8 @@ Editor
        URI and Position conversion
        capability handlers
        diagnostics publishing
+  -> local Notist client
+  -> daemon or embedded service
   -> notist-analysis
        workspace snapshot
        module graph
@@ -48,42 +35,42 @@ Editor
 
 `notist-analysis` 必须保持编辑器和协议无关。它使用 `PathBuf`、`ModulePath`、`TextRange` 和自身的查询结果类型，不应暴露 `lsp_types::Position`、URI 或 CompletionItem。
 
-LSP 层只做机械转换。例如 analysis 返回一个目标文件和 byte range，LSP handler 再将其转换为 `Location`。
+LSP 层只做机械转换。例如 core query 返回一个目标 FileId 和 byte range，LSP handler 再将其转换为 `Location`。查询可以经 daemon 执行，也可以在 embedded service 中执行；两种形态使用相同的 analysis API。
 
 == Process and Transport
 
-第一版只支持 stdio transport。编辑器启动 `notist lsp`，server 的 stdin/stdout 专用于 JSON-RPC：
+编辑器与 `notist lsp` 之间使用 stdio transport。server 的 stdin/stdout 专用于 LSP JSON-RPC：
 
 - `stdout` 不能输出日志、进度文字或 diagnostics。
 - 日志只能写入 `stderr` 或显式 log file。
 - 普通 CLI 的彩色输出在 LSP 模式下完全禁用。
-- server 生命周期跟随编辑器创建的进程，不额外启动后台 daemon。
+- adapter 生命周期跟随编辑器创建的进程；它通过本地 Notist protocol 连接共享 daemon，或在 embedded mode 中承载同一 core service。
 
-Zed extension 后续增加 language server adapter，优先从 PATH 查找 `notist`，并用参数 `lsp` 启动。自动下载和版本管理属于扩展分发问题，不进入 language server 核心。
+Zed extension 等编辑器集成通过 language server adapter 从 PATH 查找 `notist`，并用参数 `lsp` 启动。自动下载和版本管理属于扩展分发问题，不进入 language server 核心。
 
 == Vault Discovery and Unsaved Documents
 
-编辑器提供的 workspace root 只是 worktree，不一定是 vault。Notist.toml 所在目录才是显式 vault root；配置文件当前可以为空，只承担 marker 作用。
+编辑器提供的 workspace root 只是 worktree，不一定是 vault。Notist.toml 所在目录才是显式 vault root；配置文件可以为空，只承担 marker 作用。
 
-LSP 初始化时在 worktree 内发现所有 marker，并为每个 root 建立独立 Workspace：
+LSP 初始化时在 worktree 内发现所有 marker，并为每个 root 打开独立 VaultEngine 上的 Analyzer View：
 
 ```text
 editor worktree
   -> discover Notist.toml markers
-  -> VaultState { root, Workspace }
+  -> VaultState { root, ViewHandle }
   -> BTreeMap<VaultRoot, VaultState>
 ```
 
 一个 source 归属于最近祖先 marker。嵌套 marker 会建立新的 vault，外层 Workspace 扫描到该目录时停止递归。这样同一个 source 不会同时进入两个 Module graph。
 
-如果 worktree 中没有 marker，server 将 worktree root 作为单个 implicit vault，保持轻量用法兼容。有关 marker 与 CLI discovery 的完整规则见 [[vault::designs::2026-07-13 Notist toml]]。
+如果 worktree 中没有 marker，server 将 worktree root 作为单个 implicit vault，保持轻量用法兼容。有关 marker 与 CLI discovery 的完整规则见 [[vault::designs::D0007-notist-toml]]。
 
-每个 vault 的 Workspace 都接收属于自己的 open document overlays：
+每个 vault 的 Analyzer View 都接收属于自己的 open document overlays：
 
 ```text
 filesystem sources
        +
-vault overlays { path -> version + Arc<str> }
+view overlays { path -> version + Arc<str> }
        |
        v
 Workspace snapshot
@@ -103,13 +90,13 @@ Workspace snapshot
 - snapshot 内的 source、Parse、TextRange、reference 和 diagnostics 必须属于同一 revision。
 - definition、references、completion 和 Hover 不跨 vault 查询。
 
-当前每次文档变化后重建所有已发现的 Workspace。vault 尚小时，全量重建比不完整的增量失效逻辑更可靠；后续再按 vault revision、文件依赖和请求取消做增量优化。
+Analyzer View 可以全量重建 snapshot，也可以利用 VaultEngine cache 和依赖信息增量更新；这属于 analysis 优化，不能改变 overlay precedence 和 snapshot consistency。
 
 == Text Synchronization
 
-第一版声明 `TextDocumentSyncKind::FULL`。每次 `didChange` 接收完整文本，避免在 parser 尚不支持增量更新时维护另一套 range edit 应用逻辑。
+Language server 声明 `TextDocumentSyncKind::FULL`，每次 `didChange` 接收完整文本。这样 document store 始终先形成完整 source，再交给 syntax 和 analysis，而不要求 parser 的增量能力与 LSP edit protocol 同步演进。
 
-这不妨碍未来切换到 incremental sync。届时 document store 先将 LSP range edit 应用到 source，再把新的完整 source 交给 syntax 和 analysis；parser 是否增量解析是内部优化，不应影响 analysis API。
+切换到 incremental sync 时，document store 先将 LSP range edit 应用到 source，再把新的完整 source 交给 syntax 和 analysis；parser 是否增量解析是内部优化，不影响 analysis API。
 
 文件系统 watcher 只负责未在编辑器中打开的文件。若客户端已经为 workspace file events 提供可靠通知，可以优先使用 LSP notification；server 自身 watcher 作为客户端能力不足时的补充。
 
@@ -133,30 +120,30 @@ byte offset
 
 === Diagnostics
 
-第一阶段首先提供实时 diagnostics：
+实时 diagnostics 包括：
 
 - syntax errors。
 - duplicate module。
 - unresolved module reference。
 - unsupported label reference。
 - evaluation 和 builtin function argument diagnostics。
-- 后续的 name resolution 和 type diagnostics。
+- name resolution 和 type diagnostics。
 
-第一版使用 `textDocument/publishDiagnostics`。每次 snapshot 更新后，为受影响的已知文件发布完整 diagnostics 集合；原有错误消失时必须发布空数组清除客户端状态。
+Server 使用 `textDocument/publishDiagnostics`。每次 snapshot 更新后，为受影响的已知文件发布完整 diagnostics 集合；原有错误消失时必须发布空数组清除客户端状态。
 
 Diagnostic 应包含稳定的 `source = "notist"`、可机器识别的 code、准确 range 和简洁 message。跨文件冲突可以通过 related information 指向另一个定义位置。
 
 === Go to Definition
 
-最先支持 Wiki Reference 的 Module 跳转：
+Wiki Reference 提供 Module 跳转：
 
 ```not
 [[notes::today]]
 ```
 
-光标位于 reference path 时，analysis 根据当前 Module 解析目标 ModulePath。目标有 source file 时跳到文件开头；虚拟目录 Module 没有 `README.not` 时，可以返回其目录或第一个真实子模块，但第一版也可以不提供结果。
+光标位于 reference path 时，analysis 根据当前 Module 解析目标 ModulePath。目标有 source file 时跳到文件开头；虚拟目录 Module 没有 `README.not` 时不伪造源码位置，可以不返回结果或由客户端展示逻辑目录信息。
 
-未来 definition 还包括 block label、函数、变量、类型和插件导出的名称。协议 handler 不应针对每种符号复制逻辑，而应调用统一的 `definition_at(file, offset)` 查询。
+Block label、函数、变量、类型和插件导出名称也使用统一的 `definition_at(file, offset)` 查询；协议 handler 不针对每种符号复制逻辑。
 
 === Find References
 
@@ -166,13 +153,13 @@ Module reference 已经形成 workspace 级引用图，因此可以提供：
 - 在 reference 上查找同一目标的其他引用。
 - 可选地包含 Module 自身的定义位置。
 
-后续 block label 和语言符号也使用统一的 SymbolId，而不是仅按显示文本搜索。
+Block label 和语言符号同样使用统一的 SymbolId，而不是仅按显示文本搜索。
 
 === Completion
 
 Completion 必须由 source context 和语义环境共同决定，不能只做全局字符串列表。
 
-第一阶段支持：
+Completion 支持：
 
 - `[[...]]` 内补全当前可达的 ModulePath。
 - `vault::`、`self::`、`super::` 后补全合法 segment。
@@ -188,21 +175,21 @@ Completion query 应返回协议无关的数据：label、insert text、kind、d
 
 === Hover
 
-第一阶段 Hover 包括：
+Hover 包括：
 
 - Module reference 的完整逻辑路径和 source path。
 - Module 是否为虚拟目录节点。
 - 内置 Function 的签名、参数类型、默认值和 trailing Content 绑定。
-- Attribute 或未来 Symbol 的类型与定义位置。
+- Attribute 或其他 Symbol 的类型与定义位置。
 - diagnostics 之外有帮助的简短说明。
 
-LSP Hover 使用 Markdown `MarkupContent`。简单语义信息不需要依赖 `notist-html`；只有未来需要渲染 Content preview 时，才考虑复用 semantic renderer 生成经过清理的片段。
+LSP Hover 使用 Markdown `MarkupContent`。简单语义信息不依赖 `notist-html`；Content preview 则复用 semantic renderer 生成经过清理的片段，不能在 LSP 层另写渲染语义。
 
 === Document Symbols
 
-宿主 `= Heading` 与显式 `#heading[...]` 都进入 DocumentSymbol。名称来自求值后的标题 Content，symbol range 当前使用整个 Heading；symbol 按 level 组成父子层级。Fenced Raw 中的示例标题和注入语言符号不进入 LSP DocumentSymbol。未来带 id 的 Annotation、函数和变量定义也可以进入符号树。
+宿主 `= Heading` 与显式 `#heading[...]` 都进入 DocumentSymbol。名称来自求值后的标题 Content，symbol range 使用整个 Heading；symbol 按 level 组成父子层级。Fenced Raw 中的示例标题和注入语言符号不进入 LSP DocumentSymbol。带 id 的 Annotation、函数和变量定义也可以进入符号树。
 
-Workspace Symbol 可以索引 Module 和带稳定 id 的文档元素，但不应在第一阶段阻塞核心导航能力。
+Workspace Symbol 索引 Module 和带稳定 id 的文档元素；它复用 analysis identity，不建立独立于核心导航的字符串索引语义。
 
 == Syntax Source of Truth
 
@@ -226,23 +213,23 @@ Hover、completion 和 diagnostics 可能需要 Function registry 和类型信�
 
 == Concurrency
 
-Server state 可以维护当前 immutable snapshot 和递增 revision：
+Server state 为每个 vault 维护 ViewHandle，并观察该 View 发布的 immutable snapshot revision：
 
 ```text
 didChange(version)
-  -> update overlay
-  -> schedule analysis revision N
-  -> build snapshot N
+  -> submit overlay to Analyzer View
+  -> schedule View revision N
+  -> publish snapshot N
   -> publish only if N is still current
 ```
 
 旧 revision 的慢任务完成后不能覆盖更新结果。Hover、completion 等读取请求捕获一个 snapshot 并在其上完成；如果客户端取消请求，应尽快停止昂贵查询。
 
-第一版可以使用单个 analysis worker 串行重建，先保证一致性。并行 parse 和增量依赖失效属于后续优化。
+一个 View 可以使用单个 analysis worker 串行重建，也可以并行 parse；publication check 始终以 View revision 为边界。
 
-== Analysis API Direction
+== Analysis API
 
-`notist-analysis` 后续可以形成以下协议无关接口：
+`notist-analysis` 提供协议无关接口：
 
 ```text
 WorkspaceSnapshot::build(root, overlays)
@@ -257,27 +244,3 @@ snapshot.document_symbols(file_id)
 ```
 
 查询结果引用稳定的 FileId、SymbolId 和 TextRange。Path、ModulePath 与 display text 是附加信息，不应代替稳定 identity。
-
-== Testing
-
-测试分三层：
-
-- analysis unit tests：直接对 source、ModulePath 和 byte offset 验证查询结果，不涉及 LSP 类型。
-- position tests：验证 byte offset 与 UTF-16 Position 双向转换。
-- protocol integration tests：以内存 connection 发送 initialize、didOpen、didChange 和请求，验证 diagnostics、completion、hover 与 navigation。
-
-至少需要覆盖未保存 overlay、文件关闭后恢复磁盘内容、中文与 emoji range、删除 Module 后清除 diagnostics、快速连续 change 不发布旧 revision 等场景。
-
-== Implementation Order
-
-已完成的第一阶段包括 full document sync、overlay、diagnostics、Module navigation、completion、Hover、文件 watcher、DocumentSymbol、WorkspaceSymbol、Zed adapter 和基于 Notist.toml 的多 vault discovery。
-
-后续顺序：
-
-+ 将当前 Workspace 进一步固化为带 FileId、LineIndex 和 revision 的 immutable snapshot。
-+ 加入旧 revision 取消和按 vault 重建；当前文件 watcher 已提供 debounce 与全量刷新。
-+ 根据性能数据增加按文件 parse 与依赖图增量 analysis。
-+ 支持插件 schema 提供的 Function、类型、completion 和 Hover。
-+ 处理 LSP workspace folder 动态增删。
-
-多 vault 的核心约束保持不变：每个 source 只属于最近 marker 的 Workspace，未保存 overlay、diagnostics 与所有语义查询都不能越过该边界。
