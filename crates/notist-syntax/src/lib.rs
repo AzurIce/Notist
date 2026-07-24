@@ -62,6 +62,13 @@ pub struct EmbeddedExpression {
     pub range: TextRange,
 }
 
+impl EmbeddedExpression {
+    /// Returns the independent source range of the postfix `@...` metadata.
+    pub fn attributes_range(&self) -> Option<TextRange> {
+        self.attributes.range
+    }
+}
+
 /// A Code-mode Content literal whose body is parsed as Markup.
 #[derive(Clone, Debug, PartialEq)]
 pub struct ContentBlock {
@@ -383,6 +390,77 @@ mod tests {
                 "#[outer #[inner]@inner]@outer `real`"
             ),
             "real"
+        );
+    }
+
+    #[test]
+    fn attributes_keep_independent_ranges_and_all_metadata_kinds() {
+        let source = "#[outer #[inner]@inner,#tag,#tag,.class,.class,key=value,key=\"two\"]@outer,#top,owner=\"Alice\"";
+        let parse = parse(source);
+        assert!(parse.errors.is_empty(), "{:?}", parse.errors);
+        let annotations = parse.annotations();
+        assert_eq!(annotations.len(), 2);
+
+        let inner = annotations
+            .iter()
+            .find(|annotation| annotation.attributes.id.as_ref().unwrap().value == "inner")
+            .unwrap();
+        assert_eq!(
+            &source[inner.scope_range.start..inner.scope_range.end],
+            "#[inner]"
+        );
+        let inner_attributes = inner.attributes_range().unwrap();
+        assert_eq!(
+            &source[inner_attributes.start..inner_attributes.end],
+            "@inner,#tag,#tag,.class,.class,key=value,key=\"two\""
+        );
+        assert_eq!(inner.attributes.id.as_ref().unwrap().value, "inner");
+        assert_eq!(inner.attributes.items.len(), 6);
+        assert!(inner.scope_range.end <= inner_attributes.start);
+        assert_eq!(inner.range.end, inner_attributes.end);
+
+        let outer = annotations
+            .iter()
+            .find(|annotation| annotation.attributes.id.as_ref().unwrap().value == "outer")
+            .unwrap();
+        assert_eq!(outer.attributes.id.as_ref().unwrap().value, "outer");
+        assert_eq!(
+            &source[outer.attributes_range().unwrap().start..outer.range.end],
+            "@outer,#top,owner=\"Alice\""
+        );
+        assert!(
+            inner.range.start >= outer.scope_range.start
+                && inner.range.end <= outer.scope_range.end
+        );
+    }
+
+    #[test]
+    fn attributes_may_omit_id_but_reject_a_second_bare_id() {
+        let valid = parse("#[a]@#tag,.class,key=value");
+        assert!(valid.errors.is_empty(), "{:?}", valid.errors);
+        let attributes = &valid.annotations()[0].attributes;
+        assert!(attributes.id.is_none());
+        assert_eq!(attributes.items.len(), 3);
+
+        let invalid = parse("#[a]@first,second");
+        assert!(invalid.errors.iter().any(|error| {
+            error.message == "expected a tag, class, or key-value attribute after `,`"
+        }));
+    }
+
+    #[test]
+    fn parser_keeps_multiple_trailing_content_blocks_for_binding_diagnostics() {
+        let source = "#quote[first][second]";
+        let parse = parse(source);
+        assert!(parse.errors.is_empty(), "{:?}", parse.errors);
+        assert_eq!(parse.calls()[0].trailing.len(), 2);
+        assert_eq!(
+            parse.calls()[0]
+                .trailing
+                .iter()
+                .map(|block| &source[block.payload_range.start..block.payload_range.end])
+                .collect::<Vec<_>>(),
+            ["first", "second"]
         );
     }
 

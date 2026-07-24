@@ -381,6 +381,11 @@ mod tests {
                 .any(|d| d.message == "argument `body` was provided more than once")
         );
 
+        let multiple_trailing = check("#quote[a][b]");
+        assert!(multiple_trailing.iter().any(|diagnostic| {
+            diagnostic.message == "argument `body` was provided more than once"
+        }));
+
         let unknown = check("#quote(source=\"book\")[text]");
         assert!(
             unknown
