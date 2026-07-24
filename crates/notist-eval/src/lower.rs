@@ -1,9 +1,14 @@
 #![allow(dead_code)]
 
-use notist_model::{Content, Element, ElementNode, TableAlignment, TextRange};
+use std::collections::HashMap;
+
+use notist_model::{
+    Content, DefaultValue, Element, ElementNode, FunctionSignature, Parameter, TableAlignment,
+    TextRange, Type,
+};
 use notist_syntax::{
-    BodyForm, Call, ContentBlock, EmbeddedExpression, Expression, ExpressionKind, Markup,
-    MarkupItem, RawLiteral, RawLiteralForm,
+    BinaryOperator, BodyForm, Call, ContentBlock, EmbeddedExpression, Expression, ExpressionKind,
+    Markup, MarkupItem, RawLiteral, RawLiteralForm, UserFunctionDefinition,
 };
 
 use crate::builtin::citation_key_is_valid;
@@ -18,11 +23,36 @@ pub(crate) fn evaluate_markup(
     registry: &FunctionRegistry,
     depth: usize,
 ) -> Evaluation {
+    let mut user_functions = HashMap::new();
+    collect_user_functions(markup, &mut user_functions);
+    user_functions.retain(|name, _| registry.get(name).is_none());
+    evaluate_markup_in_environment(
+        source,
+        markup,
+        base_offset,
+        registry,
+        depth,
+        &user_functions,
+        Vec::new(),
+    )
+}
+
+fn evaluate_markup_in_environment(
+    source: &str,
+    markup: &Markup,
+    base_offset: usize,
+    registry: &FunctionRegistry,
+    depth: usize,
+    user_functions: &HashMap<String, UserFunctionDefinition>,
+    variables: Vec<HashMap<String, Value>>,
+) -> Evaluation {
     let mut state = LowerState {
         source,
         base_offset,
         registry,
         depth,
+        user_functions,
+        variables,
         content: Content::default(),
         diagnostics: Vec::new(),
     };
@@ -38,8 +68,94 @@ struct LowerState<'a> {
     base_offset: usize,
     registry: &'a FunctionRegistry,
     depth: usize,
+    user_functions: &'a HashMap<String, UserFunctionDefinition>,
+    variables: Vec<HashMap<String, Value>>,
     content: Content,
     diagnostics: Vec<EvalDiagnostic>,
+}
+
+fn collect_user_functions(
+    markup: &Markup,
+    functions: &mut HashMap<String, UserFunctionDefinition>,
+) {
+    for item in &markup.items {
+        let MarkupItem::Embedded(embedded) = item else {
+            continue;
+        };
+        collect_expression_functions(&embedded.expression, functions);
+    }
+}
+
+fn collect_expression_functions(
+    expression: &Expression,
+    functions: &mut HashMap<String, UserFunctionDefinition>,
+) {
+    match &expression.kind {
+        ExpressionKind::Content(block) => collect_user_functions(&block.markup, functions),
+        ExpressionKind::Call(call) => {
+            for argument in &call.arguments {
+                collect_expression_functions(&argument.expression, functions);
+            }
+            for block in &call.trailing {
+                collect_user_functions(&block.markup, functions);
+            }
+        }
+        ExpressionKind::Binary { left, right, .. } => {
+            collect_expression_functions(left, functions);
+            collect_expression_functions(right, functions);
+        }
+        ExpressionKind::LetFunction(definition) => {
+            functions
+                .entry(definition.name.value.clone())
+                .or_insert_with(|| definition.as_ref().clone());
+            collect_expression_functions(&definition.body, functions);
+        }
+        ExpressionKind::Parenthesized(inner) => collect_expression_functions(inner, functions),
+        _ => {}
+    }
+}
+
+fn signature_for_user_function(definition: &UserFunctionDefinition) -> FunctionSignature {
+    let parameters = definition
+        .parameters
+        .iter()
+        .map(|parameter| Parameter {
+            name: parameter.name.value.clone(),
+            ty: parameter.ty.clone(),
+            default: parameter.default.as_ref().and_then(expression_default),
+        })
+        .collect::<Vec<_>>();
+    let trailing_content = parameters
+        .last()
+        .filter(|parameter| parameter.ty == Type::Content)
+        .map(|parameter| parameter.name.clone());
+    FunctionSignature {
+        parameters,
+        trailing_content,
+        result: definition.result.clone(),
+    }
+}
+
+fn expression_default(expression: &Expression) -> Option<DefaultValue> {
+    match &expression.kind {
+        ExpressionKind::None => Some(DefaultValue::None),
+        ExpressionKind::Bool(value) => Some(DefaultValue::Bool(*value)),
+        ExpressionKind::Int(value) => Some(DefaultValue::Int(*value)),
+        ExpressionKind::Float(value) => Some(DefaultValue::Float(*value)),
+        ExpressionKind::String(value) => Some(DefaultValue::String(value.value.clone())),
+        ExpressionKind::Parenthesized(inner) => expression_default(inner),
+        _ => None,
+    }
+}
+
+fn float_binary(operator: BinaryOperator, left: f64, right: f64) -> Option<f64> {
+    match operator {
+        BinaryOperator::Add => Some(left + right),
+        BinaryOperator::Subtract => Some(left - right),
+        BinaryOperator::Multiply => Some(left * right),
+        BinaryOperator::Divide if right == 0.0 => None,
+        BinaryOperator::Divide => Some(left / right),
+    }
 }
 
 impl LowerState<'_> {
@@ -100,11 +216,16 @@ impl LowerState<'_> {
         if start >= end {
             return;
         }
-        let evaluation = crate::lower_fragment(
-            &self.source[start..end],
+        let source = &self.source[start..end];
+        let parse = notist_syntax::parse(source);
+        let evaluation = evaluate_markup_in_environment(
+            source,
+            &parse.root,
             self.base_offset + start,
             self.registry,
             self.depth,
+            self.user_functions,
+            self.variables.clone(),
         );
         self.content.elements.extend(evaluation.content.elements);
         self.diagnostics.extend(evaluation.diagnostics);
@@ -175,26 +296,163 @@ impl LowerState<'_> {
                 let (value, diagnostics) = self.evaluate_call(call, expression_range);
                 (value, ValueOrigin::Default, diagnostics)
             }
+            ExpressionKind::Name(name) => {
+                let value = self
+                    .variables
+                    .iter()
+                    .rev()
+                    .find_map(|scope| scope.get(&name.value))
+                    .cloned()
+                    .or_else(|| {
+                        (self.user_functions.contains_key(&name.value)
+                            || self.registry.get(&name.value).is_some())
+                        .then(|| Value::Function(name.value.clone()))
+                    });
+                match value {
+                    Some(value) => (value, ValueOrigin::Default, Vec::new()),
+                    None => (
+                        Value::None,
+                        ValueOrigin::Default,
+                        vec![EvalDiagnostic {
+                            message: format!("unresolved name `{}`", name.value),
+                            range: name.range.shifted(self.base_offset),
+                        }],
+                    ),
+                }
+            }
+            ExpressionKind::Binary {
+                operator,
+                left,
+                right,
+            } => {
+                let (value, diagnostics) =
+                    self.evaluate_binary(*operator, left, right, expression_range);
+                (value, ValueOrigin::Default, diagnostics)
+            }
+            ExpressionKind::LetFunction(_) => (Value::None, ValueOrigin::Default, Vec::new()),
             ExpressionKind::Parenthesized(inner) => self.evaluate_expression(inner, inner.range),
             ExpressionKind::Error => (Value::None, ValueOrigin::Default, Vec::new()),
-            _ => (
-                Value::None,
-                ValueOrigin::Default,
-                vec![EvalDiagnostic {
-                    message: "unsupported expression in evaluation".into(),
-                    range: expression_range.shifted(self.base_offset),
-                }],
-            ),
+            ExpressionKind::None
+            | ExpressionKind::Bool(_)
+            | ExpressionKind::Int(_)
+            | ExpressionKind::Float(_)
+            | ExpressionKind::String(_) => {
+                unreachable!("literal expressions are evaluated before dispatch")
+            }
         }
     }
 
+    fn evaluate_binary(
+        &mut self,
+        operator: BinaryOperator,
+        left: &Expression,
+        right: &Expression,
+        range: TextRange,
+    ) -> (Value, Vec<EvalDiagnostic>) {
+        let (left, _, mut diagnostics) = self.evaluate_expression(left, left.range);
+        let (right, _, mut right_diagnostics) = self.evaluate_expression(right, right.range);
+        diagnostics.append(&mut right_diagnostics);
+        if !diagnostics.is_empty() {
+            return (Value::None, diagnostics);
+        }
+
+        let value = match (operator, left, right) {
+            (BinaryOperator::Add, Value::String(left), Value::String(right)) => {
+                Value::String(left + &right)
+            }
+            (BinaryOperator::Add, Value::Int(left), Value::Int(right)) => {
+                let Some(value) = left.checked_add(right) else {
+                    return self.arithmetic_overflow(range, diagnostics);
+                };
+                Value::Int(value)
+            }
+            (BinaryOperator::Subtract, Value::Int(left), Value::Int(right)) => {
+                let Some(value) = left.checked_sub(right) else {
+                    return self.arithmetic_overflow(range, diagnostics);
+                };
+                Value::Int(value)
+            }
+            (BinaryOperator::Multiply, Value::Int(left), Value::Int(right)) => {
+                let Some(value) = left.checked_mul(right) else {
+                    return self.arithmetic_overflow(range, diagnostics);
+                };
+                Value::Int(value)
+            }
+            (BinaryOperator::Divide, Value::Int(_), Value::Int(0)) => {
+                return self.division_by_zero(range, diagnostics);
+            }
+            (BinaryOperator::Divide, Value::Int(left), Value::Int(right)) => {
+                let Some(value) = left.checked_div(right) else {
+                    return self.arithmetic_overflow(range, diagnostics);
+                };
+                Value::Int(value)
+            }
+            (operator, Value::Int(left), Value::Float(right)) => {
+                match float_binary(operator, left as f64, right) {
+                    Some(value) => Value::Float(value),
+                    None => return self.division_by_zero(range, diagnostics),
+                }
+            }
+            (operator, Value::Float(left), Value::Int(right)) => {
+                match float_binary(operator, left, right as f64) {
+                    Some(value) => Value::Float(value),
+                    None => return self.division_by_zero(range, diagnostics),
+                }
+            }
+            (operator, Value::Float(left), Value::Float(right)) => {
+                match float_binary(operator, left, right) {
+                    Some(value) => Value::Float(value),
+                    None => return self.division_by_zero(range, diagnostics),
+                }
+            }
+            (_, left, right) => {
+                diagnostics.push(EvalDiagnostic {
+                    message: format!(
+                        "operator {operator:?} does not accept {} and {}",
+                        left.ty(),
+                        right.ty()
+                    ),
+                    range: range.shifted(self.base_offset),
+                });
+                return (Value::None, diagnostics);
+            }
+        };
+        (value, diagnostics)
+    }
+
+    fn division_by_zero(
+        &self,
+        range: TextRange,
+        mut diagnostics: Vec<EvalDiagnostic>,
+    ) -> (Value, Vec<EvalDiagnostic>) {
+        diagnostics.push(EvalDiagnostic {
+            message: "division by zero".into(),
+            range: range.shifted(self.base_offset),
+        });
+        (Value::None, diagnostics)
+    }
+
+    fn arithmetic_overflow(
+        &self,
+        range: TextRange,
+        mut diagnostics: Vec<EvalDiagnostic>,
+    ) -> (Value, Vec<EvalDiagnostic>) {
+        diagnostics.push(EvalDiagnostic {
+            message: "integer arithmetic overflow".into(),
+            range: range.shifted(self.base_offset),
+        });
+        (Value::None, diagnostics)
+    }
+
     fn evaluate_content_block(&mut self, block: &ContentBlock) -> (Value, Vec<EvalDiagnostic>) {
-        let evaluation = evaluate_markup(
+        let evaluation = evaluate_markup_in_environment(
             self.source,
             &block.markup,
             self.base_offset,
             self.registry,
             self.depth,
+            self.user_functions,
+            self.variables.clone(),
         );
         let diagnostics = evaluation.diagnostics;
         (Value::Content(evaluation.content), diagnostics)
@@ -207,6 +465,10 @@ impl LowerState<'_> {
     ) -> (Value, Vec<EvalDiagnostic>) {
         let mut diagnostics = Vec::new();
         let name = &call.name.value;
+
+        if let Some(definition) = self.user_functions.get(name).cloned() {
+            return self.evaluate_user_function(&definition, call, site_range);
+        }
 
         let Some(function) = self.registry.get(name) else {
             self.diagnostics.push(EvalDiagnostic {
@@ -271,12 +533,91 @@ impl LowerState<'_> {
             range: site_range.shifted(self.base_offset),
         };
         match function.call(&context, input) {
-            Ok(output) => (Value::Content(output.content), diagnostics),
+            Ok(output) if signature.result.accepts(&output.value.ty()) => {
+                (output.value, diagnostics)
+            }
+            Ok(output) => {
+                diagnostics.push(EvalDiagnostic {
+                    message: format!(
+                        "function `{name}` returned {}, expected {}",
+                        output.value.ty(),
+                        signature.result
+                    ),
+                    range: site_range.shifted(self.base_offset),
+                });
+                (Value::None, diagnostics)
+            }
             Err(mut errors) => {
                 diagnostics.append(&mut errors);
                 (Value::None, diagnostics)
             }
         }
+    }
+
+    fn evaluate_user_function(
+        &mut self,
+        definition: &UserFunctionDefinition,
+        call: &Call,
+        site_range: TextRange,
+    ) -> (Value, Vec<EvalDiagnostic>) {
+        let mut diagnostics = Vec::new();
+        if self.depth >= 64 {
+            diagnostics.push(EvalDiagnostic {
+                message: format!(
+                    "function `{}` exceeded the evaluation depth limit",
+                    definition.name.value
+                ),
+                range: site_range.shifted(self.base_offset),
+            });
+            return (Value::None, diagnostics);
+        }
+
+        let signature = signature_for_user_function(definition);
+        let (trailing_content, mut trailing_diagnostics) = self.evaluate_trailing(&call.trailing);
+        diagnostics.append(&mut trailing_diagnostics);
+        let bound = match bind_arguments(
+            &signature,
+            &call.arguments,
+            trailing_content,
+            call.name.range,
+            self.base_offset,
+            |expression| {
+                let (value, origin, diagnostics) =
+                    self.evaluate_expression(expression, expression.range);
+                if diagnostics.is_empty() {
+                    Ok((value, origin))
+                } else {
+                    Err(diagnostics)
+                }
+            },
+        ) {
+            Ok(bound) => bound,
+            Err(mut errors) => {
+                diagnostics.append(&mut errors);
+                return (Value::None, diagnostics);
+            }
+        };
+
+        self.variables.push(bound.into_values());
+        self.depth += 1;
+        let (value, _, mut body_diagnostics) =
+            self.evaluate_expression(&definition.body, definition.body.range);
+        self.depth -= 1;
+        self.variables.pop();
+        diagnostics.append(&mut body_diagnostics);
+        if !signature.result.accepts(&value.ty()) {
+            diagnostics.push(EvalDiagnostic {
+                message: format!(
+                    "function `{}` returned {}, expected {}",
+                    definition.name.value,
+                    value.ty(),
+                    signature.result
+                ),
+                range: site_range.shifted(self.base_offset),
+            });
+            return (Value::None, diagnostics);
+        }
+        (value, diagnostics)
     }
 
     fn evaluate_trailing(
@@ -286,12 +627,14 @@ impl LowerState<'_> {
         let mut result = Vec::new();
         let mut diagnostics = Vec::new();
         for block in trailing {
-            let evaluation = evaluate_markup(
+            let evaluation = evaluate_markup_in_environment(
                 self.source,
                 &block.markup,
                 self.base_offset,
                 self.registry,
                 self.depth + 1,
+                self.user_functions,
+                self.variables.clone(),
             );
             diagnostics.extend(evaluation.diagnostics);
             let range = block.payload_range.shifted(self.base_offset);
@@ -740,11 +1083,16 @@ impl LowerState<'_> {
     }
 
     fn inline_source_fragment(&mut self, start: usize, end: usize) -> Content {
-        let evaluation = crate::lower_fragment(
-            &self.source[start..end],
+        let source = &self.source[start..end];
+        let parse = notist_syntax::parse(source);
+        let evaluation = evaluate_markup_in_environment(
+            source,
+            &parse.root,
             self.base_offset + start,
             self.registry,
             self.depth + 1,
+            self.user_functions,
+            self.variables.clone(),
         );
         self.diagnostics.extend(evaluation.diagnostics);
         evaluation.content
@@ -988,6 +1336,8 @@ impl LowerState<'_> {
             base_offset: self.base_offset,
             registry: self.registry,
             depth: self.depth,
+            user_functions: self.user_functions,
+            variables: self.variables.clone(),
             content: Content::new(),
             diagnostics: Vec::new(),
         };

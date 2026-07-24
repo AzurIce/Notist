@@ -1,7 +1,10 @@
 use std::collections::HashMap;
 
-use notist_model::{FunctionSignature, Type, builtin_signatures};
-use notist_syntax::{Call, Expression, ExpressionKind, Markup, Parse};
+use notist_model::{DefaultValue, FunctionSignature, Parameter, Type, builtin_signatures};
+use notist_syntax::{
+    BinaryOperator, Call, Expression, ExpressionKind, Markup, MarkupItem, Parse,
+    UserFunctionDefinition,
+};
 
 use crate::DiagnosticKind;
 
@@ -24,6 +27,26 @@ impl SignatureSet {
     /// Adds or replaces a function signature.
     pub fn insert(&mut self, name: &str, signature: FunctionSignature) {
         self.signatures.insert(name.to_owned(), signature);
+    }
+
+    /// Adds source-defined functions without executing their bodies.
+    pub fn extend_with_user_functions(&mut self, parse: &Parse) -> Vec<CheckDiagnostic> {
+        let mut diagnostics = Vec::new();
+        for definition in parse.user_functions() {
+            if self.signatures.contains_key(&definition.name.value) {
+                diagnostics.push(CheckDiagnostic {
+                    kind: DiagnosticKind::DuplicateFunction,
+                    message: format!("duplicate function `{}`", definition.name.value),
+                    range: definition.name.range,
+                });
+                continue;
+            }
+            self.signatures.insert(
+                definition.name.value.clone(),
+                signature_for_user_function(definition),
+            );
+        }
+        diagnostics
     }
 
     /// Looks up a function signature by its qualified name.
@@ -50,23 +73,212 @@ pub struct CheckDiagnostic {
     pub range: notist_model::TextRange,
 }
 
+/// Module-local identity assigned by static name resolution.
+#[derive(Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
+pub struct LocalSymbolId(pub u32);
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum SymbolKind {
+    Function,
+    Parameter,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct SymbolDefinition {
+    pub id: LocalSymbolId,
+    pub name: String,
+    pub kind: SymbolKind,
+    pub range: notist_model::TextRange,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct SymbolReference {
+    pub symbol: LocalSymbolId,
+    pub range: notist_model::TextRange,
+}
+
+/// Resolved source symbols retained independently from diagnostics and evaluation.
+#[derive(Clone, Debug, Default, Eq, PartialEq)]
+pub struct ModuleSemanticIndex {
+    pub definitions: Vec<SymbolDefinition>,
+    pub references: Vec<SymbolReference>,
+}
+
+/// Resolves user functions and their lexical parameters to module-local identities.
+pub fn resolve_module_symbols(parse: &Parse) -> ModuleSemanticIndex {
+    let mut resolver = SymbolResolver::default();
+    for definition in parse.user_functions() {
+        if resolver.functions.contains_key(&definition.name.value) {
+            continue;
+        }
+        let id = resolver.define(
+            definition.name.value.clone(),
+            SymbolKind::Function,
+            definition.name.range,
+        );
+        resolver.functions.insert(definition.name.value.clone(), id);
+    }
+    resolver.resolve_markup(&parse.root);
+    resolver.index
+}
+
+#[derive(Default)]
+struct SymbolResolver {
+    index: ModuleSemanticIndex,
+    functions: HashMap<String, LocalSymbolId>,
+    variables: Vec<HashMap<String, LocalSymbolId>>,
+}
+
+impl SymbolResolver {
+    fn define(
+        &mut self,
+        name: String,
+        kind: SymbolKind,
+        range: notist_model::TextRange,
+    ) -> LocalSymbolId {
+        let id = LocalSymbolId(self.index.definitions.len() as u32);
+        self.index.definitions.push(SymbolDefinition {
+            id,
+            name,
+            kind,
+            range,
+        });
+        id
+    }
+
+    fn resolve_markup(&mut self, markup: &Markup) {
+        for item in &markup.items {
+            if let MarkupItem::Embedded(embedded) = item {
+                self.resolve_expression(&embedded.expression);
+            }
+        }
+    }
+
+    fn resolve_expression(&mut self, expression: &Expression) {
+        match &expression.kind {
+            ExpressionKind::Content(block) => self.resolve_markup(&block.markup),
+            ExpressionKind::Name(name) => {
+                if let Some(symbol) = self.resolve_name(&name.value) {
+                    self.index.references.push(SymbolReference {
+                        symbol,
+                        range: name.range,
+                    });
+                }
+            }
+            ExpressionKind::Call(call) => {
+                if let Some(symbol) = self.functions.get(&call.name.value).copied() {
+                    self.index.references.push(SymbolReference {
+                        symbol,
+                        range: call.name.range,
+                    });
+                }
+                for argument in &call.arguments {
+                    self.resolve_expression(&argument.expression);
+                }
+                for block in &call.trailing {
+                    self.resolve_markup(&block.markup);
+                }
+            }
+            ExpressionKind::Binary { left, right, .. } => {
+                self.resolve_expression(left);
+                self.resolve_expression(right);
+            }
+            ExpressionKind::LetFunction(definition) => {
+                for parameter in &definition.parameters {
+                    if let Some(default) = &parameter.default {
+                        self.resolve_expression(default);
+                    }
+                }
+                let mut scope = HashMap::new();
+                for parameter in &definition.parameters {
+                    if scope.contains_key(&parameter.name.value) {
+                        continue;
+                    }
+                    let id = self.define(
+                        parameter.name.value.clone(),
+                        SymbolKind::Parameter,
+                        parameter.name.range,
+                    );
+                    scope.insert(parameter.name.value.clone(), id);
+                }
+                self.variables.push(scope);
+                self.resolve_expression(&definition.body);
+                self.variables.pop();
+            }
+            ExpressionKind::Parenthesized(inner) => self.resolve_expression(inner),
+            ExpressionKind::None
+            | ExpressionKind::Bool(_)
+            | ExpressionKind::Int(_)
+            | ExpressionKind::Float(_)
+            | ExpressionKind::String(_)
+            | ExpressionKind::Error => {}
+        }
+    }
+
+    fn resolve_name(&self, name: &str) -> Option<LocalSymbolId> {
+        self.variables
+            .iter()
+            .rev()
+            .find_map(|scope| scope.get(name).copied())
+            .or_else(|| self.functions.get(name).copied())
+    }
+}
+
 /// Statically checks a parsed module against the available function signatures.
 ///
 /// This pass performs name resolution, argument binding checks, and Markup
 /// insertion checks without ever executing a function, so it is safe to run
 /// on the LSP and `notist check` diagnostic paths.
 pub fn check_module(parse: &Parse, signatures: &SignatureSet) -> Vec<CheckDiagnostic> {
+    let mut signatures = signatures.clone();
+    let mut diagnostics = signatures.extend_with_user_functions(parse);
     let mut checker = Checker {
-        signatures,
+        signatures: &signatures,
         diagnostics: Vec::new(),
+        variables: Vec::new(),
     };
     checker.check_markup(&parse.root);
-    checker.diagnostics
+    diagnostics.extend(checker.diagnostics);
+    diagnostics
+}
+
+pub fn signature_for_user_function(definition: &UserFunctionDefinition) -> FunctionSignature {
+    let parameters = definition
+        .parameters
+        .iter()
+        .map(|parameter| Parameter {
+            name: parameter.name.value.clone(),
+            ty: parameter.ty.clone(),
+            default: parameter.default.as_ref().and_then(default_value),
+        })
+        .collect::<Vec<_>>();
+    let trailing_content = parameters
+        .last()
+        .filter(|parameter| parameter.ty == Type::Content)
+        .map(|parameter| parameter.name.clone());
+    FunctionSignature {
+        parameters,
+        trailing_content,
+        result: definition.result.clone(),
+    }
+}
+
+fn default_value(expression: &Expression) -> Option<DefaultValue> {
+    match &expression.kind {
+        ExpressionKind::None => Some(DefaultValue::None),
+        ExpressionKind::Bool(value) => Some(DefaultValue::Bool(*value)),
+        ExpressionKind::Int(value) => Some(DefaultValue::Int(*value)),
+        ExpressionKind::Float(value) => Some(DefaultValue::Float(*value)),
+        ExpressionKind::String(value) => Some(DefaultValue::String(value.value.clone())),
+        ExpressionKind::Parenthesized(inner) => default_value(inner),
+        _ => None,
+    }
 }
 
 struct Checker<'a> {
     signatures: &'a SignatureSet,
     diagnostics: Vec<CheckDiagnostic>,
+    variables: Vec<HashMap<String, Type>>,
 }
 
 impl Checker<'_> {
@@ -104,9 +316,113 @@ impl Checker<'_> {
                 self.check_markup(&block.markup);
                 CheckedType::known(Type::Content)
             }
+            ExpressionKind::Name(name) => self.resolve_name(name),
             ExpressionKind::Call(call) => self.check_call(call),
+            ExpressionKind::Binary {
+                operator,
+                left,
+                right,
+            } => self.check_binary(*operator, left, right, expression.range),
+            ExpressionKind::LetFunction(definition) => {
+                self.check_user_function(definition);
+                CheckedType::known(Type::None)
+            }
             ExpressionKind::Parenthesized(inner) => self.type_of_expression(inner),
             ExpressionKind::Error => CheckedType::unknown(),
+        }
+    }
+
+    fn resolve_name(&mut self, name: &notist_syntax::SpannedName) -> CheckedType {
+        if let Some(ty) = self
+            .variables
+            .iter()
+            .rev()
+            .find_map(|scope| scope.get(&name.value))
+        {
+            return CheckedType::known(ty.clone());
+        }
+        if self.signatures.get(&name.value).is_some() {
+            return CheckedType::known(Type::Function);
+        }
+        self.push(
+            DiagnosticKind::UnresolvedName,
+            format!("unresolved name `{}`", name.value),
+            name.range,
+        );
+        CheckedType::unknown()
+    }
+
+    fn check_binary(
+        &mut self,
+        operator: BinaryOperator,
+        left: &Expression,
+        right: &Expression,
+        range: notist_model::TextRange,
+    ) -> CheckedType {
+        let left = self.type_of_expression(left).ty;
+        let right = self.type_of_expression(right).ty;
+        let (Some(left), Some(right)) = (left, right) else {
+            return CheckedType::unknown();
+        };
+        let result = match (operator, &left, &right) {
+            (BinaryOperator::Add, Type::String, Type::String) => Some(Type::String),
+            (_, Type::Int, Type::Int) => Some(Type::Int),
+            (_, Type::Int | Type::Float, Type::Int | Type::Float) => Some(Type::Float),
+            _ => None,
+        };
+        if let Some(result) = result {
+            CheckedType::known(result)
+        } else {
+            self.push(
+                DiagnosticKind::TypeMismatch,
+                format!("operator {operator:?} does not accept {left} and {right}"),
+                range,
+            );
+            CheckedType::unknown()
+        }
+    }
+
+    fn check_user_function(&mut self, definition: &UserFunctionDefinition) {
+        let mut scope = HashMap::new();
+        for parameter in &definition.parameters {
+            if scope
+                .insert(parameter.name.value.clone(), parameter.ty.clone())
+                .is_some()
+            {
+                self.push(
+                    DiagnosticKind::InvalidFunction,
+                    format!("duplicate parameter `{}`", parameter.name.value),
+                    parameter.name.range,
+                );
+            }
+            if let Some(default) = &parameter.default
+                && let Some(actual) = self.type_of_expression(default).ty
+                && !parameter.ty.accepts(&actual)
+            {
+                self.push(
+                    DiagnosticKind::TypeMismatch,
+                    format!(
+                        "default value for `{}` is {actual}, expected {}",
+                        parameter.name.value, parameter.ty
+                    ),
+                    default.range,
+                );
+            }
+        }
+        self.variables.push(scope);
+        let body = self.type_of_expression(&definition.body).ty;
+        self.variables.pop();
+        if let Some(actual) = body
+            && !definition.result.accepts(&actual)
+        {
+            self.push(
+                DiagnosticKind::TypeMismatch,
+                format!(
+                    "function `{}` returns {actual}, expected {}",
+                    definition.name.value, definition.result
+                ),
+                definition.body.range,
+            );
         }
     }
 
@@ -130,7 +446,7 @@ impl Checker<'_> {
         };
 
         let mut clean = true;
-        let mut provided: Vec<&'static str> = Vec::new();
+        let mut provided: Vec<&str> = Vec::new();
         let mut positional_index = 0usize;
         let mut saw_named = false;
 
@@ -173,7 +489,7 @@ impl Checker<'_> {
             };
 
             let Some(parameter) = parameter else { continue };
-            if provided.contains(&parameter.name) {
+            if provided.contains(&parameter.name.as_str()) {
                 self.push(
                     DiagnosticKind::InvalidArguments,
                     format!("argument `{}` was provided more than once", parameter.name),
@@ -198,12 +514,12 @@ impl Checker<'_> {
             } else {
                 clean = false;
             }
-            provided.push(parameter.name);
+            provided.push(parameter.name.as_str());
         }
 
         for block in &call.trailing {
             self.check_markup(&block.markup);
-            let Some(parameter_name) = signature.trailing_content else {
+            let Some(parameter_name) = signature.trailing_content.as_deref() else {
                 self.push(
                     DiagnosticKind::InvalidArguments,
                     "function does not accept trailing Content".into(),
@@ -238,7 +554,7 @@ impl Checker<'_> {
                     clean = false;
                 }
                 Some(parameter) => {
-                    if provided.contains(&parameter.name) {
+                    if provided.contains(&parameter.name.as_str()) {
                         self.push(
                             DiagnosticKind::InvalidArguments,
                             format!("argument `{}` was provided more than once", parameter.name),
@@ -246,14 +562,14 @@ impl Checker<'_> {
                         );
                         clean = false;
                     } else {
-                        provided.push(parameter.name);
+                        provided.push(parameter.name.as_str());
                     }
                 }
             }
         }
 
         for parameter in &signature.parameters {
-            if provided.contains(&parameter.name) {
+            if provided.contains(&parameter.name.as_str()) {
                 continue;
             }
             if parameter.default.is_none() {
@@ -426,7 +742,7 @@ mod tests {
             "math",
             FunctionSignature {
                 parameters: vec![notist_model::Parameter {
-                    name: "formula",
+                    name: "formula".into(),
                     ty: Type::String,
                     default: None,
                 }],
@@ -436,5 +752,104 @@ mod tests {
         );
         let parse = notist_syntax::parse("#math(formula=\"x+1\")");
         assert!(check_module(&parse, &signatures).is_empty());
+    }
+
+    #[test]
+    fn checks_user_function_scopes_defaults_calls_and_results() {
+        let valid = check(
+            "#let add(a: Int, b: Float = 1.5) -> Float = a + b\n\
+             #let twice(value: Float) -> Float = add(2, value)\n\
+             #let ignore(value: Float) -> Content = []\n\
+             #ignore(twice(2.0))",
+        );
+        assert!(valid.is_empty(), "{valid:?}");
+
+        let unresolved = check("#let broken(value: Int) -> Int = value + missing");
+        assert!(
+            unresolved
+                .iter()
+                .any(|diagnostic| diagnostic.kind == DiagnosticKind::UnresolvedName)
+        );
+
+        let wrong_result = check("#let broken() -> Int = \"wrong\"");
+        assert!(wrong_result.iter().any(|diagnostic| {
+            diagnostic.kind == DiagnosticKind::TypeMismatch
+                && diagnostic.message == "function `broken` returns String, expected Int"
+        }));
+
+        let wrong_default = check("#let broken(value: Int = \"wrong\") -> Int = value");
+        assert!(wrong_default.iter().any(|diagnostic| {
+            diagnostic.kind == DiagnosticKind::TypeMismatch
+                && diagnostic
+                    .message
+                    .contains("default value for `value` is String, expected Int")
+        }));
+    }
+
+    #[test]
+    fn reports_duplicate_user_functions_and_parameters() {
+        let diagnostics = check(
+            "#let same(value: Int, value: Int) -> Int = value\n\
+             #let same() -> Int = 0",
+        );
+        assert!(
+            diagnostics
+                .iter()
+                .any(|diagnostic| diagnostic.kind == DiagnosticKind::DuplicateFunction)
+        );
+        assert!(diagnostics.iter().any(|diagnostic| {
+            diagnostic.kind == DiagnosticKind::InvalidFunction
+                && diagnostic.message == "duplicate parameter `value`"
+        }));
+    }
+
+    #[test]
+    fn resolves_function_and_parameter_uses_to_symbol_identity() {
+        let source = "#let add(a: Int, b: Int) -> Int = a + b\n#add(1, 2)";
+        let parse = notist_syntax::parse(source);
+        let index = resolve_module_symbols(&parse);
+        let function = index
+            .definitions
+            .iter()
+            .find(|definition| definition.name == "add")
+            .unwrap();
+        let a = index
+            .definitions
+            .iter()
+            .find(|definition| definition.name == "a")
+            .unwrap();
+        let b = index
+            .definitions
+            .iter()
+            .find(|definition| definition.name == "b")
+            .unwrap();
+
+        assert_eq!(function.kind, SymbolKind::Function);
+        assert_eq!(a.kind, SymbolKind::Parameter);
+        assert_eq!(b.kind, SymbolKind::Parameter);
+        assert_eq!(
+            index
+                .references
+                .iter()
+                .filter(|reference| reference.symbol == function.id)
+                .count(),
+            1
+        );
+        assert_eq!(
+            index
+                .references
+                .iter()
+                .filter(|reference| reference.symbol == a.id)
+                .count(),
+            1
+        );
+        assert_eq!(
+            index
+                .references
+                .iter()
+                .filter(|reference| reference.symbol == b.id)
+                .count(),
+            1
+        );
     }
 }

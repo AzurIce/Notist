@@ -15,6 +15,9 @@ pub enum Value {
     Float(f64),
     String(String),
     Content(Content),
+    Array(Vec<Value>),
+    Dict(Vec<(Value, Value)>),
+    Function(String),
 }
 
 impl Value {
@@ -26,7 +29,28 @@ impl Value {
             Self::Float(_) => Type::Float,
             Self::String(_) => Type::String,
             Self::Content(_) => Type::Content,
+            Self::Array(values) => Type::Array(Box::new(unified_value_type(values))),
+            Self::Dict(values) => Type::Dict(
+                Box::new(unified_value_type(values.iter().map(|(key, _)| key))),
+                Box::new(unified_value_type(values.iter().map(|(_, value)| value))),
+            ),
+            Self::Function(_) => Type::Function,
         }
+    }
+}
+
+fn unified_value_type<'a>(values: impl IntoIterator<Item = &'a Value>) -> Type {
+    let mut members = Vec::new();
+    for value in values {
+        let ty = value.ty();
+        if !members.contains(&ty) {
+            members.push(ty);
+        }
+    }
+    match members.len() {
+        0 => Type::Union(Vec::new()),
+        1 => members.pop().unwrap(),
+        _ => Type::Union(members),
     }
 }
 
@@ -62,7 +86,7 @@ pub(crate) fn default_to_value(default: &DefaultValue) -> Value {
 
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct BoundArguments {
-    values: HashMap<&'static str, BoundValue>,
+    values: HashMap<String, BoundValue>,
 }
 
 impl BoundArguments {
@@ -144,6 +168,13 @@ impl BoundArguments {
             _ => unreachable!("signature binding guarantees an optional Content value"),
         }
     }
+
+    pub(crate) fn into_values(self) -> HashMap<String, Value> {
+        self.values
+            .into_iter()
+            .map(|(name, bound)| (name, bound.value))
+            .collect()
+    }
 }
 
 pub(crate) fn bind_arguments(
@@ -192,7 +223,7 @@ pub(crate) fn bind_arguments(
         };
 
         let Some(parameter) = parameter else { continue };
-        if values.contains_key(parameter.name) {
+        if values.contains_key(&parameter.name) {
             diagnostics.push(EvalDiagnostic {
                 message: format!("argument `{}` was provided more than once", parameter.name),
                 range: argument.range.shifted(base_offset),
@@ -222,11 +253,11 @@ pub(crate) fn bind_arguments(
         {
             value = Value::Float(integer as f64);
         }
-        values.insert(parameter.name, BoundValue { value, origin });
+        values.insert(parameter.name.clone(), BoundValue { value, origin });
     }
 
     for (content, range) in trailing_content {
-        let Some(parameter_name) = signature.trailing_content else {
+        let Some(parameter_name) = signature.trailing_content.as_deref() else {
             diagnostics.push(EvalDiagnostic {
                 message: "function does not accept trailing Content".into(),
                 range: range.shifted(base_offset),
@@ -253,14 +284,14 @@ pub(crate) fn bind_arguments(
                 ),
                 range: call_name_range.shifted(base_offset),
             });
-        } else if values.contains_key(parameter.name) {
+        } else if values.contains_key(&parameter.name) {
             diagnostics.push(EvalDiagnostic {
                 message: format!("argument `{}` was provided more than once", parameter.name),
                 range: range.shifted(base_offset),
             });
         } else {
             values.insert(
-                parameter.name,
+                parameter.name.clone(),
                 BoundValue {
                     value: Value::Content(content),
                     origin: ValueOrigin::ContentLiteral {
@@ -272,7 +303,7 @@ pub(crate) fn bind_arguments(
     }
 
     for parameter in &signature.parameters {
-        if values.contains_key(parameter.name) {
+        if values.contains_key(&parameter.name) {
             continue;
         }
         if let Some(default) = &parameter.default {
@@ -283,7 +314,7 @@ pub(crate) fn bind_arguments(
                 value = Value::Float(integer as f64);
             }
             values.insert(
-                parameter.name,
+                parameter.name.clone(),
                 BoundValue {
                     value,
                     origin: ValueOrigin::Default,

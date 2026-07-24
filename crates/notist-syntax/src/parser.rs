@@ -1,10 +1,11 @@
-use notist_model::TextRange;
+use notist_model::{TextRange, Type};
 
 use crate::argument::parse_string_at;
 use crate::scope::{parse_attributes, parse_identifier, parse_qualified_name};
 use crate::{
-    Argument, BodyForm, Call, ContentBlock, EmbeddedExpression, Expression, ExpressionKind, Markup,
-    MarkupItem, Parse, SpannedText, SyntaxError, WikiLink, parse_wiki_reference,
+    Argument, BinaryOperator, BodyForm, Call, ContentBlock, EmbeddedExpression, Expression,
+    ExpressionKind, Markup, MarkupItem, Parse, SpannedText, SyntaxError, UserFunctionDefinition,
+    UserParameter, WikiLink, parse_wiki_reference,
 };
 
 pub(crate) fn parse(source: &str) -> Parse {
@@ -194,6 +195,49 @@ impl Parser<'_> {
     }
 
     fn parse_code_expression(&mut self) -> Expression {
+        self.parse_binary_expression(0)
+    }
+
+    fn parse_binary_expression(&mut self, minimum_precedence: u8) -> Expression {
+        let mut left = self.parse_atomic_expression();
+        loop {
+            let before_whitespace = self.cursor;
+            self.skip_whitespace();
+            let Some((operator, precedence)) = self.binary_operator() else {
+                self.cursor = before_whitespace;
+                break;
+            };
+            if precedence < minimum_precedence {
+                self.cursor = before_whitespace;
+                break;
+            }
+            self.cursor += 1;
+            self.skip_whitespace();
+            let right = self.parse_binary_expression(precedence + 1);
+            let range = TextRange::new(left.range.start, right.range.end);
+            left = Expression {
+                kind: ExpressionKind::Binary {
+                    operator,
+                    left: Box::new(left),
+                    right: Box::new(right),
+                },
+                range,
+            };
+        }
+        left
+    }
+
+    fn binary_operator(&self) -> Option<(BinaryOperator, u8)> {
+        match self.byte()? {
+            b'+' => Some((BinaryOperator::Add, 1)),
+            b'-' => Some((BinaryOperator::Subtract, 1)),
+            b'*' => Some((BinaryOperator::Multiply, 2)),
+            b'/' => Some((BinaryOperator::Divide, 2)),
+            _ => None,
+        }
+    }
+
+    fn parse_atomic_expression(&mut self) -> Expression {
         let start = self.cursor;
         match self.byte() {
             Some(b'[') => {
@@ -305,6 +349,9 @@ impl Parser<'_> {
             return self.invalid_expression(start);
         };
         self.cursor = name_end;
+        if name.value == "let" {
+            return self.parse_user_function(start);
+        }
         if !name.value.contains("::") {
             match name.value.as_str() {
                 "none" => {
@@ -342,15 +389,8 @@ impl Parser<'_> {
         }
 
         if arguments_range.is_none() && trailing.is_empty() {
-            self.errors.push(SyntaxError {
-                message: format!(
-                    "unsupported Code expression `{}`; variables are not implemented",
-                    name.value
-                ),
-                range: name.range,
-            });
             return Expression {
-                kind: ExpressionKind::Error,
+                kind: ExpressionKind::Name(name.clone()),
                 range: name.range,
             };
         }
@@ -366,6 +406,237 @@ impl Parser<'_> {
             })),
             range,
         }
+    }
+
+    fn parse_user_function(&mut self, start: usize) -> Expression {
+        self.skip_whitespace();
+        let Some((name, end)) = parse_qualified_name(self.source, self.cursor) else {
+            return self.invalid_expression(start);
+        };
+        self.cursor = end;
+        self.skip_whitespace();
+        let mut parameters = Vec::new();
+        if self.byte() != Some(b'(') {
+            self.errors.push(SyntaxError {
+                message: "expected `(` after user function name".into(),
+                range: TextRange::new(self.cursor, self.next_char_end(self.cursor)),
+            });
+        } else {
+            self.cursor += 1;
+            loop {
+                self.skip_whitespace();
+                if self.byte() == Some(b')') {
+                    self.cursor += 1;
+                    break;
+                }
+                let parameter_start = self.cursor;
+                let Some((parameter_name, parameter_end)) =
+                    parse_identifier(self.source, self.cursor)
+                else {
+                    self.errors.push(SyntaxError {
+                        message: "expected parameter name".into(),
+                        range: TextRange::new(self.cursor, self.next_char_end(self.cursor)),
+                    });
+                    break;
+                };
+                let parameter_name = crate::SpannedName {
+                    value: parameter_name,
+                    range: TextRange::new(self.cursor, parameter_end),
+                };
+                self.cursor = parameter_end;
+                self.skip_whitespace();
+                if self.byte() != Some(b':') {
+                    self.errors.push(SyntaxError {
+                        message: "expected `:` and an explicit parameter type".into(),
+                        range: TextRange::new(self.cursor, self.next_char_end(self.cursor)),
+                    });
+                    break;
+                }
+                self.cursor += 1;
+                self.skip_whitespace();
+                let ty = self.parse_type();
+                self.skip_whitespace();
+                let default = if self.byte() == Some(b'=') {
+                    self.cursor += 1;
+                    self.skip_whitespace();
+                    Some(self.parse_code_expression())
+                } else {
+                    None
+                };
+                let parameter_range = TextRange::new(parameter_start, self.cursor);
+                parameters.push(UserParameter {
+                    name: parameter_name,
+                    ty,
+                    default,
+                    range: parameter_range,
+                });
+                self.skip_whitespace();
+                match self.byte() {
+                    Some(b',') => self.cursor += 1,
+                    Some(b')') => {
+                        self.cursor += 1;
+                        break;
+                    }
+                    _ => {
+                        self.errors.push(SyntaxError {
+                            message: "expected `,` or `)` after parameter".into(),
+                            range: TextRange::new(self.cursor, self.next_char_end(self.cursor)),
+                        });
+                        break;
+                    }
+                }
+            }
+        }
+
+        self.skip_whitespace();
+        if self.source.as_bytes().get(self.cursor..self.cursor + 2) == Some(b"->") {
+            self.cursor += 2;
+        } else {
+            self.errors.push(SyntaxError {
+                message: "expected `->` and an explicit result type".into(),
+                range: TextRange::new(self.cursor, self.next_char_end(self.cursor)),
+            });
+        }
+        self.skip_whitespace();
+        let result = self.parse_type();
+        self.skip_whitespace();
+        if self.byte() == Some(b'=') {
+            self.cursor += 1;
+        } else {
+            self.errors.push(SyntaxError {
+                message: "expected `=` before user function body".into(),
+                range: TextRange::new(self.cursor, self.next_char_end(self.cursor)),
+            });
+        }
+        self.skip_whitespace();
+        if self.byte() == Some(b'#') {
+            self.cursor += 1;
+        }
+        let body = self.parse_code_expression();
+        let range = TextRange::new(start, body.range.end);
+        Expression {
+            kind: ExpressionKind::LetFunction(Box::new(UserFunctionDefinition {
+                name,
+                parameters,
+                result,
+                body,
+                range,
+            })),
+            range,
+        }
+    }
+
+    fn parse_type(&mut self) -> Type {
+        let mut members = vec![self.parse_primary_type()];
+        loop {
+            self.skip_whitespace();
+            if self.byte() != Some(b'|') {
+                break;
+            }
+            self.cursor += 1;
+            self.skip_whitespace();
+            members.push(self.parse_primary_type());
+        }
+        let mut ty = if members.len() == 1 {
+            members.pop().unwrap()
+        } else {
+            Type::Union(members)
+        };
+        if self.byte() == Some(b'?') {
+            self.cursor += 1;
+            ty = Type::Optional(Box::new(ty));
+        }
+        ty
+    }
+
+    fn parse_primary_type(&mut self) -> Type {
+        let start = self.cursor;
+        let Some((name, end)) = parse_identifier(self.source, start) else {
+            self.errors.push(SyntaxError {
+                message: "expected type name".into(),
+                range: TextRange::new(start, self.next_char_end(start)),
+            });
+            return Type::Union(Vec::new());
+        };
+        self.cursor = end;
+        match name.as_str() {
+            "None" => Type::None,
+            "Bool" => Type::Bool,
+            "Int" => Type::Int,
+            "Float" => Type::Float,
+            "String" => Type::String,
+            "Content" => Type::Content,
+            "Function" => Type::Function,
+            "Array" => {
+                let item = self.parse_single_type_argument("Array");
+                Type::Array(Box::new(item))
+            }
+            "Dict" => {
+                self.skip_whitespace();
+                if self.byte() == Some(b'<') {
+                    self.cursor += 1;
+                } else {
+                    self.errors.push(SyntaxError {
+                        message: "expected `<K, V>` after `Dict`".into(),
+                        range: TextRange::new(start, self.cursor),
+                    });
+                }
+                self.skip_whitespace();
+                let key = self.parse_type();
+                self.skip_whitespace();
+                if self.byte() == Some(b',') {
+                    self.cursor += 1;
+                } else {
+                    self.errors.push(SyntaxError {
+                        message: "expected `,` between Dict key and value types".into(),
+                        range: TextRange::new(start, self.cursor),
+                    });
+                }
+                self.skip_whitespace();
+                let value = self.parse_type();
+                self.skip_whitespace();
+                if self.byte() == Some(b'>') {
+                    self.cursor += 1;
+                } else {
+                    self.errors.push(SyntaxError {
+                        message: "expected `>` after Dict types".into(),
+                        range: TextRange::new(start, self.cursor),
+                    });
+                }
+                Type::Dict(Box::new(key), Box::new(value))
+            }
+            _ => {
+                self.errors.push(SyntaxError {
+                    message: format!("unknown type `{name}`"),
+                    range: TextRange::new(start, end),
+                });
+                Type::Union(Vec::new())
+            }
+        }
+    }
+
+    fn parse_single_type_argument(&mut self, owner: &str) -> Type {
+        self.skip_whitespace();
+        if self.byte() == Some(b'<') {
+            self.cursor += 1;
+        } else {
+            self.errors.push(SyntaxError {
+                message: format!("expected `<T>` after `{owner}`"),
+                range: TextRange::new(self.cursor, self.next_char_end(self.cursor)),
+            });
+        }
+        self.skip_whitespace();
+        let ty = self.parse_type();
+        self.skip_whitespace();
+        if self.byte() == Some(b'>') {
+            self.cursor += 1;
+        } else {
+            self.errors.push(SyntaxError {
+                message: format!("expected `>` after `{owner}` item type"),
+                range: TextRange::new(self.cursor, self.next_char_end(self.cursor)),
+            });
+        }
+        ty
     }
 
     fn parse_arguments(&mut self) -> (TextRange, Vec<Argument>) {

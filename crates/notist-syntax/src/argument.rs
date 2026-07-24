@@ -1,4 +1,4 @@
-use notist_model::TextRange;
+use notist_model::{TextRange, Type};
 
 use crate::{Call, ContentBlock, SpannedName, SyntaxError};
 
@@ -31,10 +31,42 @@ pub enum ExpressionKind {
     Float(f64),
     String(StringLiteral),
     Content(ContentBlock),
+    Name(SpannedName),
     Call(Box<Call>),
+    Binary {
+        operator: BinaryOperator,
+        left: Box<Expression>,
+        right: Box<Expression>,
+    },
+    LetFunction(Box<UserFunctionDefinition>),
     Parenthesized(Box<Expression>),
     /// A recoverable invalid expression retained in the tree.
     Error,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum BinaryOperator {
+    Add,
+    Subtract,
+    Multiply,
+    Divide,
+}
+
+#[derive(Clone, Debug, PartialEq)]
+pub struct UserFunctionDefinition {
+    pub name: SpannedName,
+    pub parameters: Vec<UserParameter>,
+    pub result: Type,
+    pub body: Expression,
+    pub range: TextRange,
+}
+
+#[derive(Clone, Debug, PartialEq)]
+pub struct UserParameter {
+    pub name: SpannedName,
+    pub ty: Type,
+    pub default: Option<Expression>,
+    pub range: TextRange,
 }
 
 /// A quoted string literal with lexical source metadata.

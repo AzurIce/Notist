@@ -580,6 +580,9 @@ fn diagnostic_code(kind: &DiagnosticKind) -> &'static str {
         DiagnosticKind::UnresolvedModule => "unresolved-module",
         DiagnosticKind::UnresolvedLabel => "unresolved-label",
         DiagnosticKind::UnknownFunction => "unknown-function",
+        DiagnosticKind::DuplicateFunction => "duplicate-function",
+        DiagnosticKind::UnresolvedName => "unresolved-name",
+        DiagnosticKind::InvalidFunction => "invalid-function",
         DiagnosticKind::InvalidArguments => "invalid-arguments",
         DiagnosticKind::TypeMismatch => "type-mismatch",
     }

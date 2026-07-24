@@ -18,7 +18,7 @@ pub use type_system::{
     BoundArguments, DefaultValue, FunctionSignature, Parameter, Type, Value, ValueOrigin,
 };
 
-/// The result of lowering syntax and evaluating content-producing calls.
+/// The result of lowering syntax and evaluating values inserted into Markup.
 #[derive(Clone, Debug, Default, Eq, PartialEq)]
 pub struct Evaluation {
     /// Evaluated elements in source order.
@@ -115,11 +115,11 @@ mod tests {
         fn signature(&self) -> FunctionSignature {
             FunctionSignature {
                 parameters: vec![Parameter {
-                    name: "body",
+                    name: "body".into(),
                     ty: Type::Content,
                     default: None,
                 }],
-                trailing_content: Some("body"),
+                trailing_content: Some("body".into()),
                 result: Type::Content,
             }
         }
@@ -130,16 +130,38 @@ mod tests {
             mut input: FunctionInput<'_>,
         ) -> Result<FunctionOutput, Vec<EvalDiagnostic>> {
             let body = input.arguments.take_content("body");
-            Ok(FunctionOutput {
-                content: Content::single(
-                    Element::Custom {
-                        name: "quote".into(),
-                        body,
-                        block: true,
-                    },
-                    input.range,
-                ),
-            })
+            Ok(FunctionOutput::content(Content::single(
+                Element::Custom {
+                    name: "quote".into(),
+                    body,
+                    block: true,
+                },
+                input.range,
+            )))
+        }
+    }
+
+    struct TwoFunction;
+
+    impl Function for TwoFunction {
+        fn name(&self) -> &str {
+            "test::two"
+        }
+
+        fn signature(&self) -> FunctionSignature {
+            FunctionSignature {
+                parameters: Vec::new(),
+                trailing_content: None,
+                result: Type::Int,
+            }
+        }
+
+        fn call(
+            &self,
+            _context: &FunctionContext<'_>,
+            _input: FunctionInput<'_>,
+        ) -> Result<FunctionOutput, Vec<EvalDiagnostic>> {
+            Ok(FunctionOutput::value(Value::Int(2)))
         }
     }
 
@@ -1126,6 +1148,22 @@ mod tests {
         assert_eq!(error.name, "test::quote");
     }
 
+    #[test]
+    fn native_functions_can_return_values_to_nested_expressions() {
+        let mut registry = FunctionRegistry::with_builtins();
+        registry.register(TwoFunction).unwrap();
+        let evaluated = Evaluator::new(registry).evaluate("#heading(level=test::two())[Title]");
+        assert!(
+            evaluated.diagnostics.is_empty(),
+            "{:?}",
+            evaluated.diagnostics
+        );
+        assert!(matches!(
+            evaluated.content.elements[0].element,
+            Element::Heading { level: 2, .. }
+        ));
+    }
+
     struct SignatureFunction {
         signature: FunctionSignature,
     }
@@ -1144,7 +1182,7 @@ mod tests {
             _context: &FunctionContext<'_>,
             _input: FunctionInput<'_>,
         ) -> Result<FunctionOutput, Vec<EvalDiagnostic>> {
-            Ok(FunctionOutput::default())
+            Ok(FunctionOutput::content(Content::default()))
         }
     }
 
@@ -1159,18 +1197,15 @@ mod tests {
                 result: Type::Int,
             },
         });
-        assert!(matches!(
-            value_result.unwrap_err().reason,
-            RegistryErrorReason::InvalidSignature(message)
-                if message.contains("result type must be Content")
-        ));
+        assert!(value_result.is_ok());
 
+        let mut registry = FunctionRegistry::new();
         let mismatched_default = registry.register(SignatureFunction {
             signature: FunctionSignature {
                 parameters: vec![Parameter {
-                    name: "level",
+                    name: "level".into(),
                     ty: Type::Int,
-                    default: Some(DefaultValue::String("one")),
+                    default: Some(DefaultValue::String("one".into())),
                 }],
                 trailing_content: None,
                 result: Type::Content,
@@ -1182,10 +1217,11 @@ mod tests {
                 if message.contains("parameter `level`")
         ));
 
+        let mut registry = FunctionRegistry::new();
         let undeclared_trailing = registry.register(SignatureFunction {
             signature: FunctionSignature {
                 parameters: Vec::new(),
-                trailing_content: Some("body"),
+                trailing_content: Some("body".into()),
                 result: Type::Content,
             },
         });
@@ -1559,5 +1595,53 @@ mod tests {
                     _ => None,
                 }).collect::<String>() == "left __ middle"
         )));
+    }
+
+    #[test]
+    fn evaluates_user_functions_with_defaults_and_nested_calls() {
+        let evaluated = Evaluator::default().evaluate(
+            "#let join(left: String, right: String = \"!\") -> String = left + right\n\
+             #let greet(name: String = \"World\") -> String = join(\"Hello, \" + name)\n\
+             #greet()",
+        );
+        assert!(
+            evaluated.diagnostics.is_empty(),
+            "{:?}",
+            evaluated.diagnostics
+        );
+        assert!(
+            evaluated.content.elements.iter().any(
+                |node| matches!(&node.element, Element::Text(text) if text == "Hello, World!")
+            )
+        );
+    }
+
+    #[test]
+    fn evaluates_content_returning_user_functions_in_parameter_scope() {
+        let evaluated = Evaluator::default().evaluate(
+            "#let warning(title: String = \"Warning\", body: Content) -> Content = #quote[\
+             #heading(level=3)[#title]\n#body]\n\
+             #warning[hello]",
+        );
+        assert!(
+            evaluated.diagnostics.is_empty(),
+            "{:?}",
+            evaluated.diagnostics
+        );
+        assert!(evaluated.content.elements.iter().any(|node| {
+            matches!(&node.element, Element::Quote { body, .. }
+                if body.elements.iter().any(|child| matches!(&child.element, Element::Heading { level: 3, .. })))
+        }));
+    }
+
+    #[test]
+    fn checks_user_function_results_again_at_runtime() {
+        let evaluated =
+            Evaluator::default().evaluate("#let broken() -> Int = \"wrong\"\n#broken()");
+        assert!(evaluated.diagnostics.iter().any(|diagnostic| {
+            diagnostic
+                .message
+                .contains("function `broken` returned String, expected Int")
+        }));
     }
 }

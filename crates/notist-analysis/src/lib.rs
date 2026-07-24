@@ -14,7 +14,10 @@ use notist_syntax::{Call, Expression, ExpressionKind, Parse, parse, parse_wiki_r
 
 mod check;
 
-pub use check::{CheckDiagnostic, SignatureSet, check_module};
+pub use check::{
+    CheckDiagnostic, LocalSymbolId, ModuleSemanticIndex, SignatureSet, SymbolDefinition,
+    SymbolKind, SymbolReference, check_module, resolve_module_symbols,
+};
 
 /// The marker file whose containing directory is a Notist vault root.
 pub const MANIFEST_FILE: &str = "Notist.toml";
@@ -222,6 +225,9 @@ pub enum DiagnosticKind {
     UnresolvedModule,
     UnresolvedLabel,
     UnknownFunction,
+    DuplicateFunction,
+    UnresolvedName,
+    InvalidFunction,
     InvalidArguments,
     TypeMismatch,
 }
@@ -383,6 +389,8 @@ pub struct WorkspaceSnapshot {
     references: Vec<ResolvedReference>,
     diagnostics: Vec<Diagnostic>,
     signatures: SignatureSet,
+    module_signatures: BTreeMap<ModuleId, SignatureSet>,
+    module_semantics: BTreeMap<ModuleId, ModuleSemanticIndex>,
     function_environment: FunctionEnvironmentId,
     view_id: ViewId,
     revision: Revision,
@@ -461,6 +469,8 @@ impl WorkspaceSnapshot {
             references: Vec::new(),
             diagnostics: Vec::new(),
             signatures: analyzer_configuration.signatures.clone(),
+            module_signatures: BTreeMap::new(),
+            module_semantics: BTreeMap::new(),
             function_environment,
             view_id,
             revision,
@@ -474,6 +484,7 @@ impl WorkspaceSnapshot {
             &document_versions,
         )?;
         workspace.insert_overlay_only_modules(engine, &overlays, &document_versions)?;
+        workspace.build_module_signatures();
         workspace.analyze_references();
         Ok(workspace)
     }
@@ -497,6 +508,16 @@ impl WorkspaceSnapshot {
 
     pub fn signatures(&self) -> &SignatureSet {
         &self.signatures
+    }
+
+    /// Returns the schema visible inside one module, including its source-defined functions.
+    pub fn module_signatures(&self, module_id: ModuleId) -> Option<&SignatureSet> {
+        self.module_signatures.get(&module_id)
+    }
+
+    /// Returns resolved module-local symbol identities and their use sites.
+    pub fn module_semantics(&self, module_id: ModuleId) -> Option<&ModuleSemanticIndex> {
+        self.module_semantics.get(&module_id)
     }
 
     pub fn function_environment(&self) -> FunctionEnvironmentId {
@@ -790,6 +811,39 @@ impl WorkspaceSnapshot {
     }
 
     pub fn definition_at(&self, file_id: FileId, offset: usize) -> Option<DefinitionTarget> {
+        if let Some(module) = self.module_at(file_id)
+            && let Some(semantics) = self.module_semantics(module.id)
+        {
+            let symbol = semantics
+                .references
+                .iter()
+                .find(|reference| reference.range.start <= offset && offset < reference.range.end)
+                .map(|reference| reference.symbol)
+                .or_else(|| {
+                    semantics
+                        .definitions
+                        .iter()
+                        .find(|definition| {
+                            definition.range.start <= offset && offset < definition.range.end
+                        })
+                        .map(|definition| definition.id)
+                });
+            if let Some(definition) = symbol.and_then(|symbol| {
+                semantics
+                    .definitions
+                    .iter()
+                    .find(|definition| definition.id == symbol)
+            }) {
+                return Some(DefinitionTarget {
+                    revision: self.revision,
+                    module_id: module.id,
+                    file_id: module.file_id,
+                    range: Some(definition.range),
+                    annotation: None,
+                });
+            }
+        }
+
         let reference = self.references_at(file_id, offset).next()?;
         let module = self.module_by_id(reference.target_module_id)?;
         let label = reference
@@ -874,7 +928,11 @@ impl WorkspaceSnapshot {
             .calls()
             .into_iter()
             .find(|call| call.name.range.start <= offset && offset <= call.name.range.end)?;
-        let signature = self.signatures.get(&call.name.value)?;
+        let signatures = self
+            .module_at(file_id)
+            .and_then(|module| self.module_signatures(module.id))
+            .unwrap_or(&self.signatures);
+        let signature = signatures.get(&call.name.value)?;
         Some(HoverInfo {
             revision: self.revision,
             file_id,
@@ -895,21 +953,25 @@ impl WorkspaceSnapshot {
         }
         if let Some((call, context)) =
             argument_completion_context(&source.text, &source.parse, offset)
-            && let Some(signature) = self.signatures.get(&call.name.value)
+            && let Some(signature) = self
+                .module_at(file_id)
+                .and_then(|module| self.module_signatures(module.id))
+                .unwrap_or(&self.signatures)
+                .get(&call.name.value)
         {
             let used = used_argument_parameters(signature, call);
             return signature
                 .parameters
                 .iter()
                 .filter(|parameter| {
-                    !used.contains(parameter.name)
-                        && signature.trailing_content != Some(parameter.name)
-                        && starts_with_case_insensitive(parameter.name, &context.prefix)
+                    !used.contains(parameter.name.as_str())
+                        && signature.trailing_content.as_deref() != Some(parameter.name.as_str())
+                        && starts_with_case_insensitive(&parameter.name, &context.prefix)
                 })
                 .map(|parameter| CompletionCandidate {
                     revision: self.revision,
                     kind: CompletionKind::Parameter,
-                    label: parameter.name.into(),
+                    label: parameter.name.clone(),
                     detail: parameter.ty.to_string(),
                     replacement: context.replace,
                     insert_text: format!("{}=", parameter.name),
@@ -946,8 +1008,11 @@ impl WorkspaceSnapshot {
             return candidates;
         }
         if let Some(context) = function_completion_context(&source.text, &source.parse, offset) {
-            let mut candidates: Vec<_> = self
-                .signatures
+            let signatures = self
+                .module_at(file_id)
+                .and_then(|module| self.module_signatures(module.id))
+                .unwrap_or(&self.signatures);
+            let mut candidates: Vec<_> = signatures
                 .iter()
                 .filter(|(name, _)| starts_with_case_insensitive(name, &context.prefix))
                 .map(|(name, signature)| CompletionCandidate {
@@ -1093,6 +1158,21 @@ impl WorkspaceSnapshot {
             );
         }
         Ok(())
+    }
+
+    fn build_module_signatures(&mut self) {
+        self.module_signatures.clear();
+        self.module_semantics.clear();
+        for module in self.modules.values() {
+            let Some(parse) = module.parse.as_ref() else {
+                continue;
+            };
+            let mut signatures = self.signatures.clone();
+            signatures.extend_with_user_functions(parse);
+            self.module_signatures.insert(module.id, signatures);
+            self.module_semantics
+                .insert(module.id, resolve_module_symbols(parse));
+        }
     }
 
     fn analyze_references(&mut self) {
@@ -1717,7 +1797,7 @@ fn used_argument_parameters<'a>(
             used.insert(name.value.as_str());
         } else if !saw_named {
             if let Some(parameter) = signature.parameters.get(positional_index) {
-                used.insert(parameter.name);
+                used.insert(parameter.name.as_str());
             }
             positional_index += 1;
         }
@@ -1773,7 +1853,7 @@ fn completion_module_reference(current: &ModulePath, target: &ModulePath, prefix
 }
 
 fn format_signature(name: &str, signature: &FunctionSignature) -> String {
-    let trailing = signature.trailing_content.and_then(|name| {
+    let trailing = signature.trailing_content.as_deref().and_then(|name| {
         signature
             .parameters
             .iter()
@@ -1782,7 +1862,7 @@ fn format_signature(name: &str, signature: &FunctionSignature) -> String {
     let parameters = signature
         .parameters
         .iter()
-        .filter(|parameter| signature.trailing_content != Some(parameter.name))
+        .filter(|parameter| signature.trailing_content.as_deref() != Some(parameter.name.as_str()))
         .map(|parameter| {
             let default = parameter
                 .default
@@ -2846,5 +2926,52 @@ mod tests {
         let raw = WorkspaceSnapshot::load_with_overlays(root.path(), overlays).unwrap();
         let raw_file_id = raw.file_id(&today_path).unwrap();
         assert!(raw.completions_at(raw_file_id, 10).is_empty());
+    }
+
+    #[test]
+    fn snapshot_keeps_user_function_schemas_module_local() {
+        let root = TempDir::new().unwrap();
+        let first_path = root.path().join("first.not");
+        let second_path = root.path().join("second.not");
+        let first_source = "#let local(value: String) -> String = value\n#local(\"ok\")\n#lo";
+        fs::write(&first_path, first_source).unwrap();
+        fs::write(&second_path, "#lo").unwrap();
+        let snapshot = WorkspaceSnapshot::load(root.path()).unwrap();
+        let first_id = snapshot
+            .file_id(&dunce::canonicalize(&first_path).unwrap())
+            .unwrap();
+        let second_id = snapshot
+            .file_id(&dunce::canonicalize(&second_path).unwrap())
+            .unwrap();
+
+        let first_candidates = snapshot.completions_at(first_id, first_source.len());
+        assert!(first_candidates.iter().any(|candidate| {
+            candidate.label == "local" && candidate.detail == "#local(value: String) -> String"
+        }));
+        assert!(
+            !snapshot
+                .completions_at(second_id, 3)
+                .iter()
+                .any(|candidate| candidate.label == "local")
+        );
+        let call_offset = first_source.find("#local").unwrap() + 2;
+        assert_eq!(
+            snapshot.hover_at(first_id, call_offset).unwrap().contents,
+            "#local(value: String) -> String"
+        );
+        assert_eq!(
+            snapshot.definition_at(first_id, call_offset).unwrap().range,
+            Some(TextRange::new(5, 10))
+        );
+        let parameter_use = first_source[..first_source.find("#local").unwrap()]
+            .rfind("value")
+            .unwrap();
+        assert_eq!(
+            snapshot
+                .definition_at(first_id, parameter_use)
+                .unwrap()
+                .range,
+            Some(TextRange::new(11, 16))
+        );
     }
 }

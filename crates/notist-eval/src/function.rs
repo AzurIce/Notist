@@ -3,9 +3,11 @@ use std::sync::Arc;
 
 use notist_model::{Content, TextRange};
 
-use crate::{BoundArguments, EvalDiagnostic, Evaluation, FunctionSignature, Type, lower_fragment};
+use crate::{
+    BoundArguments, EvalDiagnostic, Evaluation, FunctionSignature, Type, Value, lower_fragment,
+};
 
-/// The input supplied to a content-producing function.
+/// The input supplied to a native or plugin function.
 #[derive(Clone, Debug, PartialEq)]
 pub struct FunctionInput<'a> {
     /// The function name used at the call site.
@@ -16,21 +18,26 @@ pub struct FunctionInput<'a> {
     pub range: TextRange,
 }
 
-/// Evaluated content returned by a function.
-#[derive(Clone, Debug, Default, Eq, PartialEq)]
+/// Evaluated value returned by a native, user, or plugin function.
+#[derive(Clone, Debug, PartialEq)]
 pub struct FunctionOutput {
-    /// Content produced by the function.
-    pub content: Content,
+    pub value: Value,
 }
 
 impl FunctionOutput {
-    /// Creates an output containing only evaluated content.
+    /// Creates a Content-valued output.
     pub fn content(content: Content) -> Self {
-        Self { content }
+        Self {
+            value: Value::Content(content),
+        }
+    }
+
+    pub fn value(value: Value) -> Self {
+        Self { value }
     }
 }
 
-/// A callable that produces semantic content.
+/// A native or plugin callable that consumes and produces runtime values.
 pub trait Function: Send + Sync {
     /// Returns the globally unique function name.
     fn name(&self) -> &str;
@@ -38,7 +45,7 @@ pub trait Function: Send + Sync {
     /// Returns the statically checkable function signature.
     fn signature(&self) -> FunctionSignature;
 
-    /// Evaluates bound arguments into content.
+    /// Evaluates bound arguments into a runtime value.
     fn call(
         &self,
         context: &FunctionContext<'_>,
@@ -96,14 +103,6 @@ impl FunctionRegistry {
 
 /// Validates a function signature against the contracts the registry enforces.
 fn validate_signature(signature: &FunctionSignature) -> Option<RegistryErrorReason> {
-    // The current `Function` trait can only produce Content, so the declared
-    // result type must be Content until value-returning functions exist.
-    if signature.result != Type::Content {
-        return Some(RegistryErrorReason::InvalidSignature(format!(
-            "result type must be Content, found {}",
-            signature.result
-        )));
-    }
     for parameter in &signature.parameters {
         if let Some(default) = &parameter.default
             && !parameter.ty.accepts(&default.ty())
@@ -116,7 +115,7 @@ fn validate_signature(signature: &FunctionSignature) -> Option<RegistryErrorReas
             )));
         }
     }
-    if let Some(trailing) = signature.trailing_content {
+    if let Some(trailing) = signature.trailing_content.as_deref() {
         let content_parameter = signature
             .parameters
             .iter()

@@ -6,7 +6,8 @@ mod raw;
 mod scope;
 
 pub use argument::{
-    Argument, Expression, ExpressionKind, StringLiteral, StringLiteralForm, StringLiteralStyle,
+    Argument, BinaryOperator, Expression, ExpressionKind, StringLiteral, StringLiteralForm,
+    StringLiteralStyle, UserFunctionDefinition, UserParameter,
 };
 pub use raw::{RawLiteral, RawLiteralForm, SpannedText};
 pub use scope::{Attribute, AttributeValue, Attributes, BodyForm, SpannedName};
@@ -118,6 +119,17 @@ impl Parse {
         output
     }
 
+    /// Collects source-defined functions in source order.
+    pub fn user_functions(&self) -> Vec<&UserFunctionDefinition> {
+        let mut output = Vec::new();
+        visit_markup_expressions(&self.root, &mut |expression| {
+            if let ExpressionKind::LetFunction(definition) = &expression.kind {
+                output.push(definition.as_ref());
+            }
+        });
+        output
+    }
+
     /// Collects host Raw literals in source order.
     pub fn raw_literals(&self) -> Vec<&RawLiteral> {
         let mut output = Vec::new();
@@ -180,6 +192,18 @@ fn visit_expression_markup<'a>(
                 visit_markup(&block.markup, visitor);
             }
         }
+        ExpressionKind::Binary { left, right, .. } => {
+            visit_expression_markup(left, visitor);
+            visit_expression_markup(right, visitor);
+        }
+        ExpressionKind::LetFunction(definition) => {
+            for parameter in &definition.parameters {
+                if let Some(default) = &parameter.default {
+                    visit_expression_markup(default, visitor);
+                }
+            }
+            visit_expression_markup(&definition.body, visitor);
+        }
         ExpressionKind::Parenthesized(inner) => visit_expression_markup(inner, visitor),
         _ => {}
     }
@@ -204,6 +228,18 @@ fn visit_expression<'a>(expression: &'a Expression, visitor: &mut impl FnMut(&'a
             for block in &call.trailing {
                 visit_markup_expressions(&block.markup, visitor);
             }
+        }
+        ExpressionKind::Binary { left, right, .. } => {
+            visit_expression(left, visitor);
+            visit_expression(right, visitor);
+        }
+        ExpressionKind::LetFunction(definition) => {
+            for parameter in &definition.parameters {
+                if let Some(default) = &parameter.default {
+                    visit_expression(default, visitor);
+                }
+            }
+            visit_expression(&definition.body, visitor);
         }
         ExpressionKind::Parenthesized(inner) => visit_expression(inner, visitor),
         _ => {}
@@ -331,6 +367,8 @@ fn is_module_segment(source: &str) -> bool {
 
 #[cfg(test)]
 mod tests {
+    use notist_model::Type;
+
     use super::*;
 
     #[test]
@@ -532,6 +570,48 @@ mod tests {
                 .iter()
                 .any(|error| error.message == "unclosed block comment")
         );
+    }
+
+    #[test]
+    fn parses_typed_user_functions_and_binary_precedence() {
+        let parse = parse(
+            "#let combine(\
+             values: Array<Int>,\
+             lookup: Dict<String, Float>,\
+             choice: String | None = none,\
+             callback: Function,\
+             ) -> Float? = 1 + 2 * 3",
+        );
+        assert!(parse.errors.is_empty(), "{:?}", parse.errors);
+        let functions = parse.user_functions();
+        assert_eq!(functions.len(), 1);
+        let function = functions[0];
+        assert_eq!(function.parameters[0].ty, Type::Array(Box::new(Type::Int)));
+        assert_eq!(
+            function.parameters[1].ty,
+            Type::Dict(Box::new(Type::String), Box::new(Type::Float))
+        );
+        assert_eq!(
+            function.parameters[2].ty,
+            Type::Union(vec![Type::String, Type::None])
+        );
+        assert_eq!(function.parameters[3].ty, Type::Function);
+        assert_eq!(function.result, Type::Optional(Box::new(Type::Float)));
+        let ExpressionKind::Binary {
+            operator: BinaryOperator::Add,
+            right,
+            ..
+        } = &function.body.kind
+        else {
+            panic!("expected addition at the root")
+        };
+        assert!(matches!(
+            right.kind,
+            ExpressionKind::Binary {
+                operator: BinaryOperator::Multiply,
+                ..
+            }
+        ));
     }
 
     fn parse_source<'a>(_parse: &Parse, range: TextRange, source: &'a str) -> &'a str {
