@@ -272,13 +272,20 @@ struct ServerState {
     documents: BTreeMap<PathBuf, OpenDocument>,
     vaults: BTreeMap<PathBuf, RemoteVault>,
     published_paths: BTreeSet<PathBuf>,
-    client: Arc<Mutex<LocalNotistClient>>,
+    no_daemon: bool,
 }
 
 #[derive(Clone)]
 struct RemoteVault {
     view_id: ServiceViewId,
     sources: BTreeMap<PathBuf, ClientSource>,
+    client: Arc<Mutex<LocalNotistClient>>,
+}
+
+impl RemoteVault {
+    fn request(&self, request: CoreRequest) -> Result<notist_service::CoreReply, Box<dyn Error>> {
+        Ok(self.client.lock().unwrap().request(request)?)
+    }
 }
 
 #[derive(Clone)]
@@ -304,10 +311,7 @@ impl ServerState {
             documents: BTreeMap::new(),
             vaults: BTreeMap::new(),
             published_paths: BTreeSet::new(),
-            client: Arc::new(Mutex::new(LocalNotistClient::connect(
-                no_daemon,
-                ClientKind::Lsp,
-            )?)),
+            no_daemon,
         };
         state.rebuild()?;
         Ok(state)
@@ -387,24 +391,32 @@ impl ServerState {
                     text: document.source.to_string(),
                 })
                 .collect::<Vec<_>>();
-            let view_id = if let Some(view) = previous.remove(root) {
-                view.view_id
+            let (view_id, client) = if let Some(view) = previous.remove(root) {
+                (view.view_id, view.client)
             } else {
-                let reply = self.request(CoreRequest::OpenView {
+                let client = Arc::new(Mutex::new(LocalNotistClient::connect(
+                    self.no_daemon,
+                    ClientKind::Lsp,
+                    root.clone(),
+                )?));
+                let reply = client.lock().unwrap().request(CoreRequest::OpenView {
                     root: root.clone(),
                     kind: ProtocolViewKind::Session,
                 })?;
                 let CoreResponse::Opened { view_id, .. } = reply.response else {
                     return Err("service returned an unexpected open-view response".into());
                 };
-                view_id
+                (view_id, client)
             };
-            self.request(CoreRequest::UpdateView {
+            client.lock().unwrap().request(CoreRequest::UpdateView {
                 view_id,
                 documents,
                 configuration: None,
             })?;
-            let sources = self.request(CoreRequest::Sources { view_id })?;
+            let sources = client
+                .lock()
+                .unwrap()
+                .request(CoreRequest::Sources { view_id })?;
             let CoreResponse::Sources(sources) = sources.response else {
                 return Err("service returned an unexpected sources response".into());
             };
@@ -416,11 +428,12 @@ impl ServerState {
                         .into_iter()
                         .map(|source| (source.path, ClientSource::new(source.text)))
                         .collect(),
+                    client,
                 },
             );
         }
         for view in previous.into_values() {
-            let _ = self.request(CoreRequest::CloseView {
+            let _ = view.request(CoreRequest::CloseView {
                 view_id: view.view_id,
             });
         }
@@ -435,10 +448,6 @@ impl ServerState {
     fn workspace_for_source(&self, path: &Path) -> Option<&RemoteVault> {
         let root = assigned_vault_root(path, self.vaults.keys())?;
         self.vaults.get(root)
-    }
-
-    fn request(&self, request: CoreRequest) -> Result<notist_service::CoreReply, Box<dyn Error>> {
-        Ok(self.client.lock().unwrap().request(request)?)
     }
 }
 
@@ -455,7 +464,7 @@ fn document_symbols(
     let Some(source) = workspace.sources.get(&path) else {
         return Ok(Some(DocumentSymbolResponse::Nested(Vec::new())));
     };
-    let reply = state
+    let reply = workspace
         .request(CoreRequest::DocumentSymbols {
             view_id: workspace.view_id,
             path: path.clone(),
@@ -528,7 +537,7 @@ fn workspace_symbols(
 ) -> Result<Option<WorkspaceSymbolResponse>, String> {
     let mut symbols = Vec::new();
     for view in state.vaults.values() {
-        let reply = state
+        let reply = view
             .request(CoreRequest::WorkspaceSymbols {
                 view_id: view.view_id,
                 query: params.query.clone(),
@@ -656,7 +665,7 @@ fn diagnostics_for_path(state: &ServerState, path: &Path) -> Result<Vec<Diagnost
     let Some(workspace) = state.workspace_for_source(path) else {
         return Ok(Vec::new());
     };
-    let reply = state
+    let reply = workspace
         .request(CoreRequest::Diagnostics {
             view_id: workspace.view_id,
         })
@@ -699,7 +708,7 @@ fn definition(
     let Some((path, workspace, _source, offset)) = source_position(state, &position) else {
         return Ok(None);
     };
-    let reply = state
+    let reply = workspace
         .request(CoreRequest::Definition {
             view_id: workspace.view_id,
             path,
@@ -728,7 +737,7 @@ fn references(
     let Some((path, workspace, _source, offset)) = source_position(state, &position) else {
         return Ok(None);
     };
-    let reply = state
+    let reply = workspace
         .request(CoreRequest::References {
             view_id: workspace.view_id,
             path,
@@ -756,7 +765,7 @@ fn completion(
     let Some((path, workspace, source_input, offset)) = source_position(state, &position) else {
         return Ok(None);
     };
-    let reply = state
+    let reply = workspace
         .request(CoreRequest::Completion {
             view_id: workspace.view_id,
             path,
@@ -793,7 +802,7 @@ fn hover(state: &ServerState, params: HoverParams) -> Result<Option<Hover>, Stri
     let Some((path, workspace, source_input, offset)) = source_position(state, &position) else {
         return Ok(None);
     };
-    let reply = state
+    let reply = workspace
         .request(CoreRequest::Hover {
             view_id: workspace.view_id,
             path,

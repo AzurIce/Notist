@@ -32,7 +32,7 @@ pub fn run(
     no_daemon: bool,
     clean: bool,
 ) -> Result<ExitCode, Box<dyn Error>> {
-    let mut client = LocalNotistClient::connect(no_daemon, ClientKind::Cli)?;
+    let mut client = LocalNotistClient::connect(no_daemon, ClientKind::Cli, root.clone())?;
     let opened = client.request(CoreRequest::OpenView {
         root: root.clone(),
         kind: ProtocolViewKind::Disk,
@@ -580,7 +580,8 @@ mod tests {
     use super::*;
 
     fn render(root: &Path) -> RenderedWorkspaceRecord {
-        let mut client = LocalNotistClient::connect(true, ClientKind::Test).unwrap();
+        let mut client =
+            LocalNotistClient::connect(true, ClientKind::Test, root.to_path_buf()).unwrap();
         let opened = client
             .request(CoreRequest::OpenView {
                 root: root.to_path_buf(),

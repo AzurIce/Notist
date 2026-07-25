@@ -24,6 +24,7 @@ pub use request::*;
 /// Protocol-independent service shared by embedded clients and the daemon.
 pub struct NotistService {
     instance_id: DaemonInstanceId,
+    vault_root: Option<PathBuf>,
     vaults: Mutex<BTreeMap<PathBuf, Arc<VaultHost>>>,
     views: Mutex<HashMap<ServiceViewId, ViewEntry>>,
     edit_plans: Mutex<HashMap<String, request::StoredEditPlan>>,
@@ -77,12 +78,21 @@ struct ViewEntry {
 
 impl NotistService {
     pub fn new() -> Self {
+        Self::with_root(None)
+    }
+
+    pub fn for_root(root: impl AsRef<Path>) -> io::Result<Self> {
+        Ok(Self::with_root(Some(dunce::canonicalize(root)?)))
+    }
+
+    fn with_root(vault_root: Option<PathBuf>) -> Self {
         let nonce = SystemTime::now()
             .duration_since(UNIX_EPOCH)
             .unwrap_or_default()
             .as_nanos();
         Self {
             instance_id: DaemonInstanceId(format!("{}-{nonce:x}", std::process::id())),
+            vault_root,
             vaults: Mutex::new(BTreeMap::new()),
             views: Mutex::new(HashMap::new()),
             edit_plans: Mutex::new(HashMap::new()),
@@ -102,6 +112,12 @@ impl NotistService {
         kind: ViewKind,
     ) -> io::Result<(ServiceViewId, VaultIdentity)> {
         let root = resolve_vault_root(root.as_ref())?;
+        if self.vault_root.as_ref().is_some_and(|bound| bound != &root) {
+            return Err(io::Error::new(
+                io::ErrorKind::PermissionDenied,
+                "service only serves its configured vault",
+            ));
+        }
         let host = self.open_host(&root)?;
         let view = match kind {
             ViewKind::Disk => host.disk.clone(),
@@ -385,5 +401,17 @@ mod tests {
             first_identity.analyzer_view_id,
             second_identity.analyzer_view_id
         );
+    }
+
+    #[test]
+    fn root_bound_service_rejects_another_vault() {
+        let first = tempfile::TempDir::new().unwrap();
+        let second = tempfile::TempDir::new().unwrap();
+        let service = NotistService::for_root(first.path()).unwrap();
+        service.open_view(first.path(), ViewKind::Disk).unwrap();
+        let error = service
+            .open_view(second.path(), ViewKind::Disk)
+            .unwrap_err();
+        assert_eq!(error.kind(), io::ErrorKind::PermissionDenied);
     }
 }

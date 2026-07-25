@@ -1,4 +1,5 @@
 use std::io;
+use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
@@ -20,21 +21,22 @@ pub(crate) struct LocalNotistClient {
 }
 
 impl LocalNotistClient {
-    pub fn connect(no_daemon: bool, kind: ClientKind) -> io::Result<Self> {
+    pub fn connect(no_daemon: bool, kind: ClientKind, root: PathBuf) -> io::Result<Self> {
+        let root = dunce::canonicalize(root)?;
         if no_daemon {
             return Ok(Self {
-                backend: ClientBackend::Embedded(Arc::new(NotistService::new())),
+                backend: ClientBackend::Embedded(Arc::new(NotistService::for_root(&root)?)),
             });
         }
         let runtime = tokio::runtime::Runtime::new()?;
-        let handshake = handshake(kind);
-        let client = match runtime.block_on(DaemonClient::connect(handshake.clone())) {
+        let handshake = handshake(kind, root.clone());
+        let client = match runtime.block_on(DaemonClient::connect(&root, handshake.clone())) {
             Ok(client) => client,
             Err(error) if daemon_is_unavailable(&error) => {
-                spawn_daemon()?;
+                spawn_daemon(&root)?;
                 let deadline = Instant::now() + Duration::from_secs(5);
                 loop {
-                    match runtime.block_on(DaemonClient::connect(handshake.clone())) {
+                    match runtime.block_on(DaemonClient::connect(&root, handshake.clone())) {
                         Ok(client) => break client,
                         Err(error)
                             if daemon_is_unavailable(&error) && Instant::now() < deadline =>
@@ -60,11 +62,12 @@ impl LocalNotistClient {
     }
 }
 
-fn handshake(kind: ClientKind) -> Handshake {
+fn handshake(kind: ClientKind, vault_root: PathBuf) -> Handshake {
     Handshake {
         protocol_version: ProtocolVersion::CURRENT,
         client_kind: kind,
         client_version: env!("CARGO_PKG_VERSION").into(),
+        vault_root,
         requested_capabilities: vec![
             "completion".into(),
             "definition".into(),
@@ -87,11 +90,12 @@ fn daemon_is_unavailable(error: &io::Error) -> bool {
     ) || matches!(error.raw_os_error(), Some(2 | 53 | 109 | 231 | 233))
 }
 
-fn spawn_daemon() -> io::Result<()> {
+fn spawn_daemon(root: &Path) -> io::Result<()> {
     let executable = std::env::current_exe()?;
     let mut command = Command::new(executable);
     command
         .arg("daemon")
+        .arg(root)
         .arg("--background-child")
         .stdin(Stdio::null())
         .stdout(Stdio::null())
@@ -108,13 +112,19 @@ fn spawn_daemon() -> io::Result<()> {
 }
 
 pub(crate) fn run_daemon(
+    root: PathBuf,
     background_child: bool,
 ) -> Result<std::process::ExitCode, Box<dyn std::error::Error>> {
     let runtime = tokio::runtime::Runtime::new()?;
-    let service = Arc::new(NotistService::new());
+    let service = Arc::new(NotistService::for_root(&root)?);
     if !background_child {
         eprintln!("notist daemon {}", service.instance_id().0);
     }
-    runtime.block_on(notist_service::transport::serve(service))?;
+    let idle_timeout = background_child.then_some(Duration::from_secs(5 * 60));
+    runtime.block_on(notist_service::transport::serve(
+        root,
+        service,
+        idle_timeout,
+    ))?;
     Ok(std::process::ExitCode::SUCCESS)
 }

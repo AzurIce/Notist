@@ -41,7 +41,7 @@ pub fn run(
     let revision = Arc::new(AtomicU64::new(1));
     let (updates, _) = broadcast::channel(16);
 
-    let mut client = LocalNotistClient::connect(no_daemon, ClientKind::Preview)?;
+    let mut client = LocalNotistClient::connect(no_daemon, ClientKind::Preview, root.clone())?;
     let opened = client.request(CoreRequest::OpenView {
         root: root.clone(),
         kind: ProtocolViewKind::Disk,
@@ -297,7 +297,9 @@ mod tests {
         let output = tempfile::TempDir::new().unwrap();
         let site = PublishedSite::new(output.path().join("generations")).unwrap();
         fs::write(root.path().join("README.not"), "#heading[First]").unwrap();
-        let mut client = LocalNotistClient::connect(true, ClientKind::Preview).unwrap();
+        let mut client =
+            LocalNotistClient::connect(true, ClientKind::Preview, root.path().to_path_buf())
+                .unwrap();
         let opened = client
             .request(CoreRequest::OpenView {
                 root: root.path().to_path_buf(),

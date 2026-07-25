@@ -44,7 +44,7 @@ LSP 层只做机械转换。例如 core query 返回一个目标 FileId 和 byte
 - `stdout` 不能输出日志、进度文字或 diagnostics。
 - 日志只能写入 `stderr` 或显式 log file。
 - 普通 CLI 的彩色输出在 LSP 模式下完全禁用。
-- adapter 生命周期跟随编辑器创建的进程；它通过本地 Notist protocol 连接共享 daemon，或在 embedded mode 中承载同一 core service。
+- adapter 生命周期跟随编辑器创建的进程；它按 canonical Vault root 通过本地 Notist protocol 连接该 Vault 的共享 daemon，或在 embedded mode 中为各 Vault 承载同一 core service。
 
 Zed extension 等编辑器集成通过 language server adapter 从 PATH 查找 `notist`，并用参数 `lsp` 启动。自动下载和版本管理属于扩展分发问题，不进入 language server 核心。
 
@@ -52,12 +52,12 @@ Zed extension 等编辑器集成通过 language server adapter 从 PATH 查找 `
 
 编辑器提供的 workspace root 只是 worktree，不一定是 vault。Notist.toml 所在目录才是显式 vault root；配置文件可以为空，只承担 marker 作用。
 
-LSP 初始化时在 worktree 内发现所有 marker，并为每个 root 打开独立 VaultEngine 上的 Analyzer View：
+LSP 初始化时在 worktree 内发现所有 marker，为每个 root 连接独立的 Vault daemon，并在其 VaultEngine 上打开 Analyzer View：
 
 ```text
 editor worktree
   -> discover Notist.toml markers
-  -> VaultState { root, ViewHandle }
+  -> VaultState { root, daemon connection, ViewHandle }
   -> BTreeMap<VaultRoot, VaultState>
 ```
 

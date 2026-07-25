@@ -30,8 +30,11 @@ struct Cli {
 
 #[derive(Debug, Subcommand)]
 enum Command {
-    /// Run the shared local Notist daemon.
+    /// Run the shared local Notist daemon for one vault.
     Daemon {
+        /// Root directory of the vault this daemon serves.
+        #[arg(default_value = ".")]
+        root: PathBuf,
         #[arg(long, hide = true)]
         background_child: bool,
     },
@@ -151,12 +154,17 @@ fn main() -> ExitCode {
 
 fn run(cli: Cli) -> Result<ExitCode, Box<dyn std::error::Error>> {
     match cli.command {
-        Command::Daemon { background_child } => service::run_daemon(background_child),
+        Command::Daemon {
+            root,
+            background_child,
+        } => service::run_daemon(resolve_vault_root(&root)?, background_child),
         Command::Lsp => lsp::run(cli.no_daemon),
         Command::Mcp { root } => mcp::run(resolve_vault_root(&root)?, cli.no_daemon),
         Command::Check { root } => {
-            let mut client = service::LocalNotistClient::connect(cli.no_daemon, ClientKind::Cli)?;
-            let view_id = open_disk_view(&mut client, resolve_vault_root(&root)?)?;
+            let root = resolve_vault_root(&root)?;
+            let mut client =
+                service::LocalNotistClient::connect(cli.no_daemon, ClientKind::Cli, root.clone())?;
+            let view_id = open_disk_view(&mut client, root)?;
             let reply = client.request(CoreRequest::Diagnostics { view_id })?;
             let CoreResponse::Diagnostics(diagnostics) = reply.response else {
                 return Err("daemon returned an unexpected diagnostics response".into());
@@ -174,8 +182,10 @@ fn run(cli: Cli) -> Result<ExitCode, Box<dyn std::error::Error>> {
             }
         }
         Command::Inspect { root } => {
-            let mut client = service::LocalNotistClient::connect(cli.no_daemon, ClientKind::Cli)?;
-            let view_id = open_disk_view(&mut client, resolve_vault_root(&root)?)?;
+            let root = resolve_vault_root(&root)?;
+            let mut client =
+                service::LocalNotistClient::connect(cli.no_daemon, ClientKind::Cli, root.clone())?;
+            let view_id = open_disk_view(&mut client, root)?;
             let reply = client.request(CoreRequest::Inspect { view_id })?;
             let CoreResponse::Inspect(inspect) = reply.response else {
                 return Err("daemon returned an unexpected inspect response".into());
@@ -211,8 +221,10 @@ fn run(cli: Cli) -> Result<ExitCode, Box<dyn std::error::Error>> {
             Ok(ExitCode::SUCCESS)
         }
         Command::Search { query, root } => {
-            let mut client = service::LocalNotistClient::connect(cli.no_daemon, ClientKind::Cli)?;
-            let view_id = open_disk_view(&mut client, resolve_vault_root(&root)?)?;
+            let root = resolve_vault_root(&root)?;
+            let mut client =
+                service::LocalNotistClient::connect(cli.no_daemon, ClientKind::Cli, root.clone())?;
+            let view_id = open_disk_view(&mut client, root)?;
             let reply = client.request(CoreRequest::Search { view_id, query })?;
             let CoreResponse::Search(results) = reply.response else {
                 return Err("daemon returned an unexpected search response".into());
@@ -229,8 +241,10 @@ fn run(cli: Cli) -> Result<ExitCode, Box<dyn std::error::Error>> {
             Ok(ExitCode::SUCCESS)
         }
         Command::Outline { root } => {
-            let mut client = service::LocalNotistClient::connect(cli.no_daemon, ClientKind::Cli)?;
-            let view_id = open_disk_view(&mut client, resolve_vault_root(&root)?)?;
+            let root = resolve_vault_root(&root)?;
+            let mut client =
+                service::LocalNotistClient::connect(cli.no_daemon, ClientKind::Cli, root.clone())?;
+            let view_id = open_disk_view(&mut client, root)?;
             let reply = client.request(CoreRequest::Outline { view_id })?;
             let CoreResponse::Outline(outline) = reply.response else {
                 return Err("daemon returned an unexpected outline response".into());
@@ -254,8 +268,10 @@ fn run(cli: Cli) -> Result<ExitCode, Box<dyn std::error::Error>> {
             root,
             include_definition,
         } => {
-            let mut client = service::LocalNotistClient::connect(cli.no_daemon, ClientKind::Cli)?;
-            let view_id = open_disk_view(&mut client, resolve_vault_root(&root)?)?;
+            let root = resolve_vault_root(&root)?;
+            let mut client =
+                service::LocalNotistClient::connect(cli.no_daemon, ClientKind::Cli, root.clone())?;
+            let view_id = open_disk_view(&mut client, root)?;
             let reply = client.request(CoreRequest::ReferencesTo {
                 view_id,
                 module,
@@ -284,7 +300,8 @@ fn run(cli: Cli) -> Result<ExitCode, Box<dyn std::error::Error>> {
         } => {
             let path = dunce::canonicalize(path)?;
             let root = resolve_vault_root(&path)?;
-            let mut client = service::LocalNotistClient::connect(cli.no_daemon, ClientKind::Cli)?;
+            let mut client =
+                service::LocalNotistClient::connect(cli.no_daemon, ClientKind::Cli, root.clone())?;
             let view_id = open_disk_view(&mut client, root)?;
             let reply = client.request(CoreRequest::Definition {
                 view_id,
@@ -316,7 +333,8 @@ fn run(cli: Cli) -> Result<ExitCode, Box<dyn std::error::Error>> {
         } => {
             let path = dunce::canonicalize(path)?;
             let root = resolve_vault_root(&path)?;
-            let mut client = service::LocalNotistClient::connect(cli.no_daemon, ClientKind::Cli)?;
+            let mut client =
+                service::LocalNotistClient::connect(cli.no_daemon, ClientKind::Cli, root.clone())?;
             let view_id = open_disk_view(&mut client, root)?;
             let summary = client.request(CoreRequest::SnapshotSummary { view_id })?;
             let plan = client.request(CoreRequest::ProposeEdit {
@@ -359,7 +377,8 @@ fn run(cli: Cli) -> Result<ExitCode, Box<dyn std::error::Error>> {
         } => {
             let from = dunce::canonicalize(from)?;
             let root = resolve_vault_root(&from)?;
-            let mut client = service::LocalNotistClient::connect(cli.no_daemon, ClientKind::Cli)?;
+            let mut client =
+                service::LocalNotistClient::connect(cli.no_daemon, ClientKind::Cli, root.clone())?;
             let view_id = open_disk_view(&mut client, root)?;
             let fingerprint = client.request(CoreRequest::FingerprintSource {
                 view_id,

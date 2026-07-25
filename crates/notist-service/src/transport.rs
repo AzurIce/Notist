@@ -1,11 +1,11 @@
-//! User-local IPC transport for daemon and client processes.
+//! User-private, vault-scoped IPC transport for daemon and client processes.
 
 use std::collections::HashMap;
 use std::io;
-#[cfg(unix)]
-use std::path::PathBuf;
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
+use std::time::Duration;
 
 use serde::{Deserialize, Serialize};
 use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt};
@@ -47,8 +47,8 @@ pub struct DaemonClient {
 }
 
 impl DaemonClient {
-    pub async fn connect(handshake: Handshake) -> io::Result<Self> {
-        let mut stream = connect_stream().await?;
+    pub async fn connect(root: &Path, handshake: Handshake) -> io::Result<Self> {
+        let mut stream = connect_stream(root).await?;
         write_frame(
             &mut stream,
             &ClientMessage::Handshake {
@@ -106,11 +106,19 @@ impl DaemonClient {
     }
 }
 
-pub async fn serve(service: Arc<NotistService>) -> io::Result<()> {
-    serve_platform(service).await
+pub async fn serve(
+    root: PathBuf,
+    service: Arc<NotistService>,
+    idle_timeout: Option<Duration>,
+) -> io::Result<()> {
+    serve_platform(root, service, idle_timeout).await
 }
 
-async fn serve_connection<S>(mut stream: S, service: Arc<NotistService>) -> io::Result<()>
+async fn serve_connection<S>(
+    mut stream: S,
+    root: Arc<PathBuf>,
+    service: Arc<NotistService>,
+) -> io::Result<()>
 where
     S: AsyncRead + AsyncWrite + Unpin + Send + 'static,
 {
@@ -134,6 +142,20 @@ where
             return Ok(());
         }
     };
+    if handshake.vault_root != *root {
+        write_frame(
+            &mut stream,
+            &ServerMessage::HandshakeRejected {
+                message: format!(
+                    "daemon serves `{}`, not `{}`",
+                    root.display(),
+                    handshake.vault_root.display()
+                ),
+            },
+        )
+        .await?;
+        return Ok(());
+    }
     accepted.daemon_instance = service.instance_id().0.clone();
     write_frame(&mut stream, &ServerMessage::HandshakeAccepted { accepted }).await?;
 
@@ -164,6 +186,22 @@ where
                 }
             }
             ClientMessage::Request { id, request } => {
+                if let CoreRequest::OpenView {
+                    root: requested_root,
+                    ..
+                } = &request
+                {
+                    let requested_root = dunce::canonicalize(requested_root)?;
+                    if requested_root != *root {
+                        let _ = outgoing
+                            .send(ServerMessage::Response {
+                                id,
+                                result: Err("daemon only serves its configured vault".into()),
+                            })
+                            .await;
+                        continue;
+                    }
+                }
                 if let Some(view_id) = request.view_id()
                     && !leases.lock().unwrap().contains(&view_id)
                 {
@@ -252,12 +290,16 @@ async fn read_frame<R: AsyncRead + Unpin, T: serde::de::DeserializeOwned>(
     serde_json::from_slice(&payload).map_err(io::Error::other)
 }
 
-fn endpoint_discriminator() -> String {
+fn endpoint_discriminator(root: &Path) -> String {
     let identity = std::env::var_os("USERPROFILE")
         .or_else(|| std::env::var_os("HOME"))
         .unwrap_or_default();
     let mut hash = 0xcbf29ce484222325u64;
     for byte in identity.to_string_lossy().as_bytes() {
+        hash ^= u64::from(*byte);
+        hash = hash.wrapping_mul(0x100000001b3);
+    }
+    for byte in root.to_string_lossy().as_bytes() {
         hash ^= u64::from(*byte);
         hash = hash.wrapping_mul(0x100000001b3);
     }
@@ -268,10 +310,10 @@ fn endpoint_discriminator() -> String {
 type ClientStream = tokio::net::windows::named_pipe::NamedPipeClient;
 
 #[cfg(windows)]
-async fn connect_stream() -> io::Result<ClientStream> {
+async fn connect_stream(root: &Path) -> io::Result<ClientStream> {
     use tokio::net::windows::named_pipe::ClientOptions;
 
-    let endpoint = format!(r"\\.\pipe\notist-{}", endpoint_discriminator());
+    let endpoint = format!(r"\\.\pipe\notist-{}", endpoint_discriminator(root));
     let mut attempts = 0;
     loop {
         match ClientOptions::new().open(&endpoint) {
@@ -286,10 +328,16 @@ async fn connect_stream() -> io::Result<ClientStream> {
 }
 
 #[cfg(windows)]
-async fn serve_platform(service: Arc<NotistService>) -> io::Result<()> {
+async fn serve_platform(
+    root: PathBuf,
+    service: Arc<NotistService>,
+    idle_timeout: Option<Duration>,
+) -> io::Result<()> {
     use tokio::net::windows::named_pipe::ServerOptions;
 
-    let endpoint = format!(r"\\.\pipe\notist-{}", endpoint_discriminator());
+    let endpoint = format!(r"\\.\pipe\notist-{}", endpoint_discriminator(&root));
+    let root = Arc::new(root);
+    let active = Arc::new(AtomicUsize::new(0));
     let mut first = true;
     loop {
         let mut options = ServerOptions::new();
@@ -298,13 +346,25 @@ async fn serve_platform(service: Arc<NotistService>) -> io::Result<()> {
             .reject_remote_clients(true);
         let server = options.create(&endpoint)?;
         first = false;
-        server.connect().await?;
+        if let Some(idle_timeout) = idle_timeout {
+            match tokio::time::timeout(idle_timeout, server.connect()).await {
+                Ok(result) => result?,
+                Err(_) if active.load(Ordering::Acquire) == 0 => return Ok(()),
+                Err(_) => continue,
+            }
+        } else {
+            server.connect().await?;
+        }
         if !windows_client_is_current_user(&server) {
             continue;
         }
+        active.fetch_add(1, Ordering::AcqRel);
+        let connection_active = active.clone();
+        let root = root.clone();
         let service = service.clone();
         tokio::spawn(async move {
-            let _ = serve_connection(server, service).await;
+            let _ = serve_connection(server, root, service).await;
+            connection_active.fetch_sub(1, Ordering::AcqRel);
         });
     }
 }
@@ -386,25 +446,32 @@ fn windows_client_is_current_user(pipe: &tokio::net::windows::named_pipe::NamedP
 type ClientStream = tokio::net::UnixStream;
 
 #[cfg(unix)]
-fn unix_endpoint() -> io::Result<PathBuf> {
+fn unix_endpoint(root: &Path) -> io::Result<PathBuf> {
     let runtime = std::env::var_os("XDG_RUNTIME_DIR")
         .map(PathBuf::from)
         .unwrap_or_else(|| {
             std::env::temp_dir().join(format!("notist-{}", unsafe { libc::geteuid() }))
         });
-    Ok(runtime.join("notist").join("daemon.sock"))
+    Ok(runtime
+        .join("notist")
+        .join(format!("daemon-{}.sock", endpoint_discriminator(root))))
 }
 
 #[cfg(unix)]
-async fn connect_stream() -> io::Result<ClientStream> {
-    tokio::net::UnixStream::connect(unix_endpoint()?).await
+async fn connect_stream(root: &Path) -> io::Result<ClientStream> {
+    tokio::net::UnixStream::connect(unix_endpoint(root)?).await
 }
 
 #[cfg(unix)]
-async fn serve_platform(service: Arc<NotistService>) -> io::Result<()> {
+async fn serve_platform(
+    root: PathBuf,
+    service: Arc<NotistService>,
+    idle_timeout: Option<Duration>,
+) -> io::Result<()> {
     use std::os::unix::fs::{MetadataExt, PermissionsExt};
 
-    let endpoint = unix_endpoint()?;
+    let endpoint = unix_endpoint(&root)?;
+    let root = Arc::new(root);
     let directory = endpoint
         .parent()
         .ok_or_else(|| io::Error::other("daemon endpoint has no parent"))?;
@@ -427,17 +494,36 @@ async fn serve_platform(service: Arc<NotistService>) -> io::Result<()> {
         std::fs::remove_file(&endpoint)?;
     }
     let listener = tokio::net::UnixListener::bind(&endpoint)?;
+    let active = Arc::new(AtomicUsize::new(0));
     loop {
-        let (stream, _) = listener.accept().await?;
+        let accepted = if let Some(idle_timeout) = idle_timeout {
+            match tokio::time::timeout(idle_timeout, listener.accept()).await {
+                Ok(result) => Some(result?),
+                Err(_) if active.load(Ordering::Acquire) == 0 => None,
+                Err(_) => continue,
+            }
+        } else {
+            Some(listener.accept().await?)
+        };
+        let Some((stream, _)) = accepted else {
+            break;
+        };
         let credentials = stream.peer_cred()?;
         if credentials.uid() != unsafe { libc::geteuid() } {
             continue;
         }
+        active.fetch_add(1, Ordering::AcqRel);
+        let connection_active = active.clone();
+        let root = root.clone();
         let service = service.clone();
         tokio::spawn(async move {
-            let _ = serve_connection(stream, service).await;
+            let _ = serve_connection(stream, root, service).await;
+            connection_active.fetch_sub(1, Ordering::AcqRel);
         });
     }
+    drop(listener);
+    std::fs::remove_file(endpoint)?;
+    Ok(())
 }
 
 #[cfg(test)]
@@ -455,6 +541,7 @@ mod tests {
                     protocol_version: ProtocolVersion::CURRENT,
                     client_kind: ClientKind::Test,
                     client_version: "test".into(),
+                    vault_root: PathBuf::from("/test"),
                     requested_capabilities: Vec::new(),
                 },
             };
@@ -462,5 +549,55 @@ mod tests {
             let decoded: ClientMessage = read_frame(&mut right).await.unwrap();
             assert!(matches!(decoded, ClientMessage::Handshake { .. }));
         });
+    }
+
+    #[test]
+    fn daemon_endpoint_and_handshake_are_scoped_to_one_vault() {
+        let first = tempfile::TempDir::new().unwrap();
+        let second = tempfile::TempDir::new().unwrap();
+        let first_root = dunce::canonicalize(first.path()).unwrap();
+        let second_root = dunce::canonicalize(second.path()).unwrap();
+        assert_ne!(
+            endpoint_discriminator(&first_root),
+            endpoint_discriminator(&second_root)
+        );
+
+        let runtime = tokio::runtime::Runtime::new().unwrap();
+        runtime.block_on(async {
+            let (mut client, server) = tokio::io::duplex(4096);
+            let task = tokio::spawn(serve_connection(
+                server,
+                Arc::new(first_root),
+                Arc::new(NotistService::new()),
+            ));
+            write_frame(
+                &mut client,
+                &ClientMessage::Handshake {
+                    handshake: Handshake {
+                        protocol_version: ProtocolVersion::CURRENT,
+                        client_kind: ClientKind::Test,
+                        client_version: "test".into(),
+                        vault_root: second_root,
+                        requested_capabilities: Vec::new(),
+                    },
+                },
+            )
+            .await
+            .unwrap();
+            let response: ServerMessage = read_frame(&mut client).await.unwrap();
+            assert!(matches!(response, ServerMessage::HandshakeRejected { .. }));
+            task.await.unwrap().unwrap();
+        });
+    }
+
+    #[test]
+    fn vault_scoped_daemon_exits_after_an_idle_grace_period() {
+        let root = tempfile::TempDir::new().unwrap();
+        let root = dunce::canonicalize(root.path()).unwrap();
+        let service = Arc::new(NotistService::for_root(&root).unwrap());
+        let runtime = tokio::runtime::Runtime::new().unwrap();
+        runtime
+            .block_on(serve(root, service, Some(Duration::from_millis(20))))
+            .unwrap();
     }
 }

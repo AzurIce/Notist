@@ -10,7 +10,7 @@ use serde_json::{Value, json};
 use crate::service::LocalNotistClient;
 
 pub fn run(root: PathBuf, no_daemon: bool) -> Result<ExitCode, Box<dyn Error>> {
-    let mut client = LocalNotistClient::connect(no_daemon, ClientKind::Mcp)?;
+    let mut client = LocalNotistClient::connect(no_daemon, ClientKind::Mcp, root.clone())?;
     let opened = client.request(CoreRequest::OpenView {
         root,
         kind: ProtocolViewKind::Disk,
@@ -195,7 +195,8 @@ mod tests {
     fn mcp_tools_and_resources_use_core_requests() {
         let root = tempfile::TempDir::new().unwrap();
         fs::write(root.path().join("README.not"), "searchable text").unwrap();
-        let mut client = LocalNotistClient::connect(true, ClientKind::Mcp).unwrap();
+        let mut client =
+            LocalNotistClient::connect(true, ClientKind::Mcp, root.path().to_path_buf()).unwrap();
         let opened = client
             .request(CoreRequest::OpenView {
                 root: root.path().to_path_buf(),

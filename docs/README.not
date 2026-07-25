@@ -3,6 +3,7 @@ Note + ist -> notist(also not an ist)
 .not
 
 - Notist 介绍与核心概念 [[intro]]
+- 命令行、daemon、LSP 与 MCP 使用说明 [[cli]]
 - AI 的一些调查整理 [[ai]]
 - 设计记录 [[vault::designs]]
 - 当前语法规范 [[vault::grammar]]

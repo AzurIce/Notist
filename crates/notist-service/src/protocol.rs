@@ -2,7 +2,7 @@
 
 use serde::{Deserialize, Serialize};
 
-pub const PROTOCOL_MAJOR: u16 = 1;
+pub const PROTOCOL_MAJOR: u16 = 2;
 pub const PROTOCOL_MINOR: u16 = 0;
 pub const CAPABILITIES: &[&str] = &[
     "completion",
@@ -43,6 +43,8 @@ pub struct Handshake {
     pub protocol_version: ProtocolVersion,
     pub client_kind: ClientKind,
     pub client_version: String,
+    /// Canonical root this client expects the daemon to serve.
+    pub vault_root: PathBuf,
     pub requested_capabilities: Vec<String>,
 }
 
@@ -85,6 +87,7 @@ mod tests {
             protocol_version: ProtocolVersion::CURRENT,
             client_kind: ClientKind::Test,
             client_version: "test".into(),
+            vault_root: PathBuf::from("/test"),
             requested_capabilities: vec!["diagnostics".into()],
         };
         assert_eq!(negotiate(&handshake).unwrap().capabilities, ["diagnostics"]);
@@ -92,3 +95,4 @@ mod tests {
         assert!(negotiate(&handshake).is_err());
     }
 }
+use std::path::PathBuf;

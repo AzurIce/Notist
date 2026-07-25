@@ -1,0 +1,181 @@
+= Notist CLI
+
+`notist` 是 Notist 的统一命令行入口。检查、查询、编辑、构建以及给编辑器和 Agent 使用的协议适配器，都由同一个可执行文件提供：
+
+```text
+Editor              shell / Agent             AI host
+  |                       |                       |
+notist lsp          notist check/query         notist mcp
+  |                       |                       |
+  +-----------------------+-----------------------+
+                          |
+                    notist daemon
+                          |
+              shared VaultEngine and caches
+```
+
+这里的“都在 CLI 里”指它们随同一个 `notist` 二进制发布，并不表示它们都在同一个进程中执行。`notist daemon` 是持有共享 VaultEngine、磁盘状态和分析缓存的后台服务；`notist lsp` 与 `notist mcp` 是 stdio 协议适配器；其余子命令是短生命周期 client。
+
+普通命令会先解析 canonical Vault root，再连接这个 Vault 在当前用户私有 IPC namespace 中的本地 daemon。该 Vault 的 daemon 尚未运行时，client 会自动启动同版本 daemon；不同 Vault 使用不同进程和 endpoint，因此彼此不共享 watcher、索引或内存生命周期。全局选项 `--no-daemon` 会改为在当前进程内创建同一个 Notist service，适合隔离运行和排错：
+
+```shell
+notist --no-daemon check docs
+```
+
+== Vault Root
+
+多数命令接受可选的 `ROOT`，默认是当前目录。`Notist.toml` 是显式 vault root marker；从一个 source 或子目录执行命令时，Notist 会使用最近的祖先 marker。
+
+```text
+repository/
+├── src/
+└── docs/
+    ├── Notist.toml
+    ├── README.not
+    └── guide.not
+```
+
+在这个结构中，`notist check docs` 与从 `docs/guide.not` 解析出的 vault root 都是 `docs/`。如果给定目录自身没有祖先 marker，Notist 会检查其下的显式 vault：没有 marker 时把给定目录作为隐式 root；只有一个时使用该 vault；存在多个时要求调用者给出更明确的路径。完整边界规则见 [[vault::designs::D0007-notist-toml]]。
+
+== 检查与查看
+
+检查整个 vault 的 module path、引用和语义诊断：
+
+```shell
+notist check docs
+```
+
+没有诊断时，命令输出检查到的 module 数并以成功状态退出；存在诊断时输出 source、byte range、错误码和消息，并以失败状态退出，适合直接用于 CI。
+
+查看发现的 module、已解析引用以及语义项：
+
+```shell
+notist inspect docs
+```
+
+`inspect` 面向调试，输出格式不是稳定的交换协议。程序化集成应使用 daemon 的 core protocol、LSP 或 MCP，而不是解析这段文本。
+
+== 搜索、导航与大纲
+
+在当前磁盘 View 捕获的 source context 中搜索文本：
+
+```shell
+notist search "workspace revision" docs
+```
+
+按绝对逻辑 ModulePath 查找引用：
+
+```shell
+notist references vault::designs::D0011 docs
+notist references vault::designs::D0011 docs --include-definition
+```
+
+输出整个 vault 求值后的 heading outline：
+
+```shell
+notist outline docs
+```
+
+查询某个 source byte offset 处符号的定义：
+
+```shell
+notist query definition docs/designs/D0011-analyzer-and-workspace-snapshot.not 120
+```
+
+`query definition` 的 offset 是 UTF-8 source byte offset，不是行列号或 Unicode 字符序号。LSP adapter 会替编辑器完成 Position 与 byte offset 的转换。
+
+== 带前置条件的编辑
+
+CLI 可以通过共享 service 替换一个 byte range，或重命名一个 source：
+
+```shell
+notist edit replace docs/page.not 10 18 "replacement" --idempotency-key task-42-edit-1
+notist edit rename docs/old.not docs/new.not --idempotency-key task-42-rename-1
+```
+
+`replace` 的 `START` 与 `END` 是 UTF-8 byte offset，range 为 `[START, END)`。命令不会盲写文件：它先基于当前 snapshot 生成 edit plan、验证诊断和受影响 source fingerprint，再应用该 plan。如果文件在两阶段之间发生变化，写入会因前置条件不匹配而失败。
+
+`--idempotency-key` 是调用者为一次逻辑操作生成的稳定键。重试同一操作时应复用原键；不同操作应使用不同键，从而避免网络或进程重试造成重复写入。
+
+`rename` 要求源文件已经存在，目标仍位于同一个 vault 内。重命名保留 Notist 的稳定 file identity，并使用源 fingerprint 防止覆盖并发变化。
+
+== 构建与预览
+
+构建多页静态 HTML 站点：
+
+```shell
+notist build docs -o dist
+```
+
+默认输出目录是 `dist`。普通构建只写入本次产物；显式传入 `--clean` 才会先清理选定的输出目录：
+
+```shell
+notist build docs -o dist --clean
+```
+
+Notist 拒绝把 vault root 本身当作输出目录，也会拒绝清理过于宽泛的路径。
+
+启动带 live reload 的本地预览：
+
+```shell
+notist preview docs
+notist preview docs --port 3000 --no-open
+```
+
+默认监听 `127.0.0.1`，端口 `0` 表示由操作系统选择可用端口。使用 `--host` 绑定非 loopback 地址会把文档内容暴露到相应网络接口，Notist 会输出安全警告。
+
+== LSP
+
+编辑器应把 language server 命令配置为：
+
+```text
+command: notist
+args: ["lsp"]
+```
+
+`notist lsp` 通过 stdin/stdout 传输 LSP JSON-RPC；不要在终端中把它当成交互命令使用，也不要让 wrapper 向 stdout 写日志。编辑器通常为每个 worktree 启动一个 adapter，adapter 再发现其中的 `Notist.toml` markers，并为各 vault 建立 Analyzer View。
+
+每个编辑器 session 的未保存文本都是独立 overlay。它会覆盖该 session View 中的磁盘内容，但不会写入文件，也不会进入普通 CLI、MCP 或另一个编辑器的 disk View。同一 Vault 的 daemon 共享其 VaultEngine、磁盘分析状态和可安全复用的派生缓存，不会把不同 client 的 overlay 或 revision 混在一起。一个 worktree 包含多个 Vault 时，LSP adapter 按最近 marker 路由，并为每个 canonical root 连接各自 daemon。具体模型见 [[vault::designs::D0008-language-server]] 与 [[vault::designs::D0012-daemon-and-client-interfaces]]。
+
+== MCP
+
+AI host 可以把下面的 stdio server 注册为 MCP server：
+
+```text
+command: notist
+args: ["mcp", "docs"]
+```
+
+`notist mcp [ROOT]` 默认打开当前目录对应的 disk View，目前提供：
+
+- tools：`search`、`get_references`、`definition`
+- resources：`notist://<vault>/diagnostics`、`notist://<vault>/outline`
+
+MCP 与 CLI、LSP 一样只负责协议和参数转换，语义结果来自共享 Notist service。当前 MCP 使用磁盘 View，因此看不到编辑器尚未保存的 overlay；Agent 若要修改 source，应使用具有 fingerprint、plan 和 idempotency 前置条件的编辑接口，而不是假定 MCP resource 是可写文件系统。
+
+== Daemon
+
+通常只需执行普通命令，让 client 自动启动 daemon。需要以前台方式观察服务日志时可以运行：
+
+```shell
+notist daemon docs
+```
+
+daemon 绑定命令参数解析出的 canonical Vault root，只接受这个 Vault 的 client；当前用户身份仅用于保护本地 endpoint。Client 自动拉起的后台 daemon 在没有连接的五分钟 idle 检查窗口内自动退出，用户显式运行的前台 daemon 则持续运行。它不是网络服务，也不是新的 authored-source 真相来源。`.not` 文件与明确的 editor overlay 仍是输入；snapshot、index 和 cache 都可以从它们重建。每个 client 会先进行版本、Vault root 与 capability 握手，避免把请求发送给错误版本或错误 Vault 的 daemon。
+
+== 全局选项与帮助
+
+全局选项放在子命令之前：
+
+```shell
+notist --color never check docs
+notist --no-daemon search "ModulePath" docs
+```
+
+`--color` 可取 `auto`、`always` 或 `never`。查看当前安装版本的完整命令面：
+
+```shell
+notist --help
+notist edit replace --help
+notist preview --help
+```
