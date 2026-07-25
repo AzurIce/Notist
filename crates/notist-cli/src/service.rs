@@ -8,6 +8,8 @@ use notist_service::protocol::{ClientKind, Handshake, ProtocolVersion};
 use notist_service::transport::DaemonClient;
 use notist_service::{CoreReply, CoreRequest, NotistService};
 
+use crate::output::OutputFormat;
+
 pub(crate) enum ClientBackend {
     Embedded(Arc<NotistService>),
     Daemon {
@@ -116,12 +118,25 @@ fn spawn_daemon(root: &Path) -> io::Result<()> {
 pub(crate) fn run_daemon(
     root: PathBuf,
     background_child: bool,
+    format: OutputFormat,
 ) -> Result<std::process::ExitCode, Box<dyn std::error::Error>> {
     let runtime = tokio::runtime::Runtime::new()?;
     let service = Arc::new(NotistService::for_root(&root)?);
     let vault_generation = crate::official_docs::generation_for_root(&root)?;
     if !background_child {
-        eprintln!("notist daemon {}", service.instance_id().0);
+        if format.is_json() {
+            crate::output::emit_event(
+                "daemon",
+                "started",
+                serde_json::json!({
+                    "root": root,
+                    "instance_id": service.instance_id().0,
+                    "vault_generation": vault_generation,
+                }),
+            )?;
+        } else {
+            eprintln!("notist daemon {}", service.instance_id().0);
+        }
     }
     let idle_timeout = background_child.then_some(Duration::from_secs(5 * 60));
     runtime.block_on(notist_service::transport::serve(

@@ -4,7 +4,7 @@ use std::path::{Path, PathBuf};
 
 use crate::resources::NOTIST_SKILL_MD;
 
-pub(crate) fn init(output: PathBuf) -> io::Result<()> {
+pub(crate) fn init(output: PathBuf) -> io::Result<PathBuf> {
     if output.exists() {
         return Err(io::Error::new(
             io::ErrorKind::AlreadyExists,
@@ -36,8 +36,7 @@ pub(crate) fn init(output: PathBuf) -> io::Result<()> {
         let _ = fs::remove_dir_all(staging_path);
         return Err(error);
     }
-    println!("initialized Notist Skill at {}", output.display());
-    Ok(())
+    Ok(output)
 }
 
 #[cfg(test)]
@@ -48,7 +47,7 @@ mod tests {
     fn initializes_exactly_one_skill_file_without_overwrite() {
         let parent = tempfile::tempdir().unwrap();
         let output = parent.path().join("notist");
-        init(output.clone()).unwrap();
+        assert_eq!(init(output.clone()).unwrap(), output);
         let entries = fs::read_dir(&output)
             .unwrap()
             .collect::<Result<Vec<_>, _>>()

@@ -12,6 +12,7 @@ use notist_service::{
 };
 use percent_encoding::{AsciiSet, CONTROLS, NON_ALPHANUMERIC, utf8_percent_encode};
 
+use crate::output::OutputFormat;
 use crate::service::LocalNotistClient;
 
 const URL_PATH_SEGMENT_ENCODE_SET: &AsciiSet = &CONTROLS
@@ -31,6 +32,7 @@ pub fn run(
     _color: ColorChoice,
     no_daemon: bool,
     clean: bool,
+    format: OutputFormat,
 ) -> Result<ExitCode, Box<dyn Error>> {
     let mut client = LocalNotistClient::connect(no_daemon, ClientKind::Cli, root.clone())?;
     let opened = client.request(CoreRequest::OpenView {
@@ -51,9 +53,27 @@ pub fn run(
         return Err("service returned an unexpected diagnostics response".into());
     };
     merge_diagnostics(&mut diagnostics, rendered.evaluation_diagnostics.clone());
+    let diagnostic_count = diagnostics.len();
+    let ok = diagnostic_count == 0;
+    if format.is_json() {
+        crate::output::emit_result(
+            "build",
+            ok,
+            serde_json::json!({
+                "root": root,
+                "output": output,
+                "page_count": result.page_count,
+                "diagnostics": diagnostics,
+            }),
+        )?;
+        return Ok(if ok {
+            ExitCode::SUCCESS
+        } else {
+            ExitCode::FAILURE
+        });
+    }
     crate::emit_service_diagnostics(&diagnostics);
 
-    let diagnostic_count = diagnostics.len();
     if diagnostic_count == 0 {
         println!(
             "built {} pages -> {}",

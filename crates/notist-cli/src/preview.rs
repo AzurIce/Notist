@@ -25,6 +25,7 @@ use tokio_stream::wrappers::BroadcastStream;
 use tokio_stream::{StreamExt, once};
 
 use crate::build::{SiteOptions, merge_diagnostics, render_workspace, write_rendered_site};
+use crate::output::OutputFormat;
 use crate::service::LocalNotistClient;
 
 pub fn run(
@@ -34,6 +35,7 @@ pub fn run(
     no_open: bool,
     color: ColorChoice,
     no_daemon: bool,
+    format: OutputFormat,
 ) -> Result<ExitCode, Box<dyn Error>> {
     let root = dunce::canonicalize(root)?;
     let temporary = tempfile::tempdir()?;
@@ -51,7 +53,7 @@ pub fn run(
     };
     let initial_snapshot_revision = opened.snapshot.revision;
     let diagnostics = rebuild_preview_site(&mut client, view_id, &site, color)?;
-    print_rebuild_status(1, diagnostics);
+    print_rebuild_status(format, 1, &diagnostics)?;
 
     let rebuild_site = site.clone();
     let rebuild_revision = revision.clone();
@@ -67,7 +69,11 @@ pub fn run(
                 let summary = match client.request(CoreRequest::SnapshotSummary { view_id }) {
                     Ok(summary) => summary,
                     Err(error) => {
-                        eprintln!("notist preview: snapshot observation failed: {error}");
+                        emit_preview_error(
+                            format,
+                            "snapshot_observation_failed",
+                            &error.to_string(),
+                        );
                         continue;
                     }
                 };
@@ -80,9 +86,11 @@ pub fn run(
                     Ok(diagnostics) => {
                         let revision = rebuild_revision.fetch_add(1, Ordering::SeqCst) + 1;
                         let _ = rebuild_updates.send(revision);
-                        print_rebuild_status(revision, diagnostics);
+                        if let Err(error) = print_rebuild_status(format, revision, &diagnostics) {
+                            emit_preview_error(format, "output_failed", &error.to_string());
+                        }
                     }
-                    Err(error) => eprintln!("notist preview: rebuild failed: {error}"),
+                    Err(error) => emit_preview_error(format, "rebuild_failed", &error.to_string()),
                 }
             }
         })?;
@@ -90,11 +98,16 @@ pub fn run(
     let runtime = tokio::runtime::Builder::new_multi_thread()
         .enable_all()
         .build()?;
-    let server_result = runtime.block_on(serve(site, host, port, no_open, revision, updates));
+    let server_result =
+        runtime.block_on(serve(site, host, port, no_open, revision, updates, format));
 
     rebuild_stop.store(true, Ordering::Release);
     if rebuild_thread.join().is_err() {
-        eprintln!("notist preview: rebuild worker stopped unexpectedly");
+        emit_preview_error(
+            format,
+            "worker_stopped",
+            "rebuild worker stopped unexpectedly",
+        );
     }
     server_result?;
     Ok(ExitCode::SUCCESS)
@@ -105,7 +118,7 @@ fn rebuild_preview_site(
     view_id: ServiceViewId,
     site: &PublishedSite,
     _color: ColorChoice,
-) -> Result<usize, Box<dyn Error>> {
+) -> Result<Vec<notist_service::DiagnosticRecord>, Box<dyn Error>> {
     let staging = site.next_generation_path();
     fs::create_dir_all(&staging)?;
 
@@ -118,15 +131,39 @@ fn rebuild_preview_site(
     merge_diagnostics(&mut diagnostics, rendered.evaluation_diagnostics);
 
     site.publish(staging);
-    crate::emit_service_diagnostics(&diagnostics);
-    Ok(diagnostics.len())
+    Ok(diagnostics)
 }
 
-fn print_rebuild_status(revision: u64, diagnostics: usize) {
-    if diagnostics == 0 {
+fn print_rebuild_status(
+    format: OutputFormat,
+    revision: u64,
+    diagnostics: &[notist_service::DiagnosticRecord],
+) -> io::Result<()> {
+    if format.is_json() {
+        return crate::output::emit_event(
+            "preview",
+            "rebuilt",
+            serde_json::json!({"revision": revision, "diagnostics": diagnostics}),
+        );
+    }
+    crate::emit_service_diagnostics(diagnostics);
+    if diagnostics.is_empty() {
         println!("preview revision {revision} built");
     } else {
-        println!("preview revision {revision} built with {diagnostics} diagnostics");
+        println!(
+            "preview revision {revision} built with {} diagnostics",
+            diagnostics.len()
+        );
+    }
+    Ok(())
+}
+
+fn emit_preview_error(format: OutputFormat, event: &str, message: &str) {
+    if format.is_json() {
+        let _ =
+            crate::output::emit_event("preview", event, serde_json::json!({"message": message}));
+    } else {
+        eprintln!("notist preview: {message}");
     }
 }
 
@@ -187,11 +224,23 @@ async fn serve(
     no_open: bool,
     revision: Arc<AtomicU64>,
     updates: broadcast::Sender<u64>,
+    format: OutputFormat,
 ) -> Result<(), Box<dyn Error>> {
     if !host.is_loopback() {
-        eprintln!(
-            "notist preview: warning: serving document content on non-loopback address {host}"
-        );
+        if format.is_json() {
+            crate::output::emit_event(
+                "preview",
+                "warning",
+                serde_json::json!({
+                    "code": "non_loopback",
+                    "message": format!("serving document content on non-loopback address {host}"),
+                }),
+            )?;
+        } else {
+            eprintln!(
+                "notist preview: warning: serving document content on non-loopback address {host}"
+            );
+        }
     }
 
     let listener = tokio::net::TcpListener::bind(SocketAddr::new(host, port)).await?;
@@ -211,14 +260,22 @@ async fn serve(
         address
     };
     let url = format!("http://{browser_address}/");
-    println!("preview server listening on {url}");
+    if format.is_json() {
+        crate::output::emit_event(
+            "preview",
+            "listening",
+            serde_json::json!({"url": url, "address": address}),
+        )?;
+    } else {
+        println!("preview server listening on {url}");
+    }
 
     if !no_open && let Err(error) = open::that_detached(&url) {
-        eprintln!("notist preview: failed to open browser: {error}");
+        emit_preview_error(format, "browser_open_failed", &error.to_string());
     }
 
     axum::serve(listener, app)
-        .with_graceful_shutdown(shutdown_signal())
+        .with_graceful_shutdown(shutdown_signal(format))
         .await?;
     Ok(())
 }
@@ -281,9 +338,9 @@ async fn events_response(
     Sse::new(initial.chain(updates)).keep_alive(KeepAlive::default())
 }
 
-async fn shutdown_signal() {
+async fn shutdown_signal(format: OutputFormat) {
     if let Err(error) = tokio::signal::ctrl_c().await {
-        eprintln!("notist preview: failed to listen for shutdown signal: {error}");
+        emit_preview_error(format, "shutdown_signal_failed", &error.to_string());
     }
 }
 
@@ -313,7 +370,7 @@ mod tests {
         let diagnostics =
             rebuild_preview_site(&mut client, view_id, &site, ColorChoice::Never).unwrap();
 
-        assert_eq!(diagnostics, 0);
+        assert!(diagnostics.is_empty());
         let first_generation = site.capture();
         assert!(first_generation.path.join("_notist/reload.js").is_file());
         let first = fs::read_to_string(first_generation.path.join("index.html")).unwrap();

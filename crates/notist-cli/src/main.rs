@@ -11,10 +11,13 @@ mod build;
 mod lsp;
 mod mcp;
 mod official_docs;
+mod output;
 mod preview;
 mod resources;
 mod service;
 mod skill;
+
+use output::OutputFormat;
 
 #[derive(Debug, Parser)]
 #[command(name = "notist", version, about, arg_required_else_help = true)]
@@ -26,6 +29,10 @@ struct Cli {
     /// Run the application service in this process instead of using the local daemon.
     #[arg(long, global = true)]
     no_daemon: bool,
+
+    /// Select human-readable text or versioned JSON output.
+    #[arg(long, value_enum, default_value_t, global = true)]
+    format: OutputFormat,
 
     #[command(subcommand)]
     command: Command,
@@ -124,6 +131,31 @@ enum Command {
     },
 }
 
+impl Command {
+    fn name(&self) -> &'static str {
+        match self {
+            Self::Daemon { .. } => "daemon",
+            Self::Lsp => "lsp",
+            Self::Mcp { .. } => "mcp",
+            Self::Skill { .. } => "skill init",
+            Self::Check { .. } => "check",
+            Self::Inspect { .. } => "inspect",
+            Self::Search { .. } => "search",
+            Self::Outline { .. } => "outline",
+            Self::References { .. } => "references",
+            Self::Query { .. } => "query definition",
+            Self::Edit {
+                edit: EditCommand::Replace { .. },
+            } => "edit replace",
+            Self::Edit {
+                edit: EditCommand::Rename { .. },
+            } => "edit rename",
+            Self::Build { .. } => "build",
+            Self::Preview { .. } => "preview",
+        }
+    }
+}
+
 #[derive(Debug, Subcommand)]
 enum QueryCommand {
     /// Find the definition at a source byte offset.
@@ -157,10 +189,17 @@ enum SkillCommand {
 }
 
 fn main() -> ExitCode {
-    match run(Cli::parse()) {
+    let cli = Cli::parse();
+    let format = cli.format;
+    let command = cli.command.name();
+    match run(cli) {
         Ok(code) => code,
         Err(error) => {
-            eprintln!("notist: {error}");
+            if format.is_json() {
+                let _ = output::emit_error(command, &error.to_string());
+            } else {
+                eprintln!("notist: {error}");
+            }
             ExitCode::FAILURE
         }
     }
@@ -172,31 +211,63 @@ fn run(cli: Cli) -> Result<ExitCode, Box<dyn std::error::Error>> {
         Command::Daemon {
             root,
             background_child,
-        } => service::run_daemon(resolve_vault_root(&root)?, background_child),
-        Command::Lsp => lsp::run(cli.no_daemon),
-        Command::Mcp { root } => mcp::run(resolve_vault_root(&root)?, cli.no_daemon),
+        } => service::run_daemon(resolve_vault_root(&root)?, background_child, cli.format),
+        Command::Lsp => {
+            require_protocol_format(cli.format, "lsp")?;
+            lsp::run(cli.no_daemon)
+        }
+        Command::Mcp { root } => {
+            require_protocol_format(cli.format, "mcp")?;
+            mcp::run(resolve_vault_root(&root)?, cli.no_daemon)
+        }
         Command::Skill {
             command: SkillCommand::Init { output },
         } => {
-            skill::init(output)?;
+            let output = skill::init(output)?;
+            if cli.format.is_json() {
+                output::emit_result(
+                    "skill init",
+                    true,
+                    serde_json::json!({"output": output, "files": ["SKILL.md"]}),
+                )?;
+            } else {
+                println!("initialized Notist Skill at {}", output.display());
+            }
             Ok(ExitCode::SUCCESS)
         }
         Command::Check { root } => {
             let root = resolve_vault_root(&root)?;
             let mut client =
                 service::LocalNotistClient::connect(cli.no_daemon, ClientKind::Cli, root.clone())?;
-            let view_id = open_disk_view(&mut client, root)?;
+            let view_id = open_disk_view(&mut client, root.clone())?;
             let reply = client.request(CoreRequest::Diagnostics { view_id })?;
+            let snapshot = reply.snapshot.clone();
             let CoreResponse::Diagnostics(diagnostics) = reply.response else {
                 return Err("daemon returned an unexpected diagnostics response".into());
             };
-            emit_service_diagnostics(&diagnostics);
-            let summary = client.request(CoreRequest::SnapshotSummary { view_id })?;
-            let CoreResponse::SnapshotSummary(summary) = summary.response else {
+            let summary_reply = client.request(CoreRequest::SnapshotSummary { view_id })?;
+            let CoreResponse::SnapshotSummary(summary) = summary_reply.response else {
                 return Err("daemon returned an unexpected snapshot response".into());
             };
-            if diagnostics.is_empty() {
-                println!("checked {} modules", summary.module_count);
+            let ok = diagnostics.is_empty();
+            if cli.format.is_json() {
+                output::emit_result(
+                    "check",
+                    ok,
+                    serde_json::json!({
+                        "root": root,
+                        "snapshot": snapshot,
+                        "summary": summary,
+                        "diagnostics": diagnostics,
+                    }),
+                )?;
+            } else {
+                emit_service_diagnostics(&diagnostics);
+            }
+            if ok {
+                if !cli.format.is_json() {
+                    println!("checked {} modules", summary.module_count);
+                }
                 Ok(ExitCode::SUCCESS)
             } else {
                 Ok(ExitCode::FAILURE)
@@ -206,11 +277,20 @@ fn run(cli: Cli) -> Result<ExitCode, Box<dyn std::error::Error>> {
             let root = resolve_vault_root(&root)?;
             let mut client =
                 service::LocalNotistClient::connect(cli.no_daemon, ClientKind::Cli, root.clone())?;
-            let view_id = open_disk_view(&mut client, root)?;
+            let view_id = open_disk_view(&mut client, root.clone())?;
             let reply = client.request(CoreRequest::Inspect { view_id })?;
+            let snapshot = reply.snapshot.clone();
             let CoreResponse::Inspect(inspect) = reply.response else {
                 return Err("daemon returned an unexpected inspect response".into());
             };
+            if cli.format.is_json() {
+                output::emit_result(
+                    "inspect",
+                    true,
+                    serde_json::json!({"root": root, "snapshot": snapshot, "inspect": inspect}),
+                )?;
+                return Ok(ExitCode::SUCCESS);
+            }
             for module in inspect.modules {
                 match module.source_path {
                     Some(path) => println!("{} -> {}", module.logical_path, path.display()),
@@ -245,11 +325,28 @@ fn run(cli: Cli) -> Result<ExitCode, Box<dyn std::error::Error>> {
             let root = resolve_vault_root(&root)?;
             let mut client =
                 service::LocalNotistClient::connect(cli.no_daemon, ClientKind::Cli, root.clone())?;
-            let view_id = open_disk_view(&mut client, root)?;
-            let reply = client.request(CoreRequest::Search { view_id, query })?;
+            let view_id = open_disk_view(&mut client, root.clone())?;
+            let reply = client.request(CoreRequest::Search {
+                view_id,
+                query: query.clone(),
+            })?;
+            let snapshot = reply.snapshot.clone();
             let CoreResponse::Search(results) = reply.response else {
                 return Err("daemon returned an unexpected search response".into());
             };
+            if cli.format.is_json() {
+                output::emit_result(
+                    "search",
+                    true,
+                    serde_json::json!({
+                        "root": root,
+                        "snapshot": snapshot,
+                        "query": query,
+                        "results": results,
+                    }),
+                )?;
+                return Ok(ExitCode::SUCCESS);
+            }
             for result in results {
                 println!(
                     "{}:{}..{} {}",
@@ -265,11 +362,20 @@ fn run(cli: Cli) -> Result<ExitCode, Box<dyn std::error::Error>> {
             let root = resolve_vault_root(&root)?;
             let mut client =
                 service::LocalNotistClient::connect(cli.no_daemon, ClientKind::Cli, root.clone())?;
-            let view_id = open_disk_view(&mut client, root)?;
+            let view_id = open_disk_view(&mut client, root.clone())?;
             let reply = client.request(CoreRequest::Outline { view_id })?;
+            let snapshot = reply.snapshot.clone();
             let CoreResponse::Outline(outline) = reply.response else {
                 return Err("daemon returned an unexpected outline response".into());
             };
+            if cli.format.is_json() {
+                output::emit_result(
+                    "outline",
+                    true,
+                    serde_json::json!({"root": root, "snapshot": snapshot, "documents": outline}),
+                )?;
+                return Ok(ExitCode::SUCCESS);
+            }
             for document in outline {
                 for symbol in document.symbols {
                     println!(
@@ -292,15 +398,30 @@ fn run(cli: Cli) -> Result<ExitCode, Box<dyn std::error::Error>> {
             let root = resolve_vault_root(&root)?;
             let mut client =
                 service::LocalNotistClient::connect(cli.no_daemon, ClientKind::Cli, root.clone())?;
-            let view_id = open_disk_view(&mut client, root)?;
+            let view_id = open_disk_view(&mut client, root.clone())?;
             let reply = client.request(CoreRequest::ReferencesTo {
                 view_id,
-                module,
+                module: module.clone(),
                 include_definition,
             })?;
+            let snapshot = reply.snapshot.clone();
             let CoreResponse::References(locations) = reply.response else {
                 return Err("daemon returned an unexpected references response".into());
             };
+            if cli.format.is_json() {
+                output::emit_result(
+                    "references",
+                    true,
+                    serde_json::json!({
+                        "root": root,
+                        "snapshot": snapshot,
+                        "module": module,
+                        "include_definition": include_definition,
+                        "locations": locations,
+                    }),
+                )?;
+                return Ok(ExitCode::SUCCESS);
+            }
             for location in locations {
                 println!(
                     "{}:{}..{}{}",
@@ -323,15 +444,30 @@ fn run(cli: Cli) -> Result<ExitCode, Box<dyn std::error::Error>> {
             let root = resolve_vault_root(&path)?;
             let mut client =
                 service::LocalNotistClient::connect(cli.no_daemon, ClientKind::Cli, root.clone())?;
-            let view_id = open_disk_view(&mut client, root)?;
+            let view_id = open_disk_view(&mut client, root.clone())?;
             let reply = client.request(CoreRequest::Definition {
                 view_id,
-                path,
+                path: path.clone(),
                 offset,
             })?;
+            let snapshot = reply.snapshot.clone();
             let CoreResponse::Definition(definition) = reply.response else {
                 return Err("daemon returned an unexpected definition response".into());
             };
+            if cli.format.is_json() {
+                output::emit_result(
+                    "query definition",
+                    true,
+                    serde_json::json!({
+                        "root": root,
+                        "snapshot": snapshot,
+                        "path": path,
+                        "offset": offset,
+                        "definition": definition,
+                    }),
+                )?;
+                return Ok(ExitCode::SUCCESS);
+            }
             if let Some(definition) = definition {
                 println!(
                     "{}:{}..{}",
@@ -356,7 +492,7 @@ fn run(cli: Cli) -> Result<ExitCode, Box<dyn std::error::Error>> {
             let root = resolve_vault_root(&path)?;
             let mut client =
                 service::LocalNotistClient::connect(cli.no_daemon, ClientKind::Cli, root.clone())?;
-            let view_id = open_disk_view(&mut client, root)?;
+            let view_id = open_disk_view(&mut client, root.clone())?;
             let summary = client.request(CoreRequest::SnapshotSummary { view_id })?;
             let plan = client.request(CoreRequest::ProposeEdit {
                 view_id,
@@ -371,8 +507,16 @@ fn run(cli: Cli) -> Result<ExitCode, Box<dyn std::error::Error>> {
                 return Err("daemon returned an unexpected edit-plan response".into());
             };
             if !plan.diagnostics.is_empty() {
-                for diagnostic in plan.diagnostics {
-                    eprintln!("notist edit: {diagnostic}");
+                if cli.format.is_json() {
+                    output::emit_result(
+                        "edit replace",
+                        false,
+                        serde_json::json!({"root": root, "plan": plan}),
+                    )?;
+                } else {
+                    for diagnostic in plan.diagnostics {
+                        eprintln!("notist edit: {diagnostic}");
+                    }
                 }
                 return Ok(ExitCode::FAILURE);
             }
@@ -385,7 +529,15 @@ fn run(cli: Cli) -> Result<ExitCode, Box<dyn std::error::Error>> {
             let CoreResponse::EditApplied(applied) = applied.response else {
                 return Err("daemon returned an unexpected edit response".into());
             };
-            println!("applied edit {}", applied.plan_hash);
+            if cli.format.is_json() {
+                output::emit_result(
+                    "edit replace",
+                    true,
+                    serde_json::json!({"root": root, "applied": applied}),
+                )?;
+            } else {
+                println!("applied edit {}", applied.plan_hash);
+            }
             Ok(ExitCode::SUCCESS)
         }
         Command::Edit {
@@ -400,7 +552,7 @@ fn run(cli: Cli) -> Result<ExitCode, Box<dyn std::error::Error>> {
             let root = resolve_vault_root(&from)?;
             let mut client =
                 service::LocalNotistClient::connect(cli.no_daemon, ClientKind::Cli, root.clone())?;
-            let view_id = open_disk_view(&mut client, root)?;
+            let view_id = open_disk_view(&mut client, root.clone())?;
             let fingerprint = client.request(CoreRequest::FingerprintSource {
                 view_id,
                 path: from.clone(),
@@ -418,11 +570,19 @@ fn run(cli: Cli) -> Result<ExitCode, Box<dyn std::error::Error>> {
             let CoreResponse::SourceRenamed(renamed) = renamed.response else {
                 return Err("daemon returned an unexpected rename response".into());
             };
-            println!(
-                "renamed {} -> {}",
-                renamed.from.display(),
-                renamed.to.display()
-            );
+            if cli.format.is_json() {
+                output::emit_result(
+                    "edit rename",
+                    true,
+                    serde_json::json!({"root": root, "renamed": renamed}),
+                )?;
+            } else {
+                println!(
+                    "renamed {} -> {}",
+                    renamed.from.display(),
+                    renamed.to.display()
+                );
+            }
             Ok(ExitCode::SUCCESS)
         }
         Command::Build {
@@ -435,6 +595,7 @@ fn run(cli: Cli) -> Result<ExitCode, Box<dyn std::error::Error>> {
             cli.color,
             cli.no_daemon,
             clean,
+            cli.format,
         ),
         Command::Preview {
             root,
@@ -448,6 +609,7 @@ fn run(cli: Cli) -> Result<ExitCode, Box<dyn std::error::Error>> {
             no_open,
             cli.color,
             cli.no_daemon,
+            cli.format,
         ),
     }
 }
@@ -464,6 +626,19 @@ fn open_disk_view(
         return Err("daemon returned an unexpected open-view response".into());
     };
     Ok(view_id)
+}
+
+fn require_protocol_format(
+    format: OutputFormat,
+    protocol: &str,
+) -> Result<(), Box<dyn std::error::Error>> {
+    if format.is_json() {
+        return Err(format!(
+            "`{protocol}` already uses JSON-RPC on stdout and does not accept `--format json`"
+        )
+        .into());
+    }
+    Ok(())
 }
 
 pub(crate) fn emit_service_diagnostics(diagnostics: &[notist_service::DiagnosticRecord]) {

@@ -42,7 +42,7 @@ notist build [ROOT] [-o <OUTPUT>] [--clean]
 notist preview [ROOT] [--host <HOST>] [--port <PORT>] [--no-open]
 ```
 
-所有命令都支持 `-h` / `--help`。顶层还支持 `-V` / `--version`、`--color` 和 `--no-daemon`。
+所有命令都支持 `-h` / `--help`。顶层还支持 `-V` / `--version`、`--color`、`--no-daemon` 和 `--format`。
 
 == ROOT 与 Vault 发现
 
@@ -74,6 +74,70 @@ notist query definition docs/guide.not 40
 完整 marker、nested Vault 和 ModulePath 规则见 [[vault::designs::D0007-notist-toml]]。
 
 == 全局选项
+
+=== `--format <FORMAT>`
+
+有限生命周期的 CLI 命令支持两种输出格式：
+
+```text
+text    面向人的现有文本输出，默认值
+json    面向 Agent 和程序的版本化 JSON
+```
+
+全局参数可以写在子命令之前或之后：
+
+```shell
+notist --format json search "workspace revision" docs
+notist search "workspace revision" docs --format json
+```
+
+成功或业务失败的有限命令在 stdout 写入一个 JSON document：
+
+```json
+{
+  "schema_version": 1,
+  "command": "search",
+  "ok": true,
+  "result": {
+    "root": "...",
+    "snapshot": { "...": "..." },
+    "query": "workspace revision",
+    "results": []
+  }
+}
+```
+
+`schema_version` 描述 CLI envelope，不等于 daemon protocol version。`command` 使用稳定的逻辑名称，例如 `check`、`query definition` 或 `edit replace`。`ok` 表示命令的业务结果；例如 `check` 找到 diagnostics 或 edit plan 被拒绝时，仍能生成合法 JSON，但 `ok` 为 `false` 且进程返回非零状态。
+
+无法形成命令结果的运行错误写入 stderr：
+
+```json
+{
+  "schema_version": 1,
+  "command": "check",
+  "ok": false,
+  "error": { "message": "..." }
+}
+```
+
+JSON 模式不输出 ANSI color，也不要求调用者解析人类 diagnostics 行。Path 表示为字符串；source range 表示为 `{ "start": N, "end": N }`，仍然是 UTF-8 byte range。
+
+各命令的 `result` 保留它需要的上下文：
+
+- `check`：root、snapshot、summary 和 diagnostics。
+- `inspect`：root、snapshot，以及 modules、references、semantic items 组成的 inspect record。
+- `search`：root、snapshot、原 query 和 results。
+- `outline`：root、snapshot 和 documents。
+- `references`：root、snapshot、module、include-definition 选择和 locations。
+- `query definition`：root、snapshot、输入 path/offset 和 nullable definition。
+- `edit replace`：被拒绝时返回 plan，成功时返回 applied record。
+- `edit rename`：返回 rename record。
+- `build`：root、output、page count 和 diagnostics。
+- `skill init`：输出目录与生成的文件列表。
+
+`preview --format json` 是长期进程，因此 stdout 使用 JSON Lines：每行是一个独立 event envelope，包含 `schema_version`、`command: "preview"`、`event` 和 `data`。事件包括 initial/rebuild publication、listening URL、warning 和异步错误。前台 `daemon --format json` 同样先输出 `started` event，再持续服务。
+
+`lsp` 与 `mcp` 的 stdout 本身就是 JSON-RPC transport，不能再包装 CLI JSON；对它们传入 `--format json` 会明确失败，避免污染协议流。Clap 自己产生的参数解析与 `--help` 输出仍是文本，因为命令尚未开始执行，调用者不应把 JSON 模式当成未知参数恢复协议。
 
 === `--no-daemon`
 

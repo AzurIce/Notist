@@ -18,10 +18,12 @@ Treat the synchronized official docs as a normal read-only Notist Vault. Locate 
 Search before guessing language or CLI behavior:
 
 ```shell
-notist search "workspace snapshot" <DOCS_ROOT>
-notist outline <DOCS_ROOT>
-notist references vault::designs::D0012 <DOCS_ROOT>
+notist search "workspace snapshot" <DOCS_ROOT> --format json
+notist outline <DOCS_ROOT> --format json
+notist references vault::designs::D0012 <DOCS_ROOT> --format json
 ```
+
+Prefer `--format json` for finite CLI commands. Read the versioned envelope's `ok`, `result`, diagnostics, paths, and UTF-8 byte ranges instead of parsing human-readable lines. LSP and MCP already use JSON-RPC and must not receive this flag; `preview --format json` emits JSON Lines events while it runs.
 
 Prefer current public documentation such as `grammar.not`, `functions.not`, `types.not`, and `cli.not`. Active `designs/` describe governing architecture. Treat `docs/ai/` as dated research and `designs/archive/` as historical context.
 
@@ -36,7 +38,7 @@ Use ordinary Notist commands for saved disk state. LSP editor overlays are isola
 After changing a Vault, run:
 
 ```shell
-notist check <VAULT_ROOT>
+notist check <VAULT_ROOT> --format json
 ```
 
 Use `--no-daemon` only when an isolated in-process service is required; it does not disable analysis.
