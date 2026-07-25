@@ -29,7 +29,7 @@ impl LocalNotistClient {
             });
         }
         let runtime = tokio::runtime::Runtime::new()?;
-        let handshake = handshake(kind, root.clone());
+        let handshake = handshake(kind, root.clone())?;
         let client = match runtime.block_on(DaemonClient::connect(&root, handshake.clone())) {
             Ok(client) => client,
             Err(error) if daemon_is_unavailable(&error) => {
@@ -62,12 +62,14 @@ impl LocalNotistClient {
     }
 }
 
-fn handshake(kind: ClientKind, vault_root: PathBuf) -> Handshake {
-    Handshake {
+fn handshake(kind: ClientKind, vault_root: PathBuf) -> io::Result<Handshake> {
+    let vault_generation = crate::official_docs::generation_for_root(&vault_root)?;
+    Ok(Handshake {
         protocol_version: ProtocolVersion::CURRENT,
         client_kind: kind,
         client_version: env!("CARGO_PKG_VERSION").into(),
         vault_root,
+        vault_generation,
         requested_capabilities: vec![
             "completion".into(),
             "definition".into(),
@@ -77,7 +79,7 @@ fn handshake(kind: ClientKind, vault_root: PathBuf) -> Handshake {
             "search".into(),
             "symbols".into(),
         ],
-    }
+    })
 }
 
 fn daemon_is_unavailable(error: &io::Error) -> bool {
@@ -117,6 +119,7 @@ pub(crate) fn run_daemon(
 ) -> Result<std::process::ExitCode, Box<dyn std::error::Error>> {
     let runtime = tokio::runtime::Runtime::new()?;
     let service = Arc::new(NotistService::for_root(&root)?);
+    let vault_generation = crate::official_docs::generation_for_root(&root)?;
     if !background_child {
         eprintln!("notist daemon {}", service.instance_id().0);
     }
@@ -125,6 +128,7 @@ pub(crate) fn run_daemon(
         root,
         service,
         idle_timeout,
+        vault_generation,
     ))?;
     Ok(std::process::ExitCode::SUCCESS)
 }

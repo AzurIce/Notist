@@ -7,6 +7,7 @@
 站点命令   build / preview
 协议入口   lsp / mcp
 后台服务   daemon
+Agent 资源 skill init
 ```
 
 最常用的调用形式是：
@@ -24,6 +25,7 @@ notist preview docs
 notist daemon [ROOT]
 notist lsp
 notist mcp [ROOT]
+notist skill init <OUTPUT>
 
 notist check [ROOT]
 notist inspect [ROOT]
@@ -295,6 +297,39 @@ notist preview docs --port 3000 --no-open
 ```
 
 绑定非 loopback 地址会把文档内容暴露到相应网络接口，Notist 会输出安全警告。
+
+== 官方文档与 Agent Skill
+
+每个正常 CLI 工作流开始前都会检查当前版本内嵌的官方 docs fingerprint。用户数据目录中的 manifest 已匹配时只进行一次轻量比较；缺失或不匹配时，CLI 在跨进程锁内把完整 docs bundle 解压到 staging tree，校验后原子发布为稳定的普通 Vault。
+
+默认位置是：
+
+```text
+Windows   %LOCALAPPDATA%\Notist\docs
+macOS     $HOME/Library/Application Support/Notist/docs
+Unix      ${XDG_DATA_HOME:-$HOME/.local/share}/notist/docs
+```
+
+`NOTIST_DATA_DIR` 可以覆盖 Notist user-data root，此时官方 Vault 位于 `$NOTIST_DATA_DIR/docs`。这个覆盖适合测试、沙箱和可迁移安装；它改变的是整个 Notist 数据根，而不只是文档查询。
+
+同步完成后没有 docs 专用查询命令。它使用现有普通接口：
+
+```shell
+notist search "WorkspaceSnapshot" <DOCS_ROOT>
+notist outline <DOCS_ROOT>
+notist references vault::designs::D0012 <DOCS_ROOT>
+notist mcp <DOCS_ROOT>
+```
+
+初始化官方 Agent Skill：
+
+```text
+notist skill init <OUTPUT>
+```
+
+`OUTPUT` 必须不存在，且父目录必须已经存在。成功后目录中只有 `SKILL.md`；命令不猜测 Agent host 的安装位置，也不覆盖或更新已有 Skill。Skill 教 Agent 使用普通 Notist 命令查询同步后的官方 Vault，并区分当前公开文档、活动设计、日期调研与历史设计。
+
+官方 docs source 与 Skill 都来自当前 CLI 的内嵌发布资源，因此首次使用不需要 GitHub 或其他网络服务。向量模型和索引不包含在二进制中；未来启用语义检索时，它们仍是 docs Vault 自己的 daemon/cache 派生状态。
 
 == 协议入口
 

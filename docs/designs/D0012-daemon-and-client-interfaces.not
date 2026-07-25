@@ -141,15 +141,15 @@ Workspace symbol 等显式 worktree 级请求可以查询多个 connection，再
 ```text
 notist search ...
   -> resolve Vault root
-  -> derive endpoint from user identity + canonical root
+  -> derive endpoint from user identity + canonical root + optional managed generation
   -> lazily start notist daemon <root> when unavailable
-  -> handshake protocol version, Vault root and capabilities
+  -> handshake protocol version, Vault root, optional generation and capabilities
   -> open disk View in the root-bound daemon
   -> execute request against captured snapshot
   -> print response and exit
 ```
 
-同一 canonical root 只对应一个 daemon 实例。Daemon 可以由 client 惰性启动，也可以由桌面应用预先启动；不同 Vault 使用不同 endpoint 和进程。单实例协调依赖操作系统 endpoint exclusivity 与本用户 runtime directory；PID file 只用于诊断，不能充当锁或身份认证。Canonical path 必须在 endpoint 派生前完成解析，避免同一目录因相对路径、symlink 或大小写表示得到多个 daemon。
+普通 Vault 的同一 canonical root 只对应一个 daemon 实例。由 Notist 发布和替换内容的 managed Vault 可以额外声明 generation；此时同一 root 与 generation 组合只对应一个实例，升级前的 daemon 因 endpoint identity 不同而停止接收新 generation 的 client，并在 idle 后退出。Generation 不是普通用户 Vault 的版本号，也不能用于绕过每 Vault 隔离。Daemon 可以由 client 惰性启动，也可以由桌面应用预先启动；不同 Vault 使用不同 endpoint 和进程。单实例协调依赖操作系统 endpoint exclusivity 与本用户 runtime directory；PID file 只用于诊断，不能充当锁或身份认证。Canonical path 必须在 endpoint 派生前完成解析，避免同一目录因相对路径、symlink 或大小写表示得到多个 daemon。
 
 Client 自动拉起的后台 daemon 在没有连接后等待一个短暂 idle grace period，再关闭 watcher、Engine 和进程；新的 client 随后可以按相同 endpoint 重新启动它。Grace period 避免连续短命 CLI 命令反复冷启动，同时不会让用户曾经访问过的所有 Vault 永久驻留。用户显式以前台方式运行 `notist daemon <root>` 时，进程由用户或宿主管理，不因 idle 自动退出。
 
@@ -167,11 +167,12 @@ Handshake {
   client_kind
   client_version
   vault_root
+  vault_generation?
   requested_capabilities
 }
 ```
 
-协议按独立于 crate API 的版本演进。Daemon 必须拒绝不能安全解释的 major version，也必须拒绝 handshake root 与自身固定 root 不一致的 client，而不是尝试把请求路由到另一个 Vault。Minor capability 通过 negotiation 发现，使旧 CLI 可以连接提供兼容 surface 的新 daemon。
+协议按独立于 crate API 的版本演进。Daemon 必须拒绝不能安全解释的 major version，也必须拒绝 handshake root 或 managed generation 与自身固定 identity 不一致的 client，而不是尝试把请求路由到另一个 Vault。Minor capability 通过 negotiation 发现，使旧 CLI 可以连接提供兼容 surface 的新 daemon。
 
 每个 response 至少能关联 daemon instance、Vault identity、View identity 与 snapshot revision。长查询支持 request cancellation；notification 与 response 使用有界队列，不能让一个缓慢 client 阻塞 watcher publication 或其他 View。
 

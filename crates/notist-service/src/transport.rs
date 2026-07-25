@@ -48,7 +48,7 @@ pub struct DaemonClient {
 
 impl DaemonClient {
     pub async fn connect(root: &Path, handshake: Handshake) -> io::Result<Self> {
-        let mut stream = connect_stream(root).await?;
+        let mut stream = connect_stream(root, handshake.vault_generation.as_deref()).await?;
         write_frame(
             &mut stream,
             &ClientMessage::Handshake {
@@ -110,14 +110,16 @@ pub async fn serve(
     root: PathBuf,
     service: Arc<NotistService>,
     idle_timeout: Option<Duration>,
+    vault_generation: Option<String>,
 ) -> io::Result<()> {
-    serve_platform(root, service, idle_timeout).await
+    serve_platform(root, service, idle_timeout, Arc::new(vault_generation)).await
 }
 
 async fn serve_connection<S>(
     mut stream: S,
     root: Arc<PathBuf>,
     service: Arc<NotistService>,
+    vault_generation: Arc<Option<String>>,
 ) -> io::Result<()>
 where
     S: AsyncRead + AsyncWrite + Unpin + Send + 'static,
@@ -151,6 +153,16 @@ where
                     root.display(),
                     handshake.vault_root.display()
                 ),
+            },
+        )
+        .await?;
+        return Ok(());
+    }
+    if handshake.vault_generation != *vault_generation {
+        write_frame(
+            &mut stream,
+            &ServerMessage::HandshakeRejected {
+                message: "daemon vault generation does not match the client".into(),
             },
         )
         .await?;
@@ -290,7 +302,7 @@ async fn read_frame<R: AsyncRead + Unpin, T: serde::de::DeserializeOwned>(
     serde_json::from_slice(&payload).map_err(io::Error::other)
 }
 
-fn endpoint_discriminator(root: &Path) -> String {
+fn endpoint_discriminator(root: &Path, vault_generation: Option<&str>) -> String {
     let identity = std::env::var_os("USERPROFILE")
         .or_else(|| std::env::var_os("HOME"))
         .unwrap_or_default();
@@ -303,6 +315,14 @@ fn endpoint_discriminator(root: &Path) -> String {
         hash ^= u64::from(*byte);
         hash = hash.wrapping_mul(0x100000001b3);
     }
+    hash ^= 0xff;
+    hash = hash.wrapping_mul(0x100000001b3);
+    if let Some(vault_generation) = vault_generation {
+        for byte in vault_generation.as_bytes() {
+            hash ^= u64::from(*byte);
+            hash = hash.wrapping_mul(0x100000001b3);
+        }
+    }
     format!("{hash:016x}")
 }
 
@@ -310,10 +330,13 @@ fn endpoint_discriminator(root: &Path) -> String {
 type ClientStream = tokio::net::windows::named_pipe::NamedPipeClient;
 
 #[cfg(windows)]
-async fn connect_stream(root: &Path) -> io::Result<ClientStream> {
+async fn connect_stream(root: &Path, vault_generation: Option<&str>) -> io::Result<ClientStream> {
     use tokio::net::windows::named_pipe::ClientOptions;
 
-    let endpoint = format!(r"\\.\pipe\notist-{}", endpoint_discriminator(root));
+    let endpoint = format!(
+        r"\\.\pipe\notist-{}",
+        endpoint_discriminator(root, vault_generation)
+    );
     let mut attempts = 0;
     loop {
         match ClientOptions::new().open(&endpoint) {
@@ -332,10 +355,14 @@ async fn serve_platform(
     root: PathBuf,
     service: Arc<NotistService>,
     idle_timeout: Option<Duration>,
+    vault_generation: Arc<Option<String>>,
 ) -> io::Result<()> {
     use tokio::net::windows::named_pipe::ServerOptions;
 
-    let endpoint = format!(r"\\.\pipe\notist-{}", endpoint_discriminator(&root));
+    let endpoint = format!(
+        r"\\.\pipe\notist-{}",
+        endpoint_discriminator(&root, vault_generation.as_deref())
+    );
     let root = Arc::new(root);
     let active = Arc::new(AtomicUsize::new(0));
     let mut first = true;
@@ -362,8 +389,9 @@ async fn serve_platform(
         let connection_active = active.clone();
         let root = root.clone();
         let service = service.clone();
+        let vault_generation = vault_generation.clone();
         tokio::spawn(async move {
-            let _ = serve_connection(server, root, service).await;
+            let _ = serve_connection(server, root, service, vault_generation).await;
             connection_active.fetch_sub(1, Ordering::AcqRel);
         });
     }
@@ -446,20 +474,21 @@ fn windows_client_is_current_user(pipe: &tokio::net::windows::named_pipe::NamedP
 type ClientStream = tokio::net::UnixStream;
 
 #[cfg(unix)]
-fn unix_endpoint(root: &Path) -> io::Result<PathBuf> {
+fn unix_endpoint(root: &Path, vault_generation: Option<&str>) -> io::Result<PathBuf> {
     let runtime = std::env::var_os("XDG_RUNTIME_DIR")
         .map(PathBuf::from)
         .unwrap_or_else(|| {
             std::env::temp_dir().join(format!("notist-{}", unsafe { libc::geteuid() }))
         });
-    Ok(runtime
-        .join("notist")
-        .join(format!("daemon-{}.sock", endpoint_discriminator(root))))
+    Ok(runtime.join("notist").join(format!(
+        "daemon-{}.sock",
+        endpoint_discriminator(root, vault_generation)
+    )))
 }
 
 #[cfg(unix)]
-async fn connect_stream(root: &Path) -> io::Result<ClientStream> {
-    tokio::net::UnixStream::connect(unix_endpoint(root)?).await
+async fn connect_stream(root: &Path, vault_generation: Option<&str>) -> io::Result<ClientStream> {
+    tokio::net::UnixStream::connect(unix_endpoint(root, vault_generation)?).await
 }
 
 #[cfg(unix)]
@@ -467,10 +496,11 @@ async fn serve_platform(
     root: PathBuf,
     service: Arc<NotistService>,
     idle_timeout: Option<Duration>,
+    vault_generation: Arc<Option<String>>,
 ) -> io::Result<()> {
     use std::os::unix::fs::{MetadataExt, PermissionsExt};
 
-    let endpoint = unix_endpoint(&root)?;
+    let endpoint = unix_endpoint(&root, vault_generation.as_deref())?;
     let root = Arc::new(root);
     let directory = endpoint
         .parent()
@@ -516,8 +546,9 @@ async fn serve_platform(
         let connection_active = active.clone();
         let root = root.clone();
         let service = service.clone();
+        let vault_generation = vault_generation.clone();
         tokio::spawn(async move {
-            let _ = serve_connection(stream, root, service).await;
+            let _ = serve_connection(stream, root, service, vault_generation).await;
             connection_active.fetch_sub(1, Ordering::AcqRel);
         });
     }
@@ -542,6 +573,7 @@ mod tests {
                     client_kind: ClientKind::Test,
                     client_version: "test".into(),
                     vault_root: PathBuf::from("/test"),
+                    vault_generation: None,
                     requested_capabilities: Vec::new(),
                 },
             };
@@ -558,8 +590,12 @@ mod tests {
         let first_root = dunce::canonicalize(first.path()).unwrap();
         let second_root = dunce::canonicalize(second.path()).unwrap();
         assert_ne!(
-            endpoint_discriminator(&first_root),
-            endpoint_discriminator(&second_root)
+            endpoint_discriminator(&first_root, None),
+            endpoint_discriminator(&second_root, None)
+        );
+        assert_ne!(
+            endpoint_discriminator(&first_root, Some("old")),
+            endpoint_discriminator(&first_root, Some("new"))
         );
 
         let runtime = tokio::runtime::Runtime::new().unwrap();
@@ -569,6 +605,7 @@ mod tests {
                 server,
                 Arc::new(first_root),
                 Arc::new(NotistService::new()),
+                Arc::new(None),
             ));
             write_frame(
                 &mut client,
@@ -578,6 +615,41 @@ mod tests {
                         client_kind: ClientKind::Test,
                         client_version: "test".into(),
                         vault_root: second_root,
+                        vault_generation: None,
+                        requested_capabilities: Vec::new(),
+                    },
+                },
+            )
+            .await
+            .unwrap();
+            let response: ServerMessage = read_frame(&mut client).await.unwrap();
+            assert!(matches!(response, ServerMessage::HandshakeRejected { .. }));
+            task.await.unwrap().unwrap();
+        });
+    }
+
+    #[test]
+    fn daemon_rejects_a_mismatched_managed_vault_generation() {
+        let root = tempfile::TempDir::new().unwrap();
+        let root = dunce::canonicalize(root.path()).unwrap();
+        let runtime = tokio::runtime::Runtime::new().unwrap();
+        runtime.block_on(async {
+            let (mut client, server) = tokio::io::duplex(4096);
+            let task = tokio::spawn(serve_connection(
+                server,
+                Arc::new(root.clone()),
+                Arc::new(NotistService::new()),
+                Arc::new(Some("current".into())),
+            ));
+            write_frame(
+                &mut client,
+                &ClientMessage::Handshake {
+                    handshake: Handshake {
+                        protocol_version: ProtocolVersion::CURRENT,
+                        client_kind: ClientKind::Test,
+                        client_version: "test".into(),
+                        vault_root: root,
+                        vault_generation: Some("stale".into()),
                         requested_capabilities: Vec::new(),
                     },
                 },
@@ -597,7 +669,7 @@ mod tests {
         let service = Arc::new(NotistService::for_root(&root).unwrap());
         let runtime = tokio::runtime::Runtime::new().unwrap();
         runtime
-            .block_on(serve(root, service, Some(Duration::from_millis(20))))
+            .block_on(serve(root, service, Some(Duration::from_millis(20)), None))
             .unwrap();
     }
 }

@@ -15,6 +15,7 @@
 - [[self::D0010-string-literals-and-raw-syntax]]：统一 String 类型、literal provenance、宿主 Raw syntax 与取消 Raw Call 的理由。
 - [[self::D0011-analyzer-and-workspace-snapshot]]：Analyzer 的输入与发布职责、不可变 WorkspaceSnapshot、revision/identity、query 与 delta 边界。
 - [[self::D0012-daemon-and-client-interfaces]]：类似 ADB 的本地 daemon、共享 VaultEngine、隔离 Analyzer View，以及 CLI/LSP/MCP client interface。
+- [[self::D0013-self-contained-agent-skill]]：单文件官方 Skill、CLI 内嵌 docs bundle、用户数据中的普通 docs Vault，以及同步、版本和索引边界。
 
 == 历史记录
 

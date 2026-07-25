@@ -1,8 +1,10 @@
 //! Versioned local protocol contracts. Transport framing lives beside the daemon client.
 
+use std::path::PathBuf;
+
 use serde::{Deserialize, Serialize};
 
-pub const PROTOCOL_MAJOR: u16 = 2;
+pub const PROTOCOL_MAJOR: u16 = 3;
 pub const PROTOCOL_MINOR: u16 = 0;
 pub const CAPABILITIES: &[&str] = &[
     "completion",
@@ -45,6 +47,9 @@ pub struct Handshake {
     pub client_version: String,
     /// Canonical root this client expects the daemon to serve.
     pub vault_root: PathBuf,
+    /// Optional generation identity for a managed vault such as official docs.
+    #[serde(default)]
+    pub vault_generation: Option<String>,
     pub requested_capabilities: Vec<String>,
 }
 
@@ -88,6 +93,7 @@ mod tests {
             client_kind: ClientKind::Test,
             client_version: "test".into(),
             vault_root: PathBuf::from("/test"),
+            vault_generation: None,
             requested_capabilities: vec!["diagnostics".into()],
         };
         assert_eq!(negotiate(&handshake).unwrap().capabilities, ["diagnostics"]);
@@ -95,4 +101,3 @@ mod tests {
         assert!(negotiate(&handshake).is_err());
     }
 }
-use std::path::PathBuf;

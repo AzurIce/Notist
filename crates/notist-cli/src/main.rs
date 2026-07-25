@@ -10,8 +10,11 @@ use notist_service::{CoreRequest, CoreResponse, ProtocolViewKind};
 mod build;
 mod lsp;
 mod mcp;
+mod official_docs;
 mod preview;
+mod resources;
 mod service;
+mod skill;
 
 #[derive(Debug, Parser)]
 #[command(name = "notist", version, about, arg_required_else_help = true)]
@@ -44,6 +47,11 @@ enum Command {
     Mcp {
         #[arg(default_value = ".")]
         root: PathBuf,
+    },
+    /// Create resources that teach an Agent how to use Notist.
+    Skill {
+        #[command(subcommand)]
+        command: SkillCommand,
     },
     /// Check module paths and references in a Notist workspace.
     Check {
@@ -142,6 +150,12 @@ enum EditCommand {
     },
 }
 
+#[derive(Debug, Subcommand)]
+enum SkillCommand {
+    /// Initialize the official Notist Skill in a new directory.
+    Init { output: PathBuf },
+}
+
 fn main() -> ExitCode {
     match run(Cli::parse()) {
         Ok(code) => code,
@@ -153,6 +167,7 @@ fn main() -> ExitCode {
 }
 
 fn run(cli: Cli) -> Result<ExitCode, Box<dyn std::error::Error>> {
+    official_docs::ensure_synced()?;
     match cli.command {
         Command::Daemon {
             root,
@@ -160,6 +175,12 @@ fn run(cli: Cli) -> Result<ExitCode, Box<dyn std::error::Error>> {
         } => service::run_daemon(resolve_vault_root(&root)?, background_child),
         Command::Lsp => lsp::run(cli.no_daemon),
         Command::Mcp { root } => mcp::run(resolve_vault_root(&root)?, cli.no_daemon),
+        Command::Skill {
+            command: SkillCommand::Init { output },
+        } => {
+            skill::init(output)?;
+            Ok(ExitCode::SUCCESS)
+        }
         Command::Check { root } => {
             let root = resolve_vault_root(&root)?;
             let mut client =
