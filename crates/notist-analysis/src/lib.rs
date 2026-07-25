@@ -5,10 +5,13 @@ use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 
-use notist_eval::{EvalDiagnostic, Evaluator, structure};
+use notist_eval::{
+    EvalDiagnostic, Evaluator, Function, FunctionContext, FunctionInput, FunctionOutput,
+    FunctionRegistry, Value, structure,
+};
 use notist_model::{
     Block, Content, DefaultValue, Element, FunctionSignature, ModulePath, StructuredDocument,
-    TextRange, WikiReference,
+    TextRange, Type, WikiReference,
 };
 use notist_syntax::{Call, Expression, ExpressionKind, Parse, parse, parse_wiki_reference};
 
@@ -186,6 +189,68 @@ pub struct AnalyzerConfiguration {
     pub signatures: SignatureSet,
 }
 
+struct SchemaFunction {
+    name: String,
+    signature: FunctionSignature,
+}
+
+impl Function for SchemaFunction {
+    fn name(&self) -> &str {
+        &self.name
+    }
+
+    fn signature(&self) -> FunctionSignature {
+        self.signature.clone()
+    }
+
+    fn call(
+        &self,
+        _context: &FunctionContext<'_>,
+        _input: FunctionInput<'_>,
+    ) -> Result<FunctionOutput, Vec<EvalDiagnostic>> {
+        Ok(FunctionOutput::value(placeholder_value(
+            &self.signature.result,
+            &self.name,
+        )))
+    }
+}
+
+fn placeholder_value(ty: &Type, name: &str) -> Value {
+    match ty {
+        Type::None => Value::None,
+        Type::Bool => Value::Bool(false),
+        Type::Int => Value::Int(0),
+        Type::Float => Value::Float(0.0),
+        Type::String => Value::String(String::new()),
+        Type::Content => Value::Content(Content::default()),
+        Type::Array(_) => Value::Array(Vec::new()),
+        Type::Dict(_, _) => Value::Dict(Vec::new()),
+        Type::Function => Value::Function(name.to_owned()),
+        Type::Optional(_) => Value::None,
+        Type::Union(members) => members
+            .first()
+            .map_or(Value::None, |member| placeholder_value(member, name)),
+    }
+}
+
+fn safe_evaluation_diagnostics(source: &str, signatures: &SignatureSet) -> Vec<EvalDiagnostic> {
+    let mut registry = FunctionRegistry::with_builtins();
+    for (name, signature) in signatures.iter() {
+        if registry.get(name).is_none() {
+            let _ = registry.register(SchemaFunction {
+                name: name.to_owned(),
+                signature: signature.clone(),
+            });
+        }
+    }
+    Evaluator::new(registry)
+        .evaluate(source)
+        .diagnostics
+        .into_iter()
+        .filter(|diagnostic| !diagnostic.message.starts_with("unknown function `"))
+        .collect()
+}
+
 impl Default for AnalyzerConfiguration {
     fn default() -> Self {
         Self {
@@ -230,6 +295,7 @@ pub enum DiagnosticKind {
     InvalidFunction,
     InvalidArguments,
     TypeMismatch,
+    Evaluation,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -282,6 +348,27 @@ pub struct ReferenceTarget {
     pub annotation: Option<AnnotationId>,
 }
 
+/// Stable semantic identity used by navigation queries within a snapshot.
+#[derive(Clone, Debug, Eq, Hash, PartialEq)]
+pub enum SymbolId {
+    Module(ModuleId),
+    Annotation(AnnotationId),
+    Local {
+        module_id: ModuleId,
+        symbol: LocalSymbolId,
+    },
+}
+
+/// One definition or use site returned by a symbol navigation query.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct SymbolLocation {
+    pub revision: Revision,
+    pub symbol: SymbolId,
+    pub file_id: FileId,
+    pub range: TextRange,
+    pub is_definition: bool,
+}
+
 /// A heading returned by the protocol-independent outline query.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct DocumentSymbol {
@@ -298,6 +385,15 @@ pub struct ModuleSymbol {
     pub module_id: ModuleId,
     pub file_id: FileId,
     pub name: String,
+    pub kind: WorkspaceSymbolKind,
+    pub range: TextRange,
+    pub annotation: Option<AnnotationId>,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum WorkspaceSymbolKind {
+    Module,
+    Annotation,
 }
 
 /// A borrowed query result carrying the snapshot revision it belongs to.
@@ -323,6 +419,7 @@ pub struct CompletionCandidate {
     pub kind: CompletionKind,
     pub label: String,
     pub detail: String,
+    pub documentation: Option<String>,
     pub replacement: TextRange,
     pub insert_text: String,
     pub module_id: Option<ModuleId>,
@@ -333,6 +430,7 @@ pub enum CompletionKind {
     Module,
     Function,
     Parameter,
+    Attribute,
 }
 
 /// A source excerpt returned by snapshot search.
@@ -391,6 +489,7 @@ pub struct WorkspaceSnapshot {
     signatures: SignatureSet,
     module_signatures: BTreeMap<ModuleId, SignatureSet>,
     module_semantics: BTreeMap<ModuleId, ModuleSemanticIndex>,
+    attribute_keys: BTreeSet<String>,
     function_environment: FunctionEnvironmentId,
     view_id: ViewId,
     revision: Revision,
@@ -471,6 +570,7 @@ impl WorkspaceSnapshot {
             signatures: analyzer_configuration.signatures.clone(),
             module_signatures: BTreeMap::new(),
             module_semantics: BTreeMap::new(),
+            attribute_keys: BTreeSet::new(),
             function_environment,
             view_id,
             revision,
@@ -622,6 +722,151 @@ impl WorkspaceSnapshot {
                 annotation: None,
             })
         })?
+    }
+
+    pub fn symbol_at(&self, file_id: FileId, offset: usize) -> Option<SymbolId> {
+        if let Some(module) = self.module_at(file_id)
+            && let Some(semantics) = self.module_semantics(module.id)
+            && let Some(symbol) = semantics
+                .references
+                .iter()
+                .find(|reference| reference.range.start <= offset && offset < reference.range.end)
+                .map(|reference| reference.symbol)
+                .or_else(|| {
+                    semantics
+                        .definitions
+                        .iter()
+                        .find(|definition| {
+                            definition.range.start <= offset && offset < definition.range.end
+                        })
+                        .map(|definition| definition.id)
+                })
+        {
+            return Some(SymbolId::Local {
+                module_id: module.id,
+                symbol,
+            });
+        }
+        let target = self.reference_target_at(file_id, offset)?;
+        Some(match target.annotation {
+            Some(annotation) => SymbolId::Annotation(annotation),
+            None => SymbolId::Module(target.module_id),
+        })
+    }
+
+    pub fn symbol_locations_at(
+        &self,
+        file_id: FileId,
+        offset: usize,
+        include_definition: bool,
+    ) -> Vec<SymbolLocation> {
+        let Some(symbol) = self.symbol_at(file_id, offset) else {
+            return Vec::new();
+        };
+        match &symbol {
+            SymbolId::Local {
+                module_id,
+                symbol: local,
+            } => {
+                let Some(module) = self.module_by_id(*module_id) else {
+                    return Vec::new();
+                };
+                let Some(file_id) = module.file_id else {
+                    return Vec::new();
+                };
+                let Some(semantics) = self.module_semantics(*module_id) else {
+                    return Vec::new();
+                };
+                let mut locations = Vec::new();
+                if include_definition
+                    && let Some(definition) = semantics
+                        .definitions
+                        .iter()
+                        .find(|definition| definition.id == *local)
+                {
+                    locations.push(SymbolLocation {
+                        revision: self.revision,
+                        symbol: symbol.clone(),
+                        file_id,
+                        range: definition.range,
+                        is_definition: true,
+                    });
+                }
+                locations.extend(
+                    semantics
+                        .references
+                        .iter()
+                        .filter(|reference| reference.symbol == *local)
+                        .map(|reference| SymbolLocation {
+                            revision: self.revision,
+                            symbol: symbol.clone(),
+                            file_id,
+                            range: reference.range,
+                            is_definition: false,
+                        }),
+                );
+                locations
+            }
+            SymbolId::Module(module_id) => {
+                let mut locations = Vec::new();
+                if include_definition
+                    && let Some(module) = self.module_by_id(*module_id)
+                    && let Some(file_id) = module.file_id
+                {
+                    locations.push(SymbolLocation {
+                        revision: self.revision,
+                        symbol: symbol.clone(),
+                        file_id,
+                        range: TextRange::new(0, 0),
+                        is_definition: true,
+                    });
+                }
+                locations.extend(
+                    self.references_to(*module_id)
+                        .filter(|reference| reference.target_label.is_none())
+                        .map(|reference| SymbolLocation {
+                            revision: self.revision,
+                            symbol: symbol.clone(),
+                            file_id: reference.source_file_id,
+                            range: reference.range,
+                            is_definition: false,
+                        }),
+                );
+                locations
+            }
+            SymbolId::Annotation(annotation) => {
+                let mut locations = Vec::new();
+                if include_definition
+                    && let Some(module) = self.module_by_id(annotation.module_id)
+                    && let Some(definition) = self.label(&module.logical_path, &annotation.name)
+                {
+                    locations.push(SymbolLocation {
+                        revision: self.revision,
+                        symbol: symbol.clone(),
+                        file_id: definition.file_id,
+                        range: definition.range,
+                        is_definition: true,
+                    });
+                }
+                locations.extend(
+                    self.references
+                        .iter()
+                        .filter(|reference| {
+                            reference.target_module_id == annotation.module_id
+                                && reference.target_label.as_deref()
+                                    == Some(annotation.name.as_str())
+                        })
+                        .map(|reference| SymbolLocation {
+                            revision: self.revision,
+                            symbol: symbol.clone(),
+                            file_id: reference.source_file_id,
+                            range: reference.range,
+                            is_definition: false,
+                        }),
+                );
+                locations
+            }
+        }
     }
 
     pub fn references_for_target(
@@ -892,7 +1137,8 @@ impl WorkspaceSnapshot {
 
     pub fn workspace_symbols(&self, query: &str) -> Vec<ModuleSymbol> {
         let query = query.to_lowercase();
-        self.modules()
+        let mut symbols = self
+            .modules()
             .filter_map(|module| {
                 let file_id = module.file_id?;
                 let name = module.logical_path.to_string();
@@ -903,9 +1149,28 @@ impl WorkspaceSnapshot {
                         module_id: module.id,
                         file_id,
                         name,
+                        kind: WorkspaceSymbolKind::Module,
+                        range: TextRange::new(0, 0),
+                        annotation: None,
                     })
             })
-            .collect()
+            .collect::<Vec<_>>();
+        symbols.extend(
+            self.labels
+                .iter()
+                .filter(|label| label.name.to_lowercase().contains(&query))
+                .map(|label| ModuleSymbol {
+                    revision: self.revision,
+                    module_id: label.id.module_id,
+                    file_id: label.file_id,
+                    name: label.name.clone(),
+                    kind: WorkspaceSymbolKind::Annotation,
+                    range: label.range,
+                    annotation: Some(label.id.clone()),
+                }),
+        );
+        symbols.sort_by(|left, right| left.name.cmp(&right.name));
+        symbols
     }
 
     pub fn hover_at(&self, file_id: FileId, offset: usize) -> Option<HoverInfo> {
@@ -915,6 +1180,12 @@ impl WorkspaceSnapshot {
                 contents.push('#');
                 contents.push_str(label);
             }
+            if let Some(module) = self.module_by_id(reference.target_module_id) {
+                match &module.source_path {
+                    Some(path) => contents.push_str(&format!("\n\n`{}`", path.display())),
+                    None => contents.push_str("\n\nVirtual directory module"),
+                }
+            }
             return Some(HoverInfo {
                 revision: self.revision,
                 file_id,
@@ -923,6 +1194,73 @@ impl WorkspaceSnapshot {
             });
         }
         let source = self.source(file_id)?;
+        for annotation in source.parse.annotations() {
+            if let Some(id) = &annotation.attributes.id
+                && contains(id.range, offset)
+            {
+                return Some(HoverInfo {
+                    revision: self.revision,
+                    file_id,
+                    range: id.range,
+                    contents: format!("`{}: AnnotationId`", id.value),
+                });
+            }
+            for item in &annotation.attributes.items {
+                let (range, contents) = match item {
+                    notist_syntax::Attribute::Tag(name) if contains(name.range, offset) => {
+                        (name.range, format!("`{}: AnnotationTag`", name.value))
+                    }
+                    notist_syntax::Attribute::Class(name) if contains(name.range, offset) => {
+                        (name.range, format!("`{}: AnnotationClass`", name.value))
+                    }
+                    notist_syntax::Attribute::KeyValue { key, .. }
+                        if contains(key.range, offset) =>
+                    {
+                        (key.range, format!("`{}: AnnotationProperty`", key.value))
+                    }
+                    _ => continue,
+                };
+                return Some(HoverInfo {
+                    revision: self.revision,
+                    file_id,
+                    range,
+                    contents,
+                });
+            }
+        }
+        if let Some(SymbolId::Local { module_id, symbol }) = self.symbol_at(file_id, offset)
+            && let Some(semantics) = self.module_semantics(module_id)
+            && let Some(definition) = semantics
+                .definitions
+                .iter()
+                .find(|definition| definition.id == symbol)
+        {
+            let range = semantics
+                .references
+                .iter()
+                .find(|reference| {
+                    reference.symbol == symbol
+                        && reference.range.start <= offset
+                        && offset < reference.range.end
+                })
+                .map_or(definition.range, |reference| reference.range);
+            let contents = match definition.kind {
+                SymbolKind::Function => self
+                    .module_signatures(module_id)
+                    .and_then(|signatures| signatures.get(&definition.name))
+                    .map_or_else(
+                        || format!("`{}: Function`", definition.name),
+                        |signature| format_signature(&definition.name, signature),
+                    ),
+                SymbolKind::Parameter => format!("`{}: {}`", definition.name, definition.ty),
+            };
+            return Some(HoverInfo {
+                revision: self.revision,
+                file_id,
+                range,
+                contents,
+            });
+        }
         let call = source
             .parse
             .calls()
@@ -973,6 +1311,10 @@ impl WorkspaceSnapshot {
                     kind: CompletionKind::Parameter,
                     label: parameter.name.clone(),
                     detail: parameter.ty.to_string(),
+                    documentation: Some(format!(
+                        "Parameter of `{}` with type {}.",
+                        call.name.value, parameter.ty
+                    )),
                     replacement: context.replace,
                     insert_text: format!("{}=", parameter.name),
                     module_id: None,
@@ -997,6 +1339,10 @@ impl WorkspaceSnapshot {
                             kind: CompletionKind::Module,
                             label: reference.clone(),
                             detail: target.logical_path.to_string(),
+                            documentation: target
+                                .source_path
+                                .as_ref()
+                                .map(|path| format!("Notist module at `{}`.", path.display())),
                             replacement: context.replace,
                             insert_text: reference,
                             module_id: Some(target.id),
@@ -1020,11 +1366,31 @@ impl WorkspaceSnapshot {
                     kind: CompletionKind::Function,
                     label: name.into(),
                     detail: format_signature(name, signature),
+                    documentation: Some(format!("Notist function `{name}`.")),
                     replacement: context.replace,
                     insert_text: name.into(),
                     module_id: None,
                 })
                 .collect();
+            candidates.sort_by(|left, right| left.label.cmp(&right.label));
+            return candidates;
+        }
+        if let Some(context) = attribute_completion_context(&source.text, &source.parse, offset) {
+            let mut candidates = self
+                .attribute_keys
+                .iter()
+                .filter(|key| starts_with_case_insensitive(key, &context.prefix))
+                .map(|key| CompletionCandidate {
+                    revision: self.revision,
+                    kind: CompletionKind::Attribute,
+                    label: key.clone(),
+                    detail: "Annotation property".into(),
+                    documentation: Some(format!("Observed annotation property `{key}`.")),
+                    replacement: context.replace,
+                    insert_text: format!("{key}="),
+                    module_id: None,
+                })
+                .collect::<Vec<_>>();
             candidates.sort_by(|left, right| left.label.cmp(&right.label));
             return candidates;
         }
@@ -1163,6 +1529,7 @@ impl WorkspaceSnapshot {
     fn build_module_signatures(&mut self) {
         self.module_signatures.clear();
         self.module_semantics.clear();
+        self.attribute_keys.clear();
         for module in self.modules.values() {
             let Some(parse) = module.parse.as_ref() else {
                 continue;
@@ -1172,6 +1539,13 @@ impl WorkspaceSnapshot {
             self.module_signatures.insert(module.id, signatures);
             self.module_semantics
                 .insert(module.id, resolve_module_symbols(parse));
+            for annotation in parse.annotations() {
+                for item in &annotation.attributes.items {
+                    if let notist_syntax::Attribute::KeyValue { key, .. } = item {
+                        self.attribute_keys.insert(key.value.clone());
+                    }
+                }
+            }
         }
     }
 
@@ -1219,9 +1593,12 @@ impl WorkspaceSnapshot {
         }
 
         for module in self.modules.values() {
-            let (Some(file_id), Some(source_path), Some(parse)) =
-                (module.file_id, &module.source_path, &module.parse)
-            else {
+            let (Some(file_id), Some(source_path), Some(source), Some(parse)) = (
+                module.file_id,
+                &module.source_path,
+                &module.source,
+                &module.parse,
+            ) else {
                 continue;
             };
 
@@ -1301,16 +1678,25 @@ impl WorkspaceSnapshot {
                     target_range: target_definition.map(|definition| definition.range),
                 });
             }
-            diagnostics.extend(
-                check_module(parse, &signatures)
-                    .into_iter()
-                    .map(|diagnostic| Diagnostic {
-                        kind: diagnostic.kind,
-                        message: diagnostic.message,
-                        source_path: Some(source_path.clone()),
-                        range: Some(diagnostic.range),
-                    }),
-            );
+            let checks = check_module(parse, &signatures);
+            let runtime = safe_evaluation_diagnostics(source, &signatures);
+            diagnostics.extend(checks.iter().cloned().map(|diagnostic| Diagnostic {
+                kind: diagnostic.kind,
+                message: diagnostic.message,
+                source_path: Some(source_path.clone()),
+                range: Some(diagnostic.range),
+            }));
+            diagnostics.extend(runtime.into_iter().filter_map(|diagnostic| {
+                (!checks.iter().any(|check| {
+                    check.range == diagnostic.range && check.message == diagnostic.message
+                }))
+                .then(|| Diagnostic {
+                    kind: DiagnosticKind::Evaluation,
+                    message: diagnostic.message,
+                    source_path: Some(source_path.clone()),
+                    range: Some(diagnostic.range),
+                })
+            }));
         }
         self.labels = labels;
         self.references = references;
@@ -1749,6 +2135,35 @@ fn function_completion_context(
     Some(CompletionContext {
         prefix: prefix.to_owned(),
         replace: TextRange::new(hash + 1, offset),
+    })
+}
+
+fn attribute_completion_context(
+    source: &str,
+    parse: &Parse,
+    offset: usize,
+) -> Option<CompletionContext> {
+    let before = source.get(..offset)?;
+    let attribute_start = before.rfind('@')?;
+    parse.embedded_at(attribute_start)?;
+    let tail = &source[attribute_start + 1..offset];
+    if tail.contains(['\n', '\r']) {
+        return None;
+    }
+    let relative_start = tail.rfind(',').map_or(0, |comma| comma + 1);
+    let prefix = &tail[relative_start..];
+    if prefix.starts_with(['#', '.'])
+        || prefix.contains('=')
+        || !prefix
+            .chars()
+            .all(|character| character.is_alphanumeric() || matches!(character, '_' | '-'))
+    {
+        return None;
+    }
+    let start = attribute_start + 1 + relative_start;
+    Some(CompletionContext {
+        prefix: prefix.to_owned(),
+        replace: TextRange::new(start, offset),
     })
 }
 
@@ -2717,10 +3132,9 @@ mod tests {
         assert_eq!(target.logical_path.to_string(), "vault::page");
         assert_eq!(definition.annotation.unwrap().name, "intro");
         assert!(first.structured_document(target.id).is_some());
-        assert_eq!(
-            first.hover_at(root_file, 3).unwrap().contents,
-            "vault::page#intro"
-        );
+        let hover = first.hover_at(root_file, 3).unwrap().contents;
+        assert!(hover.starts_with("vault::page#intro"));
+        assert!(hover.contains("page.not"));
         assert!(
             first
                 .completions_at(root_file, 2)
@@ -2973,5 +3387,51 @@ mod tests {
                 .range,
             Some(TextRange::new(11, 16))
         );
+        let function_locations = snapshot.symbol_locations_at(first_id, call_offset, true);
+        assert_eq!(function_locations.len(), 2);
+        assert!(function_locations[0].is_definition);
+        assert!(!function_locations[1].is_definition);
+        assert_eq!(
+            snapshot.hover_at(first_id, parameter_use).unwrap().contents,
+            "`value: String`"
+        );
+    }
+
+    #[test]
+    fn snapshot_completes_observed_annotation_property_keys() {
+        let root = TempDir::new().unwrap();
+        let path = root.path().join("README.not");
+        let source = "#[one]@first,owner=Alice\n#[two]@second,ow";
+        fs::write(&path, source).unwrap();
+        let snapshot = WorkspaceSnapshot::load(root.path()).unwrap();
+        let file_id = snapshot
+            .file_id(&dunce::canonicalize(path).unwrap())
+            .unwrap();
+        let candidates = snapshot.completions_at(file_id, source.len());
+
+        assert_eq!(candidates.len(), 1);
+        assert_eq!(candidates[0].kind, CompletionKind::Attribute);
+        assert_eq!(candidates[0].label, "owner");
+        assert_eq!(candidates[0].insert_text, "owner=");
+        assert_eq!(
+            candidates[0].replacement,
+            TextRange::new(source.len() - 2, source.len())
+        );
+    }
+
+    #[test]
+    fn snapshot_reports_safe_evaluation_diagnostics() {
+        let root = TempDir::new().unwrap();
+        let path = root.path().join("README.not");
+        fs::write(&path, "#heading(level=1 / 0)[Title]").unwrap();
+        let snapshot = WorkspaceSnapshot::load(root.path()).unwrap();
+        let file_id = snapshot
+            .file_id(&dunce::canonicalize(path).unwrap())
+            .unwrap();
+
+        assert!(snapshot.diagnostics_for(file_id).any(|diagnostic| {
+            diagnostic.kind == DiagnosticKind::Evaluation
+                && diagnostic.message == "division by zero"
+        }));
     }
 }

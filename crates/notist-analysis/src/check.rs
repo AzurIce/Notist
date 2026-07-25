@@ -88,6 +88,7 @@ pub struct SymbolDefinition {
     pub id: LocalSymbolId,
     pub name: String,
     pub kind: SymbolKind,
+    pub ty: Type,
     pub range: notist_model::TextRange,
 }
 
@@ -114,6 +115,7 @@ pub fn resolve_module_symbols(parse: &Parse) -> ModuleSemanticIndex {
         let id = resolver.define(
             definition.name.value.clone(),
             SymbolKind::Function,
+            Type::Function,
             definition.name.range,
         );
         resolver.functions.insert(definition.name.value.clone(), id);
@@ -134,6 +136,7 @@ impl SymbolResolver {
         &mut self,
         name: String,
         kind: SymbolKind,
+        ty: Type,
         range: notist_model::TextRange,
     ) -> LocalSymbolId {
         let id = LocalSymbolId(self.index.definitions.len() as u32);
@@ -141,6 +144,7 @@ impl SymbolResolver {
             id,
             name,
             kind,
+            ty,
             range,
         });
         id
@@ -197,6 +201,7 @@ impl SymbolResolver {
                     let id = self.define(
                         parameter.name.value.clone(),
                         SymbolKind::Parameter,
+                        parameter.ty.clone(),
                         parameter.name.range,
                     );
                     scope.insert(parameter.name.value.clone(), id);

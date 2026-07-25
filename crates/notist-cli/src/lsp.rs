@@ -19,18 +19,18 @@ use lsp_types::{
     CompletionItem, CompletionItemKind, CompletionOptions, CompletionParams, CompletionResponse,
     CompletionTextEdit, Diagnostic, DiagnosticSeverity, DidChangeTextDocumentParams,
     DidCloseTextDocumentParams, DidOpenTextDocumentParams, DidSaveTextDocumentParams,
-    DocumentSymbol, DocumentSymbolParams, DocumentSymbolResponse, GotoDefinitionParams,
-    GotoDefinitionResponse, Hover, HoverContents, HoverParams, HoverProviderCapability,
-    InitializeParams, Location, MarkupContent, MarkupKind, NumberOrString, OneOf, Position,
-    PositionEncodingKind, PublishDiagnosticsParams, Range, ReferenceParams, ServerCapabilities,
-    SymbolKind, TextDocumentSyncCapability, TextDocumentSyncKind, TextEdit, Uri,
-    WorkspaceSymbolParams, WorkspaceSymbolResponse,
+    DocumentSymbol, DocumentSymbolParams, DocumentSymbolResponse, Documentation,
+    GotoDefinitionParams, GotoDefinitionResponse, Hover, HoverContents, HoverParams,
+    HoverProviderCapability, InitializeParams, Location, MarkupContent, MarkupKind, NumberOrString,
+    OneOf, Position, PositionEncodingKind, PublishDiagnosticsParams, Range, ReferenceParams,
+    ServerCapabilities, SymbolKind, TextDocumentSyncCapability, TextDocumentSyncKind, TextEdit,
+    Uri, WorkspaceSymbolParams, WorkspaceSymbolResponse,
 };
 use notify_debouncer_mini::notify::RecursiveMode;
 use notify_debouncer_mini::{DebounceEventResult, new_debouncer};
 use notist_analysis::{
     AnalyzerView, CompletionKind, DiagnosticKind, DocumentVersions, SourceInput, SourceOverlays,
-    VaultEngine, WorkspaceSnapshot, discover_vault_roots,
+    VaultEngine, WorkspaceSnapshot, WorkspaceSymbolKind, discover_vault_roots,
 };
 use notist_model::TextRange;
 
@@ -439,10 +439,13 @@ fn workspace_symbols(
             let uri = file_path_to_uri(&source.canonical_path)?;
             symbols.push(lsp_types::SymbolInformation {
                 name: symbol.name,
-                kind: SymbolKind::FILE,
+                kind: match symbol.kind {
+                    WorkspaceSymbolKind::Module => SymbolKind::FILE,
+                    WorkspaceSymbolKind::Annotation => SymbolKind::KEY,
+                },
                 tags: None,
                 deprecated: None,
-                location: Location::new(uri, Range::new(Position::new(0, 0), Position::new(0, 0))),
+                location: Location::new(uri, lsp_range(source, symbol.range)),
                 container_name: Some("Notist vault".into()),
             });
         }
@@ -585,6 +588,7 @@ fn diagnostic_code(kind: &DiagnosticKind) -> &'static str {
         DiagnosticKind::InvalidFunction => "invalid-function",
         DiagnosticKind::InvalidArguments => "invalid-arguments",
         DiagnosticKind::TypeMismatch => "type-mismatch",
+        DiagnosticKind::Evaluation => "evaluation",
     }
 }
 
@@ -641,41 +645,16 @@ fn references(
     else {
         return Ok(None);
     };
-    let Some(target) = workspace.reference_target_at(file_id, offset) else {
-        return Ok(None);
-    };
     let mut locations = Vec::new();
-    if params.context.include_declaration {
-        let declaration = target
-            .annotation
-            .as_ref()
-            .and_then(|annotation| {
-                workspace.label(
-                    &workspace.module_by_id(annotation.module_id)?.logical_path,
-                    &annotation.name,
-                )
-            })
-            .map(|label| (label.file_id, label.range))
-            .or_else(|| {
-                let module = workspace.module_by_id(target.module_id)?;
-                Some((module.file_id?, TextRange::new(0, 0)))
-            });
-        if let Some((declaration_file, range)) = declaration
-            && let Some(source) = workspace.source(declaration_file)
-        {
-            let uri = file_path_to_uri(&source.canonical_path)?;
-            locations.push(Location::new(uri, lsp_range(source, range)));
-        }
-    }
-    for result in workspace.references_for_target(&target) {
-        let reference = result.value;
-        let Some(source) = workspace.source(reference.source_file_id) else {
+    for result in workspace.symbol_locations_at(file_id, offset, params.context.include_declaration)
+    {
+        let Some(source) = workspace.source(result.file_id) else {
             continue;
         };
-        let uri = file_path_to_uri(&reference.source_path)?;
-        locations.push(Location::new(uri, lsp_range(source, reference.range)));
+        let uri = file_path_to_uri(&source.canonical_path)?;
+        locations.push(Location::new(uri, lsp_range(source, result.range)));
     }
-    Ok(Some(locations))
+    Ok((!locations.is_empty()).then_some(locations))
 }
 
 fn completion(
@@ -699,8 +678,10 @@ fn completion(
                 CompletionKind::Module => CompletionItemKind::MODULE,
                 CompletionKind::Function => CompletionItemKind::FUNCTION,
                 CompletionKind::Parameter => CompletionItemKind::FIELD,
+                CompletionKind::Attribute => CompletionItemKind::PROPERTY,
             }),
             detail: Some(candidate.detail),
+            documentation: candidate.documentation.map(Documentation::String),
             text_edit: Some(CompletionTextEdit::Edit(TextEdit {
                 range: lsp_range(source_input, candidate.replacement),
                 new_text: candidate.insert_text,
