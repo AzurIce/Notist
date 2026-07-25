@@ -617,6 +617,7 @@ dependencies = [
  "notist-eval",
  "notist-html",
  "notist-model",
+ "notist-service",
  "notist-syntax",
  "open",
  "percent-encoding",
@@ -648,6 +649,25 @@ dependencies = [
 [[package]]
 name = "notist-model"
 version = "0.1.0"
+
+[[package]]
+name = "notist-service"
+version = "0.1.0"
+dependencies = [
+ "dunce",
+ "libc",
+ "notify-debouncer-mini",
+ "notist-analysis",
+ "notist-html",
+ "notist-model",
+ "notist-syntax",
+ "percent-encoding",
+ "serde",
+ "serde_json",
+ "tempfile",
+ "tokio",
+ "windows-sys 0.61.2",
+]
 
 [[package]]
 name = "notist-syntax"

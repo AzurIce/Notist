@@ -477,9 +477,16 @@ impl Renderer<'_, '_> {
                 title,
                 body,
             } => {
-                self.output.push_str("<a class=\"notist-link\" href=\"");
-                escape_attribute(&mut self.output, destination);
-                self.output.push('"');
+                let safe_destination = safe_url(destination);
+                self.output.push_str(if safe_destination.is_some() {
+                    "<a class=\"notist-link\" href=\""
+                } else {
+                    "<a class=\"notist-link notist-url-unsafe\" aria-disabled=\"true\""
+                });
+                if let Some(destination) = safe_destination {
+                    escape_attribute(&mut self.output, destination);
+                    self.output.push('"');
+                }
                 if let Some(title) = title {
                     self.output.push_str(" title=\"");
                     escape_attribute(&mut self.output, title);
@@ -497,8 +504,14 @@ impl Renderer<'_, '_> {
                 width,
                 height,
             } => {
-                self.output.push_str("<img class=\"notist-image\" src=\"");
-                escape_attribute(&mut self.output, source);
+                self.output.push_str("<img class=\"notist-image");
+                if safe_url(source).is_none() {
+                    self.output.push_str(" notist-url-unsafe");
+                }
+                self.output.push_str("\" src=\"");
+                if let Some(source) = safe_url(source) {
+                    escape_attribute(&mut self.output, source);
+                }
                 self.output.push_str("\" alt=\"");
                 escape_attribute(&mut self.output, alt);
                 self.output.push('"');
@@ -526,7 +539,9 @@ impl Renderer<'_, '_> {
                 self.output.push_str("<figure class=\"notist-figure\"");
                 self.range_attributes(node);
                 self.output.push_str("><img class=\"notist-image\" src=\"");
-                escape_attribute(&mut self.output, source);
+                if let Some(source) = safe_url(source) {
+                    escape_attribute(&mut self.output, source);
+                }
                 self.output.push_str("\" alt=\"");
                 escape_attribute(&mut self.output, alt);
                 self.output.push('"');
@@ -545,9 +560,11 @@ impl Renderer<'_, '_> {
                 controls,
             } => {
                 self.output.push_str("<video class=\"notist-video\" src=\"");
-                escape_attribute(&mut self.output, source);
+                if let Some(source) = safe_url(source) {
+                    escape_attribute(&mut self.output, source);
+                }
                 self.output.push('"');
-                if let Some(poster) = poster {
+                if let Some(poster) = poster.as_deref().and_then(safe_url) {
                     self.output.push_str(" poster=\"");
                     escape_attribute(&mut self.output, poster);
                     self.output.push('"');
@@ -564,7 +581,9 @@ impl Renderer<'_, '_> {
                 looping,
             } => {
                 self.output.push_str("<audio class=\"notist-audio\" src=\"");
-                escape_attribute(&mut self.output, source);
+                if let Some(source) = safe_url(source) {
+                    escape_attribute(&mut self.output, source);
+                }
                 self.output.push('"');
                 if *controls {
                     self.output.push_str(" controls");
@@ -1102,6 +1121,31 @@ fn escape_attribute(output: &mut String, text: &str) {
             _ => output.push(character),
         }
     }
+}
+
+fn safe_url(value: &str) -> Option<&str> {
+    let value = value.trim();
+    if value.is_empty() || value.chars().any(char::is_control) {
+        return None;
+    }
+    let scheme_end = value.find(':');
+    let path_boundary = value.find(['/', '?', '#']);
+    if let Some(scheme_end) = scheme_end
+        && path_boundary.is_none_or(|boundary| scheme_end < boundary)
+    {
+        let scheme = &value[..scheme_end];
+        if !scheme.chars().enumerate().all(|(index, character)| {
+            character.is_ascii_alphabetic()
+                || (index > 0
+                    && (character.is_ascii_digit() || matches!(character, '+' | '-' | '.')))
+        }) || !matches!(
+            scheme.to_ascii_lowercase().as_str(),
+            "http" | "https" | "mailto" | "tel"
+        ) {
+            return None;
+        }
+    }
+    Some(value)
 }
 
 #[cfg(test)]
@@ -1995,5 +2039,25 @@ mod tests {
         let html = render(&structure(evaluation).document);
         assert!(html.contains("<cite class=\"notist-citation\" data-notist-key=\"doe&amp;roe\""));
         assert!(html.contains("[doe&amp;roe, p. &lt;17&gt;]</cite>"));
+    }
+
+    #[test]
+    fn unsafe_url_schemes_degrade_without_executable_attributes() {
+        let evaluation = Evaluator::default().evaluate(
+            "#link(destination=\"javascript:alert(1)\")[Click] \
+             #image(source=\"data:text/html,<script>alert(1)</script>\", alt=\"visible\")",
+        );
+        assert!(
+            evaluation.diagnostics.is_empty(),
+            "{:?}",
+            evaluation.diagnostics
+        );
+        let html = render(&structure(evaluation).document);
+        assert!(html.contains("notist-url-unsafe"));
+        assert!(html.contains("Click"));
+        assert!(html.contains("alt=\"visible\""));
+        assert!(!html.contains("javascript:"));
+        assert!(!html.contains("data:text/html"));
+        assert!(!html.contains("<script>"));
     }
 }

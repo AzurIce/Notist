@@ -1286,7 +1286,7 @@ impl WorkspaceSnapshot {
         if offset > source.text.len() || !source.text.is_char_boundary(offset) {
             return Vec::new();
         }
-        if is_in_raw_literal(&source.parse, offset) {
+        if is_in_raw_literal(&source.parse, offset) || is_in_string_literal(&source.parse, offset) {
             return Vec::new();
         }
         if let Some((call, context)) =
@@ -1398,16 +1398,30 @@ impl WorkspaceSnapshot {
     }
 
     pub fn search_context(&self, query: &str) -> Vec<SearchContext> {
+        self.search_context_cancellable(query, || false)
+    }
+
+    pub fn search_context_cancellable(
+        &self,
+        query: &str,
+        mut cancelled: impl FnMut() -> bool,
+    ) -> Vec<SearchContext> {
         if query.is_empty() {
             return Vec::new();
         }
         let mut results = Vec::new();
         for source in self.sources() {
+            if cancelled() {
+                break;
+            }
             let Some(module) = self.module_at(source.file_id) else {
                 continue;
             };
             let mut start = 0;
             while let Some(relative) = source.text[start..].find(query) {
+                if cancelled() {
+                    return results;
+                }
                 let match_start = start + relative;
                 let match_end = match_start + query.len();
                 let line_start = source.text[..match_start]
@@ -2059,6 +2073,13 @@ fn is_in_raw_literal(parse: &Parse, offset: usize) -> bool {
         contains(raw.range, offset)
             || (raw.payload_range.end == raw.range.end && offset == raw.range.end)
     })
+}
+
+fn is_in_string_literal(parse: &Parse, offset: usize) -> bool {
+    parse
+        .string_literal_ranges()
+        .into_iter()
+        .any(|range| contains(range, offset))
 }
 
 struct CompletionContext {
@@ -3340,6 +3361,12 @@ mod tests {
         let raw = WorkspaceSnapshot::load_with_overlays(root.path(), overlays).unwrap();
         let raw_file_id = raw.file_id(&today_path).unwrap();
         assert!(raw.completions_at(raw_file_id, 10).is_empty());
+
+        let mut overlays = SourceOverlays::new();
+        overlays.insert(today_path.clone(), Arc::from("#raw(text=\"#heading\")"));
+        let string = WorkspaceSnapshot::load_with_overlays(root.path(), overlays).unwrap();
+        let string_file_id = string.file_id(&today_path).unwrap();
+        assert!(string.completions_at(string_file_id, 19).is_empty());
     }
 
     #[test]

@@ -1,4 +1,3 @@
-use std::collections::BTreeSet;
 use std::error::Error;
 use std::fmt::Write;
 use std::fs;
@@ -6,13 +5,14 @@ use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 
 use clap::ColorChoice;
-use notist_analysis::{VaultEngine, WorkspaceSnapshot};
-use notist_eval::EvalDiagnostic;
-use notist_html::{RenderOptions, render_with_resolvers};
-use notist_model::{ModulePath, TextRange};
+use notist_model::ModulePath;
+use notist_service::protocol::ClientKind;
+use notist_service::{
+    CoreRequest, CoreResponse, ProtocolViewKind, RenderedWorkspaceRecord, ServiceViewId,
+};
 use percent_encoding::{AsciiSet, CONTROLS, NON_ALPHANUMERIC, utf8_percent_encode};
 
-use crate::diagnostics;
+use crate::service::LocalNotistClient;
 
 const URL_PATH_SEGMENT_ENCODE_SET: &AsciiSet = &CONTROLS
     .add(b' ')
@@ -25,15 +25,35 @@ const URL_PATH_SEGMENT_ENCODE_SET: &AsciiSet = &CONTROLS
     .add(b'>')
     .add(b'"');
 
-pub fn run(root: PathBuf, output: PathBuf, color: ColorChoice) -> Result<ExitCode, Box<dyn Error>> {
-    let engine = VaultEngine::open(root)?;
-    let workspace = engine.disk_view()?.snapshot();
-    let output = prepare_output_root(&output, workspace.root())?;
-    let result = build_site(&workspace, &output, SiteOptions::default())?;
+pub fn run(
+    root: PathBuf,
+    output: PathBuf,
+    _color: ColorChoice,
+    no_daemon: bool,
+    clean: bool,
+) -> Result<ExitCode, Box<dyn Error>> {
+    let mut client = LocalNotistClient::connect(no_daemon, ClientKind::Cli)?;
+    let opened = client.request(CoreRequest::OpenView {
+        root: root.clone(),
+        kind: ProtocolViewKind::Disk,
+    })?;
+    let CoreResponse::Opened { view_id, .. } = opened.response else {
+        return Err("service returned an unexpected open-view response".into());
+    };
+    let rendered = render_workspace(&mut client, view_id)?;
+    let output = prepare_output_root(&output, &root)?;
+    if clean {
+        clean_output_root(&output)?;
+    }
+    let result = write_rendered_site(&rendered, &output, SiteOptions::default())?;
+    let diagnostics = client.request(CoreRequest::Diagnostics { view_id })?;
+    let CoreResponse::Diagnostics(mut diagnostics) = diagnostics.response else {
+        return Err("service returned an unexpected diagnostics response".into());
+    };
+    merge_diagnostics(&mut diagnostics, rendered.evaluation_diagnostics.clone());
+    crate::emit_service_diagnostics(&diagnostics);
 
-    emit_diagnostics(&workspace, &result, color)?;
-
-    let diagnostic_count = diagnostic_count(&workspace, &result);
+    let diagnostic_count = diagnostics.len();
     if diagnostic_count == 0 {
         println!(
             "built {} pages -> {}",
@@ -52,145 +72,79 @@ pub fn run(root: PathBuf, output: PathBuf, color: ColorChoice) -> Result<ExitCod
     }
 }
 
-#[derive(Clone, Copy, Debug, Default)]
-pub(crate) struct SiteOptions {
-    pub live_reload: bool,
+pub(crate) fn render_workspace(
+    client: &mut LocalNotistClient,
+    view_id: ServiceViewId,
+) -> Result<RenderedWorkspaceRecord, Box<dyn Error>> {
+    let reply = client.request(CoreRequest::RenderWorkspace { view_id })?;
+    let CoreResponse::RenderedWorkspace(rendered) = reply.response else {
+        return Err("service returned an unexpected render response".into());
+    };
+    Ok(rendered)
 }
 
-pub(crate) struct BuildResult {
-    pub page_count: usize,
-    pub evaluation_reports: Vec<EvaluationReport>,
-}
-
-pub(crate) struct EvaluationReport {
-    pub path: PathBuf,
-    pub source: String,
-    pub diagnostics: Vec<EvalDiagnostic>,
-}
-
-pub(crate) fn emit_diagnostics(
-    workspace: &WorkspaceSnapshot,
-    result: &BuildResult,
-    color: ColorChoice,
-) -> Result<(), Box<dyn Error>> {
-    diagnostics::emit(workspace, color)?;
-    for report in &result.evaluation_reports {
-        diagnostics::emit_evaluation(&report.path, &report.source, &report.diagnostics, color)?;
-    }
-    Ok(())
-}
-
-pub(crate) fn diagnostic_count(workspace: &WorkspaceSnapshot, result: &BuildResult) -> usize {
-    workspace.diagnostics().len()
-        + result
-            .evaluation_reports
-            .iter()
-            .map(|report| report.diagnostics.len())
-            .sum::<usize>()
-}
-
-pub(crate) fn build_site(
-    workspace: &WorkspaceSnapshot,
+pub(crate) fn write_rendered_site(
+    rendered: &RenderedWorkspaceRecord,
     output: &Path,
     options: SiteOptions,
-) -> Result<BuildResult, Box<dyn Error>> {
+) -> Result<RenderedBuildResult, Box<dyn Error>> {
     fs::create_dir_all(output.join("_notist"))?;
     fs::write(output.join("_notist/style.css"), STYLES)?;
     if options.live_reload {
         fs::write(output.join("_notist/reload.js"), LIVE_RELOAD_SCRIPT)?;
     }
-
-    let modules: Vec<_> = workspace.modules().collect();
-    let known_modules: BTreeSet<_> = modules
+    let modules = rendered
+        .pages
         .iter()
-        .map(|module| module.logical_path.clone())
-        .collect();
-    let site_name = workspace
-        .root()
-        .file_name()
-        .map(|name| name.to_string_lossy().into_owned())
-        .unwrap_or_else(|| "Notist".into());
-    let mut evaluation_reports = Vec::new();
-
-    for module in &modules {
-        let fragment = if let (Some(source_path), Some(source)) =
-            (&module.source_path, module.source.as_deref())
-        {
-            let structured = workspace
-                .structured_module(module.id)
-                .expect("source-backed modules have structured results");
-            let current = &module.logical_path;
-            let resolver = |target: &ModulePath, label: Option<&str>| {
-                known_modules
-                    .contains(target)
-                    .then(|| module_href(current, target, label))
-            };
-            let source_ids: Vec<_> = module
-                .parse
-                .as_ref()
-                .into_iter()
-                .flat_map(|parse| parse.annotations())
-                .filter_map(|annotation| {
-                    annotation
-                        .attributes
-                        .id
-                        .as_ref()
-                        .map(|id| (annotation.scope_range, id.value.clone()))
-                })
-                .collect();
-            let source_id_resolver = |range: TextRange| {
-                source_ids
-                    .iter()
-                    .find(|(scope_range, _)| {
-                        scope_range.start <= range.start && range.end <= scope_range.end
-                    })
-                    .map(|(_, id)| id.clone())
-            };
-            let fragment = render_with_resolvers(
-                &structured.document,
-                &RenderOptions {
-                    current_module: Some(current),
-                    module_url_prefix: "",
-                },
-                &resolver,
-                &source_id_resolver,
-            );
-            if !structured.diagnostics.is_empty() {
-                evaluation_reports.push(EvaluationReport {
-                    path: source_path.clone(),
-                    source: source.to_owned(),
-                    diagnostics: structured.diagnostics,
-                });
-            }
-            fragment
-        } else {
-            virtual_module_fragment(&module.logical_path, &modules)
-        };
-
+        .map(|page| ModulePath::from_segments(page.module_segments.clone()))
+        .collect::<Vec<_>>();
+    for (page, module) in rendered.pages.iter().zip(&modules) {
         let html = page_shell(
-            &site_name,
-            &module.logical_path,
+            &rendered.site_name,
+            module,
             &modules,
-            &fragment,
+            &page.fragment,
             options,
         );
-        let page_path = module_output_dir(output, &module.logical_path).join("index.html");
+        let page_path = module_output_dir(output, module).join("index.html");
         if let Some(parent) = page_path.parent() {
             fs::create_dir_all(parent)?;
         }
         fs::write(page_path, html)?;
     }
-
-    Ok(BuildResult {
-        page_count: modules.len(),
-        evaluation_reports,
+    Ok(RenderedBuildResult {
+        page_count: rendered.pages.len(),
     })
+}
+
+pub(crate) struct RenderedBuildResult {
+    pub page_count: usize,
+}
+
+pub(crate) fn merge_diagnostics(
+    diagnostics: &mut Vec<notist_service::DiagnosticRecord>,
+    additional: impl IntoIterator<Item = notist_service::DiagnosticRecord>,
+) {
+    for diagnostic in additional {
+        if !diagnostics.iter().any(|existing| {
+            existing.path == diagnostic.path
+                && existing.range == diagnostic.range
+                && existing.message == diagnostic.message
+        }) {
+            diagnostics.push(diagnostic);
+        }
+    }
+}
+
+#[derive(Clone, Copy, Debug, Default)]
+pub(crate) struct SiteOptions {
+    pub live_reload: bool,
 }
 
 fn page_shell(
     site_name: &str,
     current: &ModulePath,
-    modules: &[&notist_analysis::Module],
+    modules: &[ModulePath],
     fragment: &str,
     options: SiteOptions,
 ) -> String {
@@ -216,11 +170,7 @@ fn page_shell(
     )
 }
 
-fn navigation(
-    current: &ModulePath,
-    modules: &[&notist_analysis::Module],
-    site_name: &str,
-) -> String {
+fn navigation(current: &ModulePath, modules: &[ModulePath], site_name: &str) -> String {
     let mut output = String::from("<aside class=\"site-sidebar\"><div class=\"site-name\">");
     let root = ModulePath::root();
     output.push_str("<a href=\"");
@@ -229,8 +179,7 @@ fn navigation(
     escape_html(&mut output, site_name);
     output.push_str("</a></div><nav aria-label=\"Modules\"><ol class=\"module-list\">");
 
-    for module in modules {
-        let path = &module.logical_path;
+    for path in modules {
         output.push_str("<li style=\"--module-depth:");
         output.push_str(&path.segments().len().to_string());
         output.push_str("\"><a href=\"");
@@ -248,33 +197,6 @@ fn navigation(
     }
 
     output.push_str("</ol></nav></aside>");
-    output
-}
-
-fn virtual_module_fragment(current: &ModulePath, modules: &[&notist_analysis::Module]) -> String {
-    let mut output = String::from("<h1>");
-    if let Some(name) = current.segments().last() {
-        escape_html(&mut output, name);
-    } else {
-        output.push_str("Home");
-    }
-    output.push_str("</h1><ul class=\"module-index\">");
-
-    let child_depth = current.segments().len() + 1;
-    for module in modules {
-        let path = &module.logical_path;
-        if path.segments().len() == child_depth && path.segments().starts_with(current.segments()) {
-            output.push_str("<li><a href=\"");
-            escape_attribute(&mut output, &module_href(current, path, None));
-            output.push_str("\">");
-            escape_html(
-                &mut output,
-                path.segments().last().expect("child has a name"),
-            );
-            output.push_str("</a></li>");
-        }
-    }
-    output.push_str("</ul>");
     output
 }
 
@@ -348,6 +270,20 @@ fn prepare_output_root(output: &Path, workspace_root: &Path) -> Result<PathBuf, 
         return Err("output directory must not be the workspace root".into());
     }
     Ok(output)
+}
+
+fn clean_output_root(output: &Path) -> Result<(), Box<dyn Error>> {
+    if output.parent().is_none()
+        || output == std::env::current_dir()?.as_path()
+        || std::env::var_os("USERPROFILE")
+            .or_else(|| std::env::var_os("HOME"))
+            .is_some_and(|home| output.as_os_str() == home)
+    {
+        return Err(format!("refusing to clean broad output path `{}`", output.display()).into());
+    }
+    fs::remove_dir_all(output)?;
+    fs::create_dir_all(output)?;
+    Ok(())
 }
 
 fn escape_html(output: &mut String, text: &str) {
@@ -643,6 +579,20 @@ const LIVE_RELOAD_SCRIPT: &str = r#"(() => {
 mod tests {
     use super::*;
 
+    fn render(root: &Path) -> RenderedWorkspaceRecord {
+        let mut client = LocalNotistClient::connect(true, ClientKind::Test).unwrap();
+        let opened = client
+            .request(CoreRequest::OpenView {
+                root: root.to_path_buf(),
+                kind: ProtocolViewKind::Disk,
+            })
+            .unwrap();
+        let CoreResponse::Opened { view_id, .. } = opened.response else {
+            panic!("expected open view")
+        };
+        render_workspace(&mut client, view_id).unwrap()
+    }
+
     #[test]
     fn builds_source_and_virtual_modules_with_relative_links() {
         let root = tempfile::TempDir::new().unwrap();
@@ -658,13 +608,12 @@ mod tests {
         )
         .unwrap();
         fs::write(root.path().join("notes/chapter one.not"), "#heading[One]").unwrap();
-        let workspace = WorkspaceSnapshot::load(root.path()).unwrap();
         let output = root.path().join("site");
-
-        let result = build_site(&workspace, &output, SiteOptions::default()).unwrap();
+        let rendered = render(root.path());
+        let result = write_rendered_site(&rendered, &output, SiteOptions::default()).unwrap();
 
         assert_eq!(result.page_count, 4);
-        assert!(result.evaluation_reports.is_empty());
+        assert!(rendered.evaluation_diagnostics.is_empty());
         let home = fs::read_to_string(output.join("index.html")).unwrap();
         let guide = fs::read_to_string(output.join("guide/index.html")).unwrap();
         let notes = fs::read_to_string(output.join("notes/index.html")).unwrap();
@@ -688,10 +637,9 @@ mod tests {
             "#heading[Introduction]@intro",
         )
         .unwrap();
-        let workspace = WorkspaceSnapshot::load(root.path()).unwrap();
         let output = root.path().join("site");
-
-        build_site(&workspace, &output, SiteOptions::default()).unwrap();
+        let rendered = render(root.path());
+        write_rendered_site(&rendered, &output, SiteOptions::default()).unwrap();
 
         let home = fs::read_to_string(output.join("index.html")).unwrap();
         let guide = fs::read_to_string(output.join("guide/index.html")).unwrap();
@@ -734,5 +682,20 @@ mod tests {
         let error = prepare_output_root(root.path(), &canonical).unwrap_err();
 
         assert!(error.to_string().contains("workspace root"));
+    }
+
+    #[test]
+    fn explicit_clean_removes_only_the_selected_output_tree() {
+        let root = tempfile::TempDir::new().unwrap();
+        let output = root.path().join("site");
+        fs::create_dir_all(&output).unwrap();
+        fs::write(output.join("stale.html"), "stale").unwrap();
+        let output = dunce::canonicalize(output).unwrap();
+
+        clean_output_root(&output).unwrap();
+
+        assert!(output.is_dir());
+        assert!(!output.join("stale.html").exists());
+        assert!(root.path().is_dir());
     }
 }

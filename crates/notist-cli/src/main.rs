@@ -3,13 +3,15 @@ use std::path::PathBuf;
 use std::process::ExitCode;
 
 use clap::{Parser, Subcommand};
-use notist_analysis::{VaultEngine, resolve_vault_root};
-use notist_syntax::RawLiteralForm;
+use notist_analysis::resolve_vault_root;
+use notist_service::protocol::ClientKind;
+use notist_service::{CoreRequest, CoreResponse, ProtocolViewKind};
 
 mod build;
-mod diagnostics;
 mod lsp;
+mod mcp;
 mod preview;
+mod service;
 
 #[derive(Debug, Parser)]
 #[command(name = "notist", version, about, arg_required_else_help = true)]
@@ -18,14 +20,28 @@ struct Cli {
     #[arg(long, value_enum, default_value_t = clap::ColorChoice::Auto, global = true)]
     color: clap::ColorChoice,
 
+    /// Run the application service in this process instead of using the local daemon.
+    #[arg(long, global = true)]
+    no_daemon: bool,
+
     #[command(subcommand)]
     command: Command,
 }
 
 #[derive(Debug, Subcommand)]
 enum Command {
+    /// Run the shared local Notist daemon.
+    Daemon {
+        #[arg(long, hide = true)]
+        background_child: bool,
+    },
     /// Run the Notist language server over standard input and output.
     Lsp,
+    /// Run the Notist MCP server over standard input and output.
+    Mcp {
+        #[arg(default_value = ".")]
+        root: PathBuf,
+    },
     /// Check module paths and references in a Notist workspace.
     Check {
         /// Root directory of the Notist workspace.
@@ -38,6 +54,36 @@ enum Command {
         #[arg(default_value = ".")]
         root: PathBuf,
     },
+    /// Search captured source context in a vault.
+    Search {
+        query: String,
+        #[arg(default_value = ".")]
+        root: PathBuf,
+    },
+    /// Print the evaluated heading outline for a vault.
+    Outline {
+        #[arg(default_value = ".")]
+        root: PathBuf,
+    },
+    /// Find references to a logical module.
+    References {
+        /// Absolute logical module path such as `vault::designs::D0011`.
+        module: String,
+        #[arg(default_value = ".")]
+        root: PathBuf,
+        #[arg(long)]
+        include_definition: bool,
+    },
+    /// Run a protocol-independent semantic query.
+    Query {
+        #[command(subcommand)]
+        query: QueryCommand,
+    },
+    /// Apply preconditioned source edits through the shared service.
+    Edit {
+        #[command(subcommand)]
+        edit: EditCommand,
+    },
     /// Build a Notist workspace as a multi-page static HTML site.
     Build {
         /// Root directory of the Notist workspace.
@@ -46,6 +92,9 @@ enum Command {
         /// Directory to write the generated site.
         #[arg(short, long, default_value = "dist")]
         output: PathBuf,
+        /// Remove the selected output directory before writing this build.
+        #[arg(long)]
+        clean: bool,
     },
     /// Preview a Notist workspace in a local browser with live reload.
     Preview {
@@ -64,6 +113,32 @@ enum Command {
     },
 }
 
+#[derive(Debug, Subcommand)]
+enum QueryCommand {
+    /// Find the definition at a source byte offset.
+    Definition { path: PathBuf, offset: usize },
+}
+
+#[derive(Debug, Subcommand)]
+enum EditCommand {
+    /// Replace one byte range after proposing and validating an edit plan.
+    Replace {
+        path: PathBuf,
+        start: usize,
+        end: usize,
+        replacement: String,
+        #[arg(long)]
+        idempotency_key: String,
+    },
+    /// Rename a source while preserving its stable file identity.
+    Rename {
+        from: PathBuf,
+        to: PathBuf,
+        #[arg(long)]
+        idempotency_key: String,
+    },
+}
+
 fn main() -> ExitCode {
     match run(Cli::parse()) {
         Ok(code) => code,
@@ -76,28 +151,42 @@ fn main() -> ExitCode {
 
 fn run(cli: Cli) -> Result<ExitCode, Box<dyn std::error::Error>> {
     match cli.command {
-        Command::Lsp => lsp::run(),
+        Command::Daemon { background_child } => service::run_daemon(background_child),
+        Command::Lsp => lsp::run(cli.no_daemon),
+        Command::Mcp { root } => mcp::run(resolve_vault_root(&root)?, cli.no_daemon),
         Command::Check { root } => {
-            let engine = VaultEngine::open(resolve_vault_root(&root)?)?;
-            let workspace = engine.disk_view()?.snapshot();
-            diagnostics::emit(&workspace, cli.color)?;
-            if workspace.diagnostics().is_empty() {
-                println!("checked {} modules", workspace.modules().count());
+            let mut client = service::LocalNotistClient::connect(cli.no_daemon, ClientKind::Cli)?;
+            let view_id = open_disk_view(&mut client, resolve_vault_root(&root)?)?;
+            let reply = client.request(CoreRequest::Diagnostics { view_id })?;
+            let CoreResponse::Diagnostics(diagnostics) = reply.response else {
+                return Err("daemon returned an unexpected diagnostics response".into());
+            };
+            emit_service_diagnostics(&diagnostics);
+            let summary = client.request(CoreRequest::SnapshotSummary { view_id })?;
+            let CoreResponse::SnapshotSummary(summary) = summary.response else {
+                return Err("daemon returned an unexpected snapshot response".into());
+            };
+            if diagnostics.is_empty() {
+                println!("checked {} modules", summary.module_count);
                 Ok(ExitCode::SUCCESS)
             } else {
                 Ok(ExitCode::FAILURE)
             }
         }
         Command::Inspect { root } => {
-            let engine = VaultEngine::open(resolve_vault_root(&root)?)?;
-            let workspace = engine.disk_view()?.snapshot();
-            for module in workspace.modules() {
-                match &module.source_path {
+            let mut client = service::LocalNotistClient::connect(cli.no_daemon, ClientKind::Cli)?;
+            let view_id = open_disk_view(&mut client, resolve_vault_root(&root)?)?;
+            let reply = client.request(CoreRequest::Inspect { view_id })?;
+            let CoreResponse::Inspect(inspect) = reply.response else {
+                return Err("daemon returned an unexpected inspect response".into());
+            };
+            for module in inspect.modules {
+                match module.source_path {
                     Some(path) => println!("{} -> {}", module.logical_path, path.display()),
                     None => println!("{} -> <virtual>", module.logical_path),
                 }
             }
-            for reference in workspace.references() {
+            for reference in inspect.references {
                 println!(
                     "{}:{}..{} => {}",
                     reference.source_module,
@@ -106,63 +195,249 @@ fn run(cli: Cli) -> Result<ExitCode, Box<dyn std::error::Error>> {
                     reference.target_module
                 );
             }
-            for module in workspace.modules() {
-                let Some(parse) = &module.parse else {
-                    continue;
-                };
-                for annotation in parse.annotations() {
+            for item in inspect.semantic_items {
+                let suffix = item.name.map_or_else(String::new, |name| {
+                    if item.kind == "embedded" {
+                        format!(" @{name}")
+                    } else {
+                        format!(" {name}")
+                    }
+                });
+                println!(
+                    "{}:{}..{} {}{}",
+                    item.module, item.range.start, item.range.end, item.kind, suffix
+                );
+            }
+            Ok(ExitCode::SUCCESS)
+        }
+        Command::Search { query, root } => {
+            let mut client = service::LocalNotistClient::connect(cli.no_daemon, ClientKind::Cli)?;
+            let view_id = open_disk_view(&mut client, resolve_vault_root(&root)?)?;
+            let reply = client.request(CoreRequest::Search { view_id, query })?;
+            let CoreResponse::Search(results) = reply.response else {
+                return Err("daemon returned an unexpected search response".into());
+            };
+            for result in results {
+                println!(
+                    "{}:{}..{} {}",
+                    result.path.display(),
+                    result.range.start,
+                    result.range.end,
+                    result.snippet
+                );
+            }
+            Ok(ExitCode::SUCCESS)
+        }
+        Command::Outline { root } => {
+            let mut client = service::LocalNotistClient::connect(cli.no_daemon, ClientKind::Cli)?;
+            let view_id = open_disk_view(&mut client, resolve_vault_root(&root)?)?;
+            let reply = client.request(CoreRequest::Outline { view_id })?;
+            let CoreResponse::Outline(outline) = reply.response else {
+                return Err("daemon returned an unexpected outline response".into());
+            };
+            for document in outline {
+                for symbol in document.symbols {
                     println!(
-                        "{}:{}..{} embedded{}",
-                        module.logical_path,
-                        annotation.scope_range.start,
-                        annotation.scope_range.end,
-                        format_id(&annotation.attributes)
-                    );
-                }
-                for call in parse.calls() {
-                    let (range, kind) = match call.trailing.first() {
-                        Some(body) => (body.payload_range, "content call"),
-                        None => (call.range, "call"),
-                    };
-                    println!(
-                        "{}:{}..{} {kind} {}",
-                        module.logical_path, range.start, range.end, call.name.value,
-                    );
-                }
-                for raw in parse.raw_literals() {
-                    let form = match raw.form {
-                        RawLiteralForm::Inline => "inline raw",
-                        RawLiteralForm::Fenced => "fenced raw",
-                    };
-                    let tag = raw
-                        .tag
-                        .as_ref()
-                        .map(|tag| format!(" {}", tag.value))
-                        .unwrap_or_default();
-                    println!(
-                        "{}:{}..{} {form}{tag}",
-                        module.logical_path, raw.payload_range.start, raw.payload_range.end,
+                        "{}:{}..{} {}{}",
+                        document.path.display(),
+                        symbol.range.start,
+                        symbol.range.end,
+                        "  ".repeat(symbol.level.saturating_sub(1) as usize),
+                        symbol.name
                     );
                 }
             }
             Ok(ExitCode::SUCCESS)
         }
-        Command::Build { root, output } => {
-            build::run(resolve_vault_root(&root)?, output, cli.color)
+        Command::References {
+            module,
+            root,
+            include_definition,
+        } => {
+            let mut client = service::LocalNotistClient::connect(cli.no_daemon, ClientKind::Cli)?;
+            let view_id = open_disk_view(&mut client, resolve_vault_root(&root)?)?;
+            let reply = client.request(CoreRequest::ReferencesTo {
+                view_id,
+                module,
+                include_definition,
+            })?;
+            let CoreResponse::References(locations) = reply.response else {
+                return Err("daemon returned an unexpected references response".into());
+            };
+            for location in locations {
+                println!(
+                    "{}:{}..{}{}",
+                    location.path.display(),
+                    location.range.start,
+                    location.range.end,
+                    if location.is_definition {
+                        " definition"
+                    } else {
+                        ""
+                    }
+                );
+            }
+            Ok(ExitCode::SUCCESS)
         }
+        Command::Query {
+            query: QueryCommand::Definition { path, offset },
+        } => {
+            let path = dunce::canonicalize(path)?;
+            let root = resolve_vault_root(&path)?;
+            let mut client = service::LocalNotistClient::connect(cli.no_daemon, ClientKind::Cli)?;
+            let view_id = open_disk_view(&mut client, root)?;
+            let reply = client.request(CoreRequest::Definition {
+                view_id,
+                path,
+                offset,
+            })?;
+            let CoreResponse::Definition(definition) = reply.response else {
+                return Err("daemon returned an unexpected definition response".into());
+            };
+            if let Some(definition) = definition {
+                println!(
+                    "{}:{}..{}",
+                    definition.path.display(),
+                    definition.range.start,
+                    definition.range.end
+                );
+            }
+            Ok(ExitCode::SUCCESS)
+        }
+        Command::Edit {
+            edit:
+                EditCommand::Replace {
+                    path,
+                    start,
+                    end,
+                    replacement,
+                    idempotency_key,
+                },
+        } => {
+            let path = dunce::canonicalize(path)?;
+            let root = resolve_vault_root(&path)?;
+            let mut client = service::LocalNotistClient::connect(cli.no_daemon, ClientKind::Cli)?;
+            let view_id = open_disk_view(&mut client, root)?;
+            let summary = client.request(CoreRequest::SnapshotSummary { view_id })?;
+            let plan = client.request(CoreRequest::ProposeEdit {
+                view_id,
+                base_revision: summary.snapshot.revision,
+                operations: vec![notist_service::EditOperation {
+                    path,
+                    range: notist_service::ByteRange { start, end },
+                    replacement,
+                }],
+            })?;
+            let CoreResponse::EditPlan(plan) = plan.response else {
+                return Err("daemon returned an unexpected edit-plan response".into());
+            };
+            if !plan.diagnostics.is_empty() {
+                for diagnostic in plan.diagnostics {
+                    eprintln!("notist edit: {diagnostic}");
+                }
+                return Ok(ExitCode::FAILURE);
+            }
+            let applied = client.request(CoreRequest::ApplyEdit {
+                view_id,
+                plan_hash: plan.plan_hash,
+                expected_fingerprints: plan.affected_sources,
+                idempotency_key,
+            })?;
+            let CoreResponse::EditApplied(applied) = applied.response else {
+                return Err("daemon returned an unexpected edit response".into());
+            };
+            println!("applied edit {}", applied.plan_hash);
+            Ok(ExitCode::SUCCESS)
+        }
+        Command::Edit {
+            edit:
+                EditCommand::Rename {
+                    from,
+                    to,
+                    idempotency_key,
+                },
+        } => {
+            let from = dunce::canonicalize(from)?;
+            let root = resolve_vault_root(&from)?;
+            let mut client = service::LocalNotistClient::connect(cli.no_daemon, ClientKind::Cli)?;
+            let view_id = open_disk_view(&mut client, root)?;
+            let fingerprint = client.request(CoreRequest::FingerprintSource {
+                view_id,
+                path: from.clone(),
+            })?;
+            let CoreResponse::SourceFingerprint(Some(fingerprint)) = fingerprint.response else {
+                return Err("source is not part of the selected vault".into());
+            };
+            let renamed = client.request(CoreRequest::RenameSource {
+                view_id,
+                from,
+                to,
+                expected_fingerprint: fingerprint.fingerprint,
+                idempotency_key,
+            })?;
+            let CoreResponse::SourceRenamed(renamed) = renamed.response else {
+                return Err("daemon returned an unexpected rename response".into());
+            };
+            println!(
+                "renamed {} -> {}",
+                renamed.from.display(),
+                renamed.to.display()
+            );
+            Ok(ExitCode::SUCCESS)
+        }
+        Command::Build {
+            root,
+            output,
+            clean,
+        } => build::run(
+            resolve_vault_root(&root)?,
+            output,
+            cli.color,
+            cli.no_daemon,
+            clean,
+        ),
         Command::Preview {
             root,
             host,
             port,
             no_open,
-        } => preview::run(resolve_vault_root(&root)?, host, port, no_open, cli.color),
+        } => preview::run(
+            resolve_vault_root(&root)?,
+            host,
+            port,
+            no_open,
+            cli.color,
+            cli.no_daemon,
+        ),
     }
 }
 
-fn format_id(attributes: &notist_syntax::Attributes) -> String {
-    attributes
-        .id
-        .as_ref()
-        .map(|id| format!(" @{}", id.value))
-        .unwrap_or_default()
+fn open_disk_view(
+    client: &mut service::LocalNotistClient,
+    root: PathBuf,
+) -> Result<notist_service::ServiceViewId, Box<dyn std::error::Error>> {
+    let reply = client.request(CoreRequest::OpenView {
+        root,
+        kind: ProtocolViewKind::Disk,
+    })?;
+    let CoreResponse::Opened { view_id, .. } = reply.response else {
+        return Err("daemon returned an unexpected open-view response".into());
+    };
+    Ok(view_id)
+}
+
+pub(crate) fn emit_service_diagnostics(diagnostics: &[notist_service::DiagnosticRecord]) {
+    for diagnostic in diagnostics {
+        let path = diagnostic
+            .path
+            .as_ref()
+            .map_or_else(|| "<workspace>".into(), |path| path.display().to_string());
+        let range = diagnostic.range.map_or_else(String::new, |range| {
+            format!(":{}..{}", range.start, range.end)
+        });
+        eprintln!(
+            "{path}{range}: {} [{}]",
+            diagnostic.message, diagnostic.code
+        );
+    }
 }

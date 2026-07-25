@@ -141,6 +141,17 @@ impl Parse {
         output
     }
 
+    /// Collects Code-mode String literal source ranges in source order.
+    pub fn string_literal_ranges(&self) -> Vec<TextRange> {
+        let mut output = Vec::new();
+        visit_markup_expressions(&self.root, &mut |expression| {
+            if matches!(expression.kind, ExpressionKind::String(_)) {
+                output.push(expression.range);
+            }
+        });
+        output
+    }
+
     /// Collects annotated embedded expressions in source order.
     pub fn annotations(&self) -> Vec<&EmbeddedExpression> {
         let mut output = Vec::new();
