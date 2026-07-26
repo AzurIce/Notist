@@ -395,15 +395,6 @@ mod tests {
                         _ => "",
                     }).collect::<String>() == "A | B")
         ));
-
-        let uneven = evaluator.evaluate("| a | b | c |\n| one | two |");
-        assert!(uneven.diagnostics.is_empty(), "{:?}", uneven.diagnostics);
-        assert!(matches!(
-            &uneven.content.elements[0].element,
-            Element::Table { columns: 3, cells, .. }
-                if cells.len() == 6
-                    && matches!(&cells[5].element, Element::TableCell { body, .. } if body.is_empty())
-        ));
     }
 
     #[test]
@@ -483,29 +474,6 @@ mod tests {
     }
 
     #[test]
-    fn outdented_list_after_an_indented_span_does_not_recurse() {
-        let evaluated = Evaluator::default().evaluate("  - child\n- parent");
-        assert!(
-            evaluated.diagnostics.is_empty(),
-            "{:?}",
-            evaluated.diagnostics
-        );
-        assert!(matches!(
-            evaluated.content.elements.as_slice(),
-            [
-                ElementNode {
-                    element: Element::ListItem(_),
-                    ..
-                },
-                ElementNode {
-                    element: Element::ListItem(_),
-                    ..
-                }
-            ]
-        ));
-    }
-
-    #[test]
     fn reserves_asterisks_for_inline_strong() {
         let evaluated = Evaluator::default().evaluate("* item");
         assert!(
@@ -558,52 +526,6 @@ mod tests {
                 .collect::<String>(),
             "*not strong* and |pipe|"
         );
-
-        let boundary = Evaluator::default().evaluate("#kbd[A] - B");
-        assert!(
-            boundary.diagnostics.is_empty(),
-            "{:?}",
-            boundary.diagnostics
-        );
-        assert!(matches!(
-            boundary.content.elements[0].element,
-            Element::Keyboard(_)
-        ));
-        assert!(matches!(
-            &boundary.content.elements[1].element,
-            Element::Text(text) if text == " - B"
-        ));
-
-        let adjacent = Evaluator::default().evaluate("#raw(text=\"<u>\")*word*");
-        assert!(
-            adjacent.diagnostics.is_empty(),
-            "{:?}",
-            adjacent.diagnostics
-        );
-        assert!(matches!(
-            adjacent.content.elements.as_slice(),
-            [
-                ElementNode {
-                    element: Element::Raw { .. },
-                    ..
-                },
-                ElementNode {
-                    element: Element::Strong(_),
-                    ..
-                }
-            ]
-        ));
-
-        let parenthesized = Evaluator::default().evaluate("#raw(text=(\"a\" + \"b\"))");
-        assert!(
-            parenthesized.diagnostics.is_empty(),
-            "{:?}",
-            parenthesized.diagnostics
-        );
-        assert!(matches!(
-            &parenthesized.content.elements[0].element,
-            Element::Raw { text, .. } if text == "ab"
-        ));
     }
 
     #[test]

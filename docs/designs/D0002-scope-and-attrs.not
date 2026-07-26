@@ -31,8 +31,6 @@ Markup
 
 Content literal 可以包含文字、Reference、Raw syntax、Function call 以及嵌套 EmbeddedExpression。它可以自然跨越段落和 block 边界，因为范围来自匹配的 [ 与 ]，而不是事后在 Element tree 上挑一对节点。
 
-顶层 `#expression` 没有右侧 delimiter，因此它只消费一个 atomic expression，随后立即恢复 Markup。于是 `#kbd[A] - B` 的减号是正文，`#raw(text="<u>")*word*` 的星号仍开始 inline strong；需要复合 expression 时写成 `#(...)`。Arguments、ContentBlock 和 User Function body 已有自己的 closing delimiter，可以在内部正常使用完整 expression。这条规则让 parser 只看局部 token 就能结束 EmbeddedExpression，不需要询问 Function registry 或猜测后续文字的类型。
-
 == Function Call
 
 Function call 使用同一个 Code expression 模型：

@@ -2433,18 +2433,6 @@ fn content_text(content: &Content) -> String {
     for node in &content.elements {
         match &node.element {
             Element::Text(value) => text.push_str(value),
-            Element::Raw { text: value, .. } | Element::Math { text: value, .. } => {
-                text.push_str(value);
-            }
-            Element::Abbr { term, .. } => text.push_str(term),
-            Element::Citation { key, .. } => text.push_str(key),
-            Element::Image { alt, .. } => text.push_str(alt),
-            Element::Reference(reference) => {
-                if let Some(label) = &reference.label {
-                    text.push_str(label);
-                }
-            }
-            Element::Linebreak => text.push(' '),
             element => {
                 for child in element_contents(element) {
                     text.push_str(&content_text(child));
@@ -3202,20 +3190,6 @@ mod tests {
         assert_eq!(delta.added_files.len(), 1);
         assert_eq!(delta.changed_files.len(), 1);
         assert!(!delta.changed_modules.is_empty());
-    }
-
-    #[test]
-    fn document_symbols_include_non_text_inline_content() {
-        let root = TempDir::new().unwrap();
-        fs::write(
-            root.path().join("README.not"),
-            "#heading[Run `cargo test` and $x^2$ #image(source=\"x.png\", alt=\"diagram\")]",
-        )
-        .unwrap();
-        let workspace = WorkspaceSnapshot::load(root.path()).unwrap();
-        let source = workspace.sources().next().unwrap();
-        let symbols = workspace.document_symbols(source.file_id);
-        assert_eq!(symbols[0].name, "Run cargo test and x^2 diagram");
     }
 
     #[test]

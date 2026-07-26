@@ -1,6 +1,5 @@
 = AI 整理文档索引
 
-- [[self::2026-07-25 agent knowledge base benchmark survey]]：系统调查 Agent 操作/基于文档知识库的现有 benchmark 生态，六路核实深度研究 QA、长上下文与记忆、文件与办公 agent、MCP 与工具调用、表示格式与切块、写入与时效；结论是检索轴有 FRAMES/LOFT/BrowseComp-Plus 等成熟先例可复用，而语言轴（Markdown vs 结构化语言）、工具界面轴（裸文件 vs CLI vs MCP vs LSP）与 read-your-write 是无先例空白，并给出 Notist bench 的平行语料、六族任务、消融矩阵、指标分层与判分器设计。
 - [[self::2026-07-21 notist agent mcp semantic retrieval and vector indexing]]：从零梳理 Notist 作为 Agent 输入/输出知识库的完整方向，说明 MCP resources/tools 与 application core 的边界，并综述 BM25、dense/sparse embedding、ColBERT、多向量、HNSW/IVF/PQ/DiskANN、hybrid/rerank、RAPTOR/GraphRAG、记忆、引用评测和安全写入；给出从稳定 ID、全文索引和只读 MCP 到向量、图检索、事务化 Agent 编辑及远程多租户的渐进路线。
 - [[self::2026-07-20 notist native desktop architecture research]]：系统比较原生平台 UI、Qt、Floem、Slint、GPUI、Tauri 与 Wry 等路线，推荐采用原生源码编辑器、pane 级 WebView、不可变 WorkspaceSnapshot 和 Wasmtime/WASI capability 插件宿主，并列出 Linux Wayland、安全隔离及四个落地 spike。
 - [[self::2026-07-17 typed document analysis and lsp migration]]：静态求值模型迁移收尾。记录 mode-aware 语法树之后的五项决策（元素 range 含 `#`、Annotation 移出 evaluator、注册时签名校验、签名数据上移 model、analysis 静态 type checking 与 eval 的错误对齐规则）,LSP 诊断去 runtime 与最内层 call 补全，以及 typst CST/AST 设计对照与遗留事项。

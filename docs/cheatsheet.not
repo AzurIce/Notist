@@ -23,39 +23,11 @@
 | Wiki 引用 | `[[module#label]]` | `ref` | Notist 知识库的核心能力 |
 | 自动链接 | 裸 HTTP(S) URL | `link` | 高频且目标文本通常就是 URL |
 | 强制换行 | 行末 `\` | `linebreak` | Function 会打断自然书写 |
-| 字面标点 | `\#`、`\-`、`\*`、`\|` | `text` | 避免标点进入 Code 或宿主语法糖 |
 | Pipe table | `| A | B |` | `table` / `table::cell` | 比大量 `#table::cell` 更易读 |
 | 单行注释 | `// comment` | 不生成 Content | 属于 lexer/parser，不需要 Comment Element |
 | 块注释 | `/* comment */` | 不生成 Content | 可跨行，适合临时隐藏一段源码 |
 
 `kbd` 是 built-in，但不需要额外语法糖：`#kbd[Ctrl + S]` 已经足够简洁。
-
-== 正文转义与 Code 边界
-
-未转义的 `#` 会从正文进入 Code；正文 hashtag 写成 `\#tag`。反斜线可以把任意 ASCII 标点变成普通文字：
-
-```not
-正文里的 \#tag、A \- B、\*星号\* 和 A \| B。
-```
-
-一个顶层 EmbeddedExpression 只消费一个 atomic expression，随后立即回到 Markup，所以这里的减号是正文，相邻的 `*bold*` 也仍是正文语法：
-
-```not
-#kbd[A] - B
-```
-
-需要带空白的 Code 运算时用括号建立明确边界：
-
-```not
-#raw(text=("a" + "b"))
-```
-
-标题锚点使用 heading Function 的 source annotation；`[[#install]]` 可以在当前 module 内跳转：
-
-```not
-#heading(level=2)[Install]@install
-See [[#install]].
-```
 
 == Quote、Callout 与 Details
 
