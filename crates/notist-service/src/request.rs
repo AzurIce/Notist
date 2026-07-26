@@ -862,7 +862,6 @@ impl NotistService {
                                 })
                                 .collect(),
                         })
-                        .filter(|outline| !outline.symbols.is_empty())
                         .collect()
                 })?;
                 Ok(CoreReply {
@@ -1580,6 +1579,30 @@ mod tests {
         assert_eq!(symbols[0].kind, "annotation");
         assert!(encoded.contains("daemon_instance"));
         assert!(encoded.contains("revision"));
+    }
+
+    #[test]
+    fn outline_keeps_sources_without_headings() {
+        let root = tempfile::TempDir::new().unwrap();
+        fs::write(root.path().join("README.not"), "plain root").unwrap();
+        fs::write(root.path().join("page.not"), "= Title").unwrap();
+        let service = NotistService::new();
+        let opened = service
+            .execute(CoreRequest::OpenView {
+                root: root.path().to_path_buf(),
+                kind: ProtocolViewKind::Disk,
+            })
+            .unwrap();
+        let CoreResponse::Opened { view_id, .. } = opened.response else {
+            panic!("expected opened view")
+        };
+        let reply = service.execute(CoreRequest::Outline { view_id }).unwrap();
+        let CoreResponse::Outline(outline) = reply.response else {
+            panic!("expected outline")
+        };
+        assert_eq!(outline.len(), 2);
+        assert!(outline.iter().any(|document| document.symbols.is_empty()));
+        assert!(outline.iter().any(|document| document.symbols.len() == 1));
     }
 
     #[test]

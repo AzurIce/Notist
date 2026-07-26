@@ -8,6 +8,7 @@ use notist_service::protocol::ClientKind;
 use notist_service::{CoreRequest, CoreResponse, ProtocolViewKind};
 
 mod build;
+mod convert;
 mod lsp;
 mod mcp;
 mod official_docs;
@@ -114,6 +115,16 @@ enum Command {
         #[arg(long)]
         clean: bool,
     },
+    /// Convert a Markdown or Obsidian vault into a Notist vault.
+    Convert {
+        /// Root directory of the Markdown vault.
+        source: PathBuf,
+        /// Directory in which to create the Notist vault.
+        output: PathBuf,
+        /// Allow writing into an existing output directory.
+        #[arg(long)]
+        force: bool,
+    },
     /// Preview a Notist workspace in a local browser with live reload.
     Preview {
         /// Root directory of the Notist workspace.
@@ -151,6 +162,7 @@ impl Command {
                 edit: EditCommand::Rename { .. },
             } => "edit rename",
             Self::Build { .. } => "build",
+            Self::Convert { .. } => "convert",
             Self::Preview { .. } => "preview",
         }
     }
@@ -198,7 +210,7 @@ fn main() -> ExitCode {
             if format.is_json() {
                 let _ = output::emit_error(command, &error.to_string());
             } else {
-                eprintln!("notist: {error}");
+                output::emit_text_error(&format!("notist: {error}"));
             }
             ExitCode::FAILURE
         }
@@ -515,7 +527,7 @@ fn run(cli: Cli) -> Result<ExitCode, Box<dyn std::error::Error>> {
                     )?;
                 } else {
                     for diagnostic in plan.diagnostics {
-                        eprintln!("notist edit: {diagnostic}");
+                        output::emit_text_error(&format!("notist edit: {diagnostic}"));
                     }
                 }
                 return Ok(ExitCode::FAILURE);
@@ -597,6 +609,27 @@ fn run(cli: Cli) -> Result<ExitCode, Box<dyn std::error::Error>> {
             clean,
             cli.format,
         ),
+        Command::Convert {
+            source,
+            output,
+            force,
+        } => {
+            let result = convert::run(&source, &output, force)?;
+            if cli.format.is_json() {
+                output::emit_result("convert", true, serde_json::to_value(&result)?)?;
+            } else {
+                println!(
+                    "converted {} Markdown files and copied {} assets to {}",
+                    result.converted_files,
+                    result.copied_assets,
+                    result.output.display()
+                );
+                for warning in &result.warnings {
+                    output::emit_text_error(&format!("notist convert: warning: {warning}"));
+                }
+            }
+            Ok(ExitCode::SUCCESS)
+        }
         Command::Preview {
             root,
             host,
@@ -650,9 +683,9 @@ pub(crate) fn emit_service_diagnostics(diagnostics: &[notist_service::Diagnostic
         let range = diagnostic.range.map_or_else(String::new, |range| {
             format!(":{}..{}", range.start, range.end)
         });
-        eprintln!(
+        output::emit_text_error(&format!(
             "{path}{range}: {} [{}]",
             diagnostic.message, diagnostic.code
-        );
+        ));
     }
 }

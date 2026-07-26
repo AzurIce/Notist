@@ -52,6 +52,12 @@ Content
 
 “flat”只表示顶层按执行顺序存放 Element，不表示 Element 内部不能有树。Heading、Strong、Quote 或 Custom Element 仍然可以拥有嵌套 Content。
 
+== Sugar Recovery
+
+Heading、list、task 与 pipe table 等高频语法糖需要先从连续源码中识别候选 span，再 lower 成内置 Element。候选并不保证结构完整：列表可能突然 outdent，表格各行也可能缺少尾格。恢复必须单向推进：一个候选 span 失败后，只能在禁用 block sugar 的 fragment 中保留 inline 语义，不能把同一 range 再交给同一个候选识别过程。否则“识别—失败—重新识别”会形成没有源码进展的递归。
+
+可以安全归一化且不改变作者顺序的输入应直接容错。pipe table 以最宽行决定列数并给较短行补空 cell；列表在缩进回落到当前 span 起点以下时结束 span。无法安全归一化的候选降级为普通内容或 diagnostic。无论选择哪种恢复结果，lowering 都必须消费 source range 一次并继续向前。
+
 == Function Call
 
 ```not

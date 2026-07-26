@@ -32,9 +32,18 @@ pub(crate) fn evaluate_markup(
         base_offset,
         registry,
         depth,
-        &user_functions,
-        Vec::new(),
+        EvaluationEnvironment {
+            user_functions: &user_functions,
+            variables: Vec::new(),
+            allow_source_sugar: true,
+        },
     )
+}
+
+struct EvaluationEnvironment<'a> {
+    user_functions: &'a HashMap<String, UserFunctionDefinition>,
+    variables: Vec<HashMap<String, Value>>,
+    allow_source_sugar: bool,
 }
 
 fn evaluate_markup_in_environment(
@@ -43,20 +52,19 @@ fn evaluate_markup_in_environment(
     base_offset: usize,
     registry: &FunctionRegistry,
     depth: usize,
-    user_functions: &HashMap<String, UserFunctionDefinition>,
-    variables: Vec<HashMap<String, Value>>,
+    environment: EvaluationEnvironment<'_>,
 ) -> Evaluation {
     let mut state = LowerState {
         source,
         base_offset,
         registry,
         depth,
-        user_functions,
-        variables,
+        user_functions: environment.user_functions,
+        variables: environment.variables,
         content: Content::default(),
         diagnostics: Vec::new(),
     };
-    state.lower_markup(markup);
+    state.lower_markup(markup, environment.allow_source_sugar);
     Evaluation {
         content: state.content,
         diagnostics: state.diagnostics,
@@ -159,7 +167,11 @@ fn float_binary(operator: BinaryOperator, left: f64, right: f64) -> Option<f64> 
 }
 
 impl LowerState<'_> {
-    fn lower_markup(&mut self, markup: &Markup) {
+    fn lower_markup(&mut self, markup: &Markup, allow_source_sugar: bool) {
+        if !allow_source_sugar {
+            self.lower_markup_items(markup);
+            return;
+        }
         let table_spans = table_source_spans(self.source, markup);
         let heading_spans = heading_source_spans(self.source, markup, &table_spans);
         let list_spans = list_source_spans(self.source, markup, &table_spans);
@@ -197,6 +209,10 @@ impl LowerState<'_> {
             return;
         }
 
+        self.lower_markup_items(markup);
+    }
+
+    fn lower_markup_items(&mut self, markup: &Markup) {
         for item in &markup.items {
             match item {
                 MarkupItem::Text(text) => self.push_text_with_parbreaks(text),
@@ -224,8 +240,11 @@ impl LowerState<'_> {
             self.base_offset + start,
             self.registry,
             self.depth,
-            self.user_functions,
-            self.variables.clone(),
+            EvaluationEnvironment {
+                user_functions: self.user_functions,
+                variables: self.variables.clone(),
+                allow_source_sugar: false,
+            },
         );
         self.content.elements.extend(evaluation.content.elements);
         self.diagnostics.extend(evaluation.diagnostics);
@@ -451,8 +470,11 @@ impl LowerState<'_> {
             self.base_offset,
             self.registry,
             self.depth,
-            self.user_functions,
-            self.variables.clone(),
+            EvaluationEnvironment {
+                user_functions: self.user_functions,
+                variables: self.variables.clone(),
+                allow_source_sugar: true,
+            },
         );
         let diagnostics = evaluation.diagnostics;
         (Value::Content(evaluation.content), diagnostics)
@@ -633,8 +655,11 @@ impl LowerState<'_> {
                 self.base_offset,
                 self.registry,
                 self.depth + 1,
-                self.user_functions,
-                self.variables.clone(),
+                EvaluationEnvironment {
+                    user_functions: self.user_functions,
+                    variables: self.variables.clone(),
+                    allow_source_sugar: true,
+                },
             );
             diagnostics.extend(evaluation.diagnostics);
             let range = block.payload_range.shifted(self.base_offset);
@@ -978,7 +1003,7 @@ impl LowerState<'_> {
     fn lower_table_source(&mut self, source_start: usize, source_end: usize) -> bool {
         let source = &self.source[source_start..source_end];
         let mut rows = Vec::new();
-        let mut columns = None;
+        let mut columns = 0usize;
         let mut caption_range = None;
         let mut offset = 0usize;
         let mut lines = source.split_inclusive('\n').peekable();
@@ -1008,13 +1033,7 @@ impl LowerState<'_> {
             if parts.is_empty() {
                 return false;
             }
-            if let Some(expected) = columns {
-                if expected != parts.len() {
-                    return false;
-                }
-            } else {
-                columns = Some(parts.len());
-            }
+            columns = columns.max(parts.len());
             let mut row = Vec::new();
             for (part_start, part_end) in parts {
                 let part = &line_without_newline[part_start..part_end];
@@ -1023,28 +1042,30 @@ impl LowerState<'_> {
                 let start = offset + part_start + leading;
                 row.push((start, value.len()));
             }
-            rows.push(row);
+            rows.push((row, offset + content_end));
             offset += line.len();
         }
-        let Some(columns) = columns else { return false };
-        if columns > u16::MAX as usize || rows.is_empty() {
+        if columns == 0 || columns > u16::MAX as usize || rows.is_empty() {
             return false;
         }
         let header_alignments = (rows.len() >= 2).then(|| {
             rows[1]
+                .0
                 .iter()
                 .map(|(start, len)| table_separator_alignment(&source[*start..*start + *len]))
                 .collect::<Option<Vec<_>>>()
         });
         let header = matches!(header_alignments, Some(Some(_)));
-        let alignments = header_alignments
+        let mut alignments = header_alignments
             .flatten()
             .unwrap_or_else(|| vec![TableAlignment::Default; columns]);
+        alignments.resize(columns, TableAlignment::Default);
         if header {
             rows.remove(1);
         }
         let mut cells = Vec::new();
-        for row in rows {
+        for (row, row_end) in rows {
+            let row_len = row.len();
             for (start, len) in row {
                 let range = TextRange::new(
                     self.base_offset + source_start + start,
@@ -1056,6 +1077,20 @@ impl LowerState<'_> {
                             source_start + start,
                             source_start + start + len,
                         ),
+                        colspan: 1,
+                        rowspan: 1,
+                    },
+                    range,
+                });
+            }
+            for _ in row_len..columns {
+                let range = TextRange::new(
+                    self.base_offset + source_start + row_end,
+                    self.base_offset + source_start + row_end,
+                );
+                cells.push(ElementNode {
+                    element: Element::TableCell {
+                        body: Content::new(),
                         colspan: 1,
                         rowspan: 1,
                     },
@@ -1091,8 +1126,11 @@ impl LowerState<'_> {
             self.base_offset + start,
             self.registry,
             self.depth + 1,
-            self.user_functions,
-            self.variables.clone(),
+            EvaluationEnvironment {
+                user_functions: self.user_functions,
+                variables: self.variables.clone(),
+                allow_source_sugar: false,
+            },
         );
         self.diagnostics.extend(evaluation.diagnostics);
         evaluation.content
@@ -1538,6 +1576,11 @@ fn list_source_spans(
         };
 
         let span_start = start;
+        let base_indent = line.trim_end_matches(['\r', '\n']).len().saturating_sub(
+            line.trim_end_matches(['\r', '\n'])
+                .trim_start_matches([' ', '\t'])
+                .len(),
+        );
         let mut span_end = end;
         index += 1;
         while index < lines.len() {
@@ -1547,7 +1590,13 @@ fn list_source_spans(
                 + candidate_line
                     .len()
                     .saturating_sub(candidate_line.trim_start_matches([' ', '\t']).len());
-            if !marker_is_text(candidate_marker) || line_kind(candidate) != Some(kind) {
+            let candidate_indent = candidate_line
+                .len()
+                .saturating_sub(candidate_line.trim_start_matches([' ', '\t']).len());
+            if candidate_indent < base_indent
+                || !marker_is_text(candidate_marker)
+                || line_kind(candidate) != Some(kind)
+            {
                 break;
             }
             span_end = candidate_end;

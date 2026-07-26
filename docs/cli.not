@@ -3,7 +3,7 @@
 `notist` 是 Notist 的统一可执行文件。它既提供面向人的命令，也提供编辑器、Agent host 和后台服务使用的协议入口：
 
 ```text
-普通命令   check / inspect / search / outline / references / query / edit
+普通命令   check / inspect / search / outline / references / query / edit / convert
 站点命令   build / preview
 协议入口   lsp / mcp
 后台服务   daemon
@@ -38,6 +38,7 @@ notist edit replace <PATH> <START> <END> <REPLACEMENT>
                     --idempotency-key <KEY>
 notist edit rename <FROM> <TO> --idempotency-key <KEY>
 
+notist convert <SOURCE> <OUTPUT> [--force]
 notist build [ROOT] [-o <OUTPUT>] [--clean]
 notist preview [ROOT] [--host <HOST>] [--port <PORT>] [--no-open]
 ```
@@ -239,7 +240,7 @@ notist search "workspace revision" docs
 notist outline [ROOT]
 ```
 
-输出整个 Vault 求值后的 heading outline，并按 heading level 缩进：
+输出整个 Vault 求值后的 heading outline，并按 heading level 缩进。结果为每个 source 保留一条 document record；没有标题的文档返回空 `symbols`，因此可以与 inspect/source 列表稳定对应。标题 name 使用可见文本投影，保留 inline Raw、Math、图片 alt 和链接正文：
 
 ```shell
 notist outline docs
@@ -318,6 +319,26 @@ notist edit rename docs/old.not docs/new.not \
 - key 应由调用者生成并在自己的操作日志中保持稳定。
 
 这样 daemon 可以识别已经完成的重试，避免一次 Agent 操作被写入两遍。
+
+== Vault 转换
+
+=== `convert`
+
+```shell
+notist convert <SOURCE> <OUTPUT> [--force]
+```
+
+把 Markdown 或 Obsidian Vault 转换成新的 Notist Vault。命令先索引整个源 Vault，再转换所有 `.md` / `.markdown` 文档并把其余资源按对应相对路径复制到输出目录；输出目录会包含 `Notist.toml` marker。文件或目录名含有 Notist ModulePath 禁止的 `[`、`]`、`#` 时，输出路径会把这些字符归一化为 `-`，并同步重写文档和资源链接。
+
+转换会把 Markdown 标题、inline formatting、列表、表格、代码、图片和命名链接改写为 Notist syntax。指向 Markdown 文档的相对链接与 Obsidian Wiki link 会解析成稳定的 `[[vault::module#label]]` reference；标题同时生成 annotation label，因此跨文档 heading link 仍可导航。图片、附件与其他普通链接保留相对位置。
+
+默认拒绝写入非空输出目录；`--force` 允许合并并覆盖同名转换产物。输出目录不能是源 Vault 本身或其子目录，以免递归复制。无法解析或存在歧义的 Wiki / 文档链接会作为 warning 输出，并在生成文档中退化成可见文本或普通链接。`--format json` 的 result 包含转换文件数、复制资源数和 warnings。
+
+```shell
+notist convert notes notes-notist
+notist convert obsidian-vault notist-vault --force --format json
+notist check notist-vault
+```
 
 == 构建与预览
 

@@ -181,7 +181,7 @@ impl Parser<'_> {
     fn parse_embedded_expression(&mut self) -> EmbeddedExpression {
         let start = self.cursor;
         self.cursor += 1;
-        let expression = self.parse_code_expression();
+        let expression = self.parse_atomic_expression();
         let expression_end = expression.range.end.max(self.cursor);
         self.cursor = expression_end;
         let (attributes, end) = parse_attributes(self.source, self.cursor, &mut self.errors);
@@ -195,14 +195,20 @@ impl Parser<'_> {
     }
 
     fn parse_code_expression(&mut self) -> Expression {
-        self.parse_binary_expression(0)
+        self.parse_binary_expression(0, true)
     }
 
-    fn parse_binary_expression(&mut self, minimum_precedence: u8) -> Expression {
+    fn parse_binary_expression(
+        &mut self,
+        minimum_precedence: u8,
+        allow_whitespace_before_operator: bool,
+    ) -> Expression {
         let mut left = self.parse_atomic_expression();
         loop {
             let before_whitespace = self.cursor;
-            self.skip_whitespace();
+            if allow_whitespace_before_operator {
+                self.skip_whitespace();
+            }
             let Some((operator, precedence)) = self.binary_operator() else {
                 self.cursor = before_whitespace;
                 break;
@@ -213,7 +219,7 @@ impl Parser<'_> {
             }
             self.cursor += 1;
             self.skip_whitespace();
-            let right = self.parse_binary_expression(precedence + 1);
+            let right = self.parse_binary_expression(precedence + 1, true);
             let range = TextRange::new(left.range.start, right.range.end);
             left = Expression {
                 kind: ExpressionKind::Binary {

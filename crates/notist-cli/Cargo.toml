@@ -26,6 +26,7 @@ notist-model.workspace = true
 notist-syntax.workspace = true
 open.workspace = true
 percent-encoding.workspace = true
+pulldown-cmark.workspace = true
 serde = { workspace = true, features = ["derive"] }
 serde_json.workspace = true
 sha2.workspace = true

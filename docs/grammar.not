@@ -6,7 +6,7 @@
 
 本文是 parser、analysis 与 evaluator 的现行规范。当前实现已支持本文描述的 mode-aware syntax tree 与一般 EmbeddedExpression，以及 Function call、trailing Content、String literal、Wiki Reference、Raw syntax 和 Attributes。
 
-本次规范只确定 Markup 与 Code 两种模式，以及当前所需的 Code expression 子集。变量、`let`、一般运算、控制流和 User Function 不属于本阶段；模式边界应允许它们未来加入而无需再次修改 Content literal 与 Function call 的语义。
+本规范确定 Markup 与 Code 两种模式，以及当前实现使用的 literal、Function call、User Function、名称、括号与二元运算 expression。Array、Dict、一般变量声明和控制流尚未进入宿主语法；以后加入它们时也不能改变 Content literal、顶层 EmbeddedExpression 与 Function call 的模式边界。
 
 == 记号
 
@@ -51,6 +51,15 @@ ContentBlock 内未转义的 `]` 结束当前 block；需要文字 `]` 时使用
 
 `#` 不是一个普通 unary operator。它在 Markup 中开始一个 EmbeddedExpression，使 parser 切换到 Code；expression 结束后恢复 Markup。Code expression 的结果必须能够插入 Content，具体类型规则见 [[vault::types]]。
 
+顶层 EmbeddedExpression 只消费一个 atomic expression，随后立即恢复 Markup。这条边界保证 Function call 后的正文标点和相邻 inline markup 不会被继续吞入 Code：
+
+```not
+#kbd[A] - B              // ` - B` 是正文
+#raw(text=("a" + "b")) // 括号内仍是完整 Code expression
+```
+
+需要在嵌入位置书写复合 expression 时使用括号。Function argument、括号和 User Function body 已经有明确的 Code delimiter，不受这条顶层边界限制。
+
 Code 中的 ContentBlock 使用 `[...]` 创建 `Content` literal。`[` 后进入 Markup，匹配的 `]` 结束该 literal 并恢复外层 Code。
 
 ```not
@@ -76,19 +85,24 @@ Mode 可以递归嵌套：
 本阶段目标 Code grammar 为：
 
 ```ebnf
-CodeExpression = NoneLiteral
+CodeExpression = BinaryExpression ;
+BinaryExpression = AtomicExpression (BinaryOperator AtomicExpression)* ;
+AtomicExpression = NoneLiteral
                | BoolLiteral
                | IntLiteral
                | FloatLiteral
                | StringLiteral
                | ContentBlock
                | CallExpression
-               | ParenthesizedExpression ;
+               | NameExpression
+               | ParenthesizedExpression
+               | UserFunctionDefinition ;
 
 ParenthesizedExpression = "(" CodeExpression ")" ;
+BinaryOperator = "+" | "-" | "*" | "/" ;
 ```
 
-`let`、变量访问、一般 binary/unary operator、Array、Dict、控制流和 User Function 将来都可以作为新的 CodeExpression 加入，但不改变 `#` 与 ContentBlock 的模式规则。
+二元运算遵循乘除高于加减的优先级；括号可以显式改变结合。User Function 使用 `let name(parameters) -> Result = expression`，其参数、default 和 body 都处于有明确 delimiter 的 Code context。Array、Dict、一般变量声明、unary operator 和控制流以后可以加入 CodeExpression，但不能改变 `#` 与 ContentBlock 的模式规则。
 
 在 Code mode 内不重复书写 `#`。例如 Function arguments 本身已经处于 Code：
 
@@ -295,9 +309,25 @@ Markup 中相邻的 Text、Reference、Raw 和 EmbeddedExpression 输出按源�
 
 当前核心 Markup sugar 为：`= heading`、`- list item`、`+ enum item`、`- [ ] task`、inline/fenced backtick、`$math$`、`*strong*`、`_emphasis_`、`__underline__`、`~~strike~~`、Wiki Reference、裸 HTTP(S) URL、bare email、管道表格和行末反斜线换行。Quote、Callout 与 Details 只使用显式 Function。图片、命名链接、分隔线和分页同样使用显式 Function。
 
-这些语法在 lowering 阶段产生统一的 Content/Element。Backtick/fence 与显式 `code` 共享 Raw Element；相邻的普通、有序或任务 item 分别组合成与显式 `list`、`enum`、`task` 相同的容器 Element。管道表格允许单元格包含 Raw、Wiki Reference 与 EmbeddedExpression；分隔器扫描会跳过反引号、String、括号和 Content block 内部的 `|`。每个语法糖 TableCell 使用 `colspan=1`、`rowspan=1`，跨列或跨行通过显式 `table::cell` 表达，并与显式表格共享 rowspan-aware 网格算法。
+这些语法在 lowering 阶段产生统一的 Content/Element。Backtick/fence 与显式 `code` 共享 Raw Element；相邻的普通、有序或任务 item 分别组合成与显式 `list`、`enum`、`task` 相同的容器 Element。列表缩进增加时建立子列表，缩进回落到当前 span 起点以下时结束该 span，不能把一个未消费的 outdent 反复交回同一 lowering 过程。
+
+管道表格允许单元格包含 Raw、Wiki Reference 与 EmbeddedExpression；分隔器扫描会跳过反引号、String、括号和 Content block 内部的 `|`。表格列数取同一连续 pipe-table 中最宽的一行，较短行在尾部补空 TableCell，因此缺少尾格仍产生规则网格。每个语法糖 TableCell 使用 `colspan=1`、`rowspan=1`；跨列或跨行通过显式 `table::cell` 表达，并与显式表格共享 rowspan-aware 网格算法。
 
 `> quote`、`!!! callout`、`??? details`、定义列表、footnote、citation、abbreviation、insert、spoiler、highlight、super/sub、video/audio 和 `%% comment %%` 均不是当前宿主语法。Setext 标题、`* item`、数字列表、Markdown `[label](URL)`、`![alt](source)` 与 `---` thematic break 也保持普通文本。
+
+== Markup 转义
+
+Markup 中的 `\` 后接 ASCII punctuation 时，二者共同产生一个 literal punctuation Text；该 punctuation 不再参与 Code、inline delimiter、URL、Wiki Reference 或表格分隔器识别。常见例子是：
+
+```not
+\#tag
+A \- B
+\*literal asterisks\*
+\[[literal brackets\]]
+| A \| B | C |
+```
+
+`\#` 用于正文 hashtag，因为未转义的 `#` 会进入 Code。`\-` 通常不是必需的；它可用于强调字面减号，或兼容旧文档中 EmbeddedExpression 后可能含混的边界。`\` 后紧接单个 newline 产生强制 line break。偶数个连续反斜线会让最后一个反斜线失去 escape 作用，例如表格中的 `\\|` 仍开始新 cell。
 
 == 错误与恢复
 
@@ -305,7 +335,7 @@ Markup 中相邻的 Text、Reference、Raw 和 EmbeddedExpression 输出按源�
 
 未知 Function 不是 syntax error。analysis 负责名称解析、signature binding 和静态类型诊断；evaluator 可以保留 UnresolvedCall 以支持预览和工具恢复。
 
-Markup 中的 `\` 后接 ASCII punctuation 时，二者共同产生一个 literal punctuation Text；该 punctuation 不再参与 inline delimiter、URL、表格 cell separator 等识别。`\` 后紧接单个 newline 的既有含义不变，产生强制 line break。管道表格按未转义的 `|` 分列，因此 `\|` 留在当前 cell 并按该 escaping 规则显示为 `|`；偶数个连续反斜线会使之后的 `|` 再次成为分隔符。
+识别到候选 block sugar、但其完整结构不成立时，lowering 只允许降级一次，并在禁用 block sugar 的 fragment 中保留其 inline 内容；不得对同一 source range 重新识别同一种 sugar。无效或不规则输入必须成为普通文本、容错后的结构或 diagnostic，不能通过递归恢复耗尽调用栈。
 
 Markup、Code 和 Raw 的边界必须由 parser 在本地确定，不依赖 Function registry 或插件 runtime。
 
@@ -313,10 +343,10 @@ Markup、Code 和 Raw 的边界必须由 parser 在本地确定，不依赖 Func
 
 以下能力不属于当前双 Mode 迁移：
 
-- `let` 与变量访问。
-- 一般 unary/binary expression。
+- 一般变量声明与可变状态。
+- 一般 unary expression。
 - Array、Dict、record 和 Function value。
-- User Function、控制流与 import。
+- 控制流与 import。
 - 插件修改宿主 grammar。
 - Annotation 任意非嵌套交叉。
 - 完整 formatter trivia model。
