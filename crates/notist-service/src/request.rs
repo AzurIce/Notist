@@ -3,17 +3,20 @@ use std::io;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
+use std::time::{Duration, Instant};
 
 use notist_analysis::{
     AnalyzerConfiguration, CompletionKind, DiagnosticKind, DocumentVersions, SignatureSet,
-    SourceOverlays, WorkspaceSymbolKind,
+    SourceOverlays, WorkspaceSnapshot, WorkspaceSymbolKind,
 };
 use notist_html::{RenderOptions, render_with_resolvers};
 use notist_model::{DefaultValue, FunctionSignature, ModulePath, Parameter, TextRange, Type};
 use percent_encoding::{AsciiSet, CONTROLS, NON_ALPHANUMERIC, utf8_percent_encode};
 use serde::{Deserialize, Serialize};
 
-use crate::{NotistService, ServiceViewId, SnapshotIdentity, VaultIdentity, ViewKind};
+use crate::{
+    NotistService, SearchIndexBuild, ServiceViewId, SnapshotIdentity, VaultIdentity, ViewKind,
+};
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(tag = "method", content = "params", rename_all = "snake_case")]
@@ -33,6 +36,13 @@ pub enum CoreRequest {
     SnapshotSummary {
         view_id: ServiceViewId,
     },
+    Status {
+        view_id: ServiceViewId,
+    },
+    ListModules {
+        view_id: ServiceViewId,
+        query: crate::query::ModulesQuery,
+    },
     Sources {
         view_id: ServiceViewId,
     },
@@ -42,12 +52,20 @@ pub enum CoreRequest {
     Diagnostics {
         view_id: ServiceViewId,
     },
+    DiagnosticsPage {
+        view_id: ServiceViewId,
+        query: crate::query::DiagnosticsQuery,
+    },
     FingerprintSource {
         view_id: ServiceViewId,
         path: PathBuf,
     },
     Inspect {
         view_id: ServiceViewId,
+    },
+    DebugInspect {
+        view_id: ServiceViewId,
+        query: crate::query::DebugQuery,
     },
     Definition {
         view_id: ServiceViewId,
@@ -82,6 +100,22 @@ pub enum CoreRequest {
     Outline {
         view_id: ServiceViewId,
     },
+    DefinitionLocation {
+        view_id: ServiceViewId,
+        query: crate::query::DefinitionQuery,
+    },
+    OutlineModule {
+        view_id: ServiceViewId,
+        query: crate::query::OutlineQuery,
+    },
+    ReadSource {
+        view_id: ServiceViewId,
+        query: crate::query::ReadQuery,
+    },
+    ReferencesPage {
+        view_id: ServiceViewId,
+        query: crate::query::ReferencesQuery,
+    },
     WorkspaceSymbols {
         view_id: ServiceViewId,
         query: String,
@@ -89,6 +123,17 @@ pub enum CoreRequest {
     Search {
         view_id: ServiceViewId,
         query: String,
+    },
+    SearchPage {
+        view_id: ServiceViewId,
+        query: crate::query::SearchQuery,
+    },
+    IndexStatus {
+        view_id: ServiceViewId,
+    },
+    IndexRebuild {
+        view_id: ServiceViewId,
+        wait: bool,
     },
     RenderWorkspace {
         view_id: ServiceViewId,
@@ -120,20 +165,31 @@ impl CoreRequest {
             Self::CloseView { view_id }
             | Self::UpdateView { view_id, .. }
             | Self::SnapshotSummary { view_id }
+            | Self::Status { view_id }
+            | Self::ListModules { view_id, .. }
             | Self::Sources { view_id }
             | Self::ReloadDiskView { view_id }
             | Self::Diagnostics { view_id }
+            | Self::DiagnosticsPage { view_id, .. }
             | Self::FingerprintSource { view_id, .. }
             | Self::Inspect { view_id }
+            | Self::DebugInspect { view_id, .. }
             | Self::Definition { view_id, .. }
+            | Self::DefinitionLocation { view_id, .. }
             | Self::References { view_id, .. }
             | Self::ReferencesTo { view_id, .. }
             | Self::Completion { view_id, .. }
             | Self::Hover { view_id, .. }
             | Self::DocumentSymbols { view_id, .. }
             | Self::Outline { view_id }
+            | Self::OutlineModule { view_id, .. }
+            | Self::ReadSource { view_id, .. }
+            | Self::ReferencesPage { view_id, .. }
             | Self::WorkspaceSymbols { view_id, .. }
             | Self::Search { view_id, .. }
+            | Self::SearchPage { view_id, .. }
+            | Self::IndexStatus { view_id }
+            | Self::IndexRebuild { view_id, .. }
             | Self::RenderWorkspace { view_id }
             | Self::ProposeEdit { view_id, .. }
             | Self::ApplyEdit { view_id, .. }
@@ -284,19 +340,30 @@ pub enum CoreResponse {
     Closed,
     Updated,
     SnapshotSummary(SnapshotSummary),
+    Status(crate::query::StatusRecord),
+    Modules(crate::query::QueryPage<crate::query::ModuleItem>),
     Sources(Vec<SourceRecord>),
     Reloaded,
     Diagnostics(Vec<DiagnosticRecord>),
+    DiagnosticsPage(crate::query::DiagnosticsResult),
     SourceFingerprint(Option<SourceFingerprint>),
     Inspect(InspectRecord),
+    DebugPage(crate::query::QueryPage<crate::query::DebugItem>),
     Definition(Option<LocationRecord>),
+    DefinitionLocation(Option<crate::query::Location>),
     References(Vec<LocationRecord>),
     Completion(Vec<CompletionRecord>),
     Hover(Option<HoverRecord>),
     DocumentSymbols(Vec<DocumentSymbolRecord>),
     Outline(Vec<OutlineRecord>),
+    OutlinePage(crate::query::QueryPage<crate::query::OutlineItem>),
+    SourcePage(crate::query::QueryPage<crate::query::SourceChunk>),
+    ReferencesPage(crate::query::QueryPage<crate::query::ReferenceItem>),
     WorkspaceSymbols(Vec<WorkspaceSymbolRecord>),
     Search(Vec<SearchRecord>),
+    SearchPage(crate::query::QueryPage<crate::query::SearchHit>),
+    IndexStatus(crate::query::IndexStatusRecord),
+    QueryError(crate::query::ToolError),
     RenderedWorkspace(RenderedWorkspaceRecord),
     EditPlan(EditPlanRecord),
     EditApplied(ApplyEditRecord),
@@ -468,6 +535,17 @@ pub struct EditPlanRecord {
     pub base_revision: u64,
     pub affected_sources: Vec<SourceFingerprint>,
     pub diagnostics: Vec<String>,
+    pub preview: Vec<EditPreviewRecord>,
+    pub preview_truncated: bool,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct EditPreviewRecord {
+    pub path: PathBuf,
+    pub range: ByteRange,
+    pub before: String,
+    pub replacement: String,
+    pub truncated: bool,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
@@ -493,7 +571,189 @@ pub(crate) struct StoredEditPlan {
     pub diagnostics: Vec<String>,
 }
 
+enum IndexBuildWait {
+    Ready(Arc<crate::query::SearchIndex>),
+    Failed(String),
+    TimedOut,
+}
+
 impl NotistService {
+    fn index_cache_key(identity: &SnapshotIdentity) -> String {
+        format!(
+            "{}:{}:{}",
+            identity.vault.fingerprint, identity.view_kind, identity.source_fingerprint
+        )
+    }
+
+    fn index_operation_handle(identity: &SnapshotIdentity) -> String {
+        let vault = &identity.vault.fingerprint[..identity.vault.fingerprint.len().min(8)];
+        let source = &identity.source_fingerprint[..identity.source_fingerprint.len().min(16)];
+        format!("index-{vault}-{source}")
+    }
+
+    fn start_index_build(
+        &self,
+        workspace: &WorkspaceSnapshot,
+        identity: &SnapshotIdentity,
+        rebuild: bool,
+    ) -> io::Result<Arc<SearchIndexBuild>> {
+        let key = Self::index_cache_key(identity);
+        let mut builds = self.search_index_builds.lock().unwrap();
+        if let Some(existing) = builds.get(&key).cloned() {
+            let pending = existing.result.lock().unwrap().is_none();
+            if !rebuild || pending {
+                return Ok(existing);
+            }
+            builds.remove(&key);
+        }
+
+        if rebuild {
+            self.search_indexes.lock().unwrap().remove(&key);
+            crate::query::SearchIndex::remove_stored(
+                workspace.root(),
+                &identity.source_fingerprint,
+            )?;
+        }
+
+        let build = Arc::new(SearchIndexBuild {
+            operation_handle: Self::index_operation_handle(identity),
+            result: std::sync::Mutex::new(None),
+            ready: std::sync::Condvar::new(),
+        });
+        builds.insert(key.clone(), build.clone());
+        drop(builds);
+
+        let captured = workspace.clone();
+        let fingerprint = identity.source_fingerprint.clone();
+        let indexes = self.search_indexes.clone();
+        let task = build.clone();
+        std::thread::spawn(move || {
+            let started = Instant::now();
+            let result = loop {
+                match crate::query::SearchIndex::build(&captured, &fingerprint) {
+                    Ok(index) => break Ok(Arc::new(index)),
+                    Err(error)
+                        if error.kind() == io::ErrorKind::WouldBlock
+                            && started.elapsed() < Duration::from_secs(10) =>
+                    {
+                        std::thread::sleep(Duration::from_millis(50));
+                    }
+                    Err(error) => break Err(error.to_string()),
+                }
+            };
+            if let Ok(index) = &result {
+                indexes.lock().unwrap().insert(key, index.clone());
+            }
+            *task.result.lock().unwrap() = Some(result);
+            task.ready.notify_all();
+        });
+        Ok(build)
+    }
+
+    fn wait_for_index(build: &SearchIndexBuild, timeout: Option<Duration>) -> IndexBuildWait {
+        let result = build.result.lock().unwrap();
+        let result = if let Some(timeout) = timeout {
+            let (result, timeout_result) = build
+                .ready
+                .wait_timeout_while(result, timeout, |result| result.is_none())
+                .unwrap();
+            if timeout_result.timed_out() && result.is_none() {
+                return IndexBuildWait::TimedOut;
+            }
+            result
+        } else {
+            build
+                .ready
+                .wait_while(result, |result| result.is_none())
+                .unwrap()
+        };
+        match result.as_ref().expect("completed index build has a result") {
+            Ok(index) => IndexBuildWait::Ready(index.clone()),
+            Err(error) => IndexBuildWait::Failed(error.clone()),
+        }
+    }
+
+    fn index_status(
+        &self,
+        workspace: &WorkspaceSnapshot,
+        identity: &SnapshotIdentity,
+        not_built_message: &str,
+    ) -> crate::query::IndexStatusRecord {
+        let key = Self::index_cache_key(identity);
+        if let Some(index) = self.search_indexes.lock().unwrap().get(&key).cloned() {
+            return crate::query::IndexStatusRecord {
+                health: "ready".into(),
+                stamp: Some(index.stamp.clone()),
+                unit_count: index.unit_count,
+                operation_handle: None,
+                message: None,
+            };
+        }
+        if let Some(build) = self.search_index_builds.lock().unwrap().get(&key).cloned() {
+            let result = build.result.lock().unwrap();
+            return match result.as_ref() {
+                None => crate::query::IndexStatusRecord {
+                    health: "building".into(),
+                    stamp: None,
+                    unit_count: 0,
+                    operation_handle: Some(build.operation_handle.clone()),
+                    message: Some("the current snapshot index is being built".into()),
+                },
+                Some(Ok(index)) => crate::query::IndexStatusRecord {
+                    health: "ready".into(),
+                    stamp: Some(index.stamp.clone()),
+                    unit_count: index.unit_count,
+                    operation_handle: None,
+                    message: None,
+                },
+                Some(Err(error)) => crate::query::IndexStatusRecord {
+                    health: "error".into(),
+                    stamp: None,
+                    unit_count: 0,
+                    operation_handle: Some(build.operation_handle.clone()),
+                    message: Some(error.clone()),
+                },
+            };
+        }
+        if let Some(status) =
+            crate::query::SearchIndex::stored_status(workspace.root(), &identity.source_fingerprint)
+        {
+            return status;
+        }
+        if let Some(status) = crate::query::SearchIndex::stale_stored_status(
+            workspace.root(),
+            &identity.source_fingerprint,
+        ) {
+            return status;
+        }
+
+        let prefix = format!("{}:{}:", identity.vault.fingerprint, identity.view_kind);
+        if let Some(index) = self
+            .search_indexes
+            .lock()
+            .unwrap()
+            .iter()
+            .filter(|(candidate, _)| candidate.starts_with(&prefix) && *candidate != &key)
+            .map(|(_, index)| index.clone())
+            .next()
+        {
+            return crate::query::IndexStatusRecord {
+                health: "stale".into(),
+                stamp: Some(index.stamp.clone()),
+                unit_count: index.unit_count,
+                operation_handle: None,
+                message: Some("the available index belongs to an older source set".into()),
+            };
+        }
+        crate::query::IndexStatusRecord {
+            health: "not_built".into(),
+            stamp: None,
+            unit_count: 0,
+            operation_handle: None,
+            message: Some(not_built_message.into()),
+        }
+    }
+
     pub fn execute(&self, request: CoreRequest) -> io::Result<CoreReply> {
         self.execute_cancellable(request, &AtomicBool::new(false))
     }
@@ -561,6 +821,56 @@ impl NotistService {
                     response: CoreResponse::SnapshotSummary(summary),
                 })
             }
+            CoreRequest::Status { view_id } => {
+                let kind = self.view_kind(view_id)?;
+                let (snapshot, result) =
+                    self.with_snapshot_identity(view_id, |workspace, identity| {
+                        let index = self.index_status(
+                            workspace,
+                            identity,
+                            "the lexical index is built lazily on first search",
+                        );
+                        let status = crate::query::status(
+                            workspace,
+                            identity,
+                            kind,
+                            self.runtime_mode(),
+                            index,
+                        );
+                        if serde_json::to_vec(&status)
+                            .map(|value| value.len())
+                            .unwrap_or(usize::MAX)
+                            > 8 * 1024
+                        {
+                            Err(crate::query::ToolError::new(
+                                "budget_exhausted",
+                                "status metadata exceeds its fixed 8 KiB logical budget",
+                            ))
+                        } else {
+                            Ok(status)
+                        }
+                    })?;
+                Ok(CoreReply {
+                    snapshot,
+                    response: match result {
+                        Ok(status) => CoreResponse::Status(status),
+                        Err(error) => CoreResponse::QueryError(error),
+                    },
+                })
+            }
+            CoreRequest::ListModules { view_id, query } => {
+                let (snapshot, result) = self
+                    .with_snapshot_identity(view_id, |workspace, identity| {
+                        crate::query::list_modules(workspace, identity, &query)
+                    })?;
+                Ok(CoreReply {
+                    snapshot,
+                    response: match result {
+                        Ok(page) => CoreResponse::Modules(page),
+                        Err(error) => CoreResponse::QueryError(error),
+                    },
+                })
+            }
             CoreRequest::Sources { view_id } => {
                 let (snapshot, sources) = self.with_snapshot(view_id, |workspace| {
                     workspace
@@ -604,6 +914,19 @@ impl NotistService {
                 Ok(CoreReply {
                     snapshot,
                     response: CoreResponse::Diagnostics(diagnostics),
+                })
+            }
+            CoreRequest::DiagnosticsPage { view_id, query } => {
+                let (snapshot, result) = self
+                    .with_snapshot_identity(view_id, |workspace, identity| {
+                        crate::query::diagnostics(workspace, identity, &query)
+                    })?;
+                Ok(CoreReply {
+                    snapshot,
+                    response: match result {
+                        Ok(page) => CoreResponse::DiagnosticsPage(page),
+                        Err(error) => CoreResponse::QueryError(error),
+                    },
                 })
             }
             CoreRequest::FingerprintSource { view_id, path } => {
@@ -870,6 +1193,70 @@ impl NotistService {
                     response: CoreResponse::Outline(outline),
                 })
             }
+            CoreRequest::DebugInspect { view_id, query } => {
+                let (snapshot, result) = self
+                    .with_snapshot_identity(view_id, |workspace, identity| {
+                        crate::query::debug_inspect(workspace, identity, &query)
+                    })?;
+                Ok(CoreReply {
+                    snapshot,
+                    response: match result {
+                        Ok(page) => CoreResponse::DebugPage(page),
+                        Err(error) => CoreResponse::QueryError(error),
+                    },
+                })
+            }
+            CoreRequest::DefinitionLocation { view_id, query } => {
+                let (snapshot, result) = self.with_snapshot(view_id, |workspace| {
+                    crate::query::definition(workspace, &query)
+                })?;
+                Ok(CoreReply {
+                    snapshot,
+                    response: match result {
+                        Ok(location) => CoreResponse::DefinitionLocation(location),
+                        Err(error) => CoreResponse::QueryError(error),
+                    },
+                })
+            }
+            CoreRequest::OutlineModule { view_id, query } => {
+                let (snapshot, result) = self
+                    .with_snapshot_identity(view_id, |workspace, identity| {
+                        crate::query::outline(workspace, identity, &query)
+                    })?;
+                Ok(CoreReply {
+                    snapshot,
+                    response: match result {
+                        Ok(page) => CoreResponse::OutlinePage(page),
+                        Err(error) => CoreResponse::QueryError(error),
+                    },
+                })
+            }
+            CoreRequest::ReadSource { view_id, query } => {
+                let (snapshot, result) = self
+                    .with_snapshot_identity(view_id, |workspace, identity| {
+                        crate::query::read_source(workspace, identity, &query)
+                    })?;
+                Ok(CoreReply {
+                    snapshot,
+                    response: match result {
+                        Ok(page) => CoreResponse::SourcePage(page),
+                        Err(error) => CoreResponse::QueryError(error),
+                    },
+                })
+            }
+            CoreRequest::ReferencesPage { view_id, query } => {
+                let (snapshot, result) = self
+                    .with_snapshot_identity(view_id, |workspace, identity| {
+                        crate::query::references(workspace, identity, &query)
+                    })?;
+                Ok(CoreReply {
+                    snapshot,
+                    response: match result {
+                        Ok(page) => CoreResponse::ReferencesPage(page),
+                        Err(error) => CoreResponse::QueryError(error),
+                    },
+                })
+            }
             CoreRequest::WorkspaceSymbols { view_id, query } => {
                 let (snapshot, symbols) = self.with_snapshot(view_id, |workspace| {
                     workspace
@@ -913,6 +1300,116 @@ impl NotistService {
                     response: CoreResponse::Search(results),
                 })
             }
+            CoreRequest::SearchPage { view_id, query } => {
+                let (snapshot, result) =
+                    self.with_snapshot_identity(view_id, |workspace, identity| match query.mode {
+                        crate::query::SearchMode::Exact | crate::query::SearchMode::Regex => {
+                            crate::query::exact_or_regex_search(workspace, identity, &query)
+                        }
+                        crate::query::SearchMode::Lexical | crate::query::SearchMode::Fuzzy => {
+                            let key = Self::index_cache_key(identity);
+                            let index = if let Some(index) = self
+                                .search_indexes
+                                .lock()
+                                .unwrap()
+                                .get(&key)
+                                .cloned()
+                            {
+                                IndexBuildWait::Ready(index)
+                            } else {
+                                match self.start_index_build(workspace, identity, false) {
+                                    Ok(build) => Self::wait_for_index(
+                                        &build,
+                                        Some(Duration::from_millis(query.wait_index_ms)),
+                                    ),
+                                    Err(error) => IndexBuildWait::Failed(error.to_string()),
+                                }
+                            };
+                            match index {
+                                IndexBuildWait::Ready(index) => {
+                                    index.search(workspace, identity, &query)
+                                }
+                                IndexBuildWait::Failed(error) => Err(crate::query::ToolError::new(
+                                    "index_not_ready",
+                                    error,
+                                )
+                                .retryable("run `notist index rebuild`, retry, or use --exact")),
+                                IndexBuildWait::TimedOut => {
+                                    let handle = Self::index_operation_handle(identity);
+                                    Err(crate::query::ToolError::new(
+                                        "index_not_ready",
+                                        format!(
+                                            "index build did not finish within {} ms (operation {handle})",
+                                            query.wait_index_ms
+                                        ),
+                                    )
+                                    .retryable(
+                                        "inspect `notist index status`, retry, or use --exact",
+                                    ))
+                                }
+                            }
+                        }
+                    })?;
+                Ok(CoreReply {
+                    snapshot,
+                    response: match result {
+                        Ok(page) => CoreResponse::SearchPage(page),
+                        Err(error) => CoreResponse::QueryError(error),
+                    },
+                })
+            }
+            CoreRequest::IndexStatus { view_id } => {
+                let (snapshot, status) =
+                    self.with_snapshot_identity(view_id, |workspace, identity| {
+                        self.index_status(
+                            workspace,
+                            identity,
+                            "run `notist index rebuild` or perform lexical search",
+                        )
+                    })?;
+                Ok(CoreReply {
+                    snapshot,
+                    response: CoreResponse::IndexStatus(status),
+                })
+            }
+            CoreRequest::IndexRebuild { view_id, wait } => {
+                let (snapshot, result) =
+                    self.with_snapshot_identity(view_id, |workspace, identity| {
+                        let build = self.start_index_build(workspace, identity, true)?;
+                        if !wait {
+                            return Ok(crate::query::IndexStatusRecord {
+                                health: "building".into(),
+                                stamp: None,
+                                unit_count: 0,
+                                operation_handle: Some(build.operation_handle.clone()),
+                                message: Some("index rebuild submitted in the background".into()),
+                            });
+                        }
+                        match Self::wait_for_index(&build, None) {
+                            IndexBuildWait::Ready(index) => Ok(crate::query::IndexStatusRecord {
+                                health: "ready".into(),
+                                stamp: Some(index.stamp.clone()),
+                                unit_count: index.unit_count,
+                                operation_handle: Some(build.operation_handle.clone()),
+                                message: Some("index rebuild completed".into()),
+                            }),
+                            IndexBuildWait::Failed(error) => Err(io::Error::other(error)),
+                            IndexBuildWait::TimedOut => {
+                                unreachable!("unbounded index wait timed out")
+                            }
+                        }
+                    })?;
+                Ok(CoreReply {
+                    snapshot,
+                    response: match result {
+                        Ok(status) => CoreResponse::IndexStatus(status),
+                        Err(error) => CoreResponse::QueryError(
+                            crate::query::ToolError::new("index_not_ready", error.to_string())
+                                .retryable("retry after correcting the reported index error"),
+                        ),
+                    },
+                })
+            }
             CoreRequest::RenderWorkspace { view_id } => {
                 let (snapshot, rendered) = self
                     .with_snapshot(view_id, |workspace| render_workspace(workspace, cancelled))?;
@@ -936,8 +1433,17 @@ impl NotistService {
                             ),
                         ));
                     }
+                    if operations.is_empty() || operations.len() > 100 {
+                        return Err(io::Error::new(
+                            io::ErrorKind::InvalidInput,
+                            "edit proposal must contain 1 to 100 operations",
+                        ));
+                    }
                     let mut fingerprints = Vec::new();
                     let mut diagnostics = Vec::new();
+                    let mut preview = Vec::new();
+                    let mut preview_remaining = 24 * 1024usize;
+                    let mut preview_truncated = false;
                     for operation in &operations {
                         let Some(file_id) = workspace.file_id(&operation.path) else {
                             diagnostics.push(format!(
@@ -947,17 +1453,47 @@ impl NotistService {
                             continue;
                         };
                         let source = workspace.source(file_id).unwrap();
-                        if operation.range.start > operation.range.end
-                            || operation.range.end > source.text.len()
-                            || !source.text.is_char_boundary(operation.range.start)
-                            || !source.text.is_char_boundary(operation.range.end)
-                        {
+                        let valid_range = operation.range.start <= operation.range.end
+                            && operation.range.end <= source.text.len()
+                            && source.text.is_char_boundary(operation.range.start)
+                            && source.text.is_char_boundary(operation.range.end);
+                        if !valid_range {
                             diagnostics.push(format!(
                                 "edit range {}..{} is invalid for `{}`",
                                 operation.range.start,
                                 operation.range.end,
                                 operation.path.display()
                             ));
+                        }
+                        if operation.replacement.len() > 64 * 1024 {
+                            diagnostics.push(format!(
+                                "replacement for `{}` exceeds 64 KiB",
+                                operation.path.display()
+                            ));
+                        }
+                        if valid_range && preview_remaining >= 128 {
+                            let cap = (preview_remaining / 2).min(2048);
+                            let (before, before_truncated) = bounded_utf8(
+                                &source.text[operation.range.start..operation.range.end],
+                                cap,
+                            );
+                            let (replacement, replacement_truncated) =
+                                bounded_utf8(&operation.replacement, cap);
+                            preview_remaining = preview_remaining
+                                .saturating_sub(before.len() + replacement.len() + 128);
+                            preview.push(EditPreviewRecord {
+                                path: operation
+                                    .path
+                                    .strip_prefix(workspace.root())
+                                    .unwrap_or(&operation.path)
+                                    .to_path_buf(),
+                                range: operation.range,
+                                before,
+                                replacement,
+                                truncated: before_truncated || replacement_truncated,
+                            });
+                        } else if valid_range {
+                            preview_truncated = true;
                         }
                         if !fingerprints
                             .iter()
@@ -967,9 +1503,9 @@ impl NotistService {
                                 .push(source_fingerprint(operation.path.clone(), &source.text));
                         }
                     }
-                    Ok((fingerprints, diagnostics))
+                    Ok((fingerprints, diagnostics, preview, preview_truncated))
                 })?;
-                let (fingerprints, diagnostics) = proposed?;
+                let (fingerprints, diagnostics, preview, preview_truncated) = proposed?;
                 let plan_hash = edit_plan_hash(
                     view_id,
                     base_revision,
@@ -994,6 +1530,8 @@ impl NotistService {
                         base_revision,
                         affected_sources: fingerprints,
                         diagnostics,
+                        preview,
+                        preview_truncated,
                     }),
                 })
             }
@@ -1251,6 +1789,10 @@ fn edit_plan_hash(
 }
 
 fn replace_file(path: &Path, contents: &[u8], plan_hash: &str) -> io::Result<()> {
+    write_artifact_atomic(path, contents, plan_hash)
+}
+
+pub fn write_artifact_atomic(path: &Path, contents: &[u8], operation_id: &str) -> io::Result<()> {
     let parent = path
         .parent()
         .ok_or_else(|| io::Error::other("edited source has no parent directory"))?;
@@ -1258,9 +1800,24 @@ fn replace_file(path: &Path, contents: &[u8], plan_hash: &str) -> io::Result<()>
         .file_name()
         .ok_or_else(|| io::Error::other("edited source has no file name"))?
         .to_string_lossy();
-    let temporary = parent.join(format!(".{name}.notist-{plan_hash}.tmp"));
+    let temporary = parent.join(format!(".{name}.notist-{operation_id}.tmp"));
     std::fs::write(&temporary, contents)?;
-    replace_file_platform(&temporary, path)
+    if path.exists() {
+        replace_file_platform(&temporary, path)
+    } else {
+        std::fs::rename(temporary, path)
+    }
+}
+
+fn bounded_utf8(value: &str, max_bytes: usize) -> (String, bool) {
+    if value.len() <= max_bytes {
+        return (value.to_owned(), false);
+    }
+    let mut end = max_bytes.min(value.len());
+    while !value.is_char_boundary(end) {
+        end -= 1;
+    }
+    (value[..end].to_owned(), true)
 }
 
 #[cfg(not(windows))]
@@ -1554,7 +2111,7 @@ mod tests {
 
     #[test]
     fn embedded_and_remote_surfaces_share_serializable_core_requests() {
-        let root = tempfile::TempDir::new().unwrap();
+        let root = tempfile::TempDir::new_in(std::env::current_dir().unwrap()).unwrap();
         let path = root.path().join("README.not");
         fs::write(&path, "#heading[Title]@title").unwrap();
         let service = NotistService::new();
@@ -1584,7 +2141,7 @@ mod tests {
 
     #[test]
     fn edit_plans_enforce_fingerprints_and_idempotency() {
-        let root = tempfile::TempDir::new().unwrap();
+        let root = tempfile::TempDir::new_in(std::env::current_dir().unwrap()).unwrap();
         let path = root.path().join("README.not");
         fs::write(&path, "one").unwrap();
         let path = dunce::canonicalize(path).unwrap();
@@ -1634,7 +2191,7 @@ mod tests {
 
     #[test]
     fn edit_apply_rejects_sources_changed_after_proposal() {
-        let root = tempfile::TempDir::new().unwrap();
+        let root = tempfile::TempDir::new_in(std::env::current_dir().unwrap()).unwrap();
         let path = root.path().join("README.not");
         fs::write(&path, "one").unwrap();
         let path = dunce::canonicalize(path).unwrap();
@@ -1677,7 +2234,7 @@ mod tests {
 
     #[test]
     fn daemon_serializes_preconditioned_source_renames() {
-        let root = tempfile::TempDir::new().unwrap();
+        let root = tempfile::TempDir::new_in(std::env::current_dir().unwrap()).unwrap();
         let from = root.path().join("old.not");
         let to = root.path().join("new.not");
         fs::write(&from, "content").unwrap();
@@ -1724,7 +2281,7 @@ mod tests {
 
     #[test]
     fn protocol_configuration_projects_plugin_schema_without_running_plugin_code() {
-        let root = tempfile::TempDir::new().unwrap();
+        let root = tempfile::TempDir::new_in(std::env::current_dir().unwrap()).unwrap();
         let path = root.path().join("README.not");
         fs::write(&path, "disk").unwrap();
         let path = dunce::canonicalize(path).unwrap();
@@ -1780,5 +2337,233 @@ mod tests {
             )
             .unwrap_err();
         assert_eq!(error.kind(), io::ErrorKind::Interrupted);
+    }
+
+    #[test]
+    fn v2_queries_are_bounded_ranked_and_resumable() {
+        let root = tempfile::TempDir::new_in(std::env::current_dir().unwrap()).unwrap();
+        fs::write(root.path().join("Notist.toml"), "").unwrap();
+        fs::write(
+            root.path().join("README.not"),
+            "= Searchable Workspace\n\nworkspace snapshot searchable\n\nworkspace snapshot second\n\n// secretcomment",
+        )
+        .unwrap();
+        fs::write(
+            root.path().join("long.not"),
+            (1..=300)
+                .map(|line| format!("line {line}\n"))
+                .collect::<String>(),
+        )
+        .unwrap();
+        let service = NotistService::new();
+        let opened = service
+            .execute(CoreRequest::OpenView {
+                root: root.path().to_path_buf(),
+                kind: ProtocolViewKind::Disk,
+            })
+            .unwrap();
+        let CoreResponse::Opened { view_id, .. } = opened.response else {
+            panic!("expected opened view")
+        };
+        let background = service
+            .execute(CoreRequest::IndexRebuild {
+                view_id,
+                wait: false,
+            })
+            .unwrap();
+        let CoreResponse::IndexStatus(background) = background.response else {
+            panic!("expected background index status")
+        };
+        assert_eq!(background.health, "building");
+        assert!(background.operation_handle.is_some());
+        let completed = service
+            .execute(CoreRequest::IndexRebuild {
+                view_id,
+                wait: true,
+            })
+            .unwrap();
+        let CoreResponse::IndexStatus(completed) = completed.response else {
+            panic!("expected completed index status")
+        };
+        assert_eq!(completed.health, "ready");
+        assert_eq!(completed.operation_handle, background.operation_handle);
+        let query = crate::query::SearchQuery {
+            query: "workspace snapshot".into(),
+            mode: crate::query::SearchMode::Lexical,
+            scopes: Vec::new(),
+            fields: crate::query::SearchField::defaults(),
+            operator: crate::query::SearchOperator::All,
+            group_by: Some(crate::query::SearchGroup::Match),
+            ignore_case: false,
+            fuzzy_distance: 1,
+            wait_index_ms: 2000,
+            snippet_bytes: 128,
+            page: crate::query::PageRequest {
+                limit: Some(1),
+                max_bytes: Some(4096),
+                cursor: None,
+            },
+        };
+        let first = service
+            .execute(CoreRequest::SearchPage {
+                view_id,
+                query: query.clone(),
+            })
+            .unwrap();
+        let CoreResponse::SearchPage(first) = first.response else {
+            panic!("expected search page")
+        };
+        assert_eq!(first.items.len(), 1);
+        assert!(first.page.has_more);
+        assert!(first.items[0].score.is_some());
+        assert!(first.items[0].match_range.is_some());
+        assert!(first.items[0].excerpt.to_lowercase().contains("workspace"));
+        assert!(serde_json::to_vec(&first).unwrap().len() < 4096);
+
+        let mut next_query = query.clone();
+        next_query.page.cursor = first.page.next_cursor;
+        let second = service
+            .execute(CoreRequest::SearchPage {
+                view_id,
+                query: next_query,
+            })
+            .unwrap();
+        let CoreResponse::SearchPage(second) = second.response else {
+            panic!("expected second search page")
+        };
+        assert_eq!(second.items.len(), 1);
+        assert_ne!(
+            first.items[0].unit_range.start,
+            second.items[0].unit_range.start
+        );
+
+        let mut grouped_query = query.clone();
+        grouped_query.group_by = None;
+        grouped_query.page.limit = Some(8);
+        grouped_query.page.cursor = None;
+        let grouped = service
+            .execute(CoreRequest::SearchPage {
+                view_id,
+                query: grouped_query,
+            })
+            .unwrap();
+        let CoreResponse::SearchPage(grouped) = grouped.response else {
+            panic!("expected grouped search page")
+        };
+        assert_eq!(grouped.items.len(), 1);
+        let metadata = grouped.search.as_ref().unwrap();
+        assert_eq!(metadata.group_by, crate::query::SearchGroup::Source);
+        assert_eq!(metadata.ordering, "relevance");
+        assert!(metadata.index_stamp.is_some());
+
+        let fuzzy = service
+            .execute(CoreRequest::SearchPage {
+                view_id,
+                query: crate::query::SearchQuery {
+                    query: "serchable".into(),
+                    mode: crate::query::SearchMode::Fuzzy,
+                    fields: crate::query::SearchField::defaults(),
+                    scopes: Vec::new(),
+                    operator: crate::query::SearchOperator::All,
+                    group_by: None,
+                    ignore_case: false,
+                    fuzzy_distance: 1,
+                    wait_index_ms: 2000,
+                    snippet_bytes: 128,
+                    page: Default::default(),
+                },
+            })
+            .unwrap();
+        let CoreResponse::SearchPage(fuzzy) = fuzzy.response else {
+            panic!("expected fuzzy page")
+        };
+        assert!(!fuzzy.items.is_empty());
+
+        for (field, expected) in [
+            (crate::query::SearchField::Comment, true),
+            (crate::query::SearchField::Body, false),
+        ] {
+            let result = service
+                .execute(CoreRequest::SearchPage {
+                    view_id,
+                    query: crate::query::SearchQuery {
+                        query: "secretcomment".into(),
+                        mode: crate::query::SearchMode::Lexical,
+                        fields: vec![field],
+                        scopes: Vec::new(),
+                        operator: crate::query::SearchOperator::All,
+                        group_by: None,
+                        ignore_case: false,
+                        fuzzy_distance: 1,
+                        wait_index_ms: 2000,
+                        snippet_bytes: 128,
+                        page: Default::default(),
+                    },
+                })
+                .unwrap();
+            let CoreResponse::SearchPage(result) = result.response else {
+                panic!("expected field search page")
+            };
+            assert_eq!(!result.items.is_empty(), expected);
+        }
+
+        let read = service
+            .execute(CoreRequest::ReadSource {
+                view_id,
+                query: crate::query::ReadQuery {
+                    selector: crate::query::Selector::Module {
+                        module: "vault::long".into(),
+                        label: None,
+                    },
+                    window: Default::default(),
+                    page: crate::query::PageRequest {
+                        limit: None,
+                        max_bytes: Some(64 * 1024),
+                        cursor: None,
+                    },
+                },
+            })
+            .unwrap();
+        let CoreResponse::SourcePage(read) = read.response else {
+            panic!("expected source page")
+        };
+        assert_eq!(
+            read.items[0].source.lines().count(),
+            crate::query::READ_DEFAULT_LINES
+        );
+        assert!(read.page.has_more);
+
+        fs::write(
+            root.path().join("README.not"),
+            "= Changed\n\nincrementalneedle",
+        )
+        .unwrap();
+        service
+            .execute(CoreRequest::ReloadDiskView { view_id })
+            .unwrap();
+        for (term, expected) in [("incrementalneedle", true), ("searchable", false)] {
+            let result = service
+                .execute(CoreRequest::SearchPage {
+                    view_id,
+                    query: crate::query::SearchQuery {
+                        query: term.into(),
+                        mode: crate::query::SearchMode::Lexical,
+                        fields: crate::query::SearchField::defaults(),
+                        scopes: Vec::new(),
+                        operator: crate::query::SearchOperator::All,
+                        group_by: None,
+                        ignore_case: false,
+                        fuzzy_distance: 1,
+                        wait_index_ms: 2000,
+                        snippet_bytes: 128,
+                        page: Default::default(),
+                    },
+                })
+                .unwrap();
+            let CoreResponse::SearchPage(result) = result.response else {
+                panic!("expected incremental search page")
+            };
+            assert_eq!(!result.items.is_empty(), expected);
+        }
     }
 }

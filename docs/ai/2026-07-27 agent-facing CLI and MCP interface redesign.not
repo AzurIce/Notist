@@ -1,0 +1,693 @@
+= Agent-facing CLI and MCP interface redesign
+
+这份提案把 [[vault::ai::2026-07-26 agent-friendly CLI output and Notist improvements]] 的成本取证收束成一套可实施的接口。它仍然是研究提案，不是新的 governing design；方向确认后，应把稳定结论更新进 [[vault::designs::D0012-daemon-and-client-interfaces]] 与 [[vault::designs::D0013-self-contained-agent-skill]]。
+
+要解决的不是“给现有命令加几个 limit”，而是同时满足四类调用者：
+
+- 人在终端里探索 Vault，需要短、漂亮、可继续的输出。
+- shell script 需要稳定 JSON、稳定 exit status 和零交互。
+- Agent 需要小而明确的 tool result、可恢复分页和可靠 citation。
+- build、导出和离线分析需要完整数据，但不应把全量数据塞进对话上下文。
+
+== 首要决策：参数控制不能替代安全默认
+
+“所有调用必须有默认上界”和“让调用者用参数控制”并不冲突。建议采用三层预算：
+
+```text
+ordinary query
+  server default
+    -> caller may tighten or raise within a hard maximum
+      -> response returns continuation
+
+full export
+  explicit export command
+    -> streams to a file or artifact
+      -> stdout/tool result only returns summary and handle
+```
+
+这三层分别解决不同问题：
+
+- *默认预算*防止调用者忘记传参数。Agent 误用、旧 Skill 或第三方 Host 不会立刻得到 1 MB 结果。
+- *请求参数*允许人或程序根据任务调节，不把 20 条写死成语言语义。
+- *服务端硬上界*防止 `limit=1000000`、单条超长 snippet 或错误 wrapper 绕过产品边界。
+- *export 流程*保留完整性，不假装所有场景都只能看 32 KiB。
+
+因此更精确的产品原则是：
+
+*任何普通查询都必须有服务端硬上界；调用者可以用参数在上界内调节。真正的全量读取必须显式进入 export 流程，普通响应始终返回继续读取所需的稳定句柄。*
+
+MCP tool 不提供 `all=true`。Agent 使用 continuation 翻页；完整导出首版保持为 CLI 或 Host 管理的显式流程。未来如果暴露 export tool，它必须是单独授权的 artifact operation，只返回 summary 和 handle。普通 tool result 永不关闭硬上界。CLI 可以面向人提供完整导出，但应要求 `--output`，避免全量数据意外进入捕获 stdout 的 Agent。
+
+== 真实 corpus 对预算的约束
+
+对 v0.3 corpus 的 339 个 `.not` source 统计如下：
+
+| 分布 | p50 | p95 | p99 | max |
+| --- | ---: | ---: | ---: | ---: |
+| 文件 UTF-8 bytes | 3,412 | 18,650 | 35,562 | 96,338 |
+| 单行 UTF-8 bytes | — | 142 | 309 | 12,667 |
+| 每文档 Heading 数 | — | 27 | 54 | 140 |
+
+另外，当前 corpus 有 408 Module、185 条 resolved reference；单 Module 最大 outgoing reference 为 41。这个分布支持以下判断：
+
+- 32 KiB 能完整覆盖绝大多数普通 source read，但不能覆盖所有文件。
+- snippet 必须有独立上限；只限制 result count 无法处理 12.7 KiB 单行。
+- 单 Module outline 默认 100 个 Heading 足够覆盖 99% 以上文档，最大文档仍需要第二页。
+- reference 默认 50 条在当前 corpus 足够，但协议仍要支持 continuation。
+- 全库 Module 清单需要分页；它不是一个应该完整内嵌到每次 discovery 的常量。
+
+这些数值是初始 policy，不是语言常量。以后应从 output telemetry 和固定 bench 调整，但调整不能取消 hard maximum。
+
+== 一套 core semantics，两个有意不同的 adapter
+
+CLI 与 MCP 应共享 core operation、排序、cursor、snapshot 和 error model，但不要求表面命令一一同名。
+
+```text
+WorkspaceSnapshot query
+        |
+        +-> CLI adapter
+        |     human text / JSON / export
+        |
+        +-> MCP adapter
+              fixed tools / resource links / structuredContent
+```
+
+CLI 可以组合人类工作流，例如 rich diagnostics、pager 和 export。MCP 应保持少量、固定 schema 的 primitive，不暴露 debug dump、pager 或交互确认。二者的语义同源，不代表 MCP 要机械复制每一个 CLI flag。
+
+=== 不引入 agent/human profile
+
+不建议增加全局 `--profile agent|human|full`：
+
+- Agent 可能在伪 TTY 中运行，人写的 script 也可能使用 JSON，无法可靠识别身份。
+- profile 容易让同一命令在不同环境返回不同 item，破坏 benchmark 和可重现性。
+- “full” profile 会成为新的无界默认捷径。
+- MCP 本身已经有 schema，不需要借 CLI profile 表达。
+
+调用范围只由显式 query 参数决定。TTY detection 只能改变颜色、source frame、pager 和提示文字，不能暗中扩大 limit 或读取下一页。`--format text|json|jsonl` 也只能改变序列化，不得改变 filter、排序、coverage 或 cursor。
+
+=== 参数分成四类
+
+接口应明确区分四个层次：
+
+| 层次 | 示例 | 是否改变查询语义 |
+| --- | --- | --- |
+| Scope/filter | `--scope`、`--kind`、`--prefix` | 是 |
+| Budget/page | `--limit`、`--max-bytes`、`--cursor` | 只改变返回窗口 |
+| Projection | command-specific compact record | 不改变匹配集合 |
+| Rendering | `--format`、`--color`、`--pager` | 否 |
+
+P0 不建议先做通用 `--fields`。GitHub CLI 需要字段投影，是因为它面对很大的通用 domain object；Notist 更应该为每个 operation 设计小而稳定的 record。`search` 默认记录本来就不应含 full source，`modules` 也不应含 semantic items。
+
+以后可以为 CLI JSON 增加只投影 scalar 的 `--fields`，但它不能解锁 source、raw、diagnostics body 等重字段，也不能成为 MCP dynamic schema。MCP 使用固定 outputSchema。
+
+== 统一 core query contract
+
+所有可能返回 collection 的 core operation 接受同一种 page request：
+
+```text
+PageRequest {
+  limit
+  max_bytes
+  cursor?
+}
+
+PagePolicy {
+  default_limit
+  maximum_limit
+  default_bytes
+  maximum_bytes
+}
+```
+
+调用者省略参数时应用 command policy；提供参数时服务端 clamp 或拒绝超界值，并在 response 中报告实际应用值。
+
+统一 response 不使用一个含义模糊的 `truncated`：
+
+```text
+QueryPage<T> {
+  snapshot
+  items
+
+  page {
+    returned
+    has_more
+    next_cursor?
+  }
+
+  budget {
+    requested_limit
+    applied_limit
+    requested_max_bytes
+    applied_max_bytes
+    returned_bytes
+    stop_reason
+  }
+
+  coverage {
+    query_complete
+    scanned_sources?
+    total_matches?
+  }
+}
+```
+
+`stop_reason` 是 `complete`、`item_limit` 或 `byte_limit`。`item.excerpt_truncated` 单独说明当前 excerpt 不是完整 source region。这样 Agent 能区分“还有更多结果”“当前 snippet 不完整”和“本页撞到 byte budget”。
+
+`total_matches` 只在已有查询能廉价、可靠计算时返回；不能为了显示总数重新扫描或物化整库。`query_complete` 表示查询对声明的 scope 是否完整执行，它对 unanswerable 判断很重要：空 items 只有在 coverage 完整时才是可靠的“未找到”证据。
+
+=== byte budget 在完整 JSON 边界执行
+
+`max_bytes` 约束完整 logical response 的 UTF-8 JSON bytes，包括 item、page metadata 和 envelope 预留，而不是先序列化再剪字符串。
+
+实现可以逐 item 序列化到 scratch buffer：
+
+- 先为 envelope、page 和 cursor 预留空间。
+- 每加入一个 item 就计算精确 serialized bytes。
+- 可变 excerpt 过大时在 Unicode scalar boundary 缩短，再重新序列化。
+- scalar metadata 本身仍放不下时返回 typed `record_too_large`，不生成非法 JSON。
+- 第一个未返回 item 成为 next cursor 的起点，不能被跳过。
+
+CLI JSON 的 hard maximum 覆盖完整 envelope。MCP 的 `max_bytes` 覆盖 serialized `structuredContent`；兼容 text mirror 会近似复制一次，因此 ordinary JSON-RPC response 的 transport hard maximum 应另设为约两倍加固定 overhead。
+
+tokenizer 因模型而异，所以 hard invariant 使用 UTF-8 bytes。可以附 `estimated_tokens`，但必须注明 tokenizer 或 bytes/4 估算，不能把它写成账单 token。
+
+== identity、selector 与一致性
+
+Agent 的首选 document handle 是 ModulePath，不是 absolute path。所有 record 同时返回：
+
+```text
+module
+path                 // Vault-relative, slash-normalized
+source_fingerprint
+range                // zero-based UTF-8 byte range
+line_range?          // one-based display range
+uri?                 // exact bounded resource link
+```
+
+CLI positional selector 可以接受完整 ModulePath 或 Vault-relative path；短名称和 fuzzy path 只能用于 discovery，不能静默选中一个目标。ambiguous selector 返回 candidates。
+
+MCP 不使用一个含义不明的 string。inputSchema 用显式 union：
+
+```json
+{
+  "oneOf": [
+    { "required": ["module"] },
+    { "required": ["path"] }
+  ],
+  "additionalProperties": false
+}
+```
+
+Heading/Annotation 使用 `module + label`。编辑和 definition 仍使用精确 byte range/offset；read 可以使用 line window、byte range 或 label section，但三者互斥。
+
+=== cursor 绑定 snapshot，而不是当前目录顺序
+
+cursor 至少包含或绑定：
+
+- cursor schema version。
+- Vault fingerprint。
+- View-local revision，以及可跨 `--no-daemon` 检查的 source/config fingerprint。
+- operation、query、scope、filter、sort 和 projection fingerprint。
+- 最后一个稳定 sort key。
+
+对外 cursor 是 opaque，不是 authorization token。调用者不能解析、修改或跨 Vault 复用。
+
+排序必须稳定：
+
+- modules 按 ModulePath。
+- outline 按 source range。
+- references 按 relative path 和 range。
+- 当前 substring search 按 ModulePath 和 range。
+- 未来 ranked search 按 score、ModulePath、range，并把 ranking/index version 纳入 cursor。
+
+Vault 内容变化后，旧 cursor 返回 `cursor_stale`，不能在新 snapshot 中猜一个相同位置继续。格式或 operation 不匹配返回 `invalid_cursor`；不应把所有问题都叫 expired。
+
+纯 server-side cursor 不适合 `--no-daemon` 的第二次独立进程。首版应使用自包含、经过完整验证的 cursor payload，或定义一个跨进程可复现的 snapshot token；不能依赖前一进程内存。cursor 可以签名以检测篡改，但绝不能被当成权限边界。
+
+== CLI command surface
+
+建议保留用户已经认识的 `search`、`outline`、`references`、`check`、`query` 和 `edit`，增加三个窄入口，并把 debug 能力移出普通 discovery：
+
+```text
+notist status [ROOT]
+notist modules [ROOT]
+notist search <QUERY> [ROOT]
+notist outline <MODULE> [ROOT]
+notist read <MODULE|PATH> [ROOT]
+notist references <MODULE[#LABEL]> [ROOT]
+notist query definition <PATH> <OFFSET>
+notist check [ROOT]
+notist edit ...
+
+notist debug inspect [ROOT]
+notist export <KIND> [ROOT] --output <FILE>
+```
+
+`outline` 的 Module 参数建议变为必填。全库 discovery 使用 modules/search，不再把“所有标题”当目录。需要 corpus-level outline 的人使用分页 `modules` 加逐 Module outline，或显式 export。
+
+=== status
+
+`status` 是最小的入口：
+
+```text
+Vault        cfc3d18d
+Snapshot     disk revision 42
+Sources      339
+Modules      408
+Diagnostics  0
+```
+
+JSON 返回 Vault identity、snapshot stamp、source/module/diagnostic counts 和 index health，不返回 source、Heading 或 semantic items。它不分页，必须保持很小。
+
+=== modules
+
+```shell
+notist modules docs --prefix vault::designs --limit 50
+notist modules docs --cursor <token> --format json
+```
+
+Module record 只含 ModulePath、relative source path、source-backed/virtual kind 和可选 title。过滤发生在 core，不先构造所有 semantic items。
+
+=== search
+
+```shell
+notist search "workspace snapshot" docs \
+  --scope vault::designs \
+  --kind text,title,annotation \
+  --limit 20 \
+  --snippet-bytes 512
+```
+
+当前实现是 deterministic substring search，因此参数称 `--limit`，不能宣传 top-k 或 score。未来 FTS/hybrid 上线后，response 明确增加 `ordering` 和 `ranking_version`。
+
+Search hit：
+
+```text
+module
+path
+range
+line_range
+label?
+match_kind
+excerpt
+excerpt_range
+excerpt_truncated
+source_fingerprint
+```
+
+tool/help 必须写清：excerpt 用于选择证据，回答事实前应调用 read。搜索结果不携带整篇 source。
+
+=== outline
+
+```shell
+notist outline vault::designs::D0011 docs --depth 3 --limit 100
+```
+
+只查询一个 Module。Heading node 返回 label、name、level、range、parent index 或 depth。inline raw 造成空 name 时应由 semantic title extraction 修复，而不是把 raw source dump 给调用者。
+
+=== read
+
+```shell
+notist read vault::designs::D0011 docs --from-line 120 --lines 80
+notist read "<MODULE>#<LABEL>" docs
+notist read docs/designs/D0011-analyzer-and-workspace-snapshot.not docs \
+  --byte-range 4000..8000
+```
+
+三种 window：
+
+- line window：面向人，默认带行号。
+- label section：面向知识导航，从 Heading/Annotation 开始。
+- byte range：面向精确 citation/edit。
+
+默认最多 200 行且仍受 32 KiB 限制。返回实际 source range、source fingerprint 和 next cursor。文件只有 3 KiB 时一次读完；96 KiB 长文自动分块，不需要 Agent 猜 shell offset。
+
+=== references 与 definition
+
+references 返回 location record 和最多 512-byte excerpt，不重复整篇 source：
+
+```shell
+notist references vault::designs::D0011 docs \
+  --direction incoming \
+  --limit 50
+```
+
+`direction` 是 `incoming`、`outgoing` 或 `both`；默认 incoming 保持现有 backlinks 语义。definition 返回零或一个 location，不分页。两者都接受 expected source/snapshot fingerprint，避免按旧 offset 查询新 source。
+
+=== check
+
+check 始终完整分析目标 scope；预算只限制 detail，不限制检查本身：
+
+```text
+summary {
+  checked_sources
+  total_diagnostics
+  counts_by_severity
+  counts_by_code
+}
+
+diagnostics_page {
+  items
+  next_cursor
+}
+```
+
+即使只显示前 50 条，只要全 Vault 有 diagnostic，`ok=false` 和 exit status 都必须反映完整检查结果。
+
+Human text 恢复类似 rustc/Typst 的 source frame：
+
+```text
+error[invalid-syntax]: unclosed Content block
+  --> ai/example.not:13:5
+   |
+13 | #quote[
+   |       ^ block starts here
+
+3 errors in 2 modules; showing 1-3
+```
+
+source frame 通过 bounded range read 组装，每个 diagnostic 只取相邻少量行。JSON diagnostic 返回 code、severity、module、relative path、byte/line range、message、hint 和 bounded excerpt，不含 full source。
+
+CI 只关心通过与否时使用 `--summary`。需要完整 machine artifact 时使用：
+
+```shell
+notist export diagnostics docs --output diagnostics.jsonl
+```
+
+=== debug 与 export
+
+旧 `inspect` 混合 modules、references、calls、annotations 和 raw literals，应退出普通 help/Skill：
+
+```shell
+notist debug inspect docs --section modules --limit 50
+notist debug inspect docs --section semantic --module vault::grammar
+notist export snapshot docs --output snapshot.jsonl
+```
+
+debug query 仍分页。真正全量通过 export 写文件，stdout 只返回：
+
+```text
+wrote 7,801 records, 1.14 MiB -> snapshot.jsonl
+artifact id: ...
+```
+
+`--output -` 可以作为专家 opt-in 支持 stdout streaming，但 help 要明确它可能无界；Skill 和 MCP 不使用这个形态。
+
+== Human text、JSON 与 JSON Lines
+
+人类默认 text renderer 的目标是“第一页可读并知道下一步”：
+
+```text
+20 matches in snapshot 42
+
+1. vault::designs::D0011  designs/D0011-....not:84
+   consumer captures one immutable snapshot ...
+
+...
+
+showing 1-20; more results available
+continue with --cursor eyJ...
+```
+
+长 opaque cursor 对人不漂亮，但诚实且可复制。以后可以让 daemon 保存一个短期 `@last` alias；这只能是 UX sugar，实际 request 仍携带完整 cursor。首版不要为了隐藏 token 引入交互状态。
+
+TTY 可以：
+
+- 自动颜色和 source frame。
+- 使用 pager 显示当前页。
+- 显示下一页命令和 export 提示。
+
+TTY 不可以自动获取下一页。pager 解决屏幕滚动，不解决 query/output budget。
+
+JSON 是一个 compact document，字段和 schema version 稳定。JSON Lines 主要用于显式 export 或长任务 event：
+
+```text
+meta
+item
+item
+summary
+```
+
+普通 page 不需要为了“streaming”改成 JSON Lines。切换格式时 item、排序、cursor 和 coverage 必须相同。
+
+零搜索结果是成功，exit status 0，response 明确 `returned=0`。`check` 找到诊断和 edit proposal 被拒绝属于有效业务结果，使用 `ok=false` 与命令定义的非零状态；usage、stale/conflict、service unavailable 和 internal error 使用稳定 error code，不靠 message substring 分类。
+
+== MCP tool surface
+
+建议只暴露下面的 model-controlled tools：
+
+| Tool | 用途 | 是否分页 |
+| --- | --- | --- |
+| `vault_status` | 小型 Vault/snapshot/index summary | 否 |
+| `list_modules` | discovery 与稳定 ModulePath | 是 |
+| `search` | bounded candidate retrieval | 是 |
+| `get_outline` | 单 Module Heading tree | 是 |
+| `read_source` | bounded evidence/source read | chunked |
+| `get_references` | incoming/outgoing semantic edges | 是 |
+| `get_definition` | 精确位置的定义 | 否 |
+| `check` | 完整 summary 加 diagnostics page | 是 |
+| `propose_edit` | 只生成受检查的 edit plan | preview bounded |
+| `apply_edit` | 应用已有 plan | 否 |
+
+不暴露 `inspect`、全库 outline、全库 diagnostics resource 或任意 execute function。
+
+=== input schema
+
+每个 schema：
+
+- `additionalProperties=false`，拼错参数立即失败。
+- limit/min/max/default 写入 JSON Schema。
+- selector 使用 oneOf，避免 module/path 混淆。
+- cursor 有长度上限。
+- query、replacement 和 idempotency key 有合理 size limit。
+- read window 三选一。
+
+search input 例如：
+
+```json
+{
+  "type": "object",
+  "additionalProperties": false,
+  "properties": {
+    "query": { "type": "string", "minLength": 1, "maxLength": 4096 },
+    "scope": { "type": "string" },
+    "kinds": {
+      "type": "array",
+      "items": { "enum": ["text", "title", "annotation", "raw"] },
+      "uniqueItems": true
+    },
+    "limit": { "type": "integer", "minimum": 1, "maximum": 100, "default": 20 },
+    "maxBytes": {
+      "type": "integer",
+      "minimum": 4096,
+      "maximum": 65536,
+      "default": 32768
+    },
+    "snippetBytes": {
+      "type": "integer",
+      "minimum": 64,
+      "maximum": 2048,
+      "default": 512
+    },
+    "cursor": { "type": "string", "maxLength": 4096 }
+  },
+  "required": ["query"]
+}
+```
+
+cursor 存在时仍要求原 query/scope，服务端验证 fingerprint。limit 与 maxBytes 可以逐页改变，因为它们只控制窗口，不改变匹配集合；scope/filter/sort 改变则返回 invalid cursor。
+
+=== output schema 与 text mirror
+
+每个 tool 声明固定 outputSchema，success result 和 typed tool error 使用 oneOf。pagination、budget 和 snapshot 必须在 structuredContent 中，不能只放进 Host 可能隐藏的 `_meta`。
+
+MCP 为旧 client 建议把 serialized JSON 同时放进 TextContent。使用 compact JSON，不 pretty-print。重复仍然存在，但 logical result 默认受 32 KiB 约束。为了覆盖 text mirror 再次 JSON escaping 的最坏膨胀，完整 JSON-RPC response 的上界按 `3 × applied maxBytes + 16 KiB fixed overhead` 计算；默认约 112 KiB，调用者请求 64 KiB logical maximum 时 transport maximum 约 208 KiB。
+
+tool description 应包含下一步而不是营销文案：
+
+- search：“Returns bounded excerpts for discovery. Call read_source before using a hit as factual evidence.”
+- read_source：“Returns authored source only, bounded by maxBytes; continue with nextCursor.”
+- check：“Analyzes the complete scope; diagnostics details may be paged.”
+
+=== Resources 只放小而稳定的对象
+
+Resources 是 application-controlled context，不适合把全库 outline/diagnostics 当 singleton 注入。
+
+resources/list 只枚举很少的固定资源，例如：
+
+```text
+notist://<vault>/summary
+notist://<vault>/capabilities
+```
+
+Resource Template 可以描述 exact bounded object：
+
+```text
+notist://<vault>/source/<module>?start=<byte>&end=<byte>&fp=<source-fingerprint>
+notist://<vault>/module/<module>/metadata
+```
+
+search/read result 可以返回指向 exact range 的 resource link，并附 size、audience、priority 和 source fingerprint。不要提供一个省略 range 就返回整篇 96 KiB source 的模板。
+
+MCP 标准 cursor 直接适用于 `resources/list`、`resources/templates/list` 和 `tools/list`。search 等 custom tool 的 cursor 是 Notist output schema 的字段，只是复用相同 opaque-cursor 原则，不应误称为 MCP 内建 tool pagination。
+
+=== error model
+
+JSON-RPC error 只处理 protocol 层：
+
+- `-32700` parse error。
+- `-32600` invalid request。
+- `-32601` unknown method。
+- `-32602` malformed params/schema。
+- `-32603` internal protocol failure。
+
+工具执行后可纠正的问题返回 `isError=true`：
+
+```json
+{
+  "code": "ambiguous_module",
+  "message": "Module name matches three documents",
+  "retryable": true,
+  "hint": "Pass one candidate as module",
+  "candidates": ["vault::a", "vault::b", "vault::c"]
+}
+```
+
+至少定义 `not_found`、`ambiguous_module`、`invalid_cursor`、`cursor_stale`、`snapshot_changed`、`budget_too_large`、`edit_conflict` 和 `plan_expired`。Unknown tool 不应继续被映射成 `-32602`。
+
+=== edit tools
+
+propose/apply 继续使用现有的 revision、fingerprint、plan hash 和 idempotency：
+
+```text
+propose_edit(expected_snapshot, operations, preview_budget)
+  -> plan_hash
+  -> bounded diff preview
+  -> affected modules/ranges
+  -> diagnostics
+  -> expected fingerprints
+
+apply_edit(plan_hash, expected_fingerprints, idempotency_key)
+  -> applied/no-op/conflict
+  -> new snapshot
+```
+
+大 diff 不直接塞进 tool result；proposal 返回 bounded preview 和 exact artifact/resource link。`propose_edit` 标为 non-destructive，`apply_edit` 标为 destructive 与 idempotent。正文中出现的任何 instruction 不改变 consent 与权限。
+
+== 建议的初始 policy
+
+| Operation | Default items/window | Ordinary max items | Default bytes | Hard bytes |
+| --- | ---: | ---: | ---: | ---: |
+| modules | 50 | 100 | 32 KiB | 64 KiB |
+| search | 20 | 100 | 32 KiB | 64 KiB |
+| outline | 100 headings | 100 | 32 KiB | 64 KiB |
+| references | 50 | 100 | 32 KiB | 64 KiB |
+| diagnostics detail | 50 | 100 | 32 KiB | 64 KiB |
+| read | 200 lines | 1,000 lines | 32 KiB | 64 KiB |
+
+Hard bytes 比 item maximum 优先。即使 `read --lines 1000`，返回达到 64 KiB 就停止并给 cursor。MCP ordinary transport maximum 使用 `3 × applied maxBytes + 16 KiB`，覆盖 text mirror、最坏 JSON string escaping 和固定 JSON-RPC metadata；模型可见的单份内容仍受 requested maxBytes。
+
+这些 maximum 不是为了阻止专家导出；export 没有 ordinary page hard cap，但只能写 artifact/file，并记录 records、bytes、snapshot 和 checksum。
+
+== 兼容迁移
+
+当前 JSON envelope 标记 schema version 1，但 collection shape 是裸 array；MCP tools 也没有 outputSchema。加入 page object 是有意 breaking change，不应通过隐藏字段悄悄混用。
+
+建议在一个明确 release 中完成：
+
+=== 阶段 A：core contract
+
+- 新增 PageRequest、QueryPage、SnapshotStamp、Selector 和 ToolError。
+- 添加 list_modules、read_source、单 Module outline。
+- diagnostics/location record 去掉 full source。
+- 建立 exact serialized byte budget 和 cursor property tests。
+
+=== 阶段 B：CLI schema version 2
+
+- `search`、`modules`、`outline`、`references`、`check` 返回 page contract。
+- human text 同时上线 source frame、summary 和 continuation hint。
+- `inspect` 移到 debug；旧 full dump 只保留 export。
+- release notes 明确说明 v1 array consumer 必须迁移到 `result.items`。
+
+项目仍处于 0.x，比长期保留一个无界 legacy JSON 更适合现在做这次 break。若确实存在外部 consumer，可以提供一个 release 的 `notist export legacy-inspect --output`，但不保留普通无界 response。
+
+=== 阶段 C：MCP v2 surface
+
+- 替换现有三个 tool 与两个 global resource。
+- 增加 outputSchema、annotations、typed error 与 exact resource link。
+- MCP Inspector 测 schema、错误、资源大小和 cursor。
+- CLI/MCP 对同一 core fixture 做 parity test。
+
+=== 阶段 D：Skill 与 benchmark
+
+- Skill 只教授 `status/modules/search -> outline/read -> references/check`。
+- 明确 snippet 不是最终证据。
+- 禁止用 debug/export 做普通 discovery。
+- 重跑 v0.3 的相同任务、模型、seed，并保存 per-tool bytes。
+
+== 验收
+
+=== 协议与正确性
+
+- 同 snapshot 翻页无遗漏、无重复，排序稳定。
+- 发布新 snapshot 后旧 cursor 返回 cursor_stale。
+- `--no-daemon` 的下一次进程仍能验证或拒绝 cursor，不依赖已消失的内存。
+- 改 format、color 或 pager 不改变 item 与 cursor。
+- JSON 永远合法 UTF-8，byte limit 不截断 escape sequence。
+- zero result 是成功；coverage 能说明查询是否完整。
+- check summary 覆盖全部 diagnostics，details 分页不影响 exit status。
+- relative path 不逃逸 Vault；selector ambiguity 不静默选择。
+
+=== 输出上界
+
+- ordinary CLI JSON envelope 不超过 requested/applied hard budget。
+- MCP structuredContent 不超过 maxBytes，完整 transport 不超过声明的 transport maximum。
+- 单条 12.7 KiB 行被 excerpt cap 安全截断。
+- 96 KiB source 通过 read cursor 完整、无重叠、无缺口地读取。
+- 同文件多 diagnostics/references 不重复 full source。
+- debug full dump 只能写显式 artifact。
+
+=== Human UX
+
+- search、modules、outline、references 的第一页能在终端中直接读懂。
+- 每个有下一页的 text 输出都显示“为何停止”和可复制的继续命令。
+- check 有颜色、行列和 bounded source frame；`--color never` 无 ANSI。
+- pager 只处理当前页，非 TTY 永不 prompt。
+- help 明确显示 default、maximum、cursor 和 export 示例。
+
+=== Agent benchmark
+
+- p99 ordinary model-visible tool content 不超过 32 KiB；无单次 1 MB 结果。
+- v0.3 pass@1 不下降，factoid 因 read_source 提升。
+- CLI/MCP cost、cacheRead 和 bytes per successful task 至少下降一个数量级。
+- reference_lookup 继续保持 ModulePath 优势。
+- unanswerable 单独测 coverage/abstention，不能靠小 limit 制造假“未找到”。
+- multi-hop 单独测分页调用数，避免为了省 bytes 造成过多 round trip。
+
+== 明确不做
+
+- 不靠 gzip、base64 或缩短字段名解决模型 token。
+- 不把 JSON Lines 当输出上限。
+- 不让 `--format` 或 TTY 改变 query semantics。
+- 不让 global `--fields` 解锁 heavy data。
+- 不在 MCP 提供 `all=true`。
+- 不把 cursor 当权限凭证。
+- 不在预算 contract 之前加入更多 embedding、reranker 或 graph expansion。
+- 不把 debug parser internals 暴露为 Agent discovery primitive。
+
+== 推荐结论
+
+这次 redesign 最重要的不是增加十个参数，而是把 Notist 查询分成三种产品形态：
+
+```text
+ordinary query
+  bounded, composable, resumable
+
+human rendering
+  rich, readable, same items
+
+full export
+  explicit artifact, never an accidental tool result
+```
+
+CLI 与 MCP 共用第一层；CLI 为人提供第二、第三层；MCP 只暴露小而固定的 query/edit primitive。这样人不会因为 Agent 优化而得到贫瘠界面，Agent 也不会因为“人可能想看全部”而承担无界历史回放。

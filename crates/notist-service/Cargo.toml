@@ -5,11 +5,16 @@ edition.workspace = true
 license.workspace = true
 
 [dependencies]
+base64.workspace = true
 dunce.workspace = true
 notify-debouncer-mini.workspace = true
 serde = { workspace = true, features = ["derive"] }
 serde_json.workspace = true
+sha2.workspace = true
+regex.workspace = true
+tantivy.workspace = true
 tokio.workspace = true
+unicode-normalization.workspace = true
 notist-analysis.workspace = true
 notist-model.workspace = true
 notist-syntax.workspace = true

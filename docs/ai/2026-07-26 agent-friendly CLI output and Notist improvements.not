@@ -1,0 +1,389 @@
+= Agent-friendly CLI output and Notist improvements
+
+这份调查是 [[vault::ai::2026-07-21 notist agent mcp semantic retrieval and vector indexing]] 的实证补充。前一份文档已经提出 `list_modules`、`get_context`、`top_k` 和截断标记；本轮 720 次真实 Agent run 证明，输出预算不是后续优化，而是查询协议的正确性边界。
+
+核心结论只有一句：
+
+*任何普通查询都必须有服务端硬上界；调用者可以用参数在上界内调节。真正的全量读取必须显式进入 export 流程，普通响应始终返回继续读取所需的稳定句柄。*
+
+把 JSON 改成单行、换成 JSON Lines 或压缩字段名只能减少常数。真正有效的模型是先返回“候选、成本和续读句柄”，等 Agent 明确选择后再读取正文。
+
+== 证据：当前接口把调试视图当成检索接口
+
+本轮主要证据来自 `E:\_noting\notist-lab\docs\cost-forensics.md`。它逐条解析 v0.3 首轮 720 次会话轨迹，发现一次大工具输出会在后续每轮历史中反复回放：
+
+| 条件 | 720 run 合计成本 | input | cacheRead |
+| --- | ---: | ---: | ---: |
+| md-shell | $2.51 | 870K | 3.4M |
+| not-shell | $2.71 | 930K | 3.7M |
+| not-cli-skill | $103.65 | 34M | 298M |
+| not-mcp | $75.73 | 17M | 305M |
+
+高成本不是来自模型多写了答案，而是来自无界结果：
+
+- `notist_inspect` 共调用 75 次，平均约 1037 KB，每次都返回全库。
+- `notist_outline` 共调用 89 次，平均约 249 KB。
+- MCP outline 和 diagnostics resource 每次读取整个 Vault。
+- MCP search 对高频词没有 top-k，单次最大工具输出达到 13.8 MB。
+
+在当前 408 Module、339 个 source document 的 corpus 上重新测量，结果方向一致：
+
+| 调用 | UTF-8 bytes | 返回规模 |
+| --- | ---: | --- |
+| `inspect --format json` | 1,140,025 | 408 modules、185 references、7208 semantic items |
+| `outline --format json` | 288,389 | 339 documents、3198 headings |
+| `search "the" --format json` | 203,493 | 574 hits |
+
+`inspect` 内部进一步拆分后，modules 约 79 KB，references 约 42 KB，semantic items 约 1019 KB。也就是说，约 89% 的载荷来自 Agent 并未请求的 parser 级 semantic items。更严重的是，Skill 把 `inspect` 描述成“模块清单与元信息”，工具却暗中返回 calls、raw literals 和 annotations。这是工具描述与实际成本不一致，不只是序列化不够紧凑。
+
+当前 core response 还有几个潜在放大器：
+
+- `LocationRecord` 为每个 definition/reference location 携带整篇 `source`；同一文件出现多个 location 时会重复正文。
+- `DiagnosticRecord` 为每条 diagnostic 携带整篇 `source`；同文件多个诊断同样重复。
+- `outline` 只能读取全 Vault，不能指定 Module。
+- `search` 返回全部字面子串命中，snippet 是整行；一条超长行可以绕过结果数量限制。
+- 默认返回 canonical absolute path，既浪费字节，也暴露与 Vault 语义无关的机器路径。
+- MCP tool 同时携带 pretty JSON text 与 `structuredContent`。当前 bench Host 只把 text 送给模型，所以 token 没有重复一倍；但 transport 和日志仍保存两份大对象。
+- MCP 的 outline/diagnostics 是两个全局 singleton resource，工具说明还主动鼓励 Agent 用 outline “先总览知识库结构”。
+
+这也解释了早先看到的“outline 比 inspect 少”：前者只保留有 Heading 的 source document，后者还包含 Virtual Module 和无标题 Module。它们本来就是两种查询，不应该靠两个整库 dump 的偶然差异来表达。
+
+=== 当前值得保留的基础
+
+Notist 并不是从零开始。以下能力对 Agent 很有价值，应在缩小输出时保留：
+
+- versioned JSON envelope、明确的 `ok` 和有限命令 exit status。
+- snapshot revision、ModulePath、UTF-8 byte range 和 resolved reference。
+- CLI、LSP、MCP 共用 core request，而不是各自重做语义。
+- daemon 复用 Vault snapshot，查询不需要每次重新扫描。
+- edit 的 revision、fingerprint、plan hash 和 idempotency key。
+
+问题在 response projection，不在 snapshot 模型。D0011 要求查询绑定同一 immutable snapshot，恰好可以成为安全分页的基础。
+
+== 其他工具已经验证的模式
+
+没有一个 CLI 可以整套照搬。最有效的组合是 QMD 的渐进读取、GitHub CLI 的默认小上限与字段投影、AWS 的 continuation token、Kubernetes API 的 snapshot consistency、ripgrep 的流式事件，以及 RTK 的硬上限与成本取证。
+
+=== QMD：先 search，再按范围 get
+
+QMD 是与 Notist 最接近的对照。它面向本地文档和 Agent，明确把流程拆成两步：
+
+```text
+search/query
+  -> 少量候选、score、短 snippet、docid
+  -> get(file, fromLine, maxLines)
+  -> 必要时 multi_get
+```
+
+CLI search 默认只给少量结果；MCP query 的 `limit` 默认 10，候选 rerank 也有独立上限。get 支持 `path:from:count`、`fromLine` 和 `maxLines`，multi-get 暴露 `maxBytes`。官方 Agent skill 还明确要求：snippet 用于选文档，回答事实前要 get 原文。
+
+值得借鉴的是“候选与证据分离”和短 docid，不是 QMD 的全部行为。QMD 仍有 unknown parameter 静默忽略、部分 get 未强制默认行数、尚无 MCP outputSchema 等缺口。
+
+- https://github.com/tobi/qmd/blob/e428df76bc0274d9e93eb7ca3e95673315c42e90/skills/qmd/SKILL.md
+- https://github.com/tobi/qmd/blob/e428df76bc0274d9e93eb7ca3e95673315c42e90/README.md
+- https://github.com/tobi/qmd/blob/e428df76bc0274d9e93eb7ca3e95673315c42e90/src/mcp/server.ts
+
+=== GitHub CLI：默认 limit 与源头字段投影
+
+`gh issue list` 默认最多 30 条。`--json number,title,url` 不只是事后删字段，它会把字段选择传进 GraphQL query；`--json` 不带字段还会列出合法字段，形成机器可发现的 projection contract。`--jq` 和 `--template` 让调用者继续缩小结果。
+
+`gh api --paginate` 是一个反例：全量翻页必须显式请求，这点正确；一旦请求仍可能产生无界输出。领域 list command 又丢掉内部已有的 end cursor，默认有界却不能稳定继续。Notist 应同时保留默认 limit 和 next cursor。
+
+- https://cli.github.com/manual/gh_help_formatting
+- https://cli.github.com/manual/gh_issue_list
+- https://cli.github.com/manual/gh_api
+
+=== AWS CLI 与 Kubernetes API：cursor 必须有一致性语义
+
+AWS CLI 用 `--max-items` 限制最终 item 数，截断时返回 `NextToken`，下一次用 `--starting-token` 继续；官方要求调用者把 token 视为 opaque。需要避免的是 AWS 默认自动取完所有 service pages，以及容易混淆的 `--page-size`：它只改变底层请求大小，不限制最终输出。
+
+Kubernetes API 的 list response 返回 opaque `continue`，同一 continuation 序列保持相同 `resourceVersion`。token 失效时返回明确错误；只有能够可靠计算时才返回 `remainingItemCount`。这与 Notist snapshot revision 高度契合。
+
+`kubectl --chunk-size` 同样只是传输分块，最终仍聚合全量对象。Notist 不应把 streaming 或内部 chunk 当成输出上限。
+
+- https://docs.aws.amazon.com/cli/latest/userguide/cli-usage-pagination.html
+- https://docs.aws.amazon.com/cli/latest/userguide/cli-usage-filter.html
+- https://kubernetes.io/docs/reference/using-api/api-concepts/
+- https://kubernetes.io/docs/reference/kubectl/generated/kubectl_get/
+
+=== ripgrep：可组合的窄视图与 JSON Lines
+
+ripgrep 提供 match、files-only、count、context、only-matching 等不同投影，并用 `--max-count` 控制每个文件的匹配行数。`--json` 输出一串 typed JSON Lines event，调用者可以流式处理而不需要先把整个结果读进内存。
+
+它也说明仅有 stream 不够：`--max-count` 是 per-file limit，不是全局 payload limit；JSON Lines 改善首条延迟和内存，并不会减少总 token。Notist 需要同时有全局 item、单 item excerpt 和总 byte 三层预算。
+
+- https://github.com/BurntSushi/ripgrep/blob/master/GUIDE.md
+- https://docs.rs/grep-printer/latest/grep_printer/struct.JSON.html
+
+=== ast-grep 与 Sourcegraph：全局停止和终态 summary
+
+ast-grep 的 `scan --max-results` 是全局结果上限，`--json=stream` 输出 NDJSON；这比 ripgrep 的 per-file limit 更接近 Notist 需要的行为。Sourcegraph 又区分 query 中服务端执行的 `count:N` 与 CLI 只影响展示的 `-display N`，stream 的最终 progress event 会报告统计和 `limitHit`。
+
+这组设计说明“少显示”和“少查询”必须是两个可观察概念。Notist 的 `--fields`、filter 和 limit 应下推到 snapshot/index query；如果提供 NDJSON，事件至少包括 `meta`、`match` 和 `summary`，终态 summary 返回 matched、returned、budget exhaustion、limit reason 和 next cursor。不能只在 formatter 丢掉已经构造好的结果。
+
+- https://ast-grep.github.io/reference/cli.html
+- https://github.com/ast-grep/ast-grep/blob/a7a07ae6cb7cad74d6b0193a381e43290c8f973f/crates/cli/src/scan.rs
+- https://github.com/sourcegraph/src-cli/blob/747e920b8fc31212e5e99d76ad54444e5ebd6902/cmd/src/search.go
+- https://sourcegraph.com/docs/code-search/queries/language
+
+=== RTK：命令语义过滤、明确截断与成本反馈
+
+RTK 不只是把 stdout 截到固定长度。它为 git、cargo、grep、test 等命令做语义过滤：成功时保留摘要，失败时保留可行动的错误；搜索过滤器有总结果和每文件上限，达到上限会显示 capped 或 remaining 提示。完整输出写入 tee，调用者得到可恢复的续读位置。
+
+`rtk gain` 记录过滤前后字节并展示估算 token 节省。本机当前累计 15,254 次命令，估算减少约 89% token；这个数字只能作为“成本反馈会改变工具使用”的本机方向性证据，不能外推为 Notist 的预期收益。
+
+Notist 比 RTK 更了解 Module、Heading、Reference 和 snapshot，因此不应把完整结果落到匿名 tee 后按文本续读；它可以返回语义 cursor 和 source range。但“截断必须显式、必须可恢复、必须可观测”值得直接采用。
+
+- https://www.rtk-ai.app/guide/
+- https://github.com/rtk-ai/rtk/blob/1d6798de8aee0940b490719153e7554845f8f43c/src/core/config.rs
+- https://github.com/rtk-ai/rtk/blob/1d6798de8aee0940b490719153e7554845f8f43c/src/core/tee.rs
+- https://github.com/rtk-ai/rtk/blob/1d6798de8aee0940b490719153e7554845f8f43c/docs/guide/analytics/gain.md
+
+=== Repomix：大产物先给 handle
+
+Repomix 的 MCP pack operation 先返回 directory structure、token 数和 `outputId`，正文通过后续 grep 或 `startLine/endLine` 读取。这验证了“metadata + handle → range read”也适用于聚合后的大产物。
+
+它同样不是完美标杆：range 可以省略，grep 也未必有 hard match cap。Notist 应把上界做成默认协议，不依赖 Agent 自觉填写参数。
+
+- https://github.com/yamadashy/repomix/blob/b921db74351fd9185897a641a8f39c0b82de7fcb/src/mcp/tools/packCodebaseTool.ts
+- https://github.com/yamadashy/repomix/blob/b921db74351fd9185897a641a8f39c0b82de7fcb/src/mcp/tools/readRepomixOutputTool.ts
+
+== Notist 的目标交互：渐进披露
+
+Agent 的正常读取路径应变成：
+
+```text
+vault status / modules list
+          |
+          v
+search(query) or outline(module)
+          |
+          v
+source read(module, range)
+          |
+          v
+references / definition / backlinks
+          |
+          v
+propose edit -> apply edit
+```
+
+每一步只回答一个问题：
+
+- `status` 告诉 Agent Vault identity、snapshot、Module 数和 diagnostics count。
+- `modules list` 返回稳定 ModulePath、Vault-relative source path 和 Module kind。
+- `search` 返回候选 Module、range、短 snippet、match kind 和可选 score。
+- `outline(module)` 只返回一个 Module 的 Heading tree；全库 outline 必须分页。
+- `source read` 按 Module 和 line/byte range 返回原文，默认带行号和下一段 cursor。
+- `references` 只返回 location 与短 excerpt，绝不为每个 location 重复整篇 source。
+- debug `inspect` 把 modules、references、semantic items 分成显式 section；完整 dump 只能显式 `--all`。
+
+ModulePath 应是 Agent 的首选 handle。canonical absolute path 只在 human verbose/debug 输出中出现；machine response 默认使用 Vault-relative path。FileId、ModuleId 和 snapshot-local element identity仍可留在结构化字段中。
+
+== 统一的预算与分页 contract
+
+可以从以下初始值开始，再由 bench 调整：
+
+```text
+default item limit
+  search             20
+  modules list       50
+  references         50
+  global outline     20 modules
+
+default excerpt      512 UTF-8 bytes
+default source read  200 lines and at most 32 KiB
+default response     at most 32 KiB after JSON serialization
+MCP logical result hard maximum  64 KiB
+MCP transport maximum            separately accounts for the text mirror
+```
+
+item limit 和 byte budget 必须同时存在。二十条超长 raw snippet 仍可能很大；一个 100 KB 的单行也不能突破 response budget。截断要在 Unicode scalar 和 JSON value 边界进行，最终响应始终是合法 JSON，不能剪断序列化后的字节流。
+
+建议的 collection response：
+
+```json
+{
+  "items": [],
+  "page": {
+    "limit": 20,
+    "returned": 20,
+    "has_more": true,
+    "next_cursor": "opaque"
+  },
+  "budget": {
+    "utf8_bytes": 18420,
+    "max_bytes": 32768,
+    "exhausted": false
+  }
+}
+```
+
+不要用一个 `truncated` 表示所有情况：
+
+- `page.has_more` 表示还有更多 item。
+- `item.excerpt_truncated` 表示当前 snippet 不是完整 source region。
+- `budget.exhausted` 表示本页因为 byte budget 提前结束。
+
+`remaining` 或 `total` 只有在已有索引能廉价、可靠给出时才返回；不要为了一个计数扫描全库。
+
+cursor 至少绑定：
+
+- cursor schema version。
+- Vault identity、View identity 和 snapshot revision。
+- command、query、filter、projection 与 sort fingerprint。
+- 最后一个稳定排序 key。
+
+Vault 发布新 snapshot 后，旧 cursor 不应悄悄落到新文本的同一 byte offset。服务应返回 typed `cursor_stale`，附新 revision 和 `restart_without_cursor` hint。格式过期与 snapshot 变化应区分为 `cursor_expired` 和 `cursor_stale`。
+
+== CLI surface
+
+建议保留现有常用动词，同时增加窄查询：
+
+```shell
+notist status <root> --format json
+notist modules list <root> --limit 50 --cursor <token> --fields module,path
+notist search <query> <root> --limit 20 --snippet-bytes 512 --cursor <token>
+notist outline <root> --module <module> --depth 3
+notist source read <module> <root> --from-line 120 --max-lines 80
+notist references <module> <root> --limit 50 --cursor <token>
+notist inspect <root> --section semantic --limit 50
+```
+
+通用 Agent-facing 参数可以统一为：
+
+```text
+--limit N
+--cursor TOKEN
+--fields a,b,c
+--max-bytes N
+--format text|json|jsonl
+--all
+```
+
+`--fields` 应像 GitHub CLI 一样在构造 core result 前生效；不带字段时列合法字段。`--all` 是明确的危险 opt-in，并建议与文件重定向配合。JSON Lines 适合显式全量导出和长任务，但不能替代 limit。
+
+Human text 与 Agent JSON 应共享查询语义，不共享展示约束。TTY 可以有 rich diagnostics、颜色、相对路径和 source frame；machine JSON 保持单行、无 ANSI、schema 稳定。切换 `--format` 不得改变 filter、排序或分页结果。
+
+`check` 需要特殊处理：它必须完整分析 Vault，exit code 也必须反映所有 diagnostics；但 detail response 可以只返回完整 summary 和第一页 diagnostics。CI 如果需要完整 artifact，再显式使用 `--all` 或分页写文件。不能因为 detail 被截断就把 Vault 报成“检查通过”。
+
+== MCP surface
+
+MCP 规范已经提供需要的积木：
+
+- list operation 使用 opaque cursor。
+- Resource Template 表达 parameterized resource。
+- Resource 有可选 `size` 和 annotation。
+- Tool 可以声明 `outputSchema` 并返回 `structuredContent`。
+- Tool 可以返回 resource link，引导 Host 按需读取正文。
+
+官方规范：
+
+- https://modelcontextprotocol.io/specification/2025-11-25/server/tools
+- https://modelcontextprotocol.io/specification/2025-11-25/server/resources
+- https://modelcontextprotocol.io/specification/2025-11-25/server/utilities/pagination
+
+Notist MCP 首版应收敛为六个只读 primitive：
+
+```text
+list_modules
+search
+get_outline
+read_source
+get_references
+check
+```
+
+每个 tool input 都包含合理的 limit/budget/filter，声明 `additionalProperties=false`，避免拼错参数后静默扩大查询。每个 tool 都提供 outputSchema；tool result 的 compact text mirror 与 structuredContent 保持一致。MCP 为兼容旧 client 建议同时返回 text mirror，因此最先要做的是把结果本身限制在 32 KiB，而不是简单删除其中一份。
+
+全库 outline/diagnostics singleton resource 应替换为：
+
+- 一个很小的 `notist://<vault>/summary` resource。
+- Module source、outline 和 diagnostics 的 Resource Template。
+- search result 中指向精确 Module/range 的 resource link。
+
+resources/list 与 resources/templates/list 按 MCP cursor 分页。长时间 index/rebuild 可以发布 progress；普通 search 不应把 progress 混进最终结果。
+
+当前 adapter 把所有 dispatch error 映射成 JSON-RPC `-32602`，应拆开：
+
+- unknown method/tool、畸形 request 是 protocol error。
+- 可纠正的参数值、ambiguous module、stale cursor、业务失败返回 `isError=true` tool result。
+- error body 至少包含 `code`、`message`、`retryable`、`hint` 和可选 candidates。
+
+== 实施优先级
+
+=== P0：先止住无界输出
+
+- 在 core protocol 定义统一 `PageRequest`、`CollectionResponse` 和 byte budget。
+- search 默认 20 条、限制单 snippet、限制整个序列化 response。
+- 将 inspect 拆成 modules、references、semantic sections；默认只返回 compact module manifest。
+- outline 支持单 Module；全库只返回一页。
+- 从 LocationRecord 和 DiagnosticRecord 移除重复 full source，改为 relative path、range、短 excerpt 或 source handle。
+- cursor 绑定 Vault/View/snapshot/query，提供 stale/expired typed error。
+- MCP tool 加 limit、outputSchema 和 compact text mirror；移除 pretty-print。
+- 修改 Skill，让 Agent 使用 modules/search → outline/read，不再鼓励全库 inspect/outline。
+
+=== P1：补齐可恢复的阅读链
+
+- 新增 `source read` 或设计中已有的 `get_module/get_context`，支持 line/byte range。
+- 加字段投影、Module/filter、JSON Lines 显式导出和 Vault-relative path。
+- definition/references 只返回 handle 与 excerpt，不重复正文。
+- check 返回全量 summary、分页 detail 和稳定 error code。
+- 为每次 response 记录 elapsed、scanned、returned、candidate bytes、returned bytes 与 budget exhaustion。
+
+=== P2：再提高检索质量
+
+- 在已有上界内加入 Module/title/tag/path field search 和 BM25/FTS。
+- benchmark 证明需要后再引入 dense、hybrid 和 reranker。
+- 任何 query rewrite、graph expansion 和 rerank 都必须继承 top-k、node、hop、time 和 byte budget。
+
+向量搜索如果仍默认倾倒几百个候选，只会把当前成本问题放大。预算 contract 必须先于索引复杂度。
+
+== 成本可观测性与验收
+
+RTK 的重要启示是让节省可见。Notist 可以增加本地、默认不记录正文的 output telemetry：
+
+```text
+command
+elapsed_ms
+scanned_items
+returned_items
+candidate_bytes
+returned_bytes
+budget_exhausted
+snapshot_revision
+```
+
+可以提供 `notist stats output --since 7d --format json`。若展示 token，只能标成 `estimated_tokens` 并说明 tokenizer 或 bytes/4 估算法，不能把估算写成账单 token。query、snippet 和正文默认不进入 telemetry，避免把知识库内容复制到日志。
+
+回归测试需要证明最坏边界，而不是只测小 fixture：
+
+- 408 Module corpus 上，默认 search/outline/inspect/MCP resource 均不超过 32 KiB。
+- 高频单字符或常见词仍只返回一页，并带可用 cursor。
+- 单个超长 Unicode 行、raw block 和长标题不会生成非法 UTF-8/JSON。
+- 多 diagnostics、同文件多 references 不重复完整 source。
+- 同 snapshot 分页无遗漏、无重复；发布新 revision 后旧 cursor 返回 `cursor_stale`。
+- CLI 与 MCP 对同一 core query 返回相同 item、排序和 page semantics。
+- 显式 `--all` 才允许超过 ordinary response hard limit，并在 stderr 或 metadata 明确提示。
+
+产品验收应同时看质量与成本：
+
+- p99 ordinary tool output 不超过 32 KiB，单次 hard maximum 不超过 64 KiB。
+- v0.3 同任务重跑时 pass@1 不下降，factoid 因 source read 提升。
+- CLI/MCP 平均成本接近 shell 档，而不是只报告压缩百分比。
+- cacheRead、tool output bytes 和 cost per successful task 至少下降一个数量级。
+- common-query、unanswerable 和 multi-hop 分开报告，防止 top-k 过小掩盖召回损失。
+
+`cost-forensics.md` 粗估 P0 落地可把同规模 720 run 从约 $240 降到约 $30。这个数字是待验证假设；真正的 release gate 应是固定任务、固定模型、固定 seed 的复跑结果。
+
+== 不应该采用的捷径
+
+- 只把 pretty JSON 变 compact JSON：semantic items 和 full source 仍然存在。
+- 只加 gzip：模型最终仍要看到解压后的全部 token。
+- 只加 JSON Lines：改善内存，不限制总输出。
+- 只让 Skill 提醒 Agent “少调用 inspect”：错误默认仍会被其他 Host 触发。
+- 只在 CLI wrapper 截字符串：会破坏 JSON、citation 和 cursor，core 也继续浪费工作。
+- 默认 `--all` 再让 Agent 自己 `jq`：字段投影发生得太晚。
+- 先做 embedding/GraphRAG：检索质量不能修复 response contract。
+
+Notist 的差异化不是“比 grep 返回更多结构”，而是能在同一 snapshot 中返回最少但足够的结构，并允许 Agent 沿 Module、Heading、Reference 和 range 精确继续读取。只有这条链默认有界，typed document model 才会转化成真实的 Agent 成本优势。

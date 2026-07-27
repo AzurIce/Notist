@@ -4,7 +4,7 @@ use std::collections::{BTreeMap, HashMap};
 use std::io;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
-use std::sync::{Arc, Mutex, Weak};
+use std::sync::{Arc, Condvar, Mutex, Weak};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use notify_debouncer_mini::notify::{RecommendedWatcher, RecursiveMode};
@@ -16,9 +16,11 @@ use notist_analysis::{
 use serde::{Deserialize, Serialize};
 
 pub mod protocol;
+pub mod query;
 mod request;
 pub mod transport;
 
+pub use query::*;
 pub use request::*;
 
 /// Protocol-independent service shared by embedded clients and the daemon.
@@ -30,7 +32,16 @@ pub struct NotistService {
     edit_plans: Mutex<HashMap<String, request::StoredEditPlan>>,
     applied_edits: Mutex<HashMap<String, request::ApplyEditRecord>>,
     renamed_sources: Mutex<HashMap<String, request::RenameSourceRecord>>,
+    search_indexes: Arc<Mutex<HashMap<String, Arc<query::SearchIndex>>>>,
+    search_index_builds: Arc<Mutex<HashMap<String, Arc<SearchIndexBuild>>>>,
+    runtime_mode: &'static str,
     next_view: AtomicU64,
+}
+
+struct SearchIndexBuild {
+    operation_handle: String,
+    result: Mutex<Option<Result<Arc<query::SearchIndex>, String>>>,
+    ready: Condvar,
 }
 
 #[derive(Clone, Debug, Eq, Hash, PartialEq, Serialize, Deserialize)]
@@ -50,6 +61,7 @@ pub struct SnapshotIdentity {
     pub daemon_instance: DaemonInstanceId,
     pub vault: VaultIdentity,
     pub view_id: ServiceViewId,
+    pub view_kind: String,
     pub analyzer_view_id: u64,
     pub revision: u64,
     pub source_fingerprint: String,
@@ -78,14 +90,21 @@ struct ViewEntry {
 
 impl NotistService {
     pub fn new() -> Self {
-        Self::with_root(None)
+        Self::with_root(None, "embedded")
     }
 
     pub fn for_root(root: impl AsRef<Path>) -> io::Result<Self> {
-        Ok(Self::with_root(Some(dunce::canonicalize(root)?)))
+        Ok(Self::with_root(
+            Some(dunce::canonicalize(root)?),
+            "embedded",
+        ))
     }
 
-    fn with_root(vault_root: Option<PathBuf>) -> Self {
+    pub fn for_daemon_root(root: impl AsRef<Path>) -> io::Result<Self> {
+        Ok(Self::with_root(Some(dunce::canonicalize(root)?), "daemon"))
+    }
+
+    fn with_root(vault_root: Option<PathBuf>, runtime_mode: &'static str) -> Self {
         let nonce = SystemTime::now()
             .duration_since(UNIX_EPOCH)
             .unwrap_or_default()
@@ -98,12 +117,19 @@ impl NotistService {
             edit_plans: Mutex::new(HashMap::new()),
             applied_edits: Mutex::new(HashMap::new()),
             renamed_sources: Mutex::new(HashMap::new()),
+            search_indexes: Arc::new(Mutex::new(HashMap::new())),
+            search_index_builds: Arc::new(Mutex::new(HashMap::new())),
+            runtime_mode,
             next_view: AtomicU64::new(1),
         }
     }
 
     pub fn instance_id(&self) -> &DaemonInstanceId {
         &self.instance_id
+    }
+
+    pub fn runtime_mode(&self) -> &'static str {
+        self.runtime_mode
     }
 
     pub fn open_view(
@@ -180,6 +206,18 @@ impl NotistService {
         let snapshot = view.lock().unwrap().snapshot();
         let identity = self.snapshot_identity(view_id, &host, &snapshot);
         Ok((identity, operation(&snapshot)))
+    }
+
+    pub fn with_snapshot_identity<T>(
+        &self,
+        view_id: ServiceViewId,
+        operation: impl FnOnce(&WorkspaceSnapshot, &SnapshotIdentity) -> T,
+    ) -> io::Result<(SnapshotIdentity, T)> {
+        let (host, view, _) = self.view(view_id)?;
+        let snapshot = view.lock().unwrap().snapshot();
+        let identity = self.snapshot_identity(view_id, &host, &snapshot);
+        let result = operation(&snapshot, &identity);
+        Ok((identity, result))
     }
 
     pub fn view_kind(&self, view_id: ServiceViewId) -> io::Result<ViewKind> {
@@ -294,10 +332,19 @@ impl NotistService {
         host: &VaultHost,
         snapshot: &WorkspaceSnapshot,
     ) -> SnapshotIdentity {
+        let view_kind = self
+            .view_kind(view_id)
+            .map(|kind| match kind {
+                ViewKind::Disk => "disk",
+                ViewKind::Session => "session",
+            })
+            .unwrap_or("unknown")
+            .to_owned();
         SnapshotIdentity {
             daemon_instance: self.instance_id.clone(),
             vault: host.identity.clone(),
             view_id,
+            view_kind,
             analyzer_view_id: snapshot.view_id().raw(),
             revision: snapshot.revision().raw(),
             source_fingerprint: snapshot_fingerprint(snapshot),
@@ -344,7 +391,7 @@ mod tests {
 
     #[test]
     fn shared_disk_and_isolated_session_views_use_one_vault_host() {
-        let root = tempfile::TempDir::new().unwrap();
+        let root = tempfile::TempDir::new_in(std::env::current_dir().unwrap()).unwrap();
         let path = root.path().join("README.not");
         fs::write(&path, "disk").unwrap();
         let service = NotistService::new();
@@ -383,7 +430,7 @@ mod tests {
 
     #[test]
     fn snapshot_identity_separates_views_and_revisions() {
-        let root = tempfile::TempDir::new().unwrap();
+        let root = tempfile::TempDir::new_in(std::env::current_dir().unwrap()).unwrap();
         fs::write(root.path().join("README.not"), "one").unwrap();
         let service = NotistService::new();
         let (first, _) = service.open_view(root.path(), ViewKind::Disk).unwrap();
@@ -405,8 +452,8 @@ mod tests {
 
     #[test]
     fn root_bound_service_rejects_another_vault() {
-        let first = tempfile::TempDir::new().unwrap();
-        let second = tempfile::TempDir::new().unwrap();
+        let first = tempfile::TempDir::new_in(std::env::current_dir().unwrap()).unwrap();
+        let second = tempfile::TempDir::new_in(std::env::current_dir().unwrap()).unwrap();
         let service = NotistService::for_root(first.path()).unwrap();
         service.open_view(first.path(), ViewKind::Disk).unwrap();
         let error = service

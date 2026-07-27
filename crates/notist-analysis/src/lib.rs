@@ -2944,7 +2944,7 @@ mod tests {
 
     #[test]
     fn discovers_marked_vaults_from_files_and_parent_directories() {
-        let root = TempDir::new().unwrap();
+        let root = TempDir::new_in(std::env::current_dir().unwrap()).unwrap();
         let vault = root.path().join("docs");
         fs::create_dir_all(vault.join("nested")).unwrap();
         fs::write(vault.join(MANIFEST_FILE), "").unwrap();
@@ -2961,7 +2961,7 @@ mod tests {
 
     #[test]
     fn reports_ambiguous_vault_discovery() {
-        let root = TempDir::new().unwrap();
+        let root = TempDir::new_in(std::env::current_dir().unwrap()).unwrap();
         for name in ["docs", "notes"] {
             fs::create_dir(root.path().join(name)).unwrap();
             fs::write(root.path().join(name).join(MANIFEST_FILE), "").unwrap();

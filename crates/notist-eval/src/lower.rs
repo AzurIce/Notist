@@ -756,14 +756,15 @@ impl LowerState<'_> {
             });
             offset += line.len();
         }
-        let Some(base_indent) = rows.front().map(|row| row.indent) else {
-            return false;
-        };
-        let Some(items) = nested_items(&mut rows, base_indent) else {
-            return false;
-        };
-        if !rows.is_empty() {
-            return false;
+        let mut items = Vec::new();
+        while let Some(base_indent) = rows.front().map(|row| row.indent) {
+            let Some(mut root_items) = nested_items(&mut rows, base_indent) else {
+                return false;
+            };
+            if root_items.is_empty() {
+                return false;
+            }
+            items.append(&mut root_items);
         }
         self.content.elements.extend(items);
         true
@@ -844,14 +845,15 @@ impl LowerState<'_> {
             });
             offset += line.len();
         }
-        let Some(base_indent) = rows.front().map(|row| row.indent) else {
-            return false;
-        };
-        let Some(items) = nested_terms(&mut rows, base_indent) else {
-            return false;
-        };
-        if !rows.is_empty() {
-            return false;
+        let mut items = Vec::new();
+        while let Some(base_indent) = rows.front().map(|row| row.indent) {
+            let Some(mut root_items) = nested_terms(&mut rows, base_indent) else {
+                return false;
+            };
+            if root_items.is_empty() {
+                return false;
+            }
+            items.append(&mut root_items);
         }
         self.content.elements.extend(items);
         true
@@ -932,14 +934,15 @@ impl LowerState<'_> {
             });
             offset += line.len();
         }
-        let Some(base_indent) = rows.front().map(|row| row.indent) else {
-            return false;
-        };
-        let Some(items) = nested_tasks(&mut rows, base_indent) else {
-            return false;
-        };
-        if !rows.is_empty() {
-            return false;
+        let mut items = Vec::new();
+        while let Some(base_indent) = rows.front().map(|row| row.indent) {
+            let Some(mut root_items) = nested_tasks(&mut rows, base_indent) else {
+                return false;
+            };
+            if root_items.is_empty() {
+                return false;
+            }
+            items.append(&mut root_items);
         }
         self.content.elements.extend(items);
         true
@@ -1008,13 +1011,7 @@ impl LowerState<'_> {
             if parts.is_empty() {
                 return false;
             }
-            if let Some(expected) = columns {
-                if expected != parts.len() {
-                    return false;
-                }
-            } else {
-                columns = Some(parts.len());
-            }
+            columns = Some(columns.unwrap_or(0).max(parts.len()));
             let mut row = Vec::new();
             for (part_start, part_end) in parts {
                 let part = &line_without_newline[part_start..part_end];
@@ -1030,16 +1027,21 @@ impl LowerState<'_> {
         if columns > u16::MAX as usize || rows.is_empty() {
             return false;
         }
-        let header_alignments = (rows.len() >= 2).then(|| {
-            rows[1]
+        let header_alignments = rows.get(1).and_then(|row| {
+            let mut alignments = row
                 .iter()
                 .map(|(start, len)| table_separator_alignment(&source[*start..*start + *len]))
-                .collect::<Option<Vec<_>>>()
+                .collect::<Option<Vec<_>>>()?;
+            alignments.resize(columns, TableAlignment::Default);
+            Some(alignments)
         });
-        let header = matches!(header_alignments, Some(Some(_)));
-        let alignments = header_alignments
-            .flatten()
-            .unwrap_or_else(|| vec![TableAlignment::Default; columns]);
+        let header = header_alignments.is_some();
+        let alignments =
+            header_alignments.unwrap_or_else(|| vec![TableAlignment::Default; columns]);
+        for row in &mut rows {
+            let padding_start = row.last().map_or(0, |(start, len)| start + len);
+            row.resize(columns, (padding_start, 0));
+        }
         if header {
             rows.remove(1);
         }

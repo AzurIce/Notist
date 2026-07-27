@@ -1,477 +1,415 @@
 = Notist CLI
 
-`notist` 是 Notist 的统一可执行文件。它既提供面向人的命令，也提供编辑器、Agent host 和后台服务使用的协议入口：
+`notist` 同时服务终端用户、shell script、编辑器和 Agent。有限查询默认输出适合人阅读的 text；`--format json` 输出 schema version 2 的稳定 envelope。LSP 与 MCP 自己使用 JSON-RPC，不能再叠加 `--format json`。
 
-```text
-普通命令   check / inspect / search / outline / references / query / edit
-站点命令   build / preview
-协议入口   lsp / mcp
-后台服务   daemon
-Agent 资源 skill init
-```
-
-最常用的调用形式是：
-
-```shell
-notist check docs
-notist search "workspace revision" docs
-notist build docs -o dist
-notist preview docs
-```
+普通查询遵循同一条边界：默认有 item 和 UTF-8 byte 预算，调用者可以在硬上限内调整；没有读完时返回 opaque cursor。需要完整数据时使用显式 `export --output`，而不是让普通 search、outline 或 check 意外输出整个 Vault。
 
 == 命令总览
 
 ```text
+notist status [ROOT]
+notist modules [ROOT]
+notist search <QUERY> [ROOT]
+notist outline <MODULE|PATH> [ROOT]
+notist read <MODULE|PATH|MODULE#LABEL> [ROOT]
+notist references <MODULE|MODULE#LABEL> [ROOT]
+notist query definition <PATH> <UTF8_BYTE_OFFSET> [ROOT]
+notist check [ROOT]
+
+notist edit replace ...
+notist edit rename ...
+notist index status|rebuild [ROOT]
+notist debug inspect [ROOT]
+notist export diagnostics|snapshot|outline [ROOT] --output FILE
+
+notist build [ROOT]
+notist preview [ROOT]
+notist skill init <OUTPUT> [--force]
 notist daemon [ROOT]
 notist lsp
-notist mcp [ROOT]
-notist skill init <OUTPUT>
-
-notist check [ROOT]
-notist inspect [ROOT]
-notist search <QUERY> [ROOT]
-notist outline [ROOT]
-notist references <MODULE> [ROOT] [--include-definition]
-notist query definition <PATH> <OFFSET>
-
-notist edit replace <PATH> <START> <END> <REPLACEMENT>
-                    --idempotency-key <KEY>
-notist edit rename <FROM> <TO> --idempotency-key <KEY>
-
-notist build [ROOT] [-o <OUTPUT>] [--clean]
-notist preview [ROOT] [--host <HOST>] [--port <PORT>] [--no-open]
+notist mcp [ROOT] [--text-mirror full|brief]
 ```
 
-所有命令都支持 `-h` / `--help`。顶层还支持 `-V` / `--version`、`--color`、`--no-daemon` 和 `--format`。
+运行 `notist --help` 查看顶层命令，运行 `notist <COMMAND> --help` 查看当前版本实际接受的参数。CLI help 是安装版本命令面的最终依据。
 
 == ROOT 与 Vault 发现
 
-接受 `[ROOT]` 的命令默认从当前目录开始。`ROOT` 可以是 Vault、Vault 内的 source，或包含一个明确 Vault 的上层目录。Notist 按以下顺序确定实际 root：
-
-1. 从给定路径向上查找最近的 `Notist.toml`，找到后使用 marker 所在目录。
-2. 没有祖先 marker 时，检查给定目录下的显式 Vault。
-3. 只发现一个显式 Vault时使用它；发现多个时要求传入更明确的路径。
-4. 没有 marker 时，把给定目录作为隐式 Vault root。
-
-例如：
-
-```text
-repository/
-├── src/
-└── docs/
-    ├── Notist.toml
-    ├── README.not
-    └── guide.not
-```
-
-下面两条命令选择的都是 `docs/`：
+需要 Vault 的命令把 `[ROOT]` 作为最后一个 positional，默认是当前目录。ROOT 可以是 Vault 内的文件或目录；Notist 按 [[vault::designs::D0007-notist-toml]] 向上寻找最近的 `Notist.toml`，canonicalize 后再连接该 root 对应的 daemon。
 
 ```shell
-notist check docs
-notist query definition docs/guide.not 40
+notist status .
+notist search "type system" docs
+notist check docs/designs/D0014-agent-facing-cli-mcp-and-search.not
 ```
 
-完整 marker、nested Vault 和 ModulePath 规则见 [[vault::designs::D0007-notist-toml]]。
+Nested Vault 不进入外层扫描。Machine result 默认使用 Vault-relative path；canonical absolute path 只出现在明确需要文件系统身份的维护操作中。
 
 == 全局选项
 
-=== `--format <FORMAT>`
+| Option | 含义 |
+| --- | --- |
+| `--format text|json` | 选择 human text 或 schema-version-2 JSON；默认 text |
+| `--color auto|always|never` | 控制 human diagnostic 颜色；不改变 query result |
+| `--pager auto|always|never` | 只分页当前 bounded text page；不会自动读取 continuation |
+| `--no-daemon` | 在当前进程运行同一 service/core operation |
+| `--help` | 显示命令或 subcommand help |
+| `--version` | 显示版本 |
 
-有限生命周期的 CLI 命令支持两种输出格式：
-
-```text
-text    面向人的现有文本输出，默认值
-json    面向 Agent 和程序的版本化 JSON
-```
-
-全局参数可以写在子命令之前或之后：
+Global option 可以放在 subcommand 前后，但脚本建议统一放在命令前。Pager 的 auto 只在 human text TTY 中启用；JSON、daemon、LSP、MCP 和 preview 不经过 pager：
 
 ```shell
-notist --format json search "workspace revision" docs
-notist search "workspace revision" docs --format json
+notist --no-daemon --format json search "WorkspaceSnapshot" docs
 ```
 
-成功或业务失败的有限命令在 stdout 写入一个 JSON document：
+`--no-daemon` 只改变部署形态，不关闭 analysis、snapshot、预算或校验。唯一需要注意的是后台 index task 没有可继续持有它的 daemon，因此 `index rebuild --no-daemon` 会等待 task 完成。`lsp`、`mcp` 和 daemon protocol stdout 只允许协议 framing；对它们传 `--format json` 会直接报错。
+
+== 分页与输出预算
+
+Collection command 共享：
+
+| Option | 含义 |
+| --- | --- |
+| `-n, --limit N` | 本页最多返回的 item；普通 hard maximum 是 100 |
+| `--max-bytes N` | logical result 的 UTF-8 byte 预算；范围 4096..65536 |
+| `--cursor TOKEN` | 继续同一个 snapshot/query/filter/sort 序列 |
+
+默认 logical budget 是 16 KiB，普通 hard maximum 是 64 KiB。Search 默认 8 条；modules、references 和 diagnostics detail 默认 20 条；单 Module outline 默认最多 100 个 Heading。Byte budget 比 item limit 优先。
+
+Collection result 形状：
 
 ```json
 {
-  "schema_version": 1,
-  "command": "search",
-  "ok": true,
-  "result": {
-    "root": "...",
-    "snapshot": { "...": "..." },
-    "query": "workspace revision",
-    "results": []
+  "snapshot": {},
+  "items": [],
+  "page": {
+    "requested_limit": 8,
+    "applied_limit": 8,
+    "returned": 8,
+    "has_more": true,
+    "next_cursor": "opaque"
+  },
+  "budget": {
+    "requested_bytes": 16384,
+    "applied_bytes": 16384,
+    "logical_bytes": 7210,
+    "exhausted": false
+  },
+  "coverage": {
+    "complete": false,
+    "stop_reason": "item_limit"
   }
 }
 ```
 
-`schema_version` 描述 CLI envelope，不等于 daemon protocol version。`command` 使用稳定的逻辑名称，例如 `check`、`query definition` 或 `edit replace`。`ok` 表示命令的业务结果；例如 `check` 找到 diagnostics 或 edit plan 被拒绝时，仍能生成合法 JSON，但 `ok` 为 `false` 且进程返回非零状态。
+`coverage.complete=false` 表示当前页没有覆盖完整集合，不等于“未找到”。`stop_reason` 区分 `item_limit`、`byte_budget`、`query_limit` 和完整结束。正向事实查找在 `read` 已取得充分 authored evidence 后可以停止，不需要为了形式上的 complete 读完所有 search page；只有首页不足、任务要求穷举，或者结论依赖证明“不存在”时才必须继续。下一次调用必须保留原 query、selector、scope、field、mode、grouping 和排序参数，只改变 cursor 以及可选的页面预算。未完成页面的 `hints` 和 text renderer 都会要求对相同查询追加 cursor。
 
-无法形成命令结果的运行错误写入 stderr：
+Cursor 绑定 Vault source fingerprint。当前 cursor 使用带校验的紧凑 binary payload 和 base64url 表示，同时继续接受旧 JSON cursor；新响应只签发紧凑版本。Vault 已变化时返回 `cursor_stale`，query/filter/grouping 不匹配或 token 损坏时返回 `invalid_cursor`；hint 会要求原样保留 selector、query、filter、mode 与排序参数，或者省略 cursor 重新开始。服务不会把旧 byte offset 猜测到新 source 中。
+
+== status
+
+```shell
+notist status [ROOT]
+```
+
+返回 Vault identity、disk snapshot、runtime mode、source/module/diagnostic counts 和 lexical index health。Index health 可以是 `ready`、`building`、`stale`、`error` 或 `not_built`。它不返回正文、Heading 或 semantic item，固定 logical 上限为 8 KiB，适合成为人和 Agent 的第一个轻量入口。
+
+```text
+Vault        cfc3d18da3049056
+Snapshot     disk revision 42
+Sources      31
+Modules      31
+Diagnostics  0
+Index        ready (712 units)
+```
+
+== modules
+
+```shell
+notist modules [ROOT]
+  [--prefix MODULE]
+  [--kind any|source|virtual]
+  [--limit N] [--max-bytes N] [--cursor TOKEN]
+```
+
+每条 record 只包含 ModulePath、Vault-relative source path、source/virtual kind、可选 semantic title 和 source fingerprint。默认按 ModulePath 排序。
+
+```shell
+notist --format json modules docs --prefix vault::designs --kind source --limit 20
+```
+
+== search
+
+```shell
+notist search <QUERY> [ROOT]
+  [--mode lexical|exact|fuzzy|regex]
+  [--exact | --fuzzy | --regex]
+  [--scope MODULE]...
+  [--fields title,heading,label,module,path,tag,body,raw,comment]
+  [--operator all|any]
+  [--group-by source|section|match]
+  [--ignore-case]
+  [--fuzzy-distance 1|2]
+  [--wait-index DURATION]
+  [--snippet-bytes 64..2048]
+  [--limit N] [--max-bytes N] [--cursor TOKEN]
+```
+
+Search 有四种明确模式：
+
+| Mode | 匹配 | 排序 | 用途 |
+| --- | --- | --- | --- |
+| `lexical` | fielded token match | BM25 relevance | 默认自然语言与主题检索 |
+| `exact` | literal substring | source order | 类型名、错误消息、源码片段 |
+| `fuzzy` | lexical + Damerau-Levenshtein expansion | relevance | 英文或 identifier typo |
+| `regex` | Rust regex | source order | 人类 shell 调查 |
+
+`--exact`、`--fuzzy`、`--regex` 是互斥 alias。MCP search 不提供 regex。Lexical/fuzzy 默认 `--group-by source`，让首页优先覆盖不同 Module；exact/regex 默认 `--group-by match`，保留逐处定位。`section` 返回每个最近 Heading 下的最佳 hit，显式 `match` 可以关闭折叠。`--operator all` 是 lexical/fuzzy 默认值，也是多词事实查找的首选；`--operator any` 只用于宽召回。`--ignore-case` 只适用于 exact/regex；`--fuzzy-distance` 只适用于 fuzzy，最大为 2。`--wait-index` 默认 `2s`、最大 `10s`，只适用于 lexical/fuzzy；当前 snapshot 的 index 已经 ready 时不会额外等待。显式传入与 mode 无关的参数属于 usage/schema error，不会被静默忽略。
+
+```shell
+notist search "workspace snapshot" docs
+notist search --exact "WorkspaceSnapshot" docs --group-by match
+notist search --fuzzy "langauge sever" docs
+notist search --regex "D00[0-9]+" docs
+```
+
+Lexical tokenizer 使用 Unicode normalization 和 case folding；保留完整 identifier，并拆分 snake_case、kebab-case、camelCase、ModulePath 和 path segment；连续汉字产生 overlapping bigram。它不使用 stop-word removal 或 stemming，避免技术名称、短数字和 `not` 等词消失。
+
+Default field 是除 comment 外的全部字段。Field weight 属于 ranking version：label/module 6、title 5、heading/tag 4、path 3、body 1、raw 0.7。Result 中的 score 是固定精度 BM25 排序值，只能在同 query、index stamp 与 ranking version 内比较，不能解释为概率。
+
+`--scope` 是精确的绝对 ModulePath prefix：`vault::foo` 匹配自身及 `vault::foo::*`，不会匹配 `vault::foobar`。Scope 与 field 在 candidate generation 前进入 query。Ranked search 每次最多考虑 10000 个候选；达到上限时 `coverage.stop_reason=query_limit`。Regex 使用线性时间的 Rust regex engine，另有 2 秒 scan deadline；超时返回 typed `query_timeout`，建议缩小 scope/field 或改用 exact/lexical。
+
+Search hit 返回 ModulePath、relative path、source fingerprint、byte/line range、matched field、可选 match range、有界 excerpt 和可选 score。应用后的 `group_by`、ordering、ranking version、index stamp 和 fuzzy expansion 状态位于页级 `search` metadata，不在每个 hit 中重复。Lexical excerpt 默认最多 256 bytes，并优先围绕实际 query term 截取；无法映射的 fuzzy expansion 才退回 unit 中心。Excerpt 只用于挑选候选；回答事实前使用 `read` 读取 authored source。完整零结果仍然 exit 0，并带有界 `hints` 建议减少关键词、显式改用 `operator=any`，或切换 exact/lexical；CLI 不会替调用者自动放宽 query。
+
+== outline
+
+```shell
+notist outline <MODULE|PATH> [ROOT]
+  [--depth 1..6]
+  [--limit N] [--max-bytes N] [--cursor TOKEN]
+```
+
+Outline 只读取一个 source-backed Module，不再把整个 Vault 的所有 Heading 一次输出。每条 item 包含 name、level、可选 label 与精确 location。
+
+```shell
+notist outline vault::designs::D0014-agent-facing-cli-mcp-and-search docs --depth 3
+```
+
+全 Vault discovery 使用 `modules` 或 `search`；需要完整 outline artifact 时使用 `export outline`。
+
+== read
+
+```shell
+notist read <MODULE|PATH|MODULE#LABEL> [ROOT]
+  [--from-line N --lines N | --byte-range START..END]
+  [--max-bytes N] [--cursor TOKEN]
+```
+
+Read 返回原始 authored source、实际 byte/line range、source fingerprint、是否到达 selector 末尾和 continuation。Line、byte 与 label section 是三种窗口：
+
+```shell
+notist read vault::designs::D0014-agent-facing-cli-mcp-and-search docs \
+  --from-line 130 --lines 80
+
+notist read vault::designs::D0014-agent-facing-cli-mcp-and-search docs \
+  --byte-range 4000..8000
+```
+
+默认最多读取 120 行，并始终受 16 KiB logical budget 限制。长 source 自动返回 cursor，不需要 Agent 猜 shell byte offset。Text output 带行号 gutter；JSON 的 source string 不包含 gutter。
+
+== references
+
+```shell
+notist references <MODULE|MODULE#LABEL> [ROOT]
+  [--direction incoming|outgoing|both]
+  [--include-definition]
+  [--snippet-bytes N]
+  [--limit N] [--max-bytes N] [--cursor TOKEN]
+```
+
+默认 direction 是 incoming。每条 item 返回 source/target Module、edge direction、location 和有界 excerpt，不为同一个 location 重复整篇 source。
+
+== query definition
+
+```shell
+notist query definition <PATH> <UTF8_BYTE_OFFSET> [ROOT]
+  [--expected-fingerprint HASH]
+```
+
+Offset 明确使用 UTF-8 bytes。Definition 返回零或一个 bounded location，不携带 full source。Expected fingerprint 不匹配时返回 `snapshot_changed`，用于防止旧 offset 查询新文本。
+
+== check
+
+```shell
+notist check [ROOT]
+  [--scope MODULE]
+  [--summary]
+  [--severity error|warning|info]
+  [--limit N] [--max-bytes N] [--cursor TOKEN]
+```
+
+Check 始终完整分析选定 scope；预算只限制 diagnostic detail，不限制 summary 或 exit status。JSON 返回 checked source 数、完整 diagnostic count、按 code 计数和 diagnostics page。`--summary` 省略 detail；`--severity` 选择最低展示级别，当前 core diagnostics 均为 error。
+
+Human text 使用有界的 rustc/Typst 风格 source frame：
+
+```text
+error[invalid-syntax]: unclosed Content block
+  --> ai/example.not:13
+   |
+ 13 | #quote[
+
+3 diagnostics in 2 sources; showing 3
+```
+
+需要完整 machine artifact 时使用：
+
+```shell
+notist export diagnostics docs --output diagnostics.json
+```
+
+== Edit
+
+```shell
+notist edit replace <PATH> <START> <END> <REPLACEMENT>
+  --idempotency-key KEY
+  --expected-fingerprint HASH
+  [--yes]
+
+notist edit rename <FROM> <TO>
+  --idempotency-key KEY
+  --expected-fingerprint HASH
+  [--yes]
+```
+
+Convenience edit 仍经过 propose、validate、fingerprint precondition 和 apply pipeline。没有 `--yes` 时只返回 proposal 并使用 exit 1；脚本不能因为 stdin 不是 TTY 就被隐式授权写入。Range 使用 UTF-8 bytes，冲突不会 fuzzy patch。
+
+MCP 将这一边界拆成 `propose_edit` 和 `apply_edit` 两个 tool，由 Host 在 destructive operation 前处理 consent。
+
+== Index
+
+```shell
+notist index status [ROOT]
+notist index rebuild [ROOT] [--wait]
+```
+
+Index status 返回 `ready/building/stale/error/not_built`、schema/tokenizer/ranking version、indexed source fingerprint、unit count、最近错误和可选 operation handle。Lexical/fuzzy search 首次使用时为捕获的 snapshot 提交共享 build task，并按 `--wait-index` 等待；deadline 后 task 继续在 daemon 中运行，调用者得到 `index_not_ready` 和 exact fallback。Exact/regex 不依赖 index。
+
+Disk View 的新 generation 从 manifest 的逐 source fingerprint 计算 delta：复用旧 Tantivy segment，对修改/删除 source 写 tombstone，只重建新增或变化的 source，然后最后原子发布 manifest 与 immutable reader。Session overlay 使用独立的完整 in-memory generation，不会把未保存文本写入持久 cache。`index rebuild` 只删除并替换当前 snapshot 的可重建 generation，不修改 authored Vault；默认返回后台 task handle，`--wait` 输出一个有界 waiting event 后等待最终状态。Embedded `--no-daemon` 会隐式等待，以免进程退出时丢失后台 task。
+
+== Debug 与 Export
+
+```shell
+notist debug inspect [ROOT]
+  --section modules|references|semantic
+  [--module MODULE]
+  [--limit N] [--max-bytes N] [--cursor TOKEN]
+```
+
+Debug inspect 必须选择有界 projection。旧的普通 `inspect` 命令已经退出公开 command surface；Agent 不应使用 debug 做正常 discovery。
+
+```shell
+notist export diagnostics [ROOT] --output FILE
+notist export snapshot [ROOT] --output FILE
+notist export outline [ROOT] --output FILE
+```
+
+Export 捕获一个 snapshot，将完整 artifact 原子写入显式文件；stdout 只返回 kind、path、record/byte count、snapshot 与 SHA-256 checksum。`--output -` 是专家级无界 opt-in，不供 MCP 或官方 Skill 使用。
+
+== Build 与 Preview
+
+```shell
+notist build [ROOT] --output DIR [--clean]
+notist preview [ROOT] [--host IP] [--port N] [--no-open]
+```
+
+Build 从一个 captured snapshot 生成多页静态 HTML。`--clean` 只清理已经验证的 output directory。Preview 默认监听 `127.0.0.1`，port 0 让系统选择空闲端口；`--no-open` 不启动默认浏览器。Preview 的 JSON 格式是持续 JSON Lines event，不是有限 query envelope。
+
+== Agent Skill 与官方文档
+
+```shell
+notist skill init <OUTPUT> [--force]
+```
+
+默认情况下 OUTPUT 必须是尚不存在的目录，命令只生成一个确定性的 `SKILL.md`，不猜 Codex、Claude 或其他 Host 的安装位置。传入 `--force` 时，OUTPUT 必须是已有目录；命令原子替换其中的 `SKILL.md`，并保留其他文件。已有的普通文件永远不是有效输出。当前 executable 同步自己的官方 docs Vault；详细发布边界见 [[vault::designs::D0013-self-contained-agent-skill]]。
+
+官方 Agent 工作流是：
+
+```text
+status / modules
+  -> search or one-Module outline
+  -> read authored source
+  -> references / definition / check
+  -> propose edit / apply edit
+```
+
+Search 是候选发现而不是穷举仪式。正向事实查找在 `read` 已核实答案后停止；当前页没有合适候选时再继续 search。只有“列出全部”“确认没有”之类依赖完备性的任务必须沿 cursor 读到 `coverage.complete=true`。
+
+== LSP、MCP 与 Daemon
+
+```shell
+notist daemon [ROOT]
+notist lsp
+notist mcp [ROOT] [--text-mirror full|brief]
+```
+
+Daemon 为一个 canonical Vault root 持有共享 Engine、watcher、cache 和 disk View。CLI 默认惰性连接或启动对应 daemon；`--no-daemon` 使用同一个 service object 的 embedded mode。Local endpoint 包含 protocol version，升级后不会误连到仍在 idle grace period 内的旧 daemon。LSP 管理 editor overlay View；CLI 与 MCP 默认查询已保存的 disk View。
+
+MCP 暴露十个 model-controlled tools：
+
+| Tool | 用途 |
+| --- | --- |
+| `vault_status` | 小型 Vault/snapshot/index summary |
+| `list_modules` | bounded Module discovery |
+| `search` | lexical/exact/fuzzy candidate retrieval |
+| `get_outline` | 一个 Module 的 Heading tree |
+| `read_source` | bounded authored evidence |
+| `get_references` | incoming/outgoing semantic edges |
+| `get_definition` | 精确 definition location |
+| `check` | 完整 summary + paged diagnostics |
+| `propose_edit` | 只读 edit plan |
+| `apply_edit` | destructive、idempotent apply |
+
+MCP input schema 使用 `additionalProperties=false`，公开每个 limit/maxBytes/snippetBytes 的 default 与 maximum。Search 的 `groupBy` 与 CLI `--group-by` 等价。`get_outline`、`read_source` 和 `get_references` 的规范 selector 是与 CLI 相同的 module、`module#label` 或 Vault-relative path 字符串，可以直接复制 `search`/`list_modules` 输出的 `module`；旧的 module/path object 仍兼容。拼错参数或 mode 无关参数立即以 `-32602` 失败，错误会指出参数名、期望形状、实际 JSON 类型，并在 error data 中标记 `retryable=false`。每个 tool 的 output schema 区分带必需字段的 success object 与 typed tool error。Resources 只包含小型 `summary` 和 `capabilities`，不再提供全 Vault outline/diagnostics singleton。
+
+MCP logical result 默认最多 16 KiB、hard maximum 64 KiB。默认 `--text-mirror full` 为兼容 Host 在 TextContent 中复制完整 compact JSON；确认 Host 使用 `structuredContent` 时可以设置 `--text-mirror brief`，TextContent 只保留 item/coverage 摘要。Full mirror 的声明上界是：
+
+```text
+3 × applied maxBytes + 16 KiB
+```
+
+== JSON Envelope、错误与退出状态
+
+有限 CLI JSON 使用：
+
+```json
+{"schemaVersion":2,"command":"search","ok":true,"result":{}}
+```
+
+Typed error 使用：
 
 ```json
 {
-  "schema_version": 1,
-  "command": "check",
+  "schemaVersion": 2,
+  "command": "search",
   "ok": false,
-  "error": { "message": "..." }
+  "error": {
+    "code": "cursor_stale",
+    "message": "Vault sources changed after the cursor was issued",
+    "retryable": true,
+    "hint": "restart the query without a cursor"
+  }
 }
 ```
 
-JSON 模式不输出 ANSI color，也不要求调用者解析人类 diagnostics 行。Path 表示为字符串；source range 表示为 `{ "start": N, "end": N }`，仍然是 UTF-8 byte range。
-
-各命令的 `result` 保留它需要的上下文：
-
-- `check`：root、snapshot、summary 和 diagnostics。
-- `inspect`：root、snapshot，以及 modules、references、semantic items 组成的 inspect record。
-- `search`：root、snapshot、原 query 和 results。
-- `outline`：root、snapshot 和 documents。
-- `references`：root、snapshot、module、include-definition 选择和 locations。
-- `query definition`：root、snapshot、输入 path/offset 和 nullable definition。
-- `edit replace`：被拒绝时返回 plan，成功时返回 applied record。
-- `edit rename`：返回 rename record。
-- `build`：root、output、page count 和 diagnostics。
-- `skill init`：输出目录与生成的文件列表。
-
-`preview --format json` 是长期进程，因此 stdout 使用 JSON Lines：每行是一个独立 event envelope，包含 `schema_version`、`command: "preview"`、`event` 和 `data`。事件包括 initial/rebuild publication、listening URL、warning 和异步错误。前台 `daemon --format json` 同样先输出 `started` event，再持续服务。
-
-`lsp` 与 `mcp` 的 stdout 本身就是 JSON-RPC transport，不能再包装 CLI JSON；对它们传入 `--format json` 会明确失败，避免污染协议流。Clap 自己产生的参数解析与 `--help` 输出仍是文本，因为命令尚未开始执行，调用者不应把 JSON 模式当成未知参数恢复协议。
-
-=== `--no-daemon`
-
-默认情况下，普通命令先根据 canonical Vault root 定位该 Vault 的本地 daemon。没有可用 daemon 时，client 会用当前 `notist` 可执行文件自动启动一个 detached 后台 child。
-
-`--no-daemon` 跳过 daemon 连接与自动启动，改为在当前 `notist` 进程中创建一个 root-bound embedded `NotistService`：
-
-```shell
-notist --no-daemon check docs
-```
-
-两种模式调用同一组 core request，语言语义和结果格式应当一致。区别只在进程与状态生命周期：
-
-```text
-默认模式
-  command -> Vault daemon -> shared Engine/cache/watcher
-                                可被同一 Vault 的后续 client 复用
-
---no-daemon
-  command -> in-process service
-             只活到当前 command / LSP / MCP 进程结束
-```
-
-因此 `--no-daemon`：
-
-- 不是关闭分析；parser、Analyzer、snapshot 和查询仍会完整运行。
-- 不会连接或启动后台 daemon，也不会复用其他进程的 warm cache。
-- 不会让普通 CLI 读取编辑器尚未保存的 overlay；CLI 仍打开 disk View。
-- 适合 CI、受限环境、排查 daemon/IPC 问题，以及需要一次性隔离状态的调用。
-- 用于 `lsp` 或 `mcp` 时，embedded service 会随对应 adapter 进程持续存在，而不只是单个 request。
-
-=== `--color <COLOR>`
-
-控制面向终端的诊断颜色：
-
-```text
-auto     根据输出终端自动决定，默认值
-always   总是输出颜色控制码
-never    从不输出颜色控制码，适合 CI 日志
-```
-
-示例：
-
-```shell
-notist --color never check docs
-```
-
-== 检查与调试
-
-=== `check`
-
-```text
-notist check [ROOT]
-```
-
-检查整个 Vault 的 ModulePath、reference 和语义诊断。
-
-```shell
-notist check docs
-```
-
-没有诊断时输出 `checked <N> modules` 并返回成功；存在诊断时输出 source path、UTF-8 byte range、错误码和消息，并返回失败。它是 CI 中验证 Vault 的首选命令。
-
-=== `inspect`
-
-```text
-notist inspect [ROOT]
-```
-
-输出发现的 module、解析后的 reference 和内部语义项，用于理解 Vault 被分析成了什么：
-
-```shell
-notist inspect docs
-```
-
-`inspect` 是人类调试输出，不是稳定的机器交换格式。程序集成应使用 core protocol、LSP 或 MCP。
-
-== 搜索与语义导航
-
-这些命令默认读取已保存文件组成的 disk View。输出位置中的 range 都是 UTF-8 byte range。
-
-=== `search`
-
-```text
-notist search <QUERY> [ROOT]
-```
-
-搜索当前 snapshot 捕获的 Notist source context：
-
-```shell
-notist search "workspace revision" docs
-```
-
-每条结果包含 source path、byte range 和匹配上下文。当前命令是 source-context 搜索入口；未来的语义检索或向量索引仍应保持同一 Vault 和 snapshot 边界。
-
-=== `outline`
-
-```text
-notist outline [ROOT]
-```
-
-输出整个 Vault 求值后的 heading outline，并按 heading level 缩进：
-
-```shell
-notist outline docs
-```
-
-=== `references`
-
-```text
-notist references <MODULE> [ROOT] [--include-definition]
-```
-
-`MODULE` 必须是绝对逻辑 ModulePath，而不是文件路径：
-
-```shell
-notist references vault::designs::D0011 docs
-notist references vault::designs::D0011 docs --include-definition
-```
-
-默认只返回引用位置；`--include-definition` 额外包含 module 自身的定义位置。
-
-=== `query definition`
-
-```text
-notist query definition <PATH> <OFFSET>
-```
-
-查询 source 的 UTF-8 byte offset 处符号所指向的定义：
-
-```shell
-notist query definition docs/designs/D0011-analyzer-and-workspace-snapshot.not 120
-```
-
-`OFFSET` 不是行号、列号或 Unicode 字符序号。编辑器通常应使用 LSP，由 adapter 完成 Position 与 byte offset 转换；该 CLI 入口适合 Agent、脚本和协议调试。
-
-== 带前置条件的编辑
-
-编辑命令直接修改磁盘 source，因此必须提供 idempotency key，并经过 snapshot/fingerprint 前置条件验证。
-
-=== `edit replace`
-
-```text
-notist edit replace <PATH> <START> <END> <REPLACEMENT>
-                    --idempotency-key <KEY>
-```
-
-替换 `[START, END)` 表示的 UTF-8 byte range：
-
-```shell
-notist edit replace docs/page.not 10 18 "replacement" \
-  --idempotency-key task-42-edit-1
-```
-
-命令先基于当前 snapshot 提议 edit plan，检查 plan diagnostics 和受影响 source fingerprint，再应用写入。如果文件在提议与应用之间发生变化，前置条件失败，命令不会覆盖新内容。
-
-=== `edit rename`
-
-```text
-notist edit rename <FROM> <TO> --idempotency-key <KEY>
-```
-
-在同一个 Vault 内重命名 source：
-
-```shell
-notist edit rename docs/old.not docs/new.not \
-  --idempotency-key task-42-rename-1
-```
-
-源文件必须存在，目标不能越出 Vault，也不能覆盖已有目标。命令使用源 fingerprint 防止并发变化，并保留显式 rename 所对应的稳定 file identity。
-
-=== Idempotency key
-
-`--idempotency-key` 标识一次逻辑写入，而不是一次进程调用：
-
-- 同一次操作因连接中断等原因重试时复用原 key。
-- 不同 replace 或 rename 使用不同 key。
-- key 应由调用者生成并在自己的操作日志中保持稳定。
-
-这样 daemon 可以识别已经完成的重试，避免一次 Agent 操作被写入两遍。
-
-== 构建与预览
-
-=== `build`
-
-```text
-notist build [ROOT] [-o <OUTPUT>] [--clean]
-```
-
-把整个 Vault 构建为多页静态 HTML：
-
-```shell
-notist build docs
-notist build docs -o dist
-notist build docs -o dist --clean
-```
-
-`OUTPUT` 默认是 `dist`。普通构建不会先删除整个输出目录；`--clean` 才会在写入前清理选定目录。Notist 拒绝把 Vault root 作为输出目录，也拒绝清理过于宽泛的路径。
-
-构建存在 diagnostics 时仍会报告生成结果，但以失败状态退出。
-
-=== `preview`
-
-```text
-notist preview [ROOT] [--host <HOST>] [--port <PORT>] [--no-open]
-```
-
-启动带 live reload 的本地预览：
-
-```shell
-notist preview docs
-notist preview docs --port 3000 --no-open
-```
-
-选项：
-
-```text
---host <HOST>   监听地址，默认 127.0.0.1
---port <PORT>   TCP 端口，默认 0，由操作系统分配可用端口
---no-open       不自动打开默认浏览器
-```
-
-绑定非 loopback 地址会把文档内容暴露到相应网络接口，Notist 会输出安全警告。
-
-== 官方文档与 Agent Skill
-
-每个正常 CLI 工作流开始前都会检查当前版本内嵌的官方 docs fingerprint。用户数据目录中的 manifest 已匹配时只进行一次轻量比较；缺失或不匹配时，CLI 在跨进程锁内把完整 docs bundle 解压到 staging tree，校验后原子发布为稳定的普通 Vault。
-
-默认位置是：
-
-```text
-Windows   %LOCALAPPDATA%\Notist\docs
-macOS     $HOME/Library/Application Support/Notist/docs
-Unix      ${XDG_DATA_HOME:-$HOME/.local/share}/notist/docs
-```
-
-`NOTIST_DATA_DIR` 可以覆盖 Notist user-data root，此时官方 Vault 位于 `$NOTIST_DATA_DIR/docs`。这个覆盖适合测试、沙箱和可迁移安装；它改变的是整个 Notist 数据根，而不只是文档查询。
-
-同步完成后没有 docs 专用查询命令。它使用现有普通接口：
-
-```shell
-notist search "WorkspaceSnapshot" <DOCS_ROOT>
-notist outline <DOCS_ROOT>
-notist references vault::designs::D0012 <DOCS_ROOT>
-notist mcp <DOCS_ROOT>
-```
-
-初始化官方 Agent Skill：
-
-```text
-notist skill init <OUTPUT>
-```
-
-`OUTPUT` 必须不存在，且父目录必须已经存在。成功后目录中只有 `SKILL.md`；命令不猜测 Agent host 的安装位置，也不覆盖或更新已有 Skill。Skill 教 Agent 使用普通 Notist 命令查询同步后的官方 Vault，并区分当前公开文档、活动设计、日期调研与历史设计。
-
-官方 docs source 与 Skill 都来自当前 CLI 的内嵌发布资源，因此首次使用不需要 GitHub 或其他网络服务。向量模型和索引不包含在二进制中；未来启用语义检索时，它们仍是 docs Vault 自己的 daemon/cache 派生状态。
-
-== 协议入口
-
-=== `lsp`
-
-```text
-notist lsp
-```
-
-编辑器配置：
-
-```text
-command: notist
-args: ["lsp"]
-```
-
-`lsp` 通过 stdin/stdout 传输 LSP JSON-RPC。stdout 必须只承载协议消息，不能写日志或包装器输出。一个编辑器 worktree 可以包含多个 Vault；adapter 按最近 `Notist.toml` marker 路由 source，并连接各 Vault 自己的 daemon。
-
-编辑器未保存文本保存在该 LSP session 的 overlay View 中。它不会写入磁盘，也不会自动出现在普通 CLI、MCP 或另一个编辑器的 View 中。详细生命周期见 [[vault::designs::D0008-language-server]]。
-
-=== `mcp`
-
-```text
-notist mcp [ROOT]
-```
-
-Agent host 配置：
-
-```text
-command: notist
-args: ["mcp", "docs"]
-```
-
-当前 MCP server 打开所选 Vault 的 disk View，并提供：
-
-```text
-tools       search, get_references, definition
-resources   notist://<vault>/diagnostics
-            notist://<vault>/outline
-```
-
-MCP 看不到编辑器未保存的 overlay。MCP resource 也是只读语义资源，不等于可写文件系统。
-
-== Daemon
-
-```text
-notist daemon [ROOT]
-```
-
-手动以前台方式运行一个 Vault 的共享 service：
-
-```shell
-notist daemon docs
-```
-
-通常不需要手动启动它；普通 client 会在 endpoint 不可用时自动拉起后台 child。两种启动方式的生命周期不同：
-
-```text
-自动后台 daemon   没有连接的五分钟 idle 检查窗口内自动退出
-显式前台 daemon   持续运行，直到用户或宿主终止进程
-```
-
-一个 daemon 只服务启动时确定的 canonical Vault root。Endpoint 由当前用户身份和 root 共同派生；handshake 还会验证协议版本、Vault root 和 capabilities。不同 Vault 使用不同 daemon、watcher、Engine、索引和内存生命周期。完整进程模型见 [[vault::designs::D0012-daemon-and-client-interfaces]]。
-
-== 输出、退出状态与帮助
-
-一般约定：
-
-- 普通结果写入 stdout，diagnostics 和错误写入 stderr。
-- 成功返回 exit code 0；参数错误、服务错误或命令定义的 diagnostics failure 返回非 0。
-- source 位置使用 UTF-8 byte range，形式通常为 `path:start..end`。
-- 人类可读输出不应被当作稳定协议格式。
-
-查看安装版本实际支持的命令和选项：
-
-```shell
-notist --help
-notist check --help
-notist edit replace --help
-notist preview --help
-```
+稳定 error code 包括 `not_found`、`ambiguous_selector`、`invalid_cursor`、`cursor_stale`、`snapshot_changed`、`index_not_ready`、`query_timeout`、`query_limit`、`budget_too_large`、`edit_conflict` 与 `plan_expired`。包括 clap parse failure 在内的 JSON usage error 也使用同一 envelope。脚本按 exit status 粗分，再按 error code 恢复，不解析 message substring。
+
+| Exit | 含义 |
+| ---: | --- |
+| 0 | 成功；零 search result 也属于成功 |
+| 1 | 命令有效完成但业务结论失败，例如 check 有 diagnostic 或 proposal 未应用 |
+| 2 | clap usage/schema error |
+| 3 | selector、cursor、index 等可纠正 query error |
+| 4 | service/protocol unavailable |
+| 5 | edit conflict 或 precondition failure |
+| 70 | 未分类 internal failure |
+
+完整接口模型与选择理由见 [[vault::designs::D0014-agent-facing-cli-mcp-and-search]]。

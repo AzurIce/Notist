@@ -4,13 +4,7 @@ use std::path::{Path, PathBuf};
 
 use crate::resources::NOTIST_SKILL_MD;
 
-pub(crate) fn init(output: PathBuf) -> io::Result<PathBuf> {
-    if output.exists() {
-        return Err(io::Error::new(
-            io::ErrorKind::AlreadyExists,
-            format!("output already exists: {}", output.display()),
-        ));
-    }
+pub(crate) fn init(output: PathBuf, force: bool) -> io::Result<PathBuf> {
     let parent = output
         .parent()
         .filter(|path| !path.as_os_str().is_empty())
@@ -23,6 +17,26 @@ pub(crate) fn init(output: PathBuf) -> io::Result<PathBuf> {
         )
     })?;
     let output = parent.join(name);
+    if output.exists() {
+        if !force {
+            return Err(io::Error::new(
+                io::ErrorKind::AlreadyExists,
+                format!("output already exists: {}", output.display()),
+            ));
+        }
+        if !output.is_dir() {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                format!("skill output must be a directory: {}", output.display()),
+            ));
+        }
+        notist_service::write_artifact_atomic(
+            &output.join("SKILL.md"),
+            NOTIST_SKILL_MD,
+            &format!("skill-init-{}", std::process::id()),
+        )?;
+        return Ok(output);
+    }
     let staging = tempfile::Builder::new()
         .prefix(".notist-skill-staging-")
         .tempdir_in(&parent)?;
@@ -47,7 +61,7 @@ mod tests {
     fn initializes_exactly_one_skill_file_without_overwrite() {
         let parent = tempfile::tempdir().unwrap();
         let output = parent.path().join("notist");
-        assert_eq!(init(output.clone()).unwrap(), output);
+        assert_eq!(init(output.clone(), false).unwrap(), output);
         let entries = fs::read_dir(&output)
             .unwrap()
             .collect::<Result<Vec<_>, _>>()
@@ -56,8 +70,33 @@ mod tests {
         assert_eq!(entries[0].file_name(), "SKILL.md");
         assert_eq!(fs::read(output.join("SKILL.md")).unwrap(), NOTIST_SKILL_MD);
         assert_eq!(
-            init(output).unwrap_err().kind(),
+            init(output, false).unwrap_err().kind(),
             io::ErrorKind::AlreadyExists
+        );
+    }
+
+    #[test]
+    fn force_replaces_only_skill_file_in_existing_directory() {
+        let parent = tempfile::tempdir().unwrap();
+        let output = parent.path().join("notist");
+        fs::create_dir(&output).unwrap();
+        fs::write(output.join("SKILL.md"), b"stale skill").unwrap();
+        fs::write(output.join("keep.txt"), b"preserve me").unwrap();
+
+        assert_eq!(init(output.clone(), true).unwrap(), output);
+        assert_eq!(fs::read(output.join("SKILL.md")).unwrap(), NOTIST_SKILL_MD);
+        assert_eq!(fs::read(output.join("keep.txt")).unwrap(), b"preserve me");
+    }
+
+    #[test]
+    fn force_rejects_existing_file() {
+        let parent = tempfile::tempdir().unwrap();
+        let output = parent.path().join("notist");
+        fs::write(&output, b"not a directory").unwrap();
+
+        assert_eq!(
+            init(output, true).unwrap_err().kind(),
+            io::ErrorKind::InvalidInput
         );
     }
 }

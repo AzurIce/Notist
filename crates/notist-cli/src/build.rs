@@ -616,7 +616,7 @@ mod tests {
 
     #[test]
     fn builds_source_and_virtual_modules_with_relative_links() {
-        let root = tempfile::TempDir::new().unwrap();
+        let root = tempfile::TempDir::new_in(std::env::current_dir().unwrap()).unwrap();
         fs::create_dir(root.path().join("notes")).unwrap();
         fs::write(
             root.path().join("README.not"),
@@ -647,7 +647,7 @@ mod tests {
 
     #[test]
     fn builds_annotation_ids_as_label_targets() {
-        let root = tempfile::TempDir::new().unwrap();
+        let root = tempfile::TempDir::new_in(std::env::current_dir().unwrap()).unwrap();
         fs::write(
             root.path().join("README.not"),
             "[[guide#intro]]\n\n#heading[Home]@home",
@@ -697,7 +697,7 @@ mod tests {
 
     #[test]
     fn refuses_to_build_over_the_workspace_root() {
-        let root = tempfile::TempDir::new().unwrap();
+        let root = tempfile::TempDir::new_in(std::env::current_dir().unwrap()).unwrap();
         let canonical = dunce::canonicalize(root.path()).unwrap();
 
         let error = prepare_output_root(root.path(), &canonical).unwrap_err();
@@ -707,7 +707,7 @@ mod tests {
 
     #[test]
     fn explicit_clean_removes_only_the_selected_output_tree() {
-        let root = tempfile::TempDir::new().unwrap();
+        let root = tempfile::TempDir::new_in(std::env::current_dir().unwrap()).unwrap();
         let output = root.path().join("site");
         fs::create_dir_all(&output).unwrap();
         fs::write(output.join("stale.html"), "stale").unwrap();

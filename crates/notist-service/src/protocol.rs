@@ -5,7 +5,7 @@ use std::path::PathBuf;
 use serde::{Deserialize, Serialize};
 
 pub const PROTOCOL_MAJOR: u16 = 3;
-pub const PROTOCOL_MINOR: u16 = 0;
+pub const PROTOCOL_MINOR: u16 = 1;
 pub const CAPABILITIES: &[&str] = &[
     "completion",
     "definition",
@@ -14,6 +14,8 @@ pub const CAPABILITIES: &[&str] = &[
     "hover",
     "references",
     "search",
+    "bounded_query",
+    "read_source",
     "symbols",
 ];
 

@@ -420,6 +420,26 @@ mod tests {
     }
 
     #[test]
+    fn pads_missing_pipe_table_cells_without_losing_header() {
+        let evaluated =
+            Evaluator::default().evaluate("| A | B | C |\n| --- | --- |\n| one | two | three |");
+        assert!(
+            evaluated.diagnostics.is_empty(),
+            "{:?}",
+            evaluated.diagnostics
+        );
+        assert!(matches!(
+            &evaluated.content.elements[0].element,
+            Element::Table {
+                columns: 3,
+                header: true,
+                cells,
+                ..
+            } if cells.len() == 6
+        ));
+    }
+
+    #[test]
     fn lowers_headings_and_tables_inside_long_form_markup() {
         let evaluated = Evaluator::default()
             .evaluate("= Title\n\nIntro\n\n| A | B |\n| --- | --- |\n| one | two |\n\nOutro");
@@ -470,6 +490,53 @@ mod tests {
                 element: Element::List { ordered: false, items },
                 ..
             }) if items.len() == 2
+        ));
+    }
+
+    #[test]
+    fn lowers_orphan_indented_list_before_shallower_list() {
+        let evaluated = Evaluator::default().evaluate("= t\n\n  - x\n+ y");
+        assert!(
+            evaluated.diagnostics.is_empty(),
+            "{:?}",
+            evaluated.diagnostics
+        );
+        assert!(
+            evaluated
+                .content
+                .elements
+                .iter()
+                .any(|node| matches!(node.element, Element::ListItem(_)))
+        );
+        assert!(
+            evaluated
+                .content
+                .elements
+                .iter()
+                .any(|node| matches!(node.element, Element::EnumItem { .. }))
+        );
+    }
+
+    #[test]
+    fn lowers_orphan_indented_task_before_shallower_task() {
+        let evaluated = Evaluator::default().evaluate("  - [ ] x\n- [x] y");
+        assert!(
+            evaluated.diagnostics.is_empty(),
+            "{:?}",
+            evaluated.diagnostics
+        );
+        assert!(matches!(
+            evaluated.content.elements.as_slice(),
+            [
+                ElementNode {
+                    element: Element::TaskItem { .. },
+                    ..
+                },
+                ElementNode {
+                    element: Element::TaskItem { .. },
+                    ..
+                }
+            ]
         ));
     }
 

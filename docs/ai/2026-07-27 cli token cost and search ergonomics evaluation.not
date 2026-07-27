@@ -1,0 +1,130 @@
+= CLI Token 成本与 Search 人机工学改进评估
+
+本轮改进建立在 [[vault::designs::D0014-agent-facing-cli-mcp-and-search]] 的 bounded query contract 上。此前的重设计已经消除了 megabyte 级无界输出，但默认 search 仍一次返回 20 个 512-byte excerpt，ranked hit 又逐条重复 index provenance；同时官方 Skill 要求只要 `coverage.complete=false` 就翻页，会让较小默认页产生更多历史回放。
+
+目标不是让单次调用看起来最小，而是在保留事实查找成功率、穷举能力和人类可理解性的前提下，降低一次完整 Agent 任务的总输入成本。
+
+== 参数模型：保留一个 limit
+
+没有加入 `--top`。CLI、Core 和 MCP 继续使用同一个 `limit` 概念：它限制当前页 item 数，未完成时由 opaque cursor 恢复。CLI 为高频输入增加短参数 `-n`，但不增加另一种全局 top-k 或终止语义：
+
+```shell
+notist search "workspace snapshot" docs -n 8
+notist search "workspace snapshot" docs --limit 8
+```
+
+如果 `top` 表示全局终止，调用者会同时得到“不完整集合”和“没有明确恢复路径”；如果只是 `limit` alias，又会让 MCP、CLI help 和 Agent prompt 多一个同义词。因此统一 limit 比新增参数更可靠。
+
+== 默认预算
+
+| Operation | 改进前 | 改进后 | Hard maximum |
+| --- | --- | --- | --- |
+| modules | 50 items / 32 KiB | 20 items / 16 KiB | 100 / 64 KiB |
+| search | 20 items / 512 B excerpt / 32 KiB | 8 items / 256 B excerpt / 16 KiB | 100 / 2048 B / 64 KiB |
+| outline | 100 items / 32 KiB | 100 items / 16 KiB | 100 / 64 KiB |
+| references | 50 items / 512 B excerpt / 32 KiB | 20 items / 256 B excerpt / 16 KiB | 100 / 2048 B / 64 KiB |
+| diagnostics detail | 50 items / 32 KiB | 20 items / 16 KiB | 100 / 64 KiB |
+| read | 200 lines / 32 KiB | 120 lines / 16 KiB | 1000 lines / 64 KiB |
+
+这些默认值仍是可调 policy，而不是调用者身份 profile。人在终端、CLI JSON、daemon 和 MCP 使用同一查询语义；需要更大页面时显式提高 limit/maxBytes，需要完整 artifact 时使用 export。
+
+== Search 先提供来源多样性
+
+新增 `--group-by source|section|match`，MCP 对应 `groupBy`：
+
+- `source` 每个 Module 保留排序最高的 hit。
+- `section` 按最近 authored Heading 保留最佳 hit；标题之前的内容形成 source preamble group。
+- `match` 保留每个独立 source region。
+
+Lexical/fuzzy 默认 source，因为它们主要执行候选发现；exact/regex 默认 match，因为人通常用它们逐处定位。Grouping 进入 query fingerprint，cursor 后不能偷偷更改。需要同一文档多个段落时可以显式请求 section 或 match：
+
+```shell
+notist search "workspace snapshot" docs
+notist search "workspace snapshot" docs --group-by section
+notist search --exact "WorkspaceSnapshot" docs --group-by match
+```
+
+Search 的 `ranking_version`、`index_stamp` 和 `expansion_limited` 从逐 hit 字段提升到页级 `search` metadata；每个 hit 继续保留 score、location、match/unit/excerpt range。这样 provenance 仍可解释，却不重复序列化同一个 index identity。
+
+== Cursor 与 continuation
+
+新签发的 cursor 使用 version 2 packed binary payload、八字节完整性校验和 base64url。它仍绑定 operation、Vault、View、source-set fingerprint、query fingerprint 与 offset；reader 同时接受旧 version 1 JSON cursor，保证迁移期 continuation 不会立即失效。
+
+成功页的 continuation hint 缩短为“对相同 query 使用 next_cursor”，详细绑定规则保留在 Skill、文档和 typed invalid-cursor error。Human text 不再输出一整句参数分类说明，只显示：
+
+```text
+more results available (item_limit).
+continue the same query with --cursor TOKEN
+```
+
+== Agent 停止规则
+
+官方 Skill 不再要求每个 incomplete page 都继续：
+
+- 正向事实查找：search 选择候选，read 获得充分 authored evidence 后停止。
+- 当前页不足：继续 cursor，或者显式调整 query/operator/grouping。
+- 穷举或否定结论：必须读到 `coverage.complete=true`。
+
+因此 `coverage.complete=false` 可以支持已经由 read 证明的正向回答，却永远不能支持“没有此内容”或“以下是全部结果”。这个规则使较小首页降低总会话成本，而不是把一个大调用拆成多次无条件调用。
+
+== Human text 与 help
+
+Search help 现在说明 mode alias、scope、fields、grouping、case、snippet 和实际默认预算，并提供 topic lookup、exact locate 与 fuzzy lookup 示例。Text renderer 做了三项调整：
+
+- 未完成页显示 `showing N sources/sections/matches; more available`，不再把 returned 数伪装成 total match count。
+- 位置优先显示 Vault-relative `path:line`，byte range 留在 JSON。
+- 每条 hit 显示 matched field；lexical/fuzzy 默认页明确称为 sources。
+
+Outline/read 等结构化命令仍保留 JSON 的精确 range 与 fingerprint；text 只做同一 logical result 的人类投影。
+
+== MCP compatibility mirror
+
+`notist mcp` 新增：
+
+```shell
+notist mcp docs --text-mirror full
+notist mcp docs --text-mirror brief
+```
+
+默认 full 继续在 TextContent 复制 compact JSON，兼容只读取 content 的 Host。确认 Host 消费 `structuredContent` 后可选 brief，TextContent 只报告 returned、coverage 和查看 structuredContent 的提示。Brief 不改变 tool schema、logical result、cursor 或 error；typed error 仍返回完整可操作文本。
+
+== 实测
+
+测量对象是当前仓库 docs Vault，改进前数据取自本轮开始快照，改进后数据取自包含本报告的最终工作树；命令使用对应 debug executable、`--no-daemon --format json` 和同一 query `workspace snapshot`。表中大小是完整 CLI JSON envelope 的 UTF-8 bytes，不是依赖特定模型 tokenizer 的估算。文档正文随本轮设计同步有少量变化，因此这些数字用于产品级成本量级比较，不宣称是只改变单一变量的微基准。
+
+| Case | 改进前 | 改进后 | 变化 |
+| --- | ---: | ---: | ---: |
+| 默认 search JSON | 23,974 B / 20 hits | 6,647 B / 8 hits | -72.3% |
+| 默认 search 首页来源 | 6 unique Modules | 8 unique Modules | 多样性提升 |
+| `group-by match` search | 23,974 B / 20 hits | 6,806 B / 8 hits | -71.6% |
+| 默认 modules JSON | 6,924 B / 31 items | 5,022 B / 20 items | -27.5% |
+| 默认 outline JSON | 11,896 B / 29 items | 11,899 B / 29 items | 基本不变 |
+| continuation cursor | 约 324 chars | 103 chars | -68.2% |
+
+默认 source grouping 的 8 个 hit 来自 8 个不同 Module；显式 match 的 8 个 hit 来自 5 个 Module。这说明“先折叠重复来源，再降低 limit”比单独把 20 改成 5 更能保持候选覆盖。
+
+Outline 大小没有改善，因为它仍在每个 Heading location 中重复同一个 Module、path 和 source fingerprint。本轮保留 outline 的完整默认深度，避免为了 token 破坏人类查看文档结构的直觉；下一版应通过单源 context 去重，而不是继续压低 outline item 数。
+
+== 保留边界与后续机会
+
+本轮没有缩写 JSON key、使用 tuple record 或新增 agent-specific profile。这些做法虽然能压字节，却增加模型字段误读、人类调试困难和多套协议漂移。
+
+尚可继续优化：
+
+- 为 outline/read 提升单源 Module/path/fingerprint 到 page context。
+- 为 search/references 在同页重复来源较多时使用 source table。
+- 将公开 query snapshot 与内部 daemon/view identity 分离。
+- 在下一个 schema version 中消除 `returned`/`has_more`/`complete` 等可推导 metadata 重复。
+- 如果 MCP Host 生态形成标准 structuredContent capability negotiation，再把 brief 从显式部署选项变成协商结果。
+
+这些改动会触及稳定 JSON shape，适合单独作为 schema migration 设计与 benchmark，而不应混入本轮默认值调整。
+
+== 验证
+
+- Rust workspace：215 passed，37 ignored。
+- `notist check docs`：32 sources，0 diagnostics。
+- 默认 lexical 首页：8 items 来自 8 个 Module；第二页 5 items，与第一页没有 Module 重复。
+- Exact 显式 `group-by source`：第一页 8 items 来自 8 个 Module，并返回 103-character continuation。
+- Cursor：version 2 round-trip、query/grouping mismatch 拒绝、stale source 拒绝和 version 1 compatibility 均有测试或行为验证。
+- MCP：schema 默认值、groupBy、flat selector、full mirror 与 brief mirror 均有测试。
+- `cargo fmt --check` 与 `git diff --check` 通过。

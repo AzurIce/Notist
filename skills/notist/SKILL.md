@@ -18,12 +18,17 @@ Treat the synchronized official docs as a normal read-only Notist Vault. Locate 
 Search before guessing language or CLI behavior:
 
 ```shell
-notist search "workspace snapshot" <DOCS_ROOT> --format json
-notist outline <DOCS_ROOT> --format json
-notist references vault::designs::D0012 <DOCS_ROOT> --format json
+notist --format json search "workspace snapshot" <DOCS_ROOT>
+notist --format json outline vault::designs::D0012-daemon-and-client-interfaces <DOCS_ROOT> --depth 2
+notist --format json read vault::designs::D0012-daemon-and-client-interfaces <DOCS_ROOT> --from-line 1 --lines 80
+notist --format json references vault::designs::D0012-daemon-and-client-interfaces <DOCS_ROOT>
 ```
 
-Prefer `--format json` for finite CLI commands. Read the versioned envelope's `ok`, `result`, diagnostics, paths, and UTF-8 byte ranges instead of parsing human-readable lines. LSP and MCP already use JSON-RPC and must not receive this flag; `preview --format json` emits JSON Lines events while it runs.
+Use `status` or bounded `modules` for discovery, then `search` or one-Module `outline`, and finally `read` for authored evidence. Lexical/fuzzy search returns a small page grouped by source by default; use `--group-by section` for section diversity or `--group-by match` to locate every occurrence. Keep the default `operator=all` for multi-term fact lookup; use `operator=any` only for deliberate broad recall. Search excerpts select candidates; do not treat them as complete evidence.
+
+For a positive fact lookup, stop paging search once `read` provides sufficient authored evidence. Follow `result.page.next_cursor` only when the current page has no adequate candidate, the task asks for every match, or the answer depends on proving absence. `coverage.complete=false` is compatible with a supported positive answer, but it can never support an exhaustive or negative claim. When continuing, preserve the original selector, query, filters, mode, grouping, and ordering parameters; if a cursor is rejected, follow its hint instead of repeating the same call. Ordinary queries have server-enforced item and byte limits; do not use `debug` or `export` for routine discovery.
+
+Prefer `--format json` for finite CLI commands. Read the schema-version-2 envelope's `ok`, `result`, `page`, `budget`, `coverage`, relative paths, source fingerprints, and UTF-8 byte ranges instead of parsing human-readable lines. LSP and MCP already use JSON-RPC and must not receive this flag; `preview --format json` emits JSON Lines events while it runs.
 
 Prefer current public documentation such as `grammar.not`, `functions.not`, `types.not`, and `cli.not`. Active `designs/` describe governing architecture. Treat `docs/ai/` as dated research and `designs/archive/` as historical context.
 

@@ -894,7 +894,7 @@ mod tests {
 
     #[test]
     fn exposes_document_and_workspace_symbols() {
-        let root = tempfile::TempDir::new().unwrap();
+        let root = tempfile::TempDir::new_in(std::env::current_dir().unwrap()).unwrap();
         fs::write(
             root.path().join("README.not"),
             "= Surface title\n== Nested title\n\n```not\n= Hidden example\n```\n\n#heading[Explicit title]\n#code(text=\"fn main() {}\", lang=\"rust\", block=true)",
@@ -950,7 +950,7 @@ mod tests {
 
     #[test]
     fn argument_completion_inside_unknown_nested_call_offers_no_outer_parameters() {
-        let root = tempfile::TempDir::new().unwrap();
+        let root = tempfile::TempDir::new_in(std::env::current_dir().unwrap()).unwrap();
         fs::write(root.path().join("README.not"), "#heading(level=missing())").unwrap();
         let root_path = dunce::canonicalize(root.path()).unwrap();
         let state = ServerState::new(root_path, true).unwrap();
@@ -973,7 +973,7 @@ mod tests {
 
     #[test]
     fn completion_uses_unsaved_workspace_sources() {
-        let root = tempfile::TempDir::new().unwrap();
+        let root = tempfile::TempDir::new_in(std::env::current_dir().unwrap()).unwrap();
         fs::write(root.path().join("README.not"), "[[ch]]").unwrap();
         fs::write(root.path().join("child.not"), "child").unwrap();
         let root_path = dunce::canonicalize(root.path()).unwrap();
@@ -1006,7 +1006,7 @@ mod tests {
 
     #[test]
     fn keeps_marked_vaults_independent_within_one_worktree() {
-        let root = tempfile::TempDir::new().unwrap();
+        let root = tempfile::TempDir::new_in(std::env::current_dir().unwrap()).unwrap();
         for vault in ["docs", "notes"] {
             fs::create_dir(root.path().join(vault)).unwrap();
             fs::write(
@@ -1057,7 +1057,7 @@ mod tests {
 
     #[test]
     fn protocol_loop_serves_overlay_diagnostics_completion_hover_and_definition() {
-        let root = tempfile::TempDir::new().unwrap();
+        let root = tempfile::TempDir::new_in(std::env::current_dir().unwrap()).unwrap();
         fs::write(root.path().join("README.not"), "disk").unwrap();
         fs::write(root.path().join("child.not"), "child").unwrap();
         let root_path = dunce::canonicalize(root.path()).unwrap();

@@ -1,5 +1,8 @@
 = AI 整理文档索引
 
+- [[self::2026-07-27 cli token cost and search ergonomics evaluation]]：实现并评估 CLI/MCP 的 token 成本优化：统一保留 `--limit`，将 search 默认缩到 8 个 256-byte excerpt，以 source/section/match grouping 提升首页多样性，把 index provenance 移到页级，压缩 cursor，修正 Agent 翻页停止规则与 human text/help，并提供 MCP full/brief mirror；同一 docs query 的默认 search JSON 从 23,974 B 降到 6,647 B。
+- [[self::2026-07-27 agent-facing CLI and MCP interface redesign]]：在成本取证之上重新设计 Agent 与人共用的 query contract：拒绝隐式 agent/human profile，采用“默认预算 + 参数可调 + 服务端硬上界 + 显式 export artifact”，并给出统一 PageRequest、snapshot cursor、CLI 命令面、十个 MCP tools、Resource Template、typed error、编辑计划、兼容迁移和可量化验收。
+- [[self::2026-07-26 agent-friendly CLI output and Notist improvements]]：基于 v0.3 的 720 次 Agent run 成本取证，对照 QMD、GitHub CLI、AWS CLI、Kubernetes API、ripgrep、RTK、Repomix 与 MCP 规范，提出默认有界、snapshot cursor、字段投影、渐进式 source read、32 KiB response budget、MCP Resource Template、typed error 和输出成本回归方案。
 - [[self::2026-07-21 notist agent mcp semantic retrieval and vector indexing]]：从零梳理 Notist 作为 Agent 输入/输出知识库的完整方向，说明 MCP resources/tools 与 application core 的边界，并综述 BM25、dense/sparse embedding、ColBERT、多向量、HNSW/IVF/PQ/DiskANN、hybrid/rerank、RAPTOR/GraphRAG、记忆、引用评测和安全写入；给出从稳定 ID、全文索引和只读 MCP 到向量、图检索、事务化 Agent 编辑及远程多租户的渐进路线。
 - [[self::2026-07-20 notist native desktop architecture research]]：系统比较原生平台 UI、Qt、Floem、Slint、GPUI、Tauri 与 Wry 等路线，推荐采用原生源码编辑器、pane 级 WebView、不可变 WorkspaceSnapshot 和 Wasmtime/WASI capability 插件宿主，并列出 Linux Wayland、安全隔离及四个落地 spike。
 - [[self::2026-07-17 typed document analysis and lsp migration]]：静态求值模型迁移收尾。记录 mode-aware 语法树之后的五项决策（元素 range 含 `#`、Annotation 移出 evaluator、注册时签名校验、签名数据上移 model、analysis 静态 type checking 与 eval 的错误对齐规则）,LSP 诊断去 runtime 与最内层 call 补全，以及 typst CST/AST 设计对照与遗留事项。

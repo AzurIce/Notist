@@ -79,6 +79,8 @@ fn handshake(kind: ClientKind, vault_root: PathBuf) -> io::Result<Handshake> {
             "hover".into(),
             "references".into(),
             "search".into(),
+            "bounded_query".into(),
+            "read_source".into(),
             "symbols".into(),
         ],
     })
@@ -121,7 +123,7 @@ pub(crate) fn run_daemon(
     format: OutputFormat,
 ) -> Result<std::process::ExitCode, Box<dyn std::error::Error>> {
     let runtime = tokio::runtime::Runtime::new()?;
-    let service = Arc::new(NotistService::for_root(&root)?);
+    let service = Arc::new(NotistService::for_daemon_root(&root)?);
     let vault_generation = crate::official_docs::generation_for_root(&root)?;
     if !background_child {
         if format.is_json() {

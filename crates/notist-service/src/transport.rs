@@ -12,7 +12,7 @@ use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt};
 use tokio::sync::mpsc;
 use tokio::task::JoinSet;
 
-use crate::protocol::{Handshake, HandshakeAccepted, negotiate};
+use crate::protocol::{Handshake, HandshakeAccepted, ProtocolVersion, negotiate};
 use crate::{CoreReply, CoreRequest, CoreResponse, NotistService, ServiceViewId};
 
 const MAX_FRAME_BYTES: usize = 256 * 1024 * 1024;
@@ -317,6 +317,16 @@ fn endpoint_discriminator(root: &Path, vault_generation: Option<&str>) -> String
     }
     hash ^= 0xff;
     hash = hash.wrapping_mul(0x100000001b3);
+    for byte in [
+        ProtocolVersion::CURRENT.major.to_le_bytes(),
+        ProtocolVersion::CURRENT.minor.to_le_bytes(),
+    ]
+    .into_iter()
+    .flatten()
+    {
+        hash ^= u64::from(byte);
+        hash = hash.wrapping_mul(0x100000001b3);
+    }
     if let Some(vault_generation) = vault_generation {
         for byte in vault_generation.as_bytes() {
             hash ^= u64::from(*byte);
@@ -585,8 +595,8 @@ mod tests {
 
     #[test]
     fn daemon_endpoint_and_handshake_are_scoped_to_one_vault() {
-        let first = tempfile::TempDir::new().unwrap();
-        let second = tempfile::TempDir::new().unwrap();
+        let first = tempfile::TempDir::new_in(std::env::current_dir().unwrap()).unwrap();
+        let second = tempfile::TempDir::new_in(std::env::current_dir().unwrap()).unwrap();
         let first_root = dunce::canonicalize(first.path()).unwrap();
         let second_root = dunce::canonicalize(second.path()).unwrap();
         assert_ne!(
@@ -630,7 +640,7 @@ mod tests {
 
     #[test]
     fn daemon_rejects_a_mismatched_managed_vault_generation() {
-        let root = tempfile::TempDir::new().unwrap();
+        let root = tempfile::TempDir::new_in(std::env::current_dir().unwrap()).unwrap();
         let root = dunce::canonicalize(root.path()).unwrap();
         let runtime = tokio::runtime::Runtime::new().unwrap();
         runtime.block_on(async {
@@ -664,7 +674,7 @@ mod tests {
 
     #[test]
     fn vault_scoped_daemon_exits_after_an_idle_grace_period() {
-        let root = tempfile::TempDir::new().unwrap();
+        let root = tempfile::TempDir::new_in(std::env::current_dir().unwrap()).unwrap();
         let root = dunce::canonicalize(root.path()).unwrap();
         let service = Arc::new(NotistService::for_root(&root).unwrap());
         let runtime = tokio::runtime::Runtime::new().unwrap();

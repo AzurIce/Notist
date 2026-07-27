@@ -350,8 +350,8 @@ mod tests {
 
     #[test]
     fn preview_rebuild_swaps_a_complete_live_reload_site() {
-        let root = tempfile::TempDir::new().unwrap();
-        let output = tempfile::TempDir::new().unwrap();
+        let root = tempfile::TempDir::new_in(std::env::current_dir().unwrap()).unwrap();
+        let output = tempfile::TempDir::new_in(std::env::current_dir().unwrap()).unwrap();
         let site = PublishedSite::new(output.path().join("generations")).unwrap();
         fs::write(root.path().join("README.not"), "#heading[First]").unwrap();
         let mut client =

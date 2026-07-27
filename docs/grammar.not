@@ -295,7 +295,7 @@ Markup 中相邻的 Text、Reference、Raw 和 EmbeddedExpression 输出按源�
 
 当前核心 Markup sugar 为：`= heading`、`- list item`、`+ enum item`、`- [ ] task`、inline/fenced backtick、`$math$`、`*strong*`、`_emphasis_`、`__underline__`、`~~strike~~`、Wiki Reference、裸 HTTP(S) URL、bare email、管道表格和行末反斜线换行。Quote、Callout 与 Details 只使用显式 Function。图片、命名链接、分隔线和分页同样使用显式 Function。
 
-这些语法在 lowering 阶段产生统一的 Content/Element。Backtick/fence 与显式 `code` 共享 Raw Element；相邻的普通、有序或任务 item 分别组合成与显式 `list`、`enum`、`task` 相同的容器 Element。管道表格允许单元格包含 Raw、Wiki Reference 与 EmbeddedExpression；分隔器扫描会跳过反引号、String、括号和 Content block 内部的 `|`。每个语法糖 TableCell 使用 `colspan=1`、`rowspan=1`，跨列或跨行通过显式 `table::cell` 表达，并与显式表格共享 rowspan-aware 网格算法。
+这些语法在 lowering 阶段产生统一的 Content/Element。Backtick/fence 与显式 `code` 共享 Raw Element；相邻的普通、有序或任务 item 分别组合成与显式 `list`、`enum`、`task` 相同的容器 Element。缩进增加时，item 嵌套到此前最近的较浅 item；孤儿缩进 item 作为新的根 item 宽容恢复，之后较浅的 item 结束当前嵌套而不会使解析递归或崩溃。管道表格允许单元格包含 Raw、Wiki Reference 与 EmbeddedExpression；分隔器扫描会跳过反引号、String、括号和 Content block 内部的 `|`。同一管道表格的列数取最宽行，缺少的尾单元格补为空 cell；若分隔行只缺尾列，仍视为表头，缺失列使用默认对齐。每个语法糖 TableCell 使用 `colspan=1`、`rowspan=1`，跨列或跨行通过显式 `table::cell` 表达，并与显式表格共享 rowspan-aware 网格算法。
 
 `> quote`、`!!! callout`、`??? details`、定义列表、footnote、citation、abbreviation、insert、spoiler、highlight、super/sub、video/audio 和 `%% comment %%` 均不是当前宿主语法。Setext 标题、`* item`、数字列表、Markdown `[label](URL)`、`![alt](source)` 与 `---` thematic break 也保持普通文本。
 
