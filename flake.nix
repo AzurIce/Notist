@@ -1,5 +1,5 @@
 {
-  description = "ranim";
+  description = "notist";
 
   # nixConfig = {
   #   extra-substituters = [
@@ -34,7 +34,7 @@
         overlays = [ (import rust-overlay) ];
         pkgs = import nixpkgs { inherit system overlays; };
         inherit (pkgs) lib;
-        craneLib = (crane.mkLib pkgs).overrideToolchain (
+        devCraneLib = (crane.mkLib pkgs).overrideToolchain (
           p:
           p.rust-bin.selectLatestNightlyWith (
             toolchain:
@@ -44,9 +44,63 @@
             }
           )
         );
+
+        # 打包用 stable 工具链即可（CI 也是 stable）
+        craneLib = crane.mkLib pkgs;
+
+        # build.rs 会把 docs/ 与 skills/notist 嵌入二进制，
+        # 因此除了 Cargo 源码外还需要保留这两个目录。
+        src = lib.cleanSourceWith {
+          src = ./.;
+          filter =
+            path: type:
+            (craneLib.filterCargoSources path type)
+            || (lib.hasInfix "/docs/" path)
+            || (lib.hasInfix "/skills/" path);
+        };
+
+        commonArgs = {
+          inherit src;
+          strictDeps = true;
+        };
+
+        cargoArtifacts = craneLib.buildDepsOnly commonArgs;
+
+        notist = craneLib.buildPackage (
+          commonArgs
+          // {
+            inherit cargoArtifacts;
+            cargoExtraArgs = "--locked --package notist-cli";
+            # 搜索索引缓存写入 $XDG_CACHE_HOME（见 notist-service 的 search_cache_path），
+            # 沙箱中 HOME 不可写会导致测试失败，这里指到构建目录内。
+            XDG_CACHE_HOME = "/build/xdg-cache";
+            meta = {
+              description = "Notist CLI";
+              mainProgram = "notist";
+              license = with lib.licenses; [
+                mit
+                asl20
+              ];
+            };
+          }
+        );
       in
       {
-        devShells.default = craneLib.devShell {
+        packages = {
+          inherit notist;
+          default = notist;
+        };
+
+        apps.default = {
+          type = "app";
+          program = lib.getExe notist;
+        };
+
+        checks = {
+          inherit notist;
+        };
+
+        devShells.default = devCraneLib.devShell {
           packages =
             [ ]
             ++ (with pkgs; [
