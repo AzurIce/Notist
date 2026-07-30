@@ -61,6 +61,7 @@
 
         commonArgs = {
           inherit src;
+          pname = "notist";
           strictDeps = true;
         };
 
