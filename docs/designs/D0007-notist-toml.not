@@ -87,7 +87,7 @@ ServerState
 ├── open documents
 ├── docs/  -> ViewHandle
 ├── notes/ -> ViewHandle
-└── builtin Function registry
+└── versioned core prelude and plugin binding schemas
 ```
 
 didOpen 和 didChange 的 source overlay 按最近 marker 分配。Definition、references、completion、Hover 和 diagnostics 只查询当前 source 所属的 Analyzer View。
@@ -99,9 +99,9 @@ didOpen 和 didChange 的 source overlay 按最近 marker 分配。Definition、
 Notist.toml 的配置空间可以在不改变 vault root 语义的前提下承载：
 
 - vault metadata。
-- enabled plugins 和 Function schema。
+- language version、core prelude 与 feature gates。
+- enabled plugins、Value/Function binding schema 与 capability policy。
 - build 与 preview options。
 - diagnostics policy。
-- language version 或 feature gates。
 
 无论启用哪些字段，vault root 始终是 Notist.toml 所在目录，避免配置位置与内容根之间再次产生二义性。

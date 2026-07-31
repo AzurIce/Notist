@@ -1,12 +1,12 @@
 = Notist Grammar
 
-本文定义 Notist 的目标语法模型。语言包含 Markup 与 Code 两种模式：文档默认处于 Markup，`#` 将一个 Code expression 嵌入当前内容，Code 中的 `[...]` 创建 Content literal 并暂时切回 Markup。概念说明见 [[vault::intro]]，类型与求值规则见 [[vault::types]]。
+本文定义当前工具与写作者可以依赖的语法 surface。语言包含 Markup 与 Code 两种模式：文档默认处于 Markup，`#` 将一个 Code expression 嵌入当前内容，Code 中的 `[...]` 创建 Content literal 并暂时切回 Markup。概念说明见 [[vault::intro]]，类型与求值规则见 [[vault::types]]；可编程文档语言的目标模型与下一版 core grammar 分别见 [[vault::designs::D0015-programmable-documents-and-language-core]] 和 [[vault::designs::D0016-surface-language-and-core-grammar]]。
 
 == 规范状态
 
-本文是 parser、analysis 与 evaluator 的现行规范。当前实现已支持本文描述的 mode-aware syntax tree 与一般 EmbeddedExpression，以及 Function call、trailing Content、String literal、Wiki Reference、Raw syntax 和 Attributes。
+本文是 parser、analysis 与 evaluator 对外保证的现行参考。当前实现已支持本文描述的 mode-aware syntax tree 与一般 EmbeddedExpression，以及 Function call、trailing Content、String literal、Wiki Reference、Raw syntax 和 Attributes。
 
-本次规范只确定 Markup 与 Code 两种模式，以及当前所需的 Code expression 子集。变量、`let`、一般运算、控制流和 User Function 不属于本阶段；模式边界应允许它们未来加入而无需再次修改 Content literal 与 Function call 的语义。
+本次参考只承诺 Markup 与 Code 两种模式，以及下文列出的 Code expression 子集。代码库中的实验性 variable、`let`、operator、Value-returning Function 或 User Function 不构成稳定语言契约；它们将按 D0015/D0016 的 lexical binding、first-class Function 和 typed HIR 模型重新进入规范。Markup/Code boundary 保持稳定，避免重构再次修改 Content quotation 的基本含义。
 
 == 记号
 
@@ -309,9 +309,9 @@ Markup 中的 `\` 后接 ASCII punctuation 时，二者共同产生一个 litera
 
 Markup、Code 和 Raw 的边界必须由 parser 在本地确定，不依赖 Function registry 或插件 runtime。
 
-== 非本阶段语法
+== 当前 surface 不承诺的语法
 
-以下能力不属于当前双 Mode 迁移：
+以下能力不属于当前稳定 surface；实验性 parser/evaluator 行为不能作为兼容性依据：
 
 - `let` 与变量访问。
 - 一般 unary/binary expression。
@@ -321,4 +321,4 @@ Markup、Code 和 Raw 的边界必须由 parser 在本地确定，不依赖 Func
 - Annotation 任意非嵌套交叉。
 - 完整 formatter trivia model。
 
-这些能力以后应扩展 CodeExpression 或 analysis，而不是改变 `#`、ContentBlock 与 Markup 的基本模式语义。
+这些能力按 [[vault::designs::D0015-programmable-documents-and-language-core]] 与 [[vault::designs::D0016-surface-language-and-core-grammar]] 扩展 Code item、expression、lexical analysis 与 typed HIR，不改变 `#`、Content literal 与 Markup quotation 的基本模式语义。

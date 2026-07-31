@@ -1,6 +1,6 @@
 = D0002: Scope and Attributes
 
-Notist 将“表达式产生什么内容”与“作者如何描述这段源码”视为两个正交维度：
+Notist 将“程序产生什么 Value/Content”与“作者如何描述一段源码”视为两个正交维度：
 
 ```not
 #[important concept]@concept,#knowledge,.highlight,status=draft
@@ -12,7 +12,7 @@ Notist 将“表达式产生什么内容”与“作者如何描述这段源码�
 
 == Content Expression
 
-文档默认处于 Markup mode，`#` 开始一个 EmbeddedExpression 并切换到 Code。Code 中的 [...] 是 Content literal，括号内部再切回 Markup：
+文档默认处于 Markup mode，`#` 开始一个 embedded Code item。Code 中的 `[...]` 是 Content literal，括号内部再切回 Markup：
 
 ```not
 #[Plain content.]
@@ -20,7 +20,7 @@ Notist 将“表达式产生什么内容”与“作者如何描述这段源码�
 #[Outer #[nested]@inner content.]@outer
 ```
 
-因此 #[...] 不是一种额外的 TransparentScope grammar。它只是把 Content literal 作为表达式嵌入外层文档；没有 Attributes 时，它与直接写出相同 Markup 的语义内容一致。
+因此 `#[...]` 不是一种额外的 TransparentScope grammar。它只是把 Content literal expression 嵌入外层文档；没有 Attributes 时，它与直接写出相同 Markup 的语义内容一致。
 
 ```text
 Markup
@@ -33,7 +33,7 @@ Content literal 可以包含文字、Reference、Raw syntax、Function call 以�
 
 == Function Call
 
-Function call 使用同一个 Code expression 模型：
+Function call 使用 [[vault::designs::D0015-programmable-documents-and-language-core]] 定义的一般 Code expression 模型：
 
 ```not
 #heading(level=2)[Typed evaluation]
@@ -44,7 +44,7 @@ It may contain [[self::references]] and #[annotations]@example.
 ]
 ```
 
-调用先解析 qualified name 和普通 arguments，再接受零个或多个 ContentBlock；公开 signature 至多声明一个 trailing Content parameter，因此 binder 只绑定零个或一个 trailing block，多余 block 产生 diagnostic。
+Call 的 callee 是 expression，不限于 qualified name。调用解析 ordinary arguments，并可接受 signature 显式声明的一个 trailing Content parameter；连续 Content postfix 若存在，则表示对前一次 Function result 继续调用，而不是向一个 call 塞入多个 body。
 
 Trailing [...] 只是普通 Content argument 的紧凑写法：
 
@@ -55,14 +55,14 @@ Trailing [...] 只是普通 Content argument 的紧凑写法：
 
 二者进入相同的 signature binding 和 Function 执行路径。Function 不重新调用 Notist parser，也不能通过注册名字改变宿主 grammar。
 
-Raw 内容也不需要第二种 call mode。它通过 String、backtick 或 fenced Raw syntax 显式产生，再传给 raw、code、math 等 Function：
+Raw 内容也不需要第二种 call mode。Function 需要 raw source 时接收普通 String；宿主 backtick/fence 则直接拥有稳定的 core raw 语义：
 
 ```not
 #raw(text="fn main() {}", lang="rust")
-#raw(text=`fn main() { println!("hello"); }`, lang="rust")
+#raw(text=r#"fn main() { println!("hello"); }"#, lang="rust")
 ```
 
-这样 parser 可以只根据局部语法确定语言边界，不需要知道函数签名，也不再需要 RawSource body、bang delimiter 或 BodyForm。
+这样 parser 可以只根据局部语法确定语言边界，不需要知道函数签名，也不再需要 RawSource body、bang delimiter 或 BodyForm。Inline/block layout 是 explicit raw argument 或宿主 syntax fact，不由 String literal provenance 暗中决定。
 
 == Attributes
 
@@ -82,7 +82,7 @@ Attributes 是 EmbeddedExpression 的统一 postfix：
 
 可以跳过 ID，直接从 `@#tag`、`@.class` 或 `@key=value` 开始。ID 只能出现一次并位于第一个位置，因为它承担 module-local identity；Tag、Class 和 property 则可组合用于查询、样式与扩展分析。
 
-一个有 Attributes 的 expression 同时保留两个 range：
+一个有 Attributes 的 embedded expression 同时保留两个 range：
 
 ```text
 EmbeddedExpression
@@ -91,7 +91,7 @@ EmbeddedExpression
 └─ metadata
 ```
 
-Annotation 的 scope 覆盖完整 EmbeddedExpression，而不是任意 token 片段。Attributes 自身拥有独立 range，使 rename、hover 和格式化能够只操作 metadata。显式 scope 必须正确嵌套或彼此分离；非嵌套交叉无法由语法树稳定表达，也会破坏增量编辑后的 identity。
+Annotation 的 scope 覆盖完整 EmbeddedExpression，而不是任意 token 片段。Attributes 自身拥有独立 range，使 rename、hover 和格式化能够只操作 metadata。显式 scope 必须正确嵌套或彼此分离；非嵌套交叉无法由语法树稳定表达，也会破坏增量编辑后的 identity。`let`、`import` 等 declaration 不使用这个 postfix；它们建立 symbol/module 语义而不插入 Content。
 
 Lowering Content 时，Attributes 不生成容器 Element，也不改变 expression 的 Value：
 
@@ -119,7 +119,7 @@ Annotation: scope_range + { id: "concept" }
 - 用 Attribute 选择函数会让 parser 和 tooling 依赖动态 registry；
 - 把 ID、Tag 当作普通 Function 参数，会让全局索引只能理解特定 builtin。
 
-Function 可以通过显式 API 查询周围 Annotation，但这属于 analysis/evaluation context，不改变基本 ownership。
+Function 不能隐式读取 call site 周围的 Annotation。若 metadata 应改变 Function 结果，它就是普通 Value argument；否则 `erase_attributes` 将无法保持相同 evaluation。
 
 == Parser and Tooling
 
@@ -127,8 +127,8 @@ Function 可以通过显式 API 查询周围 Annotation，但这属于 analysis/
 
 ```text
 #[...]                 -> Embedded Content literal
-#name(args)[...]       -> CallExpression + trailing Content
-#name(args)@...        -> CallExpression + source Annotation
+#callee(args)[...]     -> CallExpression + trailing Content
+#callee(args)@...      -> CallExpression + source Annotation
 inline/fenced raw      -> RawSyntax
 ```
 
@@ -159,14 +159,15 @@ Function call 的路径是：
 
 ```text
 arguments + trailing Content
--> expression evaluation
--> signature binding
--> FunctionInput
--> FunctionOutput(Content)
+-> resolved typed CallPlan
+-> expression evaluation and planned binding
+-> Function Value invocation
+-> result Value
+-> optional Content insertion
 ```
 
 Attributes 在这条路径之外，由 syntax/analysis 保存 source ownership。这样 evaluator 可以专注于 Value 与 Content，索引器可以专注于 Annotation，renderer 只消费结构化 Content，而不必共同维护一种万能 Scope/Processor 节点。
 
 == 结果
 
-Notist 最终只有一条组合规则：Markup 中的 `#` 嵌入 Code expression，Code 中的 [...] 创建 Content literal，完整 EmbeddedExpression 后可以附加 Attributes。Function、Content 与 Annotation 各自拥有清楚的职责，同时仍能用紧凑语法组合。
+Notist 最终只有一条内容组合规则：Markup 中的 expression result 经 Content insertion 进入当前 quotation，Code 中的 `[...]` 创建 Content literal，完整 EmbeddedExpression 后可以附加 Attributes。Declaration、Function、Content 与 Annotation 各自拥有清楚的职责，同时仍能用紧凑语法组合。

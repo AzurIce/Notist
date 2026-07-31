@@ -1,8 +1,12 @@
 = D0003: Vault and Module
 
-最初的构思见历史记录 [[vault::designs::archive::D0001-rua-markdown-module-scope]]。
+Notist Module 同时是知识库中的稳定逻辑节点和可编程文档的 evaluation unit。作者用 ModulePath 连接知识，用 import 取得另一个 Module 的 root binding；两者都建立在同一 Module identity 上，却产生不同语义。
 
-Notist 的模块系统类似 Rust：作者使用稳定的逻辑路径引用内容，不直接把操作系统路径写进语言；区别是 Module 不需要显式声明，而由 Vault 内的目录和 .not source 推导。
+最初的知识库构思见历史记录 [[vault::designs::archive::D0001-rua-markdown-module-scope]]，Module 作为程序的求值模型见 [[vault::designs::D0015-programmable-documents-and-language-core]]。
+
+== Source Tree 与 Module Tree
+
+文件系统决定 Module 的逻辑层级，不要求 source 再声明一遍：
 
 ```text
 vault-root/
@@ -13,10 +17,103 @@ vault-root/
    └─ subsubmodule.not        # vault::submodule2::subsubmodule
 ```
 
-普通文件名成为最后一个 ModulePath segment；README.not 表示它所在的目录。因此 submodule.not 与 submodule/README.not 都映射到 vault::submodule，不能共存。一个逻辑 Module 最多有一个 source，这让 definition、reference 和输出路径都具有单一身份。
+普通文件名成为最后一个 ModulePath segment；`README.not` 表示所在目录。因此 `submodule2.not` 与 `submodule2/README.not` 都映射到 `vault::submodule2`，不能同时存在。一个逻辑 Module 最多有一个 source，使 definition、import、Reference、query 与输出路径共享单一身份。
 
-目录本身仍可以成为 virtual Module。只要它的子树中存在 .not source，就需要这个中间节点来承载后代的 ModulePath；完全不含 .not 文件的目录不进入 Module tree。于是 guide/setup.not 可以定义 vault::guide::setup，即使 guide/README.not 不存在，但 assets/ 之类的普通目录不会制造无用模块。
+目录只要拥有 `.not` 后代，就形成 virtual Module，即使没有自己的 `README.not`：
 
-Reference 解析针对 ModulePath 与可选的 module-local Annotation ID，而不是磁盘路径。移动 source 会改变默认 ModulePath，因此是逻辑重命名；renderer 和 indexer 应从同一 module graph 派生链接，不能各自扫描目录猜测身份。
+```text
+guide/setup.not -> vault::guide::setup
+```
 
-Vault 决定这棵树的根、发现边界和名称解析上下文。根标记、nested Vault 与 CLI/LSP 的 root resolution 由 [[vault::designs::D0007-notist-toml]] 继续定义；本文只说明一个已选定 Vault 内部如何从 source tree 得到 Module tree。
+这里 `vault::guide` 是 virtual Module，用于承载 namespace 和 child identity。完全不含 `.not` source 的普通 asset 目录不进入 Module tree。
+
+== ModuleResult
+
+Source-backed Module 在自己的 lexical environment 中按顺序求值，得到：
+
+```text
+ModuleResult {
+  bindings: Environment,
+  content: Content,
+}
+```
+
+`content` 是该文档用于 build、preview、outline 与 semantic query 的结果；`bindings` 是其他 Module 可以 import 的 root Value environment。
+
+当前 source 在 Module root 自己声明的每个成功 `let` binding 都进入 `bindings`。Imported binding、core/prelude binding、Function parameter 以及 nested Content/Code block binding 只存在于相应 lexical environment，不会自动成为当前 Module 的 binding。这个 ownership rule 阻止一条 import 无意中把整条 transitive dependency chain 带入当前 Module namespace。
+
+Virtual Module 没有 source，不凭目录存在自动获得 Content 或 Value environment。它只提供 Module tree identity 和 child namespace；文件遍历结果不能伪装成 source evaluation。
+
+== Reference 连接知识
+
+Wiki Reference 构造 Content Element：
+
+```not
+[[setup]]
+[[self::setup]]
+[[super::intro]]
+[[vault::grammar]]
+[[vault::guide#install]]
+```
+
+Reference resolution 针对 ModulePath 与可选 module-local Annotation ID，而不是磁盘路径。它不执行目标 Module，不读取 module bindings，也不把目标 content 插入当前 Module。
+
+Reference cycle 合法：两篇知识文档可以互相链接。Renderer 和 indexer 从同一 module/reference graph 派生 URL、backlink 和 definition，不能各自扫描目录猜测 identity。
+
+== Import 连接程序环境
+
+Code import 取得目标 Module 的 root binding：
+
+```not
+#import self::theme::{warning, accent}
+#import super::shared::{format as shared_format}
+```
+
+Braces 左侧是 ModulePath，内部 selector 是该 Module 的 root Code name；这避免 `shared::format` 在 child Module 与 imported Value 之间产生 lookup ambiguity。Import declaration 扩展当前 lexical block 后续 item 的 environment，并产生 empty Content。Import selector 必须显式；core 不提供 wildcard import，以便 analyzer、review 和 cache 能看见依赖边。ModulePath 是静态 syntax，即使 import 位于 nested lexical block，其 dependency edge 也在 evaluation 前进入 import graph。
+
+Module root declaration 创建可 import 的 binding：
+
+```not
+#let accent = "violet"
+
+#let warning(kind: String = "warning", trailing body: Content) -> Content =
+  core::callout(kind=kind, body=body)
+```
+
+Module-root Function binding 是真正的 Function Value，携带 signature、implementation 与 closure environment；它不注册进一个绕开 Module scope 的全局字符串 registry。Imported binding 不自动成为当前 Module 的 binding；需要转发时，作者用新的 root `let` 明确拥有该 binding。Native/plugin package 若向 Module 提供 Value，也必须投影为同一种 module binding environment。
+
+Module root 自有 binding 一律可以被 import。
+
+== 两张跨 Module 图
+
+Reference graph 和 import graph 使用相同 Module identity，但拥有不同 cycle semantics：
+
+```text
+Reference graph -> Content links; cycles allowed
+Import graph    -> Value initialization; cycles rejected
+```
+
+Import graph 必须在 Module evaluation 前解析。请求一个 ModuleResult 时，先完成它的 transitive dependency DAG；同一 evaluation snapshot 与 environment identity 下，每个 source-backed Module 至多求值一次并复用相同 result。互不依赖的 Module 没有语言可观察的 initialization order，因此 host 可以串行或并行计算。
+
+一个 import cycle 不能通过“恰好先加载到哪个文件”决定结果，也不能由 daemon cache 顺序打破；cycle 一律是 diagnostic。若 capability backend 能观察 scheduler 或共享外部可变状态，这种 effect 必须显式退出 pure cache contract，不能让它把 import traversal order 变成隐藏的语言状态。
+
+当前语言没有跨 Module Content insertion。Import 不插入 ModuleResult.content，Wiki Reference 也只产生 link/reference Element；知识导航、code dependency 和文档 composition 因而不会合并成一条含糊的边。
+
+== Module Path 与 Code Name
+
+ModulePath segment 来自文件名，需要容纳适合人类知识库的名称。Code identifier 则参与 operator parsing、lexical binding 与 keyword 规则。两者使用不同 grammar：
+
+```text
+Module path: self::design-notes
+Code name:   design_notes
+```
+
+Import 可以通过 `as` 把 Module root name 映射为合法 Code identifier。Wiki Reference 继续使用 ModulePath 原名。`vault`、`self`、`super` 是 Module reference prefix，不是一般 Code variable。
+
+移动 source 若改变 ModulePath，就是逻辑 Module rename，而不仅是文件路径变化。Reference 和 import 都需要同一 rename plan；FileId 是否在 editor event 中保持稳定不改变语言 identity 已经变化的事实。
+
+== Vault Boundary
+
+Vault 决定 Module tree 的根、discovery boundary、language version、prelude/plugin environment 与允许的 capability。根 marker、nested Vault 和 CLI/LSP root assignment 由 [[vault::designs::D0007-notist-toml]] 定义。
+
+不同 Vault 不共享 Module environment；当前语言也不解析跨 Vault Reference 或 import。相邻目录和同一 daemon process 都不能自动扩大名称解析范围。

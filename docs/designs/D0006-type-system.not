@@ -1,52 +1,22 @@
 = D0006: Type System
 
-
-Notist 最终需要完整的静态类型系统，同时保留运行时 Value。静态类型负责在执行前验证表达式和函数调用；Value 负责承载已经求值的数据，并交给 native、user 或 plugin function 执行。
-
-Function API 使用结构化参数，避免每个函数自行解释字符串；类型能力可以逐步扩展，但不会改变 Type、Value 与 binding 的分工。
-
-== Functions Produce Content
-
-heading、raw、quote 等“processor”本质上都是 callable function：
+Notist 的 static Type 描述 expression 可以产生什么 Value，runtime Value 承载一次求值真正产生的结果。二者共同服务于 [[vault::designs::D0015-programmable-documents-and-language-core]] 定义的可编程文档模型：Module、普通 binding、User Function、core/native Function 与 plugin Function 都进入同一套名称解析、调用和返回值规则。
 
 ```not
-#heading(level=1)[Introduction]
-#raw(text=`fn main() {}`, lang="rust")
-#quote[quoted *content*]
+#let depth: Int = 2
+#let title = "Typed documents"
+
+#let heading_at(level: Int, trailing body: Content) -> Content =
+  core::heading(level=level, body=body)
+
+#heading_at(depth)[#title]
 ```
 
-它们可以具有普通函数签名：
+`depth`、`title` 和 `heading_at` 都是 lexical binding。它们的差异来自 Value 与 Type，而不是来自三种互不相干的 registry 或 AST 特例。
 
-```text
-heading(level: Int = 1, body: Content) -> Content
-raw(text: String, lang: String? = none) -> Content
-quote(attribution: Content? = none, body: Content) -> Content
-```
+== Type 与 Value
 
-因此不需要长期维护独立的 Processor type 和 ProcessorRegistry。统一系统包含 Function、FunctionRegistry、FunctionInput、FunctionOutput 和 FunctionContext。
-
-
-== Core Types
-
-核心类型集合包括：
-
-- `None`
-- `Bool`
-- `Int`
-- `Float`
-- `String`
-- `Content`
-- `Array<T>`
-- `Dict<K, V>` 或结构化 record
-- `Function`
-
-`Content` 是可组合的语义 Element sequence，不是普通字符串。Raw source 由 host syntax 产生 String，并通过独立 source range 保留诊断映射；String 只有在显式插入 Content 时才转换为 Text。
-
-类型还需要可选类型、联合类型或等价能力，以表达 `String?`、`none` 和未来更精确的参数约束。
-
-== Runtime Value
-
-即使拥有静态类型，运行时仍需要 Value：
+语言核心具有以下 Value families：
 
 ```text
 Value
@@ -57,102 +27,235 @@ Value
 ├─ String(String)
 ├─ Content(Content)
 ├─ Array(Vec<Value>)
-├─ Dict(...)
-└─ Function(...)
+├─ Dict(OrderedMap<Value, Value>)
+└─ Function(FunctionValue)
 ```
 
-Type 描述表达式“可以产生什么”，Value 表示本次执行“实际产生了什么”。常量求值、默认参数、用户函数和控制流都需要 Value。
-
-== Expressions and Binding
-
-函数参数的最终流程：
+相应 static Type 为：
 
 ```text
-source arguments
--> Expression AST
--> name resolution
--> type inference/checking
--> evaluation to Value
--> signature binding
--> Function call
+Type
+├─ None
+├─ Bool
+├─ Int
+├─ Float
+├─ String
+├─ Content
+├─ Array<T>
+├─ Dict<K, V>
+├─ fn(signature) -> R
+├─ T | U
+└─ Never
 ```
 
-例如：
+公开 Type 必须具有相应的 Value construction、observation 和 operation。Array、Dict 或 Function 不能仅因为 analyzer 想提前展示一个名字就成为公开 Type；一旦进入语言，它们就是普通 Value，可以绑定、传递并由 expression 操作。
+
+`Never` 没有 runtime Value，用于表达不会正常返回的 expression。Compiler 为错误恢复使用独立的 Error marker；Error 不是 `Never`、empty union、`None` 或 empty Content，因为后几者都有各自的合法语义。
+
+== Optional 与 Union
+
+`T?` 是 `T | None` 的 surface sugar，不是第二种 optional system：
+
+```text
+String?  == String | None
+```
+
+Union 在 semantic Type 中 flatten、去重并使用稳定顺序表示。单成员 union 归一为该成员，包含 `Never` 时移除 `Never`。Runtime 不存在 Union wrapper；一个 Value 仍然具有自己的具体 Type。
+
+Union 表示一个 expression 可能产生多个成员中的任意一个。把实际 Type 赋给 union parameter 时，actual 的每种可能结果都必须被 expected union 覆盖；不能把“类型检查暂时不知道”伪装成一个接受所有 expected Type 的 empty union。
+
+== Assignability 与 coercion
+
+Type checking 将 assignability 与 Value conversion 分开：
+
+```text
+actual Type -- assignable/coercible --> expected Type
+```
+
+相同 Type 可直接赋值。Union 按成员覆盖规则赋值。`Int` 传给 `Float` parameter 时产生显式 numeric coercion plan，在 evaluation 前确定为 `Int -> Float`；它不是 Array、Dict 或 Function type relation 可以自动继承的全局 subtyping。
+
+Collection 默认 invariant：`Array<Int>` 不是 `Array<Float>`，即使单个 Int 可以 coercion 为 Float。若 API 需要转换整个 collection，作者或 library 显式 map/coerce，避免 aliasing、mutation policy 或未来泛型能力改变已有类型关系。
+
+Dict key 必须具有稳定 equality 与 hash。Core key types 是 None、Bool、Int 和 String；runtime key identity 包含 concrete Type tag，因此 `true`、`1` 与 `"1"` 不相等。Float 因 NaN 与 signed zero semantics 不作为 key，Content、collection 与 Function 也不能作为 key。Union key Type 的每个成员都必须满足这项约束，Union 本身不产生 runtime wrapper。
+
+Array 使用 positional value equality；Dict equality 比较 key/value mapping 而忽略 insertion order。只有 member/value Type 同样支持 equality 时，collection 才支持 `==`。Content 的 source provenance 与 internal concatenation shape 不进入 Value observation，但本核心也不承诺 Content equality；Function 与 opaque plugin Value 同样没有自动 equality。
+
+`String -> Content` 与 `None -> Content` 也不是 assignability。它们只属于 Markup insertion boundary：
+
+```text
+Γ ⊢ e : String
+────────────────────────
+Γ ⊢ #e : Content(Text(e))
+```
+
+普通 Function 要求 Content parameter 时仍然拒绝 String，除非调用者显式构造 Content。这样“可展示”不会渗透成所有 API 的隐式转换规则。
+
+== Content
+
+`Content` 是不可变的有序 Element composition，不是 String、source fragment 或待解析模板。Content literal 在当前 lexical environment 中求值：
 
 ```not
-#heading(level=1 + depth)[Title]
+#let name = "Alice"
+#let greeting: Content = [Hello, #name.]
 ```
 
-parser 产生 Expression AST；analysis 解析 `depth`；type checker 确认表达式为 Int；eval 得到具体 Value；binder 将它绑定到 `level`。
+Function 接收 Content 时得到已经求值的 Content Value。需要延迟计算时使用 Function Type：
 
-Function Signature 至少描述：
+```text
+body: fn() -> Content
+```
 
-- 参数名称与顺序。
-- positional/named 调用规则。
-- 参数类型。
-- required/optional/default。
-- trailing body 类型。
-- 返回类型。
+Inline-only、block-only 或特定 child Element 约束首先由 core constructor/document validation 明确报告。未来若这些约束需要参与 static composition，可以引入 `InlineContent` 等 refinement；在此之前不得假装普通 `Content` Type 已经静态保证它们。
 
-完成 binding 后，native function 不再读取参数源码字符串。
+== Function Type 与 Function Value
 
-== User-Defined Functions
+Function 不是无内部信息的 marker Type。它的 callable signature 至少包含：
 
-统一 Function 模型后，可以自然支持 Typst 风格的用户函数。建议先采用显式类型：
+- parameter 的顺序、名称与 Type；
+- parameter 是否有 default；
+- 是否允许 positional 与 named binding；
+- 显式 trailing Content parameter；
+- result Type。
+
+Callable schema 与 module binding metadata 还保存 effect/capability information，但它与 Function Type identity 正交：Function Value 被传递后仍携带 required capabilities，host 在实际 invocation 检查它们。Higher-order effect 不属于当前 Type system，capability name 也不能偷塞进普通 Value parameter。
+
+例如，一个 definition signature 可以是：
+
+```text
+fn(kind: String = "warning", trailing body: Content) -> Content
+```
+
+相应 Function Type 写成：
+
+```text
+fn(kind?: String, trailing body: Content) -> Content
+```
+
+Parameter name 后的 `?` 表示 parameter 因 default 可省略；`kind: String?` 则表示 parameter 必须提供但 Value 可以是 None。
+
+Default expression 和 User Function body 属于 Function Value；static Function Type 记录 default 的存在与 Type，不把具体 expression 纳入 type identity。不同 callable shape 之间不做隐式 Function subtyping；需要传递 Function 时，parameter order/name、Type、omittable shape、positional/named policy、trailing modifier 与 result Type 组成 normalized signature，并且必须逐项一致。Variance、generic Function 与 overload 是独立设计，不能由一个宽泛的 `Type::Function` 掩盖。
+
+Runtime Function Value 保存：
+
+```text
+FunctionValue {
+  signature,
+  implementation,
+  closure_environment,
+  required_capabilities,
+}
+```
+
+User Function 的 implementation 是 typed body；native/plugin Function 的 implementation 是 host callable。三者都能进入普通 binding、argument 和 return position，也都通过 callee expression 调用。
+
+== Lexical binding 与 inference
+
+普通 `let` 可以绑定任意 Value：
+
+```not
+#let count = 2
+#let label: String = "items"
+#let render = fn(value: Int) -> Content => [#value]
+```
+
+没有 type annotation 的 local binding 从右侧 expression 推断 Type；annotation 存在时检查右侧是否 assignable/coercible。Function parameter 必须声明 Type，使 body、completion 与 call site 不依赖执行时猜测。Nested non-recursive Function 的 result 可以由 body 推断；recursive、Module-root 和 host/plugin Function 必须声明稳定 result Type。
+
+Scope 按源码结构和顺序建立。普通 `let x = expression` 先在旧环境中检查右侧，再把 `x` 加入后续环境。`let rec` 为 Function body 提供显式 self binding，并要求足够的 annotation 打破递归推断循环。
+
+Named Function declaration：
 
 ```not
 #let add(a: Int, b: Int) -> Int = a + b
-
-#let warning(
-    title: String = "Warning",
-    body: Content,
-) -> Content = #quote[
-    #heading(level=3)[#title]
-    #body
-]
 ```
 
-Function 可以有三种实现来源：
+只是下式的 surface sugar：
 
-- Native Function：由 Notist 核心实现。
-- User Function：由 Notist 源码定义。
-- Plugin Function：由扩展提供。
+```not
+#let add = fn(a: Int, b: Int) -> Int => a + b
+```
 
-三者共享名称解析、signature、参数 binding、Value 和返回类型检查。差异只在执行后端与权限边界。
+两者产生相同 Function Type、Function Value 与 lexical identity。
 
+== Explicit trailing parameter
 
-== Syntax Sugar
+Trailing Content 是 call surface，不是从 parameter Type 推测的隐藏 body mode。Definition 在普通 parameter list 中使用显式 `trailing` modifier 声明它：
 
-语法糖由 parser 直接识别，但其语义应归一到内置 Element 构造器：
+```not
+#let quote(attribution: Content? = none, trailing body: Content) -> Content =
+  core::quote(attribution=attribution, body=body)
+```
+
+因此普通调用：
+
+```not
+#quote(attribution=[Alice])[Body]
+```
+
+与把 `body` 显式放入 argument list 共享一个 binding plan。一个 signature 至多拥有一个 trailing parameter；它必须接受 Content，但并不因“最后一个 parameter 恰好是 Content”而自动成为 trailing。Trailing parameter 只有在自己声明 default 时才允许调用者完全省略；`Content?` 只允许显式传入 None，不等于拥有 default。
+
+需要接收 source String 的 Function 使用普通 String parameter；需要延迟 body 的 Function 使用 Function parameter。Delimiter 不替 parameter Type 发明第三种 runtime body。
+
+== Default expression
+
+Default 是普通 expression，而不是只能表示 literal 的旁路数据结构：
+
+```not
+#let repeat(
+  count: Int,
+  separator: String = default_separator(count),
+) -> String = ...
+```
+
+Default 在每次调用时求值，使用 Function definition 捕获的 lexical environment，并能读取此前已经绑定的 parameter。它不能读取后面的 parameter。定义时对 default 完成名称解析和 type checking，调用时只按 typed plan 求值。
+
+这一规则同样适用于 User、native 与 plugin Function schema。Host Function 若只能提供常量 default，可以把该常量表达为已求值的 constant expression；语言不因此限制 User Function default。
+
+== Argument binding plan
+
+Static checking 对每个 call 生成 binding plan：
 
 ```text
-= Title
--> builtin heading constructor
-
-`raw`
--> builtin raw constructor
+CallPlan {
+  callee,
+  parameter_sources,
+  defaults,
+  coercions,
+  trailing_binding,
+  result_type,
+}
 ```
 
-语法糖不能通过动态名称查找改变含义。即使用户定义同名 `heading`，`= Title` 仍表示核心 Heading。显式 `#heading[...]` 是否允许局部遮蔽，则由名称解析规则决定。
+它一次性解决：
 
-插件可以注册函数并使用通用 Call 语法，但不能直接修改核心 grammar。未来的用户宏或声明式 sugar 应作为独立系统设计。
+- positional 与 named parameter mapping；
+- positional-after-named；
+- unknown、duplicate、missing 与多余 argument；
+- trailing Content 的目标；
+- argument assignability 与 coercion；
+- result Type。
 
-== Analysis and Evaluation
+Evaluator 先求值 callee，再按 source order 求值所有显式 positional/named argument 与 trailing Content，然后按 parameter order 建立 binding：provided argument 应用 plan 中的 coercion，缺省 parameter 在 closure 与此前 binding 中求值 default。最后调用 Function Value。每个 expression 只求值一次；Evaluator 不重新用另一套循环推导 parameter mapping。Native/plugin boundary 验证 host 实际返回 Value 满足 declared result Type；这是对外部实现的防御，不改变 call 的 static semantics。
 
-静态 analysis 负责：
+== Expression 与 document checking
 
-- 建立 module 和 lexical scope。
-- 名称解析与 symbol identity。
-- 推断或检查 Expression 类型。
-- 解析 Function Signature。
-- 校验参数、trailing Content 和返回类型。
-- 产生不执行用户代码的 diagnostics。
+Static analysis 使用基本判断：
 
-Evaluation 负责：
+```text
+Γ ⊢ expression : Type
+```
 
-- 求值 Expression AST 为 Value。
-- 应用默认参数并完成运行时 binding。
-- 执行 Native/User/Plugin Function。
-- 产生 Content 和运行时 diagnostics。
+Markup/Content quotation 还检查 embedded expression 是否具有 insertion conversion，并按顺序传播 declaration 产生的新环境：
 
-Type checking 不执行 Function。这样 LSP 可以快速、确定地分析未保存或不完整的文档。
+```text
+Γ ⊢ markup ⇒ Content ▷ Γ'
+```
+
+Name resolution 先把 source name 转成稳定 Symbol identity；type checking 使用 identity，不反复按 String 查 registry。完成后的 typed HIR 保存 expression Type、resolved callee、CallPlan 与 source provenance，evaluation 只消费这份语义输入。
+
+Syntax、unresolved name 与 Type error 允许产生 partial typed HIR，使 editor 和 preview 继续处理其他 source。恢复节点必须保留自己的 Error 状态；错误 argument 不使用 default，错误 callee 不伪装成返回 `None` 的成功 Function。
+
+== Capability 不是普通参数
+
+Filesystem、network、clock、randomness 与 process execution 属于 Function effect/capability schema。它们不是作者可以通过伪造普通 Dict argument 获得的权限，也不由 Type checker 执行 Function 来发现。
+
+Pure User Function 只读取 argument 与 closure Value。它调用 effectful Function 时，required capability/effect 必须沿 typed call graph 进入自己的 callable metadata，不能借 User backend 身份洗掉 effect。Host 在 evaluation 时为获准的 native/plugin Function 提供 capability；static analysis 只读取 Type signature 与 capability schema。相同 pure inputs 因而具有确定结果，WorkspaceSnapshot 也能把 Function environment identity 纳入缓存和查询边界。

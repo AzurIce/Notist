@@ -1,22 +1,24 @@
 = Design Records
 
-这里的活动设计记录使用稳定的 `Dxxxx` 编号。每篇文档围绕自己的问题展开：先给出读者能操作的模型和例子，再解释为什么选择它、它与相邻主题怎样衔接。文档不采用统一章节模板，也不记录实现进度或开发任务；语法细节以 [[vault::grammar]] 为准，内置函数签名以 [[vault::functions]] 为准，类型细节以 [[vault::types]] 为准。
+这里的活动设计记录使用稳定的 `Dxxxx` 编号。每篇文档围绕自己的问题展开：先给出读者能操作的模型和例子，再解释为什么选择它、它与相邻主题怎样衔接。文档不采用统一章节模板，也不记录实现进度或开发任务。[[vault::grammar]]、[[vault::functions]] 与 [[vault::types]] 是可执行语言 surface 的精确参考；设计记录则说明模型的选择、长期边界与下一次语言演进必须保持的语义。
 
 == 当前设计
 
 - [[self::D0002-scope-and-attrs]]：EmbeddedExpression 的 source scope、Attributes、Annotation identity 与求值正交性。
-- [[self::D0003-vault-and-module]]：Vault、ModulePath、文件映射、Virtual Module 与 reference identity。
-- [[self::D0004-builtin-processors]]：统一 Function 模型、Builtin 与宿主 syntax sugar 的特权边界。
-- [[self::D0005-lowering-and-structuring]]：从 syntax/FunctionOutput 到 ordered Content，再到 StructuredDocument 的两步语义管线。
-- [[self::D0006-type-system]]：Type、Value、Content insertion、signature checking、binding 与 partial semantics。
+- [[self::D0003-vault-and-module]]：Vault、ModulePath、文件映射、ModuleResult、root binding ownership、Value import 与 Reference identity。
+- [[self::D0004-core-functions-and-syntax-sugar]]：first-class core Function、稳定 core namespace、Element constructor 与宿主 syntax sugar 的边界。
+- [[self::D0005-lowering-and-structuring]]：从 lossless syntax、typed HIR 与 evaluation 到 ordered Content 和 StructuredDocument 的单向语义管线。
+- [[self::D0006-type-system]]：Type/Value 对应、lexical binding、Function signature、CallPlan、Content insertion 与 capability schema。
 - [[self::D0007-notist-toml]]：显式 Vault marker、nested roots、CLI discovery 与 editor root assignment。
 - [[self::D0008-language-server]]：analysis/LSP 分层、overlay、snapshot revision、position projection 与插件执行安全。
 - [[self::D0009-preview-and-html]]：StructuredDocument renderer、静态站点、preview generation 与网络安全边界。
-- [[self::D0010-string-literals-and-raw-syntax]]：统一 String 类型、literal provenance、宿主 Raw syntax 与取消 Raw Call 的理由。
+- [[self::D0010-string-literals-and-raw-syntax]]：统一 String Value、source provenance、explicit Raw layout、宿主 Raw syntax 与取消 Raw Call 的理由。
 - [[self::D0011-analyzer-and-workspace-snapshot]]：Analyzer 的输入与发布职责、不可变 WorkspaceSnapshot、revision/identity、query 与 delta 边界。
 - [[self::D0012-daemon-and-client-interfaces]]：类似 ADB 的本地 daemon、共享 VaultEngine、隔离 Analyzer View，以及 CLI/LSP/MCP client interface。
 - [[self::D0013-self-contained-agent-skill]]：单文件官方 Skill、CLI 内嵌 docs bundle、用户数据中的普通 docs Vault，以及同步、版本和索引边界。
 - [[self::D0014-agent-facing-cli-mcp-and-search]]：面向人和 Agent 的 bounded query、CLI/MCP surface、稳定 cursor、fielded BM25、exact/fuzzy/regex search 与派生索引。
+- [[self::D0015-programmable-documents-and-language-core]]：将 Module 定义为产生 root binding environment 与 Content 的程序，以 quotation、lexical binding、first-class Function、透明语法糖和 capability boundary 约束可编程文档语言的核心语义。
+- [[self::D0016-surface-language-and-core-grammar]]：规定 Markup/Code/Raw context、真正的 let/fn/callee expression、显式 trailing Content parameter、collection/conditional/module syntax，以及宿主语法糖的准入边界。
 
 == 历史记录
 

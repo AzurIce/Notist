@@ -1,0 +1,203 @@
+= 可编程文档语言重构调查
+
+Notist 当前已经拥有许多语言外观，但这些外观还没有全部建立在同一套 binding、Value、Function、Module 与 Content 定律上。继续直接补 parser/evaluator case，会让每个新功能都把偶然实现进一步固化；重构应先写出语言宪法和可判定的 conformance example，再逐层替换实现。
+
+长期语义已经整理到 [[vault::designs::D0015-programmable-documents-and-language-core]]，目标 surface grammar 已整理到 [[vault::designs::D0016-surface-language-and-core-grammar]]。本文保存本次代码调查、学习顺序和迁移路线；它是 dated engineering record，不反过来定义语言规范。
+
+== 关键判断
+
+DSL 并不天然“不真实”。一个领域语言完全可以拥有真正的 lexical variable、closure、first-class Function、Module 和 Type。问题出在 surface 名称承诺了一套 PL 概念，底层却由互不相干的 registry、source scan 和 special case 模拟：
+
+```text
+看起来像 let       -> 实际只登记一种 Function declaration
+看起来像 Function  -> 实际只是 registry name
+看起来像 scope     -> 实际先扫描整篇 source 再全局 hoist
+看起来像 Value     -> 实际 Function 还能读取 literal provenance
+看起来像 grammar   -> 实际 evaluator 再次扫描 source 决定 heading/list/table
+```
+
+治理 vibe black box 的方式不是要求每段实现都由人手写，而是把它限制在可验证边界内：grammar、scope、Type relation、CallPlan、Content insertion 和 Module identity 必须由显式模型与 conformance test 决定；黑箱只实现满足 contract 的 parser backend、Function backend、renderer 或 query adapter。
+
+== 当前实现与目标模型的差距
+
+=== let 与 Function 仍是专用路径
+
+- `crates/notist-syntax/src/argument.rs:27` 的 expression kind 只有 `LetFunction`，没有一般 Value declaration。
+- `crates/notist-syntax/src/parser.rs:346` 解析到名字 `let` 后直接进入 `parse_user_function`。
+- `crates/notist-syntax/src/lib.rs:84` 的 Call 只保存 `name: SpannedName`，callee 不是 expression。
+- `crates/notist-eval/src/type_system.rs:10` 的 `Value::Function(String)` 只保存名字，不是含 signature、implementation 与 closure environment 的 Function Value。
+
+这意味着当前 variable、Function declaration、Function reference 和 call 并不是同一 expression/binding model。目标是一般 `let name = expression`、Function literal、named declaration sugar 和任意 callee expression。
+
+=== Scope 是全局收集，不是 sequential lexical scope
+
+`crates/notist-eval/src/lower.rs:26` 在求值前调用 `collect_user_functions`；`crates/notist-eval/src/lower.rs:77` 还会递归进入 nested Content、argument 与 trailing body 收集声明。`crates/notist-analysis/src/check.rs:32` 同样先把所有 source Function 扩展进全局 signature set。
+
+这会让声明在 source 前方可见、nested declaration 泄漏、普通 Function 获得隐式递归，并使 static/runtime scope 依赖两次扫描是否恰好一致。目标是 declaration 按 source order 扩展当前 lexical environment，nested block 离开即失效，递归必须显式 `let rec`。
+
+=== Signature 与 argument binding 被多套逻辑猜测
+
+- `crates/notist-analysis/src/check.rs:250` 自动把最后一个 Content parameter 识别为 trailing parameter。
+- `crates/notist-analysis/src/check.rs:271` 只把少数 literal 转为 default schema。
+- `crates/notist-analysis/src/check.rs:434` 和 `crates/notist-eval/src/type_system.rs:180` 分别实现 static 与 runtime argument binder。
+
+目标 signature 显式记录 positional/named/default/trailing shape；default 是普通 expression；checker 生成唯一 CallPlan，evaluator 只执行它。
+
+=== Type 名称领先于可用语义
+
+`crates/notist-eval/src/type_system.rs:10` 已暴露 Array、Dict 和 Function Value variant，但 surface construction、first-class call、collection operation 与 Function signature Type 并不完整。`crates/notist-eval/src/type_system.rs:42` 还用 empty Union 表示 empty collection member Type，使合法 `Never` 与 error/unknown 边界混合。
+
+目标是 Type 与 Value 同步进入 public language：empty collection 使用 `Never`，Error 独立；Function Type 保存完整 callable shape；Array/Dict 有真正 literal、equality/key constraint 和后续可组合 operation。
+
+=== Function 可以观察 source provenance
+
+`crates/notist-eval/src/type_system.rs:58` 把 String literal form/style 保留进 runtime argument origin，`crates/notist-eval/src/builtin.rs:192` 的 Raw Function 用 multiline provenance 决定 block/inline。
+
+这会使两个相等 String 因书写方式不同而得到不同 Function 结果。目标是 provenance 只服务 diagnostics、formatting 与 source map；Raw layout 使用显式 `block` argument，Function 只观察 Value。
+
+=== Evaluator 仍承担第二个 parser
+
+`crates/notist-eval/src/lower.rs:161` 从 Markup source 重新寻找 table、heading 和 list span，再切片 lower；`crates/notist-eval/src/function.rs:150` 还向 Function backend 暴露重新 parse source fragment 的能力。
+
+目标是 lossless syntax frontend 一次建立 host sugar node，surface lowering 赋予 core semantic identity；typed evaluator 不读取 source 补做 grammar。
+
+=== Analyzer 没有消费同一语义产物
+
+`crates/notist-analysis/src/lib.rs:192` 用会返回 placeholder Value 的 fake Function 承接 schema；`crates/notist-analysis/src/lib.rs:1113` 构造 StructuredModule 时又对 snapshot source 启动默认 Evaluator。
+
+目标是 Analyzer 发布 resolved/typed HIR、CallPlan 和 ModuleResult/StructuredDocument 派生物；CLI、LSP、MCP、preview 与 renderer 都消费同一 snapshot semantic pipeline。
+
+== 已选择的语言核心
+
+```text
+ModuleResult = { bindings: Environment, content: Content }
+
+Markup [ ... ]  = Content quotation
+# in Markup     = enter one Code item
+let             = sequential immutable lexical binding
+Function        = signature + implementation + closure + capabilities
+Call            = arbitrary callee expression + one typed CallPlan
+Content         = ordered monoid (ε, ⊕)
+```
+
+这组模型产生以下有意选择：
+
+- 普通 Function 不隐式递归；递归写 `let rec`。
+- trailing Content 由 definition 中的 `trailing` modifier 明示，不从最后一个 Content parameter 猜测。
+- `core::...` 是不可 shadow 的语言 namespace，prelude 短名遵守普通 lexical shadowing。
+- Content insertion 只允许 Content、String 和 None，不对任意 Value stringify。
+- Wiki Reference 与 Value import 是两种操作；当前核心没有跨 Module Content insertion。
+- String literal provenance 不参与 Value semantics；Raw block/inline 是显式参数。
+- host sugar 拥有稳定 core equivalence，但不要求伪造 source 中不存在的 Call AST。
+- `for`、mutation、macro、generic、Function subtyping、module recursion 和 Content refinement 都不属于当前语言模型，parser fallback 不能让它们获得偶然语义。
+
+== Identifier 取舍：与 Typst 对齐
+
+Typst 官方语法文档说明 variable name 可以包含 `-` 但不能以 `-` 开头；其 lexer 实现使用 Unicode XID start/continue，并把 `_` 与 ASCII `-` 加入 identifier continuation。减号 token 仍独立存在，因此 `a-b` 必须解释为一个 name，减法写成 `a - b`；Unicode `−` 则始终是 minus token。
+
+本次核对基于 Typst `146a58329a30f6cd38978c22c6bf0e430d8962a1`：官方说明位于 `https://typst.app/docs/reference/syntax/#identifiers`，对应 lexer rule 位于 `https://github.com/typst/typst/blob/146a58329a30f6cd38978c22c6bf0e430d8962a1/crates/typst-syntax/src/lexer.rs#L1229-L1254`。
+
+Notist 采用同一规则，原因是文档语言中的 API、Element 和 Module binding 经常需要 `my-heading`、`table::row-span` 这类人类可读名称，而且现有知识库已经广泛使用 kebab-case。这个选择不是“允许标点但以后再消歧”：它明确规定最长 identifier match、ASCII `-` 的 whitespace-sensitive subtraction、始终独立的 Unicode `−`，以及 Code name 与 Module/Annotation name 的分域 grammar。实现时必须拆出 Code identifier lexer，不能把当前 `parse_identifier` 原样扩展给所有 name domain。
+
+== Module root binding
+
+当前 source 在 Module root 自己声明的 `let` binding 进入 `ModuleResult.bindings`，每个 binding 都可以被 import。Imported name、core/prelude name 与 nested lexical binding 不自动成为当前 Module 的 binding；有意转发时创建新的 root `let`。这个规则接近 Typst 的低摩擦复用，但仍保留显式 import selector 与稳定 ModulePath。
+
+核心语法没有 `export`、`private` 或 visibility modifier，这两个词也不是 keyword。若以后出现真实封装需求，再把它作为一次完整的语言设计与 source migration 处理，不让尚不存在的需求提前增加当前 grammar 的概念数量。
+
+== 先建立 conformance corpus
+
+在替换架构前，先把目标语言写成一组小而完整的 source case。每个 case 同时保存：
+
+```text
+source
+expected lossless syntax facts
+expected resolved symbols/scopes
+expected expression Types and diagnostics
+expected CallPlan
+expected ModuleResult / Content
+```
+
+第一批必须覆盖：
+
+- declaration 前不可见、声明后可见、nested shadowing 与 scope exit；
+- closure 捕获、first-class Function argument/return、任意 callee expression；
+- non-recursive Function 报错与显式 `let rec`；
+- positional/named/default/trailing binding 和精确求值顺序；
+- Content literal eagerness、String/None insertion 与非法 Int insertion；
+- Array/Dict literal、Never、Union normalization、Dict key/equality；
+- `core::heading` 不可 shadow，prelude `heading` 可以 shadow；
+- heading/list/raw sugar 与显式 core constructor 的语义等价；
+- raw/escaped、inline/multiline String 传入同一参数得到同一 Value 行为；
+- Module-root binding ownership、显式转发、import cycle diagnostic 与 Reference cycle 合法；
+- Attributes 删除后 binding、Type、Value 与 Content 不变。
+
+Conformance corpus 是此后所有 vibe 实现的裁判。旧测试仍保护当前兼容 surface；新 corpus 描述目标语义，按 migration slice 逐步从 pending 转为 executable。
+
+== 重构切片
+
+每个切片都应有独立的进入/退出条件，保持 workspace tests、现行 docs 与已迁移 conformance case 同时通过。
+
+=== 1. Lossless syntax 与 CodeItem
+
+建立 Markup/Code/Raw mode-aware CST 和 typed AST facade，明确 Declaration 与 Expression。Parser 只根据局部 token 决定 delimiter；heading/list/table/inline sugar 在这里拥有 source node。退出条件是 evaluator 不再需要为了识别 host syntax 扫描普通 Text。
+
+=== 2. Surface lowering 与 stable HIR identity
+
+把 named Function、host sugar 和其他方便写法 lowering 为稳定 semantic operation，保留 source provenance。HIR 先拥有 ScopeId、SymbolId、ModuleId、core intrinsic identity 和 Error node，随后阶段不再用 String 猜身份。
+
+=== 3. Lexical resolver 与 Module graph
+
+实现 sequential environment、nested scope、shadowing、显式 `let rec`、不可 shadow 的 `core` root，以及静态 import/module-binding DAG。先完成 name resolution，再进入 type checking；移除全篇 Function collection/hoist。
+
+=== 4. Type interning 与完整 Value correspondence
+
+整理 None/Bool/Int/Float/String/Content/Array/Dict/Function/Union/Never/Error，定义 union normalization、collection invariant、numeric coercion 与 insertion boundary。公开 Type 必须拥有 construction 与 observation，不再用 empty Union 或 None 表示错误恢复。
+
+=== 5. 单一 CallPlan
+
+Signature 保存 parameter order/name/type/default/trailing/effect shape。Checker 一次完成 mapping、missing/duplicate、coercion 与 result Type，输出 CallPlan；runtime binder 被替换为 plan executor，host boundary 只验证实际 result。
+
+=== 6. Closure evaluator 与真正 Function Value
+
+实现一般 Value environment、Function literal、closure capture、first-class callee、return Value 和显式 recursion。Core、User、native 与 plugin Function 只在 implementation backend/capability 上不同，共用同一 call path。
+
+=== 7. Content 与 document realization
+
+Evaluator 只产生 ordered flat Content；provenance 不可被语言观察。Structuring 对所有来源的 Element 只运行一次，建立 Paragraph/List/Table/Heading 等 StructuredDocument，不回看 source。
+
+=== 8. Analyzer 与产品 surface 迁移
+
+WorkspaceSnapshot 保存或惰性派生 syntax、resolved HIR、typed HIR、ModuleResult 和 StructuredDocument。LSP、CLI、MCP、preview、build 与 query 逐一切换到这条管线，删除 placeholder Function 与 snapshot 内的默认重新求值。
+
+=== 9. 移除旧路径
+
+只有在相应 conformance case、consumer 和 compatibility decision 都迁移后，才删除 `LetFunction`、global user-function map、双 binder、literal-origin behavior、FunctionContext source reparse 和 evaluator sugar scanner。不要先做大爆炸式 rewrite，也不要长期保留两套同名语义。
+
+== 学习顺序
+
+不需要先成为 PL 研究者再开始。按重构中真正要做的决定学习，产出应直接进入 design/conformance/code：
+
+1. Operational semantics 与 interpreter：理解 environment-based evaluation、evaluation order、错误和 determinism；能够手写 `ρ ⊢ e ⇓ v` 的小步/大步规则。
+2. Lexical scope、closure 与 recursion：理解 free variable、capture、shadowing、hoisting 和 fixed point 为什么不同；能够解释每个 name 在哪里绑定。
+3. Parsing 与 representation：理解 lexer/mode、lossless CST、AST、desugaring、HIR、source map 和 error recovery；能够说明一个字符在哪一阶段获得语义。
+4. Static type systems：理解 typing judgment、assignability/coercion、Union、Never、Error、bidirectional/contextual checking 与 Function signature；能够让 checker 的决定成为 evaluator 可消费的数据。
+5. Module systems：理解 module identity、module environment、dependency DAG、cycle、separate compilation 和 initialization；能够区分 import、reference 与 content composition。
+6. Effects 与 capability：理解 pure Function、explicit effect、host boundary、deterministic input 和 cache identity；能够阻止 plugin/vibe backend 偷读全局状态。
+7. Incremental compiler 与 IDE：在核心语义稳定后再学习 stable IDs、query dependency、snapshot、incremental invalidation 和 LSP projection。
+
+对 Notist 而言，最先需要的数学不是高阶 category theory，而是几个能直接约束实现的简单结构：lexical environment、typing/evaluation judgment、Content monoid、DAG、immutable Value 和 explicit effect boundary。等 `for`、generic composition 或 algebraic effect 真正需要更强抽象时，再引入相应理论。
+
+== 审查方式
+
+任何新语法或 Function 在进入实现前都回答：
+
+- 它构造什么 Value，静态 Type 是什么？
+- 它在哪个 lexical scope 解析，按什么顺序求值？
+- 它是否只是已有 core operation 的 sugar；若是，等价关系是什么？
+- parser 能否只凭局部 syntax 确定边界？
+- checker 的决定是否完整保存在 HIR/CallPlan，runtime 会不会再猜一次？
+- source provenance、registry 顺序、cache 顺序或 plugin availability 是否会暗中改变语义？
+- 能否写出一个失败时精确指出被破坏定律的 conformance case？
+
+如果这些问题没有答案，正确动作是把功能保持在设计外，而不是让当前最方便的实现先替语言作出决定。

@@ -1,0 +1,421 @@
+= D0016: Surface Language and Core Grammar
+
+Notist 的 surface language 同时服务两种阅读：连续文字应保持像文档，计算结构应保持像真正的程序。它不把所有文字包进 String，也不把变量、Function 和控制流伪装成只能在某个文档位置工作的 macro。
+
+```not
+#let project = "Notist"
+#let level = 2
+
+#let title(prefix: String, trailing body: Content) -> Content =
+  core::heading(level=level, body=[#prefix: #body])
+
+#title("Design")[#project language core]
+```
+
+Markup 是 Content quotation；`#` 从 Markup 进入一个 Code item；Code 中的 `[...]` 再创建 Content literal。变量、Function 和 call 在所有 Code position 使用同一 expression grammar。
+
+== 三种 lexical context
+
+Notist 有 Markup、Code 与 Raw 三种 lexical context：
+
+| Context | 产生什么 | 进入方式 |
+| --- | --- | --- |
+| Markup | Content fragments | Document root；Code 中的 `[...]` |
+| Code | declaration 或一般 Value expression | Markup 中的 `#`；Code block/function body |
+| Raw | 未解释的 String payload | String/raw literal 与 Markup backtick/fence |
+
+Delimiter 在进入 context 时即可确定，不查询 Function registry 或 Type：
+
+```text
+Markup -- # --> Code item -- completion --> Markup
+Code   -- [ --> Markup quotation -- ] --> Code
+Markup -- ` / fence --> Raw -- matching delimiter --> Markup
+```
+
+Context 可以递归嵌套：
+
+```not
+#[Outer #if enabled [inner #value] else [fallback].]@example
+```
+
+Raw payload 不识别 Notist delimiter。String literal 只存在于 Code；Markup 中的普通 quote 保持文字。
+
+== Document 与 Markup
+
+Document 是隐式 Content literal：
+
+```ebnf
+Document   = Markup ;
+Markup     = MarkupItem* ;
+MarkupItem = Text
+           | WikiReference
+           | RawSyntax
+           | MarkupSugar
+           | EmbeddedCode ;
+EmbeddedCode = "#" (Expression Attributes? | Declaration) ;
+```
+
+普通 Text、Reference、Raw 与 sugar 直接产生 Content。Embedded expression 通过 Content insertion 产生 Content；Embedded declaration 扩展当前 Markup lexical block 的后续环境并产生 empty Content。
+
+```not
+Before.
+
+#let audience = "reader"
+Hello, #audience.
+```
+
+`audience` 从 declaration 之后可见。Document end 结束 Module body；Content literal 的 `]` 结束它自己的 lexical block。
+
+== Code item
+
+Code item 明确区分 declaration 与 expression：
+
+```ebnf
+CodeItem = Declaration | Expression ;
+Declaration = LetDeclaration
+            | ImportDeclaration ;
+```
+
+Declaration 不是 `None`-returning expression；它改变当前 sequential environment。只有 expression 可以出现在 argument、operator operand、array/dict member 或 conditional branch 等需要 Value 的位置。
+
+Markup 中 `#expression` 完成后立即返回 Markup。Expression parser 只消费属于该 expression 的 token；不相邻的普通文字无需 closing `#`。复杂 Code sequence 使用 `{...}`，其中 semicolon 分隔 declaration/expression：
+
+```not
+#let result = {
+  let doubled = value * 2;
+  doubled + 1
+}
+```
+
+Code block 的最后一个 expression 是 block Value；没有 tail expression 时结果为 `None`。Block 内 local binding 不泄漏到外部 scope。
+
+== Identifier 与 namespace
+
+Code identifier 采用与 Typst 一致的词法规则。首字符不能是数字或 `-`；后续字符可以包含 `-`，因此文档 API 可以自然使用 `my-heading`、`table::row-span` 这样的名字。这个选择同时带来一个必须公开说明的 operator trade-off：ASCII `-` 紧贴前一个 identifier 时属于 identifier，`a-b` 是一个名字，不是减法。
+
+```ebnf
+CodeIdentifier = (UnicodeXIDStart | "_")
+                 (UnicodeXIDContinue | "_" | "-")* ;
+QualifiedName  = CodeIdentifier ("::" CodeIdentifier)* ;
+```
+
+词法器使用最长 identifier match，keyword 只在完整 identifier 恰好等于 keyword 时生效。因此 `my-add`、`my-`、`core::my-heading` 和 `let-` 都是合法 Code name，而 `-my-add` 不是。二元 ASCII subtraction 必须在左侧留出 token boundary：`a - b`、`a -b` 合法，`a-b` 与 `a- b` 不表示 subtraction；如果需要紧凑地写减法，可以使用始终独立的 Unicode minus `−`：`a−b`。Formatter 应把 binary `-` 规范化为带空格的 `a - b`，避免生成会改变 token identity 的 `a- b`。
+
+```text
+a-b  -> Identifier("a-b")
+a - b -> Identifier("a"), Minus, Identifier("b")
+a−b  -> Identifier("a"), Minus, Identifier("b")
+```
+
+这条规则只属于 Code identifier。ModulePath segment、Annotation ID、Tag 与 Class 继续使用各自的 human-facing grammar；parser 必须为它们保留独立的 `parse_code_identifier`、`parse_module_segment` 与 `parse_annotation_name`，不能用一个“宽松 Identifier”函数重新混合四种 domain。
+
+`let`、`rec`、`fn`、`if`、`else`、`true`、`false`、`none`、`and`、`or`、`not`、`trailing`、`import` 和 `as` 是 Code keyword。`core` 是 reserved namespace root，不能成为 lexical binding。
+
+`core::name` 是稳定 language namespace；它在 ordinary lexical lookup 之前由 language version 解析，且 `core` 不能作为 `let` name、import alias 或 plugin namespace。Bare name 依次查询当前 sequential lexical environment 与 versioned prelude，所以 local/import binding 可以 shadow `heading`，但不能替换 `core::heading`。`self::`、`super::` 和 `vault::` 只在 Module path grammar 中具有相对/绝对意义，普通 lexical name resolution 不把这些 path prefix 当作魔法变量。
+
+== Primary 与 postfix expression
+
+Code expression 从少量正交 form 组合：
+
+```ebnf
+Expression   = IfExpression | BinaryExpression ;
+Primary      = Literal
+             | QualifiedName
+             | ContentLiteral
+             | FunctionLiteral
+             | CollectionLiteral
+             | CodeBlock
+             | "(" Expression ")" ;
+Postfix      = Primary PostfixCall* ;
+PostfixCall  = ArgumentList ContentArgument? | ContentArgument ;
+ArgumentList = "(" Arguments? ")" ;
+ContentArgument = ContentLiteral ;
+```
+
+Call 的 callee 是 Postfix 左侧 expression：
+
+```not
+#selected(value)
+#factory()(value)
+#(if compact { short } else { detailed })(value)
+```
+
+Qualified name 只是 expression 的一种，不是 Call AST 唯一允许的 callee。Member access、method call 与 pipe operator 在有独立语义设计前不进入核心 grammar。
+
+== Literal 与 collection
+
+基础 literal：
+
+```not
+none
+true
+false
+42
+1.5
+"escaped string"
+r#"raw string"#
+[
+  Content literal with #interpolation.
+]
+```
+
+String 的 escaped/raw、inline/multiline 是 lexical provenance，四者都产生 String。Content literal 产生 Content。
+
+Parenthesized collection syntax 补足 Array 与 Dict 的真正构造方式：
+
+```not
+(1, 2, 3)                         // Array<Int>
+(1,)                              // one-element Array<Int>
+("name": "Notist", "level": 2)   // Dict<String, String | Int>
+()                                // empty Array<Never>
+(:)                               // empty Dict<Never, Never>
+```
+
+```ebnf
+CollectionLiteral = ArrayLiteral | DictLiteral ;
+ArrayLiteral = "(" ")"
+             | "(" Expression "," (Expression ("," Expression)* ","?)? ")" ;
+DictLiteral = "(" ":" ")"
+            | "(" DictEntry ("," DictEntry)* ","? ")" ;
+DictEntry = Expression ":" Expression ;
+```
+
+`(expression)` 仍是 grouping；comma 选择 Array，colon 选择 Dict，二者不能混合。`()` 是 empty Array，`(:)` 是 empty Dict；empty member Type 是 `Never`，可按 expected collection Type 检查，它不是 compiler Error 的替身。
+
+Collection 是 homogeneous over a possibly-union Type。没有 expected Type 时，成员 Type 归一为 union；有 expected `Array<T>` 或 `Dict<K, V>` 时，每个 literal member 可以分别按 `T`、`K`、`V` 检查并执行已有的 scalar coercion，这不构成既有 collection Value 之间的 covariance。Iteration、indexing 和 transformation library 在加入操作时必须使用这些真实 Value；本设计不引入一个只能被特定 syntax 消费的伪 collection。
+
+Dict literal 按 source order 求值 key/value pair，并保存稳定 insertion order。相等 key 的后一个 entry 替换前一个 value，但不移动该 key 的位置。Dict value equality 忽略 insertion order，比较相同 key 对应的 value；serialization 使用 insertion order。
+
+Dict key 只能使用拥有稳定 equality/hash 的 None、Bool、Int、String 或由它们组成的 union。Hash identity 包含 concrete Type tag，因此 `true`、`1` 与 `"1"` 永远是不同 key；union 只影响 static Type，不增加 runtime wrapper。Float、Content、collection 与 Function 不能成为 key；parser 可以接受一般 expression，type checker 负责报告 key constraint。
+
+== Operator
+
+初始 operator set 保持有限：
+
+```text
+unary:       - / − / not
+multiplicative: * /
+additive:    + - / −
+comparison:  < <= > >=
+equality:    == !=
+logical:     and
+logical:     or
+```
+
+它们按上表从高到低 precedence，binary operator left-associative。Numeric operator 接受 Int/Float 并通过 typed coercion plan 处理混合计算；`+` 还定义 String concatenation 与 Content concatenation。不同 family 不进行隐式 stringify 或 Content insertion。
+
+Logical operator short-circuit。Equality 定义在 None、Bool、Int、Float、String 以及其成员同样支持 equality 的 Array/Dict 上；Array 按位置递归比较，Dict 按 key/value mapping 比较。不同 concrete family 的 Value 不相等，Union 只表示这些 runtime case 的集合。Content、Function 与带 runtime identity 的 opaque plugin Value 不自动获得 equality；Function 若要暴露 domain equality，必须通过普通 API 返回可比较 Value。
+
+== Type syntax
+
+Type expression 使用与 Value expression 分开的有限 grammar：
+
+```ebnf
+Type          = UnionType ;
+UnionType     = PostfixType ("|" PostfixType)* ;
+PostfixType   = PrimaryType "?"? ;
+PrimaryType   = QualifiedTypeName
+              | "Array" "<" Type ">"
+              | "Dict" "<" Type "," Type ">"
+              | FunctionType
+              | "(" Type ")" ;
+FunctionType  = "fn" "(" TypeParameters? ")" "->" Type ;
+TypeParameter = "trailing"? CodeIdentifier "?"? ":" Type ;
+```
+
+Parameter name 后的 `?` 在 Function Type 中表示调用者可以省略该 parameter，因为 Function Value 提供 default；它与 Type 后的 `?` 不同：
+
+```text
+fn(kind?: String, trailing body: Content) -> Content
+fn(value: String?) -> Content
+```
+
+第一行的 `kind` 可以完全省略；第二行的 `value` 必须提供，但 Value 可以是 None。Function definition 使用具体 default expression，而不是 `name?`：
+
+```not
+#let note(kind: String = "note", trailing body: Content) -> Content = ...
+```
+
+Function Type 保留 parameter order/name、Type、omittable shape、positional/named policy、trailing modifier 与 result Type，因为 first-class callee 仍支持 named/trailing call。当前没有 Function subtyping：两个 Function Type 兼容时，这些 normalized signature fact 必须一致；具体 default expression、Function body 与 required capability 不进入 type identity。Capability schema 跟随 Function Value/callable binding 并由 host 在实际 invocation 检查；higher-order effect、generic type variable、record type、nominal user type、variance 和 overload 都不属于当前 Type grammar。
+
+== Let 与 Function
+
+```ebnf
+LetDeclaration = "let" CodeIdentifier (":" Type)? "=" Expression
+               | "let" "rec"? CodeIdentifier Parameters ("->" Type)? "=" Expression ;
+FunctionLiteral = "fn" Parameters ("->" Type)? "=>" Expression ;
+```
+
+一般 binding：
+
+```not
+#let name = expression
+#let name: Type = expression
+```
+
+Function literal：
+
+```not
+#let add = fn(a: Int, b: Int) -> Int => a + b
+```
+
+Parameter grammar 为：
+
+```ebnf
+Parameters = "(" (Parameter ("," Parameter)* ","?)? ")" ;
+Parameter  = "trailing"? CodeIdentifier ":" Type ("=" Expression)? ;
+```
+
+一个 signature 至多声明一个 `trailing` parameter；它必须是最后一个 parameter，并接受 Content。普通 parameter 可以拥有 default；required ordinary parameter 不能跟在 omittable ordinary parameter 之后，required trailing parameter 是唯一例外，因为它由显式 named argument 或 trailing suffix 绑定。Trailing parameter 也只有在自己拥有 default 时才可省略；`Content?` 只允许传入 None，并不自动提供 default。
+
+Named Function declaration 是它的 sugar：
+
+```not
+#let add(a: Int, b: Int) -> Int = a + b
+```
+
+显式 trailing Content parameter 在普通 parameter list 中使用 `trailing` modifier，并且必须位于最后：
+
+```not
+#let callout(kind: String = "note", trailing body: Content) -> Content =
+  core::callout(kind=kind, body=body)
+```
+
+Function literal 对应写法：
+
+```not
+#let callout = fn(kind: String = "note", trailing body: Content) -> Content =>
+  core::callout(kind=kind, body=body)
+```
+
+普通 Function 非递归；递归必须写出：
+
+```not
+#let rec factorial(value: Int) -> Int =
+  if value <= 1 { 1 } else { value * factorial(value - 1) }
+```
+
+Parameter 必须有 Type。Nested non-recursive Function 可以省略 result annotation 并从 body 推断；recursive、Module-root、native 与 plugin Function 必须声明 result Type，使跨 Module callable shape 不依赖 importer 重新推断实现 body。
+
+Code 已经进入 expression context 时不重复使用 `#`：
+
+```not
+#let title(trailing body: Content) -> Content = core::heading(level=2, body=body)
+```
+
+`= #core::heading[...]` 不是另一种合法 call convention；`#` 只用于从 Markup escape 到 Code。
+
+== Call argument
+
+```ebnf
+Argument = NamedArgument | Expression ;
+NamedArgument = CodeIdentifier "=" Expression ;
+```
+
+普通 positional argument 按 parameter 顺序绑定；named argument 按 name 绑定；named 之后不允许普通 positional。Call 后的 Content literal 只绑定 signature 显式声明的 trailing parameter：
+
+```not
+#callout(kind="warning")[Body]
+```
+
+它与在完整 call model 中显式提供同一 `body` Value 等价，但 surface grammar 保留尾随形式以让文档正文自然排版。一个 Function invocation 最多绑定一个 trailing Content；连续多个 Content literal 表示继续调用前一次 result，因此每一步 result 都必须真的是 Function：
+
+```not
+#factory()[first][second]
+```
+
+这里先以 `[first]` 作为 trailing argument 调用 `factory`，再以 `[second]` 调用第一次 invocation 的 Function result；它不是一个 Function 偷偷接收多个 body。若要先单独执行 `factory()`，再调用它返回的 Function，应显式分组为 `#(factory())[first][second]`。Type checker 会依据每一步 result Type 判断是否合法。
+
+Callee 先求值一次；显式 positional/named argument 与 trailing Content 再按 source order 从左到右各求值一次。随后按 parameter order 建立 binding：provided argument 直接应用 CallPlan 中的 coercion，缺省 parameter 才在 Function closure 与此前已绑定 parameter 中求值 default，再应用 coercion。最后执行 Function body。每个 expression 只求值一次，default 不能读取后面的 parameter。
+
+== Conditional
+
+`if` 是产生一般 Value 的 expression：
+
+```not
+#let size = if compact { 1 } else { 3 }
+```
+
+Branch Code block 的 Type 必须能归一为共同 Type。Content literal 本身也是 expression，因此文档中的条件内容可以简写为：
+
+```not
+#if compact [Short.] else [A longer explanation.]
+```
+
+这与下式语义相同：
+
+```not
+#if compact { [Short.] } else { [A longer explanation.] }
+```
+
+只有选中的 branch 被求值。没有 `else` 的 if 只允许 then branch 产生 `None`，整体 Type 为 None；它不能靠“丢弃另一个 Value”伪装成 statement。
+
+本设计不把 `for` 纳入核心 surface。它究竟返回 Array、拼接 Content，还是依赖一般 monoid/typeclass，会影响 Type 与 Value 定律；在这个问题被独立设计前，不提供一个只在 Markup 中像 loop 的特殊版本。作者可以使用递归或 library collection Function 表达迭代。
+
+== Import 与 Module binding
+
+Module path 使用独立 grammar。Code import 把目标 Module 的 root binding 带入当前 lexical environment：
+
+```not
+#import self::theme::{warning, accent}
+#import super::shared::{format as shared_format}
+```
+
+```ebnf
+ImportDeclaration = "import" ModulePath "::{" ImportSelector ("," ImportSelector)* ","? "}" ;
+ImportSelector = CodeIdentifier ("as" CodeIdentifier)? ;
+```
+
+Braces 左侧只表示 ModulePath，内部 selector 只表示该 Module 的 root binding，因此 resolver 不需要根据文件树猜测 `shared::format` 究竟是 child Module 还是 imported Value。Import 可以出现在 lexical block 中并只影响该 block 的后续 item；它的 ModulePath 必须是静态 syntax，所以所有 dependency edge 仍能在 evaluation 前收集。
+
+Module root 中由当前 source 自己执行成功的 `let`/named Function declaration 进入 ModuleResult.bindings：
+
+```not
+#let accent = "violet"
+
+#let warning(kind: String = "warning", trailing body: Content) -> Content =
+  core::callout(kind=kind, body=body)
+```
+
+`bindings` 只收集当前 Module root 自己拥有的 declaration。Imported name、core/prelude name、Function parameter 以及 Content literal/Code block 中的 nested binding 不会自动成为当前 Module 的 binding。若要有意转发 imported Value，作者创建一个新的 root binding：
+
+```not
+#import self::base::{warning as base-warning}
+#let warning = base-warning
+```
+
+Module root 自有 binding 一律可以被 import。核心语言没有 wildcard import。
+
+Import graph 必须可静态解析并无 Value initialization cycle；请求一个 ModuleResult 时先完成 transitive dependency DAG，同一 snapshot/environment key 中每个 Module 至多求值一次。互不依赖的 Module evaluation order 不可由语言观察，因而实现可以并行；Wiki Reference graph 不受这些 initialization 约束。
+
+Import 不插入目标 Content。Wiki Reference 只产生 link/reference Element。当前语言没有跨 Module Content insertion。
+
+== Attributes
+
+Attributes 只跟在 Markup 中完成插入的 embedded expression 之后：
+
+```not
+#[Content]@concept,#language
+#core::quote[Body]@citation,source="book"
+```
+
+Declaration 不接受该 postfix，也不由 Attributes 获得 runtime metadata。Attributes 使用自己的 identifier/value grammar，不执行一般 Code expression。
+
+这让：
+
+```text
+erase_attributes(source)
+```
+
+保持相同的 binding、Type、Value 和 Content，只移除 analysis 的 Annotation projection。
+
+== Host sugar budget
+
+宿主 sugar 只授予满足三个条件的构造：高频、边界能从局部 syntax 决定、并拥有稳定 core semantic equivalent。它们分为：
+
+- Element sugar：heading、emphasis、raw、reference 等直接产生 Element；
+- structural sugar：list/table item 等产生局部 Element，随后 structuring；
+- value sugar：Content 与 collection literal；
+- language construct：let、fn、if、import，不伪装成 Function call。
+
+新增 sugar 必须先写出它的 syntax boundary、core equivalence、error recovery 和 editor consequence。Plugin Function registration 不增加 sugar；macro、pattern matching、mutation、for/while、set/show rule、method dispatch 与 user-defined operator 都不属于当前 grammar，拓宽 parser fallback 不能让它们获得偶然语义。

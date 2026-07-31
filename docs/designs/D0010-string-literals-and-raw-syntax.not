@@ -4,17 +4,17 @@
 
 == 最终决定
 
-Notist 采用一个普通 Function call 模型：
+Notist 采用一个普通 Function call 模型；callee 是 Code expression，qualified name 只是最常见的形式：
 
 ```not
-#name(arguments)
-#name(arguments)[trailing Content]
-#name[trailing Content]
+#callee(arguments)
+#callee(arguments)[trailing Content]
+#callee[trailing Content]
 ```
 
-- `#name(args)` 是完整调用，不要求 trailing body。
+- `#callee(args)` 是完整调用，不要求 trailing body。
 - `[...]` 始终表示由宿主递归求值的 Content。
-- Trailing Content 绑定到 Function signature 指定的 `trailing_content` 参数，例如 `heading.body`，不是普通位置参数。
+- Trailing Content 绑定到 Function signature 显式声明的 trailing parameter，例如 `heading.body`，不是按最后一个 Content parameter 猜测的 body mode。
 - Function 需要外部源码时接收普通 String 参数。
 - 不再存在 Raw Call、RawSource body、CallMode::Raw 或 bang delimiter level。
 
@@ -93,10 +93,10 @@ Form/style/range 是 literal provenance，不是公开的细分类型。Raw Stri
 显式构造器签名：
 
 ```text
-raw(text: String, lang: String? = none) -> Content
+raw(text: String, lang: String? = none, block: Bool = false) -> Content
 ```
 
-直接 String literal 的 form 决定 Raw Element 是 inline 还是 block：
+Raw layout 是显式 Value argument，不由 String literal 的 source form 决定：
 
 ```not
 #raw(text="inline escaped")
@@ -104,13 +104,15 @@ raw(text: String, lang: String? = none) -> Content
 
 #raw(text="""
 block escaped
-""")
+""", block=true)
 #raw(text=r#"""
 block raw
-"""#)
+"""#, block=true)
 ```
 
-Escaped/Raw style 只控制 String 解码，不控制 Element layout。Literal provenance 可以保存在 Expression 或 BoundArgument 中，不需要把它加入 `Value::String` 的类型身份。
+Escaped/Raw style 只控制 String 解码，不控制 Element layout。Inline/Multiline provenance 可以保存在 syntax/source map 中供 formatter、diagnostics 和 language injection 使用；ordinary Function 只收到 String Value 与 explicit arguments。
+
+因此 computed String、default String、imported String 与 literal String 在相同 `block/lang` 参数下产生相同 Raw Element。Function semantics 不读取 AST origin。
 
 == Built-in Backtick and Fence
 
@@ -124,11 +126,11 @@ fn main() {}
 ```
 ````
 
-- Inline backtick 直接产生 inline Raw Element。
-- Fence 直接产生 block Raw Element，opening line 的 info tag 直接成为 language。
+- Inline backtick 具有 `core::raw(text=payload, block=false)` 的稳定语义。
+- Fence 具有 `core::raw(text=payload, block=true, lang=tag)` 的稳定语义。
 - 它们不产生 String expression，不能放进 Function arguments。
 - 它们不查找动态名称 `raw`，用户或插件定义同名 Function 不会改变核心语法。
-- 它们与显式 `raw(...)` 共享底层 Raw Element constructor，而不是共享动态调用路径。
+- 它们与显式 `raw(...)` 共享 core constructor contract，但 syntax node 不通过可被 shadow 的 lexical name lookup。
 
 Inline payload 需要包含 backtick 时，提高相同 delimiter run 的长度：
 
@@ -182,9 +184,10 @@ Notist 额外要求 triple opener 后立即换行。原因不是沿用某一门�
 - 裸 fence 直接使用 info tag 做 language injection。
 - Hover 展示 `trailing_content` 绑定目标，而不再展示 Raw/Content body mode。
 - UnresolvedCall 保存 arguments、可选 trailing Content、Attributes 与 range，不再保存 RawSource 分支。
+- Function evaluation 不读取 String literal form；Raw layout completion/hover 展示显式 `block` parameter。
 
-== Computed String 的布局
+== Syntax Provenance 与 Value Semantics
 
-raw 可以从 direct String literal 的 Inline/Multiline provenance 决定布局；computed String 没有这样的 source form。未来的选择可以是显式 block 参数、raw.inline / raw.block 构造器，或为非 literal String 定义默认 form。无论选择哪一种，布局都不应偷偷成为 String 的公开类型身份，因为相同字符串值不该仅因求值来源不同而具有不同类型。
+String literal 的 range、payload range、Inline/Multiline form 与 Escaped/Raw style 都是重要 source fact，但不是 String Value 的隐藏字段。它们可以影响 formatter 如何保留原写法、diagnostic 指向哪里、editor 向哪段 payload 注入外部语言；不能影响一个只声明接收 String 的 Function result。
 
-此外，裸 Raw syntax 是否可以直接附加 Attributes、String multiline 是否未来增加可选 dedent，均应作为独立语法提案处理，不影响本次核心模型。
+若未来某个 API 确实需要带 provenance 的 source fragment，应引入名称和 Type 都明确的新 Value，而不是让所有 String 偶尔携带、偶尔缺少不可见能力。裸 Raw syntax 是否可以直接附加 Attributes、multiline String 是否增加 dedent，也都作为独立语法设计，不改变 String 的 Value equality。

@@ -36,8 +36,10 @@ WorkspaceSnapshot 是 Analyzer 对一组确定输入完成分析后的不可变�
 - Vault root 与该 revision 使用的配置。
 - 每个 source 的不可变文本、Parse 和 line index。
 - 由 source tree 推导出的 Module tree，包括 Virtual Module。
+- Module import/binding graph 与每个 Module 的 lexical environment identity。
 - Annotation definition、resolved reference、backlink 与其他语义索引。
-- syntax、name resolution、signature 和 type diagnostics。
+- syntax、name resolution、signature、call binding 和 type diagnostics。
+- resolved/typed HIR，或足以在 snapshot 内确定性派生它的 immutable input。
 - 完成后续 lowering、structuring 与查询所需的 Function schema 视图。
 
 `Workspace` 作为“某个目录中的文档集合”适合产品描述，却不足以说明一个值究竟是可变会话还是不可变结果。核心 API 应明确使用 Analyzer 与 WorkspaceSnapshot 这两个名字，避免调用方误以为可以原地更新 snapshot。
@@ -113,16 +115,17 @@ Analyzer 从 source facts 逐步建立更高层语义，每个阶段都只引用
 captured sources
   -> Parse + LineIndex per FileId
   -> Module tree and source-to-module mapping
-  -> definitions and Function schema environment
-  -> reference and name resolution
-  -> signature and static type checking
+  -> imports, module root bindings, lexical definitions and Function schema environment
+  -> Reference graph and Code name resolution
+  -> static type checking and call binding plans
+  -> resolved/typed HIR
   -> immutable indexes and diagnostics
   -> publish WorkspaceSnapshot
 ```
 
 Parse 保留源码事实和 recoverable syntax errors；Module graph 决定名称解析空间；static analysis 验证 Function call，但不为了回答编辑器查询而执行具有外部副作用的插件。类型系统与 partial semantics 的边界继续由 [[vault::designs::D0006-type-system]] 定义。
 
-Lowering 与 structuring 仍遵循 [[vault::designs::D0005-lowering-and-structuring]]。它们可以按 Module 惰性计算，也可以在 build 中批量计算，但必须以捕获的 snapshot 为输入，且缓存 key 至少包含 snapshot revision、ModuleId 与 Function environment identity。任何需要重新读取 source 或调用未包含在 snapshot 输入中的动态环境的求值，都不能被称为这个 snapshot 的确定结果。
+Lowering、evaluation 与 structuring 仍遵循 [[vault::designs::D0005-lowering-and-structuring]]。它们可以按 Module 惰性计算，也可以在 build 中批量计算，但必须消费 snapshot 捕获或派生的 resolved/typed HIR，且缓存 key 至少包含 snapshot revision、ModuleId、imported module-binding identities 与 Function environment identity。任何需要重新读取 source、重新猜测 call binding 或调用未包含在 snapshot input/capability 中的动态环境的求值，都不能被称为这个 snapshot 的确定结果。
 
 Analyzer 负责 orchestration，不成为新的语言语义层。Parser、resolver、checker 和 evaluator 的规则仍由各自组件定义；Analyzer 只保证它们看到同一组输入，并将结果组织成可查询的世界。
 

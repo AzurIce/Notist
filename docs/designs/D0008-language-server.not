@@ -126,8 +126,9 @@ byte offset
 - duplicate module。
 - unresolved module reference。
 - unsupported label reference。
-- evaluation 和 builtin function argument diagnostics。
-- name resolution 和 type diagnostics。
+- import cycle 与 unresolved module binding。
+- name resolution、CallPlan 和 type diagnostics。
+- 只依赖 snapshot input/capability 的确定性 evaluation diagnostics。
 
 Server 使用 `textDocument/publishDiagnostics`。每次 snapshot 更新后，为受影响的已知文件发布完整 diagnostics 集合；原有错误消失时必须发布空数组清除客户端状态。
 
@@ -163,7 +164,7 @@ Completion 支持：
 
 - `[[...]]` 内补全当前可达的 ModulePath。
 - `vault::`、`self::`、`super::` 后补全合法 segment。
-- `#...` 后补全内置 Function 名称。
+- `#...` 后按 context 补全 declaration keyword、lexical/imported binding 与 prelude/core Function。
 - call arguments 中补全 parameter name。
 - 属性列表中补全已知 attribute key。
 
@@ -179,7 +180,7 @@ Hover 包括：
 
 - Module reference 的完整逻辑路径和 source path。
 - Module 是否为虚拟目录节点。
-- 内置 Function 的签名、参数类型、默认值和 trailing Content 绑定。
+- User/core/plugin Function Value 的签名、参数类型、default、trailing Content 与 capability schema。
 - Attribute 或其他 Symbol 的类型与定义位置。
 - diagnostics 之外有帮助的简短说明。
 
@@ -201,12 +202,12 @@ Tree-sitter 仍然可以在 server 尚未响应时提供稳定的视觉结构，
 
 == Evaluation and Safety
 
-Hover、completion 和 diagnostics 可能需要 Function registry 和类型信息，但语言服务器不应为了普通编辑操作执行具有外部副作用的插件代码。
+Hover、completion 和 diagnostics 需要 lexical/import environment、Function signature 和 typed HIR，但语言服务器不应为了普通编辑操作执行具有外部副作用的插件代码。
 
 建议区分：
 
-- builtin 和纯用户定义：允许 analysis/type checking，并在必要时做受控常量求值。
-- plugin schema：读取声明的函数签名、文档和导出符号。
+- core 与纯 User Function：允许 analysis/type checking，并只在结果确有消费者时做受控常量求值。
+- plugin schema：读取声明的 Function signature、capability、文档和导出符号。
 - plugin runtime：默认不在 LSP 请求路径中执行。
 
 未知或无法执行的 Function 仍可以依据 schema 提供 completion 和 type diagnostics。需要插件生成 Content 才能知道的动态结果，可以降级为 unknown，而不是阻塞整个 workspace analysis。
