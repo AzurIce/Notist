@@ -34,12 +34,12 @@ notist mcp [ROOT] [--text-mirror full|brief]
 
 == ROOT 与 Vault 发现
 
-需要 Vault 的命令把 `[ROOT]` 作为最后一个 positional，默认是当前目录。ROOT 可以是 Vault 内的文件或目录；Notist 按 [[vault::designs::D0007-notist-toml]] 向上寻找最近的 `Notist.toml`，canonicalize 后再连接该 root 对应的 daemon。
+需要 Vault 的命令把 `[ROOT]` 作为最后一个 positional，默认是当前目录。ROOT 可以是 Vault 内的文件或目录；Notist 按 [[vault::old-designs::D0007-notist-toml]] 向上寻找最近的 `Notist.toml`，canonicalize 后再连接该 root 对应的 daemon。
 
 ```shell
 notist status .
 notist search "type system" docs
-notist check docs/designs/D0014-agent-facing-cli-mcp-and-search.not
+notist check docs/old-designs/D0014-agent-facing-cli-mcp-and-search.not
 ```
 
 Nested Vault 不进入外层扫描。Machine result 默认使用 Vault-relative path；canonical absolute path 只出现在明确需要文件系统身份的维护操作中。
@@ -134,7 +134,7 @@ notist modules [ROOT]
 每条 record 只包含 ModulePath、Vault-relative source path、source/virtual kind、可选 semantic title 和 source fingerprint。默认按 ModulePath 排序。
 
 ```shell
-notist --format json modules docs --prefix vault::designs --kind source --limit 20
+notist --format json modules docs --prefix vault::old-designs --kind source --limit 20
 ```
 
 == search
@@ -191,7 +191,7 @@ notist outline <MODULE|PATH> [ROOT]
 Outline 只读取一个 source-backed Module，不再把整个 Vault 的所有 Heading 一次输出。每条 item 包含 name、level、可选 label 与精确 location。
 
 ```shell
-notist outline vault::designs::D0014-agent-facing-cli-mcp-and-search docs --depth 3
+notist outline vault::old-designs::D0014-agent-facing-cli-mcp-and-search docs --depth 3
 ```
 
 全 Vault discovery 使用 `modules` 或 `search`；需要完整 outline artifact 时使用 `export outline`。
@@ -207,10 +207,10 @@ notist read <MODULE|PATH|MODULE#LABEL> [ROOT]
 Read 返回原始 authored source、实际 byte/line range、source fingerprint、是否到达 selector 末尾和 continuation。Line、byte 与 label section 是三种窗口：
 
 ```shell
-notist read vault::designs::D0014-agent-facing-cli-mcp-and-search docs \
+notist read vault::old-designs::D0014-agent-facing-cli-mcp-and-search docs \
   --from-line 130 --lines 80
 
-notist read vault::designs::D0014-agent-facing-cli-mcp-and-search docs \
+notist read vault::old-designs::D0014-agent-facing-cli-mcp-and-search docs \
   --byte-range 4000..8000
 ```
 
@@ -329,7 +329,7 @@ Build 从一个 captured snapshot 生成多页静态 HTML。`--clean` 只清理�
 notist skill init <OUTPUT> [--force]
 ```
 
-默认情况下 OUTPUT 必须是尚不存在的目录，命令只生成一个确定性的 `SKILL.md`，不猜 Codex、Claude 或其他 Host 的安装位置。传入 `--force` 时，OUTPUT 必须是已有目录；命令原子替换其中的 `SKILL.md`，并保留其他文件。已有的普通文件永远不是有效输出。当前 executable 同步自己的官方 docs Vault；详细发布边界见 [[vault::designs::D0013-self-contained-agent-skill]]。
+默认情况下 OUTPUT 必须是尚不存在的目录，命令只生成一个确定性的 `SKILL.md`，不猜 Codex、Claude 或其他 Host 的安装位置。传入 `--force` 时，OUTPUT 必须是已有目录；命令原子替换其中的 `SKILL.md`，并保留其他文件。已有的普通文件永远不是有效输出。当前 executable 同步自己的官方 docs Vault；详细发布边界见 [[vault::old-designs::D0013-self-contained-agent-skill]]。
 
 官方 Agent 工作流是：
 
@@ -412,4 +412,4 @@ Typed error 使用：
 | 5 | edit conflict 或 precondition failure |
 | 70 | 未分类 internal failure |
 
-完整接口模型与选择理由见 [[vault::designs::D0014-agent-facing-cli-mcp-and-search]]。
+完整接口模型与选择理由见 [[vault::old-designs::D0014-agent-facing-cli-mcp-and-search]]。

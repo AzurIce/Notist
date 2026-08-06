@@ -4,7 +4,7 @@
 
 ```shell
 notist search "workspace revision"
-notist references vault::designs::D0011
+notist references vault::old-designs::D0011
 notist check docs
 ```
 
@@ -34,7 +34,7 @@ notist lsp        notist query         notist mcp
 
 == Daemon 持有什么
 
-Daemon 是一个 Vault application core 的长期进程宿主，而不是新的语言语义层。启动时传入的 canonical root 固定它服务的 Vault；进程内只有这个 root 对应的 VaultEngine，并遵循 [[vault::designs::D0007-notist-toml]] 的 nested root 边界。Client 不能连接一个已存在 daemon 后要求它再打开任意 root。
+Daemon 是一个 Vault application core 的长期进程宿主，而不是新的语言语义层。启动时传入的 canonical root 固定它服务的 Vault；进程内只有这个 root 对应的 VaultEngine，并遵循 [[vault::old-designs::D0007-notist-toml]] 的 nested root 边界。Client 不能连接一个已存在 daemon 后要求它再打开任意 root。
 
 VaultEngine 持有适合在客户端之间复用的状态：
 
@@ -59,7 +59,7 @@ another editor overlay      C
 Agent default view          A
 ```
 
-因此一个 VaultEngine 可以有多个 Analyzer View。View 保存某个 client session 的 overlay set、配置投影和 snapshot revision；[[vault::designs::D0011-analyzer-and-workspace-snapshot]] 定义的 Analyzer 与 WorkspaceSnapshot 位于这个 View 内。
+因此一个 VaultEngine 可以有多个 Analyzer View。View 保存某个 client session 的 overlay set、配置投影和 snapshot revision；[[vault::old-designs::D0011-analyzer-and-workspace-snapshot]] 定义的 Analyzer 与 WorkspaceSnapshot 位于这个 View 内。
 
 ```text
 VaultEngine

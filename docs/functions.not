@@ -1,6 +1,6 @@
 = Built-in Functions
 
-本文记录当前工具 surface 实际提供的 core Function。未列出的名称不是现行 built-in，调用时会产生 unknown function 诊断。下一版可编程语言将把这些 constructor 作为 `core` namespace 中的 first-class Function Value，并让 Raw layout 成为显式 `block` argument；对应设计见 [[vault::designs::D0004-core-functions-and-syntax-sugar]]、[[vault::designs::D0010-string-literals-and-raw-syntax]] 与 [[vault::designs::D0016-surface-language-and-core-grammar]]。
+本文记录当前工具 surface 实际提供的 core Function。未列出的名称不是现行 built-in，调用时会产生 unknown function 诊断。下一版可编程语言将把这些 constructor 作为 `core` namespace 中的 first-class Function Value，并让 Raw layout 成为显式 `block` argument；对应设计见 [[vault::old-designs::D0004-core-functions-and-syntax-sugar]]、[[vault::old-designs::D0010-string-literals-and-raw-syntax]] 与 [[vault::old-designs::D0016-surface-language-and-core-grammar]]。
 
 == 签名总览
 

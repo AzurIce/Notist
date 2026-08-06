@@ -1,7 +1,0 @@
-= Archived Design Records
-
-这里仅保存中心哲学或基础假设已经失效、但仍值得保留为演进证据的设计。它们不再规范当前项目；需要当前结论时应回到 [[vault::designs]] 下的活动设计和 [[vault::grammar]]、[[vault::functions]]、[[vault::types]]。
-
-== 历史设计
-
-- [[self::D0001-rua-markdown-module-scope]]：以 Markdown/Rua、`#[...]{}` scope 与 page-level attributes 为基础的早期方案；现行 Module 与 Annotation 模型见 [[vault::designs::D0002-scope-and-attrs]]、[[vault::designs::D0003-vault-and-module]] 和 [[vault::designs::D0007-notist-toml]]。

@@ -1,6 +1,6 @@
 = Type System
 
-本文定义 Markup/Code 双 Mode 下当前工具 surface 保证的类型与求值模型。精确语法见 [[vault::grammar]]，内置 Function 签名见 [[vault::functions]]。可编程文档语言的目标语义由 [[vault::designs::D0015-programmable-documents-and-language-core]] 与 [[vault::designs::D0006-type-system]] 定义；代码库中的实验性 Value-returning Function、User Function、operator 与 collection Type 在经过 typed HIR 重构前不构成稳定契约。
+本文定义 Markup/Code 双 Mode 下当前工具 surface 保证的类型与求值模型。精确语法见 [[vault::grammar]]，内置 Function 签名见 [[vault::functions]]。可编程文档语言的目标语义由 [[vault::old-designs::D0015-programmable-documents-and-language-core]] 与 [[vault::old-designs::D0006-type-system]] 定义；代码库中的实验性 Value-returning Function、User Function、operator 与 collection Type 在经过 typed HIR 重构前不构成稳定契约。
 
 == 核心判断
 

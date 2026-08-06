@@ -22,7 +22,7 @@ Notist 管理的用户数据
 
 ```shell
 notist search "WorkspaceSnapshot" ~/.notist/docs
-notist references vault::designs::D0012 ~/.notist/docs
+notist references vault::old-designs::D0012 ~/.notist/docs
 notist check ~/.notist/docs
 ```
 

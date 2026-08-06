@@ -1,6 +1,6 @@
 = Agent-facing CLI and MCP interface redesign
 
-这份提案把 [[vault::ai::2026-07-26 agent-friendly CLI output and Notist improvements]] 的成本取证收束成一套可实施的接口。它仍然是研究提案，不是新的 governing design；方向确认后，应把稳定结论更新进 [[vault::designs::D0012-daemon-and-client-interfaces]] 与 [[vault::designs::D0013-self-contained-agent-skill]]。
+这份提案把 [[vault::ai::2026-07-26 agent-friendly CLI output and Notist improvements]] 的成本取证收束成一套可实施的接口。它仍然是研究提案，不是新的 governing design；方向确认后，应把稳定结论更新进 [[vault::old-designs::D0012-daemon-and-client-interfaces]] 与 [[vault::old-designs::D0013-self-contained-agent-skill]]。
 
 要解决的不是“给现有命令加几个 limit”，而是同时满足四类调用者：
 
@@ -262,7 +262,7 @@ JSON 返回 Vault identity、snapshot stamp、source/module/diagnostic counts �
 === modules
 
 ```shell
-notist modules docs --prefix vault::designs --limit 50
+notist modules docs --prefix vault::old-designs --limit 50
 notist modules docs --cursor <token> --format json
 ```
 
@@ -272,7 +272,7 @@ Module record 只含 ModulePath、relative source path、source-backed/virtual k
 
 ```shell
 notist search "workspace snapshot" docs \
-  --scope vault::designs \
+  --scope vault::old-designs \
   --kind text,title,annotation \
   --limit 20 \
   --snippet-bytes 512
@@ -300,7 +300,7 @@ tool/help 必须写清：excerpt 用于选择证据，回答事实前应调用 r
 === outline
 
 ```shell
-notist outline vault::designs::D0011 docs --depth 3 --limit 100
+notist outline vault::old-designs::D0011 docs --depth 3 --limit 100
 ```
 
 只查询一个 Module。Heading node 返回 label、name、level、range、parent index 或 depth。inline raw 造成空 name 时应由 semantic title extraction 修复，而不是把 raw source dump 给调用者。
@@ -308,9 +308,9 @@ notist outline vault::designs::D0011 docs --depth 3 --limit 100
 === read
 
 ```shell
-notist read vault::designs::D0011 docs --from-line 120 --lines 80
+notist read vault::old-designs::D0011 docs --from-line 120 --lines 80
 notist read "<MODULE>#<LABEL>" docs
-notist read docs/designs/D0011-analyzer-and-workspace-snapshot.not docs \
+notist read docs/old-designs/D0011-analyzer-and-workspace-snapshot.not docs \
   --byte-range 4000..8000
 ```
 
@@ -327,7 +327,7 @@ notist read docs/designs/D0011-analyzer-and-workspace-snapshot.not docs \
 references 返回 location record 和最多 512-byte excerpt，不重复整篇 source：
 
 ```shell
-notist references vault::designs::D0011 docs \
+notist references vault::old-designs::D0011 docs \
   --direction incoming \
   --limit 50
 ```
@@ -400,7 +400,7 @@ artifact id: ...
 ```text
 20 matches in snapshot 42
 
-1. vault::designs::D0011  designs/D0011-....not:84
+1. vault::old-designs::D0011  designs/D0011-....not:84
    consumer captures one immutable snapshot ...
 
 ...

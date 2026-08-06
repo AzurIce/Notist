@@ -10,4 +10,4 @@ Note + ist -> notist(also not an ist)
 - 当前内置函数 [[vault::functions]]
 - 日常语法速查 [[vault::cheatsheet]]
 - 当前类型系统 [[vault::types]]
-- 早期 Markdown/Rua 模块与标注构想（历史） [[vault::designs::archive::D0001-rua-markdown-module-scope]]
+- 早期 Markdown/Rua 模块与标注构想（历史） [[vault::old-designs::archive::D0001-rua-markdown-module-scope]]

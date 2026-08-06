@@ -92,7 +92,7 @@ notist build docs -o dist
 
 - `vault` -> `index.html`
 - `vault::grammar` -> `grammar/index.html`
-- `vault::designs::type system` -> `designs/type system/index.html`
+- `vault::old-designs::type system` -> `designs/type system/index.html`
 
 URL 中的路径 segment 必须单独 percent encode。页面之间使用相对链接，使构建结果可以直接从任意静态文件服务器或子路径部署。
 
@@ -120,7 +120,7 @@ notist preview . --host 0.0.0.0 --port 3000
 
 默认行为：
 
-- 通过 [[vault::designs::D0012-daemon-and-client-interfaces]] 的 daemon 或 embedded service 打开 disk View。
+- 通过 [[vault::old-designs::D0012-daemon-and-client-interfaces]] 的 daemon 或 embedded service 打开 disk View。
 - 打开根模块 `vault`。
 - 观察 disk View 的 snapshot publication 并 debounce。
 - 重新构建带 live reload 资源的完整站点。
@@ -166,7 +166,7 @@ Preview 会暴露用户正在编辑的文档内容，因此默认只能监听 lo
 
 Parse 的 byte range、源码文本和分析结果必须来自同一个 Workspace snapshot。不能在 analysis 完成后，再由 renderer 重新读取可能已经变化的文件。
 
-Snapshot 的构造、revision、identity 与发布规则见 [[vault::designs::D0011-analyzer-and-workspace-snapshot]]；本文只规定 build 和 preview 如何消费捕获后的 snapshot。
+Snapshot 的构造、revision、identity 与发布规则见 [[vault::old-designs::D0011-analyzer-and-workspace-snapshot]]；本文只规定 build 和 preview 如何消费捕获后的 snapshot。
 
 Analysis 提供稳定 snapshot：
 

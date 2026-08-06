@@ -1,6 +1,6 @@
 = D0006: Type System
 
-Notist 的 static Type 描述 expression 可以产生什么 Value，runtime Value 承载一次求值真正产生的结果。二者共同服务于 [[vault::designs::D0015-programmable-documents-and-language-core]] 定义的可编程文档模型：Module、普通 binding、User Function、core/native Function 与 plugin Function 都进入同一套名称解析、调用和返回值规则。
+Notist 的 static Type 描述 expression 可以产生什么 Value，runtime Value 承载一次求值真正产生的结果。二者共同服务于 [[vault::old-designs::D0015-programmable-documents-and-language-core]] 定义的可编程文档模型：Module、普通 binding、User Function、core/native Function 与 plugin Function 都进入同一套名称解析、调用和返回值规则。
 
 ```not
 #let depth: Int = 2

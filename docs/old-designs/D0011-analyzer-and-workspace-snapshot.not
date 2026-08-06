@@ -2,7 +2,7 @@
 
 同一份正在编辑的文档，可能同时被 diagnostics、definition、preview、静态构建和 Agent 查询读取。它们不能分别在不同时间重新读盘，再把各自得到的 source、Parse 与 reference graph 拼在一起；否则一个结果中的 byte range 可能已经不再对应另一个结果中的文本。
 
-Notist 因此把分析分成三个角色：VaultEngine 持有可跨客户端复用的磁盘状态和缓存；每个 Analyzer View 接受自己的 overlay 等变化并发布新 revision；WorkspaceSnapshot 则表示某一个 View revision 下不可变、自洽的语义世界。进程与 client interface 由 [[vault::designs::D0012-daemon-and-client-interfaces]] 定义。
+Notist 因此把分析分成三个角色：VaultEngine 持有可跨客户端复用的磁盘状态和缓存；每个 Analyzer View 接受自己的 overlay 等变化并发布新 revision；WorkspaceSnapshot 则表示某一个 View revision 下不可变、自洽的语义世界。进程与 client interface 由 [[vault::old-designs::D0012-daemon-and-client-interfaces]] 定义。
 
 ```text
 filesystem sources + configuration + function schemas
@@ -25,7 +25,7 @@ filesystem sources + configuration + function schemas
 
 == Vault、Engine、Analyzer 与 Snapshot
 
-Vault 是语言层面的知识边界，由 root、[[vault::designs::D0007-notist-toml]] 定义的 marker 规则以及 [[vault::designs::D0003-vault-and-module]] 定义的 Module tree 共同确定。
+Vault 是语言层面的知识边界，由 root、[[vault::old-designs::D0007-notist-toml]] 定义的 marker 规则以及 [[vault::old-designs::D0003-vault-and-module]] 定义的 Module tree 共同确定。
 
 VaultEngine 是这个 Vault 的共享长期状态。它拥有磁盘 source catalog、稳定 identity、可复用 cache 和派生 index，但不假设所有客户端看到相同的未保存文本。
 
@@ -123,9 +123,9 @@ captured sources
   -> publish WorkspaceSnapshot
 ```
 
-Parse 保留源码事实和 recoverable syntax errors；Module graph 决定名称解析空间；static analysis 验证 Function call，但不为了回答编辑器查询而执行具有外部副作用的插件。类型系统与 partial semantics 的边界继续由 [[vault::designs::D0006-type-system]] 定义。
+Parse 保留源码事实和 recoverable syntax errors；Module graph 决定名称解析空间；static analysis 验证 Function call，但不为了回答编辑器查询而执行具有外部副作用的插件。类型系统与 partial semantics 的边界继续由 [[vault::old-designs::D0006-type-system]] 定义。
 
-Lowering、evaluation 与 structuring 仍遵循 [[vault::designs::D0005-lowering-and-structuring]]。它们可以按 Module 惰性计算，也可以在 build 中批量计算，但必须消费 snapshot 捕获或派生的 resolved/typed HIR，且缓存 key 至少包含 snapshot revision、ModuleId、imported module-binding identities 与 Function environment identity。任何需要重新读取 source、重新猜测 call binding 或调用未包含在 snapshot input/capability 中的动态环境的求值，都不能被称为这个 snapshot 的确定结果。
+Lowering、evaluation 与 structuring 仍遵循 [[vault::old-designs::D0005-lowering-and-structuring]]。它们可以按 Module 惰性计算，也可以在 build 中批量计算，但必须消费 snapshot 捕获或派生的 resolved/typed HIR，且缓存 key 至少包含 snapshot revision、ModuleId、imported module-binding identities 与 Function environment identity。任何需要重新读取 source、重新猜测 call binding 或调用未包含在 snapshot input/capability 中的动态环境的求值，都不能被称为这个 snapshot 的确定结果。
 
 Analyzer 负责 orchestration，不成为新的语言语义层。Parser、resolver、checker 和 evaluator 的规则仍由各自组件定义；Analyzer 只保证它们看到同一组输入，并将结果组织成可查询的世界。
 
@@ -183,9 +183,9 @@ input change
 
 == 消费者边界
 
-[[vault::designs::D0008-language-server]] 负责 overlay lifecycle、LSP Position 转换和请求路由；它向自己的 Analyzer View 提交输入变化，并把 snapshot query 转成 LSP response，不维护第二套 module graph。CLI、LSP、MCP 与 daemon 的进程关系见 [[vault::designs::D0012-daemon-and-client-interfaces]]。
+[[vault::old-designs::D0008-language-server]] 负责 overlay lifecycle、LSP Position 转换和请求路由；它向自己的 Analyzer View 提交输入变化，并把 snapshot query 转成 LSP response，不维护第二套 module graph。CLI、LSP、MCP 与 daemon 的进程关系见 [[vault::old-designs::D0012-daemon-and-client-interfaces]]。
 
-[[vault::designs::D0009-preview-and-html]] 的 build 与 preview 捕获一个 snapshot，再从中得到所有页面的 StructuredDocument、链接和 diagnostics。站点生成期间不重新扫描 Vault；生成完成后，完整站点 generation 才对 HTTP server 可见。
+[[vault::old-designs::D0009-preview-and-html]] 的 build 与 preview 捕获一个 snapshot，再从中得到所有页面的 StructuredDocument、链接和 diagnostics。站点生成期间不重新扫描 Vault；生成完成后，完整站点 generation 才对 HTTP server 可见。
 
 全文索引、向量、graph projection、摘要与 MCP resource 都是 snapshot 的派生消费者。每条派生记录必须带来源 revision 和稳定 identity，并能从 snapshot 重建。它们不能把自己的缓存、embedding 或摘要写回 snapshot，Agent 写入也必须先改变 Analyzer input，再经过新的 revision 才成为可查询事实。
 

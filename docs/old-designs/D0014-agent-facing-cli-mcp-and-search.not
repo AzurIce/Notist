@@ -4,8 +4,8 @@
 
 ```shell
 notist search "workspace snapshot" docs
-notist outline vault::designs::D0011 docs
-notist read vault::designs::D0011 docs --from-line 1 --lines 80
+notist outline vault::old-designs::D0011 docs
+notist read vault::old-designs::D0011 docs --from-line 1 --lines 80
 ```
 
 第一条命令返回少量有排序的候选和短 excerpt，第二条只展开一个 Module，第三条才读取被选中的原文。人在终端中看到的是带颜色、相对路径和续读提示的紧凑页面；脚本看到的是稳定 JSON；MCP Host 看到的是有 output schema、大小上界和 citation 的 tool result。三种调用者不使用三套查询语义。
@@ -25,7 +25,7 @@ full export
 
 普通查询始终有默认预算与服务端硬上界。调用者可以用参数在硬上界内收紧或扩大页面，但不能关闭上界；需要完整数据时必须显式进入 export。这个规则不是只为 Agent 优化 token，它同时避免终端被大结果淹没、脚本意外缓存整库正文，以及 MCP tool output 在后续对话中反复回放。
 
-本文拥有 core query contract、普通 CLI 命令、MCP tool/resource 投影、全文检索和输出预算。[[vault::designs::D0011-analyzer-and-workspace-snapshot]] 继续定义 snapshot、identity 与 query consistency；[[vault::designs::D0012-daemon-and-client-interfaces]] 继续定义每 Vault daemon、Analyzer View 和协议适配层；[[vault::designs::D0013-self-contained-agent-skill]] 继续定义官方 Skill 与文档 Vault 的发布方式。把这些接口放在单独的设计中，是因为查询与输出会共同演进，而不应反过来改变 daemon 拓扑或 Skill 包装。
+本文拥有 core query contract、普通 CLI 命令、MCP tool/resource 投影、全文检索和输出预算。[[vault::old-designs::D0011-analyzer-and-workspace-snapshot]] 继续定义 snapshot、identity 与 query consistency；[[vault::old-designs::D0012-daemon-and-client-interfaces]] 继续定义每 Vault daemon、Analyzer View 和协议适配层；[[vault::old-designs::D0013-self-contained-agent-skill]] 继续定义官方 Skill 与文档 Vault 的发布方式。把这些接口放在单独的设计中，是因为查询与输出会共同演进，而不应反过来改变 daemon 拓扑或 Skill 包装。
 
 == 一个 Core Query Contract
 
@@ -108,12 +108,12 @@ Source-order query 的稳定 key 是 ModulePath、Vault-relative path、match ra
 CLI positional selector 和 MCP selector string 使用同一种紧凑表示，只接受三类精确身份：完整 ModulePath、Vault-relative `.not` path，或 ModulePath 加 Annotation label。`search`、`list_modules` 和 location 输出的 ModulePath 因而可以直接作为 `read_source`、`get_outline` 与 `get_references` 的 selector，不需要调用者先猜出另一种 JSON shape。短 basename、模糊路径和“最接近的 Module”不能静默解析；零匹配返回 `not_found`，多匹配返回 `ambiguous_selector` 和有界候选。模糊发现属于 search，不属于 selector resolution。
 
 ```text
-ModuleSelector  { module: "vault::designs::D0011" }
+ModuleSelector  { module: "vault::old-designs::D0011" }
 PathSelector    { path: "designs/D0011-analyzer-and-workspace-snapshot.not" }
-SectionSelector { module: "vault::designs::D0011", label: "snapshot" }
+SectionSelector { module: "vault::old-designs::D0011", label: "snapshot" }
 ```
 
-上面的对象仍作为 MCP 的兼容输入保留，方便已经生成结构化 selector 的 Host；规范输入则是等价字符串 `vault::designs::D0011`、`designs/D0011-analyzer-and-workspace-snapshot.not` 或 `vault::designs::D0011#snapshot`。Tool schema 把字符串放在 `oneOf` 的首个分支，description 直接说明可复制上游 `module` 字段。类型错误必须指出参数名、允许的字符串/对象形状与实际 JSON 类型，不能只返回无上下文的 `expected object parameters`。
+上面的对象仍作为 MCP 的兼容输入保留，方便已经生成结构化 selector 的 Host；规范输入则是等价字符串 `vault::old-designs::D0011`、`designs/D0011-analyzer-and-workspace-snapshot.not` 或 `vault::old-designs::D0011#snapshot`。Tool schema 把字符串放在 `oneOf` 的首个分支，description 直接说明可复制上游 `module` 字段。类型错误必须指出参数名、允许的字符串/对象形状与实际 JSON 类型，不能只返回无上下文的 `expected object parameters`。
 
 所有可作为证据或编辑位置的 record 使用统一 location：
 
@@ -275,7 +275,7 @@ Lexical/fuzzy query 只在 `IndexStamp.source_set_fingerprint` 与捕获 snapsho
 | `--pager auto|always|never` | 只分页当前 bounded page，不自动读取 continuation |
 | `--no-daemon` | 在当前进程运行同一 service/core operation |
 
-每个需要 Vault 的命令都把 `[ROOT]` 放在最后一个 positional，默认 `.`，并按 [[vault::designs::D0007-notist-toml]] 解析最近的 Vault root。`lsp` 按 editor workspace 动态发现多个 root；`daemon` 与 `mcp` 固定一个 root。Protocol stdio 命令拒绝 text/json/color/pager 组合，而不是把日志混入协议 stdout。
+每个需要 Vault 的命令都把 `[ROOT]` 放在最后一个 positional，默认 `.`，并按 [[vault::old-designs::D0007-notist-toml]] 解析最近的 Vault root。`lsp` 按 editor workspace 动态发现多个 root；`daemon` 与 `mcp` 固定一个 root。Protocol stdio 命令拒绝 text/json/color/pager 组合，而不是把日志混入协议 stdout。
 
 Collection command 共享 `-n, --limit`、`--max-bytes` 与 `--cursor`，但 help 必须展示该 operation 的实际 default 与 maximum。`limit` 是统一的页大小概念，不另设含义含混的 `top`。Cursor 不存在时 query/filter 参数定义第一页面；cursor 存在时相同参数仍然显式提供并由服务验证。普通命令不提供 `--all`，完整输出只能使用 export。
 

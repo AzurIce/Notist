@@ -36,7 +36,7 @@ Lossless tree 可以拥有面向编译器的 typed AST facade。CST 保留 token
 
 == Surface Lowering
 
-Surface lowering 把专用写法归一到 [[vault::designs::D0015-programmable-documents-and-language-core]] 定义的语言核心，同时保留 source provenance：
+Surface lowering 把专用写法归一到 [[vault::old-designs::D0015-programmable-documents-and-language-core]] 定义的语言核心，同时保留 source provenance：
 
 ```text
 = Title
