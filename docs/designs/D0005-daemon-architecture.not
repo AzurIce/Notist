@@ -1,0 +1,161 @@
+= D0005: Daemon Architecture
+
+本文承接 [[self::D0004-vault-module-and-scope]]：那里定义了 Vault 的边界与 Module 树。本文定义承载这些状态的进程形态——本地 daemon：它为每个活动 Vault 维持长期的分析状态，让 CLI、LSP 与 Agent 共享同一份 Module 树、缓存与索引。
+
+动线：先说明为什么需要 daemon，再定形态（每 Vault 一个 daemon），然后依次展开 daemon 持有什么、View 与 overlay、client interface、本地协议、snapshot 与写入、失败与重启。
+
+== 为什么需要 daemon
+
+用户连续执行几条命令时，不应该为每条命令重新扫描、解析与索引同一个 Vault：
+
+```shell
+notist search "workspace revision"
+notist check docs
+notist references vault::designs::D0005
+```
+
+编辑器与 Agent 同时工作时，也不应该为同一个 Vault 维护两份 watcher、Module 图与索引。Notist 为每个活动 Vault 使用一个本地 daemon 持有长期状态；CLI 与 LSP 是面向不同调用者的 client interface，Agent 通过 CLI 命令与官方 Skill 使用（见 [[self::D0008-cli-and-skill]]）。
+
+这个形态类似 ADB：短命令是 client，后台进程保存可复用状态。类比只到进程拓扑为止：Notist daemon 绑定一个 Vault，而不是当前用户访问过的所有知识库。
+
+== 形态：每 Vault 一个 daemon
+
+```text
+Editor          shell / Agent
+  |                  |
+notist lsp        notist query
+  |                  |
+  +------------------+
+                     |
+               local Notist protocol
+                     |
+              notist daemon <vault>
+                     |
+                VaultEngine
+                     |
+       Analyzer Views + WorkspaceSnapshots
+```
+
+两个 Vault 的 Module 树、配置、watcher、全文与向量索引、embedding 模型与权限互不相关；放进同一长期进程只会耦合内存、崩溃与升级生命周期，没有可复用的语义状态。因此采用"每用户的私有 endpoint namespace、每 Vault 一个 daemon"的组合，而不是"每用户一个 application daemon"。
+
+同一 canonical root 只对应一个 daemon 实例。canonical path 必须在 endpoint 派生前完成解析——避免同一目录因相对路径、symlink 或大小写表示得到多个 daemon。由 Notist 发布和替换内容的 managed Vault 可以额外声明 generation；同一 root 与 generation 组合对应一个实例，升级前的 daemon 因 endpoint 不同而停止接收新 client，并在 idle 后退出。generation 不是普通用户 Vault 的版本号，也不能用于绕过每 Vault 隔离。
+
+== Daemon 持有什么
+
+Daemon 是一个 Vault application core 的长期进程宿主，不是新的语言语义层。启动时传入的 canonical root 固定它服务的 Vault（发现规则见 [[self::D0004-vault-module-and-scope]]）；进程内只有这个 root 对应的 VaultEngine。Client 不能连接一个已存在 daemon 后要求它再打开任意 root。
+
+VaultEngine 持有适合在客户端之间复用的状态：
+
+- 磁盘 source catalog 与文件 watcher；
+- Vault 内稳定的 FileId、ModuleId 分配与 Module 树身份；
+- 以 source content 与语义环境为 key 的 parse、静态检查、求值与成型缓存；
+- 全文、向量、reference graph 与摘要等可重建派生索引；
+- 对磁盘写入、rename 与索引发布的串行化入口。
+
+Daemon 不成为 authored source 的真相来源。`.not` source 与明确的 editor overlay 仍是输入；缓存、索引与 daemon 内存都可以在进程退出后重建——这是求值确定性的推论：求值与成型是纯函数（D0002），增量更新只属于分析层的优化，不进入求值语义。持久化索引必须记录 schema、模型、Vault identity 与 source fingerprint，版本不匹配时丢弃或迁移，不能静默解释为新数据。
+
+== 共享 Engine，不共享 Overlay
+
+多个客户端可能同时看到同一文件的不同内容：
+
+```text
+disk source                 A
+editor-1 unsaved overlay    B
+editor-2 unsaved overlay    C
+Agent default view          A
+```
+
+因此一个 VaultEngine 可以有多个 Analyzer View：View 保存某个 client session 的 overlay set、配置投影与 snapshot revision。
+
+```text
+VaultEngine
+  shared disk sources and caches
+
+  View(editor-1)   overlays { file -> B }   revision 17
+  View(editor-2)   overlays { file -> C }   revision 9
+  View(disk)       overlays {}              revision 24
+```
+
+相同 source content 可以复用 parse 与其他纯派生缓存，但每个 View 独立发布 snapshot；一个 View 的 revision 不能与另一个 View 比较，daemon 也不制造跨 Vault 或跨 View 的伪全局 revision。
+
+CLI 默认使用 disk View，只读取已保存的 Vault。Agent 只有在用户或宿主显式授予 View handle 后，才能查询某个编辑器的未保存状态——View handle 是受限会话能力，不能通过进程列表或"最近打开的编辑器"猜测。
+
+== Client Interface
+
+所有 client interface 调用同一组协议无关的 core request；差异只在生命周期、参数投影与返回格式：
+
+```text
+Core request     CLI          LSP
+
+definition_at    definition   textDocument/definition
+references_to    references   textDocument/references
+document_symbols outline      textDocument/documentSymbol
+search           search       workspace/symbol
+diagnostics      check        publishDiagnostics
+propose_edit     edit propose code action / edit
+resolve_reference resolve      —
+references_in    references-in —
+```
+
+`resolve_reference` 把引用元素的 url 解析为 RefTarget（见 [[self::D0004-vault-module-and-scope]]），`Missing` 目标如实进入诊断；`references_in` 正向列出某段 Content 引用了什么，返回 `[{relation, url, target}]`。relation 与目标类型正交：relation 区分导航与嵌入（v1 只有 Reference，Preview 预留），目标类型由分析层 resolve 给出——值层不解释 url。
+
+CLI 命令不直接扫描 Vault 或访问 parser 私有结构：它连接 daemon，把参数转换为 core request，再把 response 格式化为人类文本或稳定 JSON。LSP 负责 URI、Position、document lifecycle 与 capability negotiation；Agent 侧的调用约定由 CLI 命令面与官方 Skill 定义（见 [[self::D0008-cli-and-skill]]）。一个能力可以同时出现在多个 interface，但语义必须来自同一个 core operation——不能让 `notist references` 与 LSP references 分别实现两套解析规则。
+
+== LSP Adapter 按 Client 存在
+
+编辑器通常要求自己启动一个 stdio language server。`notist lsp` 因而仍是跟随编辑器生命周期的 adapter，但它只维护协议连接与对应的 Analyzer View，不再独占整个 Vault 的磁盘状态与索引：
+
+```text
+Editor 1 -> notist lsp -> daemon -> View(editor-1)
+Editor 2 -> notist lsp -> daemon -> View(editor-2)
+Agent    -> notist cli -> daemon -> View(disk)
+```
+
+这避免了多个客户端共享一条 LSP connection。LSP request ID、cancellation、client capabilities、`didOpen` 与 diagnostics notification 都保留在各自 adapter 内；昂贵的 source、cache 与索引状态在 daemon 中复用。adapter 断开后，它拥有的 View 与 overlay 在租约结束后释放；daemon 不能把断开的未保存文本合并进 disk View。
+
+一个编辑器 worktree 可以发现多个 Notist.toml。这不把多个 Vault 塞进同一个 daemon：LSP adapter 按最近 marker 路由 source，并维护以 canonical root 为 key 的 daemon connection。Workspace symbol 等显式 worktree 级请求可以查询多个 connection 再合并仍带各自 source identity 的结果；definition、references、diagnostics 与 overlay update 始终只进入 source 所属 Vault。
+
+== 本地协议
+
+Daemon 默认只接受本机 IPC：Unix domain socket 或 Windows named pipe。它不默认监听 TCP，也不因为运行在 loopback 就跳过身份边界；endpoint 位于当前用户拥有的 runtime directory，并使用 OS ACL 或 peer credential 限制其他用户连接。
+
+连接首先交换：
+
+```text
+Handshake {
+  protocol_version
+  client_kind
+  client_version
+  vault_root
+  vault_generation?
+  requested_capabilities
+}
+```
+
+协议按独立于 crate API 的版本演进：daemon 拒绝不能安全解释的 major version，也拒绝 handshake root 或 generation 与自身固定身份不一致的 client。minor capability 通过 negotiation 发现，使旧 CLI 可以连接提供兼容 surface 的新 daemon。
+
+每个 response 至少能关联 daemon instance、Vault identity、View identity 与 snapshot revision。长查询支持 cancellation；notification 与 response 使用有界队列，不能让一个缓慢 client 阻塞 watcher publication 或其他 View。
+
+== Snapshot 与写入
+
+一次 request 开始时，daemon 为它捕获一个不可变 WorkspaceSnapshot（`Arc<WorkspaceSnapshot>`）。即使文件 watcher 随后发布新 revision，当前 response 中的 source、range、引用与诊断仍来自被捕获的 snapshot。
+
+跨多次 CLI invocation 的工作流不能仅相信旧 revision——daemon 可能重启，disk View 也可能已经推进。读取结果应同时提供可验证的 source fingerprint；写入采用显式前置条件：
+
+```text
+propose_edit(view_id, base_revision, operations)
+  -> plan + affected source fingerprints + diagnostics
+
+apply_edit(plan_hash, expected_fingerprints, idempotency_key)
+  -> serialize disk writes
+  -> reject changed sources
+  -> publish new disk snapshot
+```
+
+Editor View 上的未保存 overlay 不会因为 disk write 自动消失。LSP adapter 通过 watcher 或 file notification 观察磁盘变化；editor buffer 与磁盘的偏离由编辑器的正常冲突流程决定，daemon 不覆盖 overlay。
+
+== 失败与重启
+
+一个 Vault daemon 崩溃不会终止其他 Vault 的服务，也不会损坏 authored source。重启后，VaultEngine 从磁盘与有效派生索引恢复，失效缓存重建；所有 View、overlay、in-flight request 与未应用的 edit plan 都是进程会话状态，不能在没有明确持久化语义的情况下假装恢复。LSP adapter 失去连接时应终止或重建 session，不能把新 daemon instance 的 revision 与旧 instance 混用。
+
+Daemon 不应成为所有命令的单点强制依赖。Core library 保持可嵌入：CI、受限容器或显式 `--no-daemon` 的命令在进程内创建临时 VaultEngine 与 disk View，执行相同的 core request。Embedded mode 不是第二套实现——它只是把同一 service object 放在 client 进程中，输出语义不因是否连接 daemon 而改变。

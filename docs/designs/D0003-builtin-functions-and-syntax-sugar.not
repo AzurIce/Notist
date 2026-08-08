@@ -1,0 +1,275 @@
+= D0003: Builtin Functions and Syntax Sugar
+
+本文承接 [[self::D0002-evaluation-model-and-type-system]]：那里定义了元素种类清单（Element 树）与统一的调用模型（positional/named 绑定、trailing、default、可空 `T?` 与可省略 `=`）。本文定义第一批内置构造器（builtin constructor）与对应的 Markup 语法糖，并给出每个糖的完整规格。
+
+== 设计原则
+
+=== 构造器即函数
+
+内置元素以 first-class 构造器函数的形式存在，与用户函数共享同一套签名、调用解析与求值规则（见 D0002）。`heading`、`raw`、`rule` 等可以绑定、传递与组合——`#let make_title = heading` 合法。
+
+=== 糖与遮蔽隔离
+
+语法糖的语义不经过名字查找：`= 标题` 不是"调用名为 heading 的函数"的缩写，而是语法层构造，lowering 时直接获得 heading 构造器的 intrinsic identity。因此 `#let heading = ...` 遮蔽裸名不影响 `= 标题`；显式 `#heading[...]` 是普通名字解析，会被遮蔽影响。
+
+内置构造器的命名空间（如 `core::` 前缀）尚未决定，本文暂以裸名书写。正因为糖不依赖名字，裸名阶段是安全的：将来引入限定名时，糖的语义不变。
+
+=== Sugar budget
+
+只有同时满足三个条件的构造才配给语法糖：
+
+1. 高频：出现在大多数文档中；
+2. 边界能从局部语法决定：不需要跨块知识或函数签名；
+3. 有稳定的 core 语义等价：能降低为某个内置构造器调用。
+
+inline raw、quote、table 等候选与暂缓项见"暂缓与候选"一节。
+
+=== 糖不产生假元素
+
+糖在 syntax frontend 建立专用节点，lowering 时获得构造器身份，与显式调用汇合到同一 Element。求值器不扫描 Text 重新识别糖，parser 也不依赖函数签名判断 `[` 或 `-` 的含义。
+
+=== 四要素
+
+每个糖必须写明：
+
+- syntax boundary（语法边界）：什么样的局部 token 序列触发该糖；
+- core equivalence（等价形式）：降低为什么构造器调用；
+- error recovery（错误恢复）：残缺语法如何恢复与诊断；
+- editor consequence（编辑器后果）：编辑器的符号、补全、注入与格式化行为。
+
+=== 构造器校验
+
+值级语义约束不由类型系统承担，而由构造器在求值期校验：静态检查只查类型、名字与绑定，凡依赖运行时值的约束——例如 inline raw 的 `source` 不得含换行——在构造时检查并产生确定诊断。`source` 为字面量时分析层可提前报告，但权威校验在构造器。容器子元素不变量在成型时检查，与构造器校验同属"元素语义约束在值可用时校验"的分工。
+
+== 内置构造器
+
+=== heading
+
+签名：
+
+```text
+heading(level: Int = 1, trailing body: Content) -> Content
+```
+
+糖：行首的 `=` 序列（无空白）后接内容，`=` 数量即 level：
+
+```not
+= Title     ~= heading(level: 1, [Title])
+== Title    ~= heading(level: 2, [Title])
+```
+
+- syntax boundary：行首 `=` 连续出现一个或多个（无空白），其后是标题 body（markup 解析），到行尾；
+- core equivalence：`=` 数量 n → `heading(level: n, [...])`；
+- error recovery：行首 `=` 后无内容 → 空 body 的 Heading（与显式 `heading[]` 等价）；level 无上限；
+- editor consequence：标题进入 DocumentSymbol 与大纲；增减 `=` 即编辑 level。
+
+heading 额外拥有**默认 id**：body 提取的纯文本（Text 元素按顺序拼接，含嵌套）作为默认 id——`= 安装指南` 默认即可被 `[[...#安装指南]]` 引用，无需手动标注；显式 `@id` 覆盖默认 id。提取时若 body 含块级元素或无文本的元素（引用、代码块等），默认 id 可能不可靠——产生 warning（不拒绝，提取结果仍作默认 id）。默认 id 的模块内唯一性、歧义与引用匹配规则见 [[self::D0004-vault-module-and-scope]]。
+
+=== raw
+
+签名：
+
+```text
+raw(source: String, lang: String? = none, block: Bool = false) -> Content
+```
+
+`source` 无默认值，以位置实参绑定；`lang`、`block` 具名绑定。构造器校验：`block: false` 时 `source` 含换行产生诊断——校验发生在构造时（求值期），因为 `source` 可能是计算值；`source` 为字面量时，分析层可以提前报告。`block: true` 的单行 `source` 合法。
+
+糖：行首围栏代码块：
+
+````not
+```rust
+println!("Hello");
+```
+````
+
+围栏内容为 source（原样，不解析 markup、不做转义），围栏后的标注为 lang，block 恒为 true：
+
+```text
+~= raw("println!(\"Hello\");", lang: "rust", block: true)
+```
+
+- syntax boundary：行首三个以上反引号开始围栏，内容到行首的闭合围栏（同长度或更长）；闭合围栏后同一行可跟语言标注；
+- core equivalence：围栏内容 → `source`，标注 → `lang`，`block: true`；
+- error recovery：未闭合围栏 → 内容到文件尾并产生诊断；围栏内任何内容按字面处理；
+- editor consequence：围栏内按 `lang` 注入对应语言高亮；`lang` 为 `none` 时不注入。
+
+=== rule
+
+签名：
+
+```text
+rule() -> Content
+```
+
+糖：行首三个以上连续 `-`（其后仅允许行尾空白）：
+
+- syntax boundary：行首 `-` 连续出现 ≥3 且其后只有空白 → rule；`-` 后跟空白与内容 → 列表项糖（见 item）；
+- core equivalence：`---` ~= `rule()`；
+- error recovery：不足 3 个的连字符（如 `--`）按普通文本处理，不产生诊断；
+- editor consequence：无特殊符号，作为块级元素参与成型。
+
+=== callout
+
+签名：
+
+```text
+callout(kind: String = "note", title: Content? = none, trailing body: Content) -> Content
+```
+
+`title` 未提供时（default `none`）不生成标题；`kind` 是面向语义与导出的稳定分类。无语法糖——callout 通过显式调用使用。
+
+=== details
+
+签名：
+
+```text
+details(summary: Content? = none, open: Bool = false, trailing body: Content) -> Content
+```
+
+可折叠内容；`summary` 为 `none` 时由渲染器提供通用折叠标题，`open` 决定初始展开状态。无语法糖——details 通过显式调用使用。
+
+=== item
+
+签名：
+
+```text
+item(ordered: Bool = false, trailing body: Content) -> Content
+```
+
+糖：行首 `- ` 或 `+ `（符号后必须有空白）：
+
+```not
+- A    ~= item([A])
++ A    ~= item(ordered: true, [A])
+```
+
+- syntax boundary：行首空白 + `-`/`+` + 空白 + 内容，内容到行尾；
+- core equivalence：`- ` → `item([...])`；`+ ` → `item(ordered: true, [...])`；
+- error recovery：符号后无内容 → 空条目（合法）；缩进嵌套列表的糖暂不支持，用显式 `item([...])` 表达；
+- editor consequence：条目符号显示；条目缩进由格式化处理。
+
+item 是 structural sugar：相邻的同类条目（ordered 相同、之间无块级间隔）由成型组合为 List（无序）或 Enum（有序）。显式调用动态产生的 item 进入同一组合算法。
+
+=== ref
+
+签名：
+
+```text
+ref(url: String) -> Content
+```
+
+糖：`[[...]]`：
+
+```not
+[[target]]            ~= ref("target")
+```
+
+- syntax boundary：`[[` 与 `]]` 之间为字面 url 字符串——不解析 markup、不嵌套 `[[`；
+- core equivalence：`[[...]]` 的 target 即 `url` 实参；
+- error recovery：未闭合 `[[` → 诊断并按文本恢复，内容到第一个 `]]` 为止；
+- editor consequence：vault 路径补全与目标存在性检查；跳转与预览行为由渲染层提供。
+
+ref 的目标空间：
+
+- 文档模块：`vault::path::to::file`；
+- 模块内目标：`vault::path::to::file#scope-id`（文档模块的 scope/元素），或 `vault::path::to::images#logo.png`（资源目录下的资源文件——完整文件名精确匹配）；
+- 外部 URL：暂缓（见"暂缓与候选"）。
+
+目标解析规则与解析产物 RefTarget（Module/Scope/Resource/External/Missing）见 [[self::D0004-vault-module-and-scope]]；渲染语义（跳转如何呈现）属于渲染设计。本文只定义构造器与糖。
+
+=== strong
+
+签名：
+
+```text
+strong(trailing body: Content) -> Content
+```
+
+糖：`*text*`：
+
+- syntax boundary：单个 `*` 开始（后跟非空白、非 `*`），匹配的单个 `*` 结束（前非空白）；内容按 markup 解析，可嵌套其他强调（`**x**` 即嵌套的 strong）；
+- core equivalence：`*text*` ~= `strong([text])`；
+- error recovery：行尾未闭合 → 恢复为普通文本并产生诊断；未配对的 `*` 保持文本；
+- editor consequence：配对自动闭合与高亮。
+
+=== emph
+
+签名：
+
+```text
+emph(trailing body: Content) -> Content
+```
+
+糖：`_text_`：
+
+- syntax boundary：单个 `_` 开始（后跟非空白、非 `_`），匹配的单个 `_` 结束（前非空白）；`__` 优先匹配 underline（见下），不归 emph；
+- core equivalence：`_text_` ~= `emph([text])`；
+- error recovery：行尾未闭合 → 恢复为普通文本并产生诊断；未配对的 `_` 保持文本；
+- editor consequence：配对自动闭合与高亮。
+
+=== underline
+
+签名：
+
+```text
+underline(trailing body: Content) -> Content
+```
+
+糖：`__text__`：
+
+- syntax boundary：连续两个 `_` 开始（最长匹配优先于单个 `_`），匹配的两个 `_` 结束；
+- core equivalence：`__text__` ~= `underline([text])`；
+- error recovery：行尾未闭合 → 恢复为普通文本并产生诊断；
+- editor consequence：配对自动闭合与高亮。
+
+=== strike
+
+签名：
+
+```text
+strike(trailing body: Content) -> Content
+```
+
+糖：`~~text~~`：
+
+- syntax boundary：连续两个 `~` 开始，匹配的两个 `~` 结束；
+- core equivalence：`~~text~~` ~= `strike([text])`；
+- error recovery：行尾未闭合 → 恢复为普通文本并产生诊断；
+- editor consequence：配对自动闭合与高亮。
+
+== 暂缓与候选
+
+以下构造当前不设计（元素与糖均未进入本文），保留 cheatsheet 的语法作为未来参考：
+
+- `task`：`- [ ]` / `- [x]` 糖；
+- `math`：`$...$` 糖；
+- `kbd`：无糖内置函数；
+- `insert`：`++...++` 糖（修订语义）；
+- `quote`：无糖构造器（`quote(attribution: Content? =, trailing body: Content)`）；
+- `table`：pipe table 糖与显式构造器；
+- inline raw：`` `code` `` 糖（inline 的 raw）；
+- `link`：外部链接（`link` 构造器与裸 URL 自动链接）——对应外部 URL 目标整体暂缓，v1 的引用目标空间只包含 vault 内部目标；
+- `preview`：`![[...]]` 糖（预览引用）——Reference 的 relation 预留 Preview 分支，v1 只有 Reference 一种关系，`![[...]]` 糖暂缓。
+
+它们进入设计时须满足本文的全部原则（sugar budget、四要素、构造器校验等）。
+
+== 语法糖总表
+
+````text
+= Title             ~= heading(level: 1, [Title])
+== Title            ~= heading(level: 2, [Title])
+```lang ... ```      ~= raw("...", lang: "lang", block: true)
+---                 ~= rule()
+- A                 ~= item([A])
++ A                 ~= item(ordered: true, [A])
+[[target]]          ~= ref("target")
+*text*              ~= strong([text])
+_text_              ~= emph([text])
+__text__            ~= underline([text])
+~~text~~            ~= strike([text])
+````
+
+== 与求值、成型的关系
+
+糖在 syntax frontend 建立节点，lowering 获得构造器的 intrinsic identity 后，与显式调用走完全相同的解析、检查与求值路径；求值器不扫描 Text 重新识别糖。structural sugar（item）在求值后由成型组合：相邻同类条目组成 List/Enum，与动态产生的 item 汇合于同一组合规则。全部糖都不创造求值器之外的"假元素"。

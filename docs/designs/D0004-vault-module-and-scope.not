@@ -1,0 +1,167 @@
+= D0004: Vault, Module and Scope
+
+本文承接前三篇：[[self::D0001-language-overview]] 展示了单文件求值的样子，[[self::D0002-evaluation-model-and-type-system]] 定义了求值模型与类型系统，[[self::D0003-builtin-functions-and-syntax-sugar]] 定义了内置函数与引用目标空间。本文定义文件之间的世界结构——Vault（运行边界）、Module（求值单元）、以及跨模块的连接（import 与引用寻址）。
+
+动线：先定边界（Vault），再定单元（Module），然后定义单元之间的两种连接——程序面的 import 与知识面的 Reference——最后给出两张跨模块图的环语义。
+
+== Vault
+
+Vault 是运行边界：它决定 Module 树的根、discovery boundary、language version 与允许的 capability。跨 Vault 不解析名称与引用——相邻目录和同一 daemon 进程都不能自动扩大解析范围。
+
+=== Notist.toml marker
+
+Notist.toml 是 vault root marker：文件所在目录即 vault 根。文件可以为空——存在本身就声明根；配置字段不能改变内容根的位置。
+
+为什么需要显式 marker：编辑器打开的 worktree 不一定等于 vault。一个代码仓库可以把文档放在 docs、笔记放在 notes，甚至还有 examples——如果直接用 workspace root，代码、构建目录和其他文档目录都会错误地参与 Module 扫描。显式 marker 让边界由内容作者声明，不依赖目录名约定或编辑器的项目模型。
+
+=== 发现规则
+
+- 归属：从文件目录向上寻找最近的 marker，其所在目录即该文件的 vault 根；
+- 嵌套：扫描外层 vault 时，遇到子 marker 停止向该目录递归——同一个 source 只能拥有一个 ModulePath，否则引用与诊断都会重复；
+- 忽略隐藏目录、`target`、`node_modules`——构建缓存与依赖树不是项目内容；
+- 没有任何 marker 时，把 worktree 根作为单个 implicit vault，保持轻量用法兼容。
+
+CLI 与 LSP 的具体行为（overlay 归属、vault 切换）属于实现文档，本文只定归属规则。
+
+=== Vault 决定什么
+
+- Module 树的根与 discovery boundary；
+- language version 与 core/prelude 环境；
+- 允许的 capability 与 plugin schema；
+- 引用与 import 的解析边界：跨 Vault 一律不解析。
+
+== Module
+
+Module 是求值单元：Vault 内的文件树映射为 Module 树，每个 source-backed Module 独立求值，产生 ModuleResult。Module 同时是知识库中的稳定逻辑节点（被引用）和可编程文档的求值单元（被 import）——同一身份，两种语义。
+
+=== 文件树与 Module 树
+
+文件系统决定 Module 的逻辑层级，source 不需要再声明一遍：
+
+```text
+vault-root/
+├─ Notist.toml
+├─ README.not                 # vault
+├─ submodule1.not             # vault::submodule1
+└─ submodule2/
+   ├─ README.not              # vault::submodule2
+   └─ subsubmodule.not        # vault::submodule2::subsubmodule
+```
+
+- 普通文件名成为最后一个路径段；`README.not` 表示所在目录。`submodule2.not` 与 `submodule2/README.not` 都映射到 `vault::submodule2`，不能同时存在——一个逻辑 Module 至多一个 source，使定义、import、引用与输出路径共享单一身份；
+- 目录只要有 `.not` 后代就形成 virtual module（即使没有自己的 `README.not`），只提供命名空间与 child identity，不凭空产生 Content 或 bindings；
+- 移动 source 若改变 ModulePath，就是逻辑 Module 重命名，而不仅是文件移动——Reference 与 import 需要同一个 rename plan。
+
+=== 资源目录
+
+资源文件（图片等）通过"目录模块 + 文件名 id"寻址：`vault::docs::images#logo.png` 指向 `docs/images/logo.png`。因此资源目录也进入 Module 树，作为虚拟模块：提供命名空间与 child identity（文件名即 id），但没有 source、没有 Content、没有可 import 的 bindings。这是对旧设计"asset 目录不进 Module tree"的修正——寻址空间包含资源文件，求值与导入的语义仍只属于 `.not` source。
+
+=== ModuleResult
+
+每个 source-backed Module 在自己的根 scope 中按源码顺序求值（见 D0002），得到：
+
+```text
+ModuleResult {
+  bindings:    Environment,      // Module root 自有的 binding，可被其他 Module import
+  content:     Content,          // 本文档的求值结果，成型后供渲染、检索与查询
+  annotations: AnnotationTable,  // 属性表（D0002），含模块级条目
+}
+```
+
+D0002 中单文件的"求值结果"在此正式成为 ModuleResult。bindings 是程序的一面——跨模块复用的入口；content 是文档的一面——渲染与查询消费的产物；annotations 是属性的一面——标注与模块元数据的唯一入口。
+
+=== bindings ownership
+
+只有 Module root 自己声明的 `let` binding 进入 `bindings`：
+
+- imported binding、core/prelude binding、函数形参以及嵌套 scope 的 binding 只存在于相应词法环境，不自动成为当前 Module 的 binding；
+- 需要转发 imported 值时，作者用新的 root `let` 显式拥有该 binding。
+
+这条规则阻止一条 import 把整条传递依赖链带进当前命名空间。
+
+=== import
+
+Code import 取得目标 Module 的 root bindings：
+
+```not
+#import self::theme::{warning, accent}
+#import super::shared::{format as shared_format}
+```
+
+- 花括号左侧是 ModulePath，selector 是目标 root 的 Code name——显式选择，**无 wildcard**：分析器、review 与缓存必须能看见每条依赖边；
+- import 扩展当前根 scope 后续节点的环境，产生空 Content；
+- ModulePath 是静态语法：即使 import 写在嵌套 scope 里，依赖边也在求值前进入 import graph；
+- ModulePath 与 Code name 使用不同 grammar：路径段容纳人类知识库名（`design-notes`），代码名参与词法绑定（`design_notes`）；`as` 把 root name 映射为合法 Code identifier；`vault`、`self`、`super` 是 Module 引用前缀，不是普通变量；
+- import 不插入目标 Module 的 content——**没有跨模块 Content insertion**：知识导航、代码依赖与文档组合是三条不同的边，不合并。
+
+== 引用与寻址
+
+Reference 连接知识：`[[target]]` 产生 Reference 元素（见 D0003）。解析针对 ModulePath 与可选的 scope id，不针对磁盘路径；它不执行目标 Module、不读取其 bindings、不内联其 content。
+
+=== 目标书写形式
+
+```not
+[[setup]]                        # 裸名：从当前模块解析
+[[self::setup]]                  # 当前模块路径前缀
+[[super::intro]]                 # 父级
+[[vault::guide#install]]         # 绝对路径 + scope id
+[[vault::docs::images#logo.png]] # 资源文件（完整文件名）
+```
+
+- 裸名与相对前缀在补全时插入相对路径，保持源码可读与可移动；
+- `#scope-id` 后缀是"模块内目标"：文档模块中是带 id 的 scope/元素，资源目录中是完整文件名。
+
+=== scope id
+
+scope 是值层节点（D0002：节点即环境）。带 id 的 scope 承担模块内身份（module-local identity）：
+
+- id 在模块内唯一；
+- `[[vault::guide#install]]` 解析到该 scope 在模块内的位置；
+- 匿名 scope 不可寻址——想被引用或查询，就创建带 id 的节点（这正是手动 scope 的意义之一）。
+
+heading 额外拥有**默认 id**：标题 body 提取的纯文本（见 [[self::D0003-builtin-functions-and-syntax-sugar]]）。引用 `#` 后缀的匹配顺序：先按显式 id 精确匹配，再按标题默认 id（标题文本）精确匹配——标题文本不需要符合标识符语法（`[[...]]` 内是字面字符串）。重复标题产生歧义诊断，作者用显式 `@id` 消歧；显式 id 总是覆盖默认 id。
+
+=== 资源文件解析
+
+`vault::docs::images#logo.png` 的解析：
+
+- `vault::docs::images` 是资源目录虚拟模块；
+- `#logo.png` 是完整文件名，在目标目录中精确匹配；
+- 目标不存在 → 存在性诊断（编辑器可提示）。完整文件名消除了扩展名歧义——文件名即身份，不依赖目录扫描猜测。
+
+资源的 kind（Image | File）由解析给出，不属于值层。
+
+=== 解析产物：RefTarget
+
+Reference 元素的值层只有 `url` 字符串（见 D0003）；url 指向什么由分析层解析，解析产物：
+
+```text
+RefTarget
+├─ Module(path)                 # 文档模块
+├─ Scope(module, id)            # 模块内带 id 的 scope/元素；解析到节头部时，查询返回整棵节子树与节属性
+├─ Resource(module, name, kind) # 资源文件；kind: Image | File
+├─ External(url)                # 外部目标（暂缓）
+└─ Missing(...)                 # 不存在/歧义/不支持——不吞掉，进入诊断
+```
+
+两条关键原则：
+
+- 目标类型是解析产物，不是元素字段：`path#id` 是资源还是 scope，只有解析才知道；值层的 Reference 元素不携带目标类型；
+- "是什么目标"（分析层）与"以什么关系引用"（元素层）正交：relation 是引用元素自己的属性——v1 只有 Reference（导航），Preview（嵌入预览）预留分支，`![[...]]` 糖暂缓。
+
+=== 外部 URL（暂缓）
+
+带 scheme（`https://`、`mailto:` 等）的外部目标暂缓进入语言：v1 的引用目标空间只包含 vault 内部目标。RefTarget 预留 External 分支，待外部目标进入时启用；配套的 `link` 构造器与裸 URL 自动链接糖同步暂缓（见 [[self::D0003-builtin-functions-and-syntax-sugar]]）。
+
+== 两张跨模块图
+
+Reference graph 与 import graph 使用同一 Module identity，但环语义不同：
+
+```text
+Reference graph -> Content 链接；环合法
+Import graph    -> Value 初始化；环是诊断
+```
+
+- import graph 必须在求值前解析：请求一个 ModuleResult 时，先完成它的传递依赖 DAG；同一求值 snapshot 下，每个 source-backed Module 至多求值一次并复用相同结果；互不依赖的 Module 没有语言可观察的初始化顺序，host 可以串行或并行计算；
+- import 环不能由"恰好先加载到哪个文件"决定，一律是诊断；
+- 引用环合法：两篇文档可以互相链接。renderer 与 indexer 从同一 module/reference graph 派生 URL、backlink 与定义，不能各自扫描目录猜测身份。

@@ -4,4 +4,15 @@
 
 新一代从语言的最基本建模开始，逐篇建立全局一致的模型后再进入具体主题。当前活动设计：
 
-（等待 D0001）
+- [[self::D0001-language-overview]]：语言概览——双语法模式（Markup/Code）、语法糖与 Content 概念，展示求值结果（Content 树 + 环境 + 属性表）的形态与最小示例。
+- [[self::D0002-evaluation-model-and-type-system]]：求值模型与类型系统——Type 与 Value 对应、可空 `T?` 与可省略 `=`、赋值与 coercion 规则、函数类型（positional/named 绑定 + trailing）、静态检查；值宇宙、Content 值（含元素种类）、scope（节点即环境）、属性表（旁置，元素区间 → 属性集）、求值规则与成型（含节归组）。
+- [[self::D0003-builtin-functions-and-syntax-sugar]]：内置函数与语法糖——heading/raw/rule/callout/details/item/ref/strong/emph/underline/strike 构造器，以及 `=`、围栏、`---`、`-`/`+`、`[[...]]`、`*`/`_`/`__`/`~~` 糖的四要素规格与暂缓清单。
+- [[self::D0004-vault-module-and-scope]]：Vault/Module/Scope——Notist.toml 边界与发现规则、文件树到 Module 树的映射（含资源目录虚拟模块化）、ModuleResult 与 bindings ownership、import（显式 selector、无 wildcard）、引用寻址（目标书写形式、scope id、资源文件解析、RefTarget 解析产物；外部 URL 暂缓），以及 Reference/Import 两张跨模块图。
+- [[self::D0005-daemon-architecture]]：Daemon 架构——每 Vault 一个 daemon 的进程形态、VaultEngine 持有状态、共享 Engine 不共享 Overlay 的 Analyzer View、CLI/LSP/MCP 统一 core request、本地协议与 handshake、snapshot 捕获与前置条件写入、失败重启与 embedded mode。
+- [[self::D0006-scope-and-annotation-syntax]]：Scope 语法与标注——五种 scope 书写形态（根/Content literal/Code block/手动 scope/元素 scope），属性语法（一套属性列表 + 三种挂载位置：行内 postfix `@...`、块级前缀 `@[...]`、模块 `@![...]`），属性绑定到值、随值复制，求值收尾进入旁置属性表。
+- [[self::D0007-surface-language-and-core-grammar]]：表面语言与核心语法——两种 lexical context（Markup/Code，递归 quotation）、Markup 最小骨架（文本流/段落/`#` 嵌入/转义）、Code 核心语法（标识符、字面量、运算符、if、lambda、let、类型语法）、字面量载荷，以及 Markup 糖与标注的引用索引。
+- [[self::D0008-cli-and-skill]]：CLI 与 Skill（Agent 接口，无 MCP）——查询产品形态（ordinary query / human rendering / export）、Core Query Contract（预算、cursor、SnapshotStamp）、Selector 与 Citation（`#id` 含标题默认 id）、Search 四模式（lexical/exact/fuzzy/regex）与索引边界、CLI 命令面（status/modules/search/outline/read/references/check/edit/index/skill/build/preview/export）、官方 Skill 与内置文档 Vault 的分发。
+- [[self::D0009-lsp-and-implementation-architecture]]：LSP 与实现架构——分析层（VaultEngine/Analyzer View/WorkspaceSnapshot、Source Set、revision、稳定与 snapshot-local 身份、分析管线、查询属于 snapshot、delta、并发发布），LSP 适配（文档同步、position 转换、capabilities、求值安全），CLI 适配（core request 投影）。
+- [[self::D0010-rendering-and-preview]]：渲染与预览——notist-html（元素/Section/属性表到 HTML 的映射、锚点与引用链接、区间属性投影、安全）、Static Build（clean URL、资源复制、虚拟目录索引页、诊断与退出码）、Local Preview（daemon disk View、staging 原子重建、SSE reload、网络边界）。
+
+规划中的后续记录：core namespace 拍板与 plugin 边界（按需追加，参考 old-designs D0004）；Array/Dict/Union 等集合类型（推迟主题，重新设计）。

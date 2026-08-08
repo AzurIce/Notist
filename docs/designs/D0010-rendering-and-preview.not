@@ -1,0 +1,145 @@
+= D0010: Rendering and Preview
+
+本文承接 [[self::D0002-evaluation-model-and-type-system]]（成型结构树与属性表）、[[self::D0004-vault-module-and-scope]]（引用寻址与 RefTarget）、[[self::D0009-lsp-and-implementation-architecture]]（WorkspaceSnapshot）。本文定义 HTML 能力的三层：`notist-html` 把语义文档渲染为 HTML fragment，`notist build` 把整个 Vault 构建为静态站点，`notist preview` 在本地持续构建并提供浏览器预览。
+
+动线：产品模型 → notist-html（元素映射、锚点、区间属性、安全）→ Static Build（URL、资源、诊断）→ Local Preview（SSE、原子重建、网络边界）→ 一致性。
+
+== 产品模型
+
+Notist 的基本单位是 vault/module，HTML 输出以整个 Vault 为单位：
+
+- 每个 Module 有稳定页面；
+- 引用变成模块之间的导航链接；
+- 没有 `README.not` 的虚拟目录模块也有索引页面；
+- 页面共享 vault 导航与静态资源；
+- build 与 preview 使用相同的页面结构与 URL 规则——二者不应发展出两套渲染语义。
+
+渲染管线（HTML 层不重新解释源码）：
+
+```text
+.not source
+  -> 静态检查与求值（D0002）
+  -> 成型结构树 + 属性表
+  -> notist-html
+```
+
+语法、函数、scope、引用与属性的语义只在语言管线中定义一次；build、preview 与编辑器 Hover 只是这些结果的不同消费者。
+
+== notist-html
+
+`notist-html` 是纯渲染层：接收一个 Module 的结构树（含 Section 节归组与段落/列表组合）、属性表与解析上下文（RefTarget），输出可嵌入页面的 semantic HTML fragment。
+
+它负责：渲染结构与元素、转义文本/属性/Raw 内容、把引用解析为链接或锚点、把区间属性投影到 DOM、输出 source range metadata、为 Custom 与 Missing 引用提供安全且可见的降级。它不负责：读取文件或扫描 Vault、执行 parser/求值、判断目标 Module 是否存在、生成完整页面/导航/主题、启动 HTTP 服务。
+
+=== 元素映射
+
+```text
+Section（节归组）      -> <section>（嵌套，节级属性投影到该节点）
+Heading               -> <h1>..<h6>（level > 6 折叠为 <h6>）
+Paragraph             -> <p>
+List / Enum           -> <ul> / <ol> + <li>
+Text                  -> escaped text
+Strong / Emph / Underline / Strike -> <strong> / <em> / <u> / <s>
+Raw（block: true）     -> <pre><code>；Raw（block: false） -> <code>
+Rule                  -> <hr>
+Reference             -> <a class="notist-reference">（解析后）
+Callout               -> <div class="notist-callout" data-kind="...">
+Details               -> <details><summary>...</summary>...
+Custom                -> 带 data-notist-name 的 span/div
+Missing 引用 / 未知 Custom -> 不可点击的 span（保留可见文本）
+```
+
+Quote 与 Table 暂缓（D0003），映射随元素进入语言时补充。Parbreak 不渲染（段落结构已由成型给出）。
+
+=== 锚点与引用链接
+
+- 显式 scope id 与标题默认 id（D0004）投影为 HTML `id` 锚点。id 满足 HTML id 语法（Unicode 字母/数字/连字符/下划线，不以数字或连字符开头）时直接使用；否则用确定性规则生成稳定锚点（如 `loc-N`）——同 Typst HTML 导出的处理。锚点与源码位置可互相推导，不依赖随机数。
+- Reference 在构建/渲染时 resolve（RefTarget，D0004）：
+  - `Module(path)` → 目标页面相对 URL；
+  - `Scope(module, id)` → 目标页面 URL + `#锚点`（含标题默认 id 定位到节）；
+  - `Resource(module, name, kind)` → 构建时复制的资源路径（见下）；
+  - `Missing` → 不可点击 span，保留目标文本并带 unresolved 样式；
+  - `External` 暂缓（D0004）。
+- relation 只有 Reference（导航）一种（D0005）；Preview 预留。
+
+=== 区间属性投影
+
+属性表是旁置的（D0002），渲染时投影到 DOM：
+
+- 单元素区间的属性投影到该元素节点：`.class` → HTML `class`；`id` → 锚点；`#tag` 与 `key = value` → `data-notist-*` 属性（查询与样式钩子，不改变可见语义）；
+- 节级属性（节条目）投影到 Section 节点；
+- **跨元素/跨段的区间属性**不能直接映射为合法嵌套的 DOM 节点：通过 range events 把区间内的内容切分为 `<span class="notist-annotated" ...>` 包裹的片段，保持正确嵌套（旧设计同此处理）。
+
+=== Source Range 与安全
+
+语义元素输出原始 byte range（`data-notist-start` / `data-notist-end`），为点击跳转源码、Hover fragment 与选择同步保留稳定接口。
+
+Raw 的文本与 Custom 内容都不是可信 HTML：全部转义，插件渲染 HTML 必须经过显式的 trusted renderer 边界，不能让 Raw 内容绕过转义。
+
+== Static Build
+
+```shell
+notist build [ROOT] -o DIR [--clean]
+```
+
+构建器遍历整个 Vault，把 ModulePath 映射为 clean URL：
+
+```text
+vault                        -> index.html
+vault::grammar               -> grammar/index.html
+vault::designs::type-system  -> designs/type-system/index.html
+```
+
+URL 中的路径 segment 单独 percent encode；页面之间使用相对链接，使构建结果可直接从任意静态文件服务器或子路径部署。
+
+- **资源复制**：资源目录虚拟模块（D0004）中的文件按引用复制到输出（`vault::docs::images#logo.png` → 输出下对应路径），Reference 指向复制后的相对路径；未被引用的资源文件也可以整体复制（站点资源），由 CLI 决定——值层只有 Reference，资源解析属于构建层；
+- **虚拟目录模块**生成索引页（列出子模块与资源）；
+- 引用在构建时解析：目标存在输出链接，不存在保留可见文本与 unresolved 样式；
+- syntax/analysis/evaluation diagnostics 不阻止生成其他可用页面，但 `notist build` 输出 diagnostics 并返回非零退出码；
+- 默认不清空整个输出目录（只创建或覆盖本次 Vault 对应的页面与 `_notist` 资源），删除旧产物必须显式 `--clean`；`--clean` 只允许清理已解析、验证位于目标 output root 内的 artifact（D0008）。
+
+站点级职责（完整 HTML page shell、vault 名称与模块导航、`_notist/style.css` 等共享资源）属于 CLI build 层，不进入 fragment renderer。
+
+== Local Preview
+
+本地预览复用 static build，不维护独立的动态渲染 API：
+
+```shell
+notist preview [ROOT] [--host IP] [--port N] [--no-open]
+```
+
+默认行为：
+
+- 通过 daemon 或 embedded service 打开 disk View（D0009）；
+- 观察 disk View 的 snapshot publication 并 debounce；
+- 重新构建带 live reload 资源的完整站点（staging 完整构建后原子替换服务目录）；
+- 使用系统分配的空闲端口并自动打开浏览器；
+- analysis 与 evaluation diagnostics 输出到 CLI；
+- 默认只监听 `127.0.0.1`。
+
+结构：
+
+```text
+filesystem event or explicit rebuild
+  -> VaultEngine / Analyzer View
+  -> publish WorkspaceSnapshot
+  -> debounce snapshot generation
+  -> build complete staging site
+  -> replace served site
+  -> publish preview generation over SSE
+  -> browser reloads current clean URL
+```
+
+HTTP 服务只有两个表面：`GET /` 与各 Module clean URL（静态目录服务）；`GET /_notist/events`（SSE，发送当前 revision 与后续更新）。页面中的 `_notist/reload.js` 用 EventSource 订阅 revision；连接建立与重连时先收到当前值，浏览器可以发现断线期间错过的构建。完整页面 reload 不需要 WebSocket、DOM diff 或自定义文档协议。
+
+=== Atomic Rebuild 与失败
+
+文件变化后先在 staging 目录生成完整站点，成功后再替换当前服务目录；致命错误时旧站点继续可见，CLI 输出 rebuild failed。可恢复的 diagnostics 不属于构建基础设施失败——页面仍以降级语义生成。目录替换必须保证浏览器读不到写了一半的页面集合；需要更严格的跨平台原子切换时，服务状态持有不可变 generation 目录，而不是让请求观察原地删除后 rename 的中间状态。
+
+=== Network Boundary
+
+Preview 暴露用户正在编辑的文档内容，默认只监听 loopback；显式使用非 loopback 地址必须显示警告。源码读取、编辑操作或远程共享需要随机访问 token、Origin 检查与独立授权边界；只读静态页面与 revision stream 不应被自然扩展成无认证的编辑 API。
+
+== Workspace Consistency
+
+Parse 的 byte range、源码文本、分析结果与诊断必须来自同一个 WorkspaceSnapshot（D0009）——不能在分析完成后由 renderer 重新读取可能已经变化的文件。Preview、diagnostics、Hover 与 definition 共享同一个文档版本，而不是分别读盘。渲染器是 snapshot 的只读消费者：它消费结构树、属性表与解析结果，不新增语义阶段（D0009 消费者边界）。
