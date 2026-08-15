@@ -48,7 +48,7 @@ enum ServerMessage {
     },
     Response {
         id: u64,
-        result: Result<CoreReply, String>,
+        result: Box<Result<CoreReply, String>>,
     },
     ShutdownAccepted {
         pid: u32,
@@ -301,7 +301,9 @@ where
                         let _ = outgoing
                             .send(ServerMessage::Response {
                                 id,
-                                result: Err("daemon only serves its configured vault".into()),
+                                result: Box::new(Err(
+                                    "daemon only serves its configured vault".into()
+                                )),
                             })
                             .await;
                         continue;
@@ -313,7 +315,9 @@ where
                     let _ = outgoing
                         .send(ServerMessage::Response {
                             id,
-                            result: Err("view handle is not owned by this connection".into()),
+                            result: Box::new(Err(
+                                "view handle is not owned by this connection".into()
+                            )),
                         })
                         .await;
                     continue;
@@ -349,7 +353,12 @@ where
                         let closed = reply.snapshot.view_id;
                         leases.lock().unwrap().retain(|view| *view != closed);
                     }
-                    let _ = outgoing.send(ServerMessage::Response { id, result }).await;
+                    let _ = outgoing
+                        .send(ServerMessage::Response {
+                            id,
+                            result: Box::new(result),
+                        })
+                        .await;
                 });
             }
         }
@@ -966,7 +975,7 @@ mod tests {
             ));
             task.await.unwrap().unwrap();
             // The shutdown signal is published for the accept loop to observe.
-            assert_eq!(*shutdown_rx.borrow(), true);
+            assert!(*shutdown_rx.borrow());
         });
     }
 

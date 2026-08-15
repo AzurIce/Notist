@@ -2010,7 +2010,7 @@ fn render_workspace(
             let annotations = module
                 .parse
                 .as_ref()
-                .map(|parse| rendered_annotations(parse))
+                .map(rendered_annotations)
                 .unwrap_or_default();
             let anchors = module_anchors(&structured.document, &annotations);
             anchor_maps.insert(

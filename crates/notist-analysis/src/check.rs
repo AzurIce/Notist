@@ -372,16 +372,16 @@ impl Checker<'_> {
             if let notist_syntax::MarkupItem::Embedded(embedded) = item {
                 let checked = self.type_of_expression(&embedded.expression);
                 if let Some(ty) = checked.ty {
-                    let insertable = match &ty {
+                    let insertable = matches!(
+                        &ty,
                         Type::Content
-                        | Type::String
-                        | Type::None
-                        | Type::Int
-                        | Type::Float
-                        | Type::Bool
-                        | Type::Inferred => true,
-                        _ => false,
-                    };
+                            | Type::String
+                            | Type::None
+                            | Type::Int
+                            | Type::Float
+                            | Type::Bool
+                            | Type::Inferred
+                    );
                     if !insertable {
                         self.push(
                             DiagnosticKind::TypeMismatch,

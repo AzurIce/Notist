@@ -337,7 +337,7 @@ impl Parser<'_> {
     fn parse_rule_sugar(&mut self) -> Option<(TextRange, usize)> {
         let start = self.cursor;
         let rest = &self.source[start..self.end];
-        let line_len = rest.find('\n').map_or(rest.len(), |index| index);
+        let line_len = rest.find('\n').unwrap_or(rest.len());
         let line = &rest[..line_len];
         let line = line.strip_suffix('\r').unwrap_or(line);
         let run = line.bytes().take_while(|byte| *byte == b'-').count();
@@ -360,7 +360,7 @@ impl Parser<'_> {
         let mut cursor = start;
         loop {
             let rest = &self.source[cursor..self.end];
-            let line_len = rest.find('\n').map_or(rest.len(), |index| index);
+            let line_len = rest.find('\n').unwrap_or(rest.len());
             let line = &rest[..line_len];
             let line_trim_cr = line.strip_suffix('\r').unwrap_or(line);
             let indent = line_trim_cr
@@ -368,9 +368,9 @@ impl Parser<'_> {
                 .take_while(|byte| matches!(byte, b' ' | b'\t'))
                 .count();
             let trimmed = &line_trim_cr[indent..];
-            let (ordered, marker_len) = if let Some(_) = trimmed.strip_prefix("- ") {
+            let (ordered, marker_len) = if trimmed.strip_prefix("- ").is_some() {
                 (false, 2)
-            } else if let Some(_) = trimmed.strip_prefix("+ ") {
+            } else if trimmed.strip_prefix("+ ").is_some() {
                 (true, 2)
             } else {
                 break;
@@ -452,7 +452,7 @@ impl Parser<'_> {
 
         while cursor < self.end {
             let rest = &self.source[cursor..self.end];
-            let line_len = rest.find('\n').map_or(rest.len(), |index| index);
+            let line_len = rest.find('\n').unwrap_or(rest.len());
             let raw_line = &rest[..line_len];
             let line = raw_line.strip_suffix('\r').unwrap_or(raw_line);
             let indent = line
@@ -475,14 +475,11 @@ impl Parser<'_> {
                 if row.cells.len() != expected {
                     return None;
                 }
-                let Some(parsed) = row
+                let parsed = row
                     .cells
                     .iter()
                     .map(|range| self.table_separator_alignment(*range))
-                    .collect::<Option<Vec<_>>>()
-                else {
-                    return None;
-                };
+                    .collect::<Option<Vec<_>>>()?;
                 alignments = parsed;
             } else {
                 body_raw.push(row.cells);

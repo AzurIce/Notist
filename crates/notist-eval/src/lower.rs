@@ -52,6 +52,7 @@ pub(crate) fn evaluate_markup_with_bindings(
     )
 }
 
+#[allow(clippy::too_many_arguments)]
 fn evaluate_markup_in_environment(
     source: &str,
     markup: &Markup,

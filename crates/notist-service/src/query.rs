@@ -41,7 +41,7 @@ pub const RANKING_VERSION: &str = "bm25-v3";
 pub const TOKENIZER_VERSION: &str = "notist-unicode-v1";
 pub const INDEX_SCHEMA_VERSION: u32 = 4;
 
-#[derive(Clone, Debug, Serialize, Deserialize)]
+#[derive(Clone, Debug, Serialize, Deserialize, Default)]
 pub struct PageRequest {
     #[serde(default)]
     pub limit: Option<usize>,
@@ -49,16 +49,6 @@ pub struct PageRequest {
     pub max_bytes: Option<usize>,
     #[serde(default)]
     pub cursor: Option<String>,
-}
-
-impl Default for PageRequest {
-    fn default() -> Self {
-        Self {
-            limit: None,
-            max_bytes: None,
-            cursor: None,
-        }
-    }
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -2492,8 +2482,8 @@ fn damerau_levenshtein(left: &str, right: &str) -> usize {
     for (index, row) in table.iter_mut().enumerate() {
         row[0] = index;
     }
-    for index in 0..=right.len() {
-        table[0][index] = index;
+    for (index, cell) in table[0].iter_mut().enumerate() {
+        *cell = index;
     }
     for i in 1..=left.len() {
         for j in 1..=right.len() {
@@ -3311,11 +3301,13 @@ fn query_term_groups(value: &str) -> Vec<Vec<String>> {
         let mut part = String::new();
         let chars = word.chars().collect::<Vec<_>>();
         for (index, character) in chars.iter().enumerate() {
-            if index > 0 && character.is_uppercase() && chars[index - 1].is_lowercase() {
-                if !part.is_empty() {
-                    variants.push(part.to_lowercase());
-                    part.clear();
-                }
+            if index > 0
+                && character.is_uppercase()
+                && chars[index - 1].is_lowercase()
+                && !part.is_empty()
+            {
+                variants.push(part.to_lowercase());
+                part.clear();
             }
             part.push(*character);
         }

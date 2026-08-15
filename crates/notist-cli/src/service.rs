@@ -99,7 +99,7 @@ fn connect_once(
                 }
             }
         }
-        Err(error) => return Err(error),
+        Err(error) => Err(error),
     }
 }
 
@@ -204,10 +204,9 @@ pub(crate) fn stop_daemon(root: PathBuf, format: OutputFormat) -> io::Result<()>
             }
         }
         ShutdownReply::Rejected { message } => {
-            return Err(io::Error::new(
-                io::ErrorKind::Other,
-                format!("daemon refused to stop: {message}"),
-            ));
+            return Err(io::Error::other(format!(
+                "daemon refused to stop: {message}"
+            )));
         }
     }
     Ok(())

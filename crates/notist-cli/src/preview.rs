@@ -269,6 +269,7 @@ impl PublishedSite {
     }
 }
 
+#[allow(clippy::too_many_arguments)]
 async fn serve(
     site: PublishedSite,
     host: IpAddr,
