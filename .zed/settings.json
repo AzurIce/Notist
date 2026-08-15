@@ -1,0 +1,13 @@
+{
+  // 用 cargo run 启动 notist LSP：每次重启 LSP（或编辑器触发 reload）都用最新代码，
+  // 配合 daemon 的 stale 自动回收，不会连到旧构建的 daemon。
+  // 注意：Zed 的 lsp.<name>.binary.arguments 是整体替换，必须带上 lsp 子命令。
+  "lsp": {
+    "notist": {
+      "binary": {
+        "path": "cargo",
+        "arguments": ["run", "--quiet", "--", "lsp"]
+      }
+    }
+  }
+}
