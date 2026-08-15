@@ -1,6 +1,6 @@
 = D0010: Rendering and Preview
 
-本文承接 [[vault::designs::D0002-evaluation-model-and-type-system]]（成型结构树与属性表）、[[vault::designs::D0004-vault-module-and-scope]]（引用寻址与 RefTarget）、[[vault::designs::D0009-lsp-and-implementation-architecture]]（WorkspaceSnapshot）。本文定义 HTML 能力的三层：`notist-html` 把语义文档渲染为 HTML fragment，`notist build` 把整个 Vault 构建为静态站点，`notist preview` 在本地持续构建并提供浏览器预览。
+本文承接 [[vault::designs::D0011-shaping-and-structure-tree]]（成型结构树）、[[vault::designs::D0002-evaluation-model-and-type-system]]（属性表）、[[vault::designs::D0004-vault-module-and-scope]]（引用寻址与 RefTarget）、[[vault::designs::D0009-lsp-and-implementation-architecture]]（WorkspaceSnapshot）。本文定义 HTML 能力的三层：`notist-html` 把语义文档渲染为 HTML fragment，`notist build` 把整个 Vault 构建为静态站点，`notist preview` 在本地持续构建并提供浏览器预览。
 
 动线：产品模型 → notist-html（元素映射、锚点、区间属性、安全）→ Static Build（URL、资源、诊断）→ Local Preview（SSE、原子重建、网络边界）→ 一致性。
 

@@ -149,7 +149,7 @@ item(ordered: Bool = false, trailing body: Content) -> Content
 - error recovery：符号后无内容 → 空条目（合法）；缩进嵌套列表的糖暂不支持，用显式 `item([...])` 表达；
 - editor consequence：条目符号显示；条目缩进由格式化处理。
 
-item 是 structural sugar：相邻的同类条目（ordered 相同、之间无块级间隔）由成型组合为 List（无序）或 Enum（有序）。显式调用动态产生的 item 进入同一组合算法。
+item 是 structural sugar：相邻的同类条目（ordered 相同、之间无块级间隔）由成型（[[vault::designs::D0011-shaping-and-structure-tree]]）组合为 List（无序）或 Enum（有序）。显式调用动态产生的 item 进入同一组合算法。
 
 === ref
 
@@ -272,4 +272,4 @@ __text__            ~= underline([text])
 
 == 与求值、成型的关系
 
-糖在 syntax frontend 建立节点，lowering 获得构造器的 intrinsic identity 后，与显式调用走完全相同的解析、检查与求值路径；求值器不扫描 Text 重新识别糖。structural sugar（item）在求值后由成型组合：相邻同类条目组成 List/Enum，与动态产生的 item 汇合于同一组合规则。全部糖都不创造求值器之外的"假元素"。
+糖在 syntax frontend 建立节点，lowering 获得构造器的 intrinsic identity 后，与显式调用走完全相同的解析、检查与求值路径；求值器不扫描 Text 重新识别糖。structural sugar（item）在求值后由成型（[[vault::designs::D0011-shaping-and-structure-tree]]）组合：相邻同类条目组成 List/Enum，与动态产生的 item 汇合于同一组合规则。全部糖都不创造求值器之外的"假元素"。

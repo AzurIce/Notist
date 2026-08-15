@@ -1,0 +1,91 @@
+= D0011: Shaping and Structure Tree
+
+本文承接 [[vault::designs::D0002-evaluation-model-and-type-system]]（求值结果 `content` / `annotations` 与元素序列）和 [[vault::designs::D0006-scope-and-annotation-syntax]]（属性区间与挂载语义）。D0002 定义值层：求值结束时的 `content` 是元素的有序组合，属性不挂在树上。本文定义求值的收尾投影——成型（shaping）：把元素序列组成结构树，并规定投影必须保持的区间稳定不变量。
+
+```text
+Evaluation.content ── shape ──> StructuredDocument
+（属性表不在树上；消费者联合消费结构树与属性表）
+```
+
+成型是规范纯函数：输入相同则输出相同；不读源码、名称环境、配置或插件状态。它作用于任何 Content 值，不只整份文档——scope 内部、单个元素等局部视野使用同一套规则，输入随视野选择。
+
+== 输入与输出
+
+- 输入：一个已求值的 Content 值，即元素序列。透明 scope（Content literal 与手动 scope）在进入成型视野前溶解为其内容序列，属性与身份转为区间条目（D0002 属性表一节、D0006）。
+- 输出：结构树 `StructuredDocument { blocks }`，块有两种形状：
+  - `Block::Element`：独立块级元素，包括成型产生的 `Paragraph`、`List` / `Enum` 容器节点；
+  - `Block::Section { level, heading, body }`：heading 加其归组内容。
+- `Parbreak` 是输入序列中的段间分隔，不进入输出树；渲染上也不产生节点（D0010）。
+
+== 元素分类
+
+```text
+inline    Text / Reference / Strong / Emph / Underline / Strike /
+          Raw(block: false) / Custom(block: false) / UnresolvedCall(block: false)
+
+block     Heading / Rule / ListItem / EnumItem / Callout / Details /
+          Raw(block: true) / Custom(block: true) / UnresolvedCall(block: true)
+
+separator Parbreak
+```
+
+分类是封闭的：进入语言的新元素必须同时取得 inline/block 分类，否则不能通过成型。行内元素参与段落组合；块级元素独立成块，并在到来前收束当前段落与列表组合状态。
+
+== 段落与列表组合
+
+对元素序列做一次左折叠：
+
+```text
+S1 inline    → 追加到当前 paragraph buffer。
+S2 Parbreak  → flush paragraph；flush list（列表不允许跨段）。
+S3 item      → flush paragraph；与相邻同 ordered 条目合并为 List / Enum；
+               条目之间出现其他块级元素或 Parbreak 时，当前列表收束。
+S4 block     → flush paragraph；flush list；输出 Block::Element。
+结束          → flush paragraph；flush list。
+```
+
+- 相邻同类条目（`ordered` 相同、之间无块级间隔）合并；`-`/`+` 糖与显式 `item(ordered: ...)` 产生同一输入，走同一算法（D0003）。
+- 段落只包含行内元素；`Paragraph` 的 source range 从首元素起点到末元素终点。
+- `List` / `Enum` 是成型产生的容器节点，其 source range 从首条目起点到末条目终点；`Parbreak` 的区间由段落断开这一事实覆盖，不产生独立输出节点。
+
+== Section 归组
+
+对任意块序列递归应用：
+
+```text
+G1 Heading(level: h) 开启 Section(h)，并先收束所有 level >= h 的 open section。
+G2 非 heading 块进入最深的 open section；没有 open section 时输出为顶层块。
+G3 序列结束收束全部 open section。
+```
+
+- `=`/`==` 糖与显式 `#heading(level: n)` 产生同一个 Heading 输入，归组不区分来源（D0003）。
+- Section 的 source range 从 heading 起点到 body 最后一个块的终点（空节到 heading 终点）。
+- 归组递归作用于任何内容序列；属性表的节条目边界由同一规则确定（D0006）。
+
+== 不变量
+
+- **I1 投影**：成型只重组元素，不合并、不删除个体；结构树是值层的投影，可丢弃、可重建，任何消费者都不能把投影当作新的真相。
+- **I2 区间稳定**：属性表以元素序列区间为键（D0002）；成型重组元素但保持个体区间在求值、成型与投影之间稳定。Text 拼接是渲染层优化，不是成型语义。
+- **I3 确定性**：shape 是纯函数，因此不需要 reconcile——没有内容变换规则、没有迭代收敛、没有增量 diff。每次变更都对整份代码重新求值；增量更新只属于分析层的优化，不进入求值语义。
+- **I4 节层级**：Section 嵌套只由 heading level 比较产生；同一序列中不出现跨越层级的平铺归组。
+
+== 诊断
+
+成型消费已经过静态检查与求值的结果。当前 surface 中 shape 是总函数，不产生新诊断；求值诊断原样透传（`structuring_preserves_evaluation_diagnostics`）。元素值的约束在构造器校验（D0003）完成；容器子元素不变量在成型时检查——当前语言尚未命名任何子元素不变量，因此检查表为空。
+
+== Conformance
+
+| 输入 | 预期结构 | 测试 |
+|---|---|---|
+| `plain *content*` | 单个 Paragraph | `structuring_groups_plain_paragraphs` |
+| 文本 + 空行 + 两个 item + heading + 文本 | Paragraph、List(2)、Section(body=Paragraph) | `structuring_groups_paragraphs_and_adjacent_list_items` |
+| `- One\n- Two` 与 `#item[One]#item[Two]` | 同一个 List(2) | `structuring_unifies_list_sugar_and_item_calls` |
+| ordered=true 两条目 + ordered=false 一条目 | 先 List(ordered, 2)，后 List(unordered, 1) | `structuring_groups_ordered_items_separately` |
+| `= 一级` / `== 二级` / `= 一级二` | 两个顶层 Section，二级 Section 嵌套于第一个 | `sections_nest_and_receive_section_level_projection` |
+| 带求值诊断的输入 | 结构树保留全部诊断 | `structuring_preserves_evaluation_diagnostics` |
+
+== 已裁定 / 待定
+
+- 已裁定：Parbreak 不进入结构树也不渲染；Section 递归归组；item 组合只看 ordered 与块级间隔；shape 是规范纯函数。
+- 待定：段落起点的纯空白 Text 段是否属于可丢弃的段间副产物。当前实现跳过这类段，与 I1 的字面"不删除个体"存在张力；需要裁决空白段是"分段副产物"还是"个体"，并补 conformance。
+- 待定：容器子元素不变量的第一条命名、诊断与恢复形状待定；D0003 引入第一条此类约束时，本文同步补充成型期检查规则。

@@ -2,9 +2,9 @@
 
 本文承接 [[vault::designs::D0001-language-overview]] 的最小示例：在那里，一段代码求值后得到 `bindings`、`content` 与 `annotations` 三个产物。本文定义这个结果如何产生。
 
-一段源代码经过三个阶段：解析、静态检查、求值。解析把源码变成语法结构；静态检查解析名称、推断并检查类型，并把每个调用点解析为确定的已解析调用（resolved call）；求值器只消费静态检查的产物，在求值收尾时把内容成型为文档树，输出求值结果。传统的标记语言直接通过解析就可以得到表示文档的元素树；Notist 在解析之后多一步求值——计算是语言的固有部分，不是事后插入的占位符。
+一段源代码经过三个阶段：解析、静态检查、求值。解析把源码变成语法结构；静态检查解析名称、推断并检查类型，并把每个调用点解析为确定的已解析调用（resolved call）；求值器只消费静态检查的产物，在求值收尾时把内容成型为文档树（成型见 [[vault::designs::D0011-shaping-and-structure-tree]]），输出求值结果。传统的标记语言直接通过解析就可以得到表示文档的元素树；Notist 在解析之后多一步求值——计算是语言的固有部分，不是事后插入的占位符。
 
-本文先从求值之前的静态检查讲起——类型系统：类型是值的静态投影，静态检查产出求值器唯一的语义输入；再讲求值阶段——求值模型：值、scope、组合、规则、结果与成型如何把代码变成 Content 树和环境。
+本文先从求值之前的静态检查讲起——类型系统：类型是值的静态投影，静态检查产出求值器唯一的语义输入；再讲求值阶段——求值模型：值、scope、组合、规则与结果如何把代码变成 Content 树和环境；成型是求值收尾的独立投影，见 [[vault::designs::D0011-shaping-and-structure-tree]]。
 
 == 类型系统
 
@@ -120,7 +120,7 @@ Trailing content 是最后一个 positional 形参：定义中用显式 `trailin
 
 == 求值模型
 
-求值阶段回答一个问题：程序在环境中产生什么？答案是一棵 Content 树和一个环境。类型系统已经为它完成了检查——求值器只消费静态检查的产物。下面从求值的原料开始，依次展开值、scope、组合、规则、结果与成型。
+求值阶段回答一个问题：程序在环境中产生什么？答案是一棵 Content 树和一个环境。类型系统已经为它完成了检查——求值器只消费静态检查的产物。下面从求值的原料开始，依次展开值、scope、组合、规则与结果；成型见 [[vault::designs::D0011-shaping-and-structure-tree]]。
 
 === 值的宇宙
 
@@ -149,12 +149,12 @@ Value
 ```text
 Element
 ├─ Text          # 文本；String 经插入规则转换产生
-├─ Parbreak      # 段间分隔；成型时不进入结构树
+├─ Parbreak      # 段间分隔；成型时不进入结构树（D0011）
 ├─ Reference     # 引用（ref 构造器）：文档目标或资源文件（外部 URL 暂缓）
 ├─ Heading       # 标题（heading 构造器）
 ├─ Raw           # 代码（raw 构造器；行内/块级由 block 参数决定，行内糖暂缓）
 ├─ Rule          # 分割线（rule 构造器）
-├─ ListItem      # 列表条目；相邻同类条目由成型组合为 List/Enum
+├─ ListItem      # 列表条目；相邻同类条目由成型组合为 List/Enum（D0011）
 ├─ Callout       # 提示框（callout 构造器）
 ├─ Details       # 折叠内容（details 构造器）
 ├─ Strong        # 加粗（strong 构造器；*...* 糖）
@@ -165,7 +165,7 @@ Element
 └─ Custom        # 扩展元素：携带构造器身份与参数，渲染器对未知种类有兜底
 ```
 
-在任一语言版本中，内置集合是封闭的：内置元素可以穷举匹配；扩展（插件等）走 `Custom`，不改变内置集合，内置集合随语言版本演化。元素参数是普通值——例如 Heading 的 `level` 与 body、Callout 的 `kind` 与 body；容器元素的子元素不变量在成型时检查。各内置元素的构造器签名与 Markup 语法糖见 [[vault::designs::D0003-builtin-functions-and-syntax-sugar]]。
+在任一语言版本中，内置集合是封闭的：内置元素可以穷举匹配；扩展（插件等）走 `Custom`，不改变内置集合，内置集合随语言版本演化。元素参数是普通值——例如 Heading 的 `level` 与 body、Callout 的 `kind` 与 body；容器元素的子元素不变量在成型时检查（[[vault::designs::D0011-shaping-and-structure-tree]]）。各内置元素的构造器签名与 Markup 语法糖见 [[vault::designs::D0003-builtin-functions-and-syntax-sugar]]。
 
 Content 值不是散落的数据：它们组合在同一棵树上——scope 树。节点既装内容，也装名字；属性不挂在树上，见"属性表"一节。
 
@@ -178,11 +178,11 @@ Content 值不是散落的数据：它们组合在同一棵树上——scope 树
 
 属性不挂在节点上：标注在求值期绑定到值（语法见 [[vault::designs::D0006-scope-and-annotation-syntax]]），求值收尾转写为旁置的属性表（annotation table）——见"属性表"一节。
 
-名称解析沿节点链自内向外进行，最近绑定者胜出（shadowing）；`let` 绑定从声明处开始对后续节点可见。求值结束后，除根 scope 的 bindings 进入求值结果外，节点上的绑定只是求值期的环境事实——成型后的结构树消费者不依赖它们。
+名称解析沿节点链自内向外进行，最近绑定者胜出（shadowing）；`let` 绑定从声明处开始对后续节点可见。求值结束后，除根 scope 的 bindings 进入求值结果外，节点上的绑定只是求值期的环境事实——成型后的结构树（[[vault::designs::D0011-shaping-and-structure-tree]]）消费者不依赖它们。
 
 scope 按来源分为：根（root）、Content literal、Code block、元素形成的 scope，以及作者显式创建的手动 scope。手动 scope 用 `#[...]` 显式创建：封装一段内容，自带词法边界，可承载属性（其属性以区间条目进入属性表），渲染上不产生可见元素；它与隐式形成的 scope 是同一类东西，区别只在显式与隐式。
 
-scope 节点只存在于值层。成型时，元素形成的 scope 是实元素，保留为结构树节点；透明 scope（Content literal 与手动 scope）溶解进元素序列参与统一分组——scope 的内容可以与外部文字连排（例如一段文字内嵌一个 scope，其内容与前后的文字组成同一个段落），溶解后其内容可能分属多个父节点，树无法把它装成单个节点。溶解时 scope 的属性与身份以区间条目进入属性表，覆盖它内容所在的区域，可以跨越段落边界。结构树里没有透明 scope 节点，只有实元素；属性一律以区间命中（单元素区间是特例），没有第二种形状。
+scope 节点只存在于值层。在成型（[[vault::designs::D0011-shaping-and-structure-tree]]）中，元素形成的 scope 是实元素，保留为结构树节点；透明 scope（Content literal 与手动 scope）溶解进元素序列参与统一分组——scope 的内容可以与外部文字连排（例如一段文字内嵌一个 scope，其内容与前后的文字组成同一个段落），溶解后其内容可能分属多个父节点，树无法把它装成单个节点。溶解时 scope 的属性与身份以区间条目进入属性表，覆盖它内容所在的区域，可以跨越段落边界。结构树里没有透明 scope 节点，只有实元素；属性一律以区间命中（单元素区间是特例），没有第二种形状。
 
 === Content 组合
 
@@ -208,13 +208,13 @@ scope 节点只存在于值层。成型时，元素形成的 scope 是实元素�
 - `Parbreak`：段间分隔，也是元素；
 - 其他元素：每个构造调用一个个体；容器元素的 body 是子序列。
 
-序列是分层的（容器 body 是子序列），区间在同一层序列上，可以跨越段落边界。成型只重组元素，不合并、不删除个体——区间在求值、成型与投影之间稳定（Text 拼接是渲染层优化，不是成型语义）。
+序列是分层的（容器 body 是子序列），区间在同一层序列上，可以跨越段落边界。成型只重组元素，不合并、不删除个体（[[vault::designs::D0011-shaping-and-structure-tree]]）——区间在求值、成型与投影之间稳定（Text 拼接是渲染层优化，不是成型语义）。
 
 三类条目：
 
 - 元素条目：实元素上的属性（`#callout[...]@danger`）→ 单元素区间；
 - 区间条目：透明 scope 溶解后的属性与身份（`#[...]@install`）→ 内容覆盖的区间；
-- 节条目：修饰节头部 heading 的属性（`@[#施工]`、`= 标题@安装`）→ 该节覆盖的区间——节边界由 heading 归组规则确定（见成型一节），节属性语义上作用于整个子树。
+- 节条目：修饰节头部 heading 的属性（`@[#施工]`、`= 标题@安装`）→ 该节覆盖的区间——节边界由 heading 归组规则确定（[[vault::designs::D0011-shaping-and-structure-tree]]），节属性语义上作用于整个子树。
 
 属性是值的属性：绑定在值上的属性随值复制——`#let alert = [注意]@wip` 后 `#alert #alert` 产生两个元素个体，属性表里有两条 `wip` 条目。
 
@@ -235,19 +235,13 @@ scope 节点只存在于值层。成型时，元素形成的 scope 是实元素�
 ```text
 求值结果 {
   bindings:    Environment,      // 根 scope 自有的 binding
-  content:     Content,          // 文档内容（值层真相），成型后供渲染、检索与查询
+  content:     Content,          // 文档内容（值层真相），经 D0011 成型后供渲染、检索与查询
   annotations: AnnotationTable,  // 属性表：元素区间 → 属性集
 }
 ```
 
-D0001 的最小示例中：`accent` 与 `warning` 进入 `bindings`，标题与 callout 组合成 `content`——此时它还是组合形态，求值收尾把它成型为结构树。（此结构在引入 Vault 与 Module 后成为 ModuleResult，见 [[vault::designs::D0004-vault-module-and-scope]]。）
+D0001 的最小示例中：`accent` 与 `warning` 进入 `bindings`，标题与 callout 组合成 `content`——此时它还是组合形态，求值收尾按 [[vault::designs::D0011-shaping-and-structure-tree]] 把它成型为结构树。（此结构在引入 Vault 与 Module 后成为 ModuleResult，见 [[vault::designs::D0004-vault-module-and-scope]]。）
 
 === 成型：从组合到结构树
 
-求值收尾时，成型规则把元素序列组成结构树：连续的行内元素组成段落，段间分隔（Parbreak）断开段落，相邻同类条目组成列表或枚举；heading 与其后内容（直到下一个同级或更高级 heading 之前）归组为 Section 节点——节归组递归作用于任何内容序列，同一规则确定属性表的节条目（见"属性表"一节）。块级元素（Heading、block: true 的 Raw 等）独立存在，其到来前先收束当前段落与容器状态；行内元素（含 block: false 的 Raw）参与段落组合；容器子元素的不变量在成型时检查。成型只重组元素，不合并、不删除个体——属性表区间在成型前后稳定。
-
-成型是对任意 `Content` 值可独立运行的规范纯函数：任何 Content 值都是一份"文档"，可以单独成型、渲染与查询。整份文档的成型是默认视野；scope 内部、单个元素等局部区域用同一套规则对相应内容成型——规则唯一，输入随视野选择。
-
-值层（求值产生的 Content 组合）与属性表是唯一真相，成型后的结构树是它们的投影：可丢弃、可重建，任何消费者都不能把投影当作新的真相；消费端联合消费结构树与属性表。成型是确定的纯函数，因此不需要 reconcile：没有内容变换规则、没有迭代收敛、没有增量 diff。每次变更都对整份代码重新求值；增量更新只属于分析层的优化，不进入求值语义。
-
-成型是求值的收尾。至此，代码经过静态检查与求值，变成一棵 Content 树和一个环境；求值器全程只消费静态检查的产物，不重新猜测——编辑器、LSP 与构建因此可以在不执行副作用的情况下理解文档。
+求值收尾时，`content` 经成型投影为结构树。段落的组合、列表/枚举归组、Section 递归归组、区间稳定不变量、诊断与 conformance 在 [[vault::designs::D0011-shaping-and-structure-tree]] 中独立定义；本文只保留一个事实：值层与属性表是唯一真相，结构树是可重建投影。

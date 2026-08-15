@@ -30,7 +30,7 @@ CLI 与 LSP 的具体行为（overlay 归属、vault 切换）属于实现文档
 - 允许的 capability 与 plugin schema；
 - 引用与 import 的解析边界：跨 Vault 一律不解析——跨 Vault 目标对外表现为 unresolved，Vault 不探测边界外。
 
-配置内容模型（language version、capability、plugin schema 的字段与语义）待后续设计记录（core namespace 与 plugin 边界，预留 D0011）定义；此前 Notist.toml 保持空标记或未知键预留，分析层按字节载荷携带配置。
+配置内容模型（language version、capability、plugin schema 的字段与语义）待后续设计记录（core namespace 与 plugin 边界，编号按 [[vault::designs]] 分层索引的创建顺序分配）定义；此前 Notist.toml 保持空标记或未知键预留，分析层按字节载荷携带配置。
 
 == Module
 
