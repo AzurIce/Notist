@@ -1,18 +1,18 @@
-= D0002: Evaluation Model and Type System
+= D0002: Type System and Property Table
 
-本文承接 [[vault::designs::D0001-language-overview]] 的最小示例：在那里，一段代码求值后得到 `bindings`、`content` 与 `annotations` 三个产物。本文定义这个结果如何产生。
+[[vault::designs::D0001-language-overview]] 的最小示例给出求值结果 `bindings`、`content` 与 `annotations` 三个产物。本文定义其中两个规范面：静态类型系统，以及旁置的属性表。求值如何执行并产生 `content` 元素序列见 [[vault::designs::D0013-evaluation-model-and-content-sequence]]；scope 与词法环境见 [[vault::designs::D0012-scope-and-environment]]；成型见 [[vault::designs::D0011-shaping-and-structure-tree]]。
 
-一段源代码经过三个阶段：解析、静态检查、求值。解析把源码变成语法结构；静态检查解析名称、推断并检查类型，并把每个调用点解析为确定的已解析调用（resolved call）；求值器只消费静态检查的产物，在求值收尾时把内容成型为文档树（成型见 [[vault::designs::D0011-shaping-and-structure-tree]]），输出求值结果。传统的标记语言直接通过解析就可以得到表示文档的元素树；Notist 在解析之后多一步求值——计算是语言的固有部分，不是事后插入的占位符。
+一段源代码经过三个阶段：解析、静态检查、求值。解析把源码变成语法结构；静态检查解析名称、推断并检查类型，并把每个调用点解析为确定的已解析调用（resolved call）；求值器只消费静态检查的产物，产生元素序列后由成型投影为结构树。传统的标记语言直接通过解析就可以得到表示文档的元素树；Notist 在解析之后多一步求值——计算是语言的固有部分，不是事后插入的占位符。
 
-本文先从求值之前的静态检查讲起——类型系统：类型是值的静态投影，静态检查产出求值器唯一的语义输入；再讲求值阶段——求值模型：值、scope、组合、规则与结果如何把代码变成 Content 树和环境；成型是求值收尾的独立投影，见 [[vault::designs::D0011-shaping-and-structure-tree]]。
+本文先定义类型系统：类型是值的静态投影，静态检查产出求值器唯一的语义输入；再定义属性表：属性如何以区间条目旁置于树外。
 
 == 类型系统
 
-静态检查在求值之前运行：它以类型判断（type judgment）Γ ⊢ e : T 描述"表达式 e 产出什么值"，并产出求值器唯一消费的语义输入。类型是值的静态投影；名称解析沿 scope 链进行——值与 scope 的定义见求值模型一节。
+静态检查在求值之前运行：它以类型判断（type judgment）Γ ⊢ e : T 描述"表达式 e 产出什么值"，并产出求值器唯一消费的语义输入。类型是值的静态投影；名称解析沿 scope 链进行——scope 与词法环境见 [[vault::designs::D0012-scope-and-environment]]，值的定义见 [[vault::designs::D0013-evaluation-model-and-content-sequence]]。
 
 === Type 与 Value 对应
 
-类型是值的静态投影：每个类型描述一类值；求值阶段的值宇宙与类型系统共享同一套概念，类型系统是它的静态面。
+类型是值的静态投影：每个类型描述一类值；求值阶段的值宇宙（[[vault::designs::D0013-evaluation-model-and-content-sequence]]）与类型系统共享同一套概念，类型系统是它的静态面。
 
 ```text
 Type
@@ -86,13 +86,13 @@ fn(kind: String =, trailing body: Content) -> Content
 
 Trailing content 是最后一个 positional 形参：定义中用显式 `trailing` 修饰符声明，至多一个，必须接受 Content；`#f(kind: "warning")[内容]` 与 `#f(kind: "warning", [内容])` 等价——trailing block 只是追加一个 positional 实参的语法糖，没有独立的绑定通道；它是唯一允许跟在具名实参之后的位置实参。其余形参没有这种紧凑写法。
 
-函数值（function value）是闭包（closure）：携带签名、实现、捕获环境（captured environment）与所需 capability。capability 与函数类型身份正交，宿主在实际调用时检查。
+函数值（function value）是闭包（closure）：携带签名、实现、捕获环境（captured environment，见 [[vault::designs::D0012-scope-and-environment]]）与所需 capability。capability 与函数类型身份正交，宿主在实际调用时检查。
 
 函数与元素的边界在 Content 类型上汇合：builtin 元素就是 first-class 构造器函数。
 
 === Content 类型
 
-`Content` 是不透明类型：一个类型涵盖所有元素组合，元素结构（种类、嵌套、参数）是运行时数据，静态检查不追踪它。树中的每个节点携带自己的构造器身份；builtin 元素以 first-class 构造器函数的形式存在——`callout(kind: ..., body: ...)` 产生一个 callout 节点，其类型就是 `Content`。（内置构造器的命名空间尚未决定，本文暂以裸名书写。）用户函数与 builtin 构造器因此同构：`warning` 与 `callout` 遵守同一套签名、调用与求值规则，渲染与查询按节点身份消费结果，不区分来源。
+`Content` 是不透明类型：一个类型涵盖所有元素组合，元素结构（种类、嵌套、参数）是运行时数据，静态检查不追踪它；元素清单见 [[vault::designs::D0013-evaluation-model-and-content-sequence]]。树中的每个节点携带自己的构造器身份；builtin 元素以 first-class 构造器函数的形式存在——`callout(kind: ..., body: ...)` 产生一个 callout 节点，其类型就是 `Content`。（内置构造器的命名空间尚未决定，本文暂以裸名书写。）用户函数与 builtin 构造器因此同构：`warning` 与 `callout` 遵守同一套签名、调用与求值规则，渲染与查询按节点身份消费结果，不区分来源。
 
 插入转换只在 Markup insertion 边界成立：
 
@@ -102,7 +102,7 @@ Trailing content 是最后一个 positional 形参：定义中用显式 `trailin
 Γ ⊢ #e : Content(Text(e))
 ```
 
-普通函数要求 Content 参数时仍然拒绝 String——"可展示"不会渗透成所有 API 的隐式转换规则。
+普通函数要求 Content 参数时仍然拒绝 String——"可展示"不会渗透成所有 API 的隐式转换规则；插入转换只存在于 Markup insertion 边界（[[vault::designs::D0013-evaluation-model-and-content-sequence]]）。
 
 这些规则汇总为静态检查的三个职责。
 
@@ -116,89 +116,9 @@ Trailing content 是最后一个 positional 形参：定义中用显式 `trailin
 
 错误恢复：语法、未解析名称与类型错误允许产生 partial HIR，使编辑器与预览能继续处理其他源码；恢复节点保留自己的 Error 状态——错误实参不使用默认值，错误 callee 不伪装成返回 `None` 的成功函数。
 
-静态检查的产物——名称解析结果、类型与已解析调用——构成求值器唯一的语义输入：求值器不重新猜测名字指向哪个函数、实参如何绑定，只执行这份输入。求值模型一节展示它如何消费这份输入。
+静态检查的产物——名称解析结果、类型与已解析调用——构成求值器唯一的语义输入：求值器不重新猜测名字指向哪个函数、实参如何绑定，只执行这份输入。求值如何消费这份输入见 [[vault::designs::D0013-evaluation-model-and-content-sequence]]。
 
-== 求值模型
-
-求值阶段回答一个问题：程序在环境中产生什么？答案是一棵 Content 树和一个环境。类型系统已经为它完成了检查——求值器只消费静态检查的产物。下面从求值的原料开始，依次展开值、scope、组合、规则与结果；成型见 [[vault::designs::D0011-shaping-and-structure-tree]]。
-
-=== 值的宇宙
-
-求值处理的值分为几类：
-
-```text
-Value
-├─ None
-├─ Bool / Int / Float / String
-├─ Content          # 文档内容，元素的有序组合
-└─ Function         # 形参可以是普通值，也可以是 trailing Content
-```
-
-（集合类型 Array/Dict 暂不进入语言，待后续设计引入。）
-
-每个公开类型都必须具有相应的值构造、观察与操作——进入语言的类型就是普通值，可以绑定、传递与运算（语义诚实）。类型与值一一对应，见类型系统一节。
-
-值中与文档直接相关的是 `Content`——文档的每一个元素都是一个 Content 值。下面单独展开它。
-
-=== Content 值
-
-`Content` 是不透明的、已求值完成的文档子树：它是一个值的类型，内部是元素节点的递归组合（元素可以再携带 Content），元素结构是运行时数据，类型系统不追踪它。Content 值里没有占位符——求值完成时一切内容已经确定；需要延迟计算的地方使用 `fn() -> Content`。
-
-元素按种类区分，每个元素携带自己的构造器身份与参数：
-
-```text
-Element
-├─ Text          # 文本；String 经插入规则转换产生
-├─ Parbreak      # 段间分隔；成型时不进入结构树（D0011）
-├─ Reference     # 引用（ref 构造器）：文档目标或资源文件（外部 URL 暂缓）
-├─ Heading       # 标题（heading 构造器）
-├─ Raw           # 代码（raw 构造器；行内/块级由 block 参数决定，行内糖暂缓）
-├─ Rule          # 分割线（rule 构造器）
-├─ ListItem      # 列表条目；相邻同类条目由成型组合为 List/Enum（D0011）
-├─ Callout       # 提示框（callout 构造器）
-├─ Details       # 折叠内容（details 构造器）
-├─ Strong        # 加粗（strong 构造器；*...* 糖）
-├─ Emph          # 斜体（emph 构造器；_..._ 糖）
-├─ Underline     # 下划线（underline 构造器；__...__ 糖）
-├─ Strike        # 删除线（strike 构造器；~~...~~ 糖）
-├─ ……            # 其余内置元素随内置函数设计扩展
-└─ Custom        # 扩展元素：携带构造器身份与参数，渲染器对未知种类有兜底
-```
-
-在任一语言版本中，内置集合是封闭的：内置元素可以穷举匹配；扩展（插件等）走 `Custom`，不改变内置集合，内置集合随语言版本演化。元素参数是普通值——例如 Heading 的 `level` 与 body、Callout 的 `kind` 与 body；容器元素的子元素不变量在成型时检查（[[vault::designs::D0011-shaping-and-structure-tree]]）。各内置元素的构造器签名与 Markup 语法糖见 [[vault::designs::D0003-builtin-functions-and-syntax-sugar]]。
-
-Content 值不是散落的数据：它们组合在同一棵树上——scope 树。节点既装内容，也装名字；属性不挂在树上，见"属性表"一节。
-
-=== scope：节点即环境
-
-值层组合树上的每个节点同时就是一个 scope，承担两种角色：
-
-1. 内容的容器：节点包含一段 Content；
-2. 名字的容器：binding 挂在节点上，名称解析沿节点链向上——词法环境不是树之外的平行结构，就是树本身。
-
-属性不挂在节点上：标注在求值期绑定到值（语法见 [[vault::designs::D0006-scope-and-annotation-syntax]]），求值收尾转写为旁置的属性表（annotation table）——见"属性表"一节。
-
-名称解析沿节点链自内向外进行，最近绑定者胜出（shadowing）；`let` 绑定从声明处开始对后续节点可见。求值结束后，除根 scope 的 bindings 进入求值结果外，节点上的绑定只是求值期的环境事实——成型后的结构树（[[vault::designs::D0011-shaping-and-structure-tree]]）消费者不依赖它们。
-
-scope 按来源分为：根（root）、Content literal、Code block、元素形成的 scope，以及作者显式创建的手动 scope。手动 scope 用 `#[...]` 显式创建：封装一段内容，自带词法边界，可承载属性（其属性以区间条目进入属性表），渲染上不产生可见元素；它与隐式形成的 scope 是同一类东西，区别只在显式与隐式。
-
-scope 节点只存在于值层。在成型（[[vault::designs::D0011-shaping-and-structure-tree]]）中，元素形成的 scope 是实元素，保留为结构树节点；透明 scope（Content literal 与手动 scope）溶解进元素序列参与统一分组——scope 的内容可以与外部文字连排（例如一段文字内嵌一个 scope，其内容与前后的文字组成同一个段落），溶解后其内容可能分属多个父节点，树无法把它装成单个节点。溶解时 scope 的属性与身份以区间条目进入属性表，覆盖它内容所在的区域，可以跨越段落边界。结构树里没有透明 scope 节点，只有实元素；属性一律以区间命中（单元素区间是特例），没有第二种形状。
-
-=== Content 组合
-
-求值就在 scope 树上进行：名字沿节点链解析，内容按源码顺序组合成 `Content`。文档正文是隐式的 Content quotation——普通文字、引用、标注与嵌入的计算按源码顺序组合成 `Content`。正文不是求值之外的另一套流程，而是同一管线里的一种写法。
-
-嵌入表达式的结果按插入规则进入外层 Content：
-
-- `Content` 原样插入；
-- `String` 转为 `Text` 元素；
-- `Int` / `Float` / `Bool` 经 toString 转为 `Text`，与 `String` 同路；
-- `None` 产生空内容；
-- 其他类型（如 `Function`）不能插入，产生诊断。
-
-组合的规则与顺序，加上函数调用的执行，就是求值规则。
-
-=== 属性表
+== 属性表
 
 属性（标注）在求值期绑定到值，求值收尾转写为旁置的属性表（annotation table）：以元素序列区间为键、属性集为值的映射。树（scope 树、结构树）不携带属性——属性是位置注解，与结构解耦。
 
@@ -220,28 +140,6 @@ scope 节点只存在于值层。在成型（[[vault::designs::D0011-shaping-and
 
 模块属性（`@![...]`）作为模块级条目进入属性表，随求值结果发布为模块元数据。
 
-=== 求值规则
+== 与求值、成型的关系
 
-声明与正文按源码顺序求值：`let` 绑定扩展后续节点的环境；可展示的 Markup 与嵌入表达式通过 Content insertion 追加内容。
-
-函数应用遵循统一的求值顺序：求值 callee 表达式 → 按源码顺序求值显式实参与 trailing Content → 按形参声明顺序建立绑定（应用解析结果中的 coercion，或代入缺省形参的默认值）→ 调用函数值 → 校验返回值满足声明的结果类型。每个表达式只求值一次。
-
-求值结束后，程序的一面与文档的一面分离为求值结果。
-
-=== 求值结果
-
-求值结果是三元组：
-
-```text
-求值结果 {
-  bindings:    Environment,      // 根 scope 自有的 binding
-  content:     Content,          // 文档内容（值层真相），经 D0011 成型后供渲染、检索与查询
-  annotations: AnnotationTable,  // 属性表：元素区间 → 属性集
-}
-```
-
-D0001 的最小示例中：`accent` 与 `warning` 进入 `bindings`，标题与 callout 组合成 `content`——此时它还是组合形态，求值收尾按 [[vault::designs::D0011-shaping-and-structure-tree]] 把它成型为结构树。（此结构在引入 Vault 与 Module 后成为 ModuleResult，见 [[vault::designs::D0004-vault-module-and-scope]]。）
-
-=== 成型：从组合到结构树
-
-求值收尾时，`content` 经成型投影为结构树。段落的组合、列表/枚举归组、Section 递归归组、区间稳定不变量、诊断与 conformance 在 [[vault::designs::D0011-shaping-and-structure-tree]] 中独立定义；本文只保留一个事实：值层与属性表是唯一真相，结构树是可重建投影。
+求值结果三元组与 `content` 元素序列的产生见 [[vault::designs::D0013-evaluation-model-and-content-sequence]]；scope 溶解见 [[vault::designs::D0012-scope-and-environment]]；结构树投影见 [[vault::designs::D0011-shaping-and-structure-tree]]。值层与属性表是唯一真相，成型后的结构树是它们的投影：可丢弃、可重建，任何消费者都不能把投影当作新的真相；消费端联合消费结构树与属性表。

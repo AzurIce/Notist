@@ -18,7 +18,7 @@ Notist 的基本单位是 vault/module，HTML 输出以整个 Vault 为单位：
 
 ```text
 .not source
-  -> 静态检查与求值（D0002）
+  -> 静态检查与类型（D0002）→ 求值（[[vault::designs::D0013-evaluation-model-and-content-sequence]]）
   -> 成型结构树 + 属性表
   -> notist-html
 ```
@@ -49,7 +49,7 @@ Custom                -> 带 data-notist-name 的 span/div
 Missing 引用 / 未知 Custom -> 不可点击的 span（保留可见文本）
 ```
 
-Quote 与 Table 不进入当前语言（D0003 整体暂缓）；映射随元素进入语言时补充。本表是当前内置元素集合（D0002 元素树）的封闭映射：每增加一行都以 D0003 引入新元素为前提。Parbreak 不渲染（段落结构已由成型给出）。
+Quote 与 Table 不进入当前语言（D0003 整体暂缓）；映射随元素进入语言时补充。本表是当前内置元素集合（[[vault::designs::D0013-evaluation-model-and-content-sequence]] 元素树）的封闭映射：每增加一行都以 D0003 引入新元素为前提。Parbreak 不渲染（段落结构已由成型给出）。
 
 === 锚点与引用链接
 

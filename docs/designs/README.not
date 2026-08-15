@@ -10,9 +10,9 @@
 
 - L1 表面语法与词法：双模式（Markup/Code）、嵌入边界、字面量与字符串、运算符、转义、注释、字面量载荷。—— 现：[[vault::designs::D0007-surface-language-and-core-grammar]]、[[vault::designs::D0001-language-overview]]
 - L2 类型系统：Type/Value 对应、`T?` 与可省略 `=`、赋值与 coercion、`fn(...) -> R`。—— 现：[[vault::designs::D0002-evaluation-model-and-type-system]]（前半，待拆分）
-- L3 词法作用域：节点即环境、let、遮蔽、递归暂缓。—— 现：[[vault::designs::D0002-evaluation-model-and-type-system]]（scope 节，待拆分）
+- L3 词法作用域：节点即环境、let、遮蔽、递归暂缓。—— 现：[[vault::designs::D0012-scope-and-environment]]（独立成篇）
 - L4 调用模型：形参与默认值、positional/named 绑定、实参序、求值顺序、调用点检查。—— 现：[[vault::designs::D0002-evaluation-model-and-type-system]]（函数类型节）+ [[vault::designs::D0007-surface-language-and-core-grammar]]（声明节）；待独立成篇
-- L5 求值模型：求值规则、插入规则、求值结果三元组。—— 现：[[vault::designs::D0002-evaluation-model-and-type-system]]（后半，待拆分）
+- L5 求值模型：求值规则、插入规则、求值结果三元组。—— 现：[[vault::designs::D0013-evaluation-model-and-content-sequence]]（独立成篇）
 - L6 成型：元素序列 → 结构树的 fold、inline/block 分类表、列表与节归组、不变量（区间稳定、不删除个体）。—— 现：[[vault::designs::D0011-shaping-and-structure-tree]]（独立成篇）
 - L7 属性表：区间模型、三类条目、属性随值复制、模块级条目。—— 现：[[vault::designs::D0002-evaluation-model-and-type-system]]（属性表节）+ [[vault::designs::D0006-scope-and-annotation-syntax]]（语义半边）；待独立成篇
 - L8 标注语法：属性列表文法、三种挂载位置、错误恢复、lexer token 区分。—— 现：[[vault::designs::D0006-scope-and-annotation-syntax]]（语法半边）

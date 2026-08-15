@@ -1,6 +1,6 @@
 = D0007: Surface Language and Core Grammar
 
-本文定义语言的表面语法。承接：[[vault::designs::D0001-language-overview]]（双模式与表达式边界）、[[vault::designs::D0002-evaluation-model-and-type-system]]（求值模型、类型与调用）、[[vault::designs::D0003-builtin-functions-and-syntax-sugar]]（语法糖）、[[vault::designs::D0004-vault-module-and-scope]]（Module 与引用寻址）、[[vault::designs::D0006-scope-and-annotation-syntax]]（scope 形态与标注）。
+本文定义语言的表面语法。承接：[[vault::designs::D0001-language-overview]]（双模式与表达式边界）、[[vault::designs::D0013-evaluation-model-and-content-sequence]]（求值模型）、[[vault::designs::D0002-evaluation-model-and-type-system]]（类型与调用）、[[vault::designs::D0003-builtin-functions-and-syntax-sugar]]（语法糖）、[[vault::designs::D0004-vault-module-and-scope]]（Module 与引用寻址）、[[vault::designs::D0006-scope-and-annotation-syntax]]（scope 形态与标注）。
 
 Markup 模式只定义最小骨架（文本流、段落分隔、`#` 嵌入、转义）——其余一切 Markup 构造都是语法糖或标注，本文给出指向 D0003 / D0006 / D0004 的引用索引；Code 模式是本文的主体，定义完整的字面量、运算符、表达式、声明与类型语法。
 
@@ -116,7 +116,7 @@ primary：字面量、名字、括号表达式、调用、Content literal、Code
 
 === 声明
 
-**let**：`let name = 表达式` 或 `let name: T = 表达式`——右侧先在旧环境中求值，绑定对后续可见；类型标注可选（未标注时由右侧推断）。同名遮蔽允许（最近绑定者胜出，见 D0002 名称解析）。
+**let**：`let name = 表达式` 或 `let name: T = 表达式`——右侧先在旧环境中求值，绑定对后续可见；类型标注可选（未标注时由右侧推断）。同名遮蔽允许（最近绑定者胜出，见 [[vault::designs::D0012-scope-and-environment]] 名称解析）。
 
 **函数定义糖**：`let name(形参表) -> R = body`（≡ lambda 绑定，见上）。形参语法与 D0002 一致：带 `=` 的形参是 named 可省略，不带的是 positional 必填。
 

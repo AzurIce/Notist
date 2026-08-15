@@ -209,4 +209,4 @@ graph TD
 """#)
 ```
 
-调用不会被静默丢弃——解析为 `UnresolvedCall` 元素保留在 Content 中，渲染器对其有兜底展示，预览与工具恢复可以继续处理其余源码。插件与扩展机制按 `Custom` 元素走渲染层兜底，不改变内置构造器集合（见 [[vault::designs::D0002-evaluation-model-and-type-system]]）。
+调用不会被静默丢弃——解析为 `UnresolvedCall` 元素保留在 Content 中，渲染器对其有兜底展示，预览与工具恢复可以继续处理其余源码。插件与扩展机制按 `Custom` 元素走渲染层兜底，不改变内置构造器集合（元素集合见 [[vault::designs::D0013-evaluation-model-and-content-sequence]]）。

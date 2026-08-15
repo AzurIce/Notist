@@ -1,12 +1,12 @@
 = D0003: Builtin Functions and Syntax Sugar
 
-本文承接 [[vault::designs::D0002-evaluation-model-and-type-system]]：那里定义了元素种类清单（Element 树）与统一的调用模型（positional/named 绑定、trailing、default、可空 `T?` 与可省略 `=`）。本文定义第一批内置构造器（builtin constructor）与对应的 Markup 语法糖，并给出每个糖的完整规格。
+本文承接 [[vault::designs::D0013-evaluation-model-and-content-sequence]]（元素种类清单）与 [[vault::designs::D0002-evaluation-model-and-type-system]]（统一的调用模型：positional/named 绑定、trailing、default、可空 `T?` 与可省略 `=`）。本文定义第一批内置构造器（builtin constructor）与对应的 Markup 语法糖，并给出每个糖的完整规格。
 
 == 设计原则
 
 === 构造器即函数
 
-内置元素以 first-class 构造器函数的形式存在，与用户函数共享同一套签名、调用解析与求值规则（见 D0002）。`heading`、`raw`、`rule` 等可以绑定、传递与组合——`#let make_title = heading` 合法。
+内置元素以 first-class 构造器函数的形式存在，与用户函数共享同一套签名、调用解析（D0002）与求值规则（[[vault::designs::D0013-evaluation-model-and-content-sequence]]）。`heading`、`raw`、`rule` 等可以绑定、传递与组合——`#let make_title = heading` 合法。
 
 === 糖与遮蔽隔离
 

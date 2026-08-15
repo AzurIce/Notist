@@ -1,0 +1,111 @@
+= D0013: Evaluation Model and Content Sequence
+
+本文承接 [[vault::designs::D0002-evaluation-model-and-type-system]]（静态检查：名称解析、类型、已解析调用）与 [[vault::designs::D0012-scope-and-environment]]（scope 与词法环境）。本文定义求值阶段：在 scope 链上执行静态检查的产物，产生求值结果三元组；其中的 `content` 是元素序列，作为 [[vault::designs::D0011-shaping-and-structure-tree]] 的输入。
+
+```text
+静态检查产物（D0002）── evaluate ──> Evaluation {
+  bindings / content / annotations
+}
+content ── shape（D0011）──> StructuredDocument
+```
+
+求值器只消费静态检查的产物：不重新解析名称、不重新绑定实参、不重新猜测函数身份。
+
+== 值的宇宙
+
+求值处理的值分为几类：
+
+```text
+Value
+├─ None
+├─ Bool / Int / Float / String
+├─ Content          # 文档内容，元素的有序组合
+└─ Function         # 形参可以是普通值，也可以是 trailing Content
+```
+
+（集合类型 Array/Dict 暂不进入语言，待后续设计引入。）
+
+每个公开类型都必须具有相应的值构造、观察与操作——进入语言的类型就是普通值，可以绑定、传递与运算（语义诚实）。类型与值一一对应，见 D0002 类型系统。
+
+== Content 值
+
+`Content` 是不透明的、已求值完成的文档子树：它是一个值的类型，内部是元素节点的递归组合（元素可以再携带 Content），元素结构是运行时数据，类型系统不追踪它。Content 值里没有占位符——求值完成时一切内容已经确定；需要延迟计算的地方使用 `fn() -> Content`。
+
+元素按种类区分，每个元素携带自己的构造器身份与参数：
+
+```text
+Element
+├─ Text          # 文本；String 经插入规则转换产生
+├─ Parbreak      # 段间分隔；成型时不进入结构树（D0011）
+├─ Reference     # 引用（ref 构造器）：文档目标或资源文件（外部 URL 暂缓）
+├─ Heading       # 标题（heading 构造器）
+├─ Raw           # 代码（raw 构造器；行内/块级由 block 参数决定，行内糖暂缓）
+├─ Rule          # 分割线（rule 构造器）
+├─ ListItem      # 列表条目；相邻同类条目由成型组合为 List/Enum（D0011）
+├─ Callout       # 提示框（callout 构造器）
+├─ Details       # 折叠内容（details 构造器）
+├─ Strong        # 加粗（strong 构造器；*...* 糖）
+├─ Emph          # 斜体（emph 构造器；_..._ 糖）
+├─ Underline     # 下划线（underline 构造器；__...__ 糖）
+├─ Strike        # 删除线（strike 构造器；~~...~~ 糖）
+├─ ……            # 其余内置元素随内置函数设计扩展
+└─ Custom        # 扩展元素：携带构造器身份与参数，渲染器对未知种类有兜底
+```
+
+在任一语言版本中，内置集合是封闭的：内置元素可以穷举匹配；扩展（插件等）走 `Custom`，不改变内置集合，内置集合随语言版本演化。元素参数是普通值——例如 Heading 的 `level` 与 body、Callout 的 `kind` 与 body；容器元素的子元素不变量在成型时检查（D0011）。各内置元素的构造器签名与 Markup 语法糖见 [[vault::designs::D0003-builtin-functions-and-syntax-sugar]]。
+
+Content 值不是散落的数据：它们组合在同一棵树上——scope 树（D0012）。节点既装内容，也装名字；属性不挂在树上，见 D0002 属性表。
+
+== Content 组合与插入规则
+
+求值就在 scope 树上进行：名字沿节点链解析（D0012），内容按源码顺序组合成 `Content`。文档正文是隐式的 Content quotation——普通文字、引用、标注与嵌入的计算按源码顺序组合成 `Content`。正文不是求值之外的另一套流程，而是同一管线里的一种写法。
+
+Markup insertion 边界上，嵌入表达式的结果按规则插入外层 Content：
+
+| 值 | 插入结果 |
+|---|---|
+| `Content` | 原样插入 |
+| `String` | 转为 `Text` 元素 |
+| `Int` / `Float` / `Bool` | 经 toString 转为 `Text`，与 `String` 同路 |
+| `None` | 产生空内容 |
+| 其他类型（如 `Function`） | 不能插入，产生诊断 |
+
+插入转换只存在于 Markup insertion 边界；普通函数要求 Content 参数时仍然拒绝 String——"可展示"不会渗透成所有 API 的隐式转换规则（D0002 Content 类型）。
+
+== 求值规则
+
+- **E1 顺序**：声明与正文按源码顺序求值；`let` 绑定扩展后续节点的环境（D0012），可展示的 Markup 与嵌入表达式通过 Content insertion 追加内容。
+- **E2 函数应用顺序**：求值 callee 表达式 → 按源码顺序求值显式实参与 trailing Content → 按形参声明顺序建立绑定（应用解析结果中的 coercion，或代入缺省形参的默认值）→ 调用函数值 → 校验返回值满足声明的结果类型。
+- **E3 单次求值**：每个表达式只求值一次；默认值表达式在定义时求值，捕获定义处环境，不随调用环境变化（D0002 函数类型）。
+- **E4 错误恢复**：错误实参不使用默认值，错误 callee 不伪装成返回 `None` 的成功函数（D0002 静态检查）。
+
+== 求值结果
+
+求值结束产生三元组：
+
+```text
+求值结果 {
+  bindings:    Environment,      // 根 scope 自有的 binding（D0012）
+  content:     Content,          // 文档内容（值层真相），元素序列交给 D0011 成型
+  annotations: AnnotationTable,  // 属性表：元素区间 → 属性集（D0002）
+}
+```
+
+D0001 的最小示例中：`accent` 与 `warning` 进入 `bindings`，标题与 callout 组合成 `content`——此时它还是元素序列，求值收尾按 D0011 把它成型为结构树。（此结构在引入 Vault 与 Module 后成为 ModuleResult，见 [[vault::designs::D0004-vault-module-and-scope]]。）
+
+== Conformance
+
+| 输入 | 预期 | 测试 |
+|---|---|---|
+| `a[plain]#"text"#[content]z` | Markup、String 插入与 Content literal 按源码顺序形成元素序列 | `evaluates_markup_with_string_and_content_interpolation` |
+| `value: #42` | Int 经 toString 插入为 Text | `stringifies_scalar_values_in_markup_position` |
+| `#let accent = "violet"` 后 `= #accent` | 根 binding 流入后续内容并进入 bindings | `let_bindings_flow_into_later_markup` |
+| `#if true [yes] else [no]` / 无 else | 分支按值选择；缺省 else 产生空内容 | `if_expression_selects_branches_and_omitting_else_yields_none` |
+| `before { let x = 1; x + 1 } after` | Code block 的 join 值插入正文 | `bare_code_blocks_insert_their_join_value` |
+| 带求值诊断的输入 | 诊断随求值结果透传 | `structuring_preserves_evaluation_diagnostics` |
+
+== 已裁定 / 待定
+
+- 已裁定：求值器只消费静态检查产物；插入转换只存在于 Markup insertion 边界；每个表达式只求值一次。
+- 已裁定：`content` 是元素序列（值层真相），结构树是 D0011 的可重建投影。
+- 待定：递归绑定引入后，`let rec` 的求值规则与 scope 可见性由 D0012 与本文共同补充。

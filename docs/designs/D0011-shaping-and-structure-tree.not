@@ -1,6 +1,6 @@
 = D0011: Shaping and Structure Tree
 
-本文承接 [[vault::designs::D0002-evaluation-model-and-type-system]]（求值结果 `content` / `annotations` 与元素序列）和 [[vault::designs::D0006-scope-and-annotation-syntax]]（属性区间与挂载语义）。D0002 定义值层：求值结束时的 `content` 是元素的有序组合，属性不挂在树上。本文定义求值的收尾投影——成型（shaping）：把元素序列组成结构树，并规定投影必须保持的区间稳定不变量。
+本文承接 [[vault::designs::D0013-evaluation-model-and-content-sequence]]（求值结果 `content` 与元素序列）、[[vault::designs::D0002-evaluation-model-and-type-system]]（`annotations` 属性表）和 [[vault::designs::D0006-scope-and-annotation-syntax]]（属性区间与挂载语义）。D0013 定义值层：求值结束时的 `content` 是元素的有序组合；D0002 定义属性不挂在树上。本文定义求值的收尾投影——成型（shaping）：把元素序列组成结构树，并规定投影必须保持的区间稳定不变量。
 
 ```text
 Evaluation.content ── shape ──> StructuredDocument
@@ -11,7 +11,7 @@ Evaluation.content ── shape ──> StructuredDocument
 
 == 输入与输出
 
-- 输入：一个已求值的 Content 值，即元素序列。透明 scope（Content literal 与手动 scope）在进入成型视野前溶解为其内容序列，属性与身份转为区间条目（D0002 属性表一节、D0006）。
+- 输入：一个已求值的 Content 值，即元素序列。透明 scope（Content literal 与手动 scope）在进入成型视野前溶解为其内容序列（[[vault::designs::D0012-scope-and-environment]]），属性与身份转为区间条目（D0002 属性表、D0006）。
 - 输出：结构树 `StructuredDocument { blocks }`，块有两种形状：
   - `Block::Element`：独立块级元素，包括成型产生的 `Paragraph`、`List` / `Enum` 容器节点；
   - `Block::Section { level, heading, body }`：heading 加其归组内容。

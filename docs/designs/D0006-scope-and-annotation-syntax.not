@@ -1,6 +1,6 @@
 = D0006: Scope Syntax and Annotations
 
-本文承接 [[vault::designs::D0002-evaluation-model-and-type-system]]：那里定义了 scope 是值层节点（节点即环境，承担内容与名字两种角色），属性不挂在树上、以旁置的属性表存在；[[vault::designs::D0004-vault-module-and-scope]] 定义了带 id 的 scope 承担模块内身份。本文把这些概念落到语法上：scope 在源码中如何书写，属性如何绑定到值。
+本文承接 [[vault::designs::D0012-scope-and-environment]]：那里定义了 scope 是值层节点（节点即环境，承担内容与名字两种角色）；[[vault::designs::D0002-evaluation-model-and-type-system]] 定义了属性不挂在树上、以旁置的属性表存在；[[vault::designs::D0004-vault-module-and-scope]] 定义了带 id 的 scope 承担模块内身份。本文把这些概念落到语法上：scope 在源码中如何书写，属性如何绑定到值。
 
 动线：先列出 scope 的语法形态（每种 scope 的书写形式），再定义属性语法——属性列表（一套语法）、三种挂载位置（行内 postfix、块级前缀、模块）、属性在求值与成型后的存在方式，最后给出语法边界。
 
@@ -18,7 +18,7 @@ Code block       {...}
 
 === 根 scope
 
-模块（文件）求值在根 scope 中进行：正文是隐式的 Content quotation（D0002）。根 scope 的属性由模块属性声明（见下），随 ModuleResult 发布为模块元数据。
+模块（文件）求值在根 scope 中进行：正文是隐式的 Content quotation（[[vault::designs::D0013-evaluation-model-and-content-sequence]]）。根 scope 的属性由模块属性声明（见下），随 ModuleResult 发布为模块元数据。
 
 === Content literal
 
@@ -36,11 +36,11 @@ Code block       {...}
 
 === 手动 scope
 
-`#[...]`：Code 模式下的 Content literal（Markup 正文中 Content literal 的书写形式）——显式创建 scope 节点：封装一段内容、自带词法边界、可承载属性、渲染上不产生可见元素（D0002）。与裸 Content literal 的区别在显式节点：内容挂在自身的节点上，可以承载属性与绑定。它属于透明 scope，成型时溶解，属性与身份以区间条目进入属性表。
+`#[...]`：Code 模式下的 Content literal（Markup 正文中 Content literal 的书写形式）——显式创建 scope 节点：封装一段内容、自带词法边界、可承载属性、渲染上不产生可见元素（[[vault::designs::D0012-scope-and-environment]]）。与裸 Content literal 的区别在显式节点：内容挂在自身的节点上，可以承载属性与绑定。它属于透明 scope，成型时溶解，属性与身份以区间条目进入属性表。
 
 === 元素 scope
 
-构造器调用产生的元素节点（heading、callout 等）也是 scope（D0002：元素形成的 scope）。它们的属性通过标注绑定（见下），以元素条目进入属性表。
+构造器调用产生的元素节点（heading、callout 等）也是 scope（[[vault::designs::D0012-scope-and-environment]]：元素形成的 scope）。它们的属性通过标注绑定（见下），以元素条目进入属性表。
 
 == 属性
 

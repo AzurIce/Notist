@@ -1,6 +1,6 @@
 = Type System
 
-本文定义当前工具保证的类型与求值模型。精确语法见 [[vault::grammar]]，内置构造器签名见 [[vault::functions]]，日常速查见 [[vault::cheatsheet]]。完整设计见 [[vault::designs::D0002-evaluation-model-and-type-system]]。
+本文定义当前工具保证的类型与求值模型。精确语法见 [[vault::grammar]]，内置构造器签名见 [[vault::functions]]，日常速查见 [[vault::cheatsheet]]。完整设计见 [[vault::designs::D0002-evaluation-model-and-type-system]]（类型与属性表）与 [[vault::designs::D0013-evaluation-model-and-content-sequence]]（求值模型）。
 
 == 三个阶段
 

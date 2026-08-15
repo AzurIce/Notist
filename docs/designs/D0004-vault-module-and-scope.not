@@ -1,6 +1,6 @@
 = D0004: Vault, Module and Scope
 
-本文承接前三篇：[[vault::designs::D0001-language-overview]] 展示了单文件求值的样子，[[vault::designs::D0002-evaluation-model-and-type-system]] 定义了求值模型与类型系统，[[vault::designs::D0003-builtin-functions-and-syntax-sugar]] 定义了内置函数与引用目标空间。本文定义文件之间的世界结构——Vault（运行边界）、Module（求值单元）、以及跨模块的连接（import 与引用寻址）。
+本文承接此前各篇：[[vault::designs::D0001-language-overview]] 展示了单文件求值的样子，[[vault::designs::D0002-evaluation-model-and-type-system]] 定义了类型系统与属性表，[[vault::designs::D0013-evaluation-model-and-content-sequence]] 定义了求值模型，[[vault::designs::D0003-builtin-functions-and-syntax-sugar]] 定义了内置函数与引用目标空间。本文定义文件之间的世界结构——Vault（运行边界）、Module（求值单元）、以及跨模块的连接（import 与引用寻址）。
 
 动线：先定边界（Vault），再定单元（Module），然后定义单元之间的两种连接——程序面的 import 与知识面的 Reference——最后给出两张跨模块图的环语义。
 
@@ -60,7 +60,7 @@ vault-root/
 
 === ModuleResult
 
-每个 source-backed Module 在自己的根 scope 中按源码顺序求值（见 D0002），得到：
+每个 source-backed Module 在自己的根 scope 中按源码顺序求值（[[vault::designs::D0013-evaluation-model-and-content-sequence]]，scope 见 [[vault::designs::D0012-scope-and-environment]]），得到：
 
 ```text
 ModuleResult {
@@ -70,7 +70,7 @@ ModuleResult {
 }
 ```
 
-D0002 中单文件的"求值结果"在此正式成为 ModuleResult。bindings 是程序的一面——跨模块复用的入口；content 是文档的一面——渲染与查询消费的产物；annotations 是属性的一面——标注与模块元数据的唯一入口。
+[[vault::designs::D0013-evaluation-model-and-content-sequence]] 中单文件的"求值结果"在此正式成为 ModuleResult。bindings 是程序的一面——跨模块复用的入口；content 是文档的一面——渲染与查询消费的产物；annotations 是属性的一面——标注与模块元数据的唯一入口。
 
 === bindings ownership
 
@@ -115,7 +115,7 @@ Reference 连接知识：`[[target]]` 产生 Reference 元素（见 D0003）。�
 
 === scope id
 
-scope 是值层节点（D0002：节点即环境）。带 id 的 scope 承担模块内身份（module-local identity）：
+scope 是值层节点（[[vault::designs::D0012-scope-and-environment]]：节点即环境）。带 id 的 scope 承担模块内身份（module-local identity）：
 
 - id 在模块内唯一；
 - `[[vault::guide#install]]` 解析到该 scope 在模块内的位置；
