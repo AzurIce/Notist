@@ -6,7 +6,7 @@
 
 === 构造器即函数
 
-内置元素以 first-class 构造器函数的形式存在，与用户函数共享同一套签名、调用解析（D0002）与求值规则（[[vault::designs::D0013-evaluation-model-and-content-sequence]]）。`heading`、`raw`、`rule` 等可以绑定、传递与组合——`#let make_title = heading` 合法。
+内置元素以 first-class 构造器函数的形式存在，与用户函数共享同一套签名、调用解析（[[vault::designs::D0002-evaluation-model-and-type-system]]）与求值规则（[[vault::designs::D0013-evaluation-model-and-content-sequence]]）。`heading`、`raw`、`rule` 等可以绑定、传递与组合——`#let make_title = heading` 合法。
 
 === 糖与遮蔽隔离
 
@@ -165,7 +165,7 @@ ref(url: String) -> Content
 [[target]]            ~= ref("target")
 ```
 
-- syntax boundary：`[[` 与 `]]` 之间为字面 url 字符串——不解析 markup、不嵌套 `[[`，对 target 不施加模块路径文法（外部 URL 也按字面串接受，解析分类见 D0004）；
+- syntax boundary：`[[` 与 `]]` 之间为字面 url 字符串——不解析 markup、不嵌套 `[[`，对 target 不施加模块路径文法（外部 URL 也按字面串接受，解析分类见 [[vault::designs::D0004-vault-module-and-scope]]）；
 - core equivalence：`[[...]]` 的 target 即 `url` 实参；
 - error recovery：未闭合 `[[` → 诊断并按文本恢复，内容到第一个 `]]` 为止；
 - editor consequence：vault 路径补全与目标存在性检查；跳转与预览行为由渲染层提供。

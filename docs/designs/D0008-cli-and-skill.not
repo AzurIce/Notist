@@ -33,7 +33,7 @@ full export
 
 == Core Query Contract
 
-CLI 与未来 adapter 都把输入投影到协议无关的 core operation（D0005）：core operation 接受一个已经捕获的 WorkspaceSnapshot 和结构化 request，返回 typed result；CLI 只负责参数拼写与展示。
+CLI 与未来 adapter 都把输入投影到协议无关的 core operation（[[vault::designs::D0005-daemon-architecture]]）：core operation 接受一个已经捕获的 WorkspaceSnapshot 和结构化 request，返回 typed result；CLI 只负责参数拼写与展示。
 
 `--format`、颜色与 pager 不能改变匹配集合、排序、source range 或错误分类。
 
@@ -101,7 +101,7 @@ PathSelector    { path: "designs/D0002-evaluation-model-and-type-system.not" }
 SectionSelector { module: "vault::designs::D0002", id: "属性表" }
 ```
 
-规范输入是等价字符串：`vault::designs::D0002`、`designs/D0002-....not` 或 `vault::designs::D0002#属性表`。`#id` 的匹配顺序与引用寻址一致（D0004）：先按显式 scope id，再按标题默认 id（标题文本）精确匹配。短 basename、模糊路径与"最接近的 Module"不能静默解析；零匹配返回 `not_found`，多匹配返回 `ambiguous_selector` 和有界候选。模糊发现属于 search，不属于 selector resolution。
+规范输入是等价字符串：`vault::designs::D0002`、`designs/D0002-....not` 或 `vault::designs::D0002#属性表`。`#id` 的匹配顺序与引用寻址一致（[[vault::designs::D0004-vault-module-and-scope]]）：先按显式 scope id，再按标题默认 id（标题文本）精确匹配。短 basename、模糊路径与"最接近的 Module"不能静默解析；零匹配返回 `not_found`，多匹配返回 `ambiguous_selector` 和有界候选。模糊发现属于 search，不属于 selector resolution。
 
 所有可作为证据或编辑位置的 record 使用统一 location：
 
@@ -192,7 +192,7 @@ Lexical/fuzzy query 只在 `IndexStamp.source_set_fingerprint` 与捕获 snapsho
 
 == CLI 命令面
 
-全局参数：`--format text|json`（JSON 用 versioned envelope）、`--color auto|always|never`、`--pager auto|always|never`、`--no-daemon`。需要 Vault 的命令把 `[ROOT]` 放在最后一个 positional（默认 `.`，按 D0004 解析最近的 Vault root）；`lsp` 按 editor workspace 动态发现多个 root。Protocol stdio 命令拒绝 text/json/color/pager 组合。
+全局参数：`--format text|json`（JSON 用 versioned envelope）、`--color auto|always|never`、`--pager auto|always|never`、`--no-daemon`。需要 Vault 的命令把 `[ROOT]` 放在最后一个 positional（默认 `.`，按 [[vault::designs::D0004-vault-module-and-scope]] 解析最近的 Vault root）；`lsp` 按 editor workspace 动态发现多个 root。Protocol stdio 命令拒绝 text/json/color/pager 组合。
 
 Collection 命令共享 `-n, --limit`、`--max-bytes` 与 `--cursor`（help 展示实际 default 与 maximum）；普通命令不提供 `--all`，完整输出只能使用 export。JSON envelope：
 
@@ -209,13 +209,13 @@ Collection 命令共享 `-n, --limit`、`--max-bytes` 与 `--cursor`（help 展�
 - `notist search <QUERY> [ROOT] [--mode ...] [--scope MODULE]... [--fields ...] [--operator all|any] [--ignore-case] [--fuzzy-distance 1|2] [--group-by source|section|match] [--wait-index DURATION] [--snippet-bytes N]`：无关参数是 usage error。
 - `notist outline <MODULE|PATH> [ROOT] [--depth 1..6]`：Heading record 返回 name、level、id、location、parent identity 与 subtree range；全 Vault outline 不是普通 query（用 export）。
 - `notist read <MODULE|PATH|MODULE#ID> [ROOT] [--from-line N --lines N | --byte-range S..E]`：默认从 selector 起点读 120 行；line window 面向人、byte range 面向 citation/edit；带 id 的 selector 读取对应节（含标题默认 id）。返回原始 authored source、实际范围、fingerprint 与 next cursor。
-- `notist references <MODULE|MODULE#ID> [ROOT] [--direction incoming|outgoing|both] [--include-definition]`：默认 incoming（backlinks 直觉）；outgoing 使用 captured reference graph，不重新扫描文本；对应 core request `references_to` / `references_in`（D0005）。
+- `notist references <MODULE|MODULE#ID> [ROOT] [--direction incoming|outgoing|both] [--include-definition]`：默认 incoming（backlinks 直觉）；outgoing 使用 captured reference graph，不重新扫描文本；对应 core request `references_to` / `references_in`（[[vault::designs::D0005-daemon-architecture]]）。
 - `notist query definition <PATH> <UTF8_BYTE_OFFSET> [ROOT] [--expected-fingerprint HASH]`：返回零或一个 location，不分页；offset 是 UTF-8 byte offset（line/column 转换由 adapter 用 LineIndex 完成）。
 
 === 检查、编辑与维护命令
 
 - `notist check [ROOT] [--scope MODULE] [--summary] [--severity error|warning|info]`：始终完整分析所选 scope，预算只限制 diagnostic detail；即使 detail 只显示第一页，存在 error 时 `ok=false` 与 exit status 必须反映它。Human text 用 bounded source frame；JSON diagnostic 返回 code、severity、range、message、hint 与 bounded excerpt。
-- `notist edit replace <PATH> <START> <END> <REPLACEMENT> [ROOT]` 与 `notist edit rename <FROM> <TO> [ROOT]`：经过 D0005 的 propose/validate/apply pipeline，不直接写文件；`--expected-fingerprint`、`--idempotency-key` 是显式参数，冲突不做 fuzzy patch。Text 模式展示 bounded diff 并要求确认；script/JSON 必须显式 `--yes` 才应用，否则只返回 proposal summary。这一行为不能通过检测"调用者像 Agent"来改变——Skill 教 Agent 走同一个 propose → check → apply 流程。
+- `notist edit replace <PATH> <START> <END> <REPLACEMENT> [ROOT]` 与 `notist edit rename <FROM> <TO> [ROOT]`：经过 [[vault::designs::D0005-daemon-architecture]] 的 propose/validate/apply pipeline，不直接写文件；`--expected-fingerprint`、`--idempotency-key` 是显式参数，冲突不做 fuzzy patch。Text 模式展示 bounded diff 并要求确认；script/JSON 必须显式 `--yes` 才应用，否则只返回 proposal summary。这一行为不能通过检测"调用者像 Agent"来改变——Skill 教 Agent 走同一个 propose → check → apply 流程。
 - `notist index status|rebuild [ROOT] [--wait]`：rebuild 只删除可恢复的 cache generation，不修改 authored Vault。
 
 === 运行时与显式全量命令

@@ -2,7 +2,7 @@
 
 本文定义语言的表面语法。承接：[[vault::designs::D0001-language-overview]]（双模式与表达式边界）、[[vault::designs::D0013-evaluation-model-and-content-sequence]]（求值模型）、[[vault::designs::D0002-evaluation-model-and-type-system]]（类型与调用）、[[vault::designs::D0003-builtin-functions-and-syntax-sugar]]（语法糖）、[[vault::designs::D0004-vault-module-and-scope]]（Module 与引用寻址）、[[vault::designs::D0006-scope-and-annotation-syntax]]（scope 形态与标注）。
 
-Markup 模式只定义最小骨架（文本流、段落分隔、`#` 嵌入、转义）——其余一切 Markup 构造都是语法糖或标注，本文给出指向 D0003 / D0006 / D0004 的引用索引；Code 模式是本文的主体，定义完整的字面量、运算符、表达式、声明与类型语法。
+Markup 模式只定义最小骨架（文本流、段落分隔、`#` 嵌入、转义）——其余一切 Markup 构造都是语法糖或标注，本文给出指向 [[vault::designs::D0003-builtin-functions-and-syntax-sugar]] / [[vault::designs::D0006-scope-and-annotation-syntax]] / [[vault::designs::D0004-vault-module-and-scope]] 的引用索引；Code 模式是本文的主体，定义完整的字面量、运算符、表达式、声明与类型语法。
 
 动线：lexical context 总览 → Markup 最小骨架 → Code 核心语法 → 字面量载荷 → 引用索引。
 
@@ -21,10 +21,10 @@ Code   —— 产生 Value（Markup 中的 # 进入这里；{...} Code block）
 
 Markup 由文本流、段落分隔、块构造与转义组成：
 
-- **文本流**：连续文本按粒度规则成为 `Text` 元素（D0002 属性表一节）——表达式嵌入、标注、元素构造、段间分隔处切开；
+- **文本流**：连续文本按粒度规则成为 `Text` 元素（[[vault::designs::D0002-evaluation-model-and-type-system]] 属性表一节）——表达式嵌入、标注、元素构造、段间分隔处切开；
 - **段落分隔**：空行产生 `Parbreak`；
-- **`#` 嵌入式表达式**：边界规则见 D0001（Unicode 标识符字符集、`;` 与括号强制终止、句号规则、空格是文本）；
-- **块构造**：`{...}` Code block、`#[...]` 手动 scope（Markup 中 Content literal 的书写形式）——见 D0006 scope 语法形态；裸 `[` 与 `]` 是普通文本。
+- **`#` 嵌入式表达式**：边界规则见 [[vault::designs::D0001-language-overview]]（Unicode 标识符字符集、`;` 与括号强制终止、句号规则、空格是文本）；
+- **块构造**：`{...}` Code block、`#[...]` 手动 scope（Markup 中 Content literal 的书写形式）——见 [[vault::designs::D0006-scope-and-annotation-syntax]] scope 语法形态；裸 `[` 与 `]` 是普通文本。
 - **转义**：`\` 转义 `#`、`[`、`]`、`@`、`\` 本身；转义不产生额外输出（`\#` 输出一个 `#`）。
 
 其余一切 Markup 构造（标题、围栏、分割线、列表、引用、强调等）都是语法糖或标注，见"引用索引"。
@@ -33,11 +33,11 @@ Markup 由文本流、段落分隔、块构造与转义组成：
 
 === 标识符
 
-标识符由 Unicode 字母（含中文）、数字、`-`、`_` 组成，首字符不能是数字或 `-`。`-` 属于标识符字符：`my-var` 是一个名字，不是减法——想写减法要加空格（`my - var`）。标识符边界与 `#` 表达式规则见 D0001。本节的分隔规则作用于 Code 内部（`#(...)`、Code block）；裸 `#` 嵌入的顶层边界（空白终止、二元运算须加括号）见 D0001——`#1 + 2` 的 `1` 在空格处终止，` + 2` 是文本。
+标识符由 Unicode 字母（含中文）、数字、`-`、`_` 组成，首字符不能是数字或 `-`。`-` 属于标识符字符：`my-var` 是一个名字，不是减法——想写减法要加空格（`my - var`）。标识符边界与 `#` 表达式规则见 [[vault::designs::D0001-language-overview]]。本节的分隔规则作用于 Code 内部（`#(...)`、Code block）；裸 `#` 嵌入的顶层边界（空白终止、二元运算须加括号）见 [[vault::designs::D0001-language-overview]]——`#1 + 2` 的 `1` 在空格处终止，` + 2` 是文本。
 
 === 注释
 
-`//` 行注释与 `/* ... */` 嵌套块注释是 Code 上下文的词法 trivia；Markup 文本流中 `//` 与 `/*` 是普通文本，不做注释剥离。注释不进入值或 Content（检索字段见 D0008 的 `comment` 字段）。
+`//` 行注释与 `/* ... */` 嵌套块注释是 Code 上下文的词法 trivia；Markup 文本流中 `//` 与 `/*` 是普通文本，不做注释剥离。注释不进入值或 Content（检索字段见 [[vault::designs::D0008-cli-and-skill]] 的 `comment` 字段）。
 
 === 字面量
 
@@ -52,7 +52,7 @@ Content   [...]（回到 Markup）
 
 负数是一元 `-` 运算符（字面量本身无符号）。科学计数法暂缓。
 
-String 字面量四种形态（继承旧设计 D0010 的决定）：
+String 字面量四种形态（继承旧设计 [[vault::old-designs::archive::D0010-string-literals-and-raw-syntax]] 的决定）：
 
 ```text
 "..."          转义 inline
@@ -63,7 +63,7 @@ r#"""..."""#   raw 多行（同样要求 opening 后立即换行）
 
 - 转义集：`\"` `\\` `\n` `\r` `\t`；raw 形态不做任何转义处理；
 - Multiline 形态的 opening framing newline 不属于值；closing 前紧邻的一个 framing newline 被裁掉；除此之外不裁空白、不 dedent；
-- 四种形态产生同一个 `String` 类型——form/style 是字面量 provenance，不影响值语义（D0002）。
+- 四种形态产生同一个 `String` 类型——form/style 是字面量 provenance，不影响值语义（[[vault::designs::D0002-evaluation-model-and-type-system]]）。
 
 === primary 与运算符
 
@@ -85,11 +85,11 @@ primary：字面量、名字、括号表达式、调用、Content literal、Code
 - `-a * b` 是 `(-a) * b`；
 - `not a == b` 是 `not (a == b)`；
 - `a and not b` 是 `a and (not b)`；
-- 相等定义在 None/Bool/Int/Float/String 上（同族值比较，跨族不等）；Content 与 Function 没有自动相等（D0002）。
+- 相等定义在 None/Bool/Int/Float/String 上（同族值比较，跨族不等）；Content 与 Function 没有自动相等（[[vault::designs::D0002-evaluation-model-and-type-system]]）。
 
 === 表达式
 
-**调用**：`callee(实参)` 加可选 trailing block `[...]`——绑定、默认值、coercion 与调用点检查见 D0002。
+**调用**：`callee(实参)` 加可选 trailing block `[...]`——绑定、默认值、coercion 与调用点检查见 [[vault::designs::D0002-evaluation-model-and-type-system]]。
 
 **if**：表达式，typst 风格：
 
@@ -109,22 +109,22 @@ primary：字面量、名字、括号表达式、调用、Content literal、Code
 #let add = (a: Int, b: Int) => a + b
 ```
 
-- 形参必须声明类型（与命名函数一致，D0002）；返回类型由 body 推断；
+- 形参必须声明类型（与命名函数一致，[[vault::designs::D0002-evaluation-model-and-type-system]]）；返回类型由 body 推断；
 - 参数列表括号必写（单参数省略括号暂不支持）；
 - `let f(形参表) -> R = body` 定义糖与 `let f = (形参表) => body` 等价（定义糖的返回类型声明与推断结果一致）；
-- lambda 是普通 Function 值：可以绑定、传递、调用（D0002）。
+- lambda 是普通 Function 值：可以绑定、传递、调用（[[vault::designs::D0002-evaluation-model-and-type-system]]）。
 
 === 声明
 
 **let**：`let name = 表达式` 或 `let name: T = 表达式`——右侧先在旧环境中求值，绑定对后续可见；类型标注可选（未标注时由右侧推断）。同名遮蔽允许（最近绑定者胜出，见 [[vault::designs::D0012-scope-and-environment]] 名称解析）。
 
-**函数定义糖**：`let name(形参表) -> R = body`（≡ lambda 绑定，见上）。形参语法与 D0002 一致：带 `=` 的形参是 named 可省略，不带的是 positional 必填。
+**函数定义糖**：`let name(形参表) -> R = body`（≡ lambda 绑定，见上）。形参语法与 [[vault::designs::D0002-evaluation-model-and-type-system]] 一致：带 `=` 的形参是 named 可省略，不带的是 positional 必填。
 
 **import**：见 [[vault::designs::D0004-vault-module-and-scope]]。
 
 **模块属性**：`@![...]` 见 [[vault::designs::D0006-scope-and-annotation-syntax]]。
 
-（递归绑定暂缓：`let` 的右侧看不到正在声明的名字，递归函数待引入 `let rec` 时再设计——见 D0002 静态检查。）
+（递归绑定暂缓：`let` 的右侧看不到正在声明的名字，递归函数待引入 `let rec` 时再设计——见 [[vault::designs::D0002-evaluation-model-and-type-system]] 静态检查。）
 
 === 类型语法
 

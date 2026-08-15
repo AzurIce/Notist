@@ -38,10 +38,10 @@
 
 == 计划中的记录（待起草；按创建顺序取编号）
 
-- 调用模型（L4）：拆自 D0002/D0007（实参序裁决 R05 的落点）
-- 属性表（L7）：拆自 D0002/D0006
+- 调用模型（L4）：拆自 [[vault::designs::D0002-evaluation-model-and-type-system]]/[[vault::designs::D0007-surface-language-and-core-grammar]]（实参序裁决 R05 的落点）
+- 属性表（L7）：拆自 [[vault::designs::D0002-evaluation-model-and-type-system]]/[[vault::designs::D0006-scope-and-annotation-syntax]]
 - core namespace 与插件边界（V5）：并入 Notist.toml 配置内容模型（language version / capability / plugin schema）
-- import（V3）：拆自 D0004
+- import（V3）：拆自 [[vault::designs::D0004-vault-module-and-scope]]
 - Array/Dict/Union 集合类型：推迟主题，重新设计
 - macro/grammar-extension：未来若支持用户自定义语法时独立设计（函数注册不授予修改 parser 的能力，见 [[vault::old-designs::D0004-core-functions-and-syntax-sugar]]）
 

@@ -44,7 +44,7 @@ Code block       {...}
 
 == 属性
 
-属性（annotation）是绑定到求值结果（值）上的标记：标注语法在求值期绑定属性，求值收尾转写为旁置的属性表（D0002 属性表一节）——树不携带属性。属性列表只有一套语法，挂载位置是变体。
+属性（annotation）是绑定到求值结果（值）上的标记：标注语法在求值期绑定属性，求值收尾转写为旁置的属性表（[[vault::designs::D0002-evaluation-model-and-type-system]] 属性表一节）——树不携带属性。属性列表只有一套语法，挂载位置是变体。
 
 === 属性列表
 
@@ -53,7 +53,7 @@ Code block       {...}
 条目     = id | #tag | .class | key = value
 ```
 
-- `id`：裸标识符，赋 scope id——模块内唯一，可被引用（`[[vault::guide#install]]`，见 D0004）；
+- `id`：裸标识符，赋 scope id——模块内唯一，可被引用（`[[vault::guide#install]]`，见 [[vault::designs::D0004-vault-module-and-scope]]）；
 - `#tag`：标签，任意多个，用于归类与查询；
 - `.class`：类名，任意多个，用于样式与查询；
 - `key = value`：键值属性，value 是字面量（String / Int / Bool）。
@@ -76,7 +76,7 @@ id 至多一个；tag、class 与 key=value 任意多个。示例：
    #[一段内容]@install
    ```
 
-   修饰对象是前面紧接着的表达式/元素的求值结果；文本流在标注处切开，标注挂在紧邻的 Text 个体上（粒度规则见 D0002 属性表一节）。
+   修饰对象是前面紧接着的表达式/元素的求值结果；文本流在标注处切开，标注挂在紧邻的 Text 个体上（粒度规则见 [[vault::designs::D0002-evaluation-model-and-type-system]] 属性表一节）。
 
 2. 块级前缀：`@[...]`
 
@@ -107,13 +107,13 @@ id 至多一个；tag、class 与 key=value 任意多个。示例：
    - 必须出现在文件开头（第一个有意义的 token 之前）——模块元数据可被索引器快速扫描，不依赖求值；
    - `!` 表示"作用于所在模块"（对应 Rust inner attribute 的语义）；
    - 与行内/块级标注同一模型：等价于把属性列表绑定为模块属性；
-   - 属性列表中不使用 id——模块本身已是可寻址目标（Module target，见 D0004），id 无意义。
+   - 属性列表中不使用 id——模块本身已是可寻址目标（Module target，见 [[vault::designs::D0004-vault-module-and-scope]]），id 无意义。
 
 === 属性与求值、成型
 
 求值期：标注语法求值时把属性绑定到"值"上——postfix 绑定前面紧接着的表达式结果，前缀绑定下一个块级节点，模块属性绑定根 scope。
 
-求值收尾：绑定转写为属性表条目（D0002）——实元素属性是单元素区间条目，透明 scope（Content literal、手动 scope）溶解后其属性与身份是内容覆盖的区间条目，可以跨越段落边界；修饰节头部 heading 的属性上卷为节条目，节边界由成型归组规则确定（[[vault::designs::D0011-shaping-and-structure-tree]]），语义作用于整个节子树。属性是值的属性：绑定在值上的属性随值复制，每次插入产生独立条目。
+求值收尾：绑定转写为属性表条目（[[vault::designs::D0002-evaluation-model-and-type-system]]）——实元素属性是单元素区间条目，透明 scope（Content literal、手动 scope）溶解后其属性与身份是内容覆盖的区间条目，可以跨越段落边界；修饰节头部 heading 的属性上卷为节条目，节边界由成型归组规则确定（[[vault::designs::D0011-shaping-and-structure-tree]]），语义作用于整个节子树。属性是值的属性：绑定在值上的属性随值复制，每次插入产生独立条目。
 
 查询一律以区间命中（单元素区间是特例），没有节点命中与区间命中两种形状——属性表是唯一入口。
 
@@ -126,4 +126,4 @@ id 至多一个；tag、class 与 key=value 任意多个。示例：
 
 == 与查询的关系
 
-属性表是查询的唯一入口：id 是模块内唯一身份（D0004），tag 与 key=value 支持按属性查询——编辑器与 Agent 借此检索"打了某个标签/某个状态的内容"。模块属性是模块的稳定元数据，随 ModuleResult 发布，`@![...]` 的"文件开头"约束保证它可以不求值地读取。
+属性表是查询的唯一入口：id 是模块内唯一身份（[[vault::designs::D0004-vault-module-and-scope]]），tag 与 key=value 支持按属性查询——编辑器与 Agent 借此检索"打了某个标签/某个状态的内容"。模块属性是模块的稳定元数据，随 ModuleResult 发布，`@![...]` 的"文件开头"约束保证它可以不求值地读取。

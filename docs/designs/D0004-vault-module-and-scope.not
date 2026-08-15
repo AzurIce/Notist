@@ -98,7 +98,7 @@ Code import 取得目标 Module 的 root bindings：
 
 == 引用与寻址
 
-Reference 连接知识：`[[target]]` 产生 Reference 元素（见 D0003）。解析针对 ModulePath 与可选的 scope id，不针对磁盘路径；它不执行目标 Module、不读取其 bindings、不内联其 content。
+Reference 连接知识：`[[target]]` 产生 Reference 元素（见 [[vault::designs::D0003-builtin-functions-and-syntax-sugar]]）。解析针对 ModulePath 与可选的 scope id，不针对磁盘路径；它不执行目标 Module、不读取其 bindings、不内联其 content。
 
 === 目标书写形式
 
@@ -135,7 +135,7 @@ heading 额外拥有**默认 id**：标题 body 提取的纯文本（见 [[vault
 
 === 解析产物：RefTarget
 
-Reference 元素的值层只有 `url` 字符串（见 D0003）；url 指向什么由分析层解析，解析产物：
+Reference 元素的值层只有 `url` 字符串（见 [[vault::designs::D0003-builtin-functions-and-syntax-sugar]]）；url 指向什么由分析层解析，解析产物：
 
 ```text
 RefTarget
@@ -153,7 +153,7 @@ RefTarget
 
 === 外部 URL（暂缓）
 
-带 scheme（`https://`、`mailto:` 等）的外部目标暂缓进入语言：v1 的引用目标空间只包含 vault 内部目标。RefTarget 预留 External 分支，待外部目标进入时启用；配套的 `link` 构造器与裸 URL 自动链接糖同步暂缓（见 [[vault::designs::D0003-builtin-functions-and-syntax-sugar]]）。`[[https://...]]` 语法合法（target 是字面 url 字符串，见 D0003）：解析产物为 `External(url)`，v1 渲染为未解析的可见文本并产生 info 级 `external-reference-unsupported` 诊断——不是语法错误。
+带 scheme（`https://`、`mailto:` 等）的外部目标暂缓进入语言：v1 的引用目标空间只包含 vault 内部目标。RefTarget 预留 External 分支，待外部目标进入时启用；配套的 `link` 构造器与裸 URL 自动链接糖同步暂缓（见 [[vault::designs::D0003-builtin-functions-and-syntax-sugar]]）。`[[https://...]]` 语法合法（target 是字面 url 字符串，见 [[vault::designs::D0003-builtin-functions-and-syntax-sugar]]）：解析产物为 `External(url)`，v1 渲染为未解析的可见文本并产生 info 级 `external-reference-unsupported` 诊断——不是语法错误。
 
 == 两张跨模块图
 

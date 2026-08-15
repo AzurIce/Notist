@@ -25,7 +25,7 @@ Value
 
 （集合类型 Array/Dict 暂不进入语言，待后续设计引入。）
 
-每个公开类型都必须具有相应的值构造、观察与操作——进入语言的类型就是普通值，可以绑定、传递与运算（语义诚实）。类型与值一一对应，见 D0002 类型系统。
+每个公开类型都必须具有相应的值构造、观察与操作——进入语言的类型就是普通值，可以绑定、传递与运算（语义诚实）。类型与值一一对应，见 [[vault::designs::D0002-evaluation-model-and-type-system]] 类型系统。
 
 == Content 值
 
@@ -52,13 +52,13 @@ Element
 └─ Custom        # 扩展元素：携带构造器身份与参数，渲染器对未知种类有兜底
 ```
 
-在任一语言版本中，内置集合是封闭的：内置元素可以穷举匹配；扩展（插件等）走 `Custom`，不改变内置集合，内置集合随语言版本演化。元素参数是普通值——例如 Heading 的 `level` 与 body、Callout 的 `kind` 与 body；容器元素的子元素不变量在成型时检查（D0011）。各内置元素的构造器签名与 Markup 语法糖见 [[vault::designs::D0003-builtin-functions-and-syntax-sugar]]。
+在任一语言版本中，内置集合是封闭的：内置元素可以穷举匹配；扩展（插件等）走 `Custom`，不改变内置集合，内置集合随语言版本演化。元素参数是普通值——例如 Heading 的 `level` 与 body、Callout 的 `kind` 与 body；容器元素的子元素不变量在成型时检查（[[vault::designs::D0011-shaping-and-structure-tree]]）。各内置元素的构造器签名与 Markup 语法糖见 [[vault::designs::D0003-builtin-functions-and-syntax-sugar]]。
 
-Content 值不是散落的数据：它们组合在同一棵树上——scope 树（D0012）。节点既装内容，也装名字；属性不挂在树上，见 D0002 属性表。
+Content 值不是散落的数据：它们组合在同一棵树上——scope 树（[[vault::designs::D0012-scope-and-environment]]）。节点既装内容，也装名字；属性不挂在树上，见 [[vault::designs::D0002-evaluation-model-and-type-system]] 属性表。
 
 == Content 组合与插入规则
 
-求值就在 scope 树上进行：名字沿节点链解析（D0012），内容按源码顺序组合成 `Content`。文档正文是隐式的 Content quotation——普通文字、引用、标注与嵌入的计算按源码顺序组合成 `Content`。正文不是求值之外的另一套流程，而是同一管线里的一种写法。
+求值就在 scope 树上进行：名字沿节点链解析（[[vault::designs::D0012-scope-and-environment]]），内容按源码顺序组合成 `Content`。文档正文是隐式的 Content quotation——普通文字、引用、标注与嵌入的计算按源码顺序组合成 `Content`。正文不是求值之外的另一套流程，而是同一管线里的一种写法。
 
 Markup insertion 边界上，嵌入表达式的结果按规则插入外层 Content：
 
@@ -70,14 +70,14 @@ Markup insertion 边界上，嵌入表达式的结果按规则插入外层 Conte
 | `None` | 产生空内容 |
 | 其他类型（如 `Function`） | 不能插入，产生诊断 |
 
-插入转换只存在于 Markup insertion 边界；普通函数要求 Content 参数时仍然拒绝 String——"可展示"不会渗透成所有 API 的隐式转换规则（D0002 Content 类型）。
+插入转换只存在于 Markup insertion 边界；普通函数要求 Content 参数时仍然拒绝 String——"可展示"不会渗透成所有 API 的隐式转换规则（[[vault::designs::D0002-evaluation-model-and-type-system]] Content 类型）。
 
 == 求值规则
 
-- **E1 顺序**：声明与正文按源码顺序求值；`let` 绑定扩展后续节点的环境（D0012），可展示的 Markup 与嵌入表达式通过 Content insertion 追加内容。
+- **E1 顺序**：声明与正文按源码顺序求值；`let` 绑定扩展后续节点的环境（[[vault::designs::D0012-scope-and-environment]]），可展示的 Markup 与嵌入表达式通过 Content insertion 追加内容。
 - **E2 函数应用顺序**：求值 callee 表达式 → 按源码顺序求值显式实参与 trailing Content → 按形参声明顺序建立绑定（应用解析结果中的 coercion，或代入缺省形参的默认值）→ 调用函数值 → 校验返回值满足声明的结果类型。
-- **E3 单次求值**：每个表达式只求值一次；默认值表达式在定义时求值，捕获定义处环境，不随调用环境变化（D0002 函数类型）。
-- **E4 错误恢复**：错误实参不使用默认值，错误 callee 不伪装成返回 `None` 的成功函数（D0002 静态检查）。
+- **E3 单次求值**：每个表达式只求值一次；默认值表达式在定义时求值，捕获定义处环境，不随调用环境变化（[[vault::designs::D0002-evaluation-model-and-type-system]] 函数类型）。
+- **E4 错误恢复**：错误实参不使用默认值，错误 callee 不伪装成返回 `None` 的成功函数（[[vault::designs::D0002-evaluation-model-and-type-system]] 静态检查）。
 
 == 求值结果
 
@@ -91,7 +91,7 @@ Markup insertion 边界上，嵌入表达式的结果按规则插入外层 Conte
 }
 ```
 
-D0001 的最小示例中：`accent` 与 `warning` 进入 `bindings`，标题与 callout 组合成 `content`——此时它还是元素序列，求值收尾按 D0011 把它成型为结构树。（此结构在引入 Vault 与 Module 后成为 ModuleResult，见 [[vault::designs::D0004-vault-module-and-scope]]。）
+[[vault::designs::D0001-language-overview]] 的最小示例中：`accent` 与 `warning` 进入 `bindings`，标题与 callout 组合成 `content`——此时它还是元素序列，求值收尾按 [[vault::designs::D0011-shaping-and-structure-tree]] 把它成型为结构树。（此结构在引入 Vault 与 Module 后成为 ModuleResult，见 [[vault::designs::D0004-vault-module-and-scope]]。）
 
 == Conformance
 
@@ -107,5 +107,5 @@ D0001 的最小示例中：`accent` 与 `warning` 进入 `bindings`，标题与 
 == 已裁定 / 待定
 
 - 已裁定：求值器只消费静态检查产物；插入转换只存在于 Markup insertion 边界；每个表达式只求值一次。
-- 已裁定：`content` 是元素序列（值层真相），结构树是 D0011 的可重建投影。
-- 待定：递归绑定引入后，`let rec` 的求值规则与 scope 可见性由 D0012 与本文共同补充。
+- 已裁定：`content` 是元素序列（值层真相），结构树是 [[vault::designs::D0011-shaping-and-structure-tree]] 的可重建投影。
+- 待定：递归绑定引入后，`let rec` 的求值规则与 scope 可见性由 [[vault::designs::D0012-scope-and-environment]] 与本文共同补充。
