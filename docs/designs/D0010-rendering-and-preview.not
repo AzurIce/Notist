@@ -1,6 +1,6 @@
 = D0010: Rendering and Preview
 
-本文承接 [[vault::designs::D0011-shaping-and-structure-tree]]（成型结构树）、[[vault::designs::D0002-evaluation-model-and-type-system]]（属性表）、[[vault::designs::D0004-vault-module-and-scope]]（引用寻址与 RefTarget）、[[vault::designs::D0009-lsp-and-implementation-architecture]]（WorkspaceSnapshot）。本文定义 HTML 能力的三层：`notist-html` 把语义文档渲染为 HTML fragment，`notist build` 把整个 Vault 构建为静态站点，`notist preview` 在本地持续构建并提供浏览器预览。
+本文承接 [[vault::designs::D0011-shaping-and-structure-tree#输入与输出]]（成型结构树）、[[vault::designs::D0002-evaluation-model-and-type-system#属性表]]（属性表）、[[vault::designs::D0004-vault-module-and-scope#解析产物：RefTarget]]（引用寻址与 RefTarget）、[[vault::designs::D0009-lsp-and-implementation-architecture#分析层：Analyzer 与 WorkspaceSnapshot]]（WorkspaceSnapshot）。本文定义 HTML 能力的三层：`notist-html` 把语义文档渲染为 HTML fragment，`notist build` 把整个 Vault 构建为静态站点，`notist preview` 在本地持续构建并提供浏览器预览。
 
 动线：产品模型 → notist-html（元素映射、锚点、区间属性、安全）→ Static Build（URL、资源、诊断）→ Local Preview（SSE、原子重建、网络边界）→ 一致性。
 
@@ -49,22 +49,22 @@ Custom                -> 带 data-notist-name 的 span/div
 Missing 引用 / 未知 Custom -> 不可点击的 span（保留可见文本）
 ```
 
-Quote 与 Table 不进入当前语言（[[vault::designs::D0003-builtin-functions-and-syntax-sugar]] 整体暂缓）；映射随元素进入语言时补充。本表是当前内置元素集合（[[vault::designs::D0013-evaluation-model-and-content-sequence]] 元素树）的封闭映射：每增加一行都以 [[vault::designs::D0003-builtin-functions-and-syntax-sugar]] 引入新元素为前提。Parbreak 不渲染（段落结构已由成型给出）。
+Quote 与 Table 不进入当前语言（[[vault::designs::D0003-builtin-functions-and-syntax-sugar#暂缓与候选]] 整体暂缓）；映射随元素进入语言时补充。本表是当前内置元素集合（[[vault::designs::D0013-evaluation-model-and-content-sequence#Content 值]] 元素树）的封闭映射：每增加一行都以 [[vault::designs::D0003-builtin-functions-and-syntax-sugar#内置构造器]] 引入新元素为前提。Parbreak 不渲染（段落结构已由成型给出）。
 
 === 锚点与引用链接
 
-- 显式 scope id 与标题默认 id（[[vault::designs::D0004-vault-module-and-scope]]）投影为 HTML `id` 锚点。id 满足 HTML id 语法（Unicode 字母/数字/连字符/下划线，不以数字或连字符开头）时直接使用；否则用确定性规则生成稳定锚点——回退锚点是元素起始字节偏移的纯函数（`loc-<offset>`，如 `loc-140`），同 Typst HTML 导出的处理。锚点与源码位置可互相推导，不依赖随机数或文档序历史。
-- Reference 在构建/渲染时 resolve（RefTarget，[[vault::designs::D0004-vault-module-and-scope]]）：
+- 显式 scope id 与标题默认 id（[[vault::designs::D0004-vault-module-and-scope#scope id]]）投影为 HTML `id` 锚点。id 满足 HTML id 语法（Unicode 字母/数字/连字符/下划线，不以数字或连字符开头）时直接使用；否则用确定性规则生成稳定锚点——回退锚点是元素起始字节偏移的纯函数（`loc-<offset>`，如 `loc-140`），同 Typst HTML 导出的处理。锚点与源码位置可互相推导，不依赖随机数或文档序历史。
+- Reference 在构建/渲染时 resolve（RefTarget，[[vault::designs::D0004-vault-module-and-scope#解析产物：RefTarget]]）：
   - `Module(path)` → 目标页面相对 URL；
   - `Scope(module, id)` → 目标页面 URL + `#锚点`（含标题默认 id 定位到节）；
   - `Resource(module, name, kind)` → 构建时复制的资源路径（见下）；
   - `Missing` → 不可点击 span，保留目标文本并带 unresolved 样式；
   - `External` 暂缓（[[vault::designs::D0004-vault-module-and-scope]]）。
-- relation 只有 Reference（导航）一种（[[vault::designs::D0005-daemon-architecture]]）；Preview 预留。
+- relation 只有 Reference（导航）一种（[[vault::designs::D0005-daemon-architecture#Client Interface]]）；Preview 预留。
 
 === 区间属性投影
 
-属性表是旁置的（[[vault::designs::D0002-evaluation-model-and-type-system]]），渲染时投影到 DOM：
+属性表是旁置的（[[vault::designs::D0002-evaluation-model-and-type-system#属性表]]），渲染时投影到 DOM：
 
 - 单元素区间的属性投影到该元素节点：`.class` → HTML `class`；`id` → 锚点；`#tag` 与 `key = value` → `data-notist-*` 属性（查询与样式钩子，不改变可见语义）；
 - 节级属性（节条目）投影到 Section 节点；
@@ -92,11 +92,11 @@ vault::designs::type-system  -> designs/type-system/index.html
 
 URL 中的路径 segment 单独 percent encode；页面之间使用相对链接，使构建结果可直接从任意静态文件服务器或子路径部署。
 
-- **资源复制**：资源目录虚拟模块（[[vault::designs::D0004-vault-module-and-scope]]）中的文件按引用复制到输出（`vault::docs::images#logo.png` → 输出下对应路径），Reference 指向复制后的相对路径；未被引用的资源文件也可以整体复制（站点资源），由 CLI 决定——值层只有 Reference，资源解析属于构建层。当前 CLI 决策：默认整体复制所有模块资源（无额外旗标）；
+- **资源复制**：资源目录虚拟模块（[[vault::designs::D0004-vault-module-and-scope#资源目录]]）中的文件按引用复制到输出（`vault::docs::images#logo.png` → 输出下对应路径），Reference 指向复制后的相对路径；未被引用的资源文件也可以整体复制（站点资源），由 CLI 决定——值层只有 Reference，资源解析属于构建层。当前 CLI 决策：默认整体复制所有模块资源（无额外旗标）；
 - **虚拟目录模块**生成索引页（列出子模块与资源）；
 - 引用在构建时解析：目标存在输出链接，不存在保留可见文本与 unresolved 样式；
 - syntax/analysis/evaluation diagnostics 不阻止生成其他可用页面，但 `notist build` 输出 diagnostics 并返回非零退出码；
-- 默认不清空整个输出目录（只创建或覆盖本次 Vault 对应的页面与 `_notist` 资源），删除旧产物必须显式 `--clean`；`--clean` 只允许清理已解析、验证位于目标 output root 内的 artifact（[[vault::designs::D0008-cli-and-skill]]）。
+- 默认不清空整个输出目录（只创建或覆盖本次 Vault 对应的页面与 `_notist` 资源），删除旧产物必须显式 `--clean`；`--clean` 只允许清理已解析、验证位于目标 output root 内的 artifact（[[vault::designs::D0008-cli-and-skill#CLI 命令面]]）。
 
 站点级职责（完整 HTML page shell、vault 名称与模块导航、`_notist/style.css` 等共享资源）属于 CLI build 层，不进入 fragment renderer。
 
@@ -110,7 +110,7 @@ notist preview [ROOT] [--host IP] [--port N] [--no-open]
 
 默认行为：
 
-- 通过 daemon 或 embedded service 打开 disk View（[[vault::designs::D0009-lsp-and-implementation-architecture]]）；
+- 通过 daemon 或 embedded service 打开 disk View（[[vault::designs::D0009-lsp-and-implementation-architecture#分析层：Analyzer 与 WorkspaceSnapshot]]）；
 - 观察 disk View 的 snapshot publication 并 debounce；
 - 重新构建带 live reload 资源的完整站点（staging 完整构建后原子替换服务目录）；
 - 使用系统分配的空闲端口并自动打开浏览器；
@@ -142,4 +142,4 @@ Preview 暴露用户正在编辑的文档内容，默认只监听 loopback；显
 
 == Workspace Consistency
 
-Parse 的 byte range、源码文本、分析结果与诊断必须来自同一个 WorkspaceSnapshot（[[vault::designs::D0009-lsp-and-implementation-architecture]]）——不能在分析完成后由 renderer 重新读取可能已经变化的文件。Preview、diagnostics、Hover 与 definition 共享同一个文档版本，而不是分别读盘。渲染器是 snapshot 的只读消费者：它消费结构树、属性表与解析结果，不新增语义阶段（[[vault::designs::D0009-lsp-and-implementation-architecture]] 消费者边界）。
+Parse 的 byte range、源码文本、分析结果与诊断必须来自同一个 WorkspaceSnapshot（[[vault::designs::D0009-lsp-and-implementation-architecture#分析层：Analyzer 与 WorkspaceSnapshot]]）——不能在分析完成后由 renderer 重新读取可能已经变化的文件。Preview、diagnostics、Hover 与 definition 共享同一个文档版本，而不是分别读盘。渲染器是 snapshot 的只读消费者：它消费结构树、属性表与解析结果，不新增语义阶段（[[vault::designs::D0009-lsp-and-implementation-architecture#分析层：Analyzer 与 WorkspaceSnapshot]] 消费者边界）。

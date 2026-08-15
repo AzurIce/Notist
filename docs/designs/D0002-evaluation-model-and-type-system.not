@@ -1,6 +1,6 @@
 = D0002: Type System and Property Table
 
-[[vault::designs::D0001-language-overview]] 的最小示例给出求值结果 `bindings`、`content` 与 `annotations` 三个产物。本文定义其中两个规范面：静态类型系统，以及旁置的属性表。求值如何执行并产生 `content` 元素序列见 [[vault::designs::D0013-evaluation-model-and-content-sequence]]；scope 与词法环境见 [[vault::designs::D0012-scope-and-environment]]；成型见 [[vault::designs::D0011-shaping-and-structure-tree]]。
+[[vault::designs::D0001-language-overview#最小示例]] 的最小示例给出求值结果 `bindings`、`content` 与 `annotations` 三个产物。本文定义其中两个规范面：静态类型系统，以及旁置的属性表。求值如何执行并产生 `content` 元素序列见 [[vault::designs::D0013-evaluation-model-and-content-sequence#求值结果]]；scope 与词法环境见 [[vault::designs::D0012-scope-and-environment#scope 是值层节点]]；成型见 [[vault::designs::D0011-shaping-and-structure-tree#输入与输出]]。
 
 一段源代码经过三个阶段：解析、静态检查、求值。解析把源码变成语法结构；静态检查解析名称、推断并检查类型，并把每个调用点解析为确定的已解析调用（resolved call）；求值器只消费静态检查的产物，产生元素序列后由成型投影为结构树。传统的标记语言直接通过解析就可以得到表示文档的元素树；Notist 在解析之后多一步求值——计算是语言的固有部分，不是事后插入的占位符。
 
@@ -8,11 +8,11 @@
 
 == 类型系统
 
-静态检查在求值之前运行：它以类型判断（type judgment）Γ ⊢ e : T 描述"表达式 e 产出什么值"，并产出求值器唯一消费的语义输入。类型是值的静态投影；名称解析沿 scope 链进行——scope 与词法环境见 [[vault::designs::D0012-scope-and-environment]]，值的定义见 [[vault::designs::D0013-evaluation-model-and-content-sequence]]。
+静态检查在求值之前运行：它以类型判断（type judgment）Γ ⊢ e : T 描述"表达式 e 产出什么值"，并产出求值器唯一消费的语义输入。类型是值的静态投影；名称解析沿 scope 链进行——scope 与词法环境见 [[vault::designs::D0012-scope-and-environment#scope 是值层节点]]，值的定义见 [[vault::designs::D0013-evaluation-model-and-content-sequence#值的宇宙]]。
 
 === Type 与 Value 对应
 
-类型是值的静态投影：每个类型描述一类值；求值阶段的值宇宙（[[vault::designs::D0013-evaluation-model-and-content-sequence]]）与类型系统共享同一套概念，类型系统是它的静态面。
+类型是值的静态投影：每个类型描述一类值；求值阶段的值宇宙（[[vault::designs::D0013-evaluation-model-and-content-sequence#值的宇宙]]）与类型系统共享同一套概念，类型系统是它的静态面。
 
 ```text
 Type
@@ -92,7 +92,7 @@ Trailing content 是最后一个 positional 形参：定义中用显式 `trailin
 
 === Content 类型
 
-`Content` 是不透明类型：一个类型涵盖所有元素组合，元素结构（种类、嵌套、参数）是运行时数据，静态检查不追踪它；元素清单见 [[vault::designs::D0013-evaluation-model-and-content-sequence]]。树中的每个节点携带自己的构造器身份；builtin 元素以 first-class 构造器函数的形式存在——`callout(kind: ..., body: ...)` 产生一个 callout 节点，其类型就是 `Content`。（内置构造器的命名空间尚未决定，本文暂以裸名书写。）用户函数与 builtin 构造器因此同构：`warning` 与 `callout` 遵守同一套签名、调用与求值规则，渲染与查询按节点身份消费结果，不区分来源。
+`Content` 是不透明类型：一个类型涵盖所有元素组合，元素结构（种类、嵌套、参数）是运行时数据，静态检查不追踪它；元素清单见 [[vault::designs::D0013-evaluation-model-and-content-sequence#Content 值]]。树中的每个节点携带自己的构造器身份；builtin 元素以 first-class 构造器函数的形式存在——`callout(kind: ..., body: ...)` 产生一个 callout 节点，其类型就是 `Content`。（内置构造器的命名空间尚未决定，本文暂以裸名书写。）用户函数与 builtin 构造器因此同构：`warning` 与 `callout` 遵守同一套签名、调用与求值规则，渲染与查询按节点身份消费结果，不区分来源。
 
 插入转换只在 Markup insertion 边界成立：
 
@@ -116,7 +116,7 @@ Trailing content 是最后一个 positional 形参：定义中用显式 `trailin
 
 错误恢复：语法、未解析名称与类型错误允许产生 partial HIR，使编辑器与预览能继续处理其他源码；恢复节点保留自己的 Error 状态——错误实参不使用默认值，错误 callee 不伪装成返回 `None` 的成功函数。
 
-静态检查的产物——名称解析结果、类型与已解析调用——构成求值器唯一的语义输入：求值器不重新猜测名字指向哪个函数、实参如何绑定，只执行这份输入。求值如何消费这份输入见 [[vault::designs::D0013-evaluation-model-and-content-sequence]]。
+静态检查的产物——名称解析结果、类型与已解析调用——构成求值器唯一的语义输入：求值器不重新猜测名字指向哪个函数、实参如何绑定，只执行这份输入。求值如何消费这份输入见 [[vault::designs::D0013-evaluation-model-and-content-sequence#求值规则]]。
 
 == 属性表
 
@@ -142,4 +142,4 @@ Trailing content 是最后一个 positional 形参：定义中用显式 `trailin
 
 == 与求值、成型的关系
 
-求值结果三元组与 `content` 元素序列的产生见 [[vault::designs::D0013-evaluation-model-and-content-sequence]]；scope 溶解见 [[vault::designs::D0012-scope-and-environment]]；结构树投影见 [[vault::designs::D0011-shaping-and-structure-tree]]。值层与属性表是唯一真相，成型后的结构树是它们的投影：可丢弃、可重建，任何消费者都不能把投影当作新的真相；消费端联合消费结构树与属性表。
+求值结果三元组与 `content` 元素序列的产生见 [[vault::designs::D0013-evaluation-model-and-content-sequence#求值结果]]；scope 溶解见 [[vault::designs::D0012-scope-and-environment#与成型、属性表的关系]]；结构树投影见 [[vault::designs::D0011-shaping-and-structure-tree#不变量]]。值层与属性表是唯一真相，成型后的结构树是它们的投影：可丢弃、可重建，任何消费者都不能把投影当作新的真相；消费端联合消费结构树与属性表。

@@ -1,6 +1,6 @@
 = D0007: Surface Language and Core Grammar
 
-本文定义语言的表面语法。承接：[[vault::designs::D0001-language-overview]]（双模式与表达式边界）、[[vault::designs::D0013-evaluation-model-and-content-sequence]]（求值模型）、[[vault::designs::D0002-evaluation-model-and-type-system]]（类型与调用）、[[vault::designs::D0003-builtin-functions-and-syntax-sugar]]（语法糖）、[[vault::designs::D0004-vault-module-and-scope]]（Module 与引用寻址）、[[vault::designs::D0006-scope-and-annotation-syntax]]（scope 形态与标注）。
+本文定义语言的表面语法。承接：[[vault::designs::D0001-language-overview]]（双模式与表达式边界）、[[vault::designs::D0013-evaluation-model-and-content-sequence#求值规则]]（求值模型）、[[vault::designs::D0002-evaluation-model-and-type-system#类型系统]]（类型）与 [[vault::designs::D0002-evaluation-model-and-type-system#函数类型]]（调用）、[[vault::designs::D0003-builtin-functions-and-syntax-sugar]]（语法糖）、[[vault::designs::D0004-vault-module-and-scope#Module]]（Module）与 [[vault::designs::D0004-vault-module-and-scope#引用与寻址]]（引用寻址）、[[vault::designs::D0006-scope-and-annotation-syntax#scope 的语法形态]]（scope 形态与标注）。
 
 Markup 模式只定义最小骨架（文本流、段落分隔、`#` 嵌入、转义）——其余一切 Markup 构造都是语法糖或标注，本文给出指向 [[vault::designs::D0003-builtin-functions-and-syntax-sugar]] / [[vault::designs::D0006-scope-and-annotation-syntax]] / [[vault::designs::D0004-vault-module-and-scope]] 的引用索引；Code 模式是本文的主体，定义完整的字面量、运算符、表达式、声明与类型语法。
 
@@ -21,10 +21,10 @@ Code   —— 产生 Value（Markup 中的 # 进入这里；{...} Code block）
 
 Markup 由文本流、段落分隔、块构造与转义组成：
 
-- **文本流**：连续文本按粒度规则成为 `Text` 元素（[[vault::designs::D0002-evaluation-model-and-type-system]] 属性表一节）——表达式嵌入、标注、元素构造、段间分隔处切开；
+- **文本流**：连续文本按粒度规则成为 `Text` 元素（[[vault::designs::D0002-evaluation-model-and-type-system#属性表]] 属性表一节）——表达式嵌入、标注、元素构造、段间分隔处切开；
 - **段落分隔**：空行产生 `Parbreak`；
 - **`#` 嵌入式表达式**：边界规则见 [[vault::designs::D0001-language-overview]]（Unicode 标识符字符集、`;` 与括号强制终止、句号规则、空格是文本）；
-- **块构造**：`{...}` Code block、`#[...]` 手动 scope（Markup 中 Content literal 的书写形式）——见 [[vault::designs::D0006-scope-and-annotation-syntax]] scope 语法形态；裸 `[` 与 `]` 是普通文本。
+- **块构造**：`{...}` Code block、`#[...]` 手动 scope（Markup 中 Content literal 的书写形式）——见 [[vault::designs::D0006-scope-and-annotation-syntax#scope 的语法形态]] scope 语法形态；裸 `[` 与 `]` 是普通文本。
 - **转义**：`\` 转义 `#`、`[`、`]`、`@`、`\` 本身；转义不产生额外输出（`\#` 输出一个 `#`）。
 
 其余一切 Markup 构造（标题、围栏、分割线、列表、引用、强调等）都是语法糖或标注，见"引用索引"。
@@ -37,7 +37,7 @@ Markup 由文本流、段落分隔、块构造与转义组成：
 
 === 注释
 
-`//` 行注释与 `/* ... */` 嵌套块注释是 Code 上下文的词法 trivia；Markup 文本流中 `//` 与 `/*` 是普通文本，不做注释剥离。注释不进入值或 Content（检索字段见 [[vault::designs::D0008-cli-and-skill]] 的 `comment` 字段）。
+`//` 行注释与 `/* ... */` 嵌套块注释是 Code 上下文的词法 trivia；Markup 文本流中 `//` 与 `/*` 是普通文本，不做注释剥离。注释不进入值或 Content（检索字段见 [[vault::designs::D0008-cli-and-skill#检索单元与索引]] 的 `comment` 字段）。
 
 === 字面量
 
@@ -63,7 +63,7 @@ r#"""..."""#   raw 多行（同样要求 opening 后立即换行）
 
 - 转义集：`\"` `\\` `\n` `\r` `\t`；raw 形态不做任何转义处理；
 - Multiline 形态的 opening framing newline 不属于值；closing 前紧邻的一个 framing newline 被裁掉；除此之外不裁空白、不 dedent；
-- 四种形态产生同一个 `String` 类型——form/style 是字面量 provenance，不影响值语义（[[vault::designs::D0002-evaluation-model-and-type-system]]）。
+- 四种形态产生同一个 `String` 类型——form/style 是字面量 provenance，不影响值语义（[[vault::designs::D0002-evaluation-model-and-type-system#Type 与 Value 对应]]）。
 
 === primary 与运算符
 
@@ -85,11 +85,11 @@ primary：字面量、名字、括号表达式、调用、Content literal、Code
 - `-a * b` 是 `(-a) * b`；
 - `not a == b` 是 `not (a == b)`；
 - `a and not b` 是 `a and (not b)`；
-- 相等定义在 None/Bool/Int/Float/String 上（同族值比较，跨族不等）；Content 与 Function 没有自动相等（[[vault::designs::D0002-evaluation-model-and-type-system]]）。
+- 相等定义在 None/Bool/Int/Float/String 上（同族值比较，跨族不等）；Content 与 Function 没有自动相等（[[vault::designs::D0002-evaluation-model-and-type-system#Type 与 Value 对应]]）。
 
 === 表达式
 
-**调用**：`callee(实参)` 加可选 trailing block `[...]`——绑定、默认值、coercion 与调用点检查见 [[vault::designs::D0002-evaluation-model-and-type-system]]。
+**调用**：`callee(实参)` 加可选 trailing block `[...]`——绑定、默认值、coercion 与调用点检查见 [[vault::designs::D0002-evaluation-model-and-type-system#函数类型]]。
 
 **if**：表达式，typst 风格：
 
@@ -109,22 +109,22 @@ primary：字面量、名字、括号表达式、调用、Content literal、Code
 #let add = (a: Int, b: Int) => a + b
 ```
 
-- 形参必须声明类型（与命名函数一致，[[vault::designs::D0002-evaluation-model-and-type-system]]）；返回类型由 body 推断；
+- 形参必须声明类型（与命名函数一致，[[vault::designs::D0002-evaluation-model-and-type-system#函数类型]]）；返回类型由 body 推断；
 - 参数列表括号必写（单参数省略括号暂不支持）；
 - `let f(形参表) -> R = body` 定义糖与 `let f = (形参表) => body` 等价（定义糖的返回类型声明与推断结果一致）；
-- lambda 是普通 Function 值：可以绑定、传递、调用（[[vault::designs::D0002-evaluation-model-and-type-system]]）。
+- lambda 是普通 Function 值：可以绑定、传递、调用（[[vault::designs::D0002-evaluation-model-and-type-system#函数类型]]）。
 
 === 声明
 
-**let**：`let name = 表达式` 或 `let name: T = 表达式`——右侧先在旧环境中求值，绑定对后续可见；类型标注可选（未标注时由右侧推断）。同名遮蔽允许（最近绑定者胜出，见 [[vault::designs::D0012-scope-and-environment]] 名称解析）。
+**let**：`let name = 表达式` 或 `let name: T = 表达式`——右侧先在旧环境中求值，绑定对后续可见；类型标注可选（未标注时由右侧推断）。同名遮蔽允许（最近绑定者胜出，见 [[vault::designs::D0012-scope-and-environment#名称解析]] 名称解析）。
 
-**函数定义糖**：`let name(形参表) -> R = body`（≡ lambda 绑定，见上）。形参语法与 [[vault::designs::D0002-evaluation-model-and-type-system]] 一致：带 `=` 的形参是 named 可省略，不带的是 positional 必填。
+**函数定义糖**：`let name(形参表) -> R = body`（≡ lambda 绑定，见上）。形参语法与 [[vault::designs::D0002-evaluation-model-and-type-system#函数类型]] 一致：带 `=` 的形参是 named 可省略，不带的是 positional 必填。
 
-**import**：见 [[vault::designs::D0004-vault-module-and-scope]]。
+**import**：见 [[vault::designs::D0004-vault-module-and-scope#import]]。
 
-**模块属性**：`@![...]` 见 [[vault::designs::D0006-scope-and-annotation-syntax]]。
+**模块属性**：`@![...]` 见 [[vault::designs::D0006-scope-and-annotation-syntax#三种挂载位置]]。
 
-（递归绑定暂缓：`let` 的右侧看不到正在声明的名字，递归函数待引入 `let rec` 时再设计——见 [[vault::designs::D0002-evaluation-model-and-type-system]] 静态检查。）
+（递归绑定暂缓：`let` 的右侧看不到正在声明的名字，递归函数待引入 `let rec` 时再设计——见 [[vault::designs::D0002-evaluation-model-and-type-system#静态检查]] 静态检查。）
 
 === 类型语法
 
@@ -141,7 +141,7 @@ Type
 
 == 字面量载荷
 
-围栏代码块（```` ``` ````）内部与 String 字面量内部是词法层的字面量载荷：lexer 以"扫到闭合围栏/闭合引号"为唯一状态，不识别任何 Markup/Code 构造。它们不是语义 context，不参与 quotation。围栏的完整语法（opener 长度、闭合规则、lang 标注、error recovery）见 [[vault::designs::D0003-builtin-functions-and-syntax-sugar]] 的 raw 节；编辑器按载荷 range 做语言注入。
+围栏代码块（```` ``` ````）内部与 String 字面量内部是词法层的字面量载荷：lexer 以"扫到闭合围栏/闭合引号"为唯一状态，不识别任何 Markup/Code 构造。它们不是语义 context，不参与 quotation。围栏的完整语法（opener 长度、闭合规则、lang 标注、error recovery）见 [[vault::designs::D0003-builtin-functions-and-syntax-sugar#raw]] 的 raw 节；编辑器按载荷 range 做语言注入。
 
 == 引用索引
 

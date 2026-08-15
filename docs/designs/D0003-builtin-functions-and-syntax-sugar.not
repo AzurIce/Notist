@@ -1,12 +1,12 @@
 = D0003: Builtin Functions and Syntax Sugar
 
-本文承接 [[vault::designs::D0013-evaluation-model-and-content-sequence]]（元素种类清单）与 [[vault::designs::D0002-evaluation-model-and-type-system]]（统一的调用模型：positional/named 绑定、trailing、default、可空 `T?` 与可省略 `=`）。本文定义第一批内置构造器（builtin constructor）与对应的 Markup 语法糖，并给出每个糖的完整规格。
+本文承接 [[vault::designs::D0013-evaluation-model-and-content-sequence#Content 值]]（元素种类清单）与 [[vault::designs::D0002-evaluation-model-and-type-system#函数类型]]（统一的调用模型：positional/named 绑定、trailing、default、可空 `T?` 与可省略 `=`）。本文定义第一批内置构造器（builtin constructor）与对应的 Markup 语法糖，并给出每个糖的完整规格。
 
 == 设计原则
 
 === 构造器即函数
 
-内置元素以 first-class 构造器函数的形式存在，与用户函数共享同一套签名、调用解析（[[vault::designs::D0002-evaluation-model-and-type-system]]）与求值规则（[[vault::designs::D0013-evaluation-model-and-content-sequence]]）。`heading`、`raw`、`rule` 等可以绑定、传递与组合——`#let make_title = heading` 合法。
+内置元素以 first-class 构造器函数的形式存在，与用户函数共享同一套签名、调用解析（[[vault::designs::D0002-evaluation-model-and-type-system#函数类型]]）与求值规则（[[vault::designs::D0013-evaluation-model-and-content-sequence#求值规则]]）。`heading`、`raw`、`rule` 等可以绑定、传递与组合——`#let make_title = heading` 合法。
 
 === 糖与遮蔽隔离
 
@@ -63,7 +63,7 @@ heading(level: Int = 1, trailing body: Content) -> Content
 - error recovery：行首 `=` 后无内容 → 空 body 的 Heading（与显式 `heading[]` 等价）；level 无上限；
 - editor consequence：标题进入 DocumentSymbol 与大纲；增减 `=` 即编辑 level。
 
-heading 额外拥有**默认 id**：body 提取的纯文本（Text 元素按顺序拼接，含嵌套）作为默认 id——`= 安装指南` 默认即可被 `[[...#安装指南]]` 引用，无需手动标注；显式 `@id` 覆盖默认 id。提取时若 body 含块级元素或无文本的元素（引用、代码块等），默认 id 可能不可靠——产生 warning（不拒绝，提取结果仍作默认 id）。默认 id 的模块内唯一性、歧义与引用匹配规则见 [[vault::designs::D0004-vault-module-and-scope]]。
+heading 额外拥有**默认 id**：body 提取的纯文本（Text 元素按顺序拼接，含嵌套）作为默认 id——`= 安装指南` 默认即可被 `[[...#安装指南]]` 引用，无需手动标注；显式 `@id` 覆盖默认 id。提取时若 body 含块级元素或无文本的元素（引用、代码块等），默认 id 可能不可靠——产生 warning（不拒绝，提取结果仍作默认 id）。默认 id 的模块内唯一性、歧义与引用匹配规则见 [[vault::designs::D0004-vault-module-and-scope#scope id]]。
 
 === raw
 
@@ -165,7 +165,7 @@ ref(url: String) -> Content
 [[target]]            ~= ref("target")
 ```
 
-- syntax boundary：`[[` 与 `]]` 之间为字面 url 字符串——不解析 markup、不嵌套 `[[`，对 target 不施加模块路径文法（外部 URL 也按字面串接受，解析分类见 [[vault::designs::D0004-vault-module-and-scope]]）；
+- syntax boundary：`[[` 与 `]]` 之间为字面 url 字符串——不解析 markup、不嵌套 `[[`，对 target 不施加模块路径文法（外部 URL 也按字面串接受，解析分类见 [[vault::designs::D0004-vault-module-and-scope#解析产物：RefTarget]]）；
 - core equivalence：`[[...]]` 的 target 即 `url` 实参；
 - error recovery：未闭合 `[[` → 诊断并按文本恢复，内容到第一个 `]]` 为止；
 - editor consequence：vault 路径补全与目标存在性检查；跳转与预览行为由渲染层提供。
@@ -176,7 +176,7 @@ ref 的目标空间：
 - 模块内目标：`vault::path::to::file#scope-id`（文档模块的 scope/元素），或 `vault::path::to::images#logo.png`（资源目录下的资源文件——完整文件名精确匹配）；
 - 外部 URL：暂缓（见"暂缓与候选"）。
 
-目标解析规则与解析产物 RefTarget（Module/Scope/Resource/External/Missing）见 [[vault::designs::D0004-vault-module-and-scope]]；渲染语义（跳转如何呈现）属于渲染设计。本文只定义构造器与糖。
+目标解析规则与解析产物 RefTarget（Module/Scope/Resource/External/Missing）见 [[vault::designs::D0004-vault-module-and-scope#解析产物：RefTarget]]；渲染语义（跳转如何呈现）属于渲染设计。本文只定义构造器与糖。
 
 === strong
 

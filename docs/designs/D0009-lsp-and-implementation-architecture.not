@@ -1,6 +1,6 @@
 = D0009: LSP and Implementation Architecture
 
-本文承接 [[vault::designs::D0005-daemon-architecture]]（daemon 进程形态与 core request 表）与 [[vault::designs::D0008-cli-and-skill]]（CLI 命令面与查询契约）。本文定义实现层：先定义分析层——Analyzer 与 WorkspaceSnapshot，它是 LSP 与 CLI 的共同基础，并满足 [[vault::designs::D0008-cli-and-skill]] 的查询契约（stamp、cursor 稳定性、预算）；再定义 LSP 适配与 CLI 适配——它们只是协议层，不成为新的语义层。
+本文承接 [[vault::designs::D0005-daemon-architecture#形态：每 Vault 一个 daemon]]（daemon 进程形态与 core request 表）与 [[vault::designs::D0008-cli-and-skill#CLI 命令面]]（CLI 命令面与查询契约）。本文定义实现层：先定义分析层——Analyzer 与 WorkspaceSnapshot，它是 LSP 与 CLI 的共同基础，并满足 [[vault::designs::D0008-cli-and-skill#Core Query Contract]] 的查询契约（stamp、cursor 稳定性、预算）；再定义 LSP 适配与 CLI 适配——它们只是协议层，不成为新的语义层。
 
 动线：分析层（输入 → revision → snapshot → 查询 → delta → 并发）→ LSP 适配（文档同步、position 转换、capabilities、安全）→ CLI 适配（协议投影）。
 
@@ -27,7 +27,7 @@ filesystem sources + configuration + function schemas
                     Arc<WorkspaceSnapshot N>
 ```
 
-- **VaultEngine**：Vault 的共享长期状态（[[vault::designs::D0005-daemon-architecture]]）——磁盘 source catalog、稳定 identity、可复用 cache、派生索引；不假设所有客户端看到相同的未保存文本；
+- **VaultEngine**：Vault 的共享长期状态（[[vault::designs::D0005-daemon-architecture#Daemon 持有什么]]）——磁盘 source catalog、稳定 identity、可复用 cache、派生索引；不假设所有客户端看到相同的未保存文本；
 - **Analyzer View**：一个客户端会话的长期分析状态——在磁盘状态上叠加 overlay、配置投影与 revision counter；多个 View 共享 Engine 中以 source content 为 key 的 Parse 与分析缓存，发布彼此独立的 snapshot；
 - **WorkspaceSnapshot**：Analyzer 对一组确定输入完成分析后的不可变结果——Vault root 与配置、每个 source 的文本/Parse/LineIndex、Module tree（含 virtual module）、import/binding graph 与 lexical environment identity、属性与引用索引、全部 diagnostics、resolved/typed HIR（或足以确定性派生它的 immutable input）。
 
@@ -62,8 +62,8 @@ Preview generation、LSP document version 与 snapshot revision 是三个不同�
 路径、显示名称与 source range 都不足以独自充当语义对象的身份；另一方面，并非每个语法节点都能在任意编辑后保持永久身份。
 
 - `FileId`：VaultEngine 为 canonical source identity 分配，Engine 生命周期内跨 View 与 revision 稳定；文件删除后不立即复用，普通路径重命名产生新 FileId（除非上层以明确 rename event 保留身份）；
-- `ModuleId`：Vault 内的逻辑 Module identity，对应一个 ModulePath；virtual 与 source-backed Module 都有；给 virtual Module 增加 `README.not` 不改变 identity，source move 改变 ModulePath 就是语言层面的 Module rename（[[vault::designs::D0004-vault-module-and-scope]]）；
-- 显式 scope id：可跨 revision、可引用（[[vault::designs::D0004-vault-module-and-scope]]：显式 `@id` 与标题默认 id）；没有显式 id 的节点只获得 snapshot-local identity：
+- `ModuleId`：Vault 内的逻辑 Module identity，对应一个 ModulePath；virtual 与 source-backed Module 都有；给 virtual Module 增加 `README.not` 不改变 identity，source move 改变 ModulePath 就是语言层面的 Module rename（[[vault::designs::D0004-vault-module-and-scope#Module]]）；
+- 显式 scope id：可跨 revision、可引用（[[vault::designs::D0004-vault-module-and-scope#scope id]]：显式 `@id` 与标题默认 id）；没有显式 id 的节点只获得 snapshot-local identity：
 
 ```text
 SnapshotNodeId {
@@ -91,7 +91,7 @@ captured sources
   -> publish WorkspaceSnapshot
 ```
 
-Parse 保留源码事实与 recoverable syntax errors；静态分析验证调用与类型，但不为了回答编辑器查询而执行具有外部副作用的插件。求值（[[vault::designs::D0013-evaluation-model-and-content-sequence]]）与成型（[[vault::designs::D0011-shaping-and-structure-tree]]）可以按 Module 惰性计算，但必须消费 snapshot 捕获或派生的 HIR，缓存 key 至少包含 snapshot revision、ModuleId、imported module-binding identities 与 Function environment identity。
+Parse 保留源码事实与 recoverable syntax errors；静态分析验证调用与类型，但不为了回答编辑器查询而执行具有外部副作用的插件。求值（[[vault::designs::D0013-evaluation-model-and-content-sequence#求值规则]]）与成型（[[vault::designs::D0011-shaping-and-structure-tree#输入与输出]]）可以按 Module 惰性计算，但必须消费 snapshot 捕获或派生的 HIR，缓存 key 至少包含 snapshot revision、ModuleId、imported module-binding identities 与 Function environment identity。
 
 Analyzer 负责 orchestration，不成为新的语言语义层：Parser、checker、evaluator 的规则由各自组件（[[vault::designs]] 分层索引中的语言层）定义；Analyzer 只保证它们看到同一组输入，并把结果组织成可查询的世界。
 
@@ -113,7 +113,7 @@ snapshot.references_in(module_id)    // 正向引用，D0005
 
 查询结果携带 snapshot revision，优先返回 FileId、ModuleId、显式 scope id 与 TextRange；Path、ModulePath、标题与 snippet 是展示与序列化信息，不取代核心 identity。查询不修改 Analyzer 输入、不推进 revision；completion 或 search 的 memoization cache 可丢弃，只影响性能。
 
-**满足 [[vault::designs::D0008-cli-and-skill]] 的契约**：SnapshotStamp 的 `source_set_fingerprint` 由 source set 的 identity 与内容确定性派生；source-order 查询的稳定 key（ModulePath、relative path、range、record kind）与 ranked 查询的量化 score key 由 snapshot 内的 identity 保证——Analyzer 是这些稳定性的实现者，cursor 的 `cursor_stale`/`invalid_cursor` 判定建立在它的 fingerprint 上。
+**满足 [[vault::designs::D0008-cli-and-skill#Core Query Contract]] 的契约**：SnapshotStamp 的 `source_set_fingerprint` 由 source set 的 identity 与内容确定性派生；source-order 查询的稳定 key（ModulePath、relative path、range、record kind）与 ranked 查询的量化 score key 由 snapshot 内的 identity 保证——Analyzer 是这些稳定性的实现者，cursor 的 `cursor_stale`/`invalid_cursor` 判定建立在它的 fingerprint 上。
 
 === Delta 从两个 Snapshot 推导
 
@@ -145,11 +145,11 @@ input change
   -> notify consumers with Delta(N-1, N)
 ```
 
-请求开始时读取当前 `Arc<WorkspaceSnapshot>`，随后不追随 current pointer——长查询不阻塞编辑器产生新 snapshot，也不在执行中途改变语义世界。每个 Vault 一个 VaultEngine（[[vault::designs::D0005-daemon-architecture]]），每个需要不同 overlay 或配置投影的客户端一个 Analyzer View；跨 Vault 查询位于更高层（分别捕获 snapshot 再合并，不制造伪全局 revision）。Vault 隔离意味着引用解析、capability 与权限检查默认不跨 Engine 边界。
+请求开始时读取当前 `Arc<WorkspaceSnapshot>`，随后不追随 current pointer——长查询不阻塞编辑器产生新 snapshot，也不在执行中途改变语义世界。每个 Vault 一个 VaultEngine（[[vault::designs::D0005-daemon-architecture#形态：每 Vault 一个 daemon]]），每个需要不同 overlay 或配置投影的客户端一个 Analyzer View；跨 Vault 查询位于更高层（分别捕获 snapshot 再合并，不制造伪全局 revision）。Vault 隔离意味着引用解析、capability 与权限检查默认不跨 Engine 边界。
 
 == LSP 适配
 
-`notist lsp` 是编辑器与 `notist-analysis` 之间的协议适配层：负责文档同步、position 转换、请求路由与结果发布，不重新实现 parser、模块解析、类型检查或求值。它与 CLI 共享同一 daemon 与 snapshot（[[vault::designs::D0005-daemon-architecture]]），不维护第二套 module graph。
+`notist lsp` 是编辑器与 `notist-analysis` 之间的协议适配层：负责文档同步、position 转换、请求路由与结果发布，不重新实现 parser、模块解析、类型检查或求值。它与 CLI 共享同一 daemon 与 snapshot（[[vault::designs::D0005-daemon-architecture#形态：每 Vault 一个 daemon]]），不维护第二套 module graph。
 
 === 进程与传输
 
@@ -157,7 +157,7 @@ stdio transport；stdout 专用于 LSP JSON-RPC（不输出日志、进度或诊
 
 === Vault Discovery 与未保存文档
 
-编辑器提供的 workspace root 只是 worktree，不一定是 vault。初始化时在 worktree 内发现所有 Notist.toml marker（[[vault::designs::D0004-vault-module-and-scope]]），为每个 root 建立 `VaultState { root, daemon connection, ViewHandle }`；source 归属最近祖先 marker，嵌套 marker 建立新 vault 且外层停止递归；没有 marker 时 worktree root 作为单个 implicit vault。
+编辑器提供的 workspace root 只是 worktree，不一定是 vault。初始化时在 worktree 内发现所有 Notist.toml marker（[[vault::designs::D0004-vault-module-and-scope#发现规则]]），为每个 root 建立 `VaultState { root, daemon connection, ViewHandle }`；source 归属最近祖先 marker，嵌套 marker 建立新 vault 且外层停止递归；没有 marker 时 worktree root 作为单个 implicit vault。
 
 每个 vault 的 Analyzer View 接收自己的 overlays：
 
@@ -177,7 +177,7 @@ stdio transport；stdout 专用于 LSP JSON-RPC（不输出日志、进度或诊
 
 === Capabilities
 
-**Diagnostics**：syntax errors、duplicate module、unresolved module reference、引用目标不存在/歧义（Missing，[[vault::designs::D0004-vault-module-and-scope]]）、import cycle 与 unresolved module binding、名称解析与类型诊断、只依赖 snapshot input/capability 的确定性求值诊断。`textDocument/publishDiagnostics` 在每次 snapshot 更新后为受影响文件发布完整集合，错误消失必须发布空数组清除。Diagnostic 带稳定的 `source = "notist"`、可机器识别的 code、准确 range 与简洁 message；跨文件冲突用 related information 指向另一处定义。
+**Diagnostics**：syntax errors、duplicate module、unresolved module reference、引用目标不存在/歧义（Missing，[[vault::designs::D0004-vault-module-and-scope#解析产物：RefTarget]]）、import cycle 与 unresolved module binding、名称解析与类型诊断、只依赖 snapshot input/capability 的确定性求值诊断。`textDocument/publishDiagnostics` 在每次 snapshot 更新后为受影响文件发布完整集合，错误消失必须发布空数组清除。Diagnostic 带稳定的 `source = "notist"`、可机器识别的 code、准确 range 与简洁 message；跨文件冲突用 related information 指向另一处定义。
 
 **Go to Definition**：引用路径跳到目标 Module 文件开头（virtual Module 无 `README.not` 时不伪造源码位置）；scope id 与标题默认 id 跳到对应节；函数、变量等符号统一走 `definition_at(file, offset)`，handler 不针对每种符号复制逻辑。
 
@@ -201,6 +201,6 @@ Hover、completion 与 diagnostics 需要 lexical/import environment、函数签
 
 == CLI 适配
 
-CLI 是 [[vault::designs::D0008-cli-and-skill]] 命令面与 daemon 之间的最薄适配层：参数解析 → core request（[[vault::designs::D0005-daemon-architecture]] 表）→ daemon 或 embedded service → response 格式化为 text 或 versioned JSON envelope。`--no-daemon` 在当前进程创建临时 VaultEngine 与 disk View，执行相同 core request——embedded mode 不是第二套实现，只是把同一 service object 放在 client 进程中（[[vault::designs::D0005-daemon-architecture]]）。
+CLI 是 [[vault::designs::D0008-cli-and-skill#CLI 命令面]] 命令面与 daemon 之间的最薄适配层：参数解析 → core request（[[vault::designs::D0005-daemon-architecture#Client Interface]] 表）→ daemon 或 embedded service → response 格式化为 text 或 versioned JSON envelope。`--no-daemon` 在当前进程创建临时 VaultEngine 与 disk View，执行相同 core request——embedded mode 不是第二套实现，只是把同一 service object 放在 client 进程中（[[vault::designs::D0005-daemon-architecture#失败与重启]]）。
 
-`daemon`、`lsp`、`skill init`、`build`、`preview`、`export` 各自是固定协议的 adapter（[[vault::designs::D0008-cli-and-skill]] 命令表）；它们的 stdout 边界由协议决定，不混入 ordinary query JSON。CLI 不做任何语义猜测：selector 解析、cursor 验证、fingerprint 检查都在 core 侧完成，CLI 只投影与展示。
+`daemon`、`lsp`、`skill init`、`build`、`preview`、`export` 各自是固定协议的 adapter（[[vault::designs::D0008-cli-and-skill#CLI 命令面]] 命令表）；它们的 stdout 边界由协议决定，不混入 ordinary query JSON。CLI 不做任何语义猜测：selector 解析、cursor 验证、fingerprint 检查都在 core 侧完成，CLI 只投影与展示。

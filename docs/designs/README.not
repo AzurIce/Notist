@@ -6,15 +6,15 @@
 
 == 语言层（规范：纯语义，与实现宿主无关）
 
-阅读入口：[[vault::designs::D0001-language-overview]]（语言概览与最小示例；其中 `#` 嵌入边界规则属 L1 主题）。
+阅读入口：[[vault::designs::D0001-language-overview#最小示例]]（语言概览与最小示例；其中 `#` 嵌入边界规则属 L1 主题）。
 
 - L1 表面语法与词法：双模式（Markup/Code）、嵌入边界、字面量与字符串、运算符、转义、注释、字面量载荷。—— 现：[[vault::designs::D0007-surface-language-and-core-grammar]]、[[vault::designs::D0001-language-overview]]
 - L2 类型系统：Type/Value 对应、`T?` 与可省略 `=`、赋值与 coercion、`fn(...) -> R`。—— 现：[[vault::designs::D0002-evaluation-model-and-type-system]]（前半，待拆分）
 - L3 词法作用域：节点即环境、let、遮蔽、递归暂缓。—— 现：[[vault::designs::D0012-scope-and-environment]]（独立成篇）
-- L4 调用模型：形参与默认值、positional/named 绑定、实参序、求值顺序、调用点检查。—— 现：[[vault::designs::D0002-evaluation-model-and-type-system]]（函数类型节）+ [[vault::designs::D0007-surface-language-and-core-grammar]]（声明节）；待独立成篇
+- L4 调用模型：形参与默认值、positional/named 绑定、实参序、求值顺序、调用点检查。—— 现：[[vault::designs::D0002-evaluation-model-and-type-system#函数类型]]（函数类型节）+ [[vault::designs::D0007-surface-language-and-core-grammar#声明]]（声明节）；待独立成篇
 - L5 求值模型：求值规则、插入规则、求值结果三元组。—— 现：[[vault::designs::D0013-evaluation-model-and-content-sequence]]（独立成篇）
 - L6 成型：元素序列 → 结构树的 fold、inline/block 分类表、列表与节归组、不变量（区间稳定、不删除个体）。—— 现：[[vault::designs::D0011-shaping-and-structure-tree]]（独立成篇）
-- L7 属性表：区间模型、三类条目、属性随值复制、模块级条目。—— 现：[[vault::designs::D0002-evaluation-model-and-type-system]]（属性表节）+ [[vault::designs::D0006-scope-and-annotation-syntax]]（语义半边）；待独立成篇
+- L7 属性表：区间模型、三类条目、属性随值复制、模块级条目。—— 现：[[vault::designs::D0002-evaluation-model-and-type-system#属性表]]（属性表节）+ [[vault::designs::D0006-scope-and-annotation-syntax#属性]]（语义半边）；待独立成篇
 - L8 标注语法：属性列表文法、三种挂载位置、错误恢复、lexer token 区分。—— 现：[[vault::designs::D0006-scope-and-annotation-syntax]]（语法半边）
 - L9 内置构造器与语法糖：构造器签名与校验、四要素规格、sugar budget、暂缓清单。—— 现：[[vault::designs::D0003-builtin-functions-and-syntax-sugar]]（结构良好，保持）
 
@@ -22,7 +22,7 @@
 
 - V1 Vault 边界与发现：Notist.toml marker、发现规则、虚拟模块、资源目录、配置内容模型。—— 现：[[vault::designs::D0004-vault-module-and-scope]]（前半，待拆分）
 - V2 Module 与 ModuleResult：求值单元、bindings ownership。—— 现：[[vault::designs::D0004-vault-module-and-scope]]（待拆分）
-- V3 import：显式 selector、依赖边、环诊断。—— 现：[[vault::designs::D0004-vault-module-and-scope]]（import 节，待拆分）；待独立成篇
+- V3 import：显式 selector、依赖边、环诊断。—— 现：[[vault::designs::D0004-vault-module-and-scope#import]]（import 节，待拆分）；待独立成篇
 - V4 引用寻址与 RefTarget：目标书写形式、scope id、标题默认 id、解析产物（Module/Scope/Resource/External/Missing）、两张跨模块图。—— 现：[[vault::designs::D0004-vault-module-and-scope]]（后半，待拆分）
 - V5 core namespace 与插件边界：core 不可遮蔽、短名 prelude、Custom 元素契约、capability 即权限面、加载/作用域/生命周期。—— 待起草（优先；参考 [[vault::old-designs::D0004-core-functions-and-syntax-sugar]]）
 
@@ -39,9 +39,9 @@
 == 计划中的记录（待起草；按创建顺序取编号）
 
 - 调用模型（L4）：拆自 [[vault::designs::D0002-evaluation-model-and-type-system]]/[[vault::designs::D0007-surface-language-and-core-grammar]]（实参序裁决 R05 的落点）
-- 属性表（L7）：拆自 [[vault::designs::D0002-evaluation-model-and-type-system]]/[[vault::designs::D0006-scope-and-annotation-syntax]]
+- 属性表（L7）：拆自 [[vault::designs::D0002-evaluation-model-and-type-system#属性表]]/[[vault::designs::D0006-scope-and-annotation-syntax#属性]]
 - core namespace 与插件边界（V5）：并入 Notist.toml 配置内容模型（language version / capability / plugin schema）
-- import（V3）：拆自 [[vault::designs::D0004-vault-module-and-scope]]
+- import（V3）：拆自 [[vault::designs::D0004-vault-module-and-scope#import]]
 - Array/Dict/Union 集合类型：推迟主题，重新设计
 - macro/grammar-extension：未来若支持用户自定义语法时独立设计（函数注册不授予修改 parser 的能力，见 [[vault::old-designs::D0004-core-functions-and-syntax-sugar]]）
 

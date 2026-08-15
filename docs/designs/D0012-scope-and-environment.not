@@ -1,6 +1,6 @@
 = D0012: Scope and Environment
 
-本文承接 [[vault::designs::D0002-evaluation-model-and-type-system]]（静态检查、类型与属性表）与 [[vault::designs::D0006-scope-and-annotation-syntax]]（scope 的语法形态）。本文定义值层 scope 与词法环境：节点如何同时承载内容与名字、名称如何解析、绑定如何可见，以及 scope 在进入成型（[[vault::designs::D0011-shaping-and-structure-tree]]）前如何落到元素序列与属性表。求值过程如何消费 scope 并产生元素序列见 [[vault::designs::D0013-evaluation-model-and-content-sequence]]。
+本文承接 [[vault::designs::D0002-evaluation-model-and-type-system#静态检查]]（静态检查、类型与属性表）与 [[vault::designs::D0006-scope-and-annotation-syntax#scope 的语法形态]]（scope 的语法形态）。本文定义值层 scope 与词法环境：节点如何同时承载内容与名字、名称如何解析、绑定如何可见，以及 scope 在进入成型（[[vault::designs::D0011-shaping-and-structure-tree#输入与输出]]）前如何落到元素序列与属性表。求值过程如何消费 scope 并产生元素序列见 [[vault::designs::D0013-evaluation-model-and-content-sequence#求值结果]]。
 
 == scope 是值层节点
 
@@ -9,19 +9,19 @@
 1. 内容的容器：节点包含一段 Content；
 2. 名字的容器：binding 挂在节点上，名称解析沿节点链向上——词法环境不是树之外的平行结构，就是树本身。
 
-属性不挂在节点上：标注在求值期绑定到值（语法见 [[vault::designs::D0006-scope-and-annotation-syntax]]），求值收尾转写为旁置的属性表（[[vault::designs::D0002-evaluation-model-and-type-system]]）。
+属性不挂在节点上：标注在求值期绑定到值（语法见 [[vault::designs::D0006-scope-and-annotation-syntax#属性]]），求值收尾转写为旁置的属性表（[[vault::designs::D0002-evaluation-model-and-type-system#属性表]]）。
 
 == 名称解析
 
-- **N1 节点链**：名称解析沿节点链自内向外进行；求值器消费静态检查给出的 resolved name，不重新猜测名字指向（[[vault::designs::D0002-evaluation-model-and-type-system]] 静态检查）。
+- **N1 节点链**：名称解析沿节点链自内向外进行；求值器消费静态检查给出的 resolved name，不重新猜测名字指向（[[vault::designs::D0002-evaluation-model-and-type-system#静态检查]] 静态检查）。
 - **N2 遮蔽**：最近绑定者胜出（shadowing）；同名 `let` 允许在后续声明处建立新绑定并遮蔽外层或先前的同名绑定。
 - **N3 let 可见性**：`let` 绑定从声明处开始对同一 scope 的后续节点可见，声明之前的节点不可见。
 - **N4 递归暂缓**：`let` 的右侧看不到正在声明的名字；递归绑定待 `let rec` 引入。
-- **N5 根 bindings**：求值结束后，根 scope 自有的 binding 进入求值结果 `bindings`（[[vault::designs::D0013-evaluation-model-and-content-sequence]]）；其他节点上的 binding 只是求值期的环境事实，成型后的结构树消费者不依赖它们。
+- **N5 根 bindings**：求值结束后，根 scope 自有的 binding 进入求值结果 `bindings`（[[vault::designs::D0013-evaluation-model-and-content-sequence#求值结果]]）；其他节点上的 binding 只是求值期的环境事实，成型后的结构树消费者不依赖它们。
 
 == scope 形态
 
-scope 按来源分为五类；语法书写见 [[vault::designs::D0006-scope-and-annotation-syntax]]：
+scope 按来源分为五类；语法书写见 [[vault::designs::D0006-scope-and-annotation-syntax#scope 的语法形态]]：
 
 | scope | 语义角色 | 成型中的存在方式 |
 |---|---|---|
@@ -33,7 +33,7 @@ scope 按来源分为五类；语法书写见 [[vault::designs::D0006-scope-and-
 
 - 手动 scope 与隐式 scope 是同一类东西，区别只在显式与隐式；它渲染上不产生可见元素。
 - Content literal 与 Code block 的词法边界是求值期事实：其内部 `let` 不出块；透明溶解是成型期事实，二者正交。
-- 元素 scope 是实元素：成型时保留为结构树节点，元素身份、参数与 body 继续存在（[[vault::designs::D0011-shaping-and-structure-tree]]）。
+- 元素 scope 是实元素：成型时保留为结构树节点，元素身份、参数与 body 继续存在（[[vault::designs::D0011-shaping-and-structure-tree#输入与输出]]）。
 
 == 与成型、属性表的关系
 
@@ -41,7 +41,7 @@ scope 节点只存在于值层。进入成型视野前：
 
 - 元素 scope 是实元素，保留为结构树节点；
 - 透明 scope（Content literal 与手动 scope）溶解进元素序列参与统一分组——scope 的内容可以与外部文字连排，溶解后其内容可能分属多个父节点，树无法把它装成单个节点；
-- 溶解时 scope 的属性与身份以区间条目进入属性表，覆盖它内容所在的区域，可以跨越段落边界（[[vault::designs::D0002-evaluation-model-and-type-system]] 属性表、[[vault::designs::D0006-scope-and-annotation-syntax]]）。
+- 溶解时 scope 的属性与身份以区间条目进入属性表，覆盖它内容所在的区域，可以跨越段落边界（[[vault::designs::D0002-evaluation-model-and-type-system#属性表]] 属性表、[[vault::designs::D0006-scope-and-annotation-syntax#属性与求值、成型]]）。
 
 结构树里没有透明 scope 节点，只有实元素；属性一律以区间命中（单元素区间是特例），没有第二种形状。
 
