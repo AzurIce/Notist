@@ -646,18 +646,46 @@ const LIVE_RELOAD_SCRIPT: &str = r#"(() => {
   }
 
   let revision;
-  const events = new EventSource(eventsUrl);
-  events.onopen = () => setState("live", "Live reload");
-  events.onerror = () => setState("down", "Reconnecting…");
-  events.onmessage = (event) => {
-    if (revision !== undefined && revision !== event.data) {
-      sessionStorage.setItem(scrollKey, String(Math.round(scrollY)));
-      setState("sync", "Updating…");
-      location.reload();
+  let events;
+
+  const openEvents = () => {
+    if (events && events.readyState !== EventSource.CLOSED) {
       return;
     }
-    revision = event.data;
+    setState("down", "Connecting…");
+    events = new EventSource(eventsUrl);
+    events.onopen = () => setState("live", "Live reload");
+    events.onerror = () => setState("down", "Reconnecting…");
+    events.onmessage = (event) => {
+      if (revision !== undefined && revision !== event.data) {
+        sessionStorage.setItem(scrollKey, String(Math.round(scrollY)));
+        setState("sync", "Updating…");
+        location.reload();
+        return;
+      }
+      revision = event.data;
+    };
   };
+
+  const closeEvents = () => {
+    if (!events) return;
+    events.close();
+    events = null;
+  };
+
+  // A hidden or back/forward-cached page must not keep holding an EventSource
+  // connection: browsers cap connections per host, and rapid page navigation
+  // can otherwise exhaust every socket and stall the next visible page load.
+  addEventListener("pagehide", closeEvents);
+  document.addEventListener("visibilitychange", () => {
+    if (document.visibilityState === "hidden") closeEvents();
+    else openEvents();
+  });
+  addEventListener("pageshow", (event) => {
+    if (event.persisted) openEvents();
+  });
+
+  if (document.visibilityState !== "hidden") openEvents();
 })();
 "#;
 
@@ -1407,6 +1435,26 @@ mod tests {
         let site_script = fs::read_to_string(output.join("_notist/site.js")).unwrap();
         assert!(site_script.contains("notist-sidebar-scroll"));
         assert!(site_script.contains("sidebar.scrollTop"));
+    }
+
+    #[test]
+    fn live_reload_script_releases_eventsource_when_page_is_hidden() {
+        let root = tempfile::TempDir::new_in(std::env::current_dir().unwrap()).unwrap();
+        fs::write(root.path().join("README.not"), "#heading[Home]").unwrap();
+        let output = root.path().join("site");
+        let rendered = render(root.path());
+        write_rendered_site(&rendered, &output, SiteOptions { live_reload: true }).unwrap();
+
+        let script = fs::read_to_string(output.join("_notist/reload.js")).unwrap();
+        assert!(script.contains("addEventListener(\"pagehide\", closeEvents)"));
+        assert!(script.contains("document.addEventListener(\"visibilitychange\""));
+        assert!(script.contains("if (event.persisted) openEvents();"));
+        assert!(
+            script.contains("if (document.visibilityState !== \"hidden\") openEvents();")
+        );
+
+        let home = fs::read_to_string(output.join("index.html")).unwrap();
+        assert!(home.contains("_notist/reload.js"));
     }
 
     #[test]
