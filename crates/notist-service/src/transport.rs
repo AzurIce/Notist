@@ -20,12 +20,21 @@ const MAX_FRAME_BYTES: usize = 256 * 1024 * 1024;
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
 enum ClientMessage {
-    Handshake { handshake: Handshake },
-    Request { id: u64, request: CoreRequest },
-    Cancel { id: u64 },
+    Handshake {
+        handshake: Handshake,
+    },
+    Request {
+        id: u64,
+        request: CoreRequest,
+    },
+    Cancel {
+        id: u64,
+    },
     /// Ask the daemon to stop serving. `force` overrides the "no other active
     /// clients" guard used by automatic stale-daemon recycling.
-    Shutdown { force: bool },
+    Shutdown {
+        force: bool,
+    },
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -116,12 +125,10 @@ impl DaemonClient {
             ServerMessage::HandshakeAccepted { .. }
             | ServerMessage::HandshakeRejected { .. }
             | ServerMessage::ShutdownAccepted { .. }
-            | ServerMessage::ShutdownRejected { .. } => {
-                Err(io::Error::new(
-                    io::ErrorKind::InvalidData,
-                    "daemon repeated the handshake or sent a control reply",
-                ))
-            }
+            | ServerMessage::ShutdownRejected { .. } => Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                "daemon repeated the handshake or sent a control reply",
+            )),
         }
     }
 
@@ -509,52 +516,52 @@ async fn serve_platform(
     let result: io::Result<()> = async {
         let mut first = true;
         loop {
-        let mut options = ServerOptions::new();
-        options
-            .first_pipe_instance(first)
-            .reject_remote_clients(true);
-        let server = options.create(&endpoint)?;
-        first = false;
-        let connected = if let Some(idle_timeout) = idle_timeout {
-            tokio::select! {
-                _ = shutdown_rx.changed() => break,
-                result = tokio::time::timeout(idle_timeout, server.connect()) => match result {
-                    Ok(result) => Some(result?),
-                    Err(_) if active.load(Ordering::Acquire) == 0 => None,
-                    Err(_) => continue,
-                },
+            let mut options = ServerOptions::new();
+            options
+                .first_pipe_instance(first)
+                .reject_remote_clients(true);
+            let server = options.create(&endpoint)?;
+            first = false;
+            let connected = if let Some(idle_timeout) = idle_timeout {
+                tokio::select! {
+                    _ = shutdown_rx.changed() => break,
+                    result = tokio::time::timeout(idle_timeout, server.connect()) => match result {
+                        Ok(result) => Some(result?),
+                        Err(_) if active.load(Ordering::Acquire) == 0 => None,
+                        Err(_) => continue,
+                    },
+                }
+            } else {
+                tokio::select! {
+                    _ = shutdown_rx.changed() => break,
+                    result = server.connect() => Some(result?),
+                }
+            };
+            let Some(()) = connected else {
+                break;
+            };
+            if !windows_client_is_current_user(&server) {
+                continue;
             }
-        } else {
-            tokio::select! {
-                _ = shutdown_rx.changed() => break,
-                result = server.connect() => Some(result?),
-            }
-        };
-        let Some(()) = connected else {
-            break;
-        };
-        if !windows_client_is_current_user(&server) {
-            continue;
-        }
-        active.fetch_add(1, Ordering::AcqRel);
-        let connection_active = active.clone();
-        let root = root.clone();
-        let service = service.clone();
-        let vault_generation = vault_generation.clone();
-        let shutdown = shutdown_tx.clone();
-        tokio::spawn(async move {
-            let _ = serve_connection(
-                server,
-                root,
-                service,
-                vault_generation,
-                connection_active,
-                shutdown,
-                daemon_binary_stamp,
-            )
-            .await;
-            connection_active.fetch_sub(1, Ordering::AcqRel);
-        });
+            active.fetch_add(1, Ordering::AcqRel);
+            let connection_active = active.clone();
+            let root = root.clone();
+            let service = service.clone();
+            let vault_generation = vault_generation.clone();
+            let shutdown = shutdown_tx.clone();
+            tokio::spawn(async move {
+                let _ = serve_connection(
+                    server,
+                    root,
+                    service,
+                    vault_generation,
+                    connection_active,
+                    shutdown,
+                    daemon_binary_stamp,
+                )
+                .await;
+                connection_active.fetch_sub(1, Ordering::AcqRel);
+            });
         }
         Ok(())
     }

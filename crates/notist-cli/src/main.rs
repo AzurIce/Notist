@@ -1808,10 +1808,7 @@ fn export_command(
                 }
                 CoreResponse::Outline(documents) => {
                     for document in documents {
-                        let module = document
-                            .path
-                            .strip_prefix(&root)
-                            .unwrap_or(&document.path);
+                        let module = document.path.strip_prefix(&root).unwrap_or(&document.path);
                         for symbol in &document.symbols {
                             lines.extend_from_slice(&serde_json::to_vec(&serde_json::json!({
                                 "schemaVersion": 2,

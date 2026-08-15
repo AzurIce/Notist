@@ -332,7 +332,9 @@ impl Block {
         match self {
             Self::Element(node) => node.range,
             Self::Section { heading, body, .. } => {
-                let end = body.last().map_or(heading.range.end, |child| child.range().end);
+                let end = body
+                    .last()
+                    .map_or(heading.range.end, |child| child.range().end);
                 TextRange::new(heading.range.start, end)
             }
         }

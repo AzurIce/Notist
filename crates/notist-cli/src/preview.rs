@@ -212,7 +212,10 @@ impl Drop for SiteGeneration {
         // Enqueue, never delete inline: the last reference is usually released
         // by a `serve_static` request future, and blocking that worker stalls
         // the next request on the same keep-alive connection.
-        let mut retired = self.retired.lock().unwrap_or_else(|error| error.into_inner());
+        let mut retired = self
+            .retired
+            .lock()
+            .unwrap_or_else(|error| error.into_inner());
         retired.push(self.path.clone());
     }
 }
@@ -254,7 +257,10 @@ impl PublishedSite {
     /// thread (or at shutdown), never on a request-serving thread.
     fn delete_retired(&self) {
         let retired = {
-            let mut queue = self.retired.lock().unwrap_or_else(|error| error.into_inner());
+            let mut queue = self
+                .retired
+                .lock()
+                .unwrap_or_else(|error| error.into_inner());
             std::mem::take(&mut *queue)
         };
         for path in retired {
@@ -405,8 +411,11 @@ fn static_request_path(path: &str) -> Option<PathBuf> {
 async fn events_response(
     State(state): State<PreviewState>,
 ) -> Sse<impl tokio_stream::Stream<Item = Result<Event, Infallible>>> {
-    Sse::new(revision_stream(state.revision.clone(), state.updates.clone()))
-        .keep_alive(KeepAlive::default())
+    Sse::new(revision_stream(
+        state.revision.clone(),
+        state.updates.clone(),
+    ))
+    .keep_alive(KeepAlive::default())
 }
 
 /// The live-reload revision stream: the current revision, then revisions as

@@ -19,8 +19,7 @@ mod check;
 
 pub use check::{
     CheckDiagnostic, LocalSymbolId, ModuleSemanticIndex, SignatureSet, SymbolDefinition,
-    SymbolKind, SymbolReference, check_module, check_module_with_prelude,
-    resolve_module_symbols,
+    SymbolKind, SymbolReference, check_module, check_module_with_prelude, resolve_module_symbols,
 };
 
 /// The marker file whose containing directory is a Notist vault root.
@@ -361,15 +360,13 @@ impl DiagnosticKind {
     /// Standard recovery hint surfaced with the diagnostic when available.
     pub fn hint(self) -> Option<&'static str> {
         match self {
-            Self::AmbiguousLabel => {
-                Some("duplicate heading text: give one heading an explicit id")
+            Self::AmbiguousLabel => Some("duplicate heading text: give one heading an explicit id"),
+            Self::UnresolvedLabel => {
+                Some("check the label spelling, or the labeled scope does not exist in this module")
             }
-            Self::UnresolvedLabel => Some(
-                "check the label spelling, or the labeled scope does not exist in this module",
-            ),
-            Self::UnresolvedModule => Some(
-                "check the module path spelling; the module may not exist in this vault",
-            ),
+            Self::UnresolvedModule => {
+                Some("check the module path spelling; the module may not exist in this vault")
+            }
             _ => None,
         }
     }
@@ -442,7 +439,10 @@ pub struct ImportEdge {
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum RefTarget {
     Module(ModuleId),
-    Scope { module: ModuleId, id: String },
+    Scope {
+        module: ModuleId,
+        id: String,
+    },
     Resource {
         module: ModuleId,
         name: String,
@@ -852,7 +852,11 @@ impl WorkspaceSnapshot {
                 module: module.id,
                 id: label.to_owned(),
             },
-            0 => match module.resources.iter().find(|resource| resource.name == label) {
+            0 => match module
+                .resources
+                .iter()
+                .find(|resource| resource.name == label)
+            {
                 Some(resource) => RefTarget::Resource {
                     module: module.id,
                     name: resource.name.clone(),
@@ -1391,10 +1395,11 @@ impl WorkspaceSnapshot {
             .get(&module_id)
             .cloned()
             .unwrap_or_default();
-        let structured = structure(
-            Evaluator::default()
-                .evaluate_parsed_with_bindings(source, module.parse.as_ref()?, seeds),
-        );
+        let structured = structure(Evaluator::default().evaluate_parsed_with_bindings(
+            source,
+            module.parse.as_ref()?,
+            seeds,
+        ));
         Some(StructuredModule {
             revision: self.revision,
             module_id,
@@ -1668,9 +1673,7 @@ impl WorkspaceSnapshot {
                             kind: CompletionKind::Attribute,
                             label: name.clone(),
                             detail: "Heading default id".into(),
-                            documentation: Some(
-                                "Default id derived from the heading text.".into(),
-                            ),
+                            documentation: Some("Default id derived from the heading text.".into()),
                             replacement: context.replace,
                             insert_text: name,
                             module_id: self.modules.get(&target).map(|module| module.id),
@@ -1939,7 +1942,11 @@ impl WorkspaceSnapshot {
                 continue;
             };
             for expression in parse.imports() {
-                let ExpressionKind::Import { module: module_ref, selectors } = &expression.kind else {
+                let ExpressionKind::Import {
+                    module: module_ref,
+                    selectors,
+                } = &expression.kind
+                else {
                     continue;
                 };
                 let selectors = selectors
@@ -1984,7 +1991,8 @@ impl WorkspaceSnapshot {
         // cycles (already diagnosed) break with empty bindings.
         let evaluator = Evaluator::default();
         let mut module_import_seeds: BTreeMap<ModuleId, HashMap<String, Value>> = BTreeMap::new();
-        let mut module_attributes: BTreeMap<ModuleId, Vec<notist_syntax::Attributes>> = BTreeMap::new();
+        let mut module_attributes: BTreeMap<ModuleId, Vec<notist_syntax::Attributes>> =
+            BTreeMap::new();
         let mut visiting: BTreeSet<ModuleId> = BTreeSet::new();
         {
             fn module_bindings(
@@ -2021,13 +2029,7 @@ impl WorkspaceSnapshot {
                         continue;
                     };
                     let target_bindings = module_bindings(
-                        target.id,
-                        modules,
-                        imports,
-                        evaluator,
-                        cache,
-                        attributes,
-                        visiting,
+                        target.id, modules, imports, evaluator, cache, attributes, visiting,
                     );
                     for (name, alias) in &edge.selectors {
                         if let Some(value) = target_bindings.get(name) {
@@ -2038,22 +2040,20 @@ impl WorkspaceSnapshot {
                         }
                     }
                 }
-                let bindings =
-                    match (module.source.as_deref(), module.parse.as_ref()) {
-                        (Some(source), Some(parse)) => {
-                            let evaluation =
-                                evaluator.evaluate_parsed_with_bindings(source, parse, seeds);
-                            attributes.insert(module_id, evaluation.module_attributes);
-                            evaluation.bindings
-                        }
-                        _ => seeds,
-                    };
+                let bindings = match (module.source.as_deref(), module.parse.as_ref()) {
+                    (Some(source), Some(parse)) => {
+                        let evaluation =
+                            evaluator.evaluate_parsed_with_bindings(source, parse, seeds);
+                        attributes.insert(module_id, evaluation.module_attributes);
+                        evaluation.bindings
+                    }
+                    _ => seeds,
+                };
                 visiting.remove(&module_id);
                 cache.insert(module_id, bindings.clone());
                 bindings
             }
-            let module_ids: Vec<ModuleId> =
-                self.modules.values().map(|module| module.id).collect();
+            let module_ids: Vec<ModuleId> = self.modules.values().map(|module| module.id).collect();
             for module_id in &module_ids {
                 module_bindings(
                     *module_id,
@@ -2182,9 +2182,8 @@ impl WorkspaceSnapshot {
                         // Explicit scope ids always win over heading default ids.
                         target_range = Some(definition.range);
                     } else {
-                        let headings = heading_indexes
-                            .entry(target_module.id)
-                            .or_insert_with(|| {
+                        let headings =
+                            heading_indexes.entry(target_module.id).or_insert_with(|| {
                                 let seeds = self
                                     .module_import_seeds
                                     .get(&target_module.id)
@@ -2238,12 +2237,10 @@ impl WorkspaceSnapshot {
                     continue;
                 }
 
-                let url = reference
-                    .label
-                    .as_ref()
-                    .map_or_else(|| reference.module.to_string(), |label| {
-                        format!("{}#{label}", reference.module)
-                    });
+                let url = reference.label.as_ref().map_or_else(
+                    || reference.module.to_string(),
+                    |label| format!("{}#{label}", reference.module),
+                );
                 references.push(ResolvedReference {
                     source_file_id: file_id,
                     source_module_id: module.id,
@@ -3089,12 +3086,7 @@ fn collect_document_symbols(
     file_id: FileId,
     symbols: &mut Vec<DocumentSymbol>,
 ) {
-    fn walk(
-        block: &Block,
-        revision: Revision,
-        file_id: FileId,
-        symbols: &mut Vec<DocumentSymbol>,
-    ) {
+    fn walk(block: &Block, revision: Revision, file_id: FileId, symbols: &mut Vec<DocumentSymbol>) {
         match block {
             Block::Element(node) => {
                 collect_element_symbols(&node.element, node.range, revision, file_id, symbols);
@@ -3430,7 +3422,10 @@ fn heading_default_ids(
     let structured = structure(
         Evaluator::default().evaluate_parsed_with_bindings(
             source,
-            module.parse.as_ref().expect("source-backed modules have parses"),
+            module
+                .parse
+                .as_ref()
+                .expect("source-backed modules have parses"),
             seeds.clone(),
         ),
     );
@@ -3989,7 +3984,9 @@ mod tests {
             workspace.file_id(&target_path),
             "definition should resolve into the target file"
         );
-        let range = definition.range.expect("heading default id must have a range");
+        let range = definition
+            .range
+            .expect("heading default id must have a range");
         // "== Intro" begins at line 2; verify the range starts inside that
         // heading rather than at the very start of the file (line 0).
         let guide = workspace.source(definition.file_id.unwrap()).unwrap();
@@ -4646,9 +4643,7 @@ mod tests {
             .modules()
             .find(|module| module.source_path.is_none())
             .unwrap();
-        assert!(snapshot
-            .module_attributes(virtual_root.id)
-            .is_empty());
+        assert!(snapshot.module_attributes(virtual_root.id).is_empty());
     }
 
     #[test]

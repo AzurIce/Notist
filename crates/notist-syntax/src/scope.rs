@@ -69,7 +69,10 @@ pub(crate) fn parse_annotation_block(
     let mut closed = false;
 
     loop {
-        while matches!(source.as_bytes().get(cursor), Some(b' ' | b'\t' | b'\r' | b'\n')) {
+        while matches!(
+            source.as_bytes().get(cursor),
+            Some(b' ' | b'\t' | b'\r' | b'\n')
+        ) {
             cursor += 1;
         }
         if source.as_bytes().get(cursor) == Some(&b']') {
@@ -107,7 +110,10 @@ pub(crate) fn parse_annotation_block(
             }
         }
         first = false;
-        while matches!(source.as_bytes().get(cursor), Some(b' ' | b'\t' | b'\r' | b'\n')) {
+        while matches!(
+            source.as_bytes().get(cursor),
+            Some(b' ' | b'\t' | b'\r' | b'\n')
+        ) {
             cursor += 1;
         }
         match source.as_bytes().get(cursor) {
@@ -223,7 +229,10 @@ fn parse_bare_attribute(source: &str, start: usize, first: bool) -> Option<Parse
 
     // `key = value`: whitespace is allowed around the `=` (D0006).
     let mut cursor = name_end;
-    while matches!(source.as_bytes().get(cursor), Some(b' ' | b'\t' | b'\r' | b'\n')) {
+    while matches!(
+        source.as_bytes().get(cursor),
+        Some(b' ' | b'\t' | b'\r' | b'\n')
+    ) {
         cursor += 1;
     }
     if source.as_bytes().get(cursor) == Some(&b'=') {

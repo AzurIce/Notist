@@ -271,10 +271,7 @@ fn page_shell(
 
 fn module_tree(current: &ModulePath, pages: &[PageView<'_>]) -> String {
     let mut output = String::from("<nav class=\"module-tree\" aria-label=\"Modules\"><ol>");
-    if let Some(home) = pages
-        .iter()
-        .find(|page| page.module.segments().is_empty())
-    {
+    if let Some(home) = pages.iter().find(|page| page.module.segments().is_empty()) {
         tree_link(&mut output, current, home);
     }
     for page in pages {
@@ -286,7 +283,12 @@ fn module_tree(current: &ModulePath, pages: &[PageView<'_>]) -> String {
     output
 }
 
-fn tree_item(output: &mut String, current: &ModulePath, pages: &[PageView<'_>], page: &PageView<'_>) {
+fn tree_item(
+    output: &mut String,
+    current: &ModulePath,
+    pages: &[PageView<'_>],
+    page: &PageView<'_>,
+) {
     tree_link(output, current, page);
     let segments = page.module.segments();
     let mut children = String::new();
@@ -323,7 +325,8 @@ fn breadcrumb(site_name: &str, page: &PageView<'_>) -> String {
     if segments.is_empty() {
         return String::new();
     }
-    let mut output = String::from("<nav class=\"breadcrumb\" aria-label=\"Breadcrumb\"><ol><li><a href=\"");
+    let mut output =
+        String::from("<nav class=\"breadcrumb\" aria-label=\"Breadcrumb\"><ol><li><a href=\"");
     escape_attribute(
         &mut output,
         &module_href(&page.module, &ModulePath::root(), None),
@@ -360,7 +363,12 @@ fn page_toc(page: &PageView<'_>) -> String {
         if !(2..=5).contains(&heading.level) {
             continue;
         }
-        write!(output, "<li style=\"--toc-level:{}\"><a href=\"#", heading.level).unwrap();
+        write!(
+            output,
+            "<li style=\"--toc-level:{}\"><a href=\"#",
+            heading.level
+        )
+        .unwrap();
         escape_attribute(&mut output, &heading.id);
         output.push_str("\">");
         escape_html(&mut output, &heading.text);
@@ -1449,9 +1457,7 @@ mod tests {
         assert!(script.contains("addEventListener(\"pagehide\", closeEvents)"));
         assert!(script.contains("document.addEventListener(\"visibilitychange\""));
         assert!(script.contains("if (event.persisted) openEvents();"));
-        assert!(
-            script.contains("if (document.visibilityState !== \"hidden\") openEvents();")
-        );
+        assert!(script.contains("if (document.visibilityState !== \"hidden\") openEvents();"));
 
         let home = fs::read_to_string(output.join("index.html")).unwrap();
         assert!(home.contains("_notist/reload.js"));
@@ -1515,7 +1521,11 @@ mod tests {
             "= Home\n\nSee [[vault::images#logo.png]].",
         )
         .unwrap();
-        fs::write(root.path().join("images/logo.png"), [0x89, 0x50, 0x4E, 0x47]).unwrap();
+        fs::write(
+            root.path().join("images/logo.png"),
+            [0x89, 0x50, 0x4E, 0x47],
+        )
+        .unwrap();
         let output = root.path().join("site");
         let rendered = render(root.path());
         let result = write_rendered_site(&rendered, &output, SiteOptions::default()).unwrap();

@@ -7,8 +7,7 @@ mod scope;
 
 pub use argument::{
     Argument, BinaryOperator, Expression, ExpressionKind, ImportSelector, StringLiteral,
-    StringLiteralForm, UnaryOperator,
-    StringLiteralStyle, UserFunctionDefinition, UserParameter,
+    StringLiteralForm, StringLiteralStyle, UnaryOperator, UserFunctionDefinition, UserParameter,
 };
 pub use raw::{RawLiteral, RawLiteralForm, SpannedText};
 pub use scope::{Attribute, AttributeValue, Attributes, BodyForm, SpannedName};
@@ -326,9 +325,7 @@ fn visit_expression_markup<'a>(
 fn visit_markup_expressions<'a>(markup: &'a Markup, visitor: &mut impl FnMut(&'a Expression)) {
     for item in &markup.items {
         match item {
-            MarkupItem::Embedded(embedded) => {
-                visit_expression(&embedded.expression, visitor)
-            }
+            MarkupItem::Embedded(embedded) => visit_expression(&embedded.expression, visitor),
             MarkupItem::Heading(sugar) => visit_markup_expressions(&sugar.body, visitor),
             MarkupItem::List(sugar) => {
                 for row in &sugar.rows {
@@ -525,9 +522,9 @@ fn looks_like_external(source: &str) -> bool {
             .chars()
             .next()
             .is_some_and(|character| character.is_ascii_alphabetic())
-        && scheme
-            .chars()
-            .all(|character| character.is_ascii_alphanumeric() || matches!(character, '+' | '-' | '.'))
+        && scheme.chars().all(|character| {
+            character.is_ascii_alphanumeric() || matches!(character, '+' | '-' | '.')
+        })
 }
 
 #[cfg(test)]
@@ -713,8 +710,7 @@ mod tests {
     fn markup_keeps_comment_syntax_as_ordinary_text() {
         // E09: `//` and `/* ... */` are Code-context trivia only; the Markup
         // text stream keeps them verbatim (including url-like sequences).
-        let source =
-            "before // hidden\nafter /* outer /* nested */ hidden */ https://example.test/a/*path*/";
+        let source = "before // hidden\nafter /* outer /* nested */ hidden */ https://example.test/a/*path*/";
         let parse = parse(source);
         assert!(parse.errors.is_empty(), "{:?}", parse.errors);
         let visible = parse
@@ -736,9 +732,12 @@ mod tests {
         // disappear and the call stays well-formed.
         let parsed = parse("#heading(level: /* outer /* nested */ inner */ 2)[Title]");
         assert!(parsed.errors.is_empty(), "{:?}", parsed.errors);
-        assert!(parsed.calls()[0].arguments.iter().any(|argument| {
-            matches!(&argument.name, Some(name) if name.value == "level")
-        }));
+        assert!(
+            parsed.calls()[0]
+                .arguments
+                .iter()
+                .any(|argument| { matches!(&argument.name, Some(name) if name.value == "level") })
+        );
 
         let block = parse("#{ // line comment\n 1 + 2 }");
         assert!(block.errors.is_empty(), "{:?}", block.errors);
@@ -759,7 +758,8 @@ mod tests {
     fn parses_block_and_module_annotations() {
         // D0006: `@![...]` at the file start is the module mount point,
         // `@[...]` at line start is the block-prefix mount point.
-        let parsed = parse("@![#design, status = \"draft\"]\n\n@[wip]\n= Title\n\n@[install]\nbody");
+        let parsed =
+            parse("@![#design, status = \"draft\"]\n\n@[wip]\n= Title\n\n@[install]\nbody");
         assert!(parsed.errors.is_empty(), "{:?}", parsed.errors);
         assert!(matches!(
             &parsed.root.items[0],
@@ -788,15 +788,19 @@ mod tests {
     #[test]
     fn rejects_misplaced_module_annotations_and_dangling_at() {
         let parsed = parse("正文\n@![x]");
-        assert!(parsed
-            .errors
-            .iter()
-            .any(|error| error.message.contains("before any content")));
+        assert!(
+            parsed
+                .errors
+                .iter()
+                .any(|error| error.message.contains("before any content"))
+        );
         let parsed = parse("@!missing");
-        assert!(parsed
-            .errors
-            .iter()
-            .any(|error| error.message == "expected `[` after `@!`"));
+        assert!(
+            parsed
+                .errors
+                .iter()
+                .any(|error| error.message == "expected `[` after `@!`")
+        );
         // `@` followed by an identifier is ordinary text, never an annotation.
         let mention = parse("@user 提及");
         assert!(mention.errors.is_empty(), "{:?}", mention.errors);
@@ -814,10 +818,7 @@ mod tests {
         let MarkupItem::Embedded(embedded) = &parsed.root.items[0] else {
             panic!()
         };
-        assert!(matches!(
-            embedded.expression.kind,
-            ExpressionKind::Block(_)
-        ));
+        assert!(matches!(embedded.expression.kind, ExpressionKind::Block(_)));
     }
 
     #[test]
@@ -911,9 +912,13 @@ mod tests {
         // `| a | b |` followed by a non-separator line is ordinary Markup text.
         let parsed = parse("| a | b |\n| c | d |\n");
         assert!(parsed.errors.is_empty(), "{:?}", parsed.errors);
-        assert!(parsed.root.items.iter().all(|item| {
-            !matches!(item, MarkupItem::Table(_))
-        }));
+        assert!(
+            parsed
+                .root
+                .items
+                .iter()
+                .all(|item| { !matches!(item, MarkupItem::Table(_)) })
+        );
     }
 
     #[test]
@@ -972,7 +977,11 @@ mod tests {
         let ExpressionKind::Parenthesized(inner) = &embedded.expression.kind else {
             panic!("expected parenthesized expression")
         };
-        let ExpressionKind::Binary { operator: BinaryOperator::Or, .. } = &inner.kind else {
+        let ExpressionKind::Binary {
+            operator: BinaryOperator::Or,
+            ..
+        } = &inner.kind
+        else {
             panic!("expected top-level `or`, got {:?}", inner.kind)
         };
     }
@@ -1028,7 +1037,10 @@ mod tests {
         assert_eq!(selectors.len(), 2);
         assert_eq!(selectors[0].name, "format");
         assert_eq!(
-            selectors[0].alias.as_ref().map(|alias| alias.value.as_str()),
+            selectors[0]
+                .alias
+                .as_ref()
+                .map(|alias| alias.value.as_str()),
             Some("shared_format")
         );
         assert_eq!(selectors[1].name, "warning");
@@ -1039,10 +1051,7 @@ mod tests {
         let ExpressionKind::Import { module, .. } = &parsed.imports()[0].kind else {
             panic!()
         };
-        assert_eq!(
-            module,
-            &ModuleReference::Absolute(vec!["theme".to_owned()])
-        );
+        assert_eq!(module, &ModuleReference::Absolute(vec!["theme".to_owned()]));
     }
 
     #[test]
@@ -1084,7 +1093,12 @@ mod tests {
 
         // Array/Dict/Union names are no longer types (R07).
         let legacy = crate::parse("#let f(values: Array<Int>) = 1");
-        assert!(legacy.errors.iter().any(|error| error.message == "unknown type `Array`"));
+        assert!(
+            legacy
+                .errors
+                .iter()
+                .any(|error| error.message == "unknown type `Array`")
+        );
         let ExpressionKind::Binary {
             operator: BinaryOperator::Add,
             right,

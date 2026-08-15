@@ -850,8 +850,11 @@ pub fn ref_target_record(
     target: RefTarget,
 ) -> super::request::RefTargetRecord {
     use notist_analysis::ResourceKind;
-    let module_name =
-        |module_id| workspace.module_by_id(module_id).map(|module| module.logical_path.to_string());
+    let module_name = |module_id| {
+        workspace
+            .module_by_id(module_id)
+            .map(|module| module.logical_path.to_string())
+    };
     match target {
         RefTarget::Module(module_id) => super::request::RefTargetRecord {
             kind: "module".into(),
@@ -864,11 +867,7 @@ pub fn ref_target_record(
             id: Some(id),
             ..Default::default()
         },
-        RefTarget::Resource {
-            module,
-            name,
-            kind,
-        } => super::request::RefTargetRecord {
+        RefTarget::Resource { module, name, kind } => super::request::RefTargetRecord {
             kind: "resource".into(),
             module: module_name(module),
             name: Some(name),
@@ -2759,9 +2758,7 @@ fn encode_cursor(
         return encode_legacy_cursor(operation, snapshot, query, offset);
     };
     let mut bytes = Vec::with_capacity(
-        84 + operation.len()
-            + snapshot.view_kind.len()
-            + snapshot.daemon_instance.0.len(),
+        84 + operation.len() + snapshot.view_kind.len() + snapshot.daemon_instance.0.len(),
     );
     bytes.extend([3, operation_length]);
     bytes.extend(operation.as_bytes());

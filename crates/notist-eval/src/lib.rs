@@ -104,14 +104,7 @@ impl Evaluator {
         parse: &Parse,
         bindings: HashMap<String, Value>,
     ) -> Evaluation {
-        lower::evaluate_markup_with_bindings(
-            source,
-            &parse.root,
-            0,
-            &self.registry,
-            0,
-            bindings,
-        )
+        lower::evaluate_markup_with_bindings(source, &parse.root, 0, &self.registry, 0, bindings)
     }
 
     /// Returns the function registry used by this evaluator.
@@ -241,9 +234,13 @@ mod tests {
             "{:?}",
             evaluation.diagnostics
         );
-        assert!(evaluation.content.elements.iter().any(|node| {
-            matches!(&node.element, Element::Text(text) if text == "42")
-        }));
+        assert!(
+            evaluation
+                .content
+                .elements
+                .iter()
+                .any(|node| { matches!(&node.element, Element::Text(text) if text == "42") })
+        );
     }
 
     #[test]
@@ -258,11 +255,7 @@ mod tests {
         assert_eq!(evaluation.bindings.get("x"), Some(&Value::Int(3)));
         // Content statements join into one Content value.
         let joined = Evaluator::default().evaluate("#let y = { [a] [b] }");
-        assert!(
-            joined.diagnostics.is_empty(),
-            "{:?}",
-            joined.diagnostics
-        );
+        assert!(joined.diagnostics.is_empty(), "{:?}", joined.diagnostics);
         let Some(Value::Content(content)) = joined.bindings.get("y") else {
             panic!("expected a Content binding")
         };
@@ -470,9 +463,6 @@ mod tests {
         ));
     }
 
-
-
-
     #[test]
     fn lowers_headings_inside_long_form_markup() {
         let evaluated = Evaluator::default().evaluate("= Title\n\nIntro\n\nOutro");
@@ -542,7 +532,6 @@ mod tests {
                 .any(|node| matches!(node.element, Element::EnumItem { .. }))
         );
     }
-
 
     #[test]
     fn reserves_asterisks_for_inline_strong() {
@@ -616,8 +605,6 @@ mod tests {
         );
     }
 
-
-
     #[test]
     fn lowers_inline_surface_sugar() {
         // Bare URLs and forced linebreaks are no longer first-class sugar:
@@ -641,14 +628,12 @@ mod tests {
             evaluated.content.elements[2].element,
             Element::Emph(_)
         ));
-        assert!(
-            evaluated.content.elements.iter().any(|node| {
-                matches!(
-                    &node.element,
-                    Element::Text(text) if text.contains("https://example.test/page.")
-                )
-            })
-        );
+        assert!(evaluated.content.elements.iter().any(|node| {
+            matches!(
+                &node.element,
+                Element::Text(text) if text.contains("https://example.test/page.")
+            )
+        }));
     }
 
     #[test]
@@ -660,11 +645,9 @@ mod tests {
             evaluated.diagnostics
         );
         assert!(
-            evaluated
-                .content
-                .elements
-                .iter()
-                .any(|node| matches!(&node.element, Element::Text(text) if text.contains("flow.png")))
+            evaluated.content.elements.iter().any(
+                |node| matches!(&node.element, Element::Text(text) if text.contains("flow.png"))
+            )
         );
     }
 
@@ -676,13 +659,9 @@ mod tests {
             "{:?}",
             evaluated.diagnostics
         );
-        assert!(
-            evaluated
-                .content
-                .elements
-                .iter()
-                .any(|node| matches!(&node.element, Element::Text(text) if text.contains("docs/index.html")))
-        );
+        assert!(evaluated.content.elements.iter().any(
+            |node| matches!(&node.element, Element::Text(text) if text.contains("docs/index.html"))
+        ));
     }
 
     #[test]
@@ -762,8 +741,6 @@ mod tests {
         ));
     }
 
-
-
     #[test]
     fn lowers_heading_surface_sugar() {
         let evaluator = Evaluator::default();
@@ -802,7 +779,6 @@ mod tests {
         );
     }
 
-
     #[test]
     fn does_not_lower_quote_marker_sugar() {
         // Quote is not part of the v1 language (R04): the marker stays text.
@@ -813,11 +789,9 @@ mod tests {
             evaluated.diagnostics
         );
         assert!(
-            evaluated
-                .content
-                .elements
-                .iter()
-                .any(|node| matches!(&node.element, Element::Text(text) if text.contains("Nested")))
+            evaluated.content.elements.iter().any(
+                |node| matches!(&node.element, Element::Text(text) if text.contains("Nested"))
+            )
         );
     }
 
@@ -854,14 +828,10 @@ mod tests {
         );
     }
 
-
-
-
     #[test]
     fn lowers_pipe_table_sugar_to_table_element() {
-        let evaluated = Evaluator::default().evaluate(
-            "| Name | Value |\n| :--- | ---: |\n| one | 1 |\n| two | 2 |\n",
-        );
+        let evaluated = Evaluator::default()
+            .evaluate("| Name | Value |\n| :--- | ---: |\n| one | 1 |\n| two | 2 |\n");
         assert!(
             evaluated.diagnostics.is_empty(),
             "{:?}",
@@ -879,10 +849,7 @@ mod tests {
         };
         assert_eq!(*columns, 2);
         assert!(*header);
-        assert_eq!(
-            alignments,
-            &[TableAlignment::Left, TableAlignment::Right]
-        );
+        assert_eq!(alignments, &[TableAlignment::Left, TableAlignment::Right]);
         assert_eq!(cells.len(), 6);
         assert!(matches!(
             &cells[2].element,
@@ -922,15 +889,19 @@ mod tests {
         ));
 
         let incomplete = evaluator.evaluate("#table(columns: 2)[#table-cell[A]]");
-        assert!(incomplete
-            .diagnostics
-            .iter()
-            .any(|diagnostic| diagnostic.message.contains("does not fill")));
+        assert!(
+            incomplete
+                .diagnostics
+                .iter()
+                .any(|diagnostic| diagnostic.message.contains("does not fill"))
+        );
         let non_cell = evaluator.evaluate("#table(columns: 2)[#strong[A] #strong[B]]");
-        assert!(non_cell
-            .diagnostics
-            .iter()
-            .any(|diagnostic| diagnostic.message.contains("only table-cell")));
+        assert!(
+            non_cell
+                .diagnostics
+                .iter()
+                .any(|diagnostic| diagnostic.message.contains("only table-cell"))
+        );
     }
 
     #[test]
@@ -954,10 +925,11 @@ mod tests {
             panic!("expected a figure, got {:?}", evaluated.content.elements)
         };
         assert_eq!(kind, "table");
-        assert!(body
-            .elements
-            .iter()
-            .any(|node| matches!(node.element, Element::Table { .. })));
+        assert!(
+            body.elements
+                .iter()
+                .any(|node| matches!(node.element, Element::Table { .. }))
+        );
         assert!(matches!(
             supplement,
             Some(Content { elements }) if matches!(&elements[0].element, Element::Text(text) if text == "Tab")
@@ -968,10 +940,12 @@ mod tests {
         ));
 
         // Typst `kind: auto`: the wrapped block element decides the kind.
-        let inferred = evaluator.evaluate(
-            "#figure[\n#table(columns: 1)[#table-cell[X]]\n]",
+        let inferred = evaluator.evaluate("#figure[\n#table(columns: 1)[#table-cell[X]]\n]");
+        assert!(
+            inferred.diagnostics.is_empty(),
+            "{:?}",
+            inferred.diagnostics
         );
-        assert!(inferred.diagnostics.is_empty(), "{:?}", inferred.diagnostics);
         assert!(matches!(
             &inferred.content.elements[0].element,
             Element::Figure { kind, .. } if kind == "table"
@@ -1039,7 +1013,10 @@ mod tests {
             }) if items.len() == 2
         ));
         let Block::Section { level, body, .. } = &structured.document.blocks[2] else {
-            panic!("expected a section, got {:?}", structured.document.blocks[2])
+            panic!(
+                "expected a section, got {:?}",
+                structured.document.blocks[2]
+            )
         };
         assert_eq!(*level, 1);
         assert!(matches!(
@@ -1061,7 +1038,10 @@ mod tests {
                 })] if items.len() == 2
             ));
         }
-        for source in ["+ Three\n+ Four", "#item(ordered=true)[Three]#item(ordered=true)[Four]"] {
+        for source in [
+            "+ Three\n+ Four",
+            "#item(ordered=true)[Three]#item(ordered=true)[Four]",
+        ] {
             let structured = structure(evaluator.evaluate(source));
             assert!(matches!(
                 structured.document.blocks.as_slice(),
@@ -1075,9 +1055,8 @@ mod tests {
 
     #[test]
     fn structuring_groups_ordered_items_separately() {
-        let evaluation = Evaluator::default().evaluate(
-            "#item(ordered=true)[First]\n#item(ordered=true)[Second]\n#item[Other]",
-        );
+        let evaluation = Evaluator::default()
+            .evaluate("#item(ordered=true)[First]\n#item(ordered=true)[Second]\n#item[Other]");
         assert!(
             evaluation.diagnostics.is_empty(),
             "{:?}",
@@ -1233,9 +1212,13 @@ mod tests {
             "{:?}",
             evaluation.diagnostics
         );
-        assert!(evaluation.content.elements.iter().any(|node| {
-            matches!(&node.element, Element::Text(text) if text == "42")
-        }));
+        assert!(
+            evaluation
+                .content
+                .elements
+                .iter()
+                .any(|node| { matches!(&node.element, Element::Text(text) if text == "42") })
+        );
     }
 
     #[test]
@@ -1284,26 +1267,13 @@ mod tests {
         assert_eq!(plain.content, annotated.content);
     }
 
-
-
-
-
-
-
-
-
-
     #[test]
     fn keeps_markup_comment_syntax_as_text_and_drops_code_trivia() {
         // E09: `//` and `/* ... */` are ordinary text in the Markup stream;
         // only Code contexts strip them as lexical trivia.
-        let markup = Evaluator::default()
-            .evaluate("Visible // line comment\ntext /* outer block */ after");
-        assert!(
-            markup.diagnostics.is_empty(),
-            "{:?}",
-            markup.diagnostics
-        );
+        let markup =
+            Evaluator::default().evaluate("Visible // line comment\ntext /* outer block */ after");
+        assert!(markup.diagnostics.is_empty(), "{:?}", markup.diagnostics);
         let visible = markup
             .content
             .elements
@@ -1313,7 +1283,10 @@ mod tests {
                 _ => None,
             })
             .collect::<String>();
-        assert_eq!(visible, "Visible // line comment\ntext /* outer block */ after");
+        assert_eq!(
+            visible,
+            "Visible // line comment\ntext /* outer block */ after"
+        );
 
         let code = Evaluator::default().evaluate("#(1 + /* nested /* block */ comment */ 2)");
         assert!(code.diagnostics.is_empty(), "{:?}", code.diagnostics);
@@ -1346,8 +1319,8 @@ mod tests {
 
     #[test]
     fn module_annotations_become_module_attributes() {
-        let evaluation = Evaluator::default()
-            .evaluate("@![#design, #wip, status = \"draft\"]\n\n= Title");
+        let evaluation =
+            Evaluator::default().evaluate("@![#design, #wip, status = \"draft\"]\n\n= Title");
         assert!(
             evaluation.diagnostics.is_empty(),
             "{:?}",
@@ -1374,9 +1347,12 @@ mod tests {
     fn dangling_block_annotations_produce_diagnostics() {
         let evaluation = Evaluator::default().evaluate("@[wip]");
         assert!(evaluation.annotations.is_empty());
-        assert!(evaluation.diagnostics.iter().any(|diagnostic| {
-            diagnostic.message.contains("not followed by a block")
-        }));
+        assert!(
+            evaluation
+                .diagnostics
+                .iter()
+                .any(|diagnostic| { diagnostic.message.contains("not followed by a block") })
+        );
     }
 
     #[test]
@@ -1405,17 +1381,25 @@ mod tests {
         // D0002: heading, item, and Content literal bodies are value-level
         // scopes — `let` bindings inside never escape into the document.
         let heading = Evaluator::default().evaluate("= #let x = 1\n\n#x");
-        assert!(heading.diagnostics.iter().any(|diagnostic| {
-            diagnostic.message == "unresolved name `x`"
-        }));
+        assert!(
+            heading
+                .diagnostics
+                .iter()
+                .any(|diagnostic| { diagnostic.message == "unresolved name `x`" })
+        );
         let item = Evaluator::default().evaluate("- #let y = 2\n#y");
-        assert!(item.diagnostics.iter().any(|diagnostic| {
-            diagnostic.message == "unresolved name `y`"
-        }));
+        assert!(
+            item.diagnostics
+                .iter()
+                .any(|diagnostic| { diagnostic.message == "unresolved name `y`" })
+        );
         let literal = Evaluator::default().evaluate("#[let z = 3]\n#z");
-        assert!(literal.diagnostics.iter().any(|diagnostic| {
-            diagnostic.message == "unresolved name `z`"
-        }));
+        assert!(
+            literal
+                .diagnostics
+                .iter()
+                .any(|diagnostic| { diagnostic.message == "unresolved name `z`" })
+        );
 
         // Document-level `let` remains visible inside element bodies (the
         // nested scope sees the chain).
@@ -1432,7 +1416,6 @@ mod tests {
             }
         }));
     }
-
 
     #[test]
     fn escaped_closing_delimiters_remain_literal_inline_content() {

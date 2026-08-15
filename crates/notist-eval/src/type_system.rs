@@ -2,8 +2,7 @@ use std::collections::HashMap;
 
 use notist_model::{Content, TextRange};
 use notist_syntax::{
-    Argument, Expression, ExpressionKind, StringLiteralForm, StringLiteralStyle,
-    UserParameter,
+    Argument, Expression, ExpressionKind, StringLiteralForm, StringLiteralStyle, UserParameter,
 };
 
 pub use notist_model::{DefaultValue, FunctionSignature, Parameter, Type};
@@ -207,21 +206,16 @@ pub(crate) fn bind_arguments(
                     });
                     None
                 })
-        } else if saw_named
-            && matches!(argument.expression.kind, ExpressionKind::Content(_))
-        {
+        } else if saw_named && matches!(argument.expression.kind, ExpressionKind::Content(_)) {
             // R05: the trailing Content block is the one positional argument
             // allowed after named arguments; it binds the declared trailing
             // parameter.
-            let trailing = signature
-                .trailing_content
-                .as_deref()
-                .and_then(|name| {
-                    signature
-                        .parameters
-                        .iter()
-                        .find(|parameter| parameter.name == name)
-                });
+            let trailing = signature.trailing_content.as_deref().and_then(|name| {
+                signature
+                    .parameters
+                    .iter()
+                    .find(|parameter| parameter.name == name)
+            });
             if trailing.is_none() {
                 diagnostics.push(EvalDiagnostic {
                     message: "positional arguments cannot follow named arguments".into(),

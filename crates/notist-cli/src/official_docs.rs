@@ -295,10 +295,7 @@ mod tests {
         let data = tempfile::tempdir().unwrap();
         let root = ensure_synced_to(data.path()).unwrap();
         assert!(root.join("Notist.toml").is_file());
-        assert!(
-            root.join("designs/host/build-preview.not")
-                .is_file()
-        );
+        assert!(root.join("designs/host/build-preview.not").is_file());
         assert_eq!(read_manifest(&root).unwrap(), Some(expected_manifest()));
 
         fs::write(root.join(MANIFEST_NAME), b"{}").unwrap();

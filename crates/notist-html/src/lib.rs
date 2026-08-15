@@ -528,7 +528,6 @@ impl Renderer<'_, '_> {
         self.output.push_str("</li>");
     }
 
-
     fn element(&mut self, element: &Element, node: &ElementNode, position: RenderPosition) {
         match element {
             Element::Text(text) => {
@@ -579,7 +578,7 @@ impl Renderer<'_, '_> {
                 self.inline_content(body);
                 self.output.push_str("</u>");
             }
-Element::Heading { level, body } => {
+            Element::Heading { level, body } => {
                 let level = (*level).clamp(1, 6);
                 write!(self.output, "<h{level}").unwrap();
                 self.projected_class_attribute(node);
@@ -662,8 +661,7 @@ Element::Heading { level, body } => {
                 self.output.push_str("</figure>");
             }
             Element::TableCell { body, .. } => {
-                self.output
-                    .push_str("<div class=\"notist-table-cell");
+                self.output.push_str("<div class=\"notist-table-cell");
                 self.projected_class_suffix(node);
                 self.output.push('"');
                 self.range_attributes(node);
@@ -679,11 +677,7 @@ Element::Heading { level, body } => {
             } => {
                 self.output.push_str("<div class=\"notist-table-wrapper");
                 self.projected_class_suffix(node);
-                write!(
-                    self.output,
-                    "\"><table data-notist-columns=\"{columns}\""
-                )
-                .unwrap();
+                write!(self.output, "\"><table data-notist-columns=\"{columns}\"").unwrap();
                 self.range_attributes(node);
                 self.output.push('>');
                 let rows = table_layout(*columns, cells).unwrap_or_else(|_| {
@@ -725,8 +719,7 @@ Element::Heading { level, body } => {
                 self.output.push('>');
             }
             Element::Callout { kind, title, body } => {
-                self.output
-                    .push_str("<aside class=\"notist-callout");
+                self.output.push_str("<aside class=\"notist-callout");
                 self.projected_class_suffix(node);
                 self.output.push_str("\" data-notist-kind=\"");
                 escape_attribute(&mut self.output, kind);
@@ -974,7 +967,6 @@ Element::Heading { level, body } => {
         )
         .unwrap();
     }
-
 }
 
 /// Precomputed anchor, projection, and inline-wrapper assignments for one
@@ -1341,7 +1333,11 @@ fn collect_outline_entries(
                     }
                 }
                 Block::Section { heading, body, .. } => {
-                    if let Element::Heading { level, body: heading_body } = &heading.element {
+                    if let Element::Heading {
+                        level,
+                        body: heading_body,
+                    } = &heading.element
+                    {
                         output.push(RenderedHeading {
                             level: *level,
                             id: plan
@@ -1426,7 +1422,7 @@ fn escape_attribute(output: &mut String, text: &str) {
 
 #[cfg(test)]
 mod tests {
-    use notist_eval::{structure, Evaluator};
+    use notist_eval::{Evaluator, structure};
     use notist_model::{
         Block, Content, Element, ElementNode, ModulePath, StructuredDocument, TextRange,
     };
@@ -1484,9 +1480,8 @@ mod tests {
 
     #[test]
     fn sections_nest_and_receive_section_level_projection() {
-        let evaluation = Evaluator::default().evaluate(
-            "= 一级\n\n段落\n\n== 二级\n\n内文\n\n= 一级二\n",
-        );
+        let evaluation =
+            Evaluator::default().evaluate("= 一级\n\n段落\n\n== 二级\n\n内文\n\n= 一级二\n");
         let structured = structure(evaluation);
         let html = render(&structured.document);
         // Two sibling top-level sections; the second-level heading nests
@@ -1513,7 +1508,6 @@ mod tests {
         assert!(html.contains("data-notist-status=\"draft\""));
     }
 
-
     #[test]
     fn renders_plain_paragraph_element() {
         let evaluator = Evaluator::default();
@@ -1521,7 +1515,6 @@ mod tests {
         assert!(html.starts_with("<p data-notist-start=\"0\""));
         assert!(html.ends_with("</p>"));
     }
-
 
     #[test]
     fn escapes_text_attributes_and_raw_bodies() {
@@ -1980,7 +1973,9 @@ mod tests {
         );
 
         // A partially covered block carries no projection on its own tag...
-        assert!(html.contains("<aside class=\"notist-callout\" data-notist-kind=\"tip\" data-notist-start=\"0\""));
+        assert!(html.contains(
+            "<aside class=\"notist-callout\" data-notist-kind=\"tip\" data-notist-start=\"0\""
+        ));
         // ...while its automatically grouped paragraph wraps the covered
         // inline run, closing the span before the paragraph tag.
         assert!(html.contains("<p><span class=\"notist-annotated hero\">"));
@@ -2108,9 +2103,8 @@ mod tests {
 
     #[test]
     fn renders_explicit_items_grouped_into_containers() {
-        let evaluation = Evaluator::default().evaluate(
-            "#item[One]#item[Two]#item(ordered=true)[Three]#item(ordered=true)[Four]",
-        );
+        let evaluation = Evaluator::default()
+            .evaluate("#item[One]#item[Two]#item(ordered=true)[Three]#item(ordered=true)[Four]");
         assert!(
             evaluation.diagnostics.is_empty(),
             "{:?}",
@@ -2140,8 +2134,8 @@ mod tests {
 
     #[test]
     fn renders_pipe_tables_as_semantic_html() {
-        let evaluation = Evaluator::default()
-            .evaluate("| Name | Value |\n| :--- | ---: |\n| one | 1 |\n");
+        let evaluation =
+            Evaluator::default().evaluate("| Name | Value |\n| :--- | ---: |\n| one | 1 |\n");
         assert!(
             evaluation.diagnostics.is_empty(),
             "{:?}",
@@ -2180,9 +2174,8 @@ mod tests {
 
     #[test]
     fn renders_inline_elements_with_semantic_tags() {
-        let evaluation = Evaluator::default().evaluate(
-            "#strong[bold] #emph[slanted] #strike[gone] #underline[under]",
-        );
+        let evaluation = Evaluator::default()
+            .evaluate("#strong[bold] #emph[slanted] #strike[gone] #underline[under]");
         assert!(
             evaluation.diagnostics.is_empty(),
             "{:?}",
@@ -2569,9 +2562,8 @@ mod tests {
     fn unsafe_url_references_render_without_executable_hrefs() {
         // R10: external url references are syntactically legal; the renderer
         // must never emit them as clickable hrefs.
-        let evaluation = Evaluator::default().evaluate(
-            "[[javascript:alert(1)]] [[data:text/html,<script>alert(1)</script>]]",
-        );
+        let evaluation = Evaluator::default()
+            .evaluate("[[javascript:alert(1)]] [[data:text/html,<script>alert(1)</script>]]");
         assert!(
             evaluation.diagnostics.is_empty(),
             "{:?}",

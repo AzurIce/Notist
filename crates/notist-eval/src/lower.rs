@@ -425,9 +425,7 @@ impl LowerState<'_> {
                         self.registry.get(&name.value).map(|function| {
                             Value::Function(Box::new(FunctionValue {
                                 signature: function.signature(),
-                                implementation: FunctionImplementation::Builtin(
-                                    name.value.clone(),
-                                ),
+                                implementation: FunctionImplementation::Builtin(name.value.clone()),
                                 captured: self.variables.first().cloned().unwrap_or_default(),
                             }))
                         })
@@ -508,7 +506,11 @@ impl LowerState<'_> {
                     }
                 }
                 self.variables.pop();
-                (joined.unwrap_or(Value::None), ValueOrigin::Default, diagnostics)
+                (
+                    joined.unwrap_or(Value::None),
+                    ValueOrigin::Default,
+                    diagnostics,
+                )
             }
             ExpressionKind::Let { name, value, .. } => {
                 let (value, _, diagnostics) = self.evaluate_expression(value, value.range);
@@ -666,11 +668,7 @@ impl LowerState<'_> {
         }
 
         let value = match (operator, left, right) {
-            (
-                BinaryOperator::Equal | BinaryOperator::NotEqual,
-                ref left,
-                ref right,
-            ) => {
+            (BinaryOperator::Equal | BinaryOperator::NotEqual, ref left, ref right) => {
                 if matches!(left, Value::Content(_) | Value::Function(_))
                     || matches!(right, Value::Content(_) | Value::Function(_))
                 {
@@ -1092,7 +1090,13 @@ impl LowerState<'_> {
     /// first non-Parbreak element starts the annotated block, inline elements
     /// extend it, and a Parbreak or a block-level element closes it (D0006:
     /// `@[...]` binds the immediately following block-level node).
-    fn track_pending_annotation(&mut self, range: TextRange, inline: bool, parbreak: bool, blank: bool) {
+    fn track_pending_annotation(
+        &mut self,
+        range: TextRange,
+        inline: bool,
+        parbreak: bool,
+        blank: bool,
+    ) {
         if self.pending_annotations.is_empty() {
             return;
         }
@@ -1158,30 +1162,31 @@ impl LowerState<'_> {
     /// inline fragments and assembled row-major into one `Element::Table`.
     fn lower_table_sugar(&mut self, sugar: &notist_syntax::TableSugar) {
         let mut cells = Vec::new();
-        let mut lower_cells = |cells: &mut Vec<ElementNode>, row: &[notist_syntax::TableSugarCell]| {
-            for cell in row {
-                let evaluation = evaluate_markup_in_environment(
-                    self.source,
-                    &cell.body,
-                    self.base_offset,
-                    self.registry,
-                    self.depth + 1,
-                    self.user_functions,
-                    self.variables.clone(),
-                    false,
-                );
-                self.annotations.extend(evaluation.annotations);
-                self.diagnostics.extend(evaluation.diagnostics);
-                cells.push(ElementNode {
-                    element: Element::TableCell {
-                        body: evaluation.content,
-                        colspan: 1,
-                        rowspan: 1,
-                    },
-                    range: cell.range.shifted(self.base_offset),
-                });
-            }
-        };
+        let mut lower_cells =
+            |cells: &mut Vec<ElementNode>, row: &[notist_syntax::TableSugarCell]| {
+                for cell in row {
+                    let evaluation = evaluate_markup_in_environment(
+                        self.source,
+                        &cell.body,
+                        self.base_offset,
+                        self.registry,
+                        self.depth + 1,
+                        self.user_functions,
+                        self.variables.clone(),
+                        false,
+                    );
+                    self.annotations.extend(evaluation.annotations);
+                    self.diagnostics.extend(evaluation.diagnostics);
+                    cells.push(ElementNode {
+                        element: Element::TableCell {
+                            body: evaluation.content,
+                            colspan: 1,
+                            rowspan: 1,
+                        },
+                        range: cell.range.shifted(self.base_offset),
+                    });
+                }
+            };
         lower_cells(&mut cells, &sugar.header);
         for row in &sugar.rows {
             lower_cells(&mut cells, row);
@@ -1449,7 +1454,6 @@ fn newline_end(bytes: &[u8], cursor: usize) -> Option<usize> {
         _ => None,
     }
 }
-
 
 fn preceding_backslashes(bytes: &[u8], start: usize, cursor: usize) -> usize {
     bytes[start..cursor]

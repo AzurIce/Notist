@@ -1,8 +1,6 @@
 #![allow(dead_code)]
 
-use notist_model::{
-    Content, Element, TableAlignment, TableLayoutError, table_layout,
-};
+use notist_model::{Content, Element, TableAlignment, TableLayoutError, table_layout};
 
 use crate::{
     EvalDiagnostic, Function, FunctionContext, FunctionInput, FunctionOutput, FunctionRegistry,
@@ -26,8 +24,6 @@ pub(crate) fn register_builtins(registry: &mut FunctionRegistry) -> Result<(), R
     registry.register(RuleFunction)?;
     Ok(())
 }
-
-
 
 struct RefFunction;
 
@@ -93,7 +89,6 @@ impl Function for HeadingFunction {
     }
 }
 
-
 struct RawFunction;
 
 impl Function for RawFunction {
@@ -127,8 +122,6 @@ impl Function for RawFunction {
         )))
     }
 }
-
-
 
 struct CalloutFunction;
 
@@ -319,12 +312,6 @@ macro_rules! inline_wrapper_function {
 
 inline_wrapper_function!(UnderlineFunction, "underline", Underline);
 
-
-
-
-
-
-
 fn image_dimension(
     value: Option<i64>,
     name: &str,
@@ -341,8 +328,6 @@ fn image_dimension(
     }
     Ok(Some(value as u32))
 }
-
-
 
 struct TableCellFunction;
 
@@ -409,18 +394,16 @@ impl Function for TableFunction {
                 range: input.range,
             }]);
         }
-        let alignments = match table_alignments(
-            input.arguments.optional_string("align"),
-            columns as usize,
-        ) {
-            Ok(alignments) => alignments,
-            Err(message) => {
-                return Err(vec![EvalDiagnostic {
-                    message,
-                    range: input.range,
-                }]);
-            }
-        };
+        let alignments =
+            match table_alignments(input.arguments.optional_string("align"), columns as usize) {
+                Ok(alignments) => alignments,
+                Err(message) => {
+                    return Err(vec![EvalDiagnostic {
+                        message,
+                        range: input.range,
+                    }]);
+                }
+            };
         let body = input.arguments.take_content("body");
         let mut cells = Vec::new();
         for node in body.elements {
@@ -521,10 +504,7 @@ fn infer_figure_kind(body: &Content) -> String {
     "figure".into()
 }
 
-fn table_alignments(
-    source: Option<&str>,
-    columns: usize,
-) -> Result<Vec<TableAlignment>, String> {
+fn table_alignments(source: Option<&str>, columns: usize) -> Result<Vec<TableAlignment>, String> {
     let Some(source) = source else {
         return Ok(vec![TableAlignment::Default; columns]);
     };
@@ -574,9 +554,6 @@ fn table_layout_message(error: TableLayoutError, columns: u16) -> String {
     }
 }
 
-
-
-
 struct RuleFunction;
 
 impl Function for RuleFunction {
@@ -599,7 +576,6 @@ impl Function for RuleFunction {
         )))
     }
 }
-
 
 pub(crate) fn raw_content(
     text: String,
@@ -654,8 +630,6 @@ mod tests {
             );
         }
     }
-
-
 
     #[test]
     fn evaluates_ref_function_with_wiki_reference_validation() {
@@ -784,13 +758,6 @@ mod tests {
         ));
     }
 
-
-
-
-
-
-
-
     #[test]
     fn evaluates_strike_function() {
         let evaluated = Evaluator::default().evaluate("#strike[obsolete]");
@@ -805,11 +772,6 @@ mod tests {
                 if matches!(&body.elements[0].element, Element::Text(text) if text == "obsolete")
         ));
     }
-
-
-
-
-
 
     #[test]
     fn evaluates_rule_function() {
@@ -827,9 +789,8 @@ mod tests {
 
     #[test]
     fn block_raw_excludes_delimiter_line_breaks() {
-        let evaluated = Evaluator::default().evaluate(
-            "#raw(r#\"\"\"\nline one\nline two\n\"\"\"#, lang=\"text\", block=true)",
-        );
+        let evaluated = Evaluator::default()
+            .evaluate("#raw(r#\"\"\"\nline one\nline two\n\"\"\"#, lang=\"text\", block=true)");
         assert!(
             evaluated.diagnostics.is_empty(),
             "{:?}",
@@ -842,8 +803,7 @@ mod tests {
 
         // D0003 constructor validation: an inline raw source must not contain
         // line breaks; block: true is the opt-in for multi-line sources.
-        let invalid = Evaluator::default()
-            .evaluate("#raw(\"line one\\nline two\")");
+        let invalid = Evaluator::default().evaluate("#raw(\"line one\\nline two\")");
         assert!(
             invalid
                 .diagnostics
@@ -888,10 +848,4 @@ mod tests {
         let unknown = evaluator.evaluate("#details(source=\"book\")[text]");
         assert_eq!(unknown.diagnostics[0].message, "unknown argument `source`");
     }
-
-
-
-
-
-
 }

@@ -1016,9 +1016,7 @@ impl NotistService {
                             .map(|module| {
                                 let mut bindings: Vec<String> = workspace
                                     .module_bindings(module.id)
-                                    .map(|bindings| {
-                                        bindings.keys().cloned().collect()
-                                    })
+                                    .map(|bindings| bindings.keys().cloned().collect())
                                     .unwrap_or_default();
                                 bindings.sort();
                                 ModuleRecord {
@@ -2061,12 +2059,17 @@ fn render_workspace(
                 .map(|resource| resource.name.as_str())
                 .collect(),
         );
-        resources.extend(module.resources.iter().map(|resource| RenderedResourceRecord {
-            module_segments: module.logical_path.segments().to_vec(),
-            name: resource.name.clone(),
-            kind: resource_kind_name(resource.kind).to_owned(),
-            source_path: resource.path.clone(),
-        }));
+        resources.extend(
+            module
+                .resources
+                .iter()
+                .map(|resource| RenderedResourceRecord {
+                    module_segments: module.logical_path.segments().to_vec(),
+                    name: resource.name.clone(),
+                    kind: resource_kind_name(resource.kind).to_owned(),
+                    source_path: resource.path.clone(),
+                }),
+        );
     }
 
     let mut pages = Vec::new();
@@ -2199,11 +2202,7 @@ fn rendered_annotations(parse: &notist_syntax::Parse) -> Vec<RenderedAnnotation>
             }
             RenderedAnnotation {
                 scope: annotation.scope_range,
-                id: annotation
-                    .attributes
-                    .id
-                    .as_ref()
-                    .map(|id| id.value.clone()),
+                id: annotation.attributes.id.as_ref().map(|id| id.value.clone()),
                 classes,
                 tags,
                 properties,
@@ -2698,12 +2697,9 @@ mod tests {
         assert_eq!(guide.title.as_deref(), Some("指南"));
         assert!(guide.fragment.contains("id=\"简介\""));
         assert!(
-            guide
-                .headings
-                .iter()
-                .any(|heading| heading.level == 2
-                    && heading.id == "简介"
-                    && heading.text == "简介")
+            guide.headings.iter().any(|heading| heading.level == 2
+                && heading.id == "简介"
+                && heading.text == "简介")
         );
 
         // The virtual module index lists child modules by their semantic title.

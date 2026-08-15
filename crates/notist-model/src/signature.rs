@@ -380,8 +380,7 @@ mod tests {
         assert!(Type::Optional(Box::new(Type::String)).accepts(&Type::None));
         assert!(Type::Optional(Box::new(Type::String)).accepts(&Type::String));
         assert!(
-            Type::Optional(Box::new(Type::String))
-                .accepts(&Type::Optional(Box::new(Type::String)))
+            Type::Optional(Box::new(Type::String)).accepts(&Type::Optional(Box::new(Type::String)))
         );
         assert!(!Type::Optional(Box::new(Type::Int)).accepts(&Type::String));
         // The internal inferred marker accepts anything and is accepted

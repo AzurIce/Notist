@@ -188,8 +188,9 @@ impl Parser<'_> {
                         self.cursor += 2;
                         if !self.only_whitespace_before(annotation_start) {
                             self.errors.push(SyntaxError {
-                                message: "module annotation `@![...]` must appear before any content"
-                                    .into(),
+                                message:
+                                    "module annotation `@![...]` must appear before any content"
+                                        .into(),
                                 range: TextRange::new(annotation_start, annotation_start + 2),
                             });
                         }
@@ -295,7 +296,9 @@ impl Parser<'_> {
     fn parse_heading_sugar(&mut self, stop_at_bracket: bool) -> Option<(HeadingSugar, usize)> {
         let start = self.cursor;
         let rest = &self.source[start..self.end];
-        let mut line_end = rest.find('\n').map_or(start + rest.len(), |index| start + index);
+        let mut line_end = rest
+            .find('\n')
+            .map_or(start + rest.len(), |index| start + index);
         let line = &self.source[start..line_end];
         let line = line.strip_suffix('\r').unwrap_or(line);
         line_end = start + line.len();
@@ -420,12 +423,7 @@ impl Parser<'_> {
     /// Scans Markup from `start` to `end` until it would stop at `]` or `|`,
     /// without merging the nested parser's diagnostics into `self`. Returns
     /// the stopping offset and whether a delimiter was found.
-    fn scan_markup_stop(
-        &self,
-        start: usize,
-        end: usize,
-        stop_at_bracket: bool,
-    ) -> (usize, bool) {
+    fn scan_markup_stop(&self, start: usize, end: usize, stop_at_bracket: bool) -> (usize, bool) {
         let mut nested = Parser {
             source: self.source,
             cursor: start,
@@ -518,15 +516,10 @@ impl Parser<'_> {
         let mut rows = Vec::with_capacity(body_raw.len());
         for raw_row in body_raw {
             if raw_row.len() > columns {
-                let start = raw_row
-                    .first()
-                    .map_or(start, |range| range.start);
+                let start = raw_row.first().map_or(start, |range| range.start);
                 let end = raw_row.last().map_or(start, |range| range.end);
                 self.errors.push(SyntaxError {
-                    message: format!(
-                        "table row has {} cells, expected {columns}",
-                        raw_row.len()
-                    ),
+                    message: format!("table row has {} cells, expected {columns}", raw_row.len()),
                     range: TextRange::new(start, end),
                 });
             }
@@ -538,7 +531,15 @@ impl Parser<'_> {
         }
 
         let range = TextRange::new(start, end_cursor.max(start));
-        Some((TableSugar { alignments, header, rows, range }, cursor))
+        Some((
+            TableSugar {
+                alignments,
+                header,
+                rows,
+                range,
+            },
+            cursor,
+        ))
     }
 
     /// Scans one table row into raw cell payload ranges. The row starts at
@@ -605,14 +606,12 @@ impl Parser<'_> {
                         range: trimmed,
                     }
                 } else {
-                    self.parse_markup_slice(
-                        trimmed.start,
-                        trimmed.end,
-                        stop_at_bracket,
-                        false,
-                    )
+                    self.parse_markup_slice(trimmed.start, trimmed.end, stop_at_bracket, false)
                 };
-                TableSugarCell { body, range: trimmed }
+                TableSugarCell {
+                    body,
+                    range: trimmed,
+                }
             })
             .collect()
     }
@@ -710,11 +709,7 @@ impl Parser<'_> {
         self.parse_binary_expression(0, true)
     }
 
-    fn parse_binary_expression(
-        &mut self,
-        minimum_precedence: u8,
-        top_level: bool,
-    ) -> Expression {
+    fn parse_binary_expression(&mut self, minimum_precedence: u8, top_level: bool) -> Expression {
         let mut left = if minimum_precedence <= NOT_PRECEDENCE && self.peek_keyword("not") {
             self.parse_not_expression()
         } else {
@@ -791,9 +786,7 @@ impl Parser<'_> {
         let Some(after) = rest.as_bytes().get(word.len()) else {
             return false;
         };
-        let boundary = |byte: &u8| {
-            byte.is_ascii_alphanumeric() || matches!(*byte, b'_' | b'-')
-        };
+        let boundary = |byte: &u8| byte.is_ascii_alphanumeric() || matches!(*byte, b'_' | b'-');
         rest.starts_with(word) && !boundary(after)
     }
 
@@ -802,9 +795,7 @@ impl Parser<'_> {
         let after = |length: usize| {
             rest.as_bytes()
                 .get(length)
-                .is_none_or(|byte| {
-                    !(byte.is_ascii_alphanumeric() || matches!(*byte, b'_' | b'-'))
-                })
+                .is_none_or(|byte| !(byte.is_ascii_alphanumeric() || matches!(*byte, b'_' | b'-')))
         };
         if rest.starts_with("or") && after(2) {
             return Some((BinaryOperator::Or, 1, 2));
@@ -820,7 +811,11 @@ impl Parser<'_> {
                     BinaryOperator::Less
                 },
                 3,
-                if rest.as_bytes().get(1) == Some(&b'=') { 2 } else { 1 },
+                if rest.as_bytes().get(1) == Some(&b'=') {
+                    2
+                } else {
+                    1
+                },
             )),
             b'>' => Some((
                 if rest.as_bytes().get(1) == Some(&b'=') {
@@ -829,14 +824,14 @@ impl Parser<'_> {
                     BinaryOperator::Greater
                 },
                 3,
-                if rest.as_bytes().get(1) == Some(&b'=') { 2 } else { 1 },
+                if rest.as_bytes().get(1) == Some(&b'=') {
+                    2
+                } else {
+                    1
+                },
             )),
-            b'=' if rest.as_bytes().get(1) == Some(&b'=') => {
-                Some((BinaryOperator::Equal, 3, 2))
-            }
-            b'!' if rest.as_bytes().get(1) == Some(&b'=') => {
-                Some((BinaryOperator::NotEqual, 3, 2))
-            }
+            b'=' if rest.as_bytes().get(1) == Some(&b'=') => Some((BinaryOperator::Equal, 3, 2)),
+            b'!' if rest.as_bytes().get(1) == Some(&b'=') => Some((BinaryOperator::NotEqual, 3, 2)),
             b'+' => Some((BinaryOperator::Add, 4, 1)),
             b'-' => Some((BinaryOperator::Subtract, 4, 1)),
             b'*' => Some((BinaryOperator::Multiply, 5, 1)),
@@ -981,8 +976,7 @@ impl Parser<'_> {
         let mut parameters = Vec::new();
         loop {
             self.skip_trivia();
-            let (parameter_name, parameter_end) =
-                parse_identifier(self.source, self.cursor)?;
+            let (parameter_name, parameter_end) = parse_identifier(self.source, self.cursor)?;
             let name = crate::SpannedName {
                 value: parameter_name,
                 range: TextRange::new(self.cursor, parameter_end),
@@ -1247,8 +1241,7 @@ impl Parser<'_> {
                 self.cursor += 2;
                 self.skip_trivia();
                 let alias_start = self.cursor;
-                let (alias_name, alias_end) = match parse_identifier(self.source, self.cursor)
-                {
+                let (alias_name, alias_end) = match parse_identifier(self.source, self.cursor) {
                     Some(parsed) => parsed,
                     None => {
                         self.errors.push(SyntaxError {
@@ -1541,19 +1534,13 @@ impl Parser<'_> {
                     // An optional `trailing` keyword marks the parameter that
                     // binds trailing Content (D0002).
                     if self.peek_keyword("trailing") {
-                        self.cursor = self
-                            .next_char_end(self.cursor + "trailing".len());
+                        self.cursor = self.next_char_end(self.cursor + "trailing".len());
                         self.skip_trivia();
                     }
-                    let Some((_name, name_end)) =
-                        parse_identifier(self.source, self.cursor)
-                    else {
+                    let Some((_name, name_end)) = parse_identifier(self.source, self.cursor) else {
                         self.errors.push(SyntaxError {
                             message: "expected parameter name in function type".into(),
-                            range: TextRange::new(
-                                self.cursor,
-                                self.next_char_end(self.cursor),
-                            ),
+                            range: TextRange::new(self.cursor, self.next_char_end(self.cursor)),
                         });
                         self.recover_type_parameter();
                         continue;
@@ -1588,12 +1575,8 @@ impl Parser<'_> {
                         }
                         _ => {
                             self.errors.push(SyntaxError {
-                                message: "expected `,` or `)` after function type parameter"
-                                    .into(),
-                                range: TextRange::new(
-                                    self.cursor,
-                                    self.next_char_end(self.cursor),
-                                ),
+                                message: "expected `,` or `)` after function type parameter".into(),
+                                range: TextRange::new(self.cursor, self.next_char_end(self.cursor)),
                             });
                             self.recover_type_parameter();
                         }
@@ -1652,7 +1635,8 @@ impl Parser<'_> {
                 }
             });
             self.skip_trivia();
-            let name = if possible_name.is_some() && matches!(self.byte(), Some(b'=') | Some(b':')) {
+            let name = if possible_name.is_some() && matches!(self.byte(), Some(b'=') | Some(b':'))
+            {
                 self.cursor += 1;
                 self.skip_trivia();
                 possible_name
@@ -1786,7 +1770,9 @@ impl Parser<'_> {
     fn annotation_at_line_start(&self) -> bool {
         let prefix = &self.source[..self.cursor];
         match prefix.rfind('\n') {
-            Some(index) => prefix[index + 1..].bytes().all(|byte| matches!(byte, b' ' | b'\t')),
+            Some(index) => prefix[index + 1..]
+                .bytes()
+                .all(|byte| matches!(byte, b' ' | b'\t')),
             None => prefix.bytes().all(|byte| matches!(byte, b' ' | b'\t')),
         }
     }
@@ -1794,7 +1780,9 @@ impl Parser<'_> {
     /// Returns whether everything before `position` is whitespace (the
     /// `@![...]` module annotation must precede the first meaningful token).
     fn only_whitespace_before(&self, position: usize) -> bool {
-        self.source[..position].bytes().all(|byte| byte.is_ascii_whitespace())
+        self.source[..position]
+            .bytes()
+            .all(|byte| byte.is_ascii_whitespace())
     }
 
     /// Skips whitespace and comments. D0007 lexical trivia (`//` line

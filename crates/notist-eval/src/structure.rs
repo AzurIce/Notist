@@ -65,10 +65,7 @@ fn group_sections(blocks: Vec<Block>) -> Vec<Block> {
             _ => None,
         };
         if let Some(level) = heading_level {
-            while open
-                .last()
-                .is_some_and(|section| section.level >= level)
-            {
+            while open.last().is_some_and(|section| section.level >= level) {
                 let section = open.pop().unwrap();
                 push_section(&mut output, &mut open, section);
             }
@@ -92,11 +89,7 @@ fn group_sections(blocks: Vec<Block>) -> Vec<Block> {
     output
 }
 
-fn push_section(
-    output: &mut Vec<Block>,
-    open: &mut [SectionBuilder],
-    section: SectionBuilder,
-) {
+fn push_section(output: &mut Vec<Block>, open: &mut [SectionBuilder], section: SectionBuilder) {
     let block = Block::Section {
         level: section.level,
         heading: section.heading,

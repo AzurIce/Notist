@@ -2,8 +2,8 @@ use std::collections::HashMap;
 
 use notist_model::{DefaultValue, FunctionSignature, Parameter, Type, builtin_signatures};
 use notist_syntax::{
-    BinaryOperator, Call, Expression, ExpressionKind, Markup, MarkupItem, Parse,
-    UnaryOperator, UserFunctionDefinition,
+    BinaryOperator, Call, Expression, ExpressionKind, Markup, MarkupItem, Parse, UnaryOperator,
+    UserFunctionDefinition,
 };
 
 use crate::DiagnosticKind;
@@ -509,9 +509,7 @@ impl Checker<'_> {
                     Some(branch) => {
                         let else_type = self.type_of_expression(branch);
                         match (then_type.ty.clone(), else_type.ty) {
-                            (Some(left), Some(right)) if left == right => {
-                                CheckedType::known(left)
-                            }
+                            (Some(left), Some(right)) if left == right => CheckedType::known(left),
                             (Some(Type::Content), _) | (_, Some(Type::Content)) => {
                                 CheckedType::known(Type::Content)
                             }
@@ -581,12 +579,9 @@ impl Checker<'_> {
         };
         let result = match (operator, &left, &right) {
             (BinaryOperator::Add, Type::String, Type::String) => Some(Type::String),
-            (
-                BinaryOperator::Equal | BinaryOperator::NotEqual,
-                left,
-                right,
-            ) if !matches!(left, Type::Content | Type::Function)
-                && !matches!(right, Type::Content | Type::Function) =>
+            (BinaryOperator::Equal | BinaryOperator::NotEqual, left, right)
+                if !matches!(left, Type::Content | Type::Function)
+                    && !matches!(right, Type::Content | Type::Function) =>
             {
                 Some(Type::Bool)
             }
@@ -598,9 +593,7 @@ impl Checker<'_> {
                 Type::Int | Type::Float,
                 Type::Int | Type::Float,
             ) => Some(Type::Bool),
-            (BinaryOperator::And | BinaryOperator::Or, Type::Bool, Type::Bool) => {
-                Some(Type::Bool)
-            }
+            (BinaryOperator::And | BinaryOperator::Or, Type::Bool, Type::Bool) => Some(Type::Bool),
             (_, Type::Int, Type::Int) => Some(Type::Int),
             (_, Type::Int | Type::Float, Type::Int | Type::Float) => Some(Type::Float),
             _ => None,
@@ -666,9 +659,12 @@ impl Checker<'_> {
         // Calls to a `let`-bound function value (D0002 closures) are known
         // callables: their runtime closure carries the signature, so static
         // checking only validates the argument expressions.
-        if self.variables.iter().rev().any(|scope| {
-            matches!(scope.get(name), Some(Type::Function | Type::Inferred))
-        }) {
+        if self
+            .variables
+            .iter()
+            .rev()
+            .any(|scope| matches!(scope.get(name), Some(Type::Function | Type::Inferred)))
+        {
             for argument in &call.arguments {
                 self.type_of_expression(&argument.expression);
             }
@@ -720,20 +716,15 @@ impl Checker<'_> {
                     clean = false;
                 }
                 found
-            } else if saw_named
-                && matches!(argument.expression.kind, ExpressionKind::Content(_))
-            {
+            } else if saw_named && matches!(argument.expression.kind, ExpressionKind::Content(_)) {
                 // R05: the trailing Content block is the one positional
                 // argument allowed after named arguments.
-                let trailing = signature
-                    .trailing_content
-                    .as_deref()
-                    .and_then(|name| {
-                        signature
-                            .parameters
-                            .iter()
-                            .find(|parameter| parameter.name == name)
-                    });
+                let trailing = signature.trailing_content.as_deref().and_then(|name| {
+                    signature
+                        .parameters
+                        .iter()
+                        .find(|parameter| parameter.name == name)
+                });
                 if trailing.is_none() {
                     self.push(
                         DiagnosticKind::InvalidArguments,
@@ -909,36 +900,38 @@ mod tests {
         assert!(check("a#\"string\"#[content]#none z").is_empty());
         assert!(check("#details(body=[ordinary])").is_empty());
         // D0007: `fn(parameters) -> R` is the written function type (R07).
-        assert!(check("#let f: fn(x: Int =, trailing body: Content) -> Content = (x: Int) => x * 2").is_empty());
+        assert!(
+            check("#let f: fn(x: Int =, trailing body: Content) -> Content = (x: Int) => x * 2")
+                .is_empty()
+        );
     }
 
     #[test]
     fn checks_expressions_inside_pipe_table_cells() {
-        let diagnostics = check(
-            "| Name | #missing() |\n| --- | --- |\n| #heading(level=\"x\")[T] | body |\n",
-        );
+        let diagnostics =
+            check("| Name | #missing() |\n| --- | --- |\n| #heading(level=\"x\")[T] | body |\n");
         assert!(diagnostics.iter().any(|diagnostic| {
             diagnostic.kind == DiagnosticKind::UnknownFunction
                 && diagnostic.message == "unknown function `missing`"
         }));
         assert!(diagnostics.iter().any(|diagnostic| {
-            diagnostic.message
-                == "type mismatch for argument `level`: expected Int, found String"
+            diagnostic.message == "type mismatch for argument `level`: expected Int, found String"
         }));
     }
 
     #[test]
     fn accepts_well_typed_explicit_table_constructors() {
-        assert!(check(
-            "#table(columns: 2, align: \"left, right\")[#table-cell[A] #table-cell[B]]"
-        )
-        .is_empty());
+        assert!(
+            check("#table(columns: 2, align: \"left, right\")[#table-cell[A] #table-cell[B]]")
+                .is_empty()
+        );
         // Typst alignment: caption belongs to figure, not table.
-        let caption_on_table =
-            check("#table(columns: 1, caption: [C])[#table-cell[A]]");
-        assert!(caption_on_table
-            .iter()
-            .any(|diagnostic| diagnostic.message == "unknown argument `caption`"));
+        let caption_on_table = check("#table(columns: 1, caption: [C])[#table-cell[A]]");
+        assert!(
+            caption_on_table
+                .iter()
+                .any(|diagnostic| diagnostic.message == "unknown argument `caption`")
+        );
     }
 
     #[test]
@@ -948,9 +941,11 @@ mod tests {
         )
         .is_empty());
         let bad_kind = check("#figure(kind: 2)[body]");
-        assert!(bad_kind
-            .iter()
-            .any(|diagnostic| diagnostic.message.contains("expected String")));
+        assert!(
+            bad_kind
+                .iter()
+                .any(|diagnostic| diagnostic.message.contains("expected String"))
+        );
     }
 
     #[test]
