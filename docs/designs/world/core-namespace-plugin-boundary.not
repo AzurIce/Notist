@@ -1,0 +1,104 @@
+@![implementation = "partial"]
+= Core Namespace and Plugin Boundary
+
+本文是 V5 core namespace 与插件边界的独立成篇，吸收第一代设计 [[vault::old-designs::archive::D0004-core-functions-and-syntax-sugar]] 的裁决并更新到当前 surface。当前内置构造器见 [[vault::designs::language::builtin-constructors]]；函数签名与调用模型见 [[vault::designs::language::call-model]]；Vault 配置容器见 [[vault::designs::world::boundary-discovery]]。
+
+== Core Namespace
+
+`core` 是语言提供且不可被 lexical shadow 的 namespace，保存语言版本定义的内置构造器与基础操作：
+
+```text
+core::ref
+core::heading
+core::raw
+core::rule
+core::callout
+core::details
+core::item
+core::table-cell
+core::table
+core::figure
+core::strong / emph / underline / strike
+```
+
+- `core` 在 ordinary lexical lookup 之前由 language version 解析；
+- `core` 不能成为 `let` binding、import alias 或 plugin namespace；
+- 短名 prelude 可以把常用构造器以裸名带入当前 Module scope；
+- 短名遵守普通 lexical shadowing；qualified `core::...` 永远指向语言定义。
+
+当前实现尚未启用 `core::` qualified call；在 V5 落地前，builtin-constructors 中的裸名即 prelude 短名。宿主语法糖（`= Title`、pipe table 等）始终取得对应 core intrinsic identity，不经过名字查找，因此 local binding 不影响糖。
+
+== Prelude
+
+Prelude 是每个 Module root 自动获得的普通 binding 层，不是第二套全局环境：
+
+- prelude 名字可以被 author `let` 或 import 遮蔽；
+- import 显式 selector 可以引入非 prelude 的 core 短名；
+- prelude 内容随语言版本变化，并在 WorkspaceSnapshot 的 function environment identity 中记录（[[vault::designs::host::analyzer-snapshot]]）。
+
+== Custom Element Contract
+
+插件不改变内置 Element 集合（[[vault::designs::language::evaluation-model#Content 值]]）。扩展内容走 `Custom`：
+
+```text
+Custom {
+  name: String          // 全局有意义的稳定名字
+  body: Content         // 已求值的嵌套内容
+  block: Bool           // 是否中断段落流
+}
+```
+
+- `name` 由插件 schema 声明，进入索引与渲染兜底；
+- `body` 是普通 Content，不是 source string，也不重新 parse；
+- `block` 是语义参数，不由 call-site delimiter 猜测；
+- renderer 对未知 Custom 有安全兜底；真正富渲染必须经过 trusted renderer 边界。
+
+== Capability 即权限面
+
+插件 Function 是带 signature、implementation 与 capability schema 的普通 Function Value。capability 不进入 Type identity，与签名正交：
+
+```text
+FunctionValue {
+  signature
+  implementation
+  captured_environment
+  required_capabilities
+}
+```
+
+- 宿主在 invocation 前检查 capability，不把权限编码成普通 String/Dict 参数；
+- filesystem、network、process、randomness 与 cache 等属于 capability；
+- static analysis 读取 schema 与 signature，不执行插件；
+- runtime 验证返回 Value 满足 declared result Type。
+
+== 加载、作用域与生命周期
+
+- 插件通过显式 namespace 与 import/prelude 进入环境，不注册到 `core`；
+- 插件 schema 由 Vault 配置声明（见下），Analyzer 在 snapshot 中捕获 schema identity；
+- plugin runtime 默认不在普通编辑/诊断路径执行；
+- 插件失败是 host boundary diagnostic，不伪装成 `None` 成功；
+- 插件不能修改 parser、不能重新解释已有 token。
+
+== Notist.toml 配置内容模型
+
+Vault marker 从空文件扩展为受限配置容器：
+
+```toml
+language-version = "1"
+[capabilities]
+filesystem = "read-vault"
+network = false
+[plugins]
+mermaid = { package = "mermaid", schema = "0.1" }
+```
+
+- 未知字段预留，不静默忽略；分析层携带配置 identity 与字节载荷；
+- language version 决定语法、core/prelude 与诊断 surface；
+- capabilities 是权限面，plugins 是显式加载表；
+- 配置变更进入 source-set fingerprint（[[vault::designs::host::query-contract]]）。
+
+具体字段 schema、版本迁移与插件加载协议由实现切片补齐；在实现前，Notist.toml 保持空标记或未知键预留。
+
+== 语法扩展边界
+
+用户可扩展语法由独立的 macro/grammar-extension design 定义。普通 Function/plugin registration 永远不授予修改 parser 的能力。

@@ -1,6 +1,8 @@
 #![allow(dead_code)]
 
-use notist_model::{Content, Element};
+use notist_model::{
+    Content, Element, TableAlignment, TableLayoutError, table_layout,
+};
 
 use crate::{
     EvalDiagnostic, Function, FunctionContext, FunctionInput, FunctionOutput, FunctionRegistry,
@@ -14,6 +16,9 @@ pub(crate) fn register_builtins(registry: &mut FunctionRegistry) -> Result<(), R
     registry.register(CalloutFunction)?;
     registry.register(DetailsFunction)?;
     registry.register(ItemFunction)?;
+    registry.register(TableCellFunction)?;
+    registry.register(TableFunction)?;
+    registry.register(FigureFunction)?;
     registry.register(StrongFunction)?;
     registry.register(EmphFunction)?;
     registry.register(StrikeFunction)?;
@@ -336,6 +341,239 @@ fn image_dimension(
     }
     Ok(Some(value as u32))
 }
+
+
+
+struct TableCellFunction;
+
+impl Function for TableCellFunction {
+    fn name(&self) -> &str {
+        "table-cell"
+    }
+
+    fn signature(&self) -> FunctionSignature {
+        notist_model::table_cell_signature()
+    }
+
+    fn call(
+        &self,
+        _context: &FunctionContext<'_>,
+        mut input: FunctionInput<'_>,
+    ) -> Result<FunctionOutput, Vec<EvalDiagnostic>> {
+        let colspan = input.arguments.int("colspan");
+        let rowspan = input.arguments.int("rowspan");
+        if !(1..=u16::MAX as i64).contains(&colspan) {
+            return Err(vec![EvalDiagnostic {
+                message: "table cell colspan must be between 1 and 65535".into(),
+                range: input.range,
+            }]);
+        }
+        if !(1..=u16::MAX as i64).contains(&rowspan) {
+            return Err(vec![EvalDiagnostic {
+                message: "table cell rowspan must be between 1 and 65535".into(),
+                range: input.range,
+            }]);
+        }
+        Ok(FunctionOutput::content(Content::single(
+            Element::TableCell {
+                body: input.arguments.take_content("body"),
+                colspan: colspan as u16,
+                rowspan: rowspan as u16,
+            },
+            input.range,
+        )))
+    }
+}
+
+struct TableFunction;
+
+impl Function for TableFunction {
+    fn name(&self) -> &str {
+        "table"
+    }
+
+    fn signature(&self) -> FunctionSignature {
+        notist_model::table_signature()
+    }
+
+    fn call(
+        &self,
+        _context: &FunctionContext<'_>,
+        mut input: FunctionInput<'_>,
+    ) -> Result<FunctionOutput, Vec<EvalDiagnostic>> {
+        let columns = input.arguments.int("columns");
+        let header = input.arguments.bool("header");
+        if !(1..=u16::MAX as i64).contains(&columns) {
+            return Err(vec![EvalDiagnostic {
+                message: "table columns must be between 1 and 65535".into(),
+                range: input.range,
+            }]);
+        }
+        let alignments = match table_alignments(
+            input.arguments.optional_string("align"),
+            columns as usize,
+        ) {
+            Ok(alignments) => alignments,
+            Err(message) => {
+                return Err(vec![EvalDiagnostic {
+                    message,
+                    range: input.range,
+                }]);
+            }
+        };
+        let body = input.arguments.take_content("body");
+        let mut cells = Vec::new();
+        for node in body.elements {
+            match &node.element {
+                // Source formatting between cells is not table content.
+                Element::Text(text) if text.trim().is_empty() => {}
+                Element::Parbreak => {}
+                Element::TableCell { .. } => cells.push(node),
+                _ => {
+                    return Err(vec![EvalDiagnostic {
+                        message: "table body may contain only table-cell elements".into(),
+                        range: input.range,
+                    }]);
+                }
+            }
+        }
+        if cells.is_empty() {
+            return Err(vec![EvalDiagnostic {
+                message: "table requires at least one table-cell".into(),
+                range: input.range,
+            }]);
+        }
+        if let Err(error) = table_layout(columns as u16, &cells) {
+            return Err(vec![EvalDiagnostic {
+                message: table_layout_message(error, columns as u16),
+                range: input.range,
+            }]);
+        }
+        Ok(FunctionOutput::content(Content::single(
+            Element::Table {
+                columns: columns as u16,
+                header,
+                alignments,
+                cells,
+            },
+            input.range,
+        )))
+    }
+}
+
+struct FigureFunction;
+
+impl Function for FigureFunction {
+    fn name(&self) -> &str {
+        "figure"
+    }
+
+    fn signature(&self) -> FunctionSignature {
+        notist_model::figure_signature()
+    }
+
+    fn call(
+        &self,
+        _context: &FunctionContext<'_>,
+        mut input: FunctionInput<'_>,
+    ) -> Result<FunctionOutput, Vec<EvalDiagnostic>> {
+        let body = input.arguments.take_content("body");
+        let caption = input.arguments.take_optional_content("caption");
+        let supplement = input.arguments.take_optional_content("supplement");
+        let kind = match input.arguments.optional_string("kind") {
+            Some(kind) => {
+                let kind = kind.trim().to_owned();
+                if kind.is_empty() {
+                    return Err(vec![EvalDiagnostic {
+                        message: "figure kind cannot be empty".into(),
+                        range: input.range,
+                    }]);
+                }
+                kind
+            }
+            None => infer_figure_kind(&body),
+        };
+        Ok(FunctionOutput::content(Content::single(
+            Element::Figure {
+                body,
+                kind,
+                supplement,
+                caption,
+            },
+            input.range,
+        )))
+    }
+}
+
+/// Resolves the Typst-style `kind: auto` default from the wrapped body: the
+/// first meaningful block element wins; unrecognized bodies use `"figure"`.
+fn infer_figure_kind(body: &Content) -> String {
+    for node in &body.elements {
+        match &node.element {
+            Element::Text(text) if text.trim().is_empty() => {}
+            Element::Parbreak => {}
+            Element::Table { .. } => return "table".into(),
+            Element::Raw { .. } => return "raw".into(),
+            Element::Custom { name, .. } => return name.clone(),
+            _ => break,
+        }
+    }
+    "figure".into()
+}
+
+fn table_alignments(
+    source: Option<&str>,
+    columns: usize,
+) -> Result<Vec<TableAlignment>, String> {
+    let Some(source) = source else {
+        return Ok(vec![TableAlignment::Default; columns]);
+    };
+    let alignments: Result<Vec<_>, _> = source
+        .split(',')
+        .map(|value| match value.trim() {
+            "default" | "" => Ok(TableAlignment::Default),
+            "left" => Ok(TableAlignment::Left),
+            "center" => Ok(TableAlignment::Center),
+            "right" => Ok(TableAlignment::Right),
+            value => Err(format!("unknown table alignment `{value}`")),
+        })
+        .collect();
+    let alignments = alignments?;
+    if alignments.len() != columns {
+        return Err(format!(
+            "table align specifies {} columns, expected {columns}",
+            alignments.len()
+        ));
+    }
+    Ok(alignments)
+}
+
+fn table_layout_message(error: TableLayoutError, columns: u16) -> String {
+    match error {
+        TableLayoutError::NonCell { cell } => {
+            format!("table cell {cell} is not a table-cell element")
+        }
+        TableLayoutError::CellDoesNotFit {
+            row,
+            cell,
+            column,
+            colspan,
+        } => format!(
+            "table cell {cell} with colspan {colspan} does not fit row {row} at column {} of {columns}",
+            column + 1
+        ),
+        TableLayoutError::IncompleteRow { row } => {
+            format!("table row {row} does not fill all {columns} columns")
+        }
+        TableLayoutError::FullyCoveredRow { row } => {
+            format!("table row {row} is fully covered by rowspans and cannot contain the next cell")
+        }
+        TableLayoutError::RowspanBeyondTable => {
+            "table rowspan extends beyond the final explicit row".into()
+        }
+    }
+}
+
 
 
 

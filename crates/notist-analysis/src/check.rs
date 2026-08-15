@@ -162,6 +162,16 @@ impl SymbolResolver {
                         self.resolve_markup(&row.body);
                     }
                 }
+                MarkupItem::Table(sugar) => {
+                    for cell in &sugar.header {
+                        self.resolve_markup(&cell.body);
+                    }
+                    for row in &sugar.rows {
+                        for cell in row {
+                            self.resolve_markup(&cell.body);
+                        }
+                    }
+                }
                 _ => {}
             }
         }
@@ -345,6 +355,17 @@ impl Checker<'_> {
             if let notist_syntax::MarkupItem::List(sugar) = item {
                 for row in &sugar.rows {
                     self.check_markup(&row.body);
+                }
+                continue;
+            }
+            if let notist_syntax::MarkupItem::Table(sugar) = item {
+                for cell in &sugar.header {
+                    self.check_markup(&cell.body);
+                }
+                for row in &sugar.rows {
+                    for cell in row {
+                        self.check_markup(&cell.body);
+                    }
                 }
                 continue;
             }
@@ -889,6 +910,47 @@ mod tests {
         assert!(check("#details(body=[ordinary])").is_empty());
         // D0007: `fn(parameters) -> R` is the written function type (R07).
         assert!(check("#let f: fn(x: Int =, trailing body: Content) -> Content = (x: Int) => x * 2").is_empty());
+    }
+
+    #[test]
+    fn checks_expressions_inside_pipe_table_cells() {
+        let diagnostics = check(
+            "| Name | #missing() |\n| --- | --- |\n| #heading(level=\"x\")[T] | body |\n",
+        );
+        assert!(diagnostics.iter().any(|diagnostic| {
+            diagnostic.kind == DiagnosticKind::UnknownFunction
+                && diagnostic.message == "unknown function `missing`"
+        }));
+        assert!(diagnostics.iter().any(|diagnostic| {
+            diagnostic.message
+                == "type mismatch for argument `level`: expected Int, found String"
+        }));
+    }
+
+    #[test]
+    fn accepts_well_typed_explicit_table_constructors() {
+        assert!(check(
+            "#table(columns: 2, align: \"left, right\")[#table-cell[A] #table-cell[B]]"
+        )
+        .is_empty());
+        // Typst alignment: caption belongs to figure, not table.
+        let caption_on_table =
+            check("#table(columns: 1, caption: [C])[#table-cell[A]]");
+        assert!(caption_on_table
+            .iter()
+            .any(|diagnostic| diagnostic.message == "unknown argument `caption`"));
+    }
+
+    #[test]
+    fn accepts_typst_style_figure_wrappers() {
+        assert!(check(
+            "#figure(caption: [Cap], supplement: [Tab], kind: \"table\")[#table(columns: 1)[#table-cell[A]]]"
+        )
+        .is_empty());
+        let bad_kind = check("#figure(kind: 2)[body]");
+        assert!(bad_kind
+            .iter()
+            .any(|diagnostic| diagnostic.message.contains("expected String")));
     }
 
     #[test]

@@ -1,0 +1,116 @@
+@![implementation = "aligned"]
+= Builtin Constructors
+
+本文是 L9 内置构造器的独立成篇，从归档的历史混合文档中独立成篇。语法糖的完整规格见 [[vault::designs::language::syntax-sugar]]；元素种类清单见 [[vault::designs::language::evaluation-model#Content 值]]；调用模型见 [[vault::designs::language::call-model]]。
+
+== 设计原则
+
+=== 构造器即函数
+
+内置元素以 first-class 构造器函数的形式存在，与用户函数共享同一套签名、调用解析与求值规则。`heading`、`raw`、`rule` 等可以绑定、传递与组合——`#let make_title = heading` 合法。
+
+=== 构造器校验
+
+值级语义约束不由类型系统承担，而由构造器在求值期校验：静态检查只查类型、名字与绑定，凡依赖运行时值的约束——例如 inline raw 的 `source` 不得含换行——在构造时检查并产生确定诊断。`source` 为字面量时分析层可提前报告，但权威校验在构造器。容器子元素不变量在元素构造或成型时检查，与构造器校验同属"元素语义约束在值可用时校验"的分工。
+
+== 内置构造器
+
+=== ref
+
+```text
+ref(url: String) -> Content
+```
+
+产生 Reference 元素。`url` 是字面引用串，与 `[[...]]` 糖共享同一解析入口；目标空间与解析产物见 [[vault::designs::world::reference-ref-target]]。
+
+=== heading
+
+```text
+heading(level: Int = 1, trailing body: Content) -> Content
+```
+
+产生 Heading 元素。`level` 必须至少为 1，无上限（渲染时折叠到 h6）。heading 的默认 id 规则见 [[vault::designs::world::reference-ref-target#scope id]]。糖见 [[vault::designs::language::syntax-sugar#heading]]。
+
+=== raw
+
+```text
+raw(source: String, lang: String? = none, block: Bool = false) -> Content
+```
+
+产生 Raw 元素。`source` 无默认值；`lang`、`block` 具名绑定。构造器校验：`block: false` 时 `source` 含换行产生诊断；`block: true` 的单行 `source` 合法。糖见 [[vault::designs::language::syntax-sugar#raw]]。
+
+=== rule
+
+```text
+rule() -> Content
+```
+
+产生 Rule 分割线。糖见 [[vault::designs::language::syntax-sugar#rule]]。
+
+=== callout
+
+```text
+callout(kind: String = "note", title: Content? = none, trailing body: Content) -> Content
+```
+
+`kind` 是面向语义与导出的稳定分类，为空产生诊断；`title` 未提供时不生成标题。无语法糖。
+
+=== details
+
+```text
+details(summary: Content? = none, open: Bool = false, trailing body: Content) -> Content
+```
+
+可折叠内容；`summary` 为 `none` 时由渲染器提供通用折叠标题，`open` 决定初始展开状态。无语法糖。
+
+=== item
+
+```text
+item(ordered: Bool = false, trailing body: Content) -> Content
+```
+
+`ordered` 为 false 时产生 ListItem，为 true 时产生 EnumItem。相邻同类条目由成型组合为 List/Enum（[[vault::designs::language::shaping-structure-tree]]）。糖见 [[vault::designs::language::syntax-sugar#item]]。
+
+=== table-cell
+
+```text
+table-cell(colspan: Int = 1, rowspan: Int = 1, trailing body: Content) -> Content
+```
+
+产生 TableCell。`colspan` / `rowspan` 必须至少为 1（上界 65535）；TableCell 只作为 `table` body 的直接子元素参与布局。
+
+=== table
+
+```text
+table(columns: Int, header: Bool = false, align: String? = none,
+      trailing body: Content) -> Content
+```
+
+产生 Table。`columns` 必填（1..=65535）；`header` 决定首行是否渲染为表头；`align` 是逗号分隔的列对齐串（`left` / `center` / `right` / `default`，数量必须等于 `columns`，`none` 表示全部 default）。body 只接受 `table-cell`；纯空白 Text 与 Parbreak 是排版间隔。Table 自身没有 caption——题注属于 [[vault::designs::language::builtin-constructors#figure]]。构造器校验：
+
+- columns、colspan/rowspan 越界 → 诊断；
+- body 出现非 `table-cell` 的可见元素 → 诊断；
+- cell 必须恰好铺满行、rowspan 不得越出末行、span 不得重叠或越界；
+- 错误调用不产生 Table，求值继续。
+
+糖见 [[vault::designs::language::syntax-sugar#table]]。
+
+=== figure
+
+```text
+figure(kind: String? = none, supplement: Content? = none,
+       caption: Content? = none, trailing body: Content) -> Content
+```
+
+产生 Figure：带可选 caption 的块级 wrapper，对齐 Typst 0.14 `figure`。`caption` 未提供时不渲染题注；`kind` 未提供时按 body 推断：Table → `"table"`、Raw → `"raw"`、block Custom → 其 name，其他 → `"figure"`，显式 `kind` 不能为空；`supplement` 提供时渲染为 `supplement + ": " + caption`。`placement` / `scope` / `gap` / `outlined` / `numbering` 依赖 float、counter 与 outline，暂不进入。无语法糖。
+
+=== strong / emph / underline / strike
+
+```text
+strong(trailing body: Content)    -> Content
+emph(trailing body: Content)      -> Content
+underline(trailing body: Content) -> Content
+strike(trailing body: Content)    -> Content
+```
+
+四个行内 wrapper，只包装已经求值的 Content body。糖见 [[vault::designs::language::syntax-sugar#strong / emph / underline / strike]]。

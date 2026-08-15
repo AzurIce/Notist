@@ -1,6 +1,6 @@
 = Type System
 
-本文定义当前工具保证的类型与求值模型。精确语法见 [[vault::grammar]]，内置构造器签名见 [[vault::functions]]，日常速查见 [[vault::cheatsheet]]。完整设计见 [[vault::designs::D0002-evaluation-model-and-type-system]]（类型与属性表）与 [[vault::designs::D0013-evaluation-model-and-content-sequence]]（求值模型）。
+本文定义当前工具保证的类型与求值模型。精确语法见 [[vault::grammar]]，内置构造器签名见 [[vault::functions]]，日常速查见 [[vault::cheatsheet]]。完整设计见 [[vault::designs::language::type-system]]（类型）、[[vault::designs::language::call-model]]（调用模型）、[[vault::designs::language::property-table]]（属性表）与 [[vault::designs::language::evaluation-model]]（求值模型）。
 
 == 三个阶段
 
@@ -156,7 +156,7 @@ Function 不能插入，产生诊断
 }
 ```
 
-每个 Module 独立求值后，这三者成为 ModuleResult；bindings 可被其他 Module import，content 供渲染与查询消费，annotations 是标注与模块元数据的唯一入口。见 [[vault::designs::D0004-vault-module-and-scope]]。
+每个 Module 独立求值后，这三者成为 ModuleResult；bindings 可被其他 Module import，content 供渲染与查询消费，annotations 是标注与模块元数据的唯一入口。见 [[vault::designs::world::module-result]]。
 
 === 成型
 
@@ -166,7 +166,7 @@ Function 不能插入，产生诊断
 
 属性（标注）在求值期绑定到值，求值收尾转写为旁置的属性表：以元素序列区间为键、属性集为值的映射。树不携带属性——属性是位置注解，与结构解耦。三类条目：元素条目（实元素上的属性 → 单元素区间）、区间条目（透明 scope 溶解后的属性与身份 → 内容覆盖的区间）、节条目（修饰节头部 heading 的属性 → 该节覆盖的区间）。
 
-属性是值的属性：绑定在值上的属性随值复制——`#let alert = [注意]@wip` 后 `#alert #alert` 产生两个元素个体，属性表里有两条 `wip` 条目。标注语法见 [[vault::designs::D0006-scope-and-annotation-syntax]]。
+属性是值的属性：绑定在值上的属性随值复制——`#let alert = [注意]@wip` 后 `#alert #alert` 产生两个元素个体，属性表里有两条 `wip` 条目。标注语法见 [[vault::designs::language::annotation-syntax]]。
 
 == 诊断与恢复
 

@@ -296,7 +296,7 @@ mod tests {
         let root = ensure_synced_to(data.path()).unwrap();
         assert!(root.join("Notist.toml").is_file());
         assert!(
-            root.join("designs/D0010-rendering-and-preview.not")
+            root.join("designs/host/build-preview.not")
                 .is_file()
         );
         assert_eq!(read_manifest(&root).unwrap(), Some(expected_manifest()));

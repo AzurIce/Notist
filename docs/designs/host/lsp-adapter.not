@@ -1,0 +1,57 @@
+@![implementation = "partial"]
+= LSP Adapter
+
+本文是 A5 LSP 适配的独立成篇，从归档的历史混合文档中独立成篇。Analyzer 与 WorkspaceSnapshot 见 [[vault::designs::host::analyzer-snapshot]]；daemon 进程与 View 见 [[vault::designs::host::daemon-process-views]]；core request 与本地协议见 [[vault::designs::host::client-interface-protocol]]。
+
+
+== LSP 适配
+
+`notist lsp` 是编辑器与 `notist-analysis` 之间的协议适配层：负责文档同步、position 转换、请求路由与结果发布，不重新实现 parser、模块解析、类型检查或求值。它与 CLI 共享同一 daemon 与 snapshot（[[vault::designs::host::daemon-process-views#形态：每 Vault 一个 daemon]]），不维护第二套 module graph。
+
+=== 进程与传输
+
+stdio transport；stdout 专用于 LSP JSON-RPC（不输出日志、进度或诊断，日志只进 stderr），普通 CLI 的彩色输出完全禁用。adapter 生命周期跟随编辑器进程；按 canonical Vault root 连接该 Vault 的共享 daemon，或在 embedded mode 中承载同一 core service。编辑器集成从 PATH 查找 `notist` 并以 `lsp` 启动；自动下载与版本管理属于扩展分发问题。
+
+=== Vault Discovery 与未保存文档
+
+编辑器提供的 workspace root 只是 worktree，不一定是 vault。初始化时在 worktree 内发现所有 Notist.toml marker（[[vault::designs::world::boundary-discovery#发现规则]]），为每个 root 建立 `VaultState { root, daemon connection, ViewHandle }`；source 归属最近祖先 marker，嵌套 marker 建立新 vault 且外层停止递归；没有 marker 时 worktree root 作为单个 implicit vault。
+
+每个 vault 的 Analyzer View 接收自己的 overlays：
+
+- 已打开文档的 overlay 优先于磁盘内容；
+- `didChange` 更新 overlay，不写入用户文件；
+- `didSave` 可以保留 overlay，直到收到保存后的最终文本或磁盘确认；
+- `didClose` 移除 overlay，重新采用磁盘内容；
+- overlay 只进入 source 所属的最近 vault；
+- snapshot 内的 source、Parse、TextRange、引用与 diagnostics 必须属于同一 revision；
+- definition、references、completion、hover 不跨 vault 查询。
+
+=== 文本同步与 Position
+
+声明 `TextDocumentSyncKind::FULL`：每次 `didChange` 接收完整文本，document store 始终先形成完整 source 再交给 analysis——parser 的增量能力不必与 LSP edit protocol 同步演进。文件系统 watcher 只负责未打开的文件（客户端能力不足时的补充）。
+
+内部 `TextRange` 用 UTF-8 byte offset，LSP `Position` 通常用 UTF-16 code unit。analysis source 附带统一 `LineIndex`：byte offset ↔ line + UTF-8 column ↔ LSP line + UTF-16 column。所有 diagnostics、definition、references、hover 与 symbol range 经过同一个转换实现，覆盖 ASCII、中文、emoji、组合字符、CRLF 与文件末尾位置测试；协商到 UTF-8 encoding 时可用，但 UTF-16 必须始终正确支持。
+
+=== Capabilities
+
+**Diagnostics**：syntax errors、duplicate module、unresolved module reference、引用目标不存在/歧义（Missing，[[vault::designs::world::reference-ref-target#解析产物：RefTarget]]）、import cycle 与 unresolved module binding、名称解析与类型诊断、只依赖 snapshot input/capability 的确定性求值诊断。`textDocument/publishDiagnostics` 在每次 snapshot 更新后为受影响文件发布完整集合，错误消失必须发布空数组清除。Diagnostic 带稳定的 `source = "notist"`、可机器识别的 code、准确 range 与简洁 message；跨文件冲突用 related information 指向另一处定义。
+
+**Go to Definition**：引用路径跳到目标 Module 文件开头（virtual Module 无 `README.not` 时不伪造源码位置）；scope id 与标题默认 id 跳到对应节；函数、变量等符号统一走 `definition_at(file, offset)`，handler 不针对每种符号复制逻辑。
+
+**Find References**：基于 workspace 引用图——指向当前 Module 的引用、同一目标的其他引用、可选包含定义位置；符号统一用 SymbolId，不按显示文本搜索。
+
+**Completion**：由 source context 与语义环境共同决定。`[[...]]` 内补全可达 ModulePath 与 `#id`（显式 id + 标题默认 id）；`vault::`/`self::`/`super::` 后补全合法 segment；`#` 后按 context 补全声明关键字、lexical/imported binding 与内置构造器；call arguments 中补全参数名；属性列表中补全已知属性 key。Module 补全插入相对当前 Module 的自然路径；query 返回协议无关数据（label、insert text、kind、documentation、replace range），LSP 层再生成 CompletionItem。
+
+**Hover**：引用目标的逻辑路径与 source path、Module 是否 virtual、函数签名（参数、类型、default、trailing、capability）、符号的定义位置。Content preview 复用渲染器产物，不在 LSP 层另写渲染语义。
+
+**Document Symbols**：`= Heading` 与显式 `#heading[...]` 都进入 DocumentSymbol（名称来自标题文本，range 是整个 heading，按 level 组成父子层级）；带 id 的节点、函数与变量定义也进入符号树；Fenced Raw 中的示例标题不进入。Workspace Symbol 索引 Module 与带稳定 id（显式 id + 标题默认 id）的文档元素。
+
+=== Syntax 真相与求值安全
+
+编辑器中的 Tree-sitter grammar 只负责即时高亮、折叠与注入；LSP 的语义必须调用主仓库的 parser（CLI、build、preview、diagnostics 与编辑器共享同一 AST 与错误恢复行为，不因 grammar 更新节奏不同产生两套语义）。Tree-sitter 与语义 server 是互补关系。
+
+Hover、completion 与 diagnostics 需要 lexical/import environment、函数签名与 typed HIR，但语言服务器不应为普通编辑操作执行有外部副作用的插件代码：core 与纯 User Function 允许分析并在确有消费者时受控常量求值；plugin schema 只读取声明的 signature/capability；plugin runtime 默认不在 LSP 请求路径执行。未知 Function 仍可依据 schema 提供 completion 与类型诊断，动态结果降级为 unknown，不阻塞整个 workspace analysis。
+
+=== 并发
+
+每个 vault 维护 ViewHandle 并观察发布的 revision；`didChange` → 提交 overlay → 调度 revision N → 发布 snapshot N（仅在 N 仍是最新时）。旧 revision 的慢任务不能覆盖更新结果；读取请求捕获 snapshot 后在其上完成，客户端取消时尽快停止昂贵查询。

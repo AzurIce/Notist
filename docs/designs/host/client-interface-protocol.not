@@ -1,84 +1,8 @@
-= D0005: Daemon Architecture
+@![implementation = "aligned"]
+= Client Interface and Protocol
 
-本文承接 [[vault::designs::D0004-vault-module-and-scope#Vault]]（Vault 边界）与 [[vault::designs::D0004-vault-module-and-scope#Module]]（Module 树）。本文定义承载这些状态的进程形态——本地 daemon：它为每个活动 Vault 维持长期的分析状态，让 CLI、LSP 与 Agent 共享同一份 Module 树、缓存与索引。
+本文是 A3 client interface、本地协议与 daemon 生命周期的独立成篇，从归档的历史混合文档中独立成篇。Daemon 进程与 View 模型见 [[vault::designs::host::daemon-process-views]]；CLI 命令面见 [[vault::designs::host::cli-command-surface-skill-distribution]]；LSP 适配见 [[vault::designs::host::lsp-adapter]]。
 
-动线：先说明为什么需要 daemon，再定形态（每 Vault 一个 daemon），然后依次展开 daemon 持有什么、View 与 overlay、client interface、本地协议、snapshot 与写入、失败与重启。
-
-== 为什么需要 daemon
-
-用户连续执行几条命令时，不应该为每条命令重新扫描、解析与索引同一个 Vault：
-
-```shell
-notist search "workspace revision"
-notist check docs
-notist references vault::designs::D0005
-```
-
-编辑器与 Agent 同时工作时，也不应该为同一个 Vault 维护两份 watcher、Module 图与索引。Notist 为每个活动 Vault 使用一个本地 daemon 持有长期状态；CLI 与 LSP 是面向不同调用者的 client interface，Agent 通过 CLI 命令与官方 Skill 使用（见 [[vault::designs::D0008-cli-and-skill#CLI 命令面]]）。
-
-这个形态类似 ADB：短命令是 client，后台进程保存可复用状态。类比只到进程拓扑为止：Notist daemon 绑定一个 Vault，而不是当前用户访问过的所有知识库。
-
-== 形态：每 Vault 一个 daemon
-
-```text
-Editor          shell / Agent
-  |                  |
-notist lsp        notist query
-  |                  |
-  +------------------+
-                     |
-               local Notist protocol
-                     |
-              notist daemon <vault>
-                     |
-                VaultEngine
-                     |
-       Analyzer Views + WorkspaceSnapshots
-```
-
-两个 Vault 的 Module 树、配置、watcher、全文与向量索引、embedding 模型与权限互不相关；放进同一长期进程只会耦合内存、崩溃与升级生命周期，没有可复用的语义状态。因此采用"每用户的私有 endpoint namespace、每 Vault 一个 daemon"的组合，而不是"每用户一个 application daemon"。
-
-同一 canonical root 只对应一个 daemon 实例。canonical path 必须在 endpoint 派生前完成解析——避免同一目录因相对路径、symlink 或大小写表示得到多个 daemon。由 Notist 发布和替换内容的 managed Vault 可以额外声明 generation；同一 root 与 generation 组合对应一个实例，升级前的 daemon 因 endpoint 不同而停止接收新 client，并在 idle 后退出。generation 不是普通用户 Vault 的版本号，也不能用于绕过每 Vault 隔离。
-
-== Daemon 持有什么
-
-Daemon 是一个 Vault application core 的长期进程宿主，不是新的语言语义层。启动时传入的 canonical root 固定它服务的 Vault（发现规则见 [[vault::designs::D0004-vault-module-and-scope#发现规则]]）；进程内只有这个 root 对应的 VaultEngine。Client 不能连接一个已存在 daemon 后要求它再打开任意 root。
-
-VaultEngine 持有适合在客户端之间复用的状态：
-
-- 磁盘 source catalog 与文件 watcher；
-- Vault 内稳定的 FileId、ModuleId 分配与 Module 树身份；
-- 以 source content 与语义环境为 key 的 parse、静态检查、求值与成型缓存；
-- 全文、向量、reference graph 与摘要等可重建派生索引；
-- 对磁盘写入、rename 与索引发布的串行化入口。
-
-Daemon 不成为 authored source 的真相来源。`.not` source 与明确的 editor overlay 仍是输入；缓存、索引与 daemon 内存都可以在进程退出后重建——这是求值确定性的推论：求值（[[vault::designs::D0013-evaluation-model-and-content-sequence#求值规则]]）与成型（[[vault::designs::D0011-shaping-and-structure-tree#输入与输出]]）是纯函数，增量更新只属于分析层的优化，不进入求值语义。持久化索引必须记录 schema、模型、Vault identity 与 source fingerprint，版本不匹配时丢弃或迁移，不能静默解释为新数据。
-
-== 共享 Engine，不共享 Overlay
-
-多个客户端可能同时看到同一文件的不同内容：
-
-```text
-disk source                 A
-editor-1 unsaved overlay    B
-editor-2 unsaved overlay    C
-Agent default view          A
-```
-
-因此一个 VaultEngine 可以有多个 Analyzer View：View 保存某个 client session 的 overlay set、配置投影与 snapshot revision。
-
-```text
-VaultEngine
-  shared disk sources and caches
-
-  View(editor-1)   overlays { file -> B }   revision 17
-  View(editor-2)   overlays { file -> C }   revision 9
-  View(disk)       overlays {}              revision 24
-```
-
-相同 source content 可以复用 parse 与其他纯派生缓存，但每个 View 独立发布 snapshot；一个 View 的 revision 不能与另一个 View 比较，daemon 也不制造跨 Vault 或跨 View 的伪全局 revision。
-
-CLI 默认使用 disk View，只读取已保存的 Vault。Agent 只有在用户或宿主显式授予 View handle 后，才能查询某个编辑器的未保存状态——View handle 是受限会话能力，不能通过进程列表或"最近打开的编辑器"猜测。
 
 == Client Interface
 
@@ -97,9 +21,9 @@ resolve_reference —      —
 references_in    references --direction outgoing —
 ```
 
-`resolve_reference` 把引用元素的 url 解析为 RefTarget（见 [[vault::designs::D0004-vault-module-and-scope#解析产物：RefTarget]]），`Missing` 目标如实进入诊断；它不设独立 CLI 命令，由 read、references 与 build 内部消费。`references_in` 正向列出某段 Content 引用了什么，返回 `[{relation, url, target}]`，CLI 投影为 `references --direction outgoing`。relation 与目标类型正交：relation 区分导航与嵌入（v1 只有 Reference，Preview 预留），目标类型由分析层 resolve 给出——值层不解释 url。
+`resolve_reference` 把引用元素的 url 解析为 RefTarget（见 [[vault::designs::world::reference-ref-target#解析产物：RefTarget]]），`Missing` 目标如实进入诊断；它不设独立 CLI 命令，由 read、references 与 build 内部消费。`references_in` 正向列出某段 Content 引用了什么，返回 `[{relation, url, target}]`，CLI 投影为 `references --direction outgoing`。relation 与目标类型正交：relation 区分导航与嵌入（v1 只有 Reference，Preview 预留），目标类型由分析层 resolve 给出——值层不解释 url。
 
-CLI 命令不直接扫描 Vault 或访问 parser 私有结构：它连接 daemon，把参数转换为 core request，再把 response 格式化为人类文本或稳定 JSON。LSP 负责 URI、Position、document lifecycle 与 capability negotiation；Agent 侧的调用约定由 CLI 命令面与官方 Skill 定义（见 [[vault::designs::D0008-cli-and-skill#CLI 命令面]]）。一个能力可以同时出现在多个 interface，但语义必须来自同一个 core operation——不能让 `notist references` 与 LSP references 分别实现两套解析规则。
+CLI 命令不直接扫描 Vault 或访问 parser 私有结构：它连接 daemon，把参数转换为 core request，再把 response 格式化为人类文本或稳定 JSON。LSP 负责 URI、Position、document lifecycle 与 capability negotiation；Agent 侧的调用约定由 CLI 命令面与官方 Skill 定义（见 [[vault::designs::host::cli-command-surface-skill-distribution#CLI 命令面]]）。一个能力可以同时出现在多个 interface，但语义必须来自同一个 core operation——不能让 `notist references` 与 LSP references 分别实现两套解析规则。
 
 == LSP Adapter 按 Client 存在
 

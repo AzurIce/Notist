@@ -1,0 +1,32 @@
+@![implementation = "aligned"]
+= Vault Boundary and Discovery
+
+本文是 V1 Vault 边界与发现的独立成篇，从归档的历史混合文档中独立成篇。Module 树与 ModuleResult 见 [[vault::designs::world::module-result]]。
+
+Vault 是运行边界：它决定 Module 树的根、discovery boundary、language version 与允许的 capability。跨 Vault 不解析名称与引用——相邻目录和同一 daemon 进程都不能自动扩大解析范围。
+
+== Vault
+
+=== Notist.toml marker
+
+Notist.toml 是 vault root marker：文件所在目录即 vault 根。文件可以为空——存在本身就声明根；配置字段不能改变内容根的位置。
+
+为什么需要显式 marker：编辑器打开的 worktree 不一定等于 vault。一个代码仓库可以把文档放在 docs、笔记放在 notes，甚至还有 examples——如果直接用 workspace root，代码、构建目录和其他文档目录都会错误地参与 Module 扫描。显式 marker 让边界由内容作者声明，不依赖目录名约定或编辑器的项目模型。
+
+=== 发现规则
+
+- 归属：从文件目录向上寻找最近的 marker，其所在目录即该文件的 vault 根；
+- 嵌套：扫描外层 vault 时，遇到子 marker 停止向该目录递归——同一个 source 只能拥有一个 ModulePath，否则引用与诊断都会重复；
+- 忽略隐藏目录、`target`、`node_modules`——构建缓存与依赖树不是项目内容；
+- 没有任何 marker 时，把 worktree 根作为单个 implicit vault，保持轻量用法兼容。
+
+CLI 与 LSP 的具体行为（overlay 归属、vault 切换）属于实现文档，本文只定归属规则。
+
+=== Vault 决定什么
+
+- Module 树的根与 discovery boundary；
+- language version 与 core/prelude 环境；
+- 允许的 capability 与 plugin schema；
+- 引用与 import 的解析边界：跨 Vault 一律不解析——跨 Vault 目标对外表现为 unresolved，Vault 不探测边界外。
+
+配置内容模型（language version、capability、plugin schema 的字段与语义）待 V5 core namespace 与插件边界设计记录定义；此前 Notist.toml 保持空标记或未知键预留，分析层按字节载荷携带配置。

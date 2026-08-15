@@ -1,0 +1,76 @@
+@![implementation = "aligned"]
+= Reference and RefTarget
+
+本文是 V4 引用寻址与 RefTarget 的独立成篇，从归档的历史混合文档中独立成篇。Reference 元素的值层定义见 [[vault::designs::language::builtin-constructors#ref]]；scope 是值层节点见 [[vault::designs::language::scope-environment#scope 是值层节点]]。
+
+== 引用与寻址
+
+Reference 连接知识：`[[target]]` 产生 Reference 元素（见 [[vault::designs::language::syntax-sugar#ref]]）。解析针对 ModulePath 与可选的 scope id，不针对磁盘路径；它不执行目标 Module、不读取其 bindings、不内联其 content。
+
+=== 目标书写形式
+
+```not
+[[setup]]                        # 裸名：从当前模块解析
+[[self::setup]]                  # 当前模块路径前缀
+[[super::intro]]                 # 父级
+[[vault::guide#install]]         # 绝对路径 + scope id
+[[vault::docs::images#logo.png]] # 资源文件（完整文件名）
+```
+
+- 裸名与相对前缀在补全时插入相对路径，保持源码可读与可移动；
+- `#scope-id` 后缀是"模块内目标"：文档模块中是带 id 的 scope/元素，资源目录中是完整文件名。
+
+=== scope id
+
+scope 是值层节点（[[vault::designs::language::scope-environment#scope 是值层节点]]：节点即环境）。带 id 的 scope 承担模块内身份（module-local identity）：
+
+- id 在模块内唯一；
+- `[[vault::guide#install]]` 解析到该 scope 在模块内的位置；
+- 匿名 scope 不可寻址——想被引用或查询，就创建带 id 的节点（这正是手动 scope 的意义之一）。
+
+heading 额外拥有**默认 id**：标题 body 提取的纯文本（见 [[vault::designs::language::builtin-constructors#heading]]）。引用 `#` 后缀的匹配顺序：先按显式 id 精确匹配，再按标题默认 id（标题文本）精确匹配——标题文本不需要符合标识符语法（`[[...]]` 内是字面字符串）。重复标题产生歧义诊断，作者用显式 `@id` 消歧；显式 id 总是覆盖默认 id。
+
+=== 资源文件解析
+
+`vault::docs::images#logo.png` 的解析：
+
+- `vault::docs::images` 是资源目录虚拟模块；
+- `#logo.png` 是完整文件名，在目标目录中精确匹配；
+- 目标不存在 → 存在性诊断（编辑器可提示）。完整文件名消除了扩展名歧义——文件名即身份，不依赖目录扫描猜测。
+
+资源的 kind（Image | File）由解析给出，不属于值层。
+
+=== 解析产物：RefTarget
+
+Reference 元素的值层只有 `url` 字符串（见 [[vault::designs::language::syntax-sugar#ref]]）；url 指向什么由分析层解析，解析产物：
+
+```text
+RefTarget
+├─ Module(path)                 # 文档模块
+├─ Scope(module, id)            # 模块内带 id 的 scope/元素；解析到节头部时，查询返回整棵节子树与节属性
+├─ Resource(module, name, kind) # 资源文件；kind: Image | File
+├─ External(url)                # 外部目标（暂缓）
+└─ Missing(...)                 # 不存在/歧义/不支持——不吞掉，进入诊断
+```
+
+两条关键原则：
+
+- 目标类型是解析产物，不是元素字段：`path#id` 是资源还是 scope，只有解析才知道；值层的 Reference 元素不携带目标类型；
+- "是什么目标"（分析层）与"以什么关系引用"（元素层）正交：relation 是引用元素自己的属性——v1 只有 Reference（导航），Preview（嵌入预览）预留分支，`![[...]]` 糖暂缓。
+
+=== 外部 URL（暂缓）
+
+带 scheme（`https://`、`mailto:` 等）的外部目标暂缓进入语言：v1 的引用目标空间只包含 vault 内部目标。RefTarget 预留 External 分支，待外部目标进入时启用；配套的 `link` 构造器与裸 URL 自动链接糖同步暂缓（见 [[vault::designs::language::syntax-sugar#ref]]）。`[[https://...]]` 语法合法（target 是字面 url 字符串，见 [[vault::designs::language::syntax-sugar#ref]]）：解析产物为 `External(url)`，v1 渲染为未解析的可见文本并产生 info 级 `external-reference-unsupported` 诊断——不是语法错误。
+
+== 两张跨模块图
+
+Reference graph 与 import graph 使用同一 Module identity，但环语义不同：
+
+```text
+Reference graph -> Content 链接；环合法
+Import graph    -> Value 初始化；环是诊断
+```
+
+- import graph 必须在求值前解析：请求一个 ModuleResult 时，先完成它的传递依赖 DAG；同一求值 snapshot 下，每个 source-backed Module 至多求值一次并复用相同结果；互不依赖的 Module 没有语言可观察的初始化顺序，host 可以串行或并行计算；
+- import 环不能由"恰好先加载到哪个文件"决定，一律是诊断；
+- 引用环合法：两篇文档可以互相链接。renderer 与 indexer 从同一 module/reference graph 派生 URL、backlink 与定义，不能各自扫描目录猜测身份。

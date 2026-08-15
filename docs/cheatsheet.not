@@ -10,6 +10,8 @@
 ---                        → rule()
 - A                        → item([A])
 + A                        → item(ordered: true, [A])
+| a | b |
+| - | - |                  → table(columns: n, header: true, [table-cell[...] ...])
 [[target#id]]              → ref("target#id")
 *text*                     → strong([text])
 _text_                     → emph([text])
@@ -30,6 +32,11 @@ rule() -> Content
 callout(kind: String = "note", title: Content? = none, trailing body: Content) -> Content
 details(summary: Content? = none, open: Bool = false, trailing body: Content) -> Content
 item(ordered: Bool = false, trailing body: Content) -> Content
+table-cell(colspan: Int = 1, rowspan: Int = 1, trailing body: Content) -> Content
+table(columns: Int, header: Bool = false, align: String? = none,
+      trailing body: Content) -> Content
+figure(kind: String? = none, supplement: Content? = none,
+       caption: Content? = none, trailing body: Content) -> Content
 strong / emph / underline / strike
   (trailing body: Content) -> Content
 ```
@@ -42,6 +49,13 @@ strong / emph / underline / strike
 #heading(level: 2)[标题]
 #callout(kind: "warning", title: [风险])[正文]
 #item(ordered: true)[有序条目]
+#table(columns: 2, header: true, align: "left, right")[
+  #table-cell[Name] #table-cell[Value]
+  #table-cell[one] #table-cell[1]
+]
+#figure(caption: [结果], supplement: [表], kind: "table")[
+  #table(columns: 1)[#table-cell[42]]
+]
 ```
 
 - 命名实参 `name: value`；位置实参必须全部在具名实参之前，trailing Content block 是唯一例外；

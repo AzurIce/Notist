@@ -1,4 +1,4 @@
-use notist_model::{ModuleReference, TextRange, WikiReference};
+use notist_model::{ModuleReference, TableAlignment, TextRange, WikiReference};
 
 mod argument;
 mod parser;
@@ -58,6 +58,9 @@ pub enum MarkupItem {
     /// A contiguous run of `- ` / `+ ` list lines (D0003 item sugar); nesting
     /// is carried by row indentation.
     List(ListSugar),
+    /// A contiguous pipe-table run (D0003 table sugar): a header row, a
+    /// separator row, and zero or more body rows.
+    Table(TableSugar),
     /// A standalone `@[...]` annotation bound to the next block-level node
     /// (D0006 block-prefix mount point).
     BlockAnnotation(BlockAnnotation),
@@ -90,6 +93,27 @@ pub struct ListSugarRow {
     pub ordered: bool,
     pub marker_len: usize,
     pub body: Markup,
+    pub range: TextRange,
+}
+
+/// A contiguous pipe-table run (D0003 table sugar).
+#[derive(Clone, Debug, PartialEq)]
+pub struct TableSugar {
+    /// Column alignments parsed from the separator row.
+    pub alignments: Vec<TableAlignment>,
+    /// The header cells.
+    pub header: Vec<TableSugarCell>,
+    /// Body rows, each padded to the column count.
+    pub rows: Vec<Vec<TableSugarCell>>,
+    pub range: TextRange,
+}
+
+/// One parsed pipe-table cell.
+#[derive(Clone, Debug, PartialEq)]
+pub struct TableSugarCell {
+    /// The cell body parsed as Markup.
+    pub body: Markup,
+    /// The trimmed source range of the cell payload.
     pub range: TextRange,
 }
 
@@ -253,6 +277,16 @@ fn visit_markup<'a>(markup: &'a Markup, visitor: &mut impl FnMut(&'a MarkupItem)
                     visit_markup(&row.body, visitor);
                 }
             }
+            MarkupItem::Table(sugar) => {
+                for cell in &sugar.header {
+                    visit_markup(&cell.body, visitor);
+                }
+                for row in &sugar.rows {
+                    for cell in row {
+                        visit_markup(&cell.body, visitor);
+                    }
+                }
+            }
             _ => {}
         }
     }
@@ -299,6 +333,16 @@ fn visit_markup_expressions<'a>(markup: &'a Markup, visitor: &mut impl FnMut(&'a
             MarkupItem::List(sugar) => {
                 for row in &sugar.rows {
                     visit_markup_expressions(&row.body, visitor);
+                }
+            }
+            MarkupItem::Table(sugar) => {
+                for cell in &sugar.header {
+                    visit_markup_expressions(&cell.body, visitor);
+                }
+                for row in &sugar.rows {
+                    for cell in row {
+                        visit_markup_expressions(&cell.body, visitor);
+                    }
                 }
             }
             _ => {}
@@ -817,6 +861,72 @@ mod tests {
             &sugar.rows[0].body.items[0],
             MarkupItem::Text(text) if text.value == "one"
         ));
+    }
+
+    #[test]
+    fn parses_pipe_table_sugar_with_alignment_and_protected_pipes() {
+        let parsed = parse("| Name | #tag |\n| :--- | ---: |\n| *A* | `x|y` |\n");
+        assert!(parsed.errors.is_empty(), "{:?}", parsed.errors);
+        let MarkupItem::Table(sugar) = &parsed.root.items[0] else {
+            panic!("expected table sugar, got {:?}", parsed.root.items)
+        };
+        assert_eq!(
+            sugar.alignments,
+            vec![TableAlignment::Left, TableAlignment::Right]
+        );
+        assert_eq!(sugar.header.len(), 2);
+        assert_eq!(sugar.rows.len(), 1);
+        assert_eq!(sugar.rows[0].len(), 2);
+        assert!(matches!(
+            &sugar.header[1].body.items[0],
+            MarkupItem::Embedded(_)
+        ));
+        assert!(matches!(
+            &sugar.rows[0][0].body.items[0],
+            MarkupItem::Text(text) if text.value == "*A*"
+        ));
+        assert!(matches!(
+            &sugar.rows[0][1].body.items[0],
+            MarkupItem::Raw(raw) if raw.form == RawLiteralForm::Inline
+        ));
+    }
+
+    #[test]
+    fn pipe_table_delimiters_ignore_pipes_inside_code_expressions() {
+        let parsed = parse("| #raw(\"a|b\") |\n| - |\n");
+        assert!(parsed.errors.is_empty(), "{:?}", parsed.errors);
+        let MarkupItem::Table(sugar) = &parsed.root.items[0] else {
+            panic!("expected table sugar, got {:?}", parsed.root.items)
+        };
+        assert_eq!(sugar.header.len(), 1);
+        assert!(matches!(
+            &sugar.header[0].body.items[0],
+            MarkupItem::Embedded(embedded)
+                if matches!(embedded.expression.kind, ExpressionKind::Call(_))
+        ));
+    }
+
+    #[test]
+    fn rejects_pipe_table_candidates_without_a_separator_row() {
+        // `| a | b |` followed by a non-separator line is ordinary Markup text.
+        let parsed = parse("| a | b |\n| c | d |\n");
+        assert!(parsed.errors.is_empty(), "{:?}", parsed.errors);
+        assert!(parsed.root.items.iter().all(|item| {
+            !matches!(item, MarkupItem::Table(_))
+        }));
+    }
+
+    #[test]
+    fn pipe_table_body_rows_are_padded_and_extra_cells_diagnosed() {
+        let parsed = parse("| a | b |\n| - | - |\n| 1 |\n| 1 | 2 | 3 |\n");
+        assert_eq!(parsed.errors.len(), 1);
+        assert!(parsed.errors[0].message.contains("3 cells"));
+        let MarkupItem::Table(sugar) = &parsed.root.items[0] else {
+            panic!("expected table sugar, got {:?}", parsed.root.items)
+        };
+        assert_eq!(sugar.rows.len(), 2);
+        assert!(sugar.rows[0][1].range.is_empty());
+        assert_eq!(sugar.rows[1].len(), 2);
     }
 
     #[test]

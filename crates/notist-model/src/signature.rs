@@ -240,6 +240,91 @@ pub fn item_signature() -> FunctionSignature {
     }
 }
 
+/// The signature of the built-in `table-cell` function.
+pub fn table_cell_signature() -> FunctionSignature {
+    FunctionSignature {
+        parameters: vec![
+            Parameter {
+                name: "colspan".into(),
+                ty: Type::Int,
+                default: Some(DefaultValue::Int(1)),
+            },
+            Parameter {
+                name: "rowspan".into(),
+                ty: Type::Int,
+                default: Some(DefaultValue::Int(1)),
+            },
+            Parameter {
+                name: "body".into(),
+                ty: Type::Content,
+                default: None,
+            },
+        ],
+        trailing_content: Some("body".into()),
+        result: Type::Content,
+    }
+}
+
+/// The signature of the built-in `table` function.
+pub fn table_signature() -> FunctionSignature {
+    FunctionSignature {
+        parameters: vec![
+            Parameter {
+                name: "columns".into(),
+                ty: Type::Int,
+                default: None,
+            },
+            Parameter {
+                name: "header".into(),
+                ty: Type::Bool,
+                default: Some(DefaultValue::Bool(false)),
+            },
+            Parameter {
+                name: "align".into(),
+                ty: Type::Optional(Box::new(Type::String)),
+                default: Some(DefaultValue::None),
+            },
+            Parameter {
+                name: "body".into(),
+                ty: Type::Content,
+                default: None,
+            },
+        ],
+        trailing_content: Some("body".into()),
+        result: Type::Content,
+    }
+}
+
+/// The signature of the built-in `figure` function (Typst-style subset).
+pub fn figure_signature() -> FunctionSignature {
+    FunctionSignature {
+        parameters: vec![
+            Parameter {
+                name: "kind".into(),
+                ty: Type::Optional(Box::new(Type::String)),
+                default: Some(DefaultValue::None),
+            },
+            Parameter {
+                name: "supplement".into(),
+                ty: Type::Optional(Box::new(Type::Content)),
+                default: Some(DefaultValue::None),
+            },
+            Parameter {
+                name: "caption".into(),
+                ty: Type::Optional(Box::new(Type::Content)),
+                default: Some(DefaultValue::None),
+            },
+            Parameter {
+                name: "body".into(),
+                ty: Type::Content,
+                default: None,
+            },
+        ],
+        trailing_content: Some("body".into()),
+        result: Type::Content,
+    }
+}
+
 /// The signature shared by inline content wrappers such as `strong` and `emph`.
 pub fn inline_body_signature() -> FunctionSignature {
     FunctionSignature {
@@ -263,7 +348,7 @@ pub fn empty_content_signature() -> FunctionSignature {
 }
 
 /// The names and signatures of all built-in functions.
-pub fn builtin_signatures() -> [(&'static str, FunctionSignature); 11] {
+pub fn builtin_signatures() -> [(&'static str, FunctionSignature); 14] {
     [
         ("ref", ref_signature()),
         ("heading", heading_signature()),
@@ -272,6 +357,9 @@ pub fn builtin_signatures() -> [(&'static str, FunctionSignature); 11] {
         ("callout", callout_signature()),
         ("details", details_signature()),
         ("item", item_signature()),
+        ("table-cell", table_cell_signature()),
+        ("table", table_signature()),
+        ("figure", figure_signature()),
         ("strong", inline_body_signature()),
         ("emph", inline_body_signature()),
         ("underline", inline_body_signature()),

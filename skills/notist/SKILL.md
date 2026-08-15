@@ -19,9 +19,9 @@ Search before guessing language or CLI behavior:
 
 ```shell
 notist --format json search "workspace snapshot" <DOCS_ROOT>
-notist --format json outline vault::designs::D0005-daemon-architecture <DOCS_ROOT> --depth 2
-notist --format json read vault::designs::D0005-daemon-architecture <DOCS_ROOT> --from-line 1 --lines 80
-notist --format json references vault::designs::D0005-daemon-architecture <DOCS_ROOT>
+notist --format json outline vault::designs::host::daemon-process-views <DOCS_ROOT> --depth 2
+notist --format json read vault::designs::host::daemon-process-views <DOCS_ROOT> --from-line 1 --lines 80
+notist --format json references vault::designs::host::daemon-process-views <DOCS_ROOT>
 ```
 
 Use `status` or bounded `modules` for discovery, then `search` or one-Module `outline`, and finally `read` for authored evidence. Lexical/fuzzy search returns a small page grouped by source by default; use `--group-by section` for section diversity or `--group-by match` to locate every occurrence. Keep the default `operator=all` for multi-term fact lookup; use `operator=any` only for deliberate broad recall. Search excerpts select candidates; do not treat them as complete evidence.

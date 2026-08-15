@@ -1,6 +1,6 @@
 = Built-in Functions
 
-本文记录当前工具 surface 实际提供的 11 个内置构造器。未列出的名称不是现行 built-in，调用时产生 unknown function 诊断，元素以 `UnresolvedCall` 保留（渲染器有兜底）。调用模型与类型规则见 [[vault::types]]，语法细节见 [[vault::grammar]]，速查见 [[vault::cheatsheet]]。
+本文记录当前工具 surface 实际提供的 14 个内置构造器。未列出的名称不是现行 built-in，调用时产生 unknown function 诊断，元素以 `UnresolvedCall` 保留（渲染器有兜底）。调用模型与类型规则见 [[vault::types]]，语法细节见 [[vault::grammar]]，速查见 [[vault::cheatsheet]]。
 
 == 签名总览
 
@@ -12,6 +12,9 @@ rule() -> Content
 callout(kind: String = "note", title: Content? = none, trailing body: Content) -> Content
 details(summary: Content? = none, open: Bool = false, trailing body: Content) -> Content
 item(ordered: Bool = false, trailing body: Content) -> Content
+table-cell(colspan: Int = 1, rowspan: Int = 1, trailing body: Content) -> Content
+table(columns: Int, header: Bool = false, align: String? = none, trailing body: Content) -> Content
+figure(kind: String? = none, supplement: Content? = none, caption: Content? = none, trailing body: Content) -> Content
 strong(trailing body: Content) -> Content
 emph(trailing body: Content) -> Content
 underline(trailing body: Content) -> Content
@@ -50,7 +53,7 @@ ref(url: String) -> Content
 
 - 目标空间：文档模块（`vault::path::to::file`）、模块内目标（`... #id`，标题默认 id 亦匹配）、资源文件（`vault::path::to::assets#logo.png`，完整文件名精确匹配）；
 - 带 scheme（`https://` 等）的外部 URL 语法合法：解析为 External 目标，v1 渲染为未解析的可见文本并产生 info 级 `external-reference-unsupported` 诊断；
-- 目标解析产物与引用图见 [[vault::designs::D0004-vault-module-and-scope]]。
+- 目标解析产物与引用图见 [[vault::designs::world::reference-ref-target]]。
 
 == heading
 
@@ -68,7 +71,7 @@ heading(level: Int = 1, trailing body: Content) -> Content
 - 语法边界：行首 `=` 连续出现一个或多个，其后必须跟空白（或行尾），再后是标题 body；`=foo` 是普通文本；
 - 错误恢复：行首 `=` 后无内容 → 空 body 的 Heading；
 - 标题拥有默认 id：body 提取的纯文本（Text 元素按顺序拼接，含嵌套）——`= 安装指南` 默认即可被 `[[...#安装指南]]` 引用；显式 `@id` 覆盖默认 id；无效文本回退为 `loc-<起始字节偏移>` 锚点；
-- 同级标题与其后内容归组为嵌套的 Section 节点（见 [[vault::designs::D0010-rendering-and-preview]]）。
+- 同级标题与其后内容归组为嵌套的 Section 节点（见 [[vault::designs::language::shaping-structure-tree]] 与 [[vault::designs::host::html-renderer]]）。
 
 == raw
 
@@ -171,6 +174,57 @@ item(ordered: Bool = false, trailing body: Content) -> Content
 #item[显式条目]#item[另一个条目]
 ```
 
+== table-cell / table
+
+```text
+table-cell(colspan: Int = 1, rowspan: Int = 1, trailing body: Content) -> Content
+table(columns: Int, header: Bool = false, align: String? = none,
+      trailing body: Content) -> Content
+```
+
+`table-cell` 产生表格单元；`table` 消费按行平铺的 `table-cell`（每 `columns` 个 cell 为一行）并产生 Table 元素。`columns` 必填；`header` 决定首行是否进入表头；`align` 是逗号分隔的列对齐串（`left` / `center` / `right` / `default`，数量必须等于 `columns`，`none` 表示全部默认）。Table 本身没有 caption——需要题注时用 `figure` 包住 table。body 中允许纯空白与段间分隔作为源码排版，其余可见元素必须是 `table-cell`：
+
+```not
+#table(columns: 2, header: true, align: "left, right")[
+  #table-cell[Name] #table-cell[Value]
+  #table-cell[one]  #table-cell[1]
+]
+```
+
+糖：pipe table。连续的行首 `|` 行，第一行 header，第二行分隔行，其后 body：
+
+```not
+| Name | Value |
+| :--- | ----: |
+| one  | 1     |
+```
+
+- 分隔行 cell 形如 `:?-+:?`；`:` 在左、右或两侧分别表示 left / right / center，无 `:` 表示默认；
+- header cell 数即 `columns`；分隔行必须与 header 同列数；
+- cell 内是行内 Markup：`*强调*`、`#表达式`、`` `raw` `` 等正常解析，`\|` 是字面 `|`；Raw、Code 表达式内部的 `|` 不分割 cell；
+- body 行缺 cell 补空 cell；多 cell 产生诊断并截断；
+- 没有合法分隔行时，整段按普通文本处理。
+
+== figure
+
+```text
+figure(kind: String? = none, supplement: Content? = none,
+       caption: Content? = none, trailing body: Content) -> Content
+```
+
+产生 Figure 块级 wrapper，语义对齐 Typst 0.14 的 `figure`：body 是任意块内容，caption 是题注，kind 是稳定分类，supplement 是题注前缀。`kind` 省略时从 body 自动推断：Table → `"table"`，Raw → `"raw"`，block Custom → 其 name，其他 → `"figure"`。渲染时 supplement 输出为 `supplement + ": " + caption`：
+
+```not
+#figure(caption: [接口延迟], supplement: [表], kind: "table")[
+  #table(columns: 2)[
+    #table-cell[接口] #table-cell[延迟]
+    #table-cell[query] #table-cell[12 ms]
+  ]
+]
+```
+
+Typst figure 的 `placement` / `scope` / `gap` / `outlined` / `numbering` 依赖尚未进入 Notist 的 float、counter 与 outline；当前只提供 caption/kind/supplement 子集。无语法糖。
+
 == strong / emph / underline / strike
 
 ```text
@@ -209,4 +263,4 @@ graph TD
 """#)
 ```
 
-调用不会被静默丢弃——解析为 `UnresolvedCall` 元素保留在 Content 中，渲染器对其有兜底展示，预览与工具恢复可以继续处理其余源码。插件与扩展机制按 `Custom` 元素走渲染层兜底，不改变内置构造器集合（元素集合见 [[vault::designs::D0013-evaluation-model-and-content-sequence]]）。
+调用不会被静默丢弃——解析为 `UnresolvedCall` 元素保留在 Content 中，渲染器对其有兜底展示，预览与工具恢复可以继续处理其余源码。插件与扩展机制按 `Custom` 元素走渲染层兜底，不改变内置构造器集合（元素集合见 [[vault::designs::language::evaluation-model]]）。

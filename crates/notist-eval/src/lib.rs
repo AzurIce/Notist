@@ -138,7 +138,7 @@ pub(crate) fn lower_fragment(
 
 #[cfg(test)]
 mod tests {
-    use notist_model::{Block, Content, Element, ElementNode, TextRange};
+    use notist_model::{Block, Content, Element, ElementNode, TableAlignment, TextRange};
 
     use super::*;
 
@@ -856,6 +856,136 @@ mod tests {
 
 
 
+
+    #[test]
+    fn lowers_pipe_table_sugar_to_table_element() {
+        let evaluated = Evaluator::default().evaluate(
+            "| Name | Value |\n| :--- | ---: |\n| one | 1 |\n| two | 2 |\n",
+        );
+        assert!(
+            evaluated.diagnostics.is_empty(),
+            "{:?}",
+            evaluated.diagnostics
+        );
+        let Element::Table {
+            columns,
+            header,
+            alignments,
+            cells,
+            ..
+        } = &evaluated.content.elements[0].element
+        else {
+            panic!("expected a table, got {:?}", evaluated.content.elements)
+        };
+        assert_eq!(*columns, 2);
+        assert!(*header);
+        assert_eq!(
+            alignments,
+            &[TableAlignment::Left, TableAlignment::Right]
+        );
+        assert_eq!(cells.len(), 6);
+        assert!(matches!(
+            &cells[2].element,
+            Element::TableCell { body, .. }
+                if matches!(&body.elements[0].element, Element::Text(text) if text == "one")
+        ));
+
+        let structured = structure(evaluated);
+        assert!(matches!(
+            structured.document.blocks.as_slice(),
+            [Block::Element(ElementNode {
+                element: Element::Table { .. },
+                ..
+            })]
+        ));
+    }
+
+    #[test]
+    fn evaluates_explicit_table_and_table_cell_constructors() {
+        let evaluator = Evaluator::default();
+        let evaluated = evaluator.evaluate(
+            "#table(columns: 2, header: true, align: \"left, right\")[\n  #table-cell[Name] #table-cell[Value]\n  #table-cell[one] #table-cell[two]\n]",
+        );
+        assert!(
+            evaluated.diagnostics.is_empty(),
+            "{:?}",
+            evaluated.diagnostics
+        );
+        assert!(matches!(
+            &evaluated.content.elements[0].element,
+            Element::Table {
+                columns: 2,
+                header: true,
+                cells,
+                ..
+            } if cells.len() == 4
+        ));
+
+        let incomplete = evaluator.evaluate("#table(columns: 2)[#table-cell[A]]");
+        assert!(incomplete
+            .diagnostics
+            .iter()
+            .any(|diagnostic| diagnostic.message.contains("does not fill")));
+        let non_cell = evaluator.evaluate("#table(columns: 2)[#strong[A] #strong[B]]");
+        assert!(non_cell
+            .diagnostics
+            .iter()
+            .any(|diagnostic| diagnostic.message.contains("only table-cell")));
+    }
+
+    #[test]
+    fn figure_wraps_captioned_block_content_with_typst_style_kind() {
+        let evaluator = Evaluator::default();
+        let evaluated = evaluator.evaluate(
+            "#figure(caption: [Cap], supplement: [Tab], kind: \"table\")[\n  #table(columns: 2)[#table-cell[A] #table-cell[B]]\n]",
+        );
+        assert!(
+            evaluated.diagnostics.is_empty(),
+            "{:?}",
+            evaluated.diagnostics
+        );
+        let Element::Figure {
+            body,
+            kind,
+            supplement,
+            caption,
+        } = &evaluated.content.elements[0].element
+        else {
+            panic!("expected a figure, got {:?}", evaluated.content.elements)
+        };
+        assert_eq!(kind, "table");
+        assert!(body
+            .elements
+            .iter()
+            .any(|node| matches!(node.element, Element::Table { .. })));
+        assert!(matches!(
+            supplement,
+            Some(Content { elements }) if matches!(&elements[0].element, Element::Text(text) if text == "Tab")
+        ));
+        assert!(matches!(
+            caption,
+            Some(Content { elements }) if matches!(&elements[0].element, Element::Text(text) if text == "Cap")
+        ));
+
+        // Typst `kind: auto`: the wrapped block element decides the kind.
+        let inferred = evaluator.evaluate(
+            "#figure[\n#table(columns: 1)[#table-cell[X]]\n]",
+        );
+        assert!(inferred.diagnostics.is_empty(), "{:?}", inferred.diagnostics);
+        assert!(matches!(
+            &inferred.content.elements[0].element,
+            Element::Figure { kind, .. } if kind == "table"
+        ));
+
+        let structured = structure(evaluated);
+        assert!(matches!(
+            structured.document.blocks.as_slice(),
+            [Block::Element(ElementNode {
+                element: Element::Figure { .. },
+                ..
+            })]
+        ));
+    }
 
     #[test]
     fn structuring_groups_paragraphs_and_adjacent_list_items() {

@@ -1,5 +1,5 @@
 // 分割线之上的为基本确定的不再更改表述的内容（除非用户主动要求）。
-= D0001: Language Overview
+= Language Overview
 
 Notist 是一门带有静态类型系统的文档编程语言，它具有两个语法模式：Markup 和 Code（类似 typst）。
 
@@ -17,7 +17,7 @@ println!("Hello");
 
 ---
 
-分割线以下
+姑姑嘎嘎姑姑嘎嘎姑姑嘎嘎姑姑嘎嘎姑姑嘎嘎姑姑嘎嘎姑姑嘎嘎姑姑嘎嘎姑姑嘎嘎
 
 ````
 
@@ -39,7 +39,7 @@ println!("Hello");
 
 上面的 `#warning[...]` 是 trailing Content 参数的紧凑写法：`#warning[这是一段可以通过函数构造的内容。]` 与 `#warning([这是一段可以通过函数构造的内容。])` 等价——trailing block 只是追加一个位置实参的语法糖。
 
-`#` 后的表达式有自己的边界规则。标识符由 Unicode 字母（含中文）、数字、`-`、`_` 组成，表达式到标识符字符集结束处为止：`#ver。` 中全角标点不是标识符字符，`。` 作为文本继续（中文标点天然断开表达式）；紧跟汉字、字母或数字时需要 `;` 或括号结束表达式——`第一段#accent;文字`、`第一段#(accent)文字`，`;` 不产生输出。二元运算等完整表达式用括号嵌入：`#(1 + 2)` 输出 3，而 `#1 + 2` 的 `1` 在空格处结束，` + 2` 是文本。空格不是语法工具：它终止表达式，同时自身成为文本内容。
+`#` 后表达式的精确边界规则见 [[vault::designs::language::markup-surface#嵌入的边界]]；本文只保留语言概览与最小示例。
 
 Markup 模式下的标题、代码块、分割线等写法，本质都是对内置函数的语法糖：
 
@@ -58,7 +58,7 @@ println!("Hello");
 分割线以下
 ```
 
-求值之前，静态类型系统先完成名称解析与类型检查，求值器只消费这份语义输入。一篇 Notist 文档的正文是隐式的 Content quotation——等价于整段正文都被包裹在一段 Content 字面量中；它的求值结果除了一棵 Content 树以外，还包含带有函数、变量等符号的环境，以及旁置的属性表（标注与模块元数据，见 [[vault::designs::D0002-evaluation-model-and-type-system#属性表]]）。
+求值之前，静态类型系统先完成名称解析与类型检查，求值器只消费这份语义输入。一篇 Notist 文档的正文是隐式的 Content quotation——等价于整段正文都被包裹在一段 Content 字面量中；它的求值结果除了一棵 Content 树以外，还包含带有函数、变量等符号的环境，以及旁置的属性表（标注与模块元数据，见 [[vault::designs::language::property-table]]）。
 
 ---
 
@@ -95,4 +95,4 @@ annotations = {}   // 示例中没有标注，属性表为空
 
 标题来自变量 `accent` 的值，callout 的内容由函数调用构造——文档里的每一处内容都来自同一次求值。`bindings` 是程序的一面，`content` 是文档的一面，`annotations` 是标注的一面；三者来自同一次求值，却承担不同职责。
 
-这个结果如何产生——类型系统见 [[vault::designs::D0002-evaluation-model-and-type-system#类型系统]]，属性表见 [[vault::designs::D0002-evaluation-model-and-type-system#属性表]]，求值模型与元素序列见 [[vault::designs::D0013-evaluation-model-and-content-sequence#求值规则]]，scope 与词法环境见 [[vault::designs::D0012-scope-and-environment#scope 是值层节点]]。
+这个结果如何产生——类型系统见 [[vault::designs::language::type-system#类型系统]]，属性表见 [[vault::designs::language::property-table]]，求值模型与元素序列见 [[vault::designs::language::evaluation-model#求值规则]]，scope 与词法环境见 [[vault::designs::language::scope-environment#scope 是值层节点]]。

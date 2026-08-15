@@ -1,5 +1,19 @@
 use crate::{TextRange, WikiReference};
 
+/// Horizontal alignment applied to one table column.
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub enum TableAlignment {
+    /// Use the renderer's default table alignment.
+    #[default]
+    Default,
+    /// Align cell content to the left.
+    Left,
+    /// Center cell content.
+    Center,
+    /// Align cell content to the right.
+    Right,
+}
+
 /// A sequence of evaluated document elements.
 #[derive(Clone, Debug, Default, Eq, PartialEq)]
 pub struct Content {
@@ -86,6 +100,37 @@ pub enum Element {
         /// Item body.
         body: Content,
     },
+    /// A table cell consumed by a surrounding `table` element.
+    TableCell {
+        /// Cell contents.
+        body: Content,
+        /// Number of columns occupied by this cell.
+        colspan: u16,
+        /// Number of rows occupied by this cell.
+        rowspan: u16,
+    },
+    /// A table with a fixed number of columns and evaluated cells.
+    Table {
+        /// Number of cells per row.
+        columns: u16,
+        /// Whether the first row contains column headings.
+        header: bool,
+        /// Horizontal alignment for each column.
+        alignments: Vec<TableAlignment>,
+        /// Cells in row-major order.
+        cells: Vec<ElementNode>,
+    },
+    /// A captioned block-level wrapper (Typst-style `figure`).
+    Figure {
+        /// The wrapped body content.
+        body: Content,
+        /// The resolved figure kind, used by queries and future outlines.
+        kind: String,
+        /// Optional prefix rendered before the caption.
+        supplement: Option<Content>,
+        /// Optional visible caption.
+        caption: Option<Content>,
+    },
     /// An emphasized block of advisory content with an author-defined kind.
     Callout {
         /// A short category such as note, tip, or warning.
@@ -154,12 +199,111 @@ impl Element {
             | Self::List { .. }
             | Self::ListItem(_)
             | Self::EnumItem { .. }
+            | Self::TableCell { .. }
+            | Self::Table { .. }
+            | Self::Figure { .. }
             | Self::Rule
             | Self::Callout { .. }
             | Self::Details { .. } => false,
         }
     }
 }
+/// A table cell placed at its logical starting column.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct TableCellPlacement {
+    /// Index into the table's row-major cell vector.
+    pub cell_index: usize,
+    /// Zero-based logical starting column after accounting for active row spans.
+    pub column: u16,
+}
+
+/// A structural table-layout error.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum TableLayoutError {
+    /// A non-cell element appeared in the table cell vector.
+    NonCell { cell: usize },
+    /// A cell cannot occupy the first available column range.
+    CellDoesNotFit {
+        row: usize,
+        cell: usize,
+        column: u16,
+        colspan: u16,
+    },
+    /// The final explicit cell does not complete its logical row.
+    IncompleteRow { row: usize },
+    /// Existing row spans cover a whole row, leaving no position for the next explicit cell.
+    FullyCoveredRow { row: usize },
+    /// One or more row spans continue beyond the final explicit row.
+    RowspanBeyondTable,
+}
+
+/// Places table cells into logical rows while respecting both column and row spans.
+pub fn table_layout(
+    columns: u16,
+    cells: &[ElementNode],
+) -> Result<Vec<Vec<TableCellPlacement>>, TableLayoutError> {
+    let columns = columns as usize;
+    let mut active = vec![0u16; columns];
+    let mut rows = Vec::new();
+    let mut cell_index = 0usize;
+
+    while cell_index < cells.len() {
+        let row_number = rows.len() + 1;
+        let mut occupied: Vec<_> = active.iter().map(|remaining| *remaining > 0).collect();
+        if occupied.iter().all(|occupied| *occupied) {
+            return Err(TableLayoutError::FullyCoveredRow { row: row_number });
+        }
+        let mut next_active: Vec<_> = active
+            .iter()
+            .map(|remaining| remaining.saturating_sub(1))
+            .collect();
+        let mut row = Vec::new();
+
+        while occupied.iter().any(|occupied| !occupied) {
+            let Some(cell) = cells.get(cell_index) else {
+                return Err(TableLayoutError::IncompleteRow { row: row_number });
+            };
+            let Element::TableCell {
+                colspan, rowspan, ..
+            } = &cell.element
+            else {
+                return Err(TableLayoutError::NonCell {
+                    cell: cell_index + 1,
+                });
+            };
+            let column = occupied.iter().position(|occupied| !occupied).unwrap();
+            let end = column + *colspan as usize;
+            if end > columns || occupied[column..end].iter().any(|occupied| *occupied) {
+                return Err(TableLayoutError::CellDoesNotFit {
+                    row: row_number,
+                    cell: cell_index + 1,
+                    column: column as u16,
+                    colspan: *colspan,
+                });
+            }
+            occupied[column..end].fill(true);
+            if *rowspan > 1 {
+                for remaining in &mut next_active[column..end] {
+                    *remaining = (*remaining).max(*rowspan - 1);
+                }
+            }
+            row.push(TableCellPlacement {
+                cell_index,
+                column: column as u16,
+            });
+            cell_index += 1;
+        }
+
+        rows.push(row);
+        active = next_active;
+    }
+
+    if active.iter().any(|remaining| *remaining > 0) {
+        return Err(TableLayoutError::RowspanBeyondTable);
+    }
+    Ok(rows)
+}
+
 /// A structured view produced from an evaluated content sequence.
 #[derive(Clone, Debug, Default, Eq, PartialEq)]
 pub struct StructuredDocument {
@@ -192,5 +336,69 @@ impl Block {
                 TextRange::new(heading.range.start, end)
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn cell(colspan: u16, rowspan: u16) -> ElementNode {
+        ElementNode {
+            element: Element::TableCell {
+                body: Content::new(),
+                colspan,
+                rowspan,
+            },
+            range: TextRange::new(0, 0),
+        }
+    }
+
+    #[test]
+    fn table_layout_places_cells_around_rowspans() {
+        let cells = [cell(2, 1), cell(1, 2), cell(1, 1), cell(1, 1)];
+
+        assert_eq!(
+            table_layout(3, &cells),
+            Ok(vec![
+                vec![
+                    TableCellPlacement {
+                        cell_index: 0,
+                        column: 0,
+                    },
+                    TableCellPlacement {
+                        cell_index: 1,
+                        column: 2,
+                    },
+                ],
+                vec![
+                    TableCellPlacement {
+                        cell_index: 2,
+                        column: 0,
+                    },
+                    TableCellPlacement {
+                        cell_index: 3,
+                        column: 1,
+                    },
+                ],
+            ])
+        );
+    }
+
+    #[test]
+    fn table_layout_rejects_cells_that_do_not_fill_the_grid() {
+        assert_eq!(
+            table_layout(3, &[cell(2, 1)]),
+            Err(TableLayoutError::IncompleteRow { row: 1 })
+        );
+        assert_eq!(
+            table_layout(3, &[cell(2, 1), cell(1, 2), cell(1, 1), cell(2, 1)]),
+            Err(TableLayoutError::CellDoesNotFit {
+                row: 2,
+                cell: 4,
+                column: 1,
+                colspan: 2,
+            })
+        );
     }
 }

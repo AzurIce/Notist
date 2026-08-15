@@ -129,6 +129,16 @@ fn collect_user_functions(
                     collect_user_functions(&row.body, functions);
                 }
             }
+            MarkupItem::Table(sugar) => {
+                for cell in &sugar.header {
+                    collect_user_functions(&cell.body, functions);
+                }
+                for row in &sugar.rows {
+                    for cell in row {
+                        collect_user_functions(&cell.body, functions);
+                    }
+                }
+            }
             _ => {}
         }
     }
@@ -288,6 +298,7 @@ impl LowerState<'_> {
                     self.push_element(Element::Rule, range.shifted(self.base_offset));
                 }
                 MarkupItem::List(sugar) => self.lower_list_sugar(sugar),
+                MarkupItem::Table(sugar) => self.lower_table_sugar(sugar),
                 // Annotations were collected ahead of the content loop.
                 MarkupItem::BlockAnnotation(_) | MarkupItem::ModuleAnnotation(_) => {}
             }
@@ -1141,6 +1152,50 @@ impl LowerState<'_> {
                 range,
             });
         }
+    }
+
+    /// Lowers a pipe-table sugar node (D0003): cells are evaluated as nested
+    /// inline fragments and assembled row-major into one `Element::Table`.
+    fn lower_table_sugar(&mut self, sugar: &notist_syntax::TableSugar) {
+        let mut cells = Vec::new();
+        let mut lower_cells = |cells: &mut Vec<ElementNode>, row: &[notist_syntax::TableSugarCell]| {
+            for cell in row {
+                let evaluation = evaluate_markup_in_environment(
+                    self.source,
+                    &cell.body,
+                    self.base_offset,
+                    self.registry,
+                    self.depth + 1,
+                    self.user_functions,
+                    self.variables.clone(),
+                    false,
+                );
+                self.annotations.extend(evaluation.annotations);
+                self.diagnostics.extend(evaluation.diagnostics);
+                cells.push(ElementNode {
+                    element: Element::TableCell {
+                        body: evaluation.content,
+                        colspan: 1,
+                        rowspan: 1,
+                    },
+                    range: cell.range.shifted(self.base_offset),
+                });
+            }
+        };
+        lower_cells(&mut cells, &sugar.header);
+        for row in &sugar.rows {
+            lower_cells(&mut cells, row);
+        }
+        let columns = u16::try_from(sugar.header.len()).unwrap_or(u16::MAX);
+        self.push_element(
+            Element::Table {
+                columns,
+                header: true,
+                alignments: sugar.alignments.clone(),
+                cells,
+            },
+            sugar.range.shifted(self.base_offset),
+        );
     }
 
     /// Lowers a list sugar node (D0003): each row body is evaluated as a

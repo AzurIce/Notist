@@ -1,4 +1,4 @@
-use notist_model::{ModuleReference, TextRange, Type};
+use notist_model::{ModuleReference, TableAlignment, TextRange, Type};
 
 use crate::argument::parse_string_at;
 use crate::scope::{
@@ -7,8 +7,8 @@ use crate::scope::{
 use crate::{
     Argument, Attributes, BinaryOperator, BlockAnnotation, BodyForm, Call, ContentBlock,
     EmbeddedExpression, Expression, ExpressionKind, HeadingSugar, ListSugar, ListSugarRow, Markup,
-    MarkupItem, Parse, SpannedName, SpannedText, SyntaxError, UnaryOperator,
-    UserFunctionDefinition, UserParameter, WikiLink, parse_wiki_reference,
+    MarkupItem, Parse, SpannedName, SpannedText, SyntaxError, TableSugar, TableSugarCell,
+    UnaryOperator, UserFunctionDefinition, UserParameter, WikiLink, parse_wiki_reference,
 };
 
 /// Precedence of unary `not`: tighter than `and`/`or`, looser than comparison,
@@ -22,7 +22,7 @@ pub(crate) fn parse(source: &str) -> Parse {
         end: source.len(),
         errors: Vec::new(),
     };
-    let root = parser.parse_markup(false, true).0;
+    let root = parser.parse_markup(false, false, true).0;
     Parse {
         root,
         errors: parser.errors,
@@ -36,8 +36,23 @@ struct Parser<'a> {
     errors: Vec<SyntaxError>,
 }
 
+/// The raw cells and delimiters of one pipe-table row.
+struct ScannedTableRow {
+    cells: Vec<TextRange>,
+    /// The offset of the closing pipe (also the early-stop offset for `]`).
+    closing_pipe: usize,
+    /// When parsing inside a Content literal, the offset of the `]` that
+    /// ended the table run early.
+    early_bracket: Option<usize>,
+}
+
 impl Parser<'_> {
-    fn parse_markup(&mut self, stop_at_bracket: bool, at_line_start: bool) -> (Markup, bool) {
+    fn parse_markup(
+        &mut self,
+        stop_at_bracket: bool,
+        stop_at_pipe: bool,
+        at_line_start: bool,
+    ) -> (Markup, bool) {
         let start = self.cursor;
         let mut items = Vec::new();
         let mut text_start = self.cursor;
@@ -62,6 +77,17 @@ impl Parser<'_> {
                 continue;
             }
 
+            if stop_at_pipe && self.byte() == Some(b'|') {
+                self.push_text(&mut items, text_start, self.cursor);
+                return (
+                    Markup {
+                        items,
+                        range: TextRange::new(start, self.cursor),
+                    },
+                    true,
+                );
+            }
+
             if self.byte() == Some(b'\\') && self.source.as_bytes().get(self.cursor + 1).is_some() {
                 self.cursor = self.next_char_end(self.cursor + 1);
                 at_line_start = false;
@@ -76,8 +102,8 @@ impl Parser<'_> {
                 continue;
             }
 
-            // D0003: heading, rule, and list sugar are syntax-frontend nodes
-            // recognized at line starts; the evaluator never rescans source.
+            // D0003: heading, rule, list, and table sugar are syntax-frontend
+            // nodes recognized at line starts; the evaluator never rescans source.
             if at_line_start {
                 let mut consumed = false;
                 if self.byte() == Some(b'=') {
@@ -107,6 +133,14 @@ impl Parser<'_> {
                 {
                     self.push_text(&mut items, text_start, self.cursor);
                     items.push(MarkupItem::List(sugar));
+                    self.cursor = end;
+                    text_start = self.cursor;
+                    consumed = true;
+                } else if self.byte() == Some(b'|')
+                    && let Some((sugar, end)) = self.parse_table_sugar(stop_at_bracket)
+                {
+                    self.push_text(&mut items, text_start, self.cursor);
+                    items.push(MarkupItem::Table(sugar));
                     self.cursor = end;
                     text_start = self.cursor;
                     consumed = true;
@@ -232,20 +266,26 @@ impl Parser<'_> {
                 items,
                 range: TextRange::new(start, self.cursor),
             },
-            !stop_at_bracket,
+            false,
         )
     }
 
     /// Parses Markup inside `[start, end)` with a nested parser over the
     /// same source; the nested parser's errors merge into this parser's list.
-    fn parse_markup_slice(&mut self, start: usize, end: usize, stop_at_bracket: bool) -> Markup {
+    fn parse_markup_slice(
+        &mut self,
+        start: usize,
+        end: usize,
+        stop_at_bracket: bool,
+        stop_at_pipe: bool,
+    ) -> Markup {
         let mut nested = Parser {
             source: self.source,
             cursor: start,
             end: end.min(self.end),
             errors: Vec::new(),
         };
-        let (markup, _) = nested.parse_markup(stop_at_bracket, false);
+        let (markup, _) = nested.parse_markup(stop_at_bracket, stop_at_pipe, false);
         self.errors.append(&mut nested.errors);
         markup
     }
@@ -268,7 +308,7 @@ impl Parser<'_> {
             return None; // `=foo` is ordinary text.
         }
         let body_start = start + level + usize::from(!after.is_empty());
-        let body = self.parse_markup_slice(body_start, line_end, stop_at_bracket);
+        let body = self.parse_markup_slice(body_start, line_end, stop_at_bracket, false);
         let range = TextRange::new(start, body.range.end.max(start + level));
         let mut end = range.end;
         // The heading consumes its line, including the trailing newline: a
@@ -343,7 +383,7 @@ impl Parser<'_> {
             if body_end == body_start {
                 break; // `- ` with no content stays text (legacy scan parity).
             }
-            let body = self.parse_markup_slice(body_start, body_end, stop_at_bracket);
+            let body = self.parse_markup_slice(body_start, body_end, stop_at_bracket, false);
             let stopped_at_bracket = body.range.end < body_end;
             let body_end_reached = body.range.end;
             rows.push(ListSugarRow {
@@ -375,6 +415,243 @@ impl Parser<'_> {
             },
             cursor,
         ))
+    }
+
+    /// Scans Markup from `start` to `end` until it would stop at `]` or `|`,
+    /// without merging the nested parser's diagnostics into `self`. Returns
+    /// the stopping offset and whether a delimiter was found.
+    fn scan_markup_stop(
+        &self,
+        start: usize,
+        end: usize,
+        stop_at_bracket: bool,
+    ) -> (usize, bool) {
+        let mut nested = Parser {
+            source: self.source,
+            cursor: start,
+            end: end.min(self.end),
+            errors: Vec::new(),
+        };
+        let (_, stopped) = nested.parse_markup(stop_at_bracket, true, false);
+        if nested.cursor > end {
+            (end, false)
+        } else {
+            (nested.cursor, stopped)
+        }
+    }
+
+    /// Parses a contiguous pipe-table run (D0003 table sugar). Returns the
+    /// sugar and the cursor after the run; like heading/list sugar, a closing
+    /// `]` ends the run early. An invalid separator row makes the candidate
+    /// ordinary text (`None`) without consuming anything.
+    fn parse_table_sugar(&mut self, stop_at_bracket: bool) -> Option<(TableSugar, usize)> {
+        let start = self.cursor;
+        let mut cursor = start;
+        let mut header_raw: Option<Vec<TextRange>> = None;
+        let mut alignments = Vec::new();
+        let mut body_raw: Vec<Vec<TextRange>> = Vec::new();
+        let mut end_cursor = start;
+
+        while cursor < self.end {
+            let rest = &self.source[cursor..self.end];
+            let line_len = rest.find('\n').map_or(rest.len(), |index| index);
+            let raw_line = &rest[..line_len];
+            let line = raw_line.strip_suffix('\r').unwrap_or(raw_line);
+            let indent = line
+                .bytes()
+                .take_while(|byte| matches!(byte, b' ' | b'\t'))
+                .count();
+            let content_start = cursor + indent;
+            if self.source.as_bytes().get(content_start) != Some(&b'|') {
+                break;
+            }
+            let line_end = cursor + line.len();
+            let Some(row) = self.scan_table_row(content_start, line_end, stop_at_bracket) else {
+                break;
+            };
+
+            if header_raw.is_none() {
+                header_raw = Some(row.cells);
+            } else if alignments.is_empty() && body_raw.is_empty() {
+                let expected = header_raw.as_ref().map_or(0, Vec::len);
+                if row.cells.len() != expected {
+                    return None;
+                }
+                let Some(parsed) = row
+                    .cells
+                    .iter()
+                    .map(|range| self.table_separator_alignment(*range))
+                    .collect::<Option<Vec<_>>>()
+                else {
+                    return None;
+                };
+                alignments = parsed;
+            } else {
+                body_raw.push(row.cells);
+            }
+
+            if let Some(bracket) = row.early_bracket {
+                end_cursor = bracket;
+                cursor = bracket;
+                break;
+            }
+            end_cursor = row.closing_pipe + 1;
+
+            cursor += line_len;
+            if rest.as_bytes().get(line_len) == Some(&b'\n') {
+                cursor += 1;
+            }
+            if cursor <= line_end {
+                break;
+            }
+        }
+
+        let header_raw = header_raw?;
+        if alignments.is_empty() {
+            return None;
+        }
+        let columns = header_raw.len();
+        if columns == 0 || columns > u16::MAX as usize {
+            return None;
+        }
+        let header = self.parse_table_cells(header_raw, stop_at_bracket);
+        let mut rows = Vec::with_capacity(body_raw.len());
+        for raw_row in body_raw {
+            if raw_row.len() > columns {
+                let start = raw_row
+                    .first()
+                    .map_or(start, |range| range.start);
+                let end = raw_row.last().map_or(start, |range| range.end);
+                self.errors.push(SyntaxError {
+                    message: format!(
+                        "table row has {} cells, expected {columns}",
+                        raw_row.len()
+                    ),
+                    range: TextRange::new(start, end),
+                });
+            }
+            let padding = raw_row.last().map_or(start, |range| range.end);
+            let mut raw_row = raw_row;
+            raw_row.resize_with(columns, || TextRange::new(padding, padding));
+            raw_row.truncate(columns);
+            rows.push(self.parse_table_cells(raw_row, stop_at_bracket));
+        }
+
+        let range = TextRange::new(start, end_cursor.max(start));
+        Some((TableSugar { alignments, header, rows, range }, cursor))
+    }
+
+    /// Scans one table row into raw cell payload ranges. The row starts at
+    /// its opening pipe; the parser-level Markup scanner decides which pipes
+    /// are delimiters, so pipes inside Raw, Code expressions, or escaped by
+    /// `\` are payload, not separators.
+    fn scan_table_row(
+        &self,
+        pipe_start: usize,
+        line_end: usize,
+        stop_at_bracket: bool,
+    ) -> Option<ScannedTableRow> {
+        let mut cells = Vec::new();
+        let mut cursor = pipe_start + 1;
+        loop {
+            let (stop, stopped) = self.scan_markup_stop(cursor, line_end, stop_at_bracket);
+            if !stopped {
+                return None;
+            }
+            match self.source.as_bytes().get(stop) {
+                Some(b'|') => {
+                    cells.push(TextRange::new(cursor, stop));
+                    let after = stop + 1;
+                    if after >= line_end
+                        || self.source[after..line_end]
+                            .bytes()
+                            .all(|byte| matches!(byte, b' ' | b'\t'))
+                    {
+                        return Some(ScannedTableRow {
+                            cells,
+                            closing_pipe: stop,
+                            early_bracket: None,
+                        });
+                    }
+                    cursor = after;
+                }
+                Some(b']') if stop_at_bracket => {
+                    cells.push(TextRange::new(cursor, stop));
+                    return Some(ScannedTableRow {
+                        cells,
+                        closing_pipe: stop,
+                        early_bracket: Some(stop),
+                    });
+                }
+                _ => return None,
+            }
+        }
+    }
+
+    /// Parses raw cell payload ranges into Markup bodies, trimming horizontal
+    /// whitespace at the payload edges (GFM-style cell padding).
+    fn parse_table_cells(
+        &mut self,
+        raw_cells: Vec<TextRange>,
+        stop_at_bracket: bool,
+    ) -> Vec<TableSugarCell> {
+        raw_cells
+            .into_iter()
+            .map(|range| {
+                let trimmed = self.trim_horizontal_range(range);
+                let body = if trimmed.is_empty() {
+                    Markup {
+                        items: Vec::new(),
+                        range: trimmed,
+                    }
+                } else {
+                    self.parse_markup_slice(
+                        trimmed.start,
+                        trimmed.end,
+                        stop_at_bracket,
+                        false,
+                    )
+                };
+                TableSugarCell { body, range: trimmed }
+            })
+            .collect()
+    }
+
+    fn trim_horizontal_range(&self, range: TextRange) -> TextRange {
+        let bytes = self.source.as_bytes();
+        let mut start = range.start;
+        let mut end = range.end.min(self.end);
+        while start < end && matches!(bytes.get(start), Some(b' ' | b'\t')) {
+            start += 1;
+        }
+        while end > start && matches!(bytes.get(end - 1), Some(b' ' | b'\t')) {
+            end -= 1;
+        }
+        TextRange::new(start, end)
+    }
+
+    /// Parses one separator cell: `:?-+:?` with at least one `-`.
+    fn table_separator_alignment(&self, range: TextRange) -> Option<TableAlignment> {
+        let range = self.trim_horizontal_range(range);
+        let source = &self.source[range.start..range.end];
+        let bytes = source.as_bytes();
+        let left = bytes.first() == Some(&b':');
+        let right = bytes.last() == Some(&b':');
+        let inner_start = range.start + usize::from(left);
+        let inner_end = range.end - usize::from(right);
+        if inner_start >= inner_end
+            || !self.source[inner_start..inner_end]
+                .bytes()
+                .all(|byte| byte == b'-')
+        {
+            return None;
+        }
+        Some(match (left, right) {
+            (false, false) => TableAlignment::Default,
+            (true, false) => TableAlignment::Left,
+            (true, true) => TableAlignment::Center,
+            (false, true) => TableAlignment::Right,
+        })
     }
 
     fn parse_wiki_link(&mut self, items: &mut Vec<MarkupItem>) {
@@ -1441,7 +1718,7 @@ impl Parser<'_> {
             BodyForm::Inline
         };
         let payload_start = self.cursor;
-        let (mut markup, closed) = self.parse_markup(true, form == BodyForm::Block);
+        let (mut markup, closed) = self.parse_markup(true, false, form == BodyForm::Block);
         let close = self.cursor;
         let payload_end = if form == BodyForm::Block {
             trim_trailing_framing_newline(self.source, payload_start, close, &mut markup)

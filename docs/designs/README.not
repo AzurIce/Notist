@@ -1,54 +1,90 @@
-= Design Records（分层索引）
+= Design Records
 
-本目录是新一代设计序列，从 D0001 重新开始编号。旧世代设计（D0001–D0016，含 archive 与全部活动记录）已整体归档到 [[vault::old-designs]]，不再治理当前项目；需要历史背景时回到那里。
+本目录是当前世代的设计文档。目录结构直接表达设计分层，README 负责阅读顺序；文档没有编号 ID，历史追溯交给 Git。
 
-编号与位置分离：**D 编号是身份**（append-only，只增不改，被全部引用指向）；**分层（L/V/A）是位置**（只存在于本索引，可随时重排）。分层地图以本文件为单一真相，设计稿自身不写层标签。
+```text
+language/  语言层：与实现宿主无关的语义规范
+world/    Vault 层：模块、引用与运行边界
+host/      宿主层：CLI、LSP、daemon、分析与渲染架构
+archive/   已退休的旧设计；当前为空
+```
 
-== 语言层（规范：纯语义，与实现宿主无关）
+== 阅读顺序
 
-阅读入口：[[vault::designs::D0001-language-overview#最小示例]]（语言概览与最小示例；其中 `#` 嵌入边界规则属 L1 主题）。
+=== 入口
 
-- L1 表面语法与词法：双模式（Markup/Code）、嵌入边界、字面量与字符串、运算符、转义、注释、字面量载荷。—— 现：[[vault::designs::D0007-surface-language-and-core-grammar]]、[[vault::designs::D0001-language-overview]]
-- L2 类型系统：Type/Value 对应、`T?` 与可省略 `=`、赋值与 coercion、`fn(...) -> R`。—— 现：[[vault::designs::D0002-evaluation-model-and-type-system]]（前半，待拆分）
-- L3 词法作用域：节点即环境、let、遮蔽、递归暂缓。—— 现：[[vault::designs::D0012-scope-and-environment]]（独立成篇）
-- L4 调用模型：形参与默认值、positional/named 绑定、实参序、求值顺序、调用点检查。—— 现：[[vault::designs::D0002-evaluation-model-and-type-system#函数类型]]（函数类型节）+ [[vault::designs::D0007-surface-language-and-core-grammar#声明]]（声明节）；待独立成篇
-- L5 求值模型：求值规则、插入规则、求值结果三元组。—— 现：[[vault::designs::D0013-evaluation-model-and-content-sequence]]（独立成篇）
-- L6 成型：元素序列 → 结构树的 fold、inline/block 分类表、列表与节归组、不变量（区间稳定、不删除个体）。—— 现：[[vault::designs::D0011-shaping-and-structure-tree]]（独立成篇）
-- L7 属性表：区间模型、三类条目、属性随值复制、模块级条目。—— 现：[[vault::designs::D0002-evaluation-model-and-type-system#属性表]]（属性表节）+ [[vault::designs::D0006-scope-and-annotation-syntax#属性]]（语义半边）；待独立成篇
-- L8 标注语法：属性列表文法、三种挂载位置、错误恢复、lexer token 区分。—— 现：[[vault::designs::D0006-scope-and-annotation-syntax]]（语法半边）
-- L9 内置构造器与语法糖：构造器签名与校验、四要素规格、sugar budget、暂缓清单。—— 现：[[vault::designs::D0003-builtin-functions-and-syntax-sugar]]（结构良好，保持）
+1. [[vault::designs::overview]]：语言概览与最小示例。
 
-== Vault 层（世界结构）
+=== 语言层
 
-- V1 Vault 边界与发现：Notist.toml marker、发现规则、虚拟模块、资源目录、配置内容模型。—— 现：[[vault::designs::D0004-vault-module-and-scope]]（前半，待拆分）
-- V2 Module 与 ModuleResult：求值单元、bindings ownership。—— 现：[[vault::designs::D0004-vault-module-and-scope]]（待拆分）
-- V3 import：显式 selector、依赖边、环诊断。—— 现：[[vault::designs::D0004-vault-module-and-scope#import]]（import 节，待拆分）；待独立成篇
-- V4 引用寻址与 RefTarget：目标书写形式、scope id、标题默认 id、解析产物（Module/Scope/Resource/External/Missing）、两张跨模块图。—— 现：[[vault::designs::D0004-vault-module-and-scope]]（后半，待拆分）
-- V5 core namespace 与插件边界：core 不可遮蔽、短名 prelude、Custom 元素契约、capability 即权限面、加载/作用域/生命周期。—— 待起草（优先；参考 [[vault::old-designs::D0004-core-functions-and-syntax-sugar]]）
+按概念依赖顺序阅读：
 
-== 宿主层（实现架构，消费语言层与 Vault 层）
+1. [[vault::designs::language::markup-surface]]：Markup 表面语法与 scope 书写形态。
+2. [[vault::designs::language::code-grammar]]：Code 核心语法。
+3. [[vault::designs::language::type-system]]：核心类型系统。
+4. [[vault::designs::language::collection-types]]：集合类型草案，尚未进入 current surface。
+5. [[vault::designs::language::scope-environment]]：词法作用域与值层 scope。
+6. [[vault::designs::language::call-model]]：函数签名与调用模型；rest 部分待实现。
+7. [[vault::designs::language::evaluation-model]]：求值模型与元素序列。
+8. [[vault::designs::language::shaping-structure-tree]]：成型与结构树。
+9. [[vault::designs::language::property-table]]：旁置属性表。
+10. [[vault::designs::language::annotation-syntax]]：标注语法。
+11. [[vault::designs::language::builtin-constructors]]：内置构造器签名与校验。
+12. [[vault::designs::language::syntax-sugar]]：Markup 语法糖规格。
 
-- A1 分析层：VaultEngine/Analyzer View/WorkspaceSnapshot、Source Set、revision、身份、分析管线、查询属于 snapshot、delta、并发发布。—— 现：[[vault::designs::D0009-lsp-and-implementation-architecture]]（前半，待拆分）
-- A2 查询契约：预算/cursor/SnapshotStamp、Selector 与 Citation、Search 四模式、检索单元与索引。—— 现：[[vault::designs::D0008-cli-and-skill]]（契约部分，待拆分）
-- A3 daemon 进程形态：每 Vault 一个 daemon、core request、本地协议与 handshake、View 隔离、snapshot 与前置条件写入、失败重启与 embedded。—— 现：[[vault::designs::D0005-daemon-architecture]]
-- A4 CLI 命令面与 Skill 分发：查询产品形态、命令表、官方 Skill 与内置文档 Vault 的分发。—— 现：[[vault::designs::D0008-cli-and-skill]]（其余，待拆分）
-- A5 LSP 适配：文档同步、position 转换、capabilities、求值安全。—— 现：[[vault::designs::D0009-lsp-and-implementation-architecture]]（后半，待拆分）
-- A6 渲染：元素映射、锚点与引用链接、区间属性投影、source range 与安全。—— 现：[[vault::designs::D0010-rendering-and-preview]]（前半，待拆分）
-- A7 构建与预览：clean URL、资源复制、虚拟目录索引页、staging 原子重建、SSE、网络边界。—— 现：[[vault::designs::D0010-rendering-and-preview]]（后半，待拆分）
+=== Vault 层
 
-== 计划中的记录（待起草；按创建顺序取编号）
+1. [[vault::designs::world::boundary-discovery]]：Vault 边界、marker 与发现规则。
+2. [[vault::designs::world::module-result]]：Module 与 ModuleResult。
+3. [[vault::designs::world::import]]：显式 import 与依赖图。
+4. [[vault::designs::world::reference-ref-target]]：引用寻址与 RefTarget。
+5. [[vault::designs::world::core-namespace-plugin-boundary]]：core namespace、prelude 与插件边界。
 
-- 调用模型（L4）：拆自 [[vault::designs::D0002-evaluation-model-and-type-system]]/[[vault::designs::D0007-surface-language-and-core-grammar]]（实参序裁决 R05 的落点）
-- 属性表（L7）：拆自 [[vault::designs::D0002-evaluation-model-and-type-system#属性表]]/[[vault::designs::D0006-scope-and-annotation-syntax#属性]]
-- core namespace 与插件边界（V5）：并入 Notist.toml 配置内容模型（language version / capability / plugin schema）
-- import（V3）：拆自 [[vault::designs::D0004-vault-module-and-scope#import]]
-- Array/Dict/Union 集合类型：推迟主题，重新设计
-- macro/grammar-extension：未来若支持用户自定义语法时独立设计（函数注册不授予修改 parser 的能力，见 [[vault::old-designs::D0004-core-functions-and-syntax-sugar]]）
+=== 宿主层
 
-== 文档规范
+1. [[vault::designs::host::analyzer-snapshot]]：分析层与 WorkspaceSnapshot。
+2. [[vault::designs::host::query-contract]]：查询契约与 Selector/Citation。
+3. [[vault::designs::host::search-retrieval-index]]：Search 模式与检索索引。
+4. [[vault::designs::host::daemon-process-views]]：daemon 进程与 Analyzer View。
+5. [[vault::designs::host::client-interface-protocol]]：client interface、本地协议与生命周期。
+6. [[vault::designs::host::cli-command-surface-skill-distribution]]：CLI 命令面与官方 Skill 分发。
+7. [[vault::designs::host::lsp-adapter]]：LSP 适配。
+8. [[vault::designs::host::html-renderer]]：HTML 渲染。
+9. [[vault::designs::host::build-preview]]：静态构建与本地预览。
 
-- 一部分一篇：每个可独立命名、独立修订、独立引用的部分 = 一篇设计；粒度 = 语义单元的粒度。
-- 单一真相：每项内容只在一篇定义，他处只引用不重述；分层地图只在本文件。
-- 统一模板：定义 → 形式规则（编号）→ 不变量 → 诊断 → conformance（正/反例）→ 已裁定/待定。
-- 干练：正文 ≤150 行；判定规则用表，状态迁移用 fold 伪代码；散文只写"为什么"，不写"是什么"。
-- 可验证：conformance 例直接翻译为 crate 测试名与断言；每篇可单独 `notist check` 验证。
+== 状态属性
+
+每篇 active design 在文件开头用模块属性声明实现对齐状态：
+
+```notist
+@![implementation = "aligned"]
+```
+
+取值：
+
+| 值 | 含义 |
+| --- | --- |
+| `aligned` | 设计与当前实现一致 |
+| `partial` | 设计是现行方向，但实现尚未完全对齐 |
+| `missing` | 设计尚未进入实现 |
+
+当前已知的非 `aligned` 文档：
+
+- [[vault::designs::language::collection-types]]：`missing`
+- [[vault::designs::language::call-model]]：`partial`（rest 调用模型未实现）
+- [[vault::designs::world::core-namespace-plugin-boundary]]：`partial`（`core::` qualified call 未启用）
+- [[vault::designs::host::lsp-adapter]]：`partial`（Document Symbol 尚未覆盖函数与变量）
+
+位置本身表达治理状态：active 目录中的文档是现行设计；移入 [[vault::designs::archive]] 的文档即退休。Git 是完整历史，不维护编号 ID 或 `Design:` trailer。
+
+== 写作规范
+
+- 一篇文档回答一个概念或一组强耦合概念；目录层级只到 language/world/host 为止，避免深层嵌套。
+- 模块路径一旦发布，不因标题或阅读顺序调整而重命名；拆分或合并时才允许移动，并同步更新全部引用。
+- 使用语义文件名；需要区分同名退休设计时，archive 中可加日期前缀，如 `2026-08-15-type-system.not`。
+- 设计正文解释模型、边界与后果；实现状态只在文件头属性中声明，不写进行文。
+- 保持正文干练；判定规则用表，状态迁移用伪代码；每篇可独立 `notist check` 验证。
+
+== 历史编号
+
+本次重构前，设计文档使用 `D0001`–`D0036` 扁平编号。旧编号与语义路径的映射见 [[vault::designs::archive]]。旧提交仍可通过 Git 查看，不需要在当前树中保留编号壳。

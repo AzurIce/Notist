@@ -1,0 +1,257 @@
+= CLI v3 Clean Interface Redesign
+
+本文是 dated design proposal，并且是对 [[vault::ai::2026-08-15 cli agent navigation and retrieval interface]] 中“保持现有命令面、只做增量”这一结论的推翻。触发点是同一轮审计暴露出的真实感受：当前 CLI 把 token budget、分页、rendering 与 daemon 部署这些实现策略混进了每个语义命令，导致 `--help` 不可读、Agent 需要理解过多与“找信息”无关的参数。本文提出 v3：命令只表达意图，预算与翻页退到运行时，输出只保留模型需要的字段。
+
+== 问题确认
+
+当前 `notist search --help` 约 18 个 option，其中真正表达检索意图的只有 mode/scope/fields/operator/group-by/case/fuzzy 这些；其余是 `--color`、`--no-daemon`、`--format`、`--pager`、`--limit`、`--max-bytes`、`--cursor` 等策略参数。`modules`、`outline`、`references`、`check` 又各自重复同一组 page/budget 参数。结果有三层混乱：
+
+- 同一概念有多个入口：search 的 `--mode` 与 `--exact/--fuzzy/--regex` 三个 alias 并存；`query definition` 与 `references` 又像命令又像参数。
+- 预算策略侵入语义面：Agent 要区分 limit、max-bytes、snippet-bytes、cursor 四件事，还要理解 page/budget/coverage 三组 JSON 元数据。
+- 命令面不分层次：导航、编辑、构建、daemon、lsp、index、skill、debug、export 平铺在顶层，默认 discovery 边界只能靠 Skill 记忆。
+
+这不是“再加一个 `--exclude-scope` 就能解决”的问题。需要把 CLI 重新分成三层：语义命令、运行时策略、输出投影。
+
+== 设计目标
+
+- 命令 help 只回答“我想做什么”，不回答“这次返回多少字节”。
+- 翻页能力保留，但从每个命令中移除；对调用者只有一个 `next`。
+- 检索命令按认知模式分成 recall 与 precision，而不是一个 `--mode` 枚举。
+- JSON 输出从“调试协议”收敛为“模型真正需要的最小结果”。
+- 普通命令不出现 canonical absolute path、不出现 page/budget/coverage 三件套。
+- 完整数据只有 export；预算仍是硬保证，但由运行时 policy 执行。
+
+== v3 命令面
+
+=== 顶层分组
+
+```text
+Explore
+  status modules search locate outline read refs definition
+Validate & edit
+  check edit
+Artifacts
+  build preview export
+Runtime & tooling
+  index daemon lsp skill
+Common
+  next
+```
+
+所有命令仍共享 Vault discovery 规则：`[ROOT]` 是最后一个 positional，默认 `.`。
+
+=== Explore
+
+```text
+notist status [ROOT]
+
+notist modules [ROOT] [--prefix MODULE] [--kind any|source|virtual]
+
+notist search <QUERY> [ROOT]
+  [--fuzzy]
+  [--scope MODULE]...
+  [--exclude-scope MODULE]...
+  [--field title|heading|id|module|path|tag|body|raw|comment]...
+  [--any]
+  [--group source|section|match]
+
+notist locate <PATTERN> [ROOT]
+  [--regex]
+  [--ignore-case]
+  [--scope MODULE]...
+  [--exclude-scope MODULE]...
+  [--field ...]...
+  [--group source|section|match]
+
+notist outline <MODULE|PATH> [ROOT] [--depth 1..6]
+
+notist read <MODULE|PATH|MODULE#ID> [ROOT]
+  [--from-line N --lines N | --byte-range START..END]
+
+notist refs <MODULE|MODULE#ID> [ROOT]
+  [--outgoing | --both]
+  [--definitions]
+
+notist definition <PATH> <UTF8_BYTE_OFFSET> [ROOT]
+  [--expected-fingerprint HASH]
+```
+
+设计解释：
+
+- `search` 只做 ranked recall：默认 lexical BM25，`--fuzzy` 打开纠错。默认 source grouping；需要 section 或逐处匹配时用 `--group`。
+- `locate` 只做 precision：默认 literal substring，`--regex` 打开正则。默认 match grouping，按 source order 返回。它取代 `search --mode exact|regex`。
+- `--exclude-scope` 与 `--scope` 一样按 ModulePath 段边界匹配、可重复、进入 query fingerprint；常用组合是 `--scope vault::designs --exclude-scope vault::designs::archive`。
+- `--field` 取代 `--fields`，仍只控制匹配字段，不控制投影；未知字段立即 usage error。
+- `--operator all|any` 降为布尔 `--any`：默认 all，少一个需要记取值的参数。
+- `refs` 是 references 的短名；`--outgoing/--both` 取代 `--direction` 枚举，默认 incoming；`--definitions` 取代 `--include-definition`。
+- `query definition` 提升为 `definition`，不再制造一个空心的 `query` 父命令。
+
+=== Validate & edit
+
+```text
+notist check [ROOT] [--scope MODULE] [--summary] [--severity error|warning|info]
+notist edit replace <PATH> <START> <END> <REPLACEMENT> --expected-fingerprint HASH --idempotency-key KEY [--yes]
+notist edit rename <FROM> <TO> --expected-fingerprint HASH --idempotency-key KEY [--yes]
+```
+
+check 始终完整分析；detail 页仍受运行时 budget，但没有 limit/max-bytes/cursor 参数，继续诊断用 `next`。
+
+=== Artifacts
+
+```text
+notist build [ROOT] --output DIR [--clean]
+notist preview [ROOT] [--host IP] [--port N] [--open]
+notist export snapshot|diagnostics|outline|search <...> [ROOT] --output FILE [--export-format json|jsonl]
+```
+
+`export search` 是新增的显式全量检索 artifact，承接“必须看到全部匹配”的任务；它写文件、stdout 只回 summary 和 checksum。
+
+=== Runtime & tooling
+
+```text
+notist index status|rebuild [ROOT] [--wait]
+notist daemon [ROOT]
+notist daemon stop [ROOT]
+notist lsp
+notist skill init <OUTPUT> [--force]
+```
+
+这些命令不在 Agent 默认 discovery 中，但保留清晰的归属。
+
+=== 继续读取：只保留一个 next
+
+所有 collection 命令都不再接受 `--limit/--max-bytes/--cursor`。第一页返回 `next` token；调用者用：
+
+```text
+notist next <TOKEN>
+```
+
+取得下一页。`next` 不是新查询，不携带业务参数；它只表示“继续上一个未完成的页面”。
+
+实现建议：
+
+- daemon 为每个 View 维护有界 page-session LRU：token 是随机 handle，绑定 daemon instance、View、source-set fingerprint、原 query fingerprint 与 offset。
+- token 过期、daemon 重启或 source 变化时返回 `cursor_expired` / `cursor_stale`，hint 是“重跑原查询”。
+- `--no-daemon` 是隔离运行模式，不保证跨进程 `next`；该模式下建议只用第一页或 export。
+- 对外 token 仍是 opaque，不能当权限凭证。
+
+这样“翻页”从七个命令的 flag 列表里消失，变成一个全局动作；Agent 只需要学一次。
+
+=== 全局参数
+
+```text
+notist [--json] [--no-daemon] [--color auto|always|never] [--pager auto|always|never] <COMMAND>
+```
+
+- `--json` 取代 `--format text|json`；默认 text。
+- `--json` 与 lsp/daemon/preview 的协议输出冲突时仍是 usage error。
+- 子命令 help 默认不重复展示这四个全局参数；它们只在顶层 help 和“全局参数”一节说明。实现上可以继续 global parse，但 help heading 与渲染要隐藏。
+- 需要调整页大小的专家通过 runtime policy（环境变量或 Notist.toml 查询节）设置，不进入命令语法。
+
+== v3 输出：最小 JSON
+
+=== Collection
+
+```json
+{"schemaVersion":3,"command":"search","ok":true,"result":{
+  "items":[],
+  "next":"opaque-or-null",
+  "complete":true,
+  "matched":42,
+  "hints":[]
+}}
+```
+
+- `next` 为 null 表示没有下一页；`complete` 表示查询是否覆盖了声明的 scope。
+- `matched` 只在能廉价得到时返回：lexical/fuzzy 的 module candidate count、完整扫描后的 exact/regex count；不能廉价得到时省略。
+- 删除 page/budget/coverage/snapshot。location 仍带 module、relative path、byte/line range、id 与 source fingerprint，因此 citation、edit precondition 与下次 selector 都不缺。
+- 需要 budget 观测时使用 `notist next` 之外的新 debug/stats 命令或 `NOTIST_LOG_QUERY_BUDGET=1`；普通 Agent 永远不需要看这些字段。
+
+=== Single result
+
+```text
+status   -> {vault, snapshot_stamp, sources, modules, diagnostics, index}
+read     -> {location, source, next, complete}
+definition -> {definition: location|null}
+edit     -> {proposal|applied, fingerprints, diagnostics}
+check    -> {summary, items, next, complete}
+```
+
+=== Text
+
+Text 只显示当前页和一条明确的续读指令：
+
+```text
+8 sources, more available.
+continue: notist next eyJ...
+```
+
+不再打印 applied limit、requested bytes 或 stop_reason。人想调页大小属于 runtime policy，不是每次命令的认知负担。
+
+=== Error
+
+JSON error envelope 不变：`{schemaVersion, command, ok:false, error:{code,message,retryable,hint,candidates}}`，写到 stderr；exit status 与 error code 保持不变。这样 parser 不需要同时理解两种成功 shape。
+
+== 迁移与兼容
+
+v3 是有意 breaking change：
+
+- schemaVersion 从 2 升到 3；`result.items` 保留，`page/budget/coverage` 消失。
+- `--format json` 先作为 `--json` 的 deprecated alias 保留一个 release，再删除。
+- `references` 先作为 `refs` alias 保留一个 release；`query definition` 先作为 `definition` alias 保留一个 release；`search --mode/--exact/--regex/--limit/--max-bytes/--cursor` 不保留普通 alias，只接受隐藏 flag 供迁移脚本过渡。
+- Skill 与 [[vault::cli]] 在同一 release 切换到 v3；旧教程不进入新帮助。
+
+== 需要同步修订的规范
+
+- [[vault::designs::host::cli-command-surface-skill-distribution]]：命令面、分组、`next`、预算策略与 Skill 分发边界。
+- [[vault::designs::host::query-contract]]：PageRequest 从 CLI 参数层下沉到 core/runtime；公开 JSON 改为 next/complete/matched。
+- [[vault::designs::host::search-retrieval-index]]：search/locate 两个 CLI 投影；`--mode` 不再是 CLI 规范；字段与排序语义不变。
+- [[vault::designs::host::client-interface-protocol]]：新增 ContinuePage core request 或等价 page-session 语义。
+- [[vault::ai::2026-08-15 cli agent navigation and retrieval interface]]：其中“保持命令面、增量补 flag”的结论被本文取代；G1–G9 的检索正确性发现仍有效，应进入 v3 core 实现。
+
+== 实施顺序
+
+=== Phase A：语义面清理
+
+- 移除 `query` 父命令，新增 `definition`。
+- `references -> refs`，flag 改 `--outgoing/--both/--definitions`。
+- search/locate 拆分；`--mode` 与三个 alias 从公开 help 移除。
+- 全局参数从子命令 help 隐藏，顶层 help 分组。
+- 帮助文本写清每个命令的默认行为与下一跳。
+
+=== Phase B：预算与翻页下沉
+
+- 从所有 collection 命令删除 `--limit/--max-bytes/--cursor/--snippet-bytes`。
+- 实现 `next` 与 daemon page-session LRU；固定 defaults/hard caps 表作为版本化 runtime policy。
+- JSON v3 minimal envelope；`export search` 作为全量检索 artifact。
+- 错误码新增 `cursor_expired`；`cursor_stale` 语义不变。
+
+=== Phase C：检索正确性
+
+- 执行 [[vault::ai::2026-08-15 cli agent navigation and retrieval interface]] 的 G1/G2/G3/G4/G5/G8：节范围、module 级 AND、authority prior、exact/lexical 字段 parity、matched count、section context。
+- ranking/index/cursor version 同步提升，旧索引与旧 token 拒绝而不是猜测。
+
+=== Phase D：Skill 与验收
+
+- Skill 改为：search 找候选 -> read 取证；locate 找字面/正则；需要更多才 `next`；穷举与否定必须 complete；完整数据 export。
+- 用固定任务/模型/seed 重跑成本与 pass@1，比较 v2 与 v3 的 per-task bytes 和调用轮数。
+- 明确验收：子命令 help 中没有任何 budget/paging/rendering flag；所有 collection 都只有一个 `next` 续读；Agent 不需要接触 page/budget/coverage。
+
+== 验收
+
+- `notist search --help` 只显示 query/root/--fuzzy/--scope/--exclude-scope/--field/--any/--group。
+- `notist modules/outline/read/refs/check --help` 不显示 limit/max-bytes/cursor/format/color/pager/no-daemon。
+- 每个有下一页的 JSON result 只含 items/next/complete/matched/hints；`next` 可被 `notist next` 直接消费。
+- 同一 snapshot 连续 `next` 无遗漏无重复；source 变化返回 cursor_stale；daemon 重启返回 cursor_expired。
+- 正向事实任务默认路径 search -> read；否定任务 read complete 页或 export search。
+- v2 的 14 个概念查询在 v3 正确性修复后 target 全部进入 top-10。
+- 所有普通 JSON 仍满足固定服务端预算，但预算不再出现在公开 result 中。
+
+== 明确不做
+
+- 不把 `--limit/--max-bytes/--cursor` 重新加回语义命令。
+- 不新增 `ask` 自然语言答案命令。
+- 不做 agent/human profile，不根据 TTY 改变查询语义。
+- 不在 `next` 之外提供第二种翻页语法。
+- 不缩写 JSON key，不把 tuple record 当公开 schema。
+- 不在 ranking/预算契约稳定前引入 embedding、hybrid 或 reranker。

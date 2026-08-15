@@ -1,0 +1,376 @@
+= CLI Agent Navigation and Retrieval Interface
+
+本文是 dated research：调查 Notist CLI 面向 Agent 的最佳接口形式。它不替代 [[vault::designs::host::cli-command-surface-skill-distribution]] 与 [[vault::designs::host::query-contract]]；本文的结论是它们的下一轮增量修订建议，以及对当前实现的可复现实测记录。最终稳定接口仍以 [[vault::cli]] 与当前 `notist --help` 为准。
+
+== 摘要
+
+Notist CLI 对 Agent 的最佳形态不是“更聪明的 `ls`/`rg` 替代品”，而是一组数量很少、语义边界清晰的导航原语：
+
+```text
+status -> modules -> search -> outline -> read -> references -> check -> edit
+```
+
+每个命令只回答一个问题，每条结果都携带足以发起下一跳的稳定句柄（ModulePath、`module#id`、byte range、fingerprint、cursor）。当前 v2 命令面已经具备这个骨架；本轮实测发现四个会直接伤害“更快、更准”的实现差距：默认 `search` 对多概念查询的单位级 AND 会漏掉目标模块；归档文档经常压过现行规范；`read module#标题` 只返回标题行而不是整节；exact 模式的 `--fields id` 与 lexical 索引语义不一致。建议在保持现有命令面的前提下做一次 ranking v4 与 schema v3 增量，而不是新增 `ask`、全库 `outline` 或 MCP 式聚合工具。
+
+== 结论先行
+
+- 命令面保持现状：`status / modules / search / outline / read / references / query definition / check / edit` 已经是对的认知模型；不需要 `ask`、`grep-raw`、全库 `inspect` 或任何“一次给全上下文”的工具。
+- 最有价值的 Notist 差异是语义寻址：ModulePath、标题默认 id、RefTarget、annotation/property、snapshot/fingerprint。CLI 应继续把这些作为一等公民，而不是退回 path/line/regex。
+- 下一轮优先级：修复节选择器语义（P0）、检索改为模块级候选生成 + 单元级证据排序（P0）、默认排序引入来源权威先验（P0/P1）、公开 snapshot stamp 与命中 section 上下文（P1）、补齐 `--exclude-scope` 与 coverage 计数（P1）。
+- 不新增 Agent/Human profile，不新增 MCP，不把自然语言问答端点伪装成 CLI。
+
+== 调研材料
+
+=== Notist 仓库内先例
+
+- [[vault::ai::2026-07-26 agent-friendly CLI output and Notist improvements]]：720 次 Agent run 成本取证；确立“普通查询必须硬上界，全量只能显式 export”的产品原则。
+- [[vault::ai::2026-07-27 agent-facing CLI and MCP interface redesign]]：把成本取证收束为统一 PageRequest/QueryPage、cursor、selector、typed error 与 CLI/MCP 分工。
+- [[vault::ai::2026-07-27 cli token cost and search ergonomics evaluation]]：默认预算从 20×512B 收紧到 8×256B，引入 source/section/match grouping；同一 query 从 23,974 B 降到 6,647 B。
+- [[vault::ai::2026-08-14 implementation design audit and rulings]]：确认 service/CLI 层已对齐设计序列，并完成 RefTarget、标题默认 id、cursor v3、MCP 移除等收敛。
+- [[vault::ai::2026-08-15 design record separation audit]]：设计文档完成 L/V/A 分离；本报告基于分离后的 D0023/D0024/D0032/D0035/D0036。
+- [[vault::designs::host::query-contract]]：ordinary query / human rendering / full export 三形态，PageRequest 与 selector/cursor 契约。
+- [[vault::designs::host::cli-command-surface-skill-distribution]]：当前 CLI 命令面、Skill 分发与 docs-as-Vault。
+- [[vault::designs::host::search-retrieval-index]]：四 search mode、字段权重、SearchUnit、Tantivy 索引边界。
+- [[vault::designs::host::client-interface-protocol]]：core request 到 CLI/LSP 的投影，snapshot 与写入前置条件。
+
+=== 外部对照（转引自上述 dated notes）
+
+本轮不重复整篇综述，只保留与“CLI 最佳接口形式”最相关的结论：
+
+- QMD：search 只给候选 + docid + 短 snippet；正文必须二次 get。Notist 已采用 search -> read 的两段式。
+- GitHub CLI：默认小 limit，字段投影应在 query 构造前发生；unknown field 立即报错。Notist 已采用固定小而稳定的 record。
+- AWS/Kubernetes：cursor 必须 opaque 且绑定一致 snapshot；Notist 已采用 versioned cursor。
+- ripgrep/ast-grep/Sourcegraph：match、files、count、stream 是不同投影；“少显示”与“少查询”必须是两个可观察概念。Notist 需要补齐 lexical 的廉价 count/coverage 暴露。
+- RTK：截断必须显式、可恢复、可观测；Notist 已采用 PageInfo/BudgetInfo/CoverageInfo。
+- Repomix：大产物先给 metadata + handle，再按 range 读取；Notist 已采用 read window + cursor。
+
+=== 方法
+
+- 审计当前 `crates/notist-cli`、`crates/notist-service` 与 [[vault::cli]] 的一致性。
+- 用加入本文前的 75 source docs Vault 实测所有普通命令的 JSON envelope 大小与典型耗时。
+- 模拟 6 个 Agent 查询轨迹和 14 个“概念 -> 设计文档”检索查询，记录目标模块排名。
+- 与 `ls`/`find`/`grep` 的同任务输出字节数对照，说明结构信息与 token 成本的关系。
+
+== 为什么不能只做更好的 ls/rg
+
+普通 shell 工具的优势是组合与普适，劣势是它们只能看见文件、字节和行。Notist Agent 的很多任务正好落在 shell 工具看不见的结构上：
+
+- “哪些模块属于 active designs，哪些已归档？”`ls` 只能给文件名，无法给出 ModulePath、kind、title 与引用身份。
+- “谁引用了 `D0036#Client Interface`？”`grep` 只能猜测 wiki 文本，无法复用已解析的 Reference graph。
+- “读属性表这一节，不要读全文。”`sed` 需要 Agent 先猜行号；Notist 的 `read module#属性表` 应是稳定节地址。
+- “修改后有没有破坏引用？”`grep` 没有诊断模型；Notist check 直接给出 typed diagnostics 与 fingerprint。
+
+因此最佳接口不是把 `ls`/`rg` 的 flag 抄进 Notist，而是给 Agent 一组“语义文件系统原语”。每个原语对应一次知识库导航动作，并且必须同时满足：
+
+- 候选与证据分离：search/references 只负责发现，read 才提供 authored evidence。
+- 每次输出都有上界和续读句柄：没有无界页，也没有不可恢复的 `head -n`。
+- 身份稳定：跨次调用引用同一 snapshot、source fingerprint 与 ModulePath。
+- 失败可编程：exit status + typed error code，而不是解析 message 子串。
+
+== 当前接口审计
+
+=== 命令面
+
+当前命令面与 [[vault::designs::host::cli-command-surface-skill-distribution]] 基本一致：
+
+```text
+status [ROOT]
+modules [ROOT] [--prefix MODULE] [--kind any|source|virtual]
+search <QUERY> [ROOT] [--mode lexical|exact|fuzzy|regex] [--scope MODULE]... [--fields ...]
+outline <MODULE|PATH> [ROOT] [--depth 1..6]
+read <MODULE|PATH|MODULE#ID> [ROOT] [--from-line N --lines N | --byte-range S..E]
+references <MODULE|MODULE#ID> [ROOT] [--direction incoming|outgoing|both] [--include-definition]
+query definition <PATH> <UTF8_BYTE_OFFSET> [ROOT] [--expected-fingerprint HASH]
+check [ROOT] [--scope MODULE] [--summary] [--severity error|warning|info]
+edit replace|rename ...
+index status|rebuild ...
+debug inspect ... / export ... / build ... / preview ... / skill init ... / daemon ... / lsp
+```
+
+Agent 的默认 discovery 应只包含前 8 项；`debug/export/build/preview/daemon/lsp` 是显式维护或运行时能力，不应进入 Skill 的日常路径。
+
+=== 输出契约审计
+
+JSON envelope、QueryPage、typed error 与 exit status 已落地：
+
+```json
+{"schemaVersion":2,"command":"search","ok":true,"result":{"snapshot":{...},"items":[...],"page":{...},"budget":{...},"coverage":{...}}}
+```
+
+当前实现亮点：
+
+- 默认 search 8 items / 16 KiB / 256 B snippet；完整 envelope 实测约 6.9 KiB。
+- cursor v3 是紧凑 base64url payload，绑定 operation、Vault、View、daemon instance、source fingerprint 与 query fingerprint。
+- 错误分为 usage(2)、可纠正 query error(3)、service unavailable(4)、edit conflict(5)、internal(70)；JSON 错误 envelope 写到 stderr。
+- human text 与 JSON 共享同一 logical result；format 不改变匹配集合与 cursor。
+
+=== 与 shell 工具的实际对照
+
+同一 docs Vault 上的同任务输出：
+
+```text
+任务                           shell 工具                      Notist 普通查询
+列出 designs 模块              ls docs/designs               modules --prefix vault::designs
+                              约 910 B，只有文件名           默认页 5.3 KiB，含 ModulePath/title/kind/fingerprint
+找 workspace snapshot 候选     grep -Rn ... docs             search "workspace snapshot"
+                              10 行 / 1,538 B               8 个候选 / 6.9 KiB，按 source 去重并带 range/cursor
+读 D0036 开头                  sed -n '1,120p' ...           read module --from-line 1 --lines 120
+                              约 8.1 KiB 纯文本             9.1 KiB，含 location/fingerprint/citation
+```
+
+字节数上 Notist 并不总是更小，但它的输出包含下一步所需的全部语义句柄；Agent 不必再解析文件名、猜测行号或重扫全文。成本优势来自任务级少走弯路，而不是单命令字节更短。
+
+=== 实测：6 条 Agent 轨迹
+
+以下轨迹使用 `--no-daemon --format json`，目标是在加入本文前的 75 source docs Vault 中定位信息：
+
+```text
+T1 CLI 命令面是什么：
+   search "CLI command surface" -n 5          4.4 KiB，D0024 排第 2
+   read 'vault::designs::D0024-...#CLI 命令面' 899 B，但目前只返回节标题（G1）
+T2 D0036 被谁引用：
+   references vault::designs::D0036-...       5.4 KiB，7 条精确 backlinks
+T3 属性表语义在哪：
+   search "annotation table" -n 5             4.4 KiB，D0017 排第 3
+   read 'vault::designs::D0017-...#属性表'     835 B，但目前只返回标题行（G1）
+T4 当前有多少 active design 模块：
+   modules --prefix vault::designs -n 100     8.9 KiB，38 条完整列表
+T5 定位 exact 字段出现处：
+   search --exact "stop_reason" -n 8          6.3 KiB，8 个精确 range
+T6 证明 active designs 不再包含 MCP：
+   search "MCP" --scope vault::designs -n 20  876 B，0 hit 但 scope 包含 archive，不能直接支撑结论
+```
+
+结论：导航骨架有效；但 T3 暴露节读取语义缺口，T6 暴露 scope 无法表达排除，且默认 ranking 仍会把 dated research 与 archive 排在现行规范之前。
+
+=== 检索基准：14 个概念查询
+
+用 `search <title-style query> docs -n 10` 检查目标现行设计文档是否进入首页：
+
+```text
+目标模块                    目标首页排名
+D0024 CLI surface                  2
+D0023 query contract               absent
+D0035 daemon                       1
+D0032 search modes                 1
+D0022 RefTarget                    1
+D0017 property table               absent
+D0020 module result                absent
+D0021 import                       3
+D0030 builtins                     1
+D0031 syntax sugar                 absent
+D0025 analyzer snapshot            2
+D0027 html renderer                1
+D0018 annotation syntax            1
+D0016 core type system             1
+```
+
+10/14 进入 top-10，7/14 为第一条；4 个 absent 的查询都包含 3 个以上概念词，根因不是没有内容，而是当前 BM25 把 `operator=all` 作用在单个检索单元（通常是段落）上：`query + contract + cursor` 必须落在同一段落，而 D0023 的标题是 Query Contract、正文才讲 cursor，因此整个模块被漏掉。另有 2 个查询的现行文档被 archive/dated AI 文档压在下面。
+
+== 发现的问题
+
+=== G1 标题默认 id 的节范围错误
+
+`read 'vault::designs::language::property-table#属性表'` 当前只返回标题行（byte range 237..249），而不是 [[vault::designs::host::cli-command-surface-skill-distribution]] 承诺的“对应节”。根因是标题默认 id 的 scope range 来自 heading range 本身，没有展开到下一个同级/上级 heading 前的节子树；`references --direction outgoing` 使用同一 selection，因此对节的选择也会漏掉节内引用。修复应在 core 复用 outline 已经计算的 subtree range：heading default id 的 selection = 标题起点 .. 下一同级或更高级 heading 起点（或 module 末尾）；显式 scope id 继续使用 annotation 的 scope_range。
+
+=== G2 多概念 AND 作用在 unit 而非 module
+
+`search "query contract cursor"` 不返回 D0023，`search "daemon shared state"` 零结果。当前实现把每个 paragraph/heading/raw 切成一个 Tantivy document，`operator=all` 要求所有 term 出现在同一个 unit。对 Agent 而言，检索的单位应是“候选模块或节”，证据单位才是“具体 unit”。建议 ranking v4 改为两阶段：
+
+```text
+candidate generation: 所有 term 必须在同一 Module 的任意字段中出现（operator=any 反向）
+ranking: 对每个候选 Module 取最佳匹配 unit 的 BM25 作为证据分
+grouping: source 返回该 Module 最佳 unit；section 返回每个最近 Heading 下的最佳 unit；match 返回每个 unit/region
+```
+
+`score` 仍对外保持固定精度，不解释成概率。
+
+=== G3 默认排序缺少来源权威先验
+
+当前纯 BM25 让 `vault::designs::archive::D0008-...` 和 `vault::old-designs::archive::D0011-...` 压过现行 D0023/D0025；dated AI 文档也会压过当前规范。对任意用户 Vault 不应按路径魔法排序，但 Notist 语言已经提供更好的通用信号：模块属性（`@![...]`）。建议把 `status=archived`、`status=draft`、`doc-kind=reference` 等模块属性纳入索引字段与 ranking version，定义可解释的来源先验；官方 docs 通过模块属性表达 authority，其他 Vault 用同一机制自描述。过渡期可在官方 docs Vault 的 ranking profile 中给 active designs/reference docs 一个温和 boost，并明确这是 profile 不是语言语义。
+
+=== G4 exact scan 与 lexical index 的字段语义不一致
+
+- `search --exact "D0036-client-interface-and-protocol" --fields id` 返回 0 hit，而 lexical `--fields id` 命中标题默认 id。exact scanner 只索引显式 annotation label，漏掉 `workspace.module_heading_default_ids`。
+- `--fields module` / `--fields path` 的 exact/regex 命中把 location 放在 source byte 0..0，excerpt 从文件开头截取，引用位置与匹配字段不对应。建议 synthetic field 命中锚定到 module title 的 range（无 title 时才使用 0..0 并显式标记 synthetic）。
+
+=== G5 廉价计数未暴露
+
+lexical 查询已经执行 `Count`，但 QueryPage 没有返回 `matched_sources` 或 `total_matches`。Agent 做“是否有 / 是否不存在”类判断时必须翻页到 `coverage.complete=true`，即使总数很小。建议 lexical/fuzzy 页在 coverage 中返回 `matched_sources`（以及可廉价得到的 `matched_units`）；exact/regex 仅在完整扫描完成时返回，否则省略。
+
+=== G6 scope 只有正向前缀，无法排除 archive
+
+`--scope vault::designs` 会包含 `vault::designs::archive`。对“现行规范是否提到 X”这类否定/穷举任务，Agent 无法只圈住 active designs。建议增加可重复的 `--exclude-scope MODULE`（段边界语义，进入 query fingerprint），并在 Skill 中教常用组合：
+
+```shell
+notist search "MCP" docs --scope vault::designs --exclude-scope vault::designs::archive
+```
+
+=== G7 公开 snapshot stamp 暴露 canonical root
+
+所有 QueryPage 的 `snapshot.vault.canonical_root` 都会重复序列化机器绝对路径；这违反“machine result 默认 relative path”的取向，也让同一 Vault 在不同机器/checkout 下输出不稳定。建议公开投影改为：
+
+```text
+SnapshotStamp {
+  daemon_instance
+  vault_fingerprint
+  view_kind
+  view_id
+  revision
+  source_fingerprint
+}
+```
+
+`canonical_root` 只保留在 status、daemon 与维护操作中。内部 CoreReply 仍可携带完整 VaultIdentity，CLI 投影层不再把它放进普通查询页。
+
+=== G8 命中缺少 section 上下文
+
+SearchHit 有 range、excerpt 与 matched_field，但没有最近 Heading 的 id/title。Agent 面对中间段落的 excerpt 时仍要再跑 outline 才能判断该候选属于哪一节。建议 SearchHit 增加可选 `section_id` / `section_title`（最近 Heading，小字段、UTF-8 有界），与 `group_by=section` 使用同一 section 判定。
+
+=== G9 help 与默认值仍可更可发现
+
+`read --from-line/--lines` 未显示默认 120 行与 1000 行上限；`outline --depth` 未显示 1..=6；`check --scope` 未说明段边界。Agent 依赖 `--help` 作为当前版本真相，help 应像 search 一样写清 default/maximum 与互斥规则。
+
+== 推荐接口形式
+
+=== 保持的认知模型
+
+推荐继续把 CLI 组织成“导航原语 + 页面契约”，不引入聚合问答命令：
+
+```text
+status      这是哪个 Vault、什么 snapshot、index 是否 ready
+modules     有哪些稳定逻辑地址（ls 的语义版）
+search      哪些候选可能相关（rg 的语义版，候选不是证据）
+outline     这个 Module 的结构长什么样
+read        按稳定地址读 authored evidence
+references  谁链接谁（无需 grep wiki 文本）
+query definition  这个 offset 的定义在哪
+check       当前状态是否健康
+edit        如何安全变更
+```
+
+每个原语的产品约束：
+
+- 默认页必须小；扩大用 `--limit`/`--max-bytes`，上限由服务端钉死。
+- 未完成必须给 cursor；cursor 之后只能改 page 窗口，不能改 scope/filter/grouping/sort。
+- 所有 location 带 relative path、byte range、line range、fingerprint 与可选 id。
+- 候选命令的 excerpt 必须标注 `excerpt_truncated`；回答事实前 Skill 必须要求 read。
+- 普通查询不返回 canonical absolute path，不返回重复 full source。
+
+=== 命令面增量
+
+在 [[vault::designs::host::cli-command-surface-skill-distribution]] 的命令面上做最小增量：
+
+```text
+search <QUERY> [ROOT]
+  [--exclude-scope MODULE]...
+  // 新：排除一个精确 ModulePath prefix；与 --scope 同时过滤，段边界匹配
+  // coverage.matched_sources/matched_units：lexical/fuzzy 始终给出，exact/regex 完整扫描后给出
+
+read <MODULE|PATH|MODULE#ID> [ROOT]
+  // 修复：module#heading-default-id 读取整节子树；显式 @id 仍读 scope_range
+
+references <MODULE|MODULE#ID> [ROOT]
+  // 修复：带 heading-default-id 的 outgoing 覆盖整节引用
+```
+
+不建议新增：
+
+- `notist ask "<question>"`：会引入模型端点、幻觉与不可审计成本；Agent 需要的是可验证 evidence。
+- 全库 `outline` 回归普通查询：discovery 用 modules/search，完整 artifact 用 export。
+- `--all`、`--profile agent`、JSON key 缩写、gzip 输出：都破坏预算或语义可读性。
+
+=== Search ranking v4
+
+建议下一个 ranking version 同时解决 G2/G3/G8：
+
+```text
+bm25-v4
+  candidate scope       Module
+  boolean conjunction   per Module
+  evidence unit         best matching SearchUnit
+  field weights         沿用 v3，另加 module attribute authority field
+  section metadata      最近 Heading id/title 进入 hit
+  cursor fingerprint    包含 ranking/index/tokenizer/schema version
+```
+
+公开语义仍与 [[vault::designs::host::search-retrieval-index]] 一致：lexical 是 fielded token match + BM25，默认 `operator=all`；只是把“all 作用域”从 unit 修正为 module candidate，并把排序依据从单个 unit document 改成 module 聚合。exact/fuzzy/regex 的模式语义不变。
+
+=== Output schema v3 的边界
+
+只做两类低风险投影变化，不做字段缩写：
+
+- 普通 QueryPage 的 snapshot 改用 G7 的公开 SnapshotStamp。
+- outline/read 这类单 Module 结果增加可选 `source` context，把重复的 module/path/fingerprint 从每条 item 提升到页级；search/references 暂不强制 source table，待 schema v3 benchmark 证明任务成功率不降后再说。
+- SearchHit 增加 `section_id`/`section_title`。
+
+这仍然是一次显式 schemaVersion 3 迁移；release note 应像 07-27 redesign 一样明确 breaking change 和迁移窗口，不通过隐藏字段悄悄混用。
+
+=== Skill 需要同步的教学
+
+- 查询词用 2–4 个判别性概念，不用完整自然语言问句；概念词太多时先去掉一个词或改用 exact。
+- 问现行规范：`--scope vault::designs --exclude-scope vault::designs::archive`；问历史：`--scope vault::old-designs` 或 archive。
+- search excerpt 只选候选；read 之后才下事实结论。
+- 否定/穷举：必须沿 cursor 读到 `coverage.complete=true`；lexical 页的 `matched_sources` 可用于提前判断，但只有 complete 才能作为 absence 证据。
+- 使用 daemon 默认路径；`--no-daemon` 只用于隔离，不改变分析语义。
+- JSON 成功在 stdout，typed error 在 stderr；exit status 与 error code 是程序恢复依据，不解析 message。
+
+== 实施优先级
+
+=== P0：正确性修复
+
+- G1：core 提供 section range 解析；read/references/outline 共用。
+- G2：module 级候选生成 + unit 级证据排序，更新 ranking version 与 cursor fingerprint。
+- G4：exact scanner 与 lexical index 的 id/heading/synthetic field 语义对齐。
+- 回归：`read module#标题` 返回完整节、无重叠、无遗漏；`references --direction outgoing module#标题` 覆盖节内引用；exact/lexical 对同一字段同一 query 的候选集合可解释一致。
+
+=== P1：检索质量与可观测性
+
+- G3：模块属性进入索引与 ranking；官方 docs authority profile 或标注落地。
+- G5：coverage 暴露 matched counts。
+- G6：`--exclude-scope`。
+- G8：SearchHit section context。
+- G9：补齐 help 默认值与互斥规则。
+
+=== P2：schema v3 成本优化
+
+- G7：公开 SnapshotStamp 去 canonical root。
+- outline/read 单源 context 去重；benchmark 证明字节下降且 pass@1 不降。
+- 在固定任务、固定模型、固定 seed 上重跑 [[vault::ai::2026-07-26 agent-friendly CLI output and Notist improvements]] 式成本验收；不把 bytes/4 当账单 token。
+
+== 验收
+
+=== 正确性
+
+- 14 个概念查询中，现行目标文档进入 top-10 达到 14/14，进入 top-3 至少 12/14；archive 不得压过同名现行文档。
+- `search "query contract cursor"` 与 `search "daemon shared state"` 分别命中 D0023 与 D0035。
+- `read module#标题默认id` 的范围与 outline 的 subtree_range 一致；节内引用在 `references --direction outgoing` 中完整出现。
+- exact `--fields id` 与 lexical `--fields id` 对标题默认 id 的命中集合语义一致。
+- `--exclude-scope` 与 `--scope` 使用相同段边界规则并进入 query fingerprint；翻页改 cursor 时二者必须原样保留。
+
+=== 输出与成本
+
+- 所有普通查询仍不超过 applied budget；snapshot/context 重构后完整 envelope 不大于当前实测。
+- outline/read 页级去重后同任务输出字节下降，且同任务 Agent 成功率不降。
+- 同一 snapshot 分页无遗漏无重复；source 变化后旧 cursor 仍返回 `cursor_stale`。
+- status 与维护操作之外，普通 JSON 不含 canonical absolute root。
+
+=== Agent 任务
+
+- 正向事实任务：search -> read 后停止，不要求读完整页。
+- 否定/穷举任务：只有 coverage.complete 才允许作出 absence 结论。
+- 多跳任务：references/definition 无需 grep wiki 文本即可完成。
+- 编辑任务：propose -> check -> apply 全程使用 fingerprint 与 byte range，冲突可编程恢复。
+
+== 明确不做
+
+- 不新增 `ask` 式自然语言答案命令；CLI 是 evidence tool，不是模型端点。
+- 不恢复全库 outline/inspect 作为普通 discovery。
+- 不引入 `--profile agent|human`，不让 TTY 改变查询语义。
+- 不用 JSON key 缩写、tuple record、gzip 或 base64 正文压缩换取 token；结构可读性优先。
+- 不在 ranking/预算契约稳定前引入 embedding、hybrid 或 reranker。
+- 不把 cursor 当权限凭证，不把文档正文检索结果当指令源。
+
+== 结论
+
+Notist 已经站在正确的接口形态上：它把文件系统导航从 path/line/regex 提升到 ModulePath/section/RefTarget/snapshot。下一阶段的最佳接口不是增加更多命令，而是让现有命令的每一跳都真正可靠：节选择器返回整节，多概念检索以模块为单位召回，现行规范不再被 archive 淹没，廉价计数与 section 上下文直接写进结果。完成这些修正后，Agent 在 Notist Vault 中的查找路径会比任何 `ls` + `rg` + `sed` 组合更快、更准，而且每一步都可引用、可恢复、可校验。

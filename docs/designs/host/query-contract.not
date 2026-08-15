@@ -1,0 +1,119 @@
+@![implementation = "aligned"]
+= Query Contract
+
+本文是 A2 查询契约的独立成篇，从归档的历史混合文档中独立成篇。CLI 命令面与 Skill 分发见 [[vault::designs::host::cli-command-surface-skill-distribution]]；daemon 进程与 View 见 [[vault::designs::host::daemon-process-views]]；core request 与本地协议见 [[vault::designs::host::client-interface-protocol]]；Analyzer 对查询契约的实现见 [[vault::designs::host::analyzer-snapshot]]。
+
+
+== 查询产品形态
+
+一个 Agent 为了回答"属性表为什么是旁置的"而探索文档时，正常路径应当是：
+
+```shell
+notist search "annotation table" docs
+notist outline vault::designs::language::type-system docs
+notist read vault::designs::language::property-table#属性表 docs
+```
+
+第一条命令返回少量有排序的候选和短 excerpt，第二条只展开一个 Module，第三条才读取被选中的原文（按标题默认 id 定位到节）。人在终端中看到的是带颜色、相对路径和续读提示的紧凑页面；脚本与 Agent 看到的是稳定 JSON。两种调用者不使用两套查询语义。
+
+查询产品分为三种形态：
+
+```text
+ordinary query
+  bounded, composable, resumable
+
+human rendering
+  readable projection of the same result
+
+full export
+  explicit file or artifact, never an accidental tool result
+```
+
+普通查询始终有默认预算与服务端硬上界。调用者可以用参数在硬上界内收紧或扩大页面，但不能关闭上界；需要完整数据时必须显式进入 export。这个规则同时避免终端被大结果淹没、脚本意外缓存整库正文，以及 Agent 把大段正文反复回放进对话上下文。
+
+== Core Query Contract
+
+CLI 与未来 adapter 都把输入投影到协议无关的 core operation（[[vault::designs::host::client-interface-protocol#Client Interface]]）：core operation 接受一个已经捕获的 WorkspaceSnapshot 和结构化 request，返回 typed result；CLI 只负责参数拼写与展示。
+
+`--format`、颜色与 pager 不能改变匹配集合、排序、source range 或错误分类。
+
+Collection query 的概念模型：
+
+```text
+PageRequest {
+  limit
+  max_bytes
+  cursor?
+}
+
+QueryPage<T> {
+  snapshot
+  items: [T]
+  page { requested_limit, applied_limit, returned, has_more, next_cursor? }
+  budget { requested_bytes, applied_bytes, logical_bytes, exhausted }
+  coverage { complete, stop_reason }
+  hints? [String]
+}
+```
+
+`limit` 限制 item 数，`max_bytes` 限制规范化 logical result 的 UTF-8 JSON bytes。两者同时生效；服务端在加入 item 前计算最终序列化大小，绝不截断已经序列化的 JSON 或 UTF-8 scalar。
+
+`coverage.complete=false` 只表示当前页面没有覆盖完整匹配集合，不表示"未找到"。一旦 `read` 已经给出足够 authored evidence，调用者可以停止；只有当前页不足、任务要求穷举，或者结论依赖证明"不存在"时，才需要沿 cursor 读到 complete。`stop_reason` 区分 `item_limit`、`byte_budget` 与 query-specific 上限。
+
+普通 collection 的默认与硬上限（可版本化的产品 policy，不是语言常量）：
+
+| Operation | Default | Maximum |
+| --- | ---: | ---: |
+| modules | 20 items / 16 KiB | 100 / 64 KiB |
+| search | 8 items / 16 KiB | 100 / 64 KiB |
+| outline | 100 items / 16 KiB | 100 / 64 KiB |
+| references | 20 items / 16 KiB | 100 / 64 KiB |
+| diagnostics detail | 20 items / 16 KiB | 100 / 64 KiB |
+| read | 120 lines / 16 KiB | 1,000 lines / 64 KiB |
+
+=== Snapshot Stamp 与可恢复 Cursor
+
+一次 query 在开始时捕获一个 snapshot，所有 item、excerpt、range、source fingerprint 与计数都来自它：
+
+```text
+SnapshotStamp {
+  vault_id
+  view_kind
+  revision
+  source_set_fingerprint
+  daemon_instance
+}
+```
+
+`daemon_instance` 必填：daemon 模式为实例 id，embedded 模式为本次调用合成的实例 id。Revision 只在所属 View 与 daemon instance 内有意义；`source_set_fingerprint` 覆盖参与该 snapshot 的 source identity、内容 fingerprint 与影响查询的配置 identity，使 `--no-daemon` 的独立进程也能判断当前 source set 是否仍是同一个语义世界。
+
+Cursor 是 opaque、self-contained、带 schema version 和完整性校验的 token（紧凑 binary + base64url）。它绑定 Vault/View identity（含 daemon instance 与 View identity）、source-set fingerprint、operation/selector/query/filter/mode 与排序 fingerprint、tokenizer/ranking/index schema version，以及上一 item 的稳定排序位置——token 内可自由选择表示（如预排序结果中的恢复偏移），跨页稳定性契约不变。`limit`、`max_bytes` 与 excerpt 大小可以在翻页时改变；任何改变匹配集合或排序的参数必须与 cursor 一致。source set 变化返回 `cursor_stale`，schema 或 query fingerprint 不匹配返回 `invalid_cursor`。服务不能在新 snapshot 中猜测相近 byte offset 继续，也不能把 cursor 当成权限凭证。
+
+Source-order query 的稳定 key 是 ModulePath、Vault-relative path、match range 与 record kind；ranked query 的 key 是固定精度 score 的降序值、ModulePath、range 与 search-unit identity——浮点 backend score 必须先按 ranking version 量化再参与排序，使 tie 不依赖 hash 顺序或线程调度。
+
+== Selector 与 Citation
+
+CLI selector 只接受三类精确身份：
+
+```text
+ModuleSelector  { module: "vault::designs::language::type-system" }
+PathSelector    { path: "designs/language/type-system.not" }
+SectionSelector { module: "vault::designs::language::property-table", id: "属性表" }
+```
+
+规范输入是等价字符串：`vault::designs::language::type-system`、`designs/language/type-system.not` 或 `vault::designs::language::property-table#属性表`。`#id` 的匹配顺序与引用寻址一致（[[vault::designs::world::reference-ref-target#scope id]]）：先按显式 scope id，再按标题默认 id（标题文本）精确匹配。短 basename、模糊路径与"最接近的 Module"不能静默解析；零匹配返回 `not_found`，多匹配返回 `ambiguous_selector` 和有界候选。模糊发现属于 search，不属于 selector resolution。
+
+所有可作为证据或编辑位置的 record 使用统一 location：
+
+```text
+Location {
+  module
+  relative_path
+  byte_range
+  line_range?
+  id?
+  source_fingerprint
+}
+```
+
+snapshot 由所在 QueryPage 统一携带，Location 不再重复。Machine result 默认不返回 canonical absolute path，也不为每个 location 重复整篇 source。excerpt 是候选选择信息，不是独立事实来源；search 与 references 的结果必须引导调用者在形成事实性回答前使用 `read`。读取结果保留精确 byte range 与 fingerprint，使引用、后续 query 与 edit precondition 能指向同一 authored source。

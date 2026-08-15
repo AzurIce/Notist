@@ -1,0 +1,75 @@
+@![implementation = "aligned"]
+= Markup and Scope Surface
+
+本文是 L1 Markup 表面语法的独立成篇，从归档的历史混合文档中独立成篇。Code 核心语法见 [[vault::designs::language::code-grammar]]；语法糖见 [[vault::designs::language::syntax-sugar]]；标注语法见 [[vault::designs::language::annotation-syntax]]。
+
+本文定义 Markup 表面语法与 scope 书写形态。承接：[[vault::designs::overview]]（双模式与表达式边界）、[[vault::designs::language::evaluation-model#求值规则]]（求值模型）、[[vault::designs::language::type-system#类型系统]]（类型）与 [[vault::designs::language::call-model]]（调用）、[[vault::designs::language::syntax-sugar]]（语法糖）、[[vault::designs::world::module-result]]（Module）与 [[vault::designs::world::reference-ref-target]]（引用寻址）；scope 书写形态见本文「scope 的语法形态」，标注语法见 [[vault::designs::language::annotation-syntax]]。
+
+Markup 模式只定义最小骨架（文本流、段落分隔、`#` 嵌入、转义）——其余一切 Markup 构造都是语法糖或标注，引用索引见 [[vault::designs::language::code-grammar#引用索引]]；Code 核心语法见 [[vault::designs::language::code-grammar]]。
+
+动线：lexical context 总览 → Markup 最小骨架 → 嵌入边界 → scope 的语法形态。
+
+== 两种 lexical context
+
+语义模式只有两个，递归 quotation：
+
+```text
+Markup —— 产生 Content 片段（文档根；Code 中的 [...] 回到这里）
+Code   —— 产生 Value（Markup 中的 # 进入这里；{...} Code block）
+```
+
+不存在第三种语义 context。围栏代码块与 String 字面量的内部是词法层的字面量载荷（见 [[vault::designs::language::code-grammar#字面量载荷]]），不参与 quotation，也不产生语义对象。
+
+== Markup 最小骨架
+
+Markup 由文本流、段落分隔、块构造与转义组成：
+
+- **文本流**：连续文本按粒度规则成为 `Text` 元素（[[vault::designs::language::property-table]] 属性表一节）——表达式嵌入、标注、元素构造、段间分隔处切开；
+- **段落分隔**：空行产生 `Parbreak`；
+- **`#` 嵌入式表达式**：边界规则见本文「嵌入的边界」；
+- **块构造**：`{...}` Code block、`#[...]` 手动 scope（Markup 中 Content literal 的书写形式）——见本文「scope 的语法形态」；裸 `[` 与 `]` 是普通文本。
+- **转义**：`\` 转义 `#`、`[`、`]`、`@`、`\` 本身；转义不产生额外输出（`\#` 输出一个 `#`）。
+
+其余一切 Markup 构造（标题、围栏、分割线、列表、引用、强调等）都是语法糖或标注，见 [[vault::designs::language::code-grammar#引用索引]]。
+
+=== 嵌入的边界
+
+`#` 后的表达式有自己的边界规则。标识符由 Unicode 字母（含中文）、数字、`-`、`_` 组成，表达式到标识符字符集结束处为止：`#ver。` 中全角标点不是标识符字符，`。` 作为文本继续（中文标点天然断开表达式）；紧跟汉字、字母或数字时需要 `;` 或括号结束表达式——`第一段#accent;文字`、`第一段#(accent)文字`，`;` 不产生输出。二元运算等完整表达式用括号嵌入：`#(1 + 2)` 输出 3，而 `#1 + 2` 的 `1` 在空格处结束，` + 2` 是文本。空格不是语法工具：它终止表达式，同时自身成为文本内容。
+
+== scope 的语法形态
+
+scope 是值层节点（[[vault::designs::language::scope-environment#scope 是值层节点]]），源码中有五种书写形态：
+
+```text
+根 scope       模块本身（一个文件）；模块属性挂在这里
+Content literal  [...]（Code 表达式；Markup 中写作 #[...] 手动 scope）
+Code block       {...}
+手动 scope      #[...]
+元素 scope      heading、callout 等构造器产生的节点
+```
+
+=== 根 scope
+
+模块（文件）求值在根 scope 中进行：正文是隐式的 Content quotation（[[vault::designs::language::evaluation-model#Content 组合与插入规则]]）。根 scope 的属性由模块属性声明（[[vault::designs::language::annotation-syntax#三种挂载位置]]），随 ModuleResult 发布为模块元数据。
+
+=== Content literal
+
+`[...]`：方括号内回到 Markup 模式，结果是 Content 值。它是 Code 模式的字面量表达式（`#let x = [内容]`、实参与 trailing block）；Markup 正文中裸 `[` 与 `]` 是普通文本，Markup 里创建 Content literal 的书写形式是 `#[...]`（手动 scope，见下）。
+
+=== Code block
+
+`{...}`：Content literal 的对偶——方括号切到内容模式，花括号切到代码模式。`{...}` 在 Markup 中裸用（Content literal 在 Markup 中的书写形式是 `#[...]`，见上）。Code block 装多条语句，用途：
+
+- 多语句计算：`#` 只能嵌入单表达式，需要中间 `let` 绑定时用块；
+- 局部作用域：块内绑定挂在块节点上，不出块（词法边界）；
+- 控制流的 body（引入控制流后）。
+
+块的值采用 join 语义（同 typst）：块内各表达式的值按插入规则组合，`let` 产生 `none`，不参与组合——中间表达式常常就是想插入文档的内容。块值作为普通表达式可用（`#let f = { ... }`）。语句分隔：`;` 与换行皆可分隔语句（贪婪解析每条表达式）；同一行多个语句必须用 `;`；尾随 `;` 合法。
+
+=== 手动 scope
+
+`#[...]`：Code 模式下的 Content literal（Markup 正文中 Content literal 的书写形式）——显式创建 scope 节点：封装一段内容、自带词法边界、可承载属性、渲染上不产生可见元素（[[vault::designs::language::scope-environment#scope 形态]]）。与裸 Content literal 的区别在显式节点：内容挂在自身的节点上，可以承载属性与绑定。它属于透明 scope，成型时溶解，属性与身份以区间条目进入属性表（[[vault::designs::language::property-table]]）。
+
+=== 元素 scope
+
+构造器调用产生的元素节点（heading、callout 等）也是 scope（[[vault::designs::language::scope-environment#scope 形态]]：元素形成的 scope）。它们的属性通过标注绑定（[[vault::designs::language::annotation-syntax]]），以元素条目进入属性表（[[vault::designs::language::property-table]]）。

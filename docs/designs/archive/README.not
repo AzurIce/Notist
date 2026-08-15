@@ -1,0 +1,39 @@
+= Design Archive
+
+本目录保存已退休的旧设计。当前为空：所有现行设计都在 `language/`、`world/` 与 `host/` 下，历史版本由 Git 保存。
+
+== 旧编号映射
+
+本次无编号重构前的 D 编号对应如下，便于阅读旧提交与历史讨论：
+
+```text
+D0001  → designs/overview
+D0011  → designs/language/shaping-structure-tree
+D0012  → designs/language/scope-environment
+D0013  → designs/language/evaluation-model
+D0014  → designs/language/collection-types
+D0015  → designs/language/call-model
+D0016  → designs/language/type-system
+D0017  → designs/language/property-table
+D0018  → designs/language/annotation-syntax
+D0019  → designs/world/boundary-discovery
+D0020  → designs/world/module-result
+D0021  → designs/world/import
+D0022  → designs/world/reference-ref-target
+D0023  → designs/host/query-contract
+D0024  → designs/host/cli-command-surface-skill-distribution
+D0025  → designs/host/analyzer-snapshot
+D0026  → designs/host/lsp-adapter
+D0027  → designs/host/html-renderer
+D0028  → designs/host/build-preview
+D0029  → designs/world/core-namespace-plugin-boundary
+D0030  → designs/language/builtin-constructors
+D0031  → designs/language/syntax-sugar
+D0032  → designs/host/search-retrieval-index
+D0033  → designs/language/markup-surface
+D0034  → designs/language/code-grammar
+D0035  → designs/host/daemon-process-views
+D0036  → designs/host/client-interface-protocol
+```
+
+D0002–D0010 是拆分前的混合文档，已由上述概念文档取代；其历史全文只存在于旧提交中。

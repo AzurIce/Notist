@@ -1366,7 +1366,11 @@ impl WorkspaceSnapshot {
             revision: self.revision,
             module_id: module.id,
             file_id: label.map(|label| label.file_id).or(module.file_id),
-            range: label.map(|label| label.range),
+            // An explicit scope id has a source range of its own.  For a
+            // heading default id (or a resource), `self.label()` returns
+            // `None`; use the already-resolved reference range so definition
+            // jumps to the heading instead of only to the containing file.
+            range: label.map(|label| label.range).or(reference.target_range),
             annotation: label.map(|label| label.id.clone()),
         })
     }
@@ -3165,6 +3169,22 @@ fn element_contents(element: &Element) -> Vec<&Content> {
             .iter()
             .flat_map(|item| element_contents(&item.element))
             .collect(),
+        Element::TableCell { body, .. } => vec![body],
+        Element::Table { cells, .. } => cells
+            .iter()
+            .flat_map(|cell| element_contents(&cell.element))
+            .collect(),
+        Element::Figure {
+            body,
+            supplement,
+            caption,
+            ..
+        } => {
+            let mut contents = vec![body];
+            contents.extend(supplement.iter());
+            contents.extend(caption.iter());
+            contents
+        }
         Element::UnresolvedCall { trailing, .. } => trailing.iter().collect(),
         _ => Vec::new(),
     }
@@ -3469,6 +3489,28 @@ fn collect_heading_default_ids_in_children(
                 collect_heading_default_ids(item, output);
             }
         }
+        Element::TableCell { body, .. } => {
+            collect_heading_default_ids_in_content(body, output);
+        }
+        Element::Table { cells, .. } => {
+            for cell in cells {
+                collect_heading_default_ids(cell, output);
+            }
+        }
+        Element::Figure {
+            body,
+            supplement,
+            caption,
+            ..
+        } => {
+            collect_heading_default_ids_in_content(body, output);
+            if let Some(supplement) = supplement {
+                collect_heading_default_ids_in_content(supplement, output);
+            }
+            if let Some(caption) = caption {
+                collect_heading_default_ids_in_content(caption, output);
+            }
+        }
         Element::Callout { title, body, .. } => {
             if let Some(title) = title {
                 collect_heading_default_ids_in_content(title, output);
@@ -3500,7 +3542,8 @@ fn content_plain_text(content: &Content) -> String {
             Element::Strong(body)
             | Element::Emph(body)
             | Element::Strike(body)
-            | Element::Underline(body) => content_plain_text(body),
+            | Element::Underline(body)
+            | Element::TableCell { body, .. } => content_plain_text(body),
             Element::Raw { text, .. } => text.clone(),
             _ => String::new(),
         })
@@ -3920,6 +3963,41 @@ mod tests {
         assert_eq!(ranges.len(), 2);
         assert!(ranges.iter().all(Option::is_some));
         assert_ne!(ranges[0], ranges[1]);
+    }
+
+    #[test]
+    fn definition_jumps_to_heading_default_id_not_just_file() {
+        let root = TempDir::new().unwrap();
+        fs::write(root.path().join("README.not"), "[[guide#Intro]]").unwrap();
+        fs::write(
+            root.path().join("guide.not"),
+            "= Guide\n\n== Intro\n\ncontent here",
+        )
+        .unwrap();
+
+        let workspace = WorkspaceSnapshot::load(root.path()).unwrap();
+        let source_path = dunce::canonicalize(root.path().join("README.not")).unwrap();
+        let file_id = workspace.file_id(&source_path).unwrap();
+        // The reference `[[guide#Intro]]` starts at offset 0; pick a position
+        // inside the reference text.
+        let definition = workspace.definition_at(file_id, 3).unwrap();
+
+        assert!(definition.annotation.is_none());
+        let target_path = dunce::canonicalize(root.path().join("guide.not")).unwrap();
+        assert_eq!(
+            definition.file_id,
+            workspace.file_id(&target_path),
+            "definition should resolve into the target file"
+        );
+        let range = definition.range.expect("heading default id must have a range");
+        // "== Intro" begins at line 2; verify the range starts inside that
+        // heading rather than at the very start of the file (line 0).
+        let guide = workspace.source(definition.file_id.unwrap()).unwrap();
+        let (line, _) = guide
+            .line_index
+            .utf16_position(&guide.text, range.start)
+            .unwrap_or((0, 0));
+        assert_eq!(line, 2, "definition should point to the heading line");
     }
 
     #[test]

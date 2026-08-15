@@ -5,7 +5,7 @@ use std::fmt::Write;
 
 use notist_model::{
     Block, Content, Element, ElementNode, ModulePath, ModuleReference, StructuredDocument,
-    TextRange, WikiReference,
+    TableAlignment, TableCellPlacement, TextRange, WikiReference, table_layout,
 };
 use percent_encoding::{NON_ALPHANUMERIC, utf8_percent_encode};
 
@@ -194,6 +194,31 @@ impl Renderer<'_, '_> {
                 self.output.push_str("</section>");
             }
         }
+    }
+
+    /// Renders a figure body with framing whitespace-only Text and Parbreak
+    /// nodes trimmed: the body content block usually contributes indentation
+    /// and a framing newline that should not become empty paragraphs around
+    /// the wrapped block.
+    fn figure_body(&mut self, content: &Content) {
+        let is_framing = |node: &ElementNode| {
+            matches!(&node.element, Element::Parbreak)
+                || matches!(&node.element, Element::Text(text) if text.trim().is_empty())
+        };
+        let first = content
+            .elements
+            .iter()
+            .position(|node| !is_framing(node))
+            .unwrap_or(content.elements.len());
+        let last = content
+            .elements
+            .iter()
+            .rposition(|node| !is_framing(node))
+            .map_or(first, |index| index + 1);
+        let trimmed = Content {
+            elements: content.elements[first..last].to_vec(),
+        };
+        self.flow_content(&trimmed);
     }
 
     fn inline_content(&mut self, content: &Content) {
@@ -444,6 +469,47 @@ impl Renderer<'_, '_> {
         self.output.push('>');
     }
 
+    fn table_row(
+        &mut self,
+        cells: &[ElementNode],
+        placements: &[TableCellPlacement],
+        tag: &str,
+        alignments: &[TableAlignment],
+    ) {
+        self.output.push_str("<tr>");
+        for placement in placements {
+            let Some(cell) = cells.get(placement.cell_index) else {
+                continue;
+            };
+            write!(self.output, "<{tag}").unwrap();
+            let (body, colspan, rowspan) = match &cell.element {
+                Element::TableCell {
+                    body,
+                    colspan,
+                    rowspan,
+                } => (body, *colspan, *rowspan),
+                _ => continue,
+            };
+            if let Some(class) = alignments
+                .get(placement.column as usize)
+                .and_then(|alignment| table_alignment_class(*alignment))
+            {
+                write!(self.output, " class=\"{class}\"").unwrap();
+            }
+            if colspan > 1 {
+                write!(self.output, " colspan=\"{colspan}\"").unwrap();
+            }
+            if rowspan > 1 {
+                write!(self.output, " rowspan=\"{rowspan}\"").unwrap();
+            }
+            self.range_attributes(cell);
+            self.output.push('>');
+            self.flow_content(body);
+            write!(self.output, "</{tag}>").unwrap();
+        }
+        self.output.push_str("</tr>");
+    }
+
     fn list_item(&mut self, node: &ElementNode) {
         self.output.push_str("<li");
         if let Element::EnumItem {
@@ -569,6 +635,89 @@ Element::Heading { level, body } => {
                 self.output.push('>');
                 self.flow_content(body);
                 self.output.push_str("</li></ol>");
+            }
+            Element::Figure {
+                body,
+                kind,
+                supplement,
+                caption,
+            } => {
+                self.output.push_str("<figure class=\"notist-figure");
+                self.projected_class_suffix(node);
+                self.output.push_str("\" data-notist-kind=\"");
+                escape_attribute(&mut self.output, kind);
+                self.output.push('"');
+                self.range_attributes(node);
+                self.output.push('>');
+                self.figure_body(body);
+                if let Some(caption) = caption {
+                    self.output.push_str("<figcaption>");
+                    if let Some(supplement) = supplement {
+                        self.inline_content(supplement);
+                        escape_text(&mut self.output, ": ");
+                    }
+                    self.inline_content(caption);
+                    self.output.push_str("</figcaption>");
+                }
+                self.output.push_str("</figure>");
+            }
+            Element::TableCell { body, .. } => {
+                self.output
+                    .push_str("<div class=\"notist-table-cell");
+                self.projected_class_suffix(node);
+                self.output.push('"');
+                self.range_attributes(node);
+                self.output.push('>');
+                self.flow_content(body);
+                self.output.push_str("</div>");
+            }
+            Element::Table {
+                columns,
+                header,
+                alignments,
+                cells,
+            } => {
+                self.output.push_str("<div class=\"notist-table-wrapper");
+                self.projected_class_suffix(node);
+                write!(
+                    self.output,
+                    "\"><table data-notist-columns=\"{columns}\""
+                )
+                .unwrap();
+                self.range_attributes(node);
+                self.output.push('>');
+                let rows = table_layout(*columns, cells).unwrap_or_else(|_| {
+                    vec![
+                        cells
+                            .iter()
+                            .enumerate()
+                            .map(|(cell_index, _)| TableCellPlacement {
+                                cell_index,
+                                column: cell_index.min(u16::MAX as usize) as u16,
+                            })
+                            .collect(),
+                    ]
+                });
+                if *header {
+                    self.output.push_str("<thead>");
+                    if let Some(row) = rows.first() {
+                        self.table_row(cells, row, "th", alignments);
+                    }
+                    self.output.push_str("</thead>");
+                }
+                let body_rows = if *header {
+                    rows.iter().skip(1).collect::<Vec<_>>()
+                } else {
+                    rows.iter().collect::<Vec<_>>()
+                };
+                if !body_rows.is_empty() {
+                    self.output.push_str("<tbody>");
+                    for row in body_rows {
+                        self.table_row(cells, row, "td", alignments);
+                    }
+                    self.output.push_str("</tbody>");
+                }
+                self.output.push_str("</table></div>");
             }
             Element::Rule => {
                 self.output.push_str("<hr class=\"notist-rule\"");
@@ -1012,6 +1161,15 @@ fn is_valid_anchor(label: &str) -> bool {
     };
     (first.is_alphabetic() || first == '_')
         && characters.all(|character| character.is_alphanumeric() || matches!(character, '-' | '_'))
+}
+
+fn table_alignment_class(alignment: TableAlignment) -> Option<&'static str> {
+    match alignment {
+        TableAlignment::Default => None,
+        TableAlignment::Left => Some("notist-table-align-left"),
+        TableAlignment::Center => Some("notist-table-align-center"),
+        TableAlignment::Right => Some("notist-table-align-right"),
+    }
 }
 
 fn range_key(range: TextRange) -> (usize, usize) {
@@ -1978,6 +2136,46 @@ mod tests {
         assert_eq!(html.matches("<ol>").count(), 1);
         assert_eq!(html.matches("<li").count(), 4);
         assert!(html.contains("first child") && html.contains("sibling"));
+    }
+
+    #[test]
+    fn renders_pipe_tables_as_semantic_html() {
+        let evaluation = Evaluator::default()
+            .evaluate("| Name | Value |\n| :--- | ---: |\n| one | 1 |\n");
+        assert!(
+            evaluation.diagnostics.is_empty(),
+            "{:?}",
+            evaluation.diagnostics
+        );
+        let html = render(&structure(evaluation).document);
+        assert!(html.contains("<div class=\"notist-table-wrapper\">"));
+        assert!(html.contains("<table data-notist-columns=\"2\""));
+        assert!(html.contains("<thead><tr><th class=\"notist-table-align-left\""));
+        assert!(html.contains(">Name</span></p></th>"));
+        assert!(html.contains("<th class=\"notist-table-align-right\""));
+        assert!(html.contains("<tbody><tr><td"));
+        assert!(html.contains(">1</span></p></td></tr></tbody>"));
+        assert!(html.contains("</table></div>"));
+    }
+
+    #[test]
+    fn renders_figure_wrapper_with_caption() {
+        let evaluation = Evaluator::default().evaluate(
+            "#figure(caption: [Cap], supplement: [Tab], kind: \"table\")[\n  #table(columns: 2)[#table-cell[A] #table-cell[B]]\n]",
+        );
+        assert!(
+            evaluation.diagnostics.is_empty(),
+            "{:?}",
+            evaluation.diagnostics
+        );
+        let html = render(&structure(evaluation).document);
+        assert!(html.contains("<figure class=\"notist-figure\" data-notist-kind=\"table\""));
+        assert!(!html.contains("<figure class=\"notist-figure\" data-notist-kind=\"table\"><p>"));
+        assert!(html.contains("<div class=\"notist-table-wrapper\">"));
+        assert!(html.contains("<figcaption>"));
+        assert!(html.contains(">Tab</span>: "));
+        assert!(html.contains(">Cap</span></figcaption>"));
+        assert!(html.contains("</figure>"));
     }
 
     #[test]

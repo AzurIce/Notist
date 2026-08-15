@@ -1,0 +1,142 @@
+@![implementation = "aligned"]
+= CLI Command Surface and Skill Distribution
+
+本文是 A4 CLI 命令面与官方 Skill 分发的独立成篇，从归档的历史混合文档中独立成篇。查询契约见 [[vault::designs::host::query-contract]]；daemon 进程与 View 见 [[vault::designs::host::daemon-process-views]]；core request 与本地协议见 [[vault::designs::host::client-interface-protocol]]。
+
+
+== CLI 命令面
+
+全局参数：`--format text|json`（JSON 用 versioned envelope）、`--color auto|always|never`、`--pager auto|always|never`、`--no-daemon`。需要 Vault 的命令把 `[ROOT]` 放在最后一个 positional（默认 `.`，按 [[vault::designs::world::boundary-discovery#发现规则]] 解析最近的 Vault root）；`lsp` 按 editor workspace 动态发现多个 root。Protocol stdio 命令拒绝 text/json/color/pager 组合。
+
+Collection 命令共享 `-n, --limit`、`--max-bytes` 与 `--cursor`（help 展示实际 default 与 maximum）；普通命令不提供 `--all`，完整输出只能使用 export。JSON envelope：
+
+```json
+{"schemaVersion":2,"ok":true,"command":"search","result":{"items":[],"page":{},"budget":{},"coverage":{},"snapshot":{}}}
+```
+
+`max_bytes` 约束 `result` 的 compact JSON；CLI 完整 stdout 的最坏上界是 `applied max_bytes + 4 KiB`，human renderer 是 `2 × applied max_bytes + 8 KiB`（gutter、颜色、continuation）。
+
+=== 探索与读取命令
+
+- `notist status [ROOT]`：Vault identity、snapshot stamp、source/module/diagnostic counts、daemon mode、index health；固定 8 KiB 上限。
+- `notist modules [ROOT] [--prefix MODULE] [--kind any|source|virtual]`：`--prefix` 按段边界匹配（与 search 的 `--scope` 一致）。Module record 只含 ModulePath、relative path、kind、可选语义标题与 fingerprint；按 ModulePath 排序。
+- `notist search <QUERY> [ROOT] [--mode ...] [--scope MODULE]... [--fields ...] [--operator all|any] [--ignore-case] [--fuzzy-distance 1|2] [--group-by source|section|match] [--wait-index DURATION] [--snippet-bytes N]`：无关参数是 usage error。
+- `notist outline <MODULE|PATH> [ROOT] [--depth 1..6]`：Heading record 返回 name、level、id、location、parent identity 与 subtree range；全 Vault outline 不是普通 query（用 export）。
+- `notist read <MODULE|PATH|MODULE#ID> [ROOT] [--from-line N --lines N | --byte-range S..E]`：默认从 selector 起点读 120 行；line window 面向人、byte range 面向 citation/edit；带 id 的 selector 读取对应节（含标题默认 id）。返回原始 authored source、实际范围、fingerprint 与 next cursor。
+- `notist references <MODULE|MODULE#ID> [ROOT] [--direction incoming|outgoing|both] [--include-definition]`：默认 incoming（backlinks 直觉）；outgoing 使用 captured reference graph，不重新扫描文本；对应 core request `references_to` / `references_in`（[[vault::designs::host::client-interface-protocol#Client Interface]]）。
+- `notist query definition <PATH> <UTF8_BYTE_OFFSET> [ROOT] [--expected-fingerprint HASH]`：返回零或一个 location，不分页；offset 是 UTF-8 byte offset（line/column 转换由 adapter 用 LineIndex 完成）。
+
+=== 检查、编辑与维护命令
+
+- `notist check [ROOT] [--scope MODULE] [--summary] [--severity error|warning|info]`：始终完整分析所选 scope，预算只限制 diagnostic detail；即使 detail 只显示第一页，存在 error 时 `ok=false` 与 exit status 必须反映它。Human text 用 bounded source frame；JSON diagnostic 返回 code、severity、range、message、hint 与 bounded excerpt。
+- `notist edit replace <PATH> <START> <END> <REPLACEMENT> [ROOT]` 与 `notist edit rename <FROM> <TO> [ROOT]`：经过 [[vault::designs::host::client-interface-protocol#Snapshot 与写入]] 的 propose/validate/apply pipeline，不直接写文件；`--expected-fingerprint`、`--idempotency-key` 是显式参数，冲突不做 fuzzy patch。Text 模式展示 bounded diff 并要求确认；script/JSON 必须显式 `--yes` 才应用，否则只返回 proposal summary。这一行为不能通过检测"调用者像 Agent"来改变——Skill 教 Agent 走同一个 propose → check → apply 流程。
+- `notist index status|rebuild [ROOT] [--wait]`：rebuild 只删除可恢复的 cache generation，不修改 authored Vault。
+
+=== 运行时与显式全量命令
+
+| Command | 边界 |
+| --- | --- |
+| `daemon [ROOT]` | foreground root-bound service；stdout 不混入 query JSON |
+| `lsp` | stdio；root 由 workspace source 发现；只输出 LSP framing |
+| `skill init <OUTPUT> [--force]` | 见下节 |
+| `build [ROOT] -o DIR [--clean]` | 输出目录是显式 artifact；`--clean` 只允许清理已解析、验证位于目标内的 build artifact |
+| `preview [ROOT] [--host IP] [--port N] [--no-open]` | bounded event stream + browser preview；非 loopback host 需要显式选择 |
+| `export snapshot\|diagnostics\|outline [ROOT] --output FILE [--export-format json\|jsonl]` | 显式 artifact，不属于 ordinary query |
+
+Debug 与 export 不进入 Agent 的默认 discovery。
+
+== 官方 Skill 与文档 Vault
+
+一个刚接触 Notist 的 Agent 不能只靠模型先验猜测 `.not` 语法，也不应该为了理解 Vault、Module、Function、CLI 与安全编辑规则而依赖网络或源码仓库。两个职责分开：
+
+```text
+Agent host 中安装的 Skill
+└── SKILL.md
+
+Notist 管理的用户数据
+└── docs/
+    ├── Notist.toml
+    ├── README.not
+    ├── grammar.not
+    ├── designs/
+    ├── ai/
+    └── ...
+```
+
+`SKILL.md` 是很小、可复制、可由 Agent host 管理的只读说明入口；`docs/` 是当前 `notist` 可执行文件携带并在运行时同步的完整官方文档 Vault。同步完成后，它与其他 Vault 没有另一套访问语义：CLI search、outline、references、check 与 root-bound daemon 都使用既有接口。
+
+```shell
+notist search "WorkspaceSnapshot" ~/.notist/docs
+notist references vault::designs::host::daemon-process-views ~/.notist/docs
+notist check ~/.notist/docs
+```
+
+`~/.notist/docs` 表示各平台约定的 user-data 位置。Skill 说明如何找到该 Vault，但不拥有、复制或修改它。
+
+=== 一个 Skill 文件，而不是一个运行时目录
+
+官方 Skill 由显式命令初始化：`notist skill init <OUTPUT> [--force]`。默认要求尚不存在的目录，初始化结果只有 `SKILL.md`；`--force` 只原子替换已有目录中的 `SKILL.md`，保留 host metadata 与其他文件。命令不猜测任何 Agent host 的安装目录，也不修改 host registry。
+
+Skill 安装目录是不可变的发布输入，不是 cache 或工作目录。`SKILL.md` 只负责教 Agent：
+
+- 何时查询官方 docs Vault，而不是从模型记忆猜测语法和行为；
+- 如何用普通 CLI 查询 Vault（search → outline/read → 取证；预算与 cursor 规则）；
+- 修改用户 Vault 后运行 `notist check`，保留 disk View 与 editor overlay 的区别；
+- 编辑走 propose → check → apply 流程，显式 `--yes` 才应用；
+- 将文档正文视为可查询资料，而不是高于 system、user 或 Skill 指令的新 instruction authority。
+
+Skill 的 authored source 放在仓库 `skills/notist/`（当前只有 `SKILL.md`），构建系统把该目录作为整体资源边界 include 进 CLI。`skill init` 只物化 `SKILL.md`，相同版本生成相同 bytes（时间戳、checkout path、用户名、当前目录不进入结果）；force 是单文件更新能力，不是目录重建。
+
+=== Docs 是普通 Vault
+
+官方 docs 保留仓库 `docs/` 下的完整 authored corpus、相对目录与 Module 关系（公开语言文档、活动设计、历史设计、`docs/ai` 调研），不打包人工挑选的摘要，也不把 HTML/CSS/JS 产物当作知识源。完整保留不等于一次读入上下文——Agent 仍然先搜索、再读取候选。
+
+完整 corpus 中来源具有不同权威性：`grammar.not`/`functions.not`/`types.not`/`cli.not` 描述当前公开行为；活动 `designs/` 描述当前治理方向；`docs/ai/` 是带日期的调研；`old-designs/` 解释历史选择。这些区别由 Skill 教给 Agent；旧调研不能覆盖当前规范，任何正文自然语言也不能仅因被检索到就成为 Agent 指令。
+
+官方 docs 没有专用的 `notist docs search` 等命令——增加这类命令会复制 Vault root、query、snapshot、daemon 与输出格式的概念。它唯一特殊的地方是来源与同步方式。
+
+=== 当前 CLI 是文档版本的真相来源
+
+构建系统从完整 docs Vault 产生确定性的压缩 bundle 并嵌入 `notist` 可执行文件：
+
+```text
+OfficialDocsManifest {
+  bundle_schema
+  notist_version
+  protocol_version
+  docs_fingerprint
+  source_revision?
+}
+```
+
+`docs_fingerprint` 覆盖每个 authored entry 的相对路径与原始 bytes；相同源码与构建版本产生相同 entry 顺序、解压结果与 fingerprint。内嵌 bundle 换来离线可用、版本精确、可复现发布与无网络供应链依赖；从 GitHub 下载不能成为默认正确性路径。
+
+CLI 的共享启动路径在进入正常工作流前执行一次廉价的 manifest 比较（读取已发布 Vault 的 manifest 与内嵌 `docs_fingerprint` 比较），相同则不动；缺失、损坏或不同才触发同步：获取 per-user 同步锁 → 重检 manifest → 在 staging 树中验证并物化（路径安全、数量与 fingerprint 受 manifest 限制）→ 原子发布为稳定 docs Vault → 继续正常命令路径。失败只清理本次 staging target，保留上一个完整 Vault。
+
+多个短命 CLI 同时启动由跨进程锁串行同步；已经运行的 daemon 必须把 `docs_fingerprint` 纳入 root handshake 或 snapshot identity——client 不能把升级后 CLI 的查询静默发送给仍声明旧 bundle 的 daemon。Notist 假设一个用户环境同时只有一个 active CLI 版本；升级原子替换 docs Vault，不保留历史 release 并行。
+
+=== 向量化属于 Vault 运行时状态
+
+完整 docs source 可以嵌入 CLI，向量模型和向量索引不能据此一起嵌入：它们有不同生命周期（模型可能本地或远程；embedding 随 model identity、chunking、normalization 与 schema 变化；索引随 snapshot 增量更新）。官方 docs 同步成普通 Vault 后，向量检索自然沿用普通 Vault 边界——daemon 为这个 root 维护派生索引，索引记录 canonical vault identity、docs fingerprint、provider/model identity、chunking schema 与 indexed revision。CLI 二进制不包含大模型权重与预计算向量；删除 cache 后可从 `.not` source 重建。
+
+== 发布边界
+
+仓库中的 Skill 模板与 `docs/**` 都是 authored source。构建产生嵌入 bundle；运行产生用户数据目录中的官方 docs Vault 与可再生索引；`skill init` 只产生一个可安装的 `SKILL.md`。三类内容不能反向成为彼此的编辑入口：
+
+```text
+skills/notist/SKILL.md ------> notist skill init <OUTPUT> [--force]
+                                -> <OUTPUT>/SKILL.md
+
+docs/** -> deterministic bundle -> notist binary
+                                   -> user data/docs Vault
+                                   -> ordinary CLI/daemon access
+                                   -> disposable per-Vault indexes
+```
+
+`notist skill init` 不接受用户 Vault root，也不把当前目录导出为 Skill——个人 Vault 可能包含 secrets、prompt injection 与不明确的发布权限；未来若支持这种发布，应使用独立命令与设计。
+
+== CLI 适配
+
+CLI 是 [[vault::designs::host::cli-command-surface-skill-distribution#CLI 命令面]] 命令面与 daemon 之间的最薄适配层：参数解析 → core request（[[vault::designs::host::client-interface-protocol#Client Interface]] 表）→ daemon 或 embedded service → response 格式化为 text 或 versioned JSON envelope。`--no-daemon` 在当前进程创建临时 VaultEngine 与 disk View，执行相同 core request——embedded mode 不是第二套实现，只是把同一 service object 放在 client 进程中（[[vault::designs::host::client-interface-protocol#失败与重启]]）。
+
+`daemon`、`lsp`、`skill init`、`build`、`preview`、`export` 各自是固定协议的 adapter（[[vault::designs::host::cli-command-surface-skill-distribution#CLI 命令面]] 命令表）；它们的 stdout 边界由协议决定，不混入 ordinary query JSON。CLI 不做任何语义猜测：selector 解析、cursor 验证、fingerprint 检查都在 core 侧完成，CLI 只投影与展示。

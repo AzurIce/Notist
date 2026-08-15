@@ -1283,12 +1283,7 @@ div.notist-math { margin: 1.1em 0; overflow-x: auto; text-align: center; }
   border-radius: var(--radius);
 }
 .notist-table-wrapper table { width: 100%; border-collapse: collapse; font-size: 0.94em; }
-.notist-table-wrapper caption {
-  padding: 10px 14px;
-  border-bottom: 1px solid var(--border-soft);
-  font-weight: 650;
-  text-align: start;
-}
+.notist-figure > .notist-table-wrapper { margin: 0; }
 .notist-table-wrapper th,
 .notist-table-wrapper td {
   min-width: 5rem;

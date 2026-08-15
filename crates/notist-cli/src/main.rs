@@ -230,7 +230,7 @@ enum Command {
         #[arg(long, default_value = "127.0.0.1")]
         host: IpAddr,
         /// TCP port. Zero asks the operating system for an available port.
-        #[arg(long, default_value_t = 0)]
+        #[arg(long, default_value_t = 3250)]
         port: u16,
         /// Open the preview URL in the default browser.
         #[arg(long)]

@@ -290,7 +290,37 @@ async fn serve(
         }
     }
 
-    let listener = tokio::net::TcpListener::bind(SocketAddr::new(host, port)).await?;
+    // Try the requested port first; if it is taken, fall back to letting the
+    // operating system choose an available ephemeral port (port 0).
+    let listener = match tokio::net::TcpListener::bind(SocketAddr::new(host, port)).await {
+        Ok(listener) => listener,
+        Err(error)
+            if port != 0
+                && matches!(
+                    error.kind(),
+                    io::ErrorKind::AddrInUse | io::ErrorKind::AddrNotAvailable
+                ) =>
+        {
+            if format.is_json() {
+                crate::output::emit_event(
+                    "preview",
+                    "warning",
+                    serde_json::json!({
+                        "code": "port_in_use",
+                        "message": format!(
+                            "port {port} is unavailable, falling back to an ephemeral port"
+                        ),
+                    }),
+                )?;
+            } else {
+                eprintln!(
+                    "notist preview: warning: port {port} is unavailable, falling back to an ephemeral port"
+                );
+            }
+            tokio::net::TcpListener::bind(SocketAddr::new(host, 0)).await?
+        }
+        Err(error) => return Err(error.into()),
+    };
     let address = listener.local_addr()?;
     let state = PreviewState {
         revision,

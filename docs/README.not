@@ -4,10 +4,11 @@ Note + ist -> notist(also not an ist)
 
 - Notist 介绍与核心概念 [[intro]]
 - 语法参考：Markup/Code 双模式与核心文法 [[vault::grammar]]
-- 内置构造器：11 个 built-in 的签名与示例 [[vault::functions]]
+- 内置构造器：14 个 built-in 的签名与示例 [[vault::functions]]（语言规范见 [[vault::designs::language::builtin-constructors]] 与 [[vault::designs::language::syntax-sugar]]）
 - 类型系统与求值模型 [[vault::types]]
 - 日常语法速查 [[vault::cheatsheet]]
 - 命令行、daemon 与 LSP 使用说明 [[cli]]
 - AI 的一些调查整理 [[ai]]
 - 设计记录 [[vault::designs]]
-- 早期 Markdown/Rua 模块与标注构想（历史） [[vault::old-designs::archive::D0001-rua-markdown-module-scope]]
+- 设计 archive 与旧编号映射 [[vault::designs::archive]]
+- 第一代设计档案 [[vault::old-designs]]

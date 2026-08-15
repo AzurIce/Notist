@@ -2,7 +2,7 @@
 
 本文定义当前工具与写作者可以依赖的语法 surface。语言包含 Markup 与 Code 两种模式：文档默认处于 Markup，`#` 把一个 Code 表达式嵌入当前内容，Code 中的 `[...]` 创建 Content literal 并暂时切回 Markup。概念说明见 [[vault::intro]]，类型与求值规则见 [[vault::types]]，内置构造器见 [[vault::functions]]，日常速查见 [[vault::cheatsheet]]。
 
-Markup 模式只定义最小骨架——文本流、段落分隔、`#` 嵌入与转义；其余一切 Markup 构造（标题、围栏、分割线、列表、引用、强调等）都是语法糖或标注，见文末的引用索引。Code 模式是本文的主体，定义完整的字面量、运算符、表达式、声明与类型语法。
+Markup 模式只定义最小骨架——文本流、段落分隔、`#` 嵌入与转义；其余一切 Markup 构造（标题、围栏、分割线、列表、表格、引用、强调等）都是语法糖或标注，见文末的引用索引。Code 模式是本文的主体，定义完整的字面量、运算符、表达式、声明与类型语法。
 
 == 两种 lexical context
 
@@ -20,7 +20,7 @@ Code   —— 产生 Value（Markup 中的 # 进入这里；{...} Code block）
 - **文本流**：连续文本成为 `Text` 元素——表达式嵌入、标注、元素构造与段间分隔处切开；
 - **段落分隔**：空行产生 `Parbreak`；单个换行仍属于同一段；
 - **`#` 嵌入式表达式**：边界规则见下；
-- **块构造**：`{...}` Code block 与 `#[...]` 手动 scope（Markup 中 Content literal 的书写形式），见 [[vault::designs::D0006-scope-and-annotation-syntax]]；裸 `[` 与 `]` 是普通文本；
+- **块构造**：`{...}` Code block 与 `#[...]` 手动 scope（Markup 中 Content literal 的书写形式），见 [[vault::designs::language::annotation-syntax]]；裸 `[` 与 `]` 是普通文本；
 - **转义**：`\` 转义 `#`、`[`、`]`、`@` 与 `\` 本身；转义不产生额外输出（`\#` 输出一个 `#`）；
 - **注释**：Markup 文本流中 `//` 与 `/*` 是普通文本——注释是 Code 上下文的词法 trivia（见下）。
 
@@ -136,13 +136,13 @@ r#"""..."""#   raw 多行（同样要求 opening 后立即换行）
 
 **代码块**：`{...}` 是多语句的 Code 表达式——语句以 `;` 或换行分隔（同一行多个语句必须用 `;`，尾随 `;` 合法）。块的值采用 join 语义：块内各表达式的值按插入规则组合，`let` 产生 `None`、不参与组合。块内绑定挂在块节点上，不出块。
 
-**import**：`#import path::{name, name as alias}`——显式选择器，无 wildcard；花括号左侧是 ModulePath，`as` 把名字映射为合法 Code 标识符。import 扩展当前根 scope 后续节点的环境，产生空 Content；依赖边在求值前进入 import graph，import 环一律是诊断。见 [[vault::designs::D0004-vault-module-and-scope]]。
+**import**：`#import path::{name, name as alias}`——显式选择器，无 wildcard；花括号左侧是 ModulePath，`as` 把名字映射为合法 Code 标识符。import 扩展当前根 scope 后续节点的环境，产生空 Content；依赖边在求值前进入 import graph，import 环一律是诊断。见 [[vault::designs::world::import]]。
 
 ```not
 #import self::theme::{warning, accent as highlight}
 ```
 
-**模块属性**：`@![...]` 见 [[vault::designs::D0006-scope-and-annotation-syntax]]。
+**模块属性**：`@![...]` 见 [[vault::designs::language::annotation-syntax]]。
 
 === 类型语法
 
@@ -223,25 +223,26 @@ fn main() {}
 #[一段内容]@install
 ```
 
-完整规则见 [[vault::designs::D0006-scope-and-annotation-syntax]]。
+完整规则见 [[vault::designs::language::annotation-syntax]]。
 
 == 引用索引
 
 Markup 中除最小骨架外的一切构造，定义处如下：
 
 ```text
-= Title / == Title         → heading（D0003 heading 节，含默认 id）
-```lang ... ```            → raw（D0003 raw 节）
----                        → rule（D0003 rule 节）
-- A / + A                  → item（D0003 item 节）
-[[target]]                 → ref（D0003 ref 节）
-*text* / _text_            → strong / emph（D0003）
-__text__ / ~~text~~        → underline / strike（D0003）
-@id,#tag,.class,key=value  → 标注（D0006）
-@[...] / @![...]           → 标注（D0006）
-{...} / #[...]             → scope 语法形态（D0006）
-#scope-id 引用寻址         → D0004
-# 表达式边界               → D0001
+= Title / == Title         → heading（syntax-sugar heading 节，含默认 id）
+```lang ... ```            → raw（syntax-sugar raw 节）
+---                        → rule（syntax-sugar rule 节）
+- A / + A                  → item（syntax-sugar item 节）
+| a | b | / | - | - |      → table（syntax-sugar table 节）
+[[target]]                 → ref（syntax-sugar ref 节）
+*text* / _text_            → strong / emph（syntax-sugar）
+__text__ / ~~text~~        → underline / strike（syntax-sugar）
+@id,#tag,.class,key=value  → 标注（annotation-syntax）
+@[...] / @![...]           → 标注（annotation-syntax）
+{...} / #[...]             → scope 语法形态（markup-surface）
+#scope-id 引用寻址         → reference-ref-target
+# 表达式边界               → markup-surface
 ```
 
 == 错误与恢复

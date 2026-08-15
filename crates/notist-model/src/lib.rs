@@ -4,12 +4,14 @@ mod content;
 mod signature;
 
 pub use content::{
-    Block, Content, Element, ElementNode, StructuredDocument,
+    Block, Content, Element, ElementNode, StructuredDocument, TableAlignment, TableCellPlacement,
+    TableLayoutError, table_layout,
 };
 pub use signature::{
     DefaultValue, FunctionSignature, Parameter, Type, builtin_signatures, callout_signature,
-    details_signature, empty_content_signature, heading_signature, inline_body_signature,
-    item_signature, raw_signature, ref_signature,
+    details_signature, empty_content_signature, figure_signature, heading_signature,
+    inline_body_signature, item_signature, raw_signature, ref_signature, table_cell_signature,
+    table_signature,
 };
 
 /// A half-open byte range in a source file.

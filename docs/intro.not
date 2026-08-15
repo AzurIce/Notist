@@ -37,7 +37,7 @@ content = [
 annotations = {}   // 示例中没有标注，属性表为空
 ```
 
-`bindings` 是程序的一面——跨模块复用的入口；`content` 是文档的一面——渲染与查询消费的产物；`annotations` 是属性的一面——标注与模块元数据的唯一入口。三者来自同一次求值，却承担不同职责。这个结果如何产生：类型与属性表见 [[vault::designs::D0002-evaluation-model-and-type-system]]，求值模型见 [[vault::designs::D0013-evaluation-model-and-content-sequence]]，scope 见 [[vault::designs::D0012-scope-and-environment]]。
+`bindings` 是程序的一面——跨模块复用的入口；`content` 是文档的一面——渲染与查询消费的产物；`annotations` 是属性的一面——标注与模块元数据的唯一入口。三者来自同一次求值，却承担不同职责。这个结果如何产生：类型见 [[vault::designs::language::type-system]]，属性表见 [[vault::designs::language::property-table]]，求值模型见 [[vault::designs::language::evaluation-model]]，scope 见 [[vault::designs::language::scope-environment]]。
 
 == 一篇 Notist 文档
 
@@ -80,7 +80,7 @@ docs/guide/README.not    -> vault::guide
 
 普通文件名成为 ModulePath 的最后一段；`README.not` 表示它所在的目录，因此 `guide.not` 与 `guide/README.not` 都映射到 `vault::guide`，不能同时存在。目录只要有 `.not` 后代或资源文件后代就形成 virtual module——只提供命名空间与 child identity，不凭空产生内容。资源文件（图片等）也通过目录模块加文件名寻址：`[[vault::guide::assets#logo.png]]`。
 
-Module 是求值单元：每个 source-backed Module 独立求值，产生 `bindings`、`content` 与 `annotations`。跨模块的连接有两条边：程序面的 import（取目标 Module 的 root bindings）与知识面的 Reference（链接内容）。详见 [[vault::designs::D0004-vault-module-and-scope]]。
+Module 是求值单元：每个 source-backed Module 独立求值，产生 `bindings`、`content` 与 `annotations`。跨模块的连接有两条边：程序面的 import（取目标 Module 的 root bindings）与知识面的 Reference（链接内容）。Vault 边界见 [[vault::designs::world::boundary-discovery]]，Module/ModuleResult 见 [[vault::designs::world::module-result]]，import 见 [[vault::designs::world::import]]，引用寻址见 [[vault::designs::world::reference-ref-target]]。
 
 == 引用其他 Module
 
@@ -140,7 +140,7 @@ println!("Hello");
 [[target]]  *加粗*  _斜体_  __下划线__  ~~删除线~~
 ````
 
-糖的语义不经过名字查找：`= 标题` 不是「调用名为 heading 的函数」，而是语法层构造。每个糖的完整规格见 [[vault::designs::D0003-builtin-functions-and-syntax-sugar]]，速查见 [[vault::cheatsheet]]。
+糖的语义不经过名字查找：`= 标题` 不是「调用名为 heading 的函数」，而是语法层构造。每个糖的完整规格见 [[vault::designs::language::syntax-sugar]]，速查见 [[vault::cheatsheet]]。
 
 == 标注
 
@@ -150,7 +150,7 @@ println!("Hello");
 #[The documentation build passes.]@status,#verified,.highlight,owner = "Alice"
 ```
 
-四种条目：`@id` 赋 scope id（模块内唯一）；`#tag` 是标签；`.class` 是类名；`key = value` 是键值属性。三种挂载位置：行内 postfix（紧贴在值之后）、块级前缀 `@[...]`（修饰下一个块级节点）、模块属性 `@![...]`（文件开头）。完整语法见 [[vault::designs::D0006-scope-and-annotation-syntax]]。
+四种条目：`@id` 赋 scope id（模块内唯一）；`#tag` 是标签；`.class` 是类名；`key = value` 是键值属性。三种挂载位置：行内 postfix（紧贴在值之后）、块级前缀 `@[...]`（修饰下一个块级节点）、模块属性 `@![...]`（文件开头）。完整语法见 [[vault::designs::language::annotation-syntax]]。
 
 == 检查、构建与预览
 
@@ -170,4 +170,4 @@ notist preview docs
 - 内置构造器：[[vault::functions]]
 - 类型与求值：[[vault::types]]
 - 日常速查：[[vault::cheatsheet]]
-- 语言设计记录：[[vault::designs::D0001-language-overview]] 起
+- 语言设计记录：[[vault::designs::overview]] 起
