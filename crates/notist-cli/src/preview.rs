@@ -6,7 +6,7 @@ use std::net::{IpAddr, Ipv4Addr, SocketAddr};
 use std::path::PathBuf;
 use std::process::ExitCode;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
-use std::sync::{Arc, RwLock};
+use std::sync::{Arc, Mutex, RwLock};
 use std::time::Duration;
 
 use axum::Router;
@@ -28,11 +28,19 @@ use crate::build::{SiteOptions, merge_diagnostics, render_workspace, write_rende
 use crate::output::OutputFormat;
 use crate::service::LocalNotistClient;
 
+/// One event on the live-reload channel: a published site revision, or the
+/// shutdown signal that ends every live-reload stream.
+#[derive(Clone, Debug)]
+enum PreviewEvent {
+    Revision(u64),
+    Shutdown,
+}
+
 pub fn run(
     root: PathBuf,
     host: IpAddr,
     port: u16,
-    no_open: bool,
+    open: bool,
     color: ColorChoice,
     no_daemon: bool,
     format: OutputFormat,
@@ -66,6 +74,9 @@ pub fn run(
             let mut snapshot_revision = initial_snapshot_revision;
             while !thread_stop.load(Ordering::Acquire) {
                 std::thread::sleep(Duration::from_millis(250));
+                // Retired site generations are deleted here, on the dedicated
+                // worker thread, so page requests never pay the cost.
+                rebuild_site.delete_retired();
                 let summary = match client.request(CoreRequest::SnapshotSummary { view_id }) {
                     Ok(summary) => summary,
                     Err(error) => {
@@ -85,7 +96,7 @@ pub fn run(
                 match rebuilt {
                     Ok(diagnostics) => {
                         let revision = rebuild_revision.fetch_add(1, Ordering::SeqCst) + 1;
-                        let _ = rebuild_updates.send(revision);
+                        let _ = rebuild_updates.send(PreviewEvent::Revision(revision));
                         if let Err(error) = print_rebuild_status(format, revision, &diagnostics) {
                             emit_preview_error(format, "output_failed", &error.to_string());
                         }
@@ -93,13 +104,22 @@ pub fn run(
                     Err(error) => emit_preview_error(format, "rebuild_failed", &error.to_string()),
                 }
             }
+            rebuild_site.delete_retired();
         })?;
 
     let runtime = tokio::runtime::Builder::new_multi_thread()
         .enable_all()
         .build()?;
-    let server_result =
-        runtime.block_on(serve(site, host, port, no_open, revision, updates, format));
+    let server_result = runtime.block_on(serve(
+        site,
+        host,
+        port,
+        open,
+        revision,
+        updates,
+        rebuild_stop.clone(),
+        format,
+    ));
 
     rebuild_stop.store(true, Ordering::Release);
     if rebuild_thread.join().is_err() {
@@ -124,10 +144,7 @@ fn rebuild_preview_site(
 
     let rendered = render_workspace(client, view_id)?;
     write_rendered_site(&rendered, &staging, SiteOptions { live_reload: true })?;
-    let diagnostics_reply = client.request(CoreRequest::Diagnostics { view_id })?;
-    let CoreResponse::Diagnostics(mut diagnostics) = diagnostics_reply.response else {
-        return Err("service returned an unexpected diagnostics response".into());
-    };
+    let mut diagnostics = rendered.analysis_diagnostics;
     merge_diagnostics(&mut diagnostics, rendered.evaluation_diagnostics);
 
     site.publish(staging);
@@ -170,7 +187,7 @@ fn emit_preview_error(format: OutputFormat, event: &str, message: &str) {
 #[derive(Clone)]
 struct PreviewState {
     revision: Arc<AtomicU64>,
-    updates: broadcast::Sender<u64>,
+    updates: broadcast::Sender<PreviewEvent>,
     site: PublishedSite,
 }
 
@@ -179,15 +196,24 @@ struct PublishedSite {
     root: Arc<PathBuf>,
     current: Arc<RwLock<Arc<SiteGeneration>>>,
     next: Arc<AtomicU64>,
+    /// Retired generation directories awaiting deletion. Deletion is deferred
+    /// off the request path: `remove_dir_all` over a whole site generation is
+    /// slow and must never block a tokio worker serving a page request.
+    retired: Arc<Mutex<Vec<PathBuf>>>,
 }
 
 struct SiteGeneration {
     path: PathBuf,
+    retired: Arc<Mutex<Vec<PathBuf>>>,
 }
 
 impl Drop for SiteGeneration {
     fn drop(&mut self) {
-        let _ = fs::remove_dir_all(&self.path);
+        // Enqueue, never delete inline: the last reference is usually released
+        // by a `serve_static` request future, and blocking that worker stalls
+        // the next request on the same keep-alive connection.
+        let mut retired = self.retired.lock().unwrap_or_else(|error| error.into_inner());
+        retired.push(self.path.clone());
     }
 }
 
@@ -196,10 +222,15 @@ impl PublishedSite {
         fs::create_dir_all(&root)?;
         let initial = root.join("generation-0");
         fs::create_dir_all(&initial)?;
+        let retired = Arc::new(Mutex::new(Vec::new()));
         Ok(Self {
             root: Arc::new(root),
-            current: Arc::new(RwLock::new(Arc::new(SiteGeneration { path: initial }))),
+            current: Arc::new(RwLock::new(Arc::new(SiteGeneration {
+                path: initial,
+                retired: retired.clone(),
+            }))),
             next: Arc::new(AtomicU64::new(1)),
+            retired,
         })
     }
 
@@ -209,11 +240,26 @@ impl PublishedSite {
     }
 
     fn publish(&self, path: PathBuf) {
-        *self.current.write().unwrap() = Arc::new(SiteGeneration { path });
+        *self.current.write().unwrap() = Arc::new(SiteGeneration {
+            path,
+            retired: self.retired.clone(),
+        });
     }
 
     fn capture(&self) -> Arc<SiteGeneration> {
         self.current.read().unwrap().clone()
+    }
+
+    /// Deletes every retired generation directory. Runs on the rebuild worker
+    /// thread (or at shutdown), never on a request-serving thread.
+    fn delete_retired(&self) {
+        let retired = {
+            let mut queue = self.retired.lock().unwrap_or_else(|error| error.into_inner());
+            std::mem::take(&mut *queue)
+        };
+        for path in retired {
+            let _ = fs::remove_dir_all(&path);
+        }
     }
 }
 
@@ -221,9 +267,10 @@ async fn serve(
     site: PublishedSite,
     host: IpAddr,
     port: u16,
-    no_open: bool,
+    open: bool,
     revision: Arc<AtomicU64>,
-    updates: broadcast::Sender<u64>,
+    updates: broadcast::Sender<PreviewEvent>,
+    rebuild_stop: Arc<AtomicBool>,
     format: OutputFormat,
 ) -> Result<(), Box<dyn Error>> {
     if !host.is_loopback() {
@@ -247,7 +294,7 @@ async fn serve(
     let address = listener.local_addr()?;
     let state = PreviewState {
         revision,
-        updates,
+        updates: updates.clone(),
         site,
     };
     let app = Router::new()
@@ -270,12 +317,12 @@ async fn serve(
         println!("preview server listening on {url}");
     }
 
-    if !no_open && let Err(error) = open::that_detached(&url) {
+    if open && let Err(error) = open::that_detached(&url) {
         emit_preview_error(format, "browser_open_failed", &error.to_string());
     }
 
     axum::serve(listener, app)
-        .with_graceful_shutdown(shutdown_signal(format))
+        .with_graceful_shutdown(shutdown_signal(format, updates, rebuild_stop))
         .await?;
     Ok(())
 }
@@ -328,20 +375,42 @@ fn static_request_path(path: &str) -> Option<PathBuf> {
 async fn events_response(
     State(state): State<PreviewState>,
 ) -> Sse<impl tokio_stream::Stream<Item = Result<Event, Infallible>>> {
-    let current = state.revision.load(Ordering::SeqCst);
-    let initial = once(Ok(Event::default().data(current.to_string())));
-    let updates = BroadcastStream::new(state.updates.subscribe()).filter_map(|result| {
-        result
-            .ok()
-            .map(|revision| Ok(Event::default().data(revision.to_string())))
-    });
-    Sse::new(initial.chain(updates)).keep_alive(KeepAlive::default())
+    Sse::new(revision_stream(state.revision.clone(), state.updates.clone()))
+        .keep_alive(KeepAlive::default())
 }
 
-async fn shutdown_signal(format: OutputFormat) {
+/// The live-reload revision stream: the current revision, then revisions as
+/// they are published, ending when the `Shutdown` event arrives so Ctrl+C can
+/// complete the graceful drain.
+fn revision_stream(
+    revision: Arc<AtomicU64>,
+    updates: broadcast::Sender<PreviewEvent>,
+) -> impl tokio_stream::Stream<Item = Result<Event, Infallible>> + Send {
+    let current = revision.load(Ordering::SeqCst);
+    let initial = once(Ok(Event::default().data(current.to_string())));
+    let revisions = BroadcastStream::new(updates.subscribe())
+        .filter_map(|result| result.ok())
+        .take_while(|event| matches!(event, PreviewEvent::Revision(_)))
+        .map(|event| match event {
+            PreviewEvent::Revision(revision) => Ok(Event::default().data(revision.to_string())),
+            PreviewEvent::Shutdown => unreachable!("take_while ends the stream on Shutdown"),
+        });
+    initial.chain(revisions)
+}
+
+async fn shutdown_signal(
+    format: OutputFormat,
+    updates: broadcast::Sender<PreviewEvent>,
+    rebuild_stop: Arc<AtomicBool>,
+) {
     if let Err(error) = tokio::signal::ctrl_c().await {
         emit_preview_error(format, "shutdown_signal_failed", &error.to_string());
     }
+    // Stop the rebuild worker immediately (no more error spam against a
+    // possibly dead service) and end every live-reload stream so the server
+    // can drain its connections and exit.
+    rebuild_stop.store(true, Ordering::Release);
+    let _ = updates.send(PreviewEvent::Shutdown);
 }
 
 #[cfg(test)]
@@ -390,6 +459,10 @@ mod tests {
         assert!(first_generation.path.is_dir());
         let first_path = first_generation.path.clone();
         drop(first_generation);
+        // Deletion is deferred: the drop never blocks the caller, so the
+        // retired directory survives until the rebuild worker drains it.
+        assert!(first_path.exists());
+        site.delete_retired();
         assert!(!first_path.exists());
     }
 
@@ -402,5 +475,22 @@ mod tests {
         );
         assert!(static_request_path("/%2e%2e/secret").is_none());
         assert!(static_request_path("/notes%5csecret").is_none());
+    }
+
+    #[tokio::test]
+    async fn revision_stream_ends_on_shutdown_event() {
+        let (updates, _) = broadcast::channel(16);
+        let revision = Arc::new(AtomicU64::new(1));
+        let mut stream = revision_stream(revision.clone(), updates.clone());
+
+        assert!(stream.next().await.is_some());
+
+        updates.send(PreviewEvent::Revision(3)).unwrap();
+        assert!(stream.next().await.is_some());
+
+        // The Shutdown event ends the stream: this is what lets the graceful
+        // drain finish while a browser holds an EventSource open.
+        updates.send(PreviewEvent::Shutdown).unwrap();
+        assert!(stream.next().await.is_none());
     }
 }

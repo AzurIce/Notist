@@ -1,221 +1,135 @@
 = Notist Cheatsheet
 
-这份文档汇总 Notist 当前的最小宿主语法。语法糖只解决高频书写中 Function call 过于繁琐的问题；低频、特定领域或特定 renderer 的能力由显式 Function 或未来 plugin 提供。精确规则以 [[vault::grammar]] 为准。
+这份文档汇总 Notist 当前 surface 的日常速查。语法糖只解决高频书写中构造器调用过于繁琐的问题；精确规则以 [[vault::grammar]] 为准，构造器逐一说明见 [[vault::functions]]，类型规则见 [[vault::types]]，概念介绍见 [[vault::intro]]。
 
-== 当前 Core 宿主语法
+== 语法糖总表
 
-| 能力 | 现行语法 | 对应语义 | 理由 |
-| --- | --- | --- | --- |
-| 普通文本 | 直接书写 | `text` | 文档基础 |
-| 段落 | 空行分段 | `paragraph` / `parbreak` | 高频且无法合理改成 Function call |
-| 标题 | `= Heading`、`== Heading` | `heading` | 高频，显式 level 调用繁琐 |
-| 加粗 | `*bold*` | `strong` | 笔记中高频；界面称“加粗”即可 |
-| 斜体 | `_italic_` | `emph` | 笔记中高频，Function call 会打断书写 |
-| 下划线 | `__underline__` | `underline` | 笔记中高频，显式调用明显更繁琐 |
-| 删除线 | `~~strike~~` | `strike` | 常用于保留已作废内容及其上下文 |
-| 行内 Raw | `` `raw` `` | `raw` | 代码、标识符和原样文本高频 |
-| Raw block | fenced backticks | `Raw` Element（`block=true`） | 显式 String 写多行代码过于繁琐 |
-| 无序列表 | `- item` | `list::item` | 高频，Function 嵌套明显过长 |
-| 有序列表 | `+ item` | `enum::item` | 与 Typst 一致且足够小巧 |
-| Task | `- [ ] item`、`- [x] item` | `task` / `task::item` | 状态标记高频，显式嵌套 Function 过长 |
-| Math | `$x^2$` | `math` | 公式需要轻量且明确的内容边界 |
-| 引用 | — | `quote` | 使用显式 Function，保留真实引用的语义 |
-| Wiki 引用 | `[[module#label]]` | `ref` | Notist 知识库的核心能力 |
-| 自动链接 | 裸 HTTP(S) URL | `link` | 高频且目标文本通常就是 URL |
-| 强制换行 | 行末 `\` | `linebreak` | Function 会打断自然书写 |
-| Pipe table | `| A | B |` | `table` / `table::cell` | 比大量 `#table::cell` 更易读 |
-| 单行注释 | `// comment` | 不生成 Content | 属于 lexer/parser，不需要 Comment Element |
-| 块注释 | `/* comment */` | 不生成 Content | 可跨行，适合临时隐藏一段源码 |
+````text
+= Title / == Title         → heading(level: n, [Title])
+```lang ... ```            → raw(..., lang: "lang", block: true)
+---                        → rule()
+- A                        → item([A])
++ A                        → item(ordered: true, [A])
+[[target#id]]              → ref("target#id")
+*text*                     → strong([text])
+_text_                     → emph([text])
+__text__                   → underline([text])
+~~text~~                   → strike([text])
+`code`（行内反引号）        → Raw（block: false）
+````
 
-`kbd` 是 built-in，但不需要额外语法糖：`#kbd[Ctrl + S]` 已经足够简洁。
+糖的语义不经过名字查找：`= 标题` 是语法层构造，显式 `#heading[...]` 才是普通名字解析。
 
-== Quote、Callout 与 Details
+== 内置构造器签名
 
-三者都使用显式 Function call。它们可能共用块级样式的实现，但语义和可用参数不同，不能把 Callout 当成一种 Quote。
-
-| Function | 签名 | 用途 |
-| --- | --- | --- |
-| `quote` | `quote(attribution: Content? = none, body: Content) -> Content` | 转述或摘录他人的原话 |
-| `callout` | `callout(kind: String = "note", title: Content? = none, body: Content) -> Content` | 作者的提示性内容 |
-| `details` | `details(summary: Content? = none, open: Bool = false, body: Content) -> Content` | 可折叠内容 |
-
-签名中的 `body: Content` 是尾随 Content 参数，实际调用时写成尾随 `[body]`。其他参数使用 `name=value` 传入；这让多段内容、列表和嵌套结构都不必塞进字符串参数里。
-
-```not
-#quote(attribution=[Francis Bacon])[
-  Knowledge is power.
-]
-
-#callout(kind="warning", title=[风险说明])[
-  保存前请检查配置。
-]
-
-#details(summary=[查看详情])[
-  这里是折叠内容。
-]
+```text
+ref(url: String) -> Content
+heading(level: Int = 1, trailing body: Content) -> Content
+raw(source: String, lang: String? = none, block: Bool = false) -> Content
+rule() -> Content
+callout(kind: String = "note", title: Content? = none, trailing body: Content) -> Content
+details(summary: Content? = none, open: Bool = false, trailing body: Content) -> Content
+item(ordered: Bool = false, trailing body: Content) -> Content
+strong / emph / underline / strike
+  (trailing body: Content) -> Content
 ```
 
-=== 普通 Quote
+未列出的名称一律产生 unknown function 诊断（调用保留为 `UnresolvedCall`）。
+
+== 调用规则
 
 ```not
-#quote[Knowledge is power]
-
-#quote(attribution=[Francis Bacon])[
-  Knowledge is power.
-]
+#heading(level: 2)[标题]
+#callout(kind: "warning", title: [风险])[正文]
+#item(ordered: true)[有序条目]
 ```
 
-`quote` 只表示真实引用，不提供 `>` 简写。这也与 Typst 的 `quote` Function 一致。
+- 命名实参 `name: value`；位置实参必须全部在具名实参之前，trailing Content block 是唯一例外；
+- `#f(kind: "warning")[内容]` 与 `#f(kind: "warning", [内容])` 等价；
+- 带默认值的形参只能具名绑定；重复/未知/缺失实参、类型不匹配都有确定诊断。
 
-=== Callout
+== 类型速查
+
+```text
+None / Bool / Int / Float / String / Content   基础类型
+T?                                             可空（含 None）
+fn(形参表) -> R                                 函数类型（形参 name: Type，= 表示可省略）
+```
+
+```text
+kind: String      必填，位置绑定
+kind: String =    可省略（有默认值），具名绑定
+kind: String?     必填但可为 None
+kind: String? =   可省略且可为 None
+```
+
+唯一 coercion：Int 传给 Float 形参时自动数值转换。插入规则：Content 原样；String 转 Text；Int/Float/Bool 转 Text；None 为空；Function 不能插入。
+
+== 标注速查
+
+```text
+@id                        赋 scope id（模块内唯一，可被 [[...#id]] 引用）
+#tag                       标签（任意多个）
+.class                     类名（任意多个）
+key = value                键值属性（String / Int / Bool 字面量）
+```
 
 ```not
-#callout(kind="warning", title=[保存前检查])[
-  保存前请检查配置。
-]
+文字内容@note                      # 行内 postfix：绑定前面紧接着的值
+
+@[wip]                            # 块级前缀：绑定下一个块级节点
+= 标题
+
+@![#design, status = "draft"]    # 模块属性：文件开头
+
+#[一段内容]@install               # 手动 scope + 行内标注
 ```
 
-`kind` 是面向语义、主题和导出的稳定分类；core 只约定常用的 `note`、`tip`、`important`、`warning`、`caution`，其他 kind 可由 plugin 或 theme 解释。`title` 未提供时不生成标题，避免暗中把 kind 变成可见文案。
+注意：标注的键值用等号（`key = value`），调用点命名实参用冒号（`name: value`）。
 
-=== Details
+== 运算符优先级
+
+```text
+高  一元 -、not
+    *  /
+    +  -
+    <  <=  >  >=     ==  !=
+    and（短路）
+低  or（短路）
+```
+
+`-a * b` 是 `(-a) * b`；`not a == b` 是 `not (a == b)`；`a and not b` 是 `a and (not b)`。
+
+== Code 速查
 
 ```not
-#details(summary=[点击展开])[
-  这里是折叠内容。
-]
+#let accent = "violet"                // let 绑定（顺序作用域）
+#let double = (x: Int) => x * 2       // lambda
+#let double(x: Int) -> Int = x * 2    // 函数定义糖（与上一行等价）
+#if 2 > 1 [对] else [错]               // if 表达式（Content 分支）
+#(1 + 2)                              // 括号嵌入完整表达式
+#{ let x = 1; x + 2 }                 // Code block
+#import self::theme::{accent as a}    // import（显式选择器，无 wildcard）
 ```
 
-`details` 只负责展开状态，不引入 `kind`。`summary` 为 `none` 时使用渲染器的通用折叠标题。需要“可折叠的警告”时，让 Callout 提供外层语义和样式：
+String 四种形态：`"转义"`、`"""多行"""`（opening 后立即换行）、`r#"raw"#`、`r#"""raw 多行"""#`。
+
+== 引用与模块速查
 
 ```not
-#callout(kind="warning", title=[风险说明])[
-  #details(summary=[查看详情])[
-    这里是折叠的警告内容。
-  ]
-]
+[[setup]]                   # 裸名（当前模块解析）
+[[self::setup]]             # 当前模块
+[[super::intro]]            # 父级
+[[vault::grammar]]          # 绝对路径
+[[vault::guide#install]]    # 绝对路径 + scope id
 ```
 
-== Inline 效果与去留
+`README.not` 表示所在目录；目录只要有 `.not` 后代或资源文件后代就形成 virtual module；外部 URL 语法合法但 v1 渲染为未解析文本并产生 info 级诊断。
 
-=== 建议保留
+== 模式与边界速查
 
-| 能力 | 源码或 Function | 实际效果 | HTML 语义 |
-| --- | --- | --- | --- |
-| 加粗 | `*重要*` | *重要* | `<strong>` |
-| 斜体 | `_现在_` | _现在_ | `<em>` |
-| 下划线 | `__标注__` | __标注__ | `<u>` |
-| 删除线 | `~~旧内容~~` | ~~旧内容~~ | `<s>` |
-| Raw | `` `let x = 1` `` | `let x = 1` | `<code>` |
-| Keyboard | `#kbd[Ctrl + S]` | #kbd[Ctrl + S] | `<kbd>` |
-| 自动链接 | `https://example.com` | https://example.com | `<a>` |
-
-`strong` 表示重要性，`emph` 表示语气重读；但面向笔记作者时可以直接称为“加粗”和“斜体”，不要求用户先理解这组排版术语。
-
-=== 源码注释
-
-注释由 parser 直接跳过，不产生 `Comment` Element，也不进入 HTML：
-
-```not
-// 单行注释到本行结束
-
-/*
-这是一段块注释，
-可以跨越多行。
-*/
-```
-
-与 Typst 一样，块注释支持嵌套：`/* 外层 /* 内层 */ 外层继续 */`。实现时应确保 URL 中的 `https://` 不会被误识别成注释。
-
-=== Insert 与 Underline
-
-两者默认都显示为下划线，但含义不同：
-
-| Element | 实际效果 | 原本语义 | 建议 |
-| --- | --- | --- | --- |
-| `insert` | `#insert[新增内容]` | 修订中新增的内容，HTML `<ins>` | 移入未来 revision plugin |
-| `underline` | #underline[带下划线内容] | 作者主动添加的常用下划线，HTML `<u>` | 保留为 core，简写为 `__...__` |
-
-普通下划线是高频排版操作；`insert` 则只有在修订追踪中才有独立价值。因此 core 只保留 `underline`，不同时保留视觉效果相近的 `insert`。
-
-== Table 效果
-
-Pipe table 暂时保留，因为它比显式 cell Function 更容易阅读和维护：
-
-```not
-| Name | Value |
-| --- | ---: |
-| one | 1 |
-| two | 2 |
-```
-
-| Name | Value |
-| --- | ---: |
-| one | 1 |
-| two | 2 |
-
-复杂的 `colspan`、`rowspan` 或动态表格仍可使用显式 `#table(...)`，不需要继续扩张 Pipe table 语法。
-
-== Rule
-
-下面的 Markdown 写法只是反例，不是 Notist 语法：
-
-```not
----
-```
-
-实际效果：
-
-#rule()
-
-Notist 当前只提供显式 `#rule()`。`---`、`***` 和 `___` 都保持为普通文本，避免继续扩张宿主语法并与其他标记产生歧义。
-
-== 已确认移出 Core
-
-| 能力 | 旧语法 / Element | 去向 |
-| --- | --- | --- |
-| 上标 | `^super^` / `super` | 移除；math 或 typography plugin |
-| 下标 | `~sub~` / `sub` | 移除；math 或 typography plugin |
-| 高亮 | `==highlight==` / `highlight` | 移除；typography plugin |
-| Terms | `/ Term: Description` / `terms` | 移除；低频且 `/` 不直观 |
-| Sample | `samp` | 移除；低频 |
-| Time | `time` | 移除；低频或 metadata plugin |
-| Video | `!video(...)` / `video` | 移除；media plugin |
-| Audio | `!audio(...)` / `audio` | 移除；media plugin |
-| Outline | `outline` | 移除；navigation/renderer plugin |
-
-== 后续 Plugin 候选
-
-| 能力 | 旧语法 / Element | Plugin 方向 |
-| --- | --- | --- |
-| Footnote | `^[...]` / `footnote` | publishing plugin |
-| Citation | `[@key]` / `cite` | bibliography plugin |
-| Abbreviation | `*[HTML]: ...` / `abbr` | glossary/semantic HTML plugin |
-| Insert | `++...++` / `insert` | revision plugin |
-| Spoiler | `>!...!<` / `spoiler` | interactive HTML plugin |
-
-== 最小示例
-
-```not
-= 项目标题
-
-这是一段包含 *重点*、_斜体_、__下划线__、~~已作废内容~~、`inline raw` 和 [[另一个页面]] 的正文。
-
-// 这是源码注释，不进入文档内容。
-
-/*
-这是一段多行源码注释。
-*/
-
-- 第一项
-- 第二项
-
-#callout(kind="warning", title=[保存前检查])[
-  请确认配置已经写入磁盘。
-]
-
-| Name | Value |
-| --- | --- |
-| one | two |
-```
-
-当前完整 Function 签名见 [[vault::functions]]，语法规则见 [[vault::grammar]]。
+- Markup：文档默认；`#` 进入 Code；Code 中 `[...]` 回到 Markup；`#[...]` 是 Markup 中 Content literal 的书写形式；裸 `[` `]` 是文本；
+- `#` 嵌入边界：顶层嵌入以空白终止（R01），二元运算符必须与操作数相邻；完整表达式写进括号 `#(...)`；紧跟文字时用 `;` 结束（`;` 被消费、不产生输出）；
+- 转义：`\` 转义 `#` `[` `]` `@` `\`；
+- 注释仅 Code 上下文：`//` 行注释、`/* ... */` 嵌套块注释；Markup 中它们是普通文本；
+- 空行产生段间分隔，单个换行仍属于同一段；同级标题归组为嵌套 Section。

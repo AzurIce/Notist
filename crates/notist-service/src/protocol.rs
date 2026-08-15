@@ -5,7 +5,7 @@ use std::path::PathBuf;
 use serde::{Deserialize, Serialize};
 
 pub const PROTOCOL_MAJOR: u16 = 3;
-pub const PROTOCOL_MINOR: u16 = 1;
+pub const PROTOCOL_MINOR: u16 = 2;
 pub const CAPABILITIES: &[&str] = &[
     "completion",
     "definition",
@@ -37,7 +37,6 @@ impl ProtocolVersion {
 pub enum ClientKind {
     Cli,
     Lsp,
-    Mcp,
     Preview,
     Test,
 }
@@ -60,6 +59,11 @@ pub struct HandshakeAccepted {
     pub protocol_version: ProtocolVersion,
     pub daemon_instance: String,
     pub capabilities: Vec<String>,
+    /// Stamp of the binary the daemon was started from, when it can be read.
+    /// Clients compare it against their own executable to detect a daemon that
+    /// is serving stale code and recycle it (see D0005).
+    #[serde(default)]
+    pub daemon_binary_stamp: Option<u64>,
 }
 
 pub fn negotiate(handshake: &Handshake) -> Result<HandshakeAccepted, String> {
@@ -75,6 +79,7 @@ pub fn negotiate(handshake: &Handshake) -> Result<HandshakeAccepted, String> {
             minor: PROTOCOL_MINOR,
         },
         daemon_instance: String::new(),
+        daemon_binary_stamp: None,
         capabilities: handshake
             .requested_capabilities
             .iter()

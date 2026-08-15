@@ -1,4 +1,4 @@
-use notist_model::{TextRange, Type};
+use notist_model::{ModuleReference, TextRange, Type};
 
 use crate::{Call, ContentBlock, SpannedName, SyntaxError};
 
@@ -38,6 +38,34 @@ pub enum ExpressionKind {
         left: Box<Expression>,
         right: Box<Expression>,
     },
+    Unary {
+        operator: UnaryOperator,
+        operand: Box<Expression>,
+    },
+    /// A Code block: multiple statements with join semantics (D0006).
+    Block(Vec<Expression>),
+    /// A general value binding `let name[: T] = expression` (D0007).
+    Let {
+        name: SpannedName,
+        annotation: Option<Type>,
+        value: Box<Expression>,
+    },
+    /// A conditional expression (D0007).
+    If {
+        condition: Box<Expression>,
+        then_branch: Box<Expression>,
+        else_branch: Option<Box<Expression>>,
+    },
+    /// An anonymous function `(params) => expression` (D0007).
+    Lambda {
+        parameters: Vec<UserParameter>,
+        body: Box<Expression>,
+    },
+    /// A Code import with explicit selectors (D0004: no wildcard).
+    Import {
+        module: ModuleReference,
+        selectors: Vec<ImportSelector>,
+    },
     LetFunction(Box<UserFunctionDefinition>),
     Parenthesized(Box<Expression>),
     /// A recoverable invalid expression retained in the tree.
@@ -50,6 +78,29 @@ pub enum BinaryOperator {
     Subtract,
     Multiply,
     Divide,
+    Equal,
+    NotEqual,
+    Less,
+    LessEqual,
+    Greater,
+    GreaterEqual,
+    And,
+    Or,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum UnaryOperator {
+    Not,
+}
+
+/// One explicitly selected root binding of an import (D0004).
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct ImportSelector {
+    /// The Code name in the target module.
+    pub name: String,
+    /// The `as` alias that binds the value locally, when renamed.
+    pub alias: Option<SpannedName>,
+    pub range: TextRange,
 }
 
 #[derive(Clone, Debug, PartialEq)]

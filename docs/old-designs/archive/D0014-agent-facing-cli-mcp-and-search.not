@@ -25,7 +25,7 @@ full export
 
 普通查询始终有默认预算与服务端硬上界。调用者可以用参数在硬上界内收紧或扩大页面，但不能关闭上界；需要完整数据时必须显式进入 export。这个规则不是只为 Agent 优化 token，它同时避免终端被大结果淹没、脚本意外缓存整库正文，以及 MCP tool output 在后续对话中反复回放。
 
-本文拥有 core query contract、普通 CLI 命令、MCP tool/resource 投影、全文检索和输出预算。[[vault::old-designs::D0011-analyzer-and-workspace-snapshot]] 继续定义 snapshot、identity 与 query consistency；[[vault::old-designs::D0012-daemon-and-client-interfaces]] 继续定义每 Vault daemon、Analyzer View 和协议适配层；[[vault::old-designs::D0013-self-contained-agent-skill]] 继续定义官方 Skill 与文档 Vault 的发布方式。把这些接口放在单独的设计中，是因为查询与输出会共同演进，而不应反过来改变 daemon 拓扑或 Skill 包装。
+本文拥有 core query contract、普通 CLI 命令、MCP tool/resource 投影、全文检索和输出预算。[[vault::old-designs::archive::D0011-analyzer-and-workspace-snapshot]] 继续定义 snapshot、identity 与 query consistency；[[vault::old-designs::archive::D0012-daemon-and-client-interfaces]] 继续定义每 Vault daemon、Analyzer View 和协议适配层；[[vault::old-designs::archive::D0013-self-contained-agent-skill]] 继续定义官方 Skill 与文档 Vault 的发布方式。把这些接口放在单独的设计中，是因为查询与输出会共同演进，而不应反过来改变 daemon 拓扑或 Skill 包装。
 
 == 一个 Core Query Contract
 
@@ -275,7 +275,7 @@ Lexical/fuzzy query 只在 `IndexStamp.source_set_fingerprint` 与捕获 snapsho
 | `--pager auto|always|never` | 只分页当前 bounded page，不自动读取 continuation |
 | `--no-daemon` | 在当前进程运行同一 service/core operation |
 
-每个需要 Vault 的命令都把 `[ROOT]` 放在最后一个 positional，默认 `.`，并按 [[vault::old-designs::D0007-notist-toml]] 解析最近的 Vault root。`lsp` 按 editor workspace 动态发现多个 root；`daemon` 与 `mcp` 固定一个 root。Protocol stdio 命令拒绝 text/json/color/pager 组合，而不是把日志混入协议 stdout。
+每个需要 Vault 的命令都把 `[ROOT]` 放在最后一个 positional，默认 `.`，并按 [[vault::old-designs::archive::D0007-notist-toml]] 解析最近的 Vault root。`lsp` 按 editor workspace 动态发现多个 root；`daemon` 与 `mcp` 固定一个 root。Protocol stdio 命令拒绝 text/json/color/pager 组合，而不是把日志混入协议 stdout。
 
 Collection command 共享 `-n, --limit`、`--max-bytes` 与 `--cursor`，但 help 必须展示该 operation 的实际 default 与 maximum。`limit` 是统一的页大小概念，不另设含义含混的 `top`。Cursor 不存在时 query/filter 参数定义第一页面；cursor 存在时相同参数仍然显式提供并由服务验证。普通命令不提供 `--all`，完整输出只能使用 export。
 

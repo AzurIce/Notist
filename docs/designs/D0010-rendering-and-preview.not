@@ -1,6 +1,6 @@
 = D0010: Rendering and Preview
 
-本文承接 [[self::D0002-evaluation-model-and-type-system]]（成型结构树与属性表）、[[self::D0004-vault-module-and-scope]]（引用寻址与 RefTarget）、[[self::D0009-lsp-and-implementation-architecture]]（WorkspaceSnapshot）。本文定义 HTML 能力的三层：`notist-html` 把语义文档渲染为 HTML fragment，`notist build` 把整个 Vault 构建为静态站点，`notist preview` 在本地持续构建并提供浏览器预览。
+本文承接 [[vault::designs::D0002-evaluation-model-and-type-system]]（成型结构树与属性表）、[[vault::designs::D0004-vault-module-and-scope]]（引用寻址与 RefTarget）、[[vault::designs::D0009-lsp-and-implementation-architecture]]（WorkspaceSnapshot）。本文定义 HTML 能力的三层：`notist-html` 把语义文档渲染为 HTML fragment，`notist build` 把整个 Vault 构建为静态站点，`notist preview` 在本地持续构建并提供浏览器预览。
 
 动线：产品模型 → notist-html（元素映射、锚点、区间属性、安全）→ Static Build（URL、资源、诊断）→ Local Preview（SSE、原子重建、网络边界）→ 一致性。
 
@@ -43,17 +43,17 @@ Strong / Emph / Underline / Strike -> <strong> / <em> / <u> / <s>
 Raw（block: true）     -> <pre><code>；Raw（block: false） -> <code>
 Rule                  -> <hr>
 Reference             -> <a class="notist-reference">（解析后）
-Callout               -> <div class="notist-callout" data-kind="...">
+Callout               -> <aside class="notist-callout" data-notist-kind="...">
 Details               -> <details><summary>...</summary>...
 Custom                -> 带 data-notist-name 的 span/div
 Missing 引用 / 未知 Custom -> 不可点击的 span（保留可见文本）
 ```
 
-Quote 与 Table 暂缓（D0003），映射随元素进入语言时补充。Parbreak 不渲染（段落结构已由成型给出）。
+Quote 与 Table 不进入当前语言（D0003 整体暂缓）；映射随元素进入语言时补充。本表是当前内置元素集合（D0002 元素树）的封闭映射：每增加一行都以 D0003 引入新元素为前提。Parbreak 不渲染（段落结构已由成型给出）。
 
 === 锚点与引用链接
 
-- 显式 scope id 与标题默认 id（D0004）投影为 HTML `id` 锚点。id 满足 HTML id 语法（Unicode 字母/数字/连字符/下划线，不以数字或连字符开头）时直接使用；否则用确定性规则生成稳定锚点（如 `loc-N`）——同 Typst HTML 导出的处理。锚点与源码位置可互相推导，不依赖随机数。
+- 显式 scope id 与标题默认 id（D0004）投影为 HTML `id` 锚点。id 满足 HTML id 语法（Unicode 字母/数字/连字符/下划线，不以数字或连字符开头）时直接使用；否则用确定性规则生成稳定锚点——回退锚点是元素起始字节偏移的纯函数（`loc-<offset>`，如 `loc-140`），同 Typst HTML 导出的处理。锚点与源码位置可互相推导，不依赖随机数或文档序历史。
 - Reference 在构建/渲染时 resolve（RefTarget，D0004）：
   - `Module(path)` → 目标页面相对 URL；
   - `Scope(module, id)` → 目标页面 URL + `#锚点`（含标题默认 id 定位到节）；
@@ -92,7 +92,7 @@ vault::designs::type-system  -> designs/type-system/index.html
 
 URL 中的路径 segment 单独 percent encode；页面之间使用相对链接，使构建结果可直接从任意静态文件服务器或子路径部署。
 
-- **资源复制**：资源目录虚拟模块（D0004）中的文件按引用复制到输出（`vault::docs::images#logo.png` → 输出下对应路径），Reference 指向复制后的相对路径；未被引用的资源文件也可以整体复制（站点资源），由 CLI 决定——值层只有 Reference，资源解析属于构建层；
+- **资源复制**：资源目录虚拟模块（D0004）中的文件按引用复制到输出（`vault::docs::images#logo.png` → 输出下对应路径），Reference 指向复制后的相对路径；未被引用的资源文件也可以整体复制（站点资源），由 CLI 决定——值层只有 Reference，资源解析属于构建层。当前 CLI 决策：默认整体复制所有模块资源（无额外旗标）；
 - **虚拟目录模块**生成索引页（列出子模块与资源）；
 - 引用在构建时解析：目标存在输出链接，不存在保留可见文本与 unresolved 样式；
 - syntax/analysis/evaluation diagnostics 不阻止生成其他可用页面，但 `notist build` 输出 diagnostics 并返回非零退出码；

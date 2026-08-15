@@ -1,6 +1,6 @@
 = D0009: LSP and Implementation Architecture
 
-本文承接 [[self::D0005-daemon-architecture]]（daemon 进程形态与 core request 表）与 [[self::D0008-cli-and-skill]]（CLI 命令面与查询契约）。本文定义实现层：先定义分析层——Analyzer 与 WorkspaceSnapshot，它是 LSP 与 CLI 的共同基础，并满足 D0008 的查询契约（stamp、cursor 稳定性、预算）；再定义 LSP 适配与 CLI 适配——它们只是协议层，不成为新的语义层。
+本文承接 [[vault::designs::D0005-daemon-architecture]]（daemon 进程形态与 core request 表）与 [[vault::designs::D0008-cli-and-skill]]（CLI 命令面与查询契约）。本文定义实现层：先定义分析层——Analyzer 与 WorkspaceSnapshot，它是 LSP 与 CLI 的共同基础，并满足 D0008 的查询契约（stamp、cursor 稳定性、预算）；再定义 LSP 适配与 CLI 适配——它们只是协议层，不成为新的语义层。
 
 动线：分析层（输入 → revision → snapshot → 查询 → delta → 并发）→ LSP 适配（文档同步、position 转换、capabilities、安全）→ CLI 适配（协议投影）。
 

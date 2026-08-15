@@ -6,7 +6,8 @@ mod raw;
 mod scope;
 
 pub use argument::{
-    Argument, BinaryOperator, Expression, ExpressionKind, StringLiteral, StringLiteralForm,
+    Argument, BinaryOperator, Expression, ExpressionKind, ImportSelector, StringLiteral,
+    StringLiteralForm, UnaryOperator,
     StringLiteralStyle, UserFunctionDefinition, UserParameter,
 };
 pub use raw::{RawLiteral, RawLiteralForm, SpannedText};
@@ -49,6 +50,54 @@ pub enum MarkupItem {
     Wiki(WikiLink),
     Raw(RawLiteral),
     Embedded(EmbeddedExpression),
+    /// A line-leading `= ...` heading sugar (D0003). The body is Markup up
+    /// to the line end.
+    Heading(HeadingSugar),
+    /// A line-leading `---` rule sugar (D0003).
+    Rule(TextRange),
+    /// A contiguous run of `- ` / `+ ` list lines (D0003 item sugar); nesting
+    /// is carried by row indentation.
+    List(ListSugar),
+    /// A standalone `@[...]` annotation bound to the next block-level node
+    /// (D0006 block-prefix mount point).
+    BlockAnnotation(BlockAnnotation),
+    /// A file-leading `@![...]` annotation bound to the root scope as module
+    /// metadata (D0006 module mount point).
+    ModuleAnnotation(BlockAnnotation),
+}
+
+/// A line-leading heading sugar node: the `=` run length is the level, the
+/// remainder of the line is the heading body (D0003).
+#[derive(Clone, Debug, PartialEq)]
+pub struct HeadingSugar {
+    pub level: u32,
+    pub body: Markup,
+    pub range: TextRange,
+}
+
+/// A contiguous run of `- ` / `+ ` list lines (D0003 item sugar).
+#[derive(Clone, Debug, PartialEq)]
+pub struct ListSugar {
+    pub rows: Vec<ListSugarRow>,
+    pub range: TextRange,
+}
+
+/// One list line: indentation, marker kind, and the body Markup to the line
+/// end (D0003).
+#[derive(Clone, Debug, PartialEq)]
+pub struct ListSugarRow {
+    pub indent: usize,
+    pub ordered: bool,
+    pub marker_len: usize,
+    pub body: Markup,
+    pub range: TextRange,
+}
+
+/// A standalone bracket-delimited annotation (`@[...]` / `@![...]`, D0006).
+#[derive(Clone, Debug, PartialEq)]
+pub struct BlockAnnotation {
+    pub attributes: Attributes,
+    pub range: TextRange,
 }
 
 /// A `#`-prefixed Code expression embedded into Markup.
@@ -130,6 +179,17 @@ impl Parse {
         output
     }
 
+    /// Collects import statements in source order (D0004).
+    pub fn imports(&self) -> Vec<&Expression> {
+        let mut output = Vec::new();
+        visit_markup_expressions(&self.root, &mut |expression| {
+            if matches!(expression.kind, ExpressionKind::Import { .. }) {
+                output.push(expression);
+            }
+        });
+        output
+    }
+
     /// Collects host Raw literals in source order.
     pub fn raw_literals(&self) -> Vec<&RawLiteral> {
         let mut output = Vec::new();
@@ -183,8 +243,17 @@ impl Parse {
 fn visit_markup<'a>(markup: &'a Markup, visitor: &mut impl FnMut(&'a MarkupItem)) {
     for item in &markup.items {
         visitor(item);
-        if let MarkupItem::Embedded(embedded) = item {
-            visit_expression_markup(&embedded.expression, visitor);
+        match item {
+            MarkupItem::Embedded(embedded) => {
+                visit_expression_markup(&embedded.expression, visitor)
+            }
+            MarkupItem::Heading(sugar) => visit_markup(&sugar.body, visitor),
+            MarkupItem::List(sugar) => {
+                for row in &sugar.rows {
+                    visit_markup(&row.body, visitor);
+                }
+            }
+            _ => {}
         }
     }
 }
@@ -222,8 +291,17 @@ fn visit_expression_markup<'a>(
 
 fn visit_markup_expressions<'a>(markup: &'a Markup, visitor: &mut impl FnMut(&'a Expression)) {
     for item in &markup.items {
-        if let MarkupItem::Embedded(embedded) = item {
-            visit_expression(&embedded.expression, visitor);
+        match item {
+            MarkupItem::Embedded(embedded) => {
+                visit_expression(&embedded.expression, visitor)
+            }
+            MarkupItem::Heading(sugar) => visit_markup_expressions(&sugar.body, visitor),
+            MarkupItem::List(sugar) => {
+                for row in &sugar.rows {
+                    visit_markup_expressions(&row.body, visitor);
+                }
+            }
+            _ => {}
         }
     }
 }
@@ -271,6 +349,14 @@ pub fn parse_wiki_reference(source: &str) -> Result<WikiReference, String> {
 
     let mut parts = source.split('#');
     let module_part = parts.next().unwrap_or_default();
+    if looks_like_external(module_part) {
+        // External targets are deferred (D0004) but syntactically legal (R10):
+        // the literal url string parses and the resolver classifies it External.
+        return Ok(WikiReference {
+            module: ModuleReference::External(source.to_owned()),
+            label: None,
+        });
+    }
     let label = parts.next().map(str::trim).map(str::to_owned);
     if parts.next().is_some() {
         return Err("wiki reference contains more than one `#`".into());
@@ -374,6 +460,30 @@ fn is_module_segment(source: &str) -> bool {
     !source.chars().any(|character| {
         character.is_control() || matches!(character, '/' | '\\' | '#' | '[' | ']')
     })
+}
+
+/// Detects an external url scheme such as `https://` or `mailto:` while
+/// leaving module paths (`vault::x`, which use `::`) alone.
+fn looks_like_external(source: &str) -> bool {
+    if source.contains("://") {
+        return true;
+    }
+    let bytes = source.as_bytes();
+    let Some(colon) = bytes.iter().position(|byte| *byte == b':') else {
+        return false;
+    };
+    if bytes.get(colon + 1) == Some(&b':') {
+        return false;
+    }
+    let scheme = &source[..colon];
+    !scheme.is_empty()
+        && scheme
+            .chars()
+            .next()
+            .is_some_and(|character| character.is_ascii_alphabetic())
+        && scheme
+            .chars()
+            .all(|character| character.is_ascii_alphanumeric() || matches!(character, '+' | '-' | '.'))
 }
 
 #[cfg(test)]
@@ -556,8 +666,11 @@ mod tests {
     }
 
     #[test]
-    fn skips_line_and_nested_block_comments_without_treating_urls_as_comments() {
-        let source = "before // hidden\nafter /* outer /* nested */ hidden */ https://example.test/a/*path*/";
+    fn markup_keeps_comment_syntax_as_ordinary_text() {
+        // E09: `//` and `/* ... */` are Code-context trivia only; the Markup
+        // text stream keeps them verbatim (including url-like sequences).
+        let source =
+            "before // hidden\nafter /* outer /* nested */ hidden */ https://example.test/a/*path*/";
         let parse = parse(source);
         assert!(parse.errors.is_empty(), "{:?}", parse.errors);
         let visible = parse
@@ -569,12 +682,27 @@ mod tests {
                 _ => None,
             })
             .collect::<String>();
-        assert_eq!(visible, "before \nafter  https://example.test/a/*path*/");
+        assert_eq!(visible, source);
     }
 
     #[test]
-    fn reports_unclosed_block_comments() {
-        let parse = parse("visible /* hidden");
+    fn code_trivia_skips_line_and_nested_block_comments() {
+        // D0007: comments inside Code contexts are lexical trivia. The
+        // argument list is a Code context, so the comments between arguments
+        // disappear and the call stays well-formed.
+        let parsed = parse("#heading(level: /* outer /* nested */ inner */ 2)[Title]");
+        assert!(parsed.errors.is_empty(), "{:?}", parsed.errors);
+        assert!(parsed.calls()[0].arguments.iter().any(|argument| {
+            matches!(&argument.name, Some(name) if name.value == "level")
+        }));
+
+        let block = parse("#{ // line comment\n 1 + 2 }");
+        assert!(block.errors.is_empty(), "{:?}", block.errors);
+    }
+
+    #[test]
+    fn reports_unclosed_block_comments_in_code_contexts() {
+        let parse = parse("#{ /* hidden");
         assert!(
             parse
                 .errors
@@ -584,30 +712,269 @@ mod tests {
     }
 
     #[test]
+    fn parses_block_and_module_annotations() {
+        // D0006: `@![...]` at the file start is the module mount point,
+        // `@[...]` at line start is the block-prefix mount point.
+        let parsed = parse("@![#design, status = \"draft\"]\n\n@[wip]\n= Title\n\n@[install]\nbody");
+        assert!(parsed.errors.is_empty(), "{:?}", parsed.errors);
+        assert!(matches!(
+            &parsed.root.items[0],
+            MarkupItem::ModuleAnnotation(_)
+        ));
+        assert_eq!(
+            parsed
+                .root
+                .items
+                .iter()
+                .filter(|item| matches!(item, MarkupItem::BlockAnnotation(_)))
+                .count(),
+            2
+        );
+        let MarkupItem::ModuleAnnotation(module) = &parsed.root.items[0] else {
+            panic!()
+        };
+        assert!(module.attributes.items.iter().any(|attribute| {
+            matches!(attribute, Attribute::Tag(name) if name.value == "design")
+        }));
+        assert!(module.attributes.items.iter().any(|attribute| {
+            matches!(attribute, Attribute::KeyValue { key, value, .. } if key.value == "status" && value.raw == "\"draft\"")
+        }));
+    }
+
+    #[test]
+    fn rejects_misplaced_module_annotations_and_dangling_at() {
+        let parsed = parse("正文\n@![x]");
+        assert!(parsed
+            .errors
+            .iter()
+            .any(|error| error.message.contains("before any content")));
+        let parsed = parse("@!missing");
+        assert!(parsed
+            .errors
+            .iter()
+            .any(|error| error.message == "expected `[` after `@!`"));
+        // `@` followed by an identifier is ordinary text, never an annotation.
+        let mention = parse("@user 提及");
+        assert!(mention.errors.is_empty(), "{:?}", mention.errors);
+        assert!(matches!(
+            &mention.root.items[0],
+            MarkupItem::Text(text) if text.value == "@user 提及"
+        ));
+    }
+
+    #[test]
+    fn parses_bare_code_blocks_in_markup() {
+        // D0006: `{...}` is the Code block form usable bare in Markup.
+        let parsed = parse("{ let x = 1; x + 1 }");
+        assert!(parsed.errors.is_empty(), "{:?}", parsed.errors);
+        let MarkupItem::Embedded(embedded) = &parsed.root.items[0] else {
+            panic!()
+        };
+        assert!(matches!(
+            embedded.expression.kind,
+            ExpressionKind::Block(_)
+        ));
+    }
+
+    #[test]
+    fn parses_heading_rule_and_list_sugar_as_frontend_items() {
+        // D0003: sugar is a syntax-frontend node — the evaluator never
+        // rescans source text.
+        let parsed = parse("= Title\n\n---\n\n- one\n- two\n");
+        assert!(parsed.errors.is_empty(), "{:?}", parsed.errors);
+        assert!(matches!(
+            &parsed.root.items[0],
+            MarkupItem::Heading(sugar) if sugar.level == 1
+        ));
+        let Some((rule_index, _)) = parsed
+            .root
+            .items
+            .iter()
+            .enumerate()
+            .find(|(_, item)| matches!(item, MarkupItem::Rule(_)))
+        else {
+            panic!()
+        };
+        assert!(matches!(
+            &parsed.root.items[rule_index],
+            MarkupItem::Rule(range) if range.start == 9 && range.end == 12
+        ));
+        let Some((list_index, _)) = parsed
+            .root
+            .items
+            .iter()
+            .enumerate()
+            .find(|(_, item)| matches!(item, MarkupItem::List(_)))
+        else {
+            panic!()
+        };
+        let MarkupItem::List(sugar) = &parsed.root.items[list_index] else {
+            panic!()
+        };
+        assert_eq!(sugar.rows.len(), 2);
+        assert!(!sugar.rows[0].ordered);
+        assert!(matches!(
+            &sugar.rows[0].body.items[0],
+            MarkupItem::Text(text) if text.value == "one"
+        ));
+    }
+
+    #[test]
+    fn parses_nested_list_indentation_and_setext_boundaries() {
+        let parsed = parse("- parent\n  + child\n- sibling");
+        assert!(parsed.errors.is_empty(), "{:?}", parsed.errors);
+        let MarkupItem::List(sugar) = &parsed.root.items[0] else {
+            panic!()
+        };
+        assert_eq!(sugar.rows.len(), 3);
+        assert_eq!(sugar.rows[0].indent, 0);
+        assert!(sugar.rows[1].ordered && sugar.rows[1].indent == 2);
+        assert!(!sugar.rows[2].ordered && sugar.rows[2].indent == 0);
+
+        // `=foo` is ordinary text; `= foo` is heading sugar (D0003).
+        let boundary = parse("=foo\n= bar");
+        assert!(boundary.errors.is_empty(), "{:?}", boundary.errors);
+        assert!(matches!(
+            &boundary.root.items[0],
+            MarkupItem::Text(text) if text.value == "=foo\n"
+        ));
+        assert!(matches!(
+            &boundary.root.items[1],
+            MarkupItem::Heading(sugar) if sugar.level == 1
+        ));
+    }
+
+    #[test]
+    fn parses_colon_named_arguments_and_operator_precedence() {
+        let parsed = parse("#callout(kind: \"warning\", title: [注意], [内容。])");
+        assert!(parsed.errors.is_empty(), "{:?}", parsed.errors);
+        let call = &parsed.calls()[0];
+        assert_eq!(call.arguments.len(), 3);
+        assert_eq!(call.arguments[0].name.as_ref().unwrap().value, "kind");
+        assert_eq!(call.arguments[1].name.as_ref().unwrap().value, "title");
+        assert!(call.arguments[2].name.is_none());
+
+        let parsed = parse("#(1 + 2 * 3 == 7 and not false or 2 < 3)");
+        assert!(parsed.errors.is_empty(), "{:?}", parsed.errors);
+        let MarkupItem::Embedded(embedded) = &parsed.root.items[0] else {
+            panic!()
+        };
+        let ExpressionKind::Parenthesized(inner) = &embedded.expression.kind else {
+            panic!("expected parenthesized expression")
+        };
+        let ExpressionKind::Binary { operator: BinaryOperator::Or, .. } = &inner.kind else {
+            panic!("expected top-level `or`, got {:?}", inner.kind)
+        };
+    }
+
+    #[test]
+    fn embed_boundary_stops_at_whitespace_and_consumes_semicolon() {
+        // R01: `#1 + 2` embeds `1` and keeps " + 2" as Markup text.
+        let parsed = parse("#1 + 2");
+        assert!(parsed.errors.is_empty(), "{:?}", parsed.errors);
+        assert!(matches!(
+            &parsed.root.items[0],
+            MarkupItem::Embedded(EmbeddedExpression {
+                expression: Expression {
+                    kind: ExpressionKind::Int(1),
+                    ..
+                },
+                ..
+            })
+        ));
+        assert!(matches!(&parsed.root.items[1], MarkupItem::Text(text) if text.value == " + 2"));
+
+        // D0001: `;` terminates an embed and produces no output.
+        let parsed = parse("第一段#accent;文字");
+        assert!(parsed.errors.is_empty(), "{:?}", parsed.errors);
+        let text = parsed
+            .root
+            .items
+            .iter()
+            .filter_map(|item| match item {
+                MarkupItem::Text(text) => Some(text.value.as_str()),
+                _ => None,
+            })
+            .collect::<String>();
+        assert_eq!(text, "第一段文字");
+    }
+
+    #[test]
+    fn parses_imports_with_explicit_selectors_and_aliases() {
+        let parsed = parse("#import super::shared::{format as shared_format, warning}");
+        assert!(parsed.errors.is_empty(), "{:?}", parsed.errors);
+        let imports = parsed.imports();
+        assert_eq!(imports.len(), 1);
+        let ExpressionKind::Import { module, selectors } = &imports[0].kind else {
+            panic!("expected an import, got {:?}", imports[0].kind)
+        };
+        assert_eq!(
+            module,
+            &ModuleReference::Parent {
+                levels: 1,
+                remainder: vec!["shared".to_owned()],
+            }
+        );
+        assert_eq!(selectors.len(), 2);
+        assert_eq!(selectors[0].name, "format");
+        assert_eq!(
+            selectors[0].alias.as_ref().map(|alias| alias.value.as_str()),
+            Some("shared_format")
+        );
+        assert_eq!(selectors[1].name, "warning");
+        assert!(selectors[1].alias.is_none());
+        // `path::{...}`: the brace separator does not extend the path.
+        let parsed = parse("#import vault::theme::{accent}");
+        assert!(parsed.errors.is_empty(), "{:?}", parsed.errors);
+        let ExpressionKind::Import { module, .. } = &parsed.imports()[0].kind else {
+            panic!()
+        };
+        assert_eq!(
+            module,
+            &ModuleReference::Absolute(vec!["theme".to_owned()])
+        );
+    }
+
+    #[test]
+    fn heading_markup_is_not_consumed_by_equality_operators() {
+        // R01: the equality operator must not swallow a following line's
+        // heading marker — `== 标题` on its own line is heading sugar, never
+        // an operand of the preceding embed.
+        let parsed = parse("#callout[内容]\n\n== 标题");
+        assert!(parsed.errors.is_empty(), "{:?}", parsed.errors);
+        assert_eq!(parsed.root.items.len(), 3);
+        assert!(matches!(
+            &parsed.root.items[2],
+            MarkupItem::Heading(sugar) if sugar.level == 2
+        ));
+    }
+
+    #[test]
     fn parses_typed_user_functions_and_binary_precedence() {
+        // D0007 type surface: scalars, T?, and fn(parameters) -> R. Array/
+        // Dict/Union were removed (R07).
         let parse = parse(
             "#let combine(\
-             values: Array<Int>,\
-             lookup: Dict<String, Float>,\
-             choice: String | None = none,\
-             callback: Function,\
+             values: fn(x: Int =, y: Int =) -> Int,\
+             choice: String? = none,\
+             callback: fn() -> Content,\
              ) -> Float? = 1 + 2 * 3",
         );
         assert!(parse.errors.is_empty(), "{:?}", parse.errors);
         let functions = parse.user_functions();
         assert_eq!(functions.len(), 1);
         let function = functions[0];
-        assert_eq!(function.parameters[0].ty, Type::Array(Box::new(Type::Int)));
+        assert_eq!(function.parameters[0].ty, Type::Function);
         assert_eq!(
             function.parameters[1].ty,
-            Type::Dict(Box::new(Type::String), Box::new(Type::Float))
+            Type::Optional(Box::new(Type::String))
         );
-        assert_eq!(
-            function.parameters[2].ty,
-            Type::Union(vec![Type::String, Type::None])
-        );
-        assert_eq!(function.parameters[3].ty, Type::Function);
+        assert_eq!(function.parameters[2].ty, Type::Function);
         assert_eq!(function.result, Type::Optional(Box::new(Type::Float)));
+
+        // Array/Dict/Union names are no longer types (R07).
+        let legacy = crate::parse("#let f(values: Array<Int>) = 1");
+        assert!(legacy.errors.iter().any(|error| error.message == "unknown type `Array`"));
         let ExpressionKind::Binary {
             operator: BinaryOperator::Add,
             right,

@@ -1,6 +1,6 @@
 = D0004: Vault, Module and Scope
 
-本文承接前三篇：[[self::D0001-language-overview]] 展示了单文件求值的样子，[[self::D0002-evaluation-model-and-type-system]] 定义了求值模型与类型系统，[[self::D0003-builtin-functions-and-syntax-sugar]] 定义了内置函数与引用目标空间。本文定义文件之间的世界结构——Vault（运行边界）、Module（求值单元）、以及跨模块的连接（import 与引用寻址）。
+本文承接前三篇：[[vault::designs::D0001-language-overview]] 展示了单文件求值的样子，[[vault::designs::D0002-evaluation-model-and-type-system]] 定义了求值模型与类型系统，[[vault::designs::D0003-builtin-functions-and-syntax-sugar]] 定义了内置函数与引用目标空间。本文定义文件之间的世界结构——Vault（运行边界）、Module（求值单元）、以及跨模块的连接（import 与引用寻址）。
 
 动线：先定边界（Vault），再定单元（Module），然后定义单元之间的两种连接——程序面的 import 与知识面的 Reference——最后给出两张跨模块图的环语义。
 
@@ -28,7 +28,9 @@ CLI 与 LSP 的具体行为（overlay 归属、vault 切换）属于实现文档
 - Module 树的根与 discovery boundary；
 - language version 与 core/prelude 环境；
 - 允许的 capability 与 plugin schema；
-- 引用与 import 的解析边界：跨 Vault 一律不解析。
+- 引用与 import 的解析边界：跨 Vault 一律不解析——跨 Vault 目标对外表现为 unresolved，Vault 不探测边界外。
+
+配置内容模型（language version、capability、plugin schema 的字段与语义）待后续设计记录（core namespace 与 plugin 边界，预留 D0011）定义；此前 Notist.toml 保持空标记或未知键预留，分析层按字节载荷携带配置。
 
 == Module
 
@@ -49,7 +51,7 @@ vault-root/
 ```
 
 - 普通文件名成为最后一个路径段；`README.not` 表示所在目录。`submodule2.not` 与 `submodule2/README.not` 都映射到 `vault::submodule2`，不能同时存在——一个逻辑 Module 至多一个 source，使定义、import、引用与输出路径共享单一身份；
-- 目录只要有 `.not` 后代就形成 virtual module（即使没有自己的 `README.not`），只提供命名空间与 child identity，不凭空产生 Content 或 bindings；
+- 目录只要有 `.not` 后代或资源文件后代就形成 virtual module（即使没有自己的 `README.not`），只提供命名空间与 child identity，不凭空产生 Content 或 bindings；
 - 移动 source 若改变 ModulePath，就是逻辑 Module 重命名，而不仅是文件移动——Reference 与 import 需要同一个 rename plan。
 
 === 资源目录
@@ -119,7 +121,7 @@ scope 是值层节点（D0002：节点即环境）。带 id 的 scope 承担模�
 - `[[vault::guide#install]]` 解析到该 scope 在模块内的位置；
 - 匿名 scope 不可寻址——想被引用或查询，就创建带 id 的节点（这正是手动 scope 的意义之一）。
 
-heading 额外拥有**默认 id**：标题 body 提取的纯文本（见 [[self::D0003-builtin-functions-and-syntax-sugar]]）。引用 `#` 后缀的匹配顺序：先按显式 id 精确匹配，再按标题默认 id（标题文本）精确匹配——标题文本不需要符合标识符语法（`[[...]]` 内是字面字符串）。重复标题产生歧义诊断，作者用显式 `@id` 消歧；显式 id 总是覆盖默认 id。
+heading 额外拥有**默认 id**：标题 body 提取的纯文本（见 [[vault::designs::D0003-builtin-functions-and-syntax-sugar]]）。引用 `#` 后缀的匹配顺序：先按显式 id 精确匹配，再按标题默认 id（标题文本）精确匹配——标题文本不需要符合标识符语法（`[[...]]` 内是字面字符串）。重复标题产生歧义诊断，作者用显式 `@id` 消歧；显式 id 总是覆盖默认 id。
 
 === 资源文件解析
 
@@ -151,7 +153,7 @@ RefTarget
 
 === 外部 URL（暂缓）
 
-带 scheme（`https://`、`mailto:` 等）的外部目标暂缓进入语言：v1 的引用目标空间只包含 vault 内部目标。RefTarget 预留 External 分支，待外部目标进入时启用；配套的 `link` 构造器与裸 URL 自动链接糖同步暂缓（见 [[self::D0003-builtin-functions-and-syntax-sugar]]）。
+带 scheme（`https://`、`mailto:` 等）的外部目标暂缓进入语言：v1 的引用目标空间只包含 vault 内部目标。RefTarget 预留 External 分支，待外部目标进入时启用；配套的 `link` 构造器与裸 URL 自动链接糖同步暂缓（见 [[vault::designs::D0003-builtin-functions-and-syntax-sugar]]）。`[[https://...]]` 语法合法（target 是字面 url 字符串，见 D0003）：解析产物为 `External(url)`，v1 渲染为未解析的可见文本并产生 info 级 `external-reference-unsupported` 诊断——不是语法错误。
 
 == 两张跨模块图
 

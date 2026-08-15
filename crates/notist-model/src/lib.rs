@@ -4,17 +4,12 @@ mod content;
 mod signature;
 
 pub use content::{
-    Block, Content, Element, ElementNode, StructuredDocument, TableAlignment, TableCellPlacement,
-    TableLayoutError, table_layout,
+    Block, Content, Element, ElementNode, StructuredDocument,
 };
 pub use signature::{
-    DefaultValue, FunctionSignature, Parameter, Type, abbr_signature, audio_signature,
-    builtin_signatures, callout_signature, cite_signature, code_signature, details_signature,
-    empty_content_signature, enum_item_signature, figure_signature, heading_signature,
-    image_signature, inline_body_signature, link_signature, list_item_signature, list_signature,
-    math_signature, outline_signature, quote_signature, raw_signature, ref_signature,
-    table_cell_signature, table_signature, task_item_signature, terms_item_signature,
-    text_signature, time_signature, video_signature,
+    DefaultValue, FunctionSignature, Parameter, Type, builtin_signatures, callout_signature,
+    details_signature, empty_content_signature, heading_signature, inline_body_signature,
+    item_signature, raw_signature, ref_signature,
 };
 
 /// A half-open byte range in a source file.
@@ -102,6 +97,8 @@ pub enum ModuleReference {
         levels: usize,
         remainder: Vec<String>,
     },
+    /// A literal external url target (deferred in v1, but syntactically legal).
+    External(String),
 }
 
 impl ModuleReference {
@@ -112,6 +109,35 @@ impl ModuleReference {
             Self::Parent { levels, remainder } => {
                 Some(current.ancestor(*levels)?.child(remainder.clone()))
             }
+            Self::External(_) => None,
+        }
+    }
+}
+
+impl std::fmt::Display for ModuleReference {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Absolute(segments) => {
+                formatter.write_str("vault")?;
+                for segment in segments {
+                    write!(formatter, "::{segment}")?;
+                }
+                Ok(())
+            }
+            Self::Relative(segments) => {
+                formatter.write_str("self")?;
+                for segment in segments {
+                    write!(formatter, "::{segment}")?;
+                }
+                Ok(())
+            }
+            Self::Parent { levels, remainder } => {
+                for _ in 0..*levels {
+                    formatter.write_str("super::")?;
+                }
+                formatter.write_str(&remainder.join("::"))
+            }
+            Self::External(url) => formatter.write_str(url),
         }
     }
 }

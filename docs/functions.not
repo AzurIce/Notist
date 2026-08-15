@@ -1,302 +1,212 @@
 = Built-in Functions
 
-本文记录当前工具 surface 实际提供的 core Function。未列出的名称不是现行 built-in，调用时会产生 unknown function 诊断。下一版可编程语言将把这些 constructor 作为 `core` namespace 中的 first-class Function Value，并让 Raw layout 成为显式 `block` argument；对应设计见 [[vault::old-designs::D0004-core-functions-and-syntax-sugar]]、[[vault::old-designs::D0010-string-literals-and-raw-syntax]] 与 [[vault::old-designs::D0016-surface-language-and-core-grammar]]。
+本文记录当前工具 surface 实际提供的 11 个内置构造器。未列出的名称不是现行 built-in，调用时产生 unknown function 诊断，元素以 `UnresolvedCall` 保留（渲染器有兜底）。调用模型与类型规则见 [[vault::types]]，语法细节见 [[vault::grammar]]，速查见 [[vault::cheatsheet]]。
 
 == 签名总览
 
 ```text
-text(value: String) -> Content
-paragraph(body: Content) -> Content
-ref(target: String) -> Content
-heading(level: Int = 1, body: Content) -> Content
-raw(text: String, lang: String? = none) -> Content
-code(text: String, lang: String? = none, block: Bool = false) -> Content
-quote(attribution: Content? = none, body: Content) -> Content
-callout(kind: String = "note", title: Content? = none, body: Content) -> Content
-details(summary: Content? = none, open: Bool = false, body: Content) -> Content
-list(body: Content) -> Content
-enum(body: Content) -> Content
-list::item(body: Content) -> Content
-enum::item(value: Int? = none, body: Content) -> Content
-task(body: Content) -> Content
-task::item(checked: Bool = false, body: Content) -> Content
-table::cell(colspan: Int = 1, rowspan: Int = 1, body: Content) -> Content
-table(columns: Int, header: Bool = false, align: String? = none, caption: Content? = none, body: Content) -> Content
-strong(body: Content) -> Content
-emph(body: Content) -> Content
-strike(body: Content) -> Content
-underline(body: Content) -> Content
-kbd(body: Content) -> Content
-math(text: String, block: Bool = false) -> Content
-link(destination: String, title: String? = none, body: Content) -> Content
-image(source: String, alt: String = "", title: String? = none, width: Int? = none, height: Int? = none) -> Content
-figure(source: String, alt: String = "", title: String? = none, caption: Content) -> Content
-linebreak() -> Content
-parbreak() -> Content
+ref(url: String) -> Content
+heading(level: Int = 1, trailing body: Content) -> Content
+raw(source: String, lang: String? = none, block: Bool = false) -> Content
 rule() -> Content
-pagebreak() -> Content
+callout(kind: String = "note", title: Content? = none, trailing body: Content) -> Content
+details(summary: Content? = none, open: Bool = false, trailing body: Content) -> Content
+item(ordered: Bool = false, trailing body: Content) -> Content
+strong(trailing body: Content) -> Content
+emph(trailing body: Content) -> Content
+underline(trailing body: Content) -> Content
+strike(trailing body: Content) -> Content
 ```
 
-签名中的 `body: Content` 通常是 trailing Content 参数，因此在调用末尾写成 `[...]`。命名参数使用 `name=value`：
+签名记号：`T?` 是可空类型（可传 `none`）；`= 默认值` 表示形参可省略且只能具名绑定；`trailing` 表示末尾 Content 形参，调用时写作尾随 `[内容]`。
+
+== 调用规则
 
 ```not
-#heading(level=2)[标题]
-#link(destination="https://example.com", title="示例站点")[打开]
+#heading(level: 2)[标题]
+#raw(r#"fn main() {}"#, lang: "rust", block: true)
+#callout(kind: "warning", title: [风险])[正文]
 ```
 
-== 文本、段落与引用
+- 命名实参写作 `name: value`；
+- 位置实参必须全部出现在具名实参之前，trailing Content block 是唯一例外——`#f(kind: "warning")[内容]` 与 `#f(kind: "warning", [内容])` 等价；
+- 带默认值的形参只能具名绑定（可选即 named），不带默认值的形参按声明顺序位置绑定；
+- 重复绑定、未知实参、缺失必填实参与类型不匹配都产生指向调用位置的诊断；
+- 内置构造器是 first-class 函数：可以绑定、传递与组合——`#let make_title = heading` 合法。
 
-`text` 构造不会再次解析 Markup 的普通文本。`paragraph` 显式构造只包含 inline Content 的段落。普通文本和空行分别是它们更自然的宿主写法。
+== ref
+
+```text
+ref(url: String) -> Content
+```
+
+产生 Reference 元素。`url` 是字面引用串，与 `[[...]]` 糖共享同一解析入口——不解析 markup、不嵌套 `[[`：
 
 ```not
-普通文本会自然组成段落。
-
-#paragraph[显式段落可以包含 *加粗* 与 _斜体_。]
-#text("*这里的星号保持原样*")
+[[vault::grammar]]
+#ref("vault::grammar")
+[[vault::guide#install]]
 ```
 
-`ref` 指向 Module 或 label。Wiki Reference 是知识库书写时的语法糖：
+- 目标空间：文档模块（`vault::path::to::file`）、模块内目标（`... #id`，标题默认 id 亦匹配）、资源文件（`vault::path::to::assets#logo.png`，完整文件名精确匹配）；
+- 带 scheme（`https://` 等）的外部 URL 语法合法：解析为 External 目标，v1 渲染为未解析的可见文本并产生 info 级 `external-reference-unsupported` 诊断；
+- 目标解析产物与引用图见 [[vault::designs::D0004-vault-module-and-scope]]。
+
+== heading
+
+```text
+heading(level: Int = 1, trailing body: Content) -> Content
+```
+
+产生 Heading 元素。`level` 必须至少为 1，无上限（渲染时折叠到 h6 以内）。糖：行首的 `=` 串（无空白）后接内容，`=` 数量即 level：
 
 ```not
-[[guide::intro#overview]]
-#ref("guide::intro#overview")
+= Title     ~= heading(level: 1, [Title])
+== Title    ~= heading(level: 2, [Title])
 ```
 
-== Heading
+- 语法边界：行首 `=` 连续出现一个或多个，其后必须跟空白（或行尾），再后是标题 body；`=foo` 是普通文本；
+- 错误恢复：行首 `=` 后无内容 → 空 body 的 Heading；
+- 标题拥有默认 id：body 提取的纯文本（Text 元素按顺序拼接，含嵌套）——`= 安装指南` 默认即可被 `[[...#安装指南]]` 引用；显式 `@id` 覆盖默认 id；无效文本回退为 `loc-<起始字节偏移>` 锚点；
+- 同级标题与其后内容归组为嵌套的 Section 节点（见 [[vault::designs::D0010-rendering-and-preview]]）。
 
-`heading` 的 `level` 必须位于 `1..=6`。标题属于高频块结构，因此保留 Typst 风格的 `=` 语法：
+== raw
+
+```text
+raw(source: String, lang: String? = none, block: Bool = false) -> Content
+```
+
+产生 Raw 元素。构造器校验：`block` 为 false 时 `source` 含换行产生诊断——多行源码必须写 `block: true`。
 
 ```not
-= 一级标题
-== 二级标题
+#raw("cargo test", lang: "text")
 
-#heading(level=3)[三级标题]
+#raw(
+  r#"""
+fn main() {
+    println!("hello");
+}
+"""#,
+  lang: "rust",
+  block: true,
+)
 ```
 
-不支持 Markdown Setext 标题。
-
-== Raw 与 Code
-
-`raw` 和 `code` 都保存未经 Markup 解析的 String。`code.block` 显式选择 inline 或 block 输出；`lang` 是可选语言标识。
+糖：行首围栏代码块（三个以上反引号）。围栏内容为 source（原样，不解析 markup、不做转义），opening line 上的标注为 lang，block 恒为 true：
 
 ````not
-`inline raw`
-
 ```rust
-fn main() {}
+println!("Hello");
 ```
-
-#code(text="let answer = 42", lang="rust")
-#code(text="fn main() {}", lang="rust", block=true)
 ````
 
-Backtick 与 fenced Raw 是宿主语法。`raw` 和 `code` 不接受 trailing Content，源码必须作为 String 参数传入。
+等价于 `raw("println!(\"Hello\");", lang: "rust", block: true)`。行内反引号（一对相同长度的 backtick run）同样产生 Raw 元素，block 为 false；未闭合围栏 → 内容到文件尾并产生诊断。
 
-== Quote
+== rule
 
-`quote` 表示真正的转述或摘录。`attribution` 接受可选 Content，因此可以包含格式或引用：
-
-```not
-#quote[
-  Knowledge is power.
-]
-
-#quote(attribution=[Francis Bacon])[
-  Knowledge is power.
-]
+```text
+rule() -> Content
 ```
 
-Quote 不提供 `>` 语法糖；`>` 保持为普通文本。
-
-== Callout 与 Details
-
-`callout` 表示作者自己的提示性内容。`kind` 是供主题和导出使用的稳定分类，默认为 `note`；`title` 是可选 Content。
+产生 Rule 分割线。糖：行首三个以上连续 `-` 且其后只有空白：
 
 ```not
-#callout[
-  这是一条普通提示。
-]
-
-#callout(kind="warning", title=[保存前检查])[
-  请确认配置已经写入磁盘。
-]
+---
 ```
 
-`details` 只负责折叠状态。`summary` 是可选 Content，`open` 默认为 `false`；HTML renderer 在 summary 为 `none` 时使用通用的 `Details` 标题。
+- `---` 是 rule；`-` 后跟空白与内容 → 列表条目糖（见 item）；
+- 不足三个的连字符（如 `--`）按普通文本处理，不产生诊断。
 
-```not
-#details(summary=[查看详情])[
-  默认折叠的内容。
-]
+== callout
 
-#details(open=true)[
-  初始展开的内容。
-]
+```text
+callout(kind: String = "note", title: Content? = none, trailing body: Content) -> Content
 ```
 
-可折叠 Callout 由外层 Callout 提供语义和样式，内层 Details 控制展开：
+产生 Callout 提示框。`kind` 是面向语义与导出的稳定分类，为空产生诊断；`title` 未提供时不生成标题。无语法糖——通过显式调用使用：
 
 ```not
-#callout(kind="warning", title=[风险说明])[
-  #details(summary=[查看详情])[
-    这里是折叠的警告内容。
-  ]
+#callout(kind: "note")[普通提示。]
+
+#callout(kind: "warning", title: [风险])[保存前请检查配置。]
+```
+
+== details
+
+```text
+details(summary: Content? = none, open: Bool = false, trailing body: Content) -> Content
+```
+
+产生 Details 可折叠内容。`summary` 为 `none` 时由渲染器提供通用折叠标题；`open` 决定初始展开状态。无语法糖：
+
+```not
+#details(summary: [查看详情], open: false)[
+这里是折叠内容。
 ]
 ```
 
-Callout 与 Details 都不提供 `!!!`、`???` 或 `>` 简写。
+== item
 
-== Inline Content
-
-常用 inline Function 与宿主语法如下：
-
-| 效果 | Function | 宿主语法 |
-| --- | --- | --- |
-| 加粗 | `strong(body: Content)` | `*重要*` |
-| 斜体 | `emph(body: Content)` | `_强调_` |
-| 下划线 | `underline(body: Content)` | `__术语__` |
-| 删除线 | `strike(body: Content)` | `~~作废~~` |
-| 键盘输入 | `kbd(body: Content)` | 无 |
-
-```not
-这段文字包含 *加粗*、_斜体_、__下划线__ 和 ~~删除线~~。
-
-按下 #kbd[Ctrl + S] 保存。
+```text
+item(ordered: Bool = false, trailing body: Content) -> Content
 ```
 
-`kbd` 的显式调用已经足够简洁，因此不增加定界符。
-
-== List、Enum 与 Task
-
-显式容器只接受对应的 item Element：
+产生列表条目：`ordered` 为 false 时是 ListItem，为 true 时是 EnumItem。糖：行首 `- ` 或 `+ `（符号后必须有空白）：
 
 ```not
-#list[
-  #list::item[Alpha]
-  #list::item[Beta]
-]
-
-#enum[
-  #enum::item[First]
-  #enum::item[Second]
-]
-
-#task[
-  #task::item[待处理]
-  #task::item(checked=true)[已完成]
-]
+- A    ~= item([A])
++ A    ~= item(ordered: true, [A])
 ```
 
-日常书写使用更紧凑的宿主语法：
+- 语法边界：行首空白 + `-`/`+` + 空白 + 内容，内容到行尾；
+- 错误恢复：符号后无内容 → 空条目（合法）；
+- 缩进嵌套：缩进增加的条目嵌套到此前最近的较浅条目之下；
+- item 是 structural sugar：相邻的同类条目（ordered 相同、之间无块级间隔）由成型组合为 List（无序）或 Enum（有序）——显式调用动态产生的 item 进入同一组合算法。
 
 ```not
-- Alpha
-- Beta
+- parent
+  - child
+- sibling
 
-+ First
-+ Second
-
-- [ ] 待处理
-- [x] 已完成
+#item[显式条目]#item[另一个条目]
 ```
 
-缩进可以构造嵌套列表或 Task。
+== strong / emph / underline / strike
 
-== Math
+```text
+strong(trailing body: Content)    -> Content
+emph(trailing body: Content)      -> Content
+underline(trailing body: Content) -> Content
+strike(trailing body: Content)    -> Content
+```
 
-`math` 保存公式源码，`block` 决定 inline 或 block。`$...$` 与 `$$...$$` 是高频公式的宿主语法：
+行内强调构造器。糖：
+
+```text
+*text*    ~= strong([text])
+_text_    ~= emph([text])
+__text__  ~= underline([text])
+~~text~~  ~= strike([text])
+```
+
+- 语法边界：开符后必须跟非空白、非同符字符，闭符前必须是非空白——`/* 不是强调 */` 保持文本；
+- `__` 优先匹配 underline（最长匹配优先于单个 `_`）；
+- 可嵌套其他强调（`**x**` 即嵌套的 strong）；
+- 错误恢复：行尾未闭合 → 恢复为普通文本并产生诊断；未配对的符号保持文本。
 
 ```not
-行内公式 $x^2 + y^2$。
-
-$$
-E = mc^2
-$$
-
-#math("x^2 + y^2")
-#math("E = mc^2", block=true)
+*加粗*、_斜体_、__下划线__、~~删除线~~。
 ```
 
-== Link、Image 与 Figure
+== 未知函数
 
-`link` 使用 trailing Content 作为可见文本。裸 HTTP(S) URL 会自动产生 Link；Markdown 的 `[label](url)` 不是 Notist 语法。
+不在上表的名称（含任何 `::` 命名空间形式）都产生 unknown function 诊断：
 
 ```not
-https://example.com
-#link("https://example.com")[示例站点]
+#plugin::mermaid(source: r#"""
+graph TD
+    A --> B
+"""#)
 ```
 
-图片和图注使用显式 Function：
-
-```not
-#image(source="images/flow.png", alt="流程图", width=640)
-
-#figure(source="images/flow.png", alt="流程图")[
-  构建流程
-]
-```
-
-Video 与 Audio 不属于 core，后续由 media plugin 提供。
-
-== Table
-
-显式 Table 适合动态构造，Pipe Table 适合直接阅读和维护：
-
-```not
-#table(columns=2, header=true, align="left,right", caption=[库存])[
-  #table::cell[名称]
-  #table::cell[数量]
-  #table::cell[Apple]
-  #table::cell[2]
-]
-
-| 名称 | 数量 |
-| --- | ---: |
-| Apple | 2 |
-```
-
-`colspan` 与 `rowspan` 必须是正整数。`align` 是与列数相同的逗号分隔列表，成员为 `left`、`center`、`right` 或 `default`。
-
-== Break
-
-```not
-第一行\
-仍在同一段落。
-
-#linebreak()
-#parbreak()
-#rule()
-#pagebreak()
-```
-
-行末反斜线是 `linebreak` 的高频语法糖。`rule` 当前只提供显式 Function，不把 Markdown 的 `---`、`***` 或 `___` 识别为分隔线。
-
-== 源码注释
-
-注释属于 lexer/parser trivia，不是 Element，也没有 `comment` Function：
-
-```not
-可见内容。 // 单行注释
-
-/*
-  块注释可以跨行。
-  /* 也可以嵌套。 */
-*/
-```
-
-URL 中的 `https://` 不会被误识别为单行注释。
-
-== Plugin 边界
-
-以下能力已经移出 core，不再注册 Function，也不再识别旧语法糖：
-
-| 能力 | 后续方向 |
-| --- | --- |
-| Footnote、Citation | publishing / bibliography plugin |
-| Abbreviation | glossary plugin |
-| Insert | revision plugin |
-| Spoiler | interactive plugin |
-| Highlight、Super、Sub | typography / math plugin |
-| Terms、Outline | semantic list / navigation plugin |
-| Sample、Time | semantic metadata plugin |
-| Video、Audio | media plugin |
+调用不会被静默丢弃——解析为 `UnresolvedCall` 元素保留在 Content 中，渲染器对其有兜底展示，预览与工具恢复可以继续处理其余源码。插件与扩展机制按 `Custom` 元素走渲染层兜底，不改变内置构造器集合（见 [[vault::designs::D0002-evaluation-model-and-type-system]]）。

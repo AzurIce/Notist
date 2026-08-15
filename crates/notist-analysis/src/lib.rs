@@ -1,4 +1,4 @@
-use std::collections::{BTreeMap, BTreeSet};
+use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::fs;
 use std::io;
 use std::path::{Path, PathBuf};
@@ -10,8 +10,8 @@ use notist_eval::{
     FunctionRegistry, Value, structure,
 };
 use notist_model::{
-    Block, Content, DefaultValue, Element, FunctionSignature, ModulePath, StructuredDocument,
-    TextRange, Type, WikiReference,
+    Block, Content, DefaultValue, Element, ElementNode, FunctionSignature, ModulePath,
+    ModuleReference, StructuredDocument, TextRange, Type, WikiReference,
 };
 use notist_syntax::{Call, Expression, ExpressionKind, Parse, parse, parse_wiki_reference};
 
@@ -19,7 +19,8 @@ mod check;
 
 pub use check::{
     CheckDiagnostic, LocalSymbolId, ModuleSemanticIndex, SignatureSet, SymbolDefinition,
-    SymbolKind, SymbolReference, check_module, resolve_module_symbols,
+    SymbolKind, SymbolReference, check_module, check_module_with_prelude,
+    resolve_module_symbols,
 };
 
 /// The marker file whose containing directory is a Notist vault root.
@@ -223,17 +224,25 @@ fn placeholder_value(ty: &Type, name: &str) -> Value {
         Type::Float => Value::Float(0.0),
         Type::String => Value::String(String::new()),
         Type::Content => Value::Content(Content::default()),
-        Type::Array(_) => Value::Array(Vec::new()),
-        Type::Dict(_, _) => Value::Dict(Vec::new()),
-        Type::Function => Value::Function(name.to_owned()),
-        Type::Optional(_) => Value::None,
-        Type::Union(members) => members
-            .first()
-            .map_or(Value::None, |member| placeholder_value(member, name)),
+        Type::Function => Value::Function(Box::new(notist_eval::FunctionValue {
+            signature: notist_eval::FunctionSignature {
+                parameters: Vec::new(),
+                trailing_content: None,
+                result: Type::Inferred,
+            },
+            implementation: notist_eval::FunctionImplementation::Builtin(name.to_owned()),
+            captured: std::collections::HashMap::new(),
+        })),
+        Type::Optional(_) | Type::Inferred => Value::None,
     }
 }
 
-fn safe_evaluation_diagnostics(source: &str, signatures: &SignatureSet) -> Vec<EvalDiagnostic> {
+fn safe_evaluation_diagnostics(
+    source: &str,
+    parse: &notist_syntax::Parse,
+    signatures: &SignatureSet,
+    seeds: &HashMap<String, Value>,
+) -> Vec<EvalDiagnostic> {
     let mut registry = FunctionRegistry::with_builtins();
     for (name, signature) in signatures.iter() {
         if registry.get(name).is_none() {
@@ -244,7 +253,7 @@ fn safe_evaluation_diagnostics(source: &str, signatures: &SignatureSet) -> Vec<E
         }
     }
     Evaluator::new(registry)
-        .evaluate(source)
+        .evaluate_parsed_with_bindings(source, parse, seeds.clone())
         .diagnostics
         .into_iter()
         .filter(|diagnostic| !diagnostic.message.starts_with("unknown function `"))
@@ -274,6 +283,26 @@ pub struct Module {
     pub source: Option<Arc<str>>,
     /// The parsed source, or `None` for a virtual directory module.
     pub parse: Option<Parse>,
+    /// Resource files living in the module's directory, addressed by file name.
+    pub resources: Vec<ResourceFile>,
+}
+
+/// A non-source file discovered inside a module's directory.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct ResourceFile {
+    /// The file name, which is also its module-local label.
+    pub name: String,
+    /// Absolute path of the file on disk.
+    pub path: PathBuf,
+    /// Resolution-level classification of the resource.
+    pub kind: ResourceKind,
+}
+
+/// The resource classification assigned during resolution (D0004).
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum ResourceKind {
+    Image,
+    File,
 }
 
 /// Unsaved source texts keyed by their absolute source path.
@@ -282,13 +311,14 @@ pub type SourceOverlays = BTreeMap<PathBuf, Arc<str>>;
 /// Optional editor document versions keyed by canonical source path.
 pub type DocumentVersions = BTreeMap<PathBuf, i64>;
 
-#[derive(Clone, Debug, Eq, PartialEq)]
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum DiagnosticKind {
     DuplicateModule,
     DuplicateLabel,
     InvalidSyntax,
     UnresolvedModule,
     UnresolvedLabel,
+    AmbiguousLabel,
     UnknownFunction,
     DuplicateFunction,
     UnresolvedName,
@@ -296,6 +326,53 @@ pub enum DiagnosticKind {
     InvalidArguments,
     TypeMismatch,
     Evaluation,
+    ExternalReferenceUnsupported,
+    ImportCycle,
+}
+
+/// Diagnostic severity classification (D0009). The full analysis always runs;
+/// severity only selects which diagnostics a caller asks to see in detail.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum DiagnosticSeverity {
+    Error,
+    Warning,
+    Info,
+}
+
+impl DiagnosticKind {
+    /// Classifies this diagnostic kind (deterministic per kind; D0003-style
+    /// warnings such as unreliable heading default ids map to Warning).
+    pub const fn severity(self) -> DiagnosticSeverity {
+        match self {
+            Self::ExternalReferenceUnsupported => DiagnosticSeverity::Info,
+            _ => DiagnosticSeverity::Error,
+        }
+    }
+
+    /// Serialized severity label used by query envelopes.
+    pub const fn severity_label(self) -> &'static str {
+        match self.severity() {
+            DiagnosticSeverity::Error => "error",
+            DiagnosticSeverity::Warning => "warning",
+            DiagnosticSeverity::Info => "info",
+        }
+    }
+
+    /// Standard recovery hint surfaced with the diagnostic when available.
+    pub fn hint(self) -> Option<&'static str> {
+        match self {
+            Self::AmbiguousLabel => {
+                Some("duplicate heading text: give one heading an explicit id")
+            }
+            Self::UnresolvedLabel => Some(
+                "check the label spelling, or the labeled scope does not exist in this module",
+            ),
+            Self::UnresolvedModule => Some(
+                "check the module path spelling; the module may not exist in this vault",
+            ),
+            _ => None,
+        }
+    }
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -313,6 +390,7 @@ pub struct ResolvedReference {
     pub source_module: ModulePath,
     pub source_path: PathBuf,
     pub range: TextRange,
+    pub url: String,
     pub target_module_id: ModuleId,
     pub target_module: ModulePath,
     pub target_label: Option<String>,
@@ -346,6 +424,40 @@ pub struct ReferenceTarget {
     pub revision: Revision,
     pub module_id: ModuleId,
     pub annotation: Option<AnnotationId>,
+}
+
+/// One static import edge (D0004): an explicit selector list from one
+/// module to another, resolved before evaluation.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct ImportEdge {
+    pub source_module: ModulePath,
+    pub source_path: PathBuf,
+    pub range: TextRange,
+    pub target_module: Option<ModulePath>,
+    pub selectors: Vec<(String, Option<String>)>,
+}
+
+/// Discriminated target produced by resolving a reference url (D0004): the
+/// target kind is a resolution product, not an element field.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub enum RefTarget {
+    Module(ModuleId),
+    Scope { module: ModuleId, id: String },
+    Resource {
+        module: ModuleId,
+        name: String,
+        kind: ResourceKind,
+    },
+    External(String),
+    Missing(MissingReason),
+}
+
+/// Why a reference target did not resolve (D0004: 不存在/歧义/不支持).
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum MissingReason {
+    Nonexistent,
+    Ambiguous,
+    Unsupported,
 }
 
 /// Stable semantic identity used by navigation queries within a snapshot.
@@ -485,6 +597,13 @@ pub struct WorkspaceSnapshot {
     module_paths: BTreeMap<ModuleId, ModulePath>,
     labels: Vec<LabelDefinition>,
     references: Vec<ResolvedReference>,
+    imports: Vec<ImportEdge>,
+    /// Imported bindings seeded into each module's evaluation, computed once
+    /// per snapshot in dependency order (D0004).
+    module_import_seeds: BTreeMap<ModuleId, HashMap<String, Value>>,
+    /// Module attributes declared by `@![...]` (D0006), captured once per
+    /// snapshot in the same dependency-ordered evaluation pass.
+    module_attributes: BTreeMap<ModuleId, Vec<notist_syntax::Attributes>>,
     diagnostics: Vec<Diagnostic>,
     signatures: SignatureSet,
     module_signatures: BTreeMap<ModuleId, SignatureSet>,
@@ -566,6 +685,9 @@ impl WorkspaceSnapshot {
             module_paths: BTreeMap::new(),
             labels: Vec::new(),
             references: Vec::new(),
+            imports: Vec::new(),
+            module_import_seeds: BTreeMap::new(),
+            module_attributes: BTreeMap::new(),
             diagnostics: Vec::new(),
             signatures: analyzer_configuration.signatures.clone(),
             module_signatures: BTreeMap::new(),
@@ -644,6 +766,26 @@ impl WorkspaceSnapshot {
         &self.diagnostics
     }
 
+    /// Returns the static import edges of this snapshot (D0004).
+    pub fn imports(&self) -> &[ImportEdge] {
+        &self.imports
+    }
+
+    /// Returns a module's root bindings — its own `let` bindings plus its
+    /// imported names (D0004 ModuleResult.bindings).
+    pub fn module_bindings(&self, module_id: ModuleId) -> Option<&HashMap<String, Value>> {
+        self.module_import_seeds.get(&module_id)
+    }
+
+    /// Returns a module's `@![...]` module attributes (D0006), published as
+    /// module metadata in source order.
+    pub fn module_attributes(&self, module_id: ModuleId) -> &[notist_syntax::Attributes] {
+        self.module_attributes
+            .get(&module_id)
+            .map(Vec::as_slice)
+            .unwrap_or(&[])
+    }
+
     pub fn references(&self) -> &[ResolvedReference] {
         &self.references
     }
@@ -656,6 +798,103 @@ impl WorkspaceSnapshot {
         self.labels
             .iter()
             .find(|label| &label.module == module && label.name == name)
+    }
+
+    /// Resolves a reference url written in a source module to its discriminated
+    /// target (D0004 RefTarget). External urls are syntactically legal (R10)
+    /// and classify as `External`; everything unresolved surfaces as `Missing`
+    /// with a reason instead of being swallowed.
+    pub fn resolve_reference(&self, source_module: &ModulePath, url: &str) -> RefTarget {
+        let Ok(reference) = parse_wiki_reference(url) else {
+            return RefTarget::Missing(MissingReason::Unsupported);
+        };
+        if let ModuleReference::External(external) = reference.module {
+            return RefTarget::External(external);
+        }
+        let Some(target) = reference.module.resolve_from(source_module) else {
+            return RefTarget::Missing(MissingReason::Nonexistent);
+        };
+        let Some(module) = self.modules.get(&target) else {
+            return RefTarget::Missing(MissingReason::Nonexistent);
+        };
+        match reference.label {
+            None => RefTarget::Module(module.id),
+            Some(label) => self.resolve_module_label(&target, &label),
+        }
+    }
+
+    /// Resolves a `module#label` selector's label part against one module:
+    /// explicit scope ids first, then heading default ids (exact heading text),
+    /// then resource file names (D0004). Duplicate heading texts are ambiguous.
+    pub fn resolve_module_label(&self, module_path: &ModulePath, label: &str) -> RefTarget {
+        let Some(module) = self.modules.get(module_path) else {
+            return RefTarget::Missing(MissingReason::Nonexistent);
+        };
+        if let Some(definition) = self
+            .labels
+            .iter()
+            .find(|definition| definition.module == *module_path && definition.name == label)
+        {
+            return RefTarget::Scope {
+                module: module.id,
+                id: definition.name.clone(),
+            };
+        }
+        let seeds = self
+            .module_import_seeds
+            .get(&module.id)
+            .cloned()
+            .unwrap_or_default();
+        let headings = heading_default_ids(module, &seeds);
+        let matches: Vec<_> = headings.iter().filter(|(text, _)| text == label).collect();
+        match matches.len() {
+            1 => RefTarget::Scope {
+                module: module.id,
+                id: label.to_owned(),
+            },
+            0 => match module.resources.iter().find(|resource| resource.name == label) {
+                Some(resource) => RefTarget::Resource {
+                    module: module.id,
+                    name: resource.name.clone(),
+                    kind: resource.kind,
+                },
+                None => RefTarget::Missing(MissingReason::Nonexistent),
+            },
+            _ => RefTarget::Missing(MissingReason::Ambiguous),
+        }
+    }
+
+    /// Returns the heading default ids (heading plain text plus source
+    /// range) of a source-backed module, in document order (D0003).
+    pub fn module_heading_default_ids(&self, module_path: &ModulePath) -> Vec<(String, TextRange)> {
+        let Some(module) = self.module(module_path) else {
+            return Vec::new();
+        };
+        let seeds = self
+            .module_import_seeds
+            .get(&module.id)
+            .cloned()
+            .unwrap_or_default();
+        heading_default_ids(module, &seeds)
+    }
+
+    /// Returns the source range covering a resolved scope label: the explicit
+    /// label's scope range, or the first heading default-id match range.
+    pub fn label_scope_range(&self, module: &ModulePath, label: &str) -> Option<TextRange> {
+        if let Some(definition) = self.label(module, label) {
+            return Some(definition.scope_range);
+        }
+        let module = self.module(module)?;
+        let seeds = self
+            .module_import_seeds
+            .get(&module.id)
+            .cloned()
+            .unwrap_or_default();
+        let headings = heading_default_ids(module, &seeds);
+        headings
+            .iter()
+            .find(|(text, _)| text == label)
+            .map(|(_, range)| *range)
     }
 
     /// Returns a module by its logical path.
@@ -919,22 +1158,29 @@ impl WorkspaceSnapshot {
     ) -> io::Result<bool> {
         let mut entries: Vec<_> = fs::read_dir(directory)?.collect::<Result<_, _>>()?;
         entries.sort_by_key(|entry| entry.file_name());
-        let mut contains_notist_file = false;
+        let mut contains_module_content = false;
+        let mut resources = Vec::new();
 
         for entry in entries {
             let path = entry.path();
             let file_type = entry.file_type()?;
+            let file_name = entry.file_name();
+            let file_name = file_name.to_string_lossy();
             if file_type.is_dir() {
-                if entry.file_name().to_string_lossy().starts_with('.') {
+                if file_name.starts_with('.') {
+                    continue;
+                }
+                // Build caches and dependency trees are not project content (D0004).
+                if file_name == "target" || file_name == "node_modules" {
                     continue;
                 }
                 if path != self.root && path.join(MANIFEST_FILE).is_file() {
                     continue;
                 }
-                let child = module_path.child([entry.file_name().to_string_lossy().into_owned()]);
+                let child = module_path.child([file_name.into_owned()]);
                 if self.scan_directory(engine, &path, &child, overlays, document_versions)? {
                     self.insert_virtual_module(engine, child);
-                    contains_notist_file = true;
+                    contains_module_content = true;
                 }
             } else if file_type.is_file() && is_notist_file(&path) {
                 let logical_path = if is_readme(&path) {
@@ -955,10 +1201,29 @@ impl WorkspaceSnapshot {
                     overlays,
                     document_versions,
                 );
-                contains_notist_file = true;
+                contains_module_content = true;
+            } else if file_type.is_file()
+                && !file_name.starts_with('.')
+                && file_name != MANIFEST_FILE
+            {
+                // A plain file is a resource of this directory's module; a
+                // resource-only directory still forms a virtual module (D0004).
+                resources.push(ResourceFile {
+                    name: file_name.into_owned(),
+                    kind: resource_kind(&path),
+                    path,
+                });
+                contains_module_content = true;
             }
         }
-        Ok(contains_notist_file)
+        if !resources.is_empty() {
+            self.insert_virtual_module(engine, module_path.clone());
+            self.modules
+                .get_mut(module_path)
+                .expect("the directory module was just inserted")
+                .resources = resources;
+        }
+        Ok(contains_module_content)
     }
 
     fn insert_virtual_module(&mut self, engine: &VaultEngine, logical_path: ModulePath) {
@@ -971,6 +1236,7 @@ impl WorkspaceSnapshot {
             source_path: None,
             source: None,
             parse: None,
+            resources: Vec::new(),
         });
     }
 
@@ -1007,6 +1273,7 @@ impl WorkspaceSnapshot {
             source_path: None,
             source: None,
             parse: None,
+            resources: Vec::new(),
         });
 
         if let Some(existing) = &module.source_path {
@@ -1113,7 +1380,17 @@ impl WorkspaceSnapshot {
     pub fn structured_module(&self, module_id: ModuleId) -> Option<StructuredModule> {
         let module = self.module_by_id(module_id)?;
         let source = module.source.as_deref()?;
-        let structured = structure(Evaluator::default().evaluate(source));
+        // D0004: evaluation runs with the imported bindings seeded by the
+        // snapshot build (idempotent for a module's own bindings).
+        let seeds = self
+            .module_import_seeds
+            .get(&module_id)
+            .cloned()
+            .unwrap_or_default();
+        let structured = structure(
+            Evaluator::default()
+                .evaluate_parsed_with_bindings(source, module.parse.as_ref()?, seeds),
+        );
         Some(StructuredModule {
             revision: self.revision,
             module_id,
@@ -1169,6 +1446,33 @@ impl WorkspaceSnapshot {
                     annotation: Some(label.id.clone()),
                 }),
         );
+        // Heading default ids are stable document identities (D0009) and enter
+        // the workspace symbol index; explicit ids stay authoritative.
+        for module in self.modules() {
+            let Some(file_id) = module.file_id else {
+                continue;
+            };
+            let explicit: std::collections::HashSet<&str> = self
+                .labels
+                .iter()
+                .filter(|label| label.id.module_id == module.id)
+                .map(|label| label.name.as_str())
+                .collect();
+            for (name, range) in self.module_heading_default_ids(&module.logical_path) {
+                if explicit.contains(name.as_str()) || !name.to_lowercase().contains(&query) {
+                    continue;
+                }
+                symbols.push(ModuleSymbol {
+                    revision: self.revision,
+                    module_id: module.id,
+                    file_id,
+                    name,
+                    kind: WorkspaceSymbolKind::Annotation,
+                    range,
+                    annotation: None,
+                });
+            }
+        }
         symbols.sort_by(|left, right| left.name.cmp(&right.name));
         symbols
     }
@@ -1324,6 +1628,54 @@ impl WorkspaceSnapshot {
         if let Some(context) = wiki_completion_context(&source.text, &source.parse, offset)
             && let Some(current) = self.module_at(file_id)
         {
+            if context.kind == CompletionContextKind::Label {
+                // `#id` completion inside a wiki reference: explicit scope ids
+                // first, then heading default ids of the target module (D0009).
+                let target = context
+                    .label_target
+                    .as_deref()
+                    .and_then(|part| parse_wiki_reference(part).ok())
+                    .and_then(|reference| reference.module.resolve_from(&current.logical_path));
+                let Some(target) = target else {
+                    return Vec::new();
+                };
+                let mut candidates: Vec<_> = self
+                    .labels
+                    .iter()
+                    .filter(|label| label.module == target)
+                    .filter(|label| starts_with_case_insensitive(&label.name, &context.prefix))
+                    .map(|label| CompletionCandidate {
+                        revision: self.revision,
+                        kind: CompletionKind::Attribute,
+                        label: label.name.clone(),
+                        detail: "Scope id".into(),
+                        documentation: Some("Explicit scope id in this module.".into()),
+                        replacement: context.replace,
+                        insert_text: label.name.clone(),
+                        module_id: Some(label.id.module_id),
+                    })
+                    .collect();
+                for (name, _) in self.module_heading_default_ids(&target) {
+                    if starts_with_case_insensitive(&name, &context.prefix)
+                        && !candidates.iter().any(|candidate| candidate.label == name)
+                    {
+                        candidates.push(CompletionCandidate {
+                            revision: self.revision,
+                            kind: CompletionKind::Attribute,
+                            label: name.clone(),
+                            detail: "Heading default id".into(),
+                            documentation: Some(
+                                "Default id derived from the heading text.".into(),
+                            ),
+                            replacement: context.replace,
+                            insert_text: name,
+                            module_id: self.modules.get(&target).map(|module| module.id),
+                        });
+                    }
+                }
+                candidates.sort_by(|left, right| left.label.cmp(&right.label));
+                return candidates;
+            }
             let mut candidates: Vec<_> = self
                 .modules()
                 .filter(|target| target.id != current.id)
@@ -1568,7 +1920,149 @@ impl WorkspaceSnapshot {
         let mut labels = Vec::new();
         let mut label_indexes = BTreeMap::new();
         let mut references = Vec::new();
+        let mut imports = Vec::new();
         let signatures = self.signatures.clone();
+        // Heading default ids are extracted from the evaluated document, so the
+        // index is built lazily for reference target modules only and cached per
+        // module; ambiguity diagnostics fire once per (module, heading text).
+        let mut heading_indexes: BTreeMap<ModuleId, Vec<(String, TextRange)>> = BTreeMap::new();
+        let mut reported_ambiguous: BTreeSet<(ModuleId, String)> = BTreeSet::new();
+
+        // D0004: import edges enter the import graph before evaluation, with
+        // explicit selectors and no wildcard.
+        for module in self.modules.values() {
+            let (Some(source_path), Some(parse)) = (&module.source_path, &module.parse) else {
+                continue;
+            };
+            for expression in parse.imports() {
+                let ExpressionKind::Import { module: module_ref, selectors } = &expression.kind else {
+                    continue;
+                };
+                let selectors = selectors
+                    .iter()
+                    .map(|selector| {
+                        (
+                            selector.name.clone(),
+                            selector.alias.as_ref().map(|alias| alias.value.clone()),
+                        )
+                    })
+                    .collect();
+                let target = module_ref.resolve_from(&module.logical_path);
+                match &target {
+                    None => diagnostics.push(Diagnostic {
+                        kind: DiagnosticKind::UnresolvedModule,
+                        message: "import path escapes above `vault`".into(),
+                        source_path: Some(source_path.clone()),
+                        range: Some(expression.range),
+                    }),
+                    Some(target) if !self.modules.contains_key(target) => {
+                        diagnostics.push(Diagnostic {
+                            kind: DiagnosticKind::UnresolvedModule,
+                            message: format!("imported module `{target}` was not found"),
+                            source_path: Some(source_path.clone()),
+                            range: Some(expression.range),
+                        })
+                    }
+                    Some(_) => {}
+                }
+                imports.push(ImportEdge {
+                    source_module: module.logical_path.clone(),
+                    source_path: source_path.clone(),
+                    range: expression.range,
+                    target_module: target,
+                    selectors,
+                });
+            }
+        }
+
+        // D0004: the import graph resolves before evaluation; each module
+        // evaluates at most once per snapshot in dependency order, and import
+        // cycles (already diagnosed) break with empty bindings.
+        let evaluator = Evaluator::default();
+        let mut module_import_seeds: BTreeMap<ModuleId, HashMap<String, Value>> = BTreeMap::new();
+        let mut module_attributes: BTreeMap<ModuleId, Vec<notist_syntax::Attributes>> = BTreeMap::new();
+        let mut visiting: BTreeSet<ModuleId> = BTreeSet::new();
+        {
+            fn module_bindings(
+                module_id: ModuleId,
+                modules: &BTreeMap<ModulePath, Module>,
+                imports: &[ImportEdge],
+                evaluator: &Evaluator,
+                cache: &mut BTreeMap<ModuleId, HashMap<String, Value>>,
+                attributes: &mut BTreeMap<ModuleId, Vec<notist_syntax::Attributes>>,
+                visiting: &mut BTreeSet<ModuleId>,
+            ) -> HashMap<String, Value> {
+                if let Some(bindings) = cache.get(&module_id) {
+                    return bindings.clone();
+                }
+                if !visiting.insert(module_id) {
+                    // Cycle: already diagnosed; break with empty bindings.
+                    return HashMap::new();
+                }
+                let module = modules.values().find(|module| module.id == module_id);
+                let mut seeds = HashMap::new();
+                let Some(module) = module else {
+                    visiting.remove(&module_id);
+                    cache.insert(module_id, HashMap::new());
+                    return HashMap::new();
+                };
+                for edge in imports
+                    .iter()
+                    .filter(|edge| edge.source_module == module.logical_path)
+                {
+                    let Some(target_path) = &edge.target_module else {
+                        continue;
+                    };
+                    let Some(target) = modules.get(target_path) else {
+                        continue;
+                    };
+                    let target_bindings = module_bindings(
+                        target.id,
+                        modules,
+                        imports,
+                        evaluator,
+                        cache,
+                        attributes,
+                        visiting,
+                    );
+                    for (name, alias) in &edge.selectors {
+                        if let Some(value) = target_bindings.get(name) {
+                            seeds.insert(
+                                alias.clone().unwrap_or_else(|| name.clone()),
+                                value.clone(),
+                            );
+                        }
+                    }
+                }
+                let bindings =
+                    match (module.source.as_deref(), module.parse.as_ref()) {
+                        (Some(source), Some(parse)) => {
+                            let evaluation =
+                                evaluator.evaluate_parsed_with_bindings(source, parse, seeds);
+                            attributes.insert(module_id, evaluation.module_attributes);
+                            evaluation.bindings
+                        }
+                        _ => seeds,
+                    };
+                visiting.remove(&module_id);
+                cache.insert(module_id, bindings.clone());
+                bindings
+            }
+            let module_ids: Vec<ModuleId> =
+                self.modules.values().map(|module| module.id).collect();
+            for module_id in &module_ids {
+                module_bindings(
+                    *module_id,
+                    &self.modules,
+                    &imports,
+                    &evaluator,
+                    &mut module_import_seeds,
+                    &mut module_attributes,
+                    &mut visiting,
+                );
+            }
+        }
+        self.module_attributes = module_attributes;
 
         for module in self.modules.values() {
             let (Some(file_id), Some(source_path), Some(parse)) =
@@ -1643,6 +2137,17 @@ impl WorkspaceSnapshot {
             }
 
             for (reference, range) in module_references {
+                if let ModuleReference::External(url) = &reference.module {
+                    diagnostics.push(Diagnostic {
+                        kind: DiagnosticKind::ExternalReferenceUnsupported,
+                        message: format!(
+                            "external reference `{url}` is not supported in v1; it renders as unresolved visible text"
+                        ),
+                        source_path: Some(source_path.clone()),
+                        range: Some(range),
+                    });
+                    continue;
+                }
                 let Some(target) = reference.module.resolve_from(&module.logical_path) else {
                     diagnostics.push(Diagnostic {
                         kind: DiagnosticKind::UnresolvedModule,
@@ -1663,14 +2168,63 @@ impl WorkspaceSnapshot {
                     continue;
                 };
 
-                let target_definition = reference.label.as_ref().and_then(|label| {
-                    label_indexes
+                let mut target_range = None;
+                let mut unresolved = false;
+                if let Some(label) = &reference.label {
+                    if let Some(definition) = label_indexes
                         .get(&(target.clone(), label.clone()))
                         .map(|index| &labels[*index])
-                });
-                if let Some(label) = &reference.label
-                    && target_definition.is_none()
-                {
+                    {
+                        // Explicit scope ids always win over heading default ids.
+                        target_range = Some(definition.range);
+                    } else {
+                        let headings = heading_indexes
+                            .entry(target_module.id)
+                            .or_insert_with(|| {
+                                let seeds = self
+                                    .module_import_seeds
+                                    .get(&target_module.id)
+                                    .cloned()
+                                    .unwrap_or_default();
+                                heading_default_ids(target_module, &seeds)
+                            });
+                        if let Some(position) = headings.iter().position(|(text, _)| text == label)
+                        {
+                            // Heading default id: exact match on the evaluated
+                            // heading plain text; the first occurrence wins.
+                            target_range = Some(headings[position].1);
+                            if reported_ambiguous.insert((target_module.id, label.clone())) {
+                                for (_, duplicate_range) in headings[position + 1..]
+                                    .iter()
+                                    .filter(|(text, _)| text == label)
+                                {
+                                    diagnostics.push(Diagnostic {
+                                        kind: DiagnosticKind::AmbiguousLabel,
+                                        message: format!(
+                                            "ambiguous label `{label}` in module `{target}`: multiple headings share this text; add an explicit `@id` to disambiguate"
+                                        ),
+                                        source_path: target_module.source_path.clone(),
+                                        range: Some(*duplicate_range),
+                                    });
+                                }
+                            }
+                        } else if target_module
+                            .resources
+                            .iter()
+                            .any(|resource| &resource.name == label)
+                        {
+                            // Resource files resolve by exact file name and carry
+                            // no source range.
+                        } else {
+                            unresolved = true;
+                        }
+                    }
+                }
+                if unresolved {
+                    let label = reference
+                        .label
+                        .as_ref()
+                        .expect("only labeled references can be unresolved");
                     diagnostics.push(Diagnostic {
                         kind: DiagnosticKind::UnresolvedLabel,
                         message: format!("unresolved label `{label}` in module `{target}`"),
@@ -1680,20 +2234,46 @@ impl WorkspaceSnapshot {
                     continue;
                 }
 
+                let url = reference
+                    .label
+                    .as_ref()
+                    .map_or_else(|| reference.module.to_string(), |label| {
+                        format!("{}#{label}", reference.module)
+                    });
                 references.push(ResolvedReference {
                     source_file_id: file_id,
                     source_module_id: module.id,
                     source_module: module.logical_path.clone(),
                     source_path: source_path.clone(),
                     range,
+                    url,
                     target_module_id: target_module.id,
                     target_module: target,
                     target_label: reference.label,
-                    target_range: target_definition.map(|definition| definition.range),
+                    target_range,
                 });
             }
-            let checks = check_module(parse, &signatures);
-            let runtime = safe_evaluation_diagnostics(source, &signatures);
+            // D0004: imported names are visible in the static check as
+            // unchecked bindings (the target module's types arrive with the
+            // import evaluation).
+            let prelude: HashMap<String, Type> = imports
+                .iter()
+                .filter(|edge| edge.source_module == module.logical_path)
+                .flat_map(|edge| {
+                    edge.selectors.iter().map(|(name, alias)| {
+                        (
+                            alias.clone().unwrap_or_else(|| name.clone()),
+                            Type::Inferred,
+                        )
+                    })
+                })
+                .collect();
+            let checks = check_module_with_prelude(parse, &signatures, prelude);
+            let seeds = module_import_seeds
+                .get(&module.id)
+                .cloned()
+                .unwrap_or_default();
+            let runtime = safe_evaluation_diagnostics(source, parse, &signatures, &seeds);
             diagnostics.extend(checks.iter().cloned().map(|diagnostic| Diagnostic {
                 kind: diagnostic.kind,
                 message: diagnostic.message,
@@ -1712,8 +2292,87 @@ impl WorkspaceSnapshot {
                 })
             }));
         }
+        // D0004: import cycles are always diagnostics, independent of
+        // evaluation order.
+        {
+            let mut adjacent: HashMap<ModulePath, Vec<ModulePath>> = HashMap::new();
+            for edge in &imports {
+                if let Some(target) = &edge.target_module {
+                    adjacent
+                        .entry(edge.source_module.clone())
+                        .or_default()
+                        .push(target.clone());
+                }
+            }
+            let mut visited = BTreeSet::new();
+            let mut stack = Vec::new();
+            let mut reported = BTreeSet::new();
+            fn visit(
+                node: &ModulePath,
+                adjacent: &HashMap<ModulePath, Vec<ModulePath>>,
+                visited: &mut BTreeSet<ModulePath>,
+                stack: &mut Vec<ModulePath>,
+                reported: &mut BTreeSet<(ModulePath, ModulePath)>,
+                diagnostics: &mut Vec<Diagnostic>,
+                imports: &[ImportEdge],
+            ) {
+                if !visited.insert(node.clone()) {
+                    return;
+                }
+                stack.push(node.clone());
+                if let Some(targets) = adjacent.get(node) {
+                    for target in targets {
+                        if stack.contains(target) {
+                            let key = (node.clone(), target.clone());
+                            if reported.insert(key.clone())
+                                && let Some(edge) = imports.iter().find(|edge| {
+                                    edge.source_module == key.0
+                                        && edge.target_module.as_ref() == Some(&key.1)
+                                })
+                            {
+                                diagnostics.push(Diagnostic {
+                                    kind: DiagnosticKind::ImportCycle,
+                                    message: format!(
+                                        "import cycle detected: `{}` imports `{}`, which transitively imports back",
+                                        key.0, key.1
+                                    ),
+                                    source_path: Some(edge.source_path.clone()),
+                                    range: Some(edge.range),
+                                });
+                            }
+                        } else {
+                            visit(
+                                target,
+                                adjacent,
+                                visited,
+                                stack,
+                                reported,
+                                diagnostics,
+                                imports,
+                            );
+                        }
+                    }
+                }
+                stack.pop();
+            }
+            let modules: Vec<ModulePath> = self.modules.keys().cloned().collect();
+            for node in &modules {
+                visit(
+                    node,
+                    &adjacent,
+                    &mut visited,
+                    &mut stack,
+                    &mut reported,
+                    &mut diagnostics,
+                    &imports,
+                );
+            }
+        }
+
         self.labels = labels;
         self.references = references;
+        self.imports = imports;
+        self.module_import_seeds = module_import_seeds;
         self.diagnostics.extend(diagnostics);
     }
 }
@@ -2034,6 +2693,19 @@ impl AnalyzerView {
         )?;
         self.overlays = overlays;
         self.document_versions = document_versions;
+        // A disk reload that observes no content change must not advance the
+        // revision. Debounced filesystem watchers fire on read-close events too,
+        // so an unconditional revision bump turns the preview rebuild loop into a
+        // self-exciting storm: every reload produces a "new" revision, the
+        // preview worker rebuilds, the browser reloads, and the reload re-touches
+        // the files that feed the watcher. Keep the previous snapshot and report
+        // an empty delta when the source set and configuration are unchanged.
+        if same_source_content(&previous, &candidate) {
+            return Ok(SnapshotPublication {
+                snapshot: previous.clone(),
+                delta: empty_delta(previous.revision),
+            });
+        }
         self.snapshot = candidate.clone();
         let delta = candidate
             .delta_from(&previous)
@@ -2064,6 +2736,51 @@ impl AnalyzerView {
     }
 }
 
+/// Reports whether two snapshots carry the same author-authored source set and
+/// configuration, so that a no-op reload can keep its revision stable.
+///
+/// Text, origin, and document version are all compared so that a session view
+/// re-publishing identical text under a newer LSP document version still counts
+/// as a change (and advances the revision), while a disk watcher reload of
+/// untouched files does not.
+fn same_source_content(a: &WorkspaceSnapshot, b: &WorkspaceSnapshot) -> bool {
+    if a.configuration != b.configuration {
+        return false;
+    }
+    if a.sources.len() != b.sources.len() {
+        return false;
+    }
+    a.source_ids.iter().all(|(path, a_id)| {
+        let Some(b_id) = b.source_ids.get(path) else {
+            return false;
+        };
+        match (a.sources.get(a_id), b.sources.get(b_id)) {
+            (Some(a_source), Some(b_source)) => {
+                a_source.text == b_source.text
+                    && a_source.origin == b_source.origin
+                    && a_source.document_version == b_source.document_version
+            }
+            _ => false,
+        }
+    })
+}
+
+/// An empty semantic delta for a publication that changed nothing.
+fn empty_delta(revision: Revision) -> WorkspaceDelta {
+    WorkspaceDelta {
+        from_revision: revision,
+        to_revision: revision,
+        added_files: Vec::new(),
+        changed_files: Vec::new(),
+        removed_files: Vec::new(),
+        added_modules: Vec::new(),
+        changed_modules: Vec::new(),
+        removed_modules: Vec::new(),
+        changed_references: Vec::new(),
+        changed_diagnostics: Vec::new(),
+    }
+}
+
 fn contains(range: TextRange, offset: usize) -> bool {
     range.start <= offset && offset < range.end
 }
@@ -2082,9 +2799,18 @@ fn is_in_string_literal(parse: &Parse, offset: usize) -> bool {
         .any(|range| contains(range, offset))
 }
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum CompletionContextKind {
+    Module,
+    Label,
+}
+
 struct CompletionContext {
     prefix: String,
     replace: TextRange,
+    kind: CompletionContextKind,
+    /// For `Label` contexts: the module part before `#` in the wiki link.
+    label_target: Option<String>,
 }
 
 fn wiki_completion_context(
@@ -2106,6 +2832,17 @@ fn wiki_completion_context(
             return Some(CompletionContext {
                 prefix: source[start..offset].to_owned(),
                 replace: TextRange::new(start, module_end),
+                kind: CompletionContextKind::Module,
+                label_target: None,
+            });
+        }
+        let label_start = module_end + 1;
+        if label_start <= offset && offset <= content_end {
+            return Some(CompletionContext {
+                prefix: source[label_start..offset].to_owned(),
+                replace: TextRange::new(label_start, content_end),
+                kind: CompletionContextKind::Label,
+                label_target: Some(source[start..module_end].to_owned()),
             });
         }
     }
@@ -2120,6 +2857,8 @@ fn wiki_completion_context(
     Some(CompletionContext {
         prefix: source[start..offset].to_owned(),
         replace: TextRange::new(start, offset),
+        kind: CompletionContextKind::Module,
+        label_target: None,
     })
 }
 
@@ -2136,6 +2875,8 @@ fn function_completion_context(
         return Some(CompletionContext {
             prefix: source[call.name.range.start..offset].to_owned(),
             replace: call.name.range,
+            kind: CompletionContextKind::Module,
+            label_target: None,
         });
     }
     let before = source.get(..offset)?;
@@ -2145,6 +2886,8 @@ fn function_completion_context(
         return (prefix != "[").then(|| CompletionContext {
             prefix: String::new(),
             replace: TextRange::new(hash + 1, offset),
+            kind: CompletionContextKind::Module,
+            label_target: None,
         });
     }
     if !prefix
@@ -2156,6 +2899,8 @@ fn function_completion_context(
     Some(CompletionContext {
         prefix: prefix.to_owned(),
         replace: TextRange::new(hash + 1, offset),
+        kind: CompletionContextKind::Module,
+        label_target: None,
     })
 }
 
@@ -2185,6 +2930,8 @@ fn attribute_completion_context(
     Some(CompletionContext {
         prefix: prefix.to_owned(),
         replace: TextRange::new(start, offset),
+        kind: CompletionContextKind::Module,
+        label_target: None,
     })
 }
 
@@ -2216,6 +2963,8 @@ fn argument_completion_context<'a>(
         CompletionContext {
             prefix: source[start..offset].to_owned(),
             replace: TextRange::new(start, offset),
+            kind: CompletionContextKind::Module,
+            label_target: None,
         },
     ))
 }
@@ -2336,9 +3085,32 @@ fn collect_document_symbols(
     file_id: FileId,
     symbols: &mut Vec<DocumentSymbol>,
 ) {
+    fn walk(
+        block: &Block,
+        revision: Revision,
+        file_id: FileId,
+        symbols: &mut Vec<DocumentSymbol>,
+    ) {
+        match block {
+            Block::Element(node) => {
+                collect_element_symbols(&node.element, node.range, revision, file_id, symbols);
+            }
+            Block::Section { heading, body, .. } => {
+                collect_element_symbols(
+                    &heading.element,
+                    heading.range,
+                    revision,
+                    file_id,
+                    symbols,
+                );
+                for child in body {
+                    walk(child, revision, file_id, symbols);
+                }
+            }
+        }
+    }
     for block in &document.blocks {
-        let Block::Element(node) = block;
-        collect_element_symbols(&node.element, node.range, revision, file_id, symbols);
+        walk(block, revision, file_id, symbols);
     }
 }
 
@@ -2375,28 +3147,10 @@ fn element_contents(element: &Element) -> Vec<&Content> {
         | Element::Strong(body)
         | Element::Emph(body)
         | Element::Strike(body)
-        | Element::Insert(body)
-        | Element::Spoiler(body)
-        | Element::Highlight(body)
         | Element::Underline(body)
-        | Element::Keyboard(body)
-        | Element::Sample(body)
-        | Element::Super(body)
-        | Element::Sub(body)
-        | Element::Footnote(body)
-        | Element::Comment(body)
-        | Element::ListItem(body) => vec![body],
-        Element::Heading { body, .. }
-        | Element::Time { body, .. }
-        | Element::Link { body, .. }
-        | Element::TaskItem { body, .. }
-        | Element::Custom { body, .. } => vec![body],
-        Element::Figure { caption, .. } => vec![caption],
-        Element::Quote { body, attribution } => {
-            let mut contents = vec![body];
-            contents.extend(attribution.iter());
-            contents
-        }
+        | Element::ListItem(body)
+        | Element::EnumItem { body, .. } => vec![body],
+        Element::Heading { body, .. } | Element::Custom { body, .. } => vec![body],
         Element::Callout { title, body, .. } => {
             let mut contents = vec![body];
             contents.extend(title.iter());
@@ -2407,22 +3161,10 @@ fn element_contents(element: &Element) -> Vec<&Content> {
             contents.extend(summary.iter());
             contents
         }
-        Element::TableCell { body, .. } => vec![body],
-        Element::Table { caption, cells, .. } => {
-            let mut contents: Vec<_> = caption.iter().collect();
-            contents.extend(
-                cells
-                    .iter()
-                    .flat_map(|cell| element_contents(&cell.element)),
-            );
-            contents
-        }
-        Element::List { items, .. } | Element::Terms { items } | Element::Tasks { items } => items
+        Element::List { items, .. } => items
             .iter()
             .flat_map(|item| element_contents(&item.element))
             .collect(),
-        Element::EnumItem { body, .. } => vec![body],
-        Element::TermItem { term, description } => vec![term, description],
         Element::UnresolvedCall { trailing, .. } => trailing.iter().collect(),
         _ => Vec::new(),
     }
@@ -2634,6 +3376,135 @@ fn normalize_discovery_path(path: &Path) -> io::Result<PathBuf> {
 fn is_notist_file(path: &Path) -> bool {
     path.extension()
         .is_some_and(|extension| extension.eq_ignore_ascii_case("not"))
+}
+
+/// Classifies a resource file by its extension, case-insensitively.
+fn resource_kind(path: &Path) -> ResourceKind {
+    const IMAGE_EXTENSIONS: [&str; 10] = [
+        "png", "apng", "gif", "jpg", "jpeg", "webp", "svg", "avif", "ico", "bmp",
+    ];
+    let is_image = path
+        .extension()
+        .and_then(|extension| extension.to_str())
+        .is_some_and(|extension| {
+            IMAGE_EXTENSIONS
+                .iter()
+                .any(|image| extension.eq_ignore_ascii_case(image))
+        });
+    if is_image {
+        ResourceKind::Image
+    } else {
+        ResourceKind::File
+    }
+}
+
+/// Extracts the heading default ids (heading plain text) of a source-backed
+/// module from its evaluated document, in document order.
+fn heading_default_ids(
+    module: &Module,
+    seeds: &HashMap<String, Value>,
+) -> Vec<(String, TextRange)> {
+    let Some(source) = module.source.as_deref() else {
+        return Vec::new();
+    };
+    let structured = structure(
+        Evaluator::default().evaluate_parsed_with_bindings(
+            source,
+            module.parse.as_ref().expect("source-backed modules have parses"),
+            seeds.clone(),
+        ),
+    );
+    let mut headings = Vec::new();
+    fn walk(block: &Block, headings: &mut Vec<(String, TextRange)>) {
+        match block {
+            Block::Element(node) => collect_heading_default_ids(node, headings),
+            Block::Section { heading, body, .. } => {
+                collect_heading_default_ids(heading, headings);
+                for child in body {
+                    walk(child, headings);
+                }
+            }
+        }
+    }
+    for block in &structured.document.blocks {
+        walk(block, &mut headings);
+    }
+    headings
+}
+
+/// Collects heading texts in render (depth-first) order, mirroring the anchor
+/// planning walk of the HTML renderer.
+fn collect_heading_default_ids(node: &ElementNode, output: &mut Vec<(String, TextRange)>) {
+    if let Element::Heading { body, .. } = &node.element {
+        output.push((content_plain_text(body), node.range));
+    }
+    collect_heading_default_ids_in_children(&node.element, output);
+}
+
+fn collect_heading_default_ids_in_content(
+    content: &Content,
+    output: &mut Vec<(String, TextRange)>,
+) {
+    for node in &content.elements {
+        collect_heading_default_ids(node, output);
+    }
+}
+
+fn collect_heading_default_ids_in_children(
+    element: &Element,
+    output: &mut Vec<(String, TextRange)>,
+) {
+    match element {
+        Element::Paragraph(body)
+        | Element::Strong(body)
+        | Element::Emph(body)
+        | Element::Strike(body)
+        | Element::Underline(body)
+        | Element::Heading { body, .. }
+        | Element::ListItem(body)
+        | Element::EnumItem { body, .. }
+        | Element::Custom { body, .. } => collect_heading_default_ids_in_content(body, output),
+        Element::List { items, .. } => {
+            for item in items {
+                collect_heading_default_ids(item, output);
+            }
+        }
+        Element::Callout { title, body, .. } => {
+            if let Some(title) = title {
+                collect_heading_default_ids_in_content(title, output);
+            }
+            collect_heading_default_ids_in_content(body, output);
+        }
+        Element::Details { summary, body, .. } => {
+            if let Some(summary) = summary {
+                collect_heading_default_ids_in_content(summary, output);
+            }
+            collect_heading_default_ids_in_content(body, output);
+        }
+        Element::UnresolvedCall {
+            trailing: Some(trailing),
+            ..
+        } => collect_heading_default_ids_in_content(trailing, output),
+        _ => {}
+    }
+}
+
+/// Extracts the plain text of an inline content sequence, mirroring the
+/// renderer's heading text extraction.
+fn content_plain_text(content: &Content) -> String {
+    content
+        .elements
+        .iter()
+        .map(|node| match &node.element {
+            Element::Text(text) => text.clone(),
+            Element::Strong(body)
+            | Element::Emph(body)
+            | Element::Strike(body)
+            | Element::Underline(body) => content_plain_text(body),
+            Element::Raw { text, .. } => text.clone(),
+            _ => String::new(),
+        })
+        .collect()
 }
 
 fn normalize_overlays(root: &Path, overlays: SourceOverlays) -> io::Result<SourceOverlays> {
@@ -2862,7 +3733,8 @@ mod tests {
     fn ignores_directories_without_notist_files_in_their_subtree() {
         let root = TempDir::new().unwrap();
         fs::create_dir_all(root.path().join("empty/nested")).unwrap();
-        fs::write(root.path().join("empty/nested/readme.txt"), "not a module").unwrap();
+        // Hidden files are not resources, so this subtree stays module-free.
+        fs::write(root.path().join("empty/nested/.notes.txt"), "not a module").unwrap();
         fs::create_dir_all(root.path().join("notes/nested")).unwrap();
         fs::write(root.path().join("notes/nested/page.not"), "").unwrap();
 
@@ -2881,6 +3753,173 @@ mod tests {
                 "vault::notes::nested::page",
             ]
         );
+    }
+
+    #[test]
+    fn resource_directories_become_virtual_modules_with_resources() {
+        let root = TempDir::new().unwrap();
+        fs::create_dir_all(root.path().join("docs/images")).unwrap();
+        fs::write(root.path().join("README.not"), "home").unwrap();
+        fs::write(root.path().join("docs/images/logo.png"), [0x89, 0x50]).unwrap();
+        fs::write(root.path().join("docs/images/notes.txt"), "text").unwrap();
+        fs::write(root.path().join("docs/images/.hidden.png"), "hidden").unwrap();
+
+        let workspace = WorkspaceSnapshot::load(root.path()).unwrap();
+        let images = workspace
+            .module(&ModulePath::from_segments(["docs".into(), "images".into()]))
+            .expect("resource-only directory forms a virtual module");
+
+        assert!(images.source_path.is_none());
+        let resources: Vec<_> = images
+            .resources
+            .iter()
+            .map(|resource| (resource.name.as_str(), resource.kind))
+            .collect();
+        assert_eq!(
+            resources,
+            [
+                ("logo.png", ResourceKind::Image),
+                ("notes.txt", ResourceKind::File),
+            ]
+        );
+        assert!(
+            workspace
+                .module(&ModulePath::from_segments(["docs".into()]))
+                .is_some_and(|module| module.source_path.is_none())
+        );
+    }
+
+    #[test]
+    fn skips_target_and_node_modules_directories() {
+        let root = TempDir::new().unwrap();
+        fs::create_dir_all(root.path().join("target/debug")).unwrap();
+        fs::create_dir_all(root.path().join("node_modules/package")).unwrap();
+        fs::write(root.path().join("README.not"), "home").unwrap();
+        fs::write(root.path().join("target/debug/build.not"), "noise").unwrap();
+        fs::write(root.path().join("node_modules/package/index.not"), "noise").unwrap();
+
+        let workspace = WorkspaceSnapshot::load(root.path()).unwrap();
+        let modules: Vec<_> = workspace
+            .modules()
+            .map(|module| module.logical_path.to_string())
+            .collect();
+
+        assert_eq!(modules, ["vault"]);
+    }
+
+    #[test]
+    fn resolves_resource_file_labels_without_diagnostics() {
+        let root = TempDir::new().unwrap();
+        fs::create_dir(root.path().join("images")).unwrap();
+        fs::write(
+            root.path().join("README.not"),
+            "[[vault::images#logo.png]] [[vault::images#missing.png]]",
+        )
+        .unwrap();
+        fs::write(root.path().join("images/logo.png"), [0x89, 0x50]).unwrap();
+
+        let workspace = WorkspaceSnapshot::load(root.path()).unwrap();
+
+        assert_eq!(
+            workspace
+                .diagnostics()
+                .iter()
+                .filter(|diagnostic| diagnostic.kind == DiagnosticKind::UnresolvedLabel)
+                .count(),
+            1
+        );
+        let resource = workspace
+            .references()
+            .iter()
+            .find(|reference| reference.target_label.as_deref() == Some("logo.png"))
+            .expect("resource reference resolves");
+        assert_eq!(
+            resource.target_module,
+            ModulePath::from_segments(["images".into()])
+        );
+        assert_eq!(resource.target_range, None);
+    }
+
+    #[test]
+    fn resolves_heading_text_labels_and_reports_ambiguity() {
+        let root = TempDir::new().unwrap();
+        fs::write(
+            root.path().join("README.not"),
+            "[[guide#简介]] [[guide#安装]]",
+        )
+        .unwrap();
+        fs::write(
+            root.path().join("guide.not"),
+            "= 指南\n\n== 简介\n\n内容\n\n== 安装\n\n步骤\n\n== 安装\n\n重复",
+        )
+        .unwrap();
+
+        let workspace = WorkspaceSnapshot::load(root.path()).unwrap();
+
+        let heading = workspace
+            .references()
+            .iter()
+            .find(|reference| reference.target_label.as_deref() == Some("简介"))
+            .expect("heading text label resolves");
+        assert!(heading.target_range.is_some());
+        let ambiguous: Vec<_> = workspace
+            .diagnostics()
+            .iter()
+            .filter(|diagnostic| diagnostic.kind == DiagnosticKind::AmbiguousLabel)
+            .collect();
+        assert_eq!(ambiguous.len(), 1, "{:?}", workspace.diagnostics());
+        assert!(ambiguous[0].message.contains("安装"));
+        // The ambiguous reference still resolves to the first heading, which
+        // precedes the reported duplicate.
+        let first = workspace
+            .references()
+            .iter()
+            .find(|reference| reference.target_label.as_deref() == Some("安装"))
+            .expect("ambiguous reference resolves");
+        assert!(
+            first.target_range.expect("heading range").start
+                < ambiguous[0].range.expect("duplicate range").start
+        );
+        // Explicit ids keep winning over heading text.
+        assert!(
+            !workspace
+                .diagnostics()
+                .iter()
+                .any(|diagnostic| diagnostic.kind == DiagnosticKind::UnresolvedLabel)
+        );
+    }
+
+    #[test]
+    fn explicit_ids_win_over_heading_text_labels() {
+        let root = TempDir::new().unwrap();
+        fs::write(root.path().join("README.not"), "= Home").unwrap();
+        fs::write(
+            root.path().join("guide.not"),
+            "= Guide\n\n== Intro\n\n#[explicit]@intro",
+        )
+        .unwrap();
+        fs::write(
+            root.path().join("explicit.not"),
+            "[[vault::guide#intro]] [[vault::guide#Intro]]",
+        )
+        .unwrap();
+
+        let workspace = WorkspaceSnapshot::load(root.path()).unwrap();
+        assert!(
+            workspace.diagnostics().is_empty(),
+            "{:?}",
+            workspace.diagnostics()
+        );
+        let ranges: Vec<_> = workspace
+            .references()
+            .iter()
+            .filter(|reference| reference.source_path.ends_with("explicit.not"))
+            .map(|reference| reference.target_range)
+            .collect();
+        // `#intro` hits the explicit id, `#Intro` the heading default id.
+        assert_eq!(ranges.len(), 2);
+        assert!(ranges.iter().all(Option::is_some));
+        assert_ne!(ranges[0], ranges[1]);
     }
 
     #[test]
@@ -3067,6 +4106,34 @@ mod tests {
         assert!(view.reload().is_err());
         assert_eq!(view.current().revision().raw(), 1);
         assert_eq!(view.snapshot().revision(), updated.revision());
+    }
+
+    #[test]
+    fn no_op_reload_keeps_revision_stable() {
+        let root = TempDir::new().unwrap();
+        let source_path = root.path().join("README.not");
+        fs::write(&source_path, "unchanged").unwrap();
+        let engine = VaultEngine::open(root.path()).unwrap();
+        let mut view = engine.disk_view().unwrap();
+        let first = view.snapshot();
+        assert_eq!(first.revision(), Revision::INITIAL);
+
+        // A reload that observes no content change must not advance the
+        // revision; otherwise a read-close filesystem event would re-excite the
+        // preview rebuild loop forever.
+        let publication = view.reload_publication().unwrap();
+        assert!(Arc::ptr_eq(&publication.snapshot, &first));
+        assert_eq!(publication.snapshot.revision(), Revision::INITIAL);
+        assert_eq!(publication.delta.from_revision, Revision::INITIAL);
+        assert_eq!(publication.delta.to_revision, Revision::INITIAL);
+        assert!(publication.delta.changed_files.is_empty());
+        assert!(publication.delta.added_files.is_empty());
+        assert!(publication.delta.removed_files.is_empty());
+
+        // An actual content change still advances the revision as before.
+        fs::write(&source_path, "changed").unwrap();
+        let updated = view.reload().unwrap();
+        assert_eq!(updated.revision().raw(), 1);
     }
 
     #[test]
@@ -3309,7 +4376,7 @@ mod tests {
                 .iter()
                 .map(|candidate| candidate.label.as_str())
                 .collect::<Vec<_>>(),
-            ["text", "lang"]
+            ["source", "lang", "block"]
         );
 
         fs::write(&source_path, "#raw(\"code\", )").unwrap();
@@ -3320,7 +4387,7 @@ mod tests {
                 .iter()
                 .map(|candidate| candidate.label.as_str())
                 .collect::<Vec<_>>(),
-            ["lang"]
+            ["lang", "block"]
         );
 
         fs::write(&source_path, "#he").unwrap();
@@ -3363,7 +4430,7 @@ mod tests {
         assert!(raw.completions_at(raw_file_id, 10).is_empty());
 
         let mut overlays = SourceOverlays::new();
-        overlays.insert(today_path.clone(), Arc::from("#raw(text=\"#heading\")"));
+        overlays.insert(today_path.clone(), Arc::from("#raw(source=\"#heading\")"));
         let string = WorkspaceSnapshot::load_with_overlays(root.path(), overlays).unwrap();
         let string_file_id = string.file_id(&today_path).unwrap();
         assert!(string.completions_at(string_file_id, 19).is_empty());
@@ -3460,5 +4527,68 @@ mod tests {
             diagnostic.kind == DiagnosticKind::Evaluation
                 && diagnostic.message == "division by zero"
         }));
+    }
+
+    #[test]
+    fn snapshot_publishes_module_attributes() {
+        // D0006: `@![...]` at the file start binds the root scope and is
+        // published as module metadata (ModuleResult).
+        let root = TempDir::new().unwrap();
+        fs::write(
+            root.path().join("guide.not"),
+            "@![#design, #wip, status = \"draft\"]\n\n= 指南",
+        )
+        .unwrap();
+        let snapshot = WorkspaceSnapshot::load(root.path()).unwrap();
+        let module_id = snapshot
+            .modules()
+            .find(|module| module.logical_path.segments() == ["guide"])
+            .unwrap()
+            .id;
+
+        let attributes = snapshot.module_attributes(module_id);
+        assert_eq!(attributes.len(), 1);
+        assert!(attributes[0]
+            .items
+            .iter()
+            .any(|attribute| matches!(attribute, notist_syntax::Attribute::Tag(name) if name.value == "design")));
+        assert!(attributes[0]
+            .items
+            .iter()
+            .any(|attribute| matches!(attribute, notist_syntax::Attribute::Tag(name) if name.value == "wip")));
+        assert!(attributes[0].items.iter().any(|attribute| {
+            matches!(
+                attribute,
+                notist_syntax::Attribute::KeyValue { key, value, .. }
+                    if key.value == "status" && value.raw == "\"draft\""
+            )
+        }));
+        // Virtual modules carry no attributes.
+        let virtual_root = snapshot
+            .modules()
+            .find(|module| module.source_path.is_none())
+            .unwrap();
+        assert!(snapshot
+            .module_attributes(virtual_root.id)
+            .is_empty());
+    }
+
+    #[test]
+    fn manual_scope_ids_resolve_as_module_labels() {
+        // D0002/D0006: a `#[...]@id` manual scope carries module-local
+        // identity; `[[vault::guide#install]]` resolves to it.
+        let root = TempDir::new().unwrap();
+        fs::write(
+            root.path().join("guide.not"),
+            "#[安装指南]@install\n\n[[vault::guide#install]]",
+        )
+        .unwrap();
+        let snapshot = WorkspaceSnapshot::load(root.path()).unwrap();
+        let guide = snapshot
+            .modules()
+            .find(|module| module.logical_path.segments() == ["guide"])
+            .unwrap();
+        let target = snapshot.resolve_reference(&guide.logical_path, "vault::guide#install");
+        assert!(matches!(target, RefTarget::Scope { id, .. } if id == "install"));
     }
 }

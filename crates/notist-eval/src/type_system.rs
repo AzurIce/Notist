@@ -1,7 +1,10 @@
 use std::collections::HashMap;
 
 use notist_model::{Content, TextRange};
-use notist_syntax::{Argument, Expression, ExpressionKind, StringLiteralForm, StringLiteralStyle};
+use notist_syntax::{
+    Argument, Expression, ExpressionKind, StringLiteralForm, StringLiteralStyle,
+    UserParameter,
+};
 
 pub use notist_model::{DefaultValue, FunctionSignature, Parameter, Type};
 
@@ -15,9 +18,29 @@ pub enum Value {
     Float(f64),
     String(String),
     Content(Content),
-    Array(Vec<Value>),
-    Dict(Vec<(Value, Value)>),
-    Function(String),
+    Function(Box<FunctionValue>),
+}
+
+/// A first-class function value (D0002): a closure carrying its callable
+/// signature, its implementation, and the environment captured at definition
+/// time.
+#[derive(Clone, Debug, PartialEq)]
+pub struct FunctionValue {
+    pub signature: FunctionSignature,
+    pub implementation: FunctionImplementation,
+    pub captured: HashMap<String, Value>,
+}
+
+#[derive(Clone, Debug, PartialEq)]
+pub enum FunctionImplementation {
+    /// A registered builtin constructor, dispatched by name.
+    Builtin(String),
+    /// A user-defined body evaluated in the closure's captured environment.
+    User {
+        parameters: Vec<UserParameter>,
+        result: Type,
+        body: Expression,
+    },
 }
 
 impl Value {
@@ -29,28 +52,8 @@ impl Value {
             Self::Float(_) => Type::Float,
             Self::String(_) => Type::String,
             Self::Content(_) => Type::Content,
-            Self::Array(values) => Type::Array(Box::new(unified_value_type(values))),
-            Self::Dict(values) => Type::Dict(
-                Box::new(unified_value_type(values.iter().map(|(key, _)| key))),
-                Box::new(unified_value_type(values.iter().map(|(_, value)| value))),
-            ),
             Self::Function(_) => Type::Function,
         }
-    }
-}
-
-fn unified_value_type<'a>(values: impl IntoIterator<Item = &'a Value>) -> Type {
-    let mut members = Vec::new();
-    for value in values {
-        let ty = value.ty();
-        if !members.contains(&ty) {
-            members.push(ty);
-        }
-    }
-    match members.len() {
-        0 => Type::Union(Vec::new()),
-        1 => members.pop().unwrap(),
-        _ => Type::Union(members),
     }
 }
 
@@ -204,6 +207,28 @@ pub(crate) fn bind_arguments(
                     });
                     None
                 })
+        } else if saw_named
+            && matches!(argument.expression.kind, ExpressionKind::Content(_))
+        {
+            // R05: the trailing Content block is the one positional argument
+            // allowed after named arguments; it binds the declared trailing
+            // parameter.
+            let trailing = signature
+                .trailing_content
+                .as_deref()
+                .and_then(|name| {
+                    signature
+                        .parameters
+                        .iter()
+                        .find(|parameter| parameter.name == name)
+                });
+            if trailing.is_none() {
+                diagnostics.push(EvalDiagnostic {
+                    message: "positional arguments cannot follow named arguments".into(),
+                    range: argument.range.shifted(base_offset),
+                });
+            }
+            trailing
         } else if saw_named {
             diagnostics.push(EvalDiagnostic {
                 message: "positional arguments cannot follow named arguments".into(),

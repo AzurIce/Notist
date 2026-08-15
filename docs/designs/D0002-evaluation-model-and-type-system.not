@@ -1,6 +1,6 @@
 = D0002: Evaluation Model and Type System
 
-本文承接 [[self::D0001-language-overview]] 的最小示例：在那里，一段代码求值后得到 `bindings`、`content` 与 `annotations` 三个产物。本文定义这个结果如何产生。
+本文承接 [[vault::designs::D0001-language-overview]] 的最小示例：在那里，一段代码求值后得到 `bindings`、`content` 与 `annotations` 三个产物。本文定义这个结果如何产生。
 
 一段源代码经过三个阶段：解析、静态检查、求值。解析把源码变成语法结构；静态检查解析名称、推断并检查类型，并把每个调用点解析为确定的已解析调用（resolved call）；求值器只消费静态检查的产物，在求值收尾时把内容成型为文档树，输出求值结果。传统的标记语言直接通过解析就可以得到表示文档的元素树；Notist 在解析之后多一步求值——计算是语言的固有部分，不是事后插入的占位符。
 
@@ -63,7 +63,7 @@ Type
 - 带默认值（`=`）的形参只能以具名实参（named argument）绑定（named-only）；
 - 不带默认值的形参只能以位置实参（positional argument）绑定（positional-only）。
 
-必填即 positional、可选即 named，两种表面不互通（Typst 采用同一条分界线）。调用点按位或按名绑定：positional 实参按声明顺序依次填充 positional 形参，named 实参按名字匹配 named 形参；两类实参可以任意交错。定义签名：
+必填即 positional、可选即 named，两种表面不互通（Typst 采用同一条分界线）。调用点按位或按名绑定：具名实参写作 `name: value`（与形参声明同构；`=` 只用于签名默认值与标注列表的 `key = value`）；positional 实参按声明顺序依次填充 positional 形参，named 实参按名字匹配 named 形参。位置实参必须全部出现在具名实参之前，具名实参之间可任意排序；trailing Content block 是唯一例外——它是恒为最后的 positional 实参，允许跟在具名实参之后。定义签名：
 
 ```text
 fn(kind: String = "warning", trailing body: Content) -> Content
@@ -84,7 +84,7 @@ fn(kind: String =, trailing body: Content) -> Content
 - 缺失实参（missing argument）：无默认值的必填形参未被提供；
 - 绑定方式不匹配（binding mismatch）：positional 实参没有剩余可填充的形参，或 named 实参指向 positional 形参——绝不静默改绑。
 
-Trailing content 是最后一个 positional 形参：定义中用显式 `trailing` 修饰符声明，至多一个，必须接受 Content；`#f(1)[内容]` 与 `#f(1, [内容])` 等价——trailing block 只是追加一个 positional 实参的语法糖，没有独立的绑定通道。其余形参没有这种紧凑写法。
+Trailing content 是最后一个 positional 形参：定义中用显式 `trailing` 修饰符声明，至多一个，必须接受 Content；`#f(kind: "warning")[内容]` 与 `#f(kind: "warning", [内容])` 等价——trailing block 只是追加一个 positional 实参的语法糖，没有独立的绑定通道；它是唯一允许跟在具名实参之后的位置实参。其余形参没有这种紧凑写法。
 
 函数值（function value）是闭包（closure）：携带签名、实现、捕获环境（captured environment）与所需 capability。capability 与函数类型身份正交，宿主在实际调用时检查。
 
@@ -155,8 +155,6 @@ Element
 ├─ Raw           # 代码（raw 构造器；行内/块级由 block 参数决定，行内糖暂缓）
 ├─ Rule          # 分割线（rule 构造器）
 ├─ ListItem      # 列表条目；相邻同类条目由成型组合为 List/Enum
-├─ Quote         # 引用块（quote 构造器暂缓）
-├─ Table         # 表格（table 构造器暂缓）
 ├─ Callout       # 提示框（callout 构造器）
 ├─ Details       # 折叠内容（details 构造器）
 ├─ Strong        # 加粗（strong 构造器；*...* 糖）
@@ -167,7 +165,7 @@ Element
 └─ Custom        # 扩展元素：携带构造器身份与参数，渲染器对未知种类有兜底
 ```
 
-在任一语言版本中，内置集合是封闭的：内置元素可以穷举匹配；扩展（插件等）走 `Custom`，不改变内置集合，内置集合随语言版本演化。元素参数是普通值——例如 Heading 的 `level` 与 body、Callout 的 `kind` 与 body；容器元素的子元素不变量在成型时检查。各内置元素的构造器签名与 Markup 语法糖见 [[self::D0003-builtin-functions-and-syntax-sugar]]。
+在任一语言版本中，内置集合是封闭的：内置元素可以穷举匹配；扩展（插件等）走 `Custom`，不改变内置集合，内置集合随语言版本演化。元素参数是普通值——例如 Heading 的 `level` 与 body、Callout 的 `kind` 与 body；容器元素的子元素不变量在成型时检查。各内置元素的构造器签名与 Markup 语法糖见 [[vault::designs::D0003-builtin-functions-and-syntax-sugar]]。
 
 Content 值不是散落的数据：它们组合在同一棵树上——scope 树。节点既装内容，也装名字；属性不挂在树上，见"属性表"一节。
 
@@ -178,7 +176,7 @@ Content 值不是散落的数据：它们组合在同一棵树上——scope 树
 1. 内容的容器：节点包含一段 Content；
 2. 名字的容器：binding 挂在节点上，名称解析沿节点链向上——词法环境不是树之外的平行结构，就是树本身。
 
-属性不挂在节点上：标注在求值期绑定到值（语法见 [[self::D0006-scope-and-annotation-syntax]]），求值收尾转写为旁置的属性表（annotation table）——见"属性表"一节。
+属性不挂在节点上：标注在求值期绑定到值（语法见 [[vault::designs::D0006-scope-and-annotation-syntax]]），求值收尾转写为旁置的属性表（annotation table）——见"属性表"一节。
 
 名称解析沿节点链自内向外进行，最近绑定者胜出（shadowing）；`let` 绑定从声明处开始对后续节点可见。求值结束后，除根 scope 的 bindings 进入求值结果外，节点上的绑定只是求值期的环境事实——成型后的结构树消费者不依赖它们。
 
@@ -242,11 +240,11 @@ scope 节点只存在于值层。成型时，元素形成的 scope 是实元素�
 }
 ```
 
-D0001 的最小示例中：`accent` 与 `warning` 进入 `bindings`，标题与 callout 组合成 `content`——此时它还是组合形态，求值收尾把它成型为结构树。（此结构在引入 Vault 与 Module 后成为 ModuleResult，见 [[self::D0004-vault-module-and-scope]]。）
+D0001 的最小示例中：`accent` 与 `warning` 进入 `bindings`，标题与 callout 组合成 `content`——此时它还是组合形态，求值收尾把它成型为结构树。（此结构在引入 Vault 与 Module 后成为 ModuleResult，见 [[vault::designs::D0004-vault-module-and-scope]]。）
 
 === 成型：从组合到结构树
 
-求值收尾时，成型规则把元素序列组成结构树：连续的行内元素组成段落，段间分隔（Parbreak）断开段落，相邻同类条目组成列表或枚举；heading 与其后内容（直到下一个同级或更高级 heading 之前）归组为 Section 节点——节归组递归作用于任何内容序列，同一规则确定属性表的节条目（见"属性表"一节）。块级元素（Heading、block: true 的 Raw、Table、Quote 等）独立存在，其到来前先收束当前段落与容器状态；行内元素（含 block: false 的 Raw）参与段落组合；容器子元素的不变量在成型时检查。成型只重组元素，不合并、不删除个体——属性表区间在成型前后稳定。
+求值收尾时，成型规则把元素序列组成结构树：连续的行内元素组成段落，段间分隔（Parbreak）断开段落，相邻同类条目组成列表或枚举；heading 与其后内容（直到下一个同级或更高级 heading 之前）归组为 Section 节点——节归组递归作用于任何内容序列，同一规则确定属性表的节条目（见"属性表"一节）。块级元素（Heading、block: true 的 Raw 等）独立存在，其到来前先收束当前段落与容器状态；行内元素（含 block: false 的 Raw）参与段落组合；容器子元素的不变量在成型时检查。成型只重组元素，不合并、不删除个体——属性表区间在成型前后稳定。
 
 成型是对任意 `Content` 值可独立运行的规范纯函数：任何 Content 值都是一份"文档"，可以单独成型、渲染与查询。整份文档的成型是默认视野；scope 内部、单个元素等局部区域用同一套规则对相应内容成型——规则唯一，输入随视野选择。
 

@@ -5,7 +5,7 @@ use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use notist_service::protocol::{ClientKind, Handshake, ProtocolVersion};
-use notist_service::transport::DaemonClient;
+use notist_service::transport::{DaemonClient, ShutdownReply};
 use notist_service::{CoreReply, CoreRequest, NotistService};
 
 use crate::output::OutputFormat;
@@ -31,26 +31,8 @@ impl LocalNotistClient {
             });
         }
         let runtime = tokio::runtime::Runtime::new()?;
-        let handshake = handshake(kind, root.clone())?;
-        let client = match runtime.block_on(DaemonClient::connect(&root, handshake.clone())) {
-            Ok(client) => client,
-            Err(error) if daemon_is_unavailable(&error) => {
-                spawn_daemon(&root)?;
-                let deadline = Instant::now() + Duration::from_secs(5);
-                loop {
-                    match runtime.block_on(DaemonClient::connect(&root, handshake.clone())) {
-                        Ok(client) => break client,
-                        Err(error)
-                            if daemon_is_unavailable(&error) && Instant::now() < deadline =>
-                        {
-                            std::thread::sleep(Duration::from_millis(50));
-                        }
-                        Err(error) => return Err(error),
-                    }
-                }
-            }
-            Err(error) => return Err(error),
-        };
+        let our_stamp = notist_service::transport::binary_stamp();
+        let client = connect_daemon(&runtime, &root, kind, our_stamp)?;
         Ok(Self {
             backend: ClientBackend::Daemon { runtime, client },
         })
@@ -62,6 +44,173 @@ impl LocalNotistClient {
             ClientBackend::Daemon { runtime, client } => runtime.block_on(client.request(request)),
         }
     }
+}
+
+const DAEMON_CONNECT_DEADLINE: Duration = Duration::from_secs(5);
+
+/// Connect to the vault daemon, starting it on demand. When the running daemon
+/// was started from a different executable than this process, it is asked to
+/// shut down (unless it has other active clients) and a replacement daemon is
+/// started from the current executable, so local `cargo run` development never
+/// silently queries code that predates the last build.
+fn connect_daemon(
+    runtime: &tokio::runtime::Runtime,
+    root: &Path,
+    kind: ClientKind,
+    our_stamp: Option<u64>,
+) -> io::Result<DaemonClient> {
+    let mut restarts = 0;
+    loop {
+        let client = connect_once(runtime, root, kind)?;
+        match recycle_stale_daemon(runtime, root, client, our_stamp, restarts >= 2)? {
+            Recycle::Keep(client) => return Ok(client),
+            Recycle::Restart => restarts += 1,
+        }
+    }
+}
+
+enum Recycle {
+    /// Use the connected daemon as-is.
+    Keep(DaemonClient),
+    /// The stale daemon was shut down; connect to the replacement instead.
+    Restart,
+}
+
+/// One connect attempt that also starts the daemon when it is unavailable and
+/// waits briefly for it to come up.
+fn connect_once(
+    runtime: &tokio::runtime::Runtime,
+    root: &Path,
+    kind: ClientKind,
+) -> io::Result<DaemonClient> {
+    let hs = handshake(kind, root.to_path_buf())?;
+    match runtime.block_on(DaemonClient::connect(root, hs)) {
+        Ok(client) => Ok(client),
+        Err(error) if daemon_is_unavailable(&error) => {
+            spawn_daemon(root)?;
+            let deadline = Instant::now() + DAEMON_CONNECT_DEADLINE;
+            loop {
+                std::thread::sleep(Duration::from_millis(50));
+                let hs = handshake(kind, root.to_path_buf())?;
+                match runtime.block_on(DaemonClient::connect(root, hs)) {
+                    Ok(client) => return Ok(client),
+                    Err(error) if daemon_is_unavailable(&error) && Instant::now() < deadline => {}
+                    Err(error) => return Err(error),
+                }
+            }
+        }
+        Err(error) => return Err(error),
+    }
+}
+
+/// If the connected daemon serves a different binary than this process, ask it
+/// to shut down (guarded by "no other active clients") and signal a restart.
+fn recycle_stale_daemon(
+    runtime: &tokio::runtime::Runtime,
+    root: &Path,
+    mut client: DaemonClient,
+    our_stamp: Option<u64>,
+    restart_exhausted: bool,
+) -> io::Result<Recycle> {
+    let stale = match (client.handshake.daemon_binary_stamp, our_stamp) {
+        (Some(daemon_stamp), Some(our_stamp)) => daemon_stamp != our_stamp,
+        _ => false,
+    };
+    if !stale {
+        return Ok(Recycle::Keep(client));
+    }
+    if restart_exhausted {
+        eprintln!(
+            "notist: the daemon for {} serves a different binary and keeps reappearing; keeping this connection. Run `notist daemon stop <root>` to restart it.",
+            root.display()
+        );
+        return Ok(Recycle::Keep(client));
+    }
+    match runtime.block_on(client.shutdown(false))? {
+        ShutdownReply::Accepted { .. } => {
+            drop(client);
+            // Wait until the old daemon has released its endpoint; the caller's
+            // next connect attempt then starts the replacement through the
+            // normal spawn-on-unavailable path.
+            wait_for_endpoint_free(runtime, root)?;
+            Ok(Recycle::Restart)
+        }
+        ShutdownReply::Rejected { message } => {
+            eprintln!(
+                "notist: the daemon for {} serves a different binary and has active clients ({message}); keeping this connection. Run `notist daemon stop <root>` to restart it.",
+                root.display()
+            );
+            Ok(Recycle::Keep(client))
+        }
+    }
+}
+
+/// Poll the endpoint until no daemon answers, meaning the old process has
+/// released it. Each poll opens a throwaway connection that is dropped.
+fn wait_for_endpoint_free(runtime: &tokio::runtime::Runtime, root: &Path) -> io::Result<()> {
+    let deadline = Instant::now() + DAEMON_CONNECT_DEADLINE;
+    loop {
+        let hs = handshake(ClientKind::Cli, root.to_path_buf())?;
+        match runtime.block_on(DaemonClient::connect(root, hs)) {
+            Ok(_client) => {}
+            Err(error) if daemon_is_unavailable(&error) => return Ok(()),
+            Err(error) => return Err(error),
+        }
+        if Instant::now() >= deadline {
+            return Err(io::Error::new(
+                io::ErrorKind::TimedOut,
+                "daemon did not exit after shutdown",
+            ));
+        }
+        std::thread::sleep(Duration::from_millis(25));
+    }
+}
+
+/// Stop the daemon serving `root`. A missing daemon is not an error, so scripts
+/// can run `notist daemon stop` before a rebuild without failing.
+pub(crate) fn stop_daemon(root: PathBuf, format: OutputFormat) -> io::Result<()> {
+    let root = dunce::canonicalize(root)?;
+    let runtime = tokio::runtime::Runtime::new()?;
+    let hs = handshake(ClientKind::Cli, root.clone())?;
+    let mut client = match runtime.block_on(DaemonClient::connect(&root, hs)) {
+        Ok(client) => client,
+        Err(error) if daemon_is_unavailable(&error) => {
+            if format.is_json() {
+                crate::output::emit_event(
+                    "daemon",
+                    "not_running",
+                    serde_json::json!({ "root": root }),
+                )?;
+            } else {
+                println!("no notist daemon is running for {}", root.display());
+            }
+            return Ok(());
+        }
+        Err(error) => return Err(error),
+    };
+    match runtime.block_on(client.shutdown(true))? {
+        ShutdownReply::Accepted { pid } => {
+            wait_for_endpoint_free(&runtime, &root)?;
+            if format.is_json() {
+                crate::output::emit_event(
+                    "daemon",
+                    "stopped",
+                    serde_json::json!({ "root": root, "pid": pid }),
+                )?;
+            } else if let Some(pid) = pid {
+                println!("stopped notist daemon (pid {pid})");
+            } else {
+                println!("stopped notist daemon");
+            }
+        }
+        ShutdownReply::Rejected { message } => {
+            return Err(io::Error::new(
+                io::ErrorKind::Other,
+                format!("daemon refused to stop: {message}"),
+            ));
+        }
+    }
+    Ok(())
 }
 
 fn handshake(kind: ClientKind, vault_root: PathBuf) -> io::Result<Handshake> {

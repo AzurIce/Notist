@@ -5,7 +5,10 @@ use std::time::{Duration, Instant};
 
 use base64::Engine as _;
 use base64::engine::general_purpose::URL_SAFE_NO_PAD;
-use notist_analysis::{DiagnosticKind, WorkspaceSnapshot};
+use notist_analysis::{
+    DiagnosticKind, DiagnosticSeverity as AnalysisSeverity, MissingReason, RefTarget,
+    WorkspaceSnapshot,
+};
 use notist_model::{ModulePath, TextRange};
 use regex::RegexBuilder;
 use serde::de::DeserializeOwned;
@@ -36,7 +39,7 @@ const MAX_SEARCH_CANDIDATES: usize = 10_000;
 const REGEX_SCAN_DEADLINE: Duration = Duration::from_secs(2);
 pub const RANKING_VERSION: &str = "bm25-v3";
 pub const TOKENIZER_VERSION: &str = "notist-unicode-v1";
-pub const INDEX_SCHEMA_VERSION: u32 = 3;
+pub const INDEX_SCHEMA_VERSION: u32 = 4;
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct PageRequest {
@@ -189,7 +192,7 @@ pub struct Location {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub line_range: Option<LineRange>,
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub label: Option<String>,
+    pub id: Option<String>,
     pub source_fingerprint: String,
 }
 
@@ -256,7 +259,7 @@ pub struct OutlineItem {
     pub name: String,
     pub level: u8,
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub label: Option<String>,
+    pub id: Option<String>,
     pub location: Location,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub parent_range: Option<super::request::ByteRange>,
@@ -316,6 +319,12 @@ pub struct ReferenceItem {
     pub source: String,
     pub target: String,
     pub direction: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub relation: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub url: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub target_kind: Option<String>,
     pub location: Location,
     pub excerpt: String,
     pub excerpt_truncated: bool,
@@ -353,7 +362,7 @@ pub enum SearchGroup {
 pub enum SearchField {
     Title,
     Heading,
-    Label,
+    Id,
     Module,
     Path,
     Tag,
@@ -367,7 +376,7 @@ impl SearchField {
         vec![
             Self::Title,
             Self::Heading,
-            Self::Label,
+            Self::Id,
             Self::Module,
             Self::Path,
             Self::Tag,
@@ -498,6 +507,7 @@ pub enum DiagnosticSeverity {
 pub struct DiagnosticSummary {
     pub checked_sources: usize,
     pub total_diagnostics: usize,
+    pub error_count: usize,
     pub counts_by_code: HashMap<String, usize>,
 }
 
@@ -506,6 +516,8 @@ pub struct DiagnosticItem {
     pub code: String,
     pub severity: String,
     pub message: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub hint: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub location: Option<Location>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -559,6 +571,10 @@ struct CursorPayload {
     operation: String,
     vault_fingerprint: String,
     view_kind: String,
+    #[serde(default)]
+    daemon_instance: String,
+    #[serde(default)]
+    view_id: u64,
     source_fingerprint: String,
     query_fingerprint: String,
     offset: usize,
@@ -581,7 +597,10 @@ pub fn list_modules(
     let mut items = workspace
         .modules()
         .filter(|module| {
-            prefix.is_none_or(|prefix| module.logical_path.to_string().starts_with(prefix))
+            prefix.is_none_or(|prefix| {
+                let path = module.logical_path.to_string();
+                path == prefix || path.starts_with(&format!("{prefix}::"))
+            })
         })
         .filter(|module| match query.kind {
             ModuleKind::Any => true,
@@ -653,7 +672,7 @@ pub fn outline(
             .find(|candidate| candidate.level <= symbol.level)
             .map_or(resolved.selection.end, |candidate| candidate.range.start);
         items.push(OutlineItem {
-            label: workspace
+            id: workspace
                 .labels()
                 .iter()
                 .find(|label| {
@@ -661,7 +680,8 @@ pub fn outline(
                         && label.scope_range.start <= symbol.range.start
                         && symbol.range.end <= label.scope_range.end
                 })
-                .map(|label| label.name.clone()),
+                .map(|label| label.name.clone())
+                .or_else(|| Some(symbol.name.clone())),
             location: location(
                 workspace,
                 resolved.module,
@@ -824,6 +844,63 @@ pub fn read_source(
     })
 }
 
+/// Converts a resolved RefTarget into its serialized record shape (D0004).
+pub fn ref_target_record(
+    workspace: &WorkspaceSnapshot,
+    target: RefTarget,
+) -> super::request::RefTargetRecord {
+    use notist_analysis::ResourceKind;
+    let module_name =
+        |module_id| workspace.module_by_id(module_id).map(|module| module.logical_path.to_string());
+    match target {
+        RefTarget::Module(module_id) => super::request::RefTargetRecord {
+            kind: "module".into(),
+            module: module_name(module_id),
+            ..Default::default()
+        },
+        RefTarget::Scope { module, id } => super::request::RefTargetRecord {
+            kind: "scope".into(),
+            module: module_name(module),
+            id: Some(id),
+            ..Default::default()
+        },
+        RefTarget::Resource {
+            module,
+            name,
+            kind,
+        } => super::request::RefTargetRecord {
+            kind: "resource".into(),
+            module: module_name(module),
+            name: Some(name),
+            resource_kind: Some(
+                match kind {
+                    ResourceKind::Image => "image",
+                    ResourceKind::File => "file",
+                }
+                .into(),
+            ),
+            ..Default::default()
+        },
+        RefTarget::External(url) => super::request::RefTargetRecord {
+            kind: "external".into(),
+            url: Some(url),
+            ..Default::default()
+        },
+        RefTarget::Missing(reason) => super::request::RefTargetRecord {
+            kind: "missing".into(),
+            reason: Some(
+                match reason {
+                    MissingReason::Nonexistent => "nonexistent",
+                    MissingReason::Ambiguous => "ambiguous",
+                    MissingReason::Unsupported => "unsupported",
+                }
+                .into(),
+            ),
+            ..Default::default()
+        },
+    }
+}
+
 pub fn references(
     workspace: &WorkspaceSnapshot,
     snapshot: &SnapshotIdentity,
@@ -850,6 +927,9 @@ pub fn references(
                     source: module.logical_path.to_string(),
                     target: resolved.module.logical_path.to_string(),
                     direction: "incoming".into(),
+                    relation: None,
+                    url: None,
+                    target_kind: None,
                     location: location(workspace, module, source, reference.range, None),
                     excerpt,
                     excerpt_truncated: truncated,
@@ -872,10 +952,19 @@ pub fn references(
         }) {
             let (excerpt, _, truncated) =
                 excerpt(&resolved.source.text, reference.range, query.snippet_bytes);
+            let target_kind = reference.target_label.as_deref().map_or("module", |label| {
+                match workspace.resolve_module_label(&reference.target_module, label) {
+                    RefTarget::Resource { .. } => "resource",
+                    _ => "scope",
+                }
+            });
             items.push(ReferenceItem {
                 source: resolved.module.logical_path.to_string(),
                 target: reference.target_module.to_string(),
                 direction: "outgoing".into(),
+                relation: Some("reference".into()),
+                url: Some(reference.url.clone()),
+                target_kind: Some(target_kind.into()),
                 location: location(
                     workspace,
                     resolved.module,
@@ -894,6 +983,9 @@ pub fn references(
             source: resolved.module.logical_path.to_string(),
             target: resolved.module.logical_path.to_string(),
             direction: "definition".into(),
+            relation: None,
+            url: None,
+            target_kind: None,
             location: location(
                 workspace,
                 resolved.module,
@@ -991,12 +1083,31 @@ pub fn definition(
     )))
 }
 
+impl From<AnalysisSeverity> for DiagnosticSeverity {
+    fn from(severity: AnalysisSeverity) -> Self {
+        match severity {
+            AnalysisSeverity::Error => Self::Error,
+            AnalysisSeverity::Warning => Self::Warning,
+            AnalysisSeverity::Info => Self::Info,
+        }
+    }
+}
+
+fn severity_rank(severity: DiagnosticSeverity) -> u8 {
+    match severity {
+        DiagnosticSeverity::Error => 2,
+        DiagnosticSeverity::Warning => 1,
+        DiagnosticSeverity::Info => 0,
+    }
+}
+
 pub fn diagnostics(
     workspace: &WorkspaceSnapshot,
     snapshot: &SnapshotIdentity,
     query: &DiagnosticsQuery,
 ) -> Result<DiagnosticsResult, ToolError> {
     let mut counts = HashMap::new();
+    let mut error_count = 0usize;
     let mut items = Vec::new();
     for diagnostic in workspace.diagnostics() {
         if let Some(scope) = query.scope.as_deref()
@@ -1010,7 +1121,13 @@ pub fn diagnostics(
         }
         let code = diagnostic_code(&diagnostic.kind).to_owned();
         *counts.entry(code.clone()).or_insert(0) += 1;
+        if diagnostic.kind.severity() == AnalysisSeverity::Error {
+            error_count += 1;
+        }
         if query.summary_only {
+            continue;
+        }
+        if severity_rank(diagnostic.kind.severity().into()) < severity_rank(query.severity) {
             continue;
         }
         let location = diagnostic.source_path.as_deref().and_then(|path| {
@@ -1038,8 +1155,9 @@ pub fn diagnostics(
         });
         items.push(DiagnosticItem {
             code,
-            severity: "error".into(),
+            severity: diagnostic.kind.severity_label().into(),
             message: diagnostic.message.clone(),
+            hint: diagnostic.kind.hint().map(str::to_owned),
             location,
             excerpt: excerpt.as_ref().map(|(text, _, _)| text.clone()),
             excerpt_range: excerpt.as_ref().map(|(_, range, _)| *range),
@@ -1047,6 +1165,7 @@ pub fn diagnostics(
         });
     }
     let summary = DiagnosticSummary {
+        error_count,
         checked_sources: workspace
             .sources()
             .filter(|source| {
@@ -1399,7 +1518,7 @@ fn searchable_regions(
             }
         }
     }
-    if fields.contains(&SearchField::Label) {
+    if fields.contains(&SearchField::Id) {
         for label in workspace
             .labels()
             .iter()
@@ -1549,6 +1668,7 @@ impl SearchIndex {
                 message: Some("the persisted index manifest is unreadable".into()),
             });
         };
+        let vault_fingerprint = digest(root.to_string_lossy().as_bytes());
         let valid = manifest.get("schemaVersion").and_then(JsonValue::as_u64)
             == Some(u64::from(INDEX_SCHEMA_VERSION))
             && manifest.get("tokenizerVersion").and_then(JsonValue::as_str)
@@ -1557,7 +1677,11 @@ impl SearchIndex {
             && manifest
                 .get("sourceFingerprint")
                 .and_then(JsonValue::as_str)
-                == Some(source_fingerprint);
+                == Some(source_fingerprint)
+            && manifest
+                .get("vaultRootFingerprint")
+                .and_then(JsonValue::as_str)
+                == Some(vault_fingerprint.as_str());
         if !valid {
             return Some(IndexStatusRecord {
                 health: "stale".into(),
@@ -1897,7 +2021,7 @@ impl SearchIndex {
         Some(match field {
             SearchField::Title => (self.schema.title, 5.0),
             SearchField::Heading => (self.schema.heading, 4.0),
-            SearchField::Label => (self.schema.label, 6.0),
+            SearchField::Id => (self.schema.label, 6.0),
             SearchField::Module => (self.schema.module, 6.0),
             SearchField::Path => (self.schema.path, 3.0),
             SearchField::Tag => (self.schema.tag, 4.0),
@@ -1935,7 +2059,7 @@ fn make_search_schema() -> (Schema, SearchSchema) {
     let mut builder = Schema::builder();
     let title = builder.add_text_field("title", TEXT);
     let heading = builder.add_text_field("heading", TEXT);
-    let label = builder.add_text_field("label", TEXT);
+    let label = builder.add_text_field("id", TEXT);
     let module = builder.add_text_field("module", TEXT);
     let path = builder.add_text_field("path", TEXT);
     let tag = builder.add_text_field("tag", TEXT);
@@ -2191,10 +2315,26 @@ fn populate_index_paths(
                     fields.stored_path => relative.to_string_lossy().to_string(),
                     fields.stored_start => definition.range.start as u64,
                     fields.stored_end => definition.range.end as u64,
-                    fields.stored_kind => "label",
+                    fields.stored_kind => "id",
                 ))
                 .map_err(io::Error::other)?;
             count += 1;
+        }
+        // Heading default ids participate in the `id` field (D0008 field table).
+        {
+            for (name, range) in workspace.module_heading_default_ids(&module_record.logical_path) {
+                writer
+                    .add_document(doc!(
+                        fields.label => normalize_for_index(&name),
+                        fields.stored_module => module_record.logical_path.to_string(),
+                        fields.stored_path => relative.to_string_lossy().to_string(),
+                        fields.stored_start => range.start as u64,
+                        fields.stored_end => range.end as u64,
+                        fields.stored_kind => "id",
+                    ))
+                    .map_err(io::Error::other)?;
+                count += 1;
+            }
         }
         if let Some(parse) = &module_record.parse {
             for literal in parse.raw_literals() {
@@ -2322,7 +2462,7 @@ fn build_lexicons(workspace: &WorkspaceSnapshot) -> HashMap<SearchField, Vec<Str
             .iter()
             .filter(|label| label.file_id == source.file_id)
         {
-            add(SearchField::Label, &label.name);
+            add(SearchField::Id, &label.name);
         }
         if let Some(parse) = &module.parse {
             for literal in parse.raw_literals() {
@@ -2571,10 +2711,13 @@ fn cursor_offset(
     }
     if payload.vault_fingerprint != snapshot.vault.fingerprint
         || payload.view_kind != snapshot.view_kind
+        || (!payload.daemon_instance.is_empty()
+            && payload.daemon_instance != snapshot.daemon_instance.0)
+        || (payload.view_id != 0 && payload.view_id != snapshot.view_id.0)
     {
         return Err(ToolError::new(
             "invalid_cursor",
-            "cursor belongs to another Vault or view kind",
+            "cursor belongs to another Vault, daemon instance, or view",
         )
         .with_hint(
             "use the cursor only with the Vault and view that issued it, or omit cursor to restart",
@@ -2612,11 +2755,21 @@ fn encode_cursor(
     let Ok(view_length) = u8::try_from(snapshot.view_kind.len()) else {
         return encode_legacy_cursor(operation, snapshot, query, offset);
     };
-    let mut bytes = Vec::with_capacity(76 + operation.len() + snapshot.view_kind.len());
-    bytes.extend([2, operation_length]);
+    let Ok(instance_length) = u8::try_from(snapshot.daemon_instance.0.len()) else {
+        return encode_legacy_cursor(operation, snapshot, query, offset);
+    };
+    let mut bytes = Vec::with_capacity(
+        84 + operation.len()
+            + snapshot.view_kind.len()
+            + snapshot.daemon_instance.0.len(),
+    );
+    bytes.extend([3, operation_length]);
     bytes.extend(operation.as_bytes());
     bytes.push(view_length);
     bytes.extend(snapshot.view_kind.as_bytes());
+    bytes.push(instance_length);
+    bytes.extend(snapshot.daemon_instance.0.as_bytes());
+    bytes.extend(snapshot.view_id.0.to_le_bytes());
     bytes.extend(vault_fingerprint);
     bytes.extend(source_fingerprint);
     bytes.extend(query_fingerprint);
@@ -2637,6 +2790,8 @@ fn encode_legacy_cursor(
         operation: operation.into(),
         vault_fingerprint: snapshot.vault.fingerprint.clone(),
         view_kind: snapshot.view_kind.clone(),
+        daemon_instance: snapshot.daemon_instance.0.clone(),
+        view_id: snapshot.view_id.0,
         source_fingerprint: snapshot.source_fingerprint.clone(),
         query_fingerprint: digest(query.as_bytes()),
         offset,
@@ -2657,7 +2812,7 @@ fn decode_packed_cursor(cursor: &str) -> Result<CursorPayload, ToolError> {
     let bytes = URL_SAFE_NO_PAD
         .decode(cursor)
         .map_err(|_| invalid_cursor("cursor is not valid base64url"))?;
-    if bytes.len() < 2 + 1 + 8 + 8 + 32 + 8 + 8 {
+    if bytes.len() < 1 + 1 + 1 + 1 + 8 + 8 + 8 + 32 + 8 + 8 {
         return Err(invalid_cursor("cursor payload is too short"));
     }
     let (payload, checksum) = bytes.split_at(bytes.len() - 8);
@@ -2666,11 +2821,16 @@ fn decode_packed_cursor(cursor: &str) -> Result<CursorPayload, ToolError> {
     }
     let mut index = 0usize;
     let version = take_byte(payload, &mut index)?;
-    if version != 2 {
+    if version != 3 {
         return Err(invalid_cursor("cursor schema is unsupported"));
     }
     let operation = take_string(payload, &mut index)?;
     let view_kind = take_string(payload, &mut index)?;
+    let daemon_instance = take_string(payload, &mut index)?;
+    let view_id_bytes: [u8; 8] = take_bytes(payload, &mut index, 8)?
+        .try_into()
+        .map_err(|_| invalid_cursor("cursor view id is malformed"))?;
+    let view_id = u64::from_le_bytes(view_id_bytes);
     let vault_fingerprint = encode_hex(take_bytes(payload, &mut index, 8)?);
     let source_fingerprint = encode_hex(take_bytes(payload, &mut index, 8)?);
     let query_fingerprint = encode_hex(take_bytes(payload, &mut index, 32)?);
@@ -2683,10 +2843,12 @@ fn decode_packed_cursor(cursor: &str) -> Result<CursorPayload, ToolError> {
     let offset = usize::try_from(u64::from_le_bytes(offset_bytes))
         .map_err(|_| invalid_cursor("cursor offset is too large"))?;
     Ok(CursorPayload {
-        version: 2,
+        version: 3,
         operation,
         vault_fingerprint,
         view_kind,
+        daemon_instance,
+        view_id,
         source_fingerprint,
         query_fingerprint,
         offset,
@@ -2813,18 +2975,39 @@ fn resolve_source<'a>(
     })?;
     let source = workspace.source(file_id).unwrap();
     let selection = if let Some(label_name) = &label {
-        workspace
-            .label(&module.logical_path, label_name)
-            .map(|definition| definition.scope_range)
-            .ok_or_else(|| {
-                ToolError::new(
-                    "not_found",
+        match workspace.resolve_module_label(&module.logical_path, label_name) {
+            RefTarget::Scope { .. } => workspace
+                .label_scope_range(&module.logical_path, label_name)
+                .unwrap_or(TextRange::new(0, source.text.len())),
+            RefTarget::Missing(MissingReason::Ambiguous) => {
+                return Err(ToolError::new(
+                    "ambiguous_selector",
                     format!(
-                        "label `{label_name}` was not found in {module_path}",
-                        module_path = module.logical_path
+                        "label `{label_name}` in `{}` matches multiple headings; add an explicit `@id` to disambiguate",
+                        module.logical_path
                     ),
                 )
-            })?
+                .with_hint("use an explicit id or a more specific selector"));
+            }
+            RefTarget::Missing(_) => {
+                return Err(ToolError::new(
+                    "not_found",
+                    format!(
+                        "label `{label_name}` was not found in {}",
+                        module.logical_path
+                    ),
+                ));
+            }
+            _ => {
+                return Err(ToolError::new(
+                    "not_found",
+                    format!(
+                        "label `{label_name}` in `{}` is not a section or scope target",
+                        module.logical_path
+                    ),
+                ));
+            }
+        }
     } else {
         TextRange::new(0, source.text.len())
     };
@@ -2841,14 +3024,14 @@ fn location(
     module: &notist_analysis::Module,
     source: &notist_analysis::SourceInput,
     range: TextRange,
-    label: Option<String>,
+    id: Option<String>,
 ) -> Location {
     Location {
         module: module.logical_path.to_string(),
         relative_path: relative_path(workspace.root(), &source.canonical_path),
         byte_range: range.into(),
         line_range: Some(line_range(&source.text, range)),
-        label,
+        id,
         source_fingerprint: fingerprint(&source.text),
     }
 }
@@ -3252,6 +3435,7 @@ fn diagnostic_code(kind: &DiagnosticKind) -> &'static str {
         DiagnosticKind::InvalidSyntax => "invalid-syntax",
         DiagnosticKind::UnresolvedModule => "unresolved-module",
         DiagnosticKind::UnresolvedLabel => "unresolved-label",
+        DiagnosticKind::AmbiguousLabel => "ambiguous-label",
         DiagnosticKind::UnknownFunction => "unknown-function",
         DiagnosticKind::DuplicateFunction => "duplicate-function",
         DiagnosticKind::UnresolvedName => "unresolved-name",
@@ -3259,6 +3443,8 @@ fn diagnostic_code(kind: &DiagnosticKind) -> &'static str {
         DiagnosticKind::InvalidArguments => "invalid-arguments",
         DiagnosticKind::TypeMismatch => "type-mismatch",
         DiagnosticKind::Evaluation => "evaluation",
+        DiagnosticKind::ExternalReferenceUnsupported => "external-reference-unsupported",
+        DiagnosticKind::ImportCycle => "import-cycle",
     }
 }
 

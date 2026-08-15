@@ -49,6 +49,89 @@ pub struct SpannedName {
     pub range: TextRange,
 }
 
+/// Parses a bracket-delimited attribute list starting at the opening `[`
+/// (`@[...]` block-prefix and `@![...]` module annotations, D0006). The
+/// attribute list is the same grammar as the postfix form: an optional id,
+/// `#tag`, `.class`, and `key = value` entries separated by `,`; whitespace
+/// around entries is allowed. Returns the attributes, the cursor after the
+/// closing `]`, and whether the list closed.
+pub(crate) fn parse_annotation_block(
+    source: &str,
+    start: usize,
+    errors: &mut Vec<SyntaxError>,
+) -> (Attributes, TextRange, bool) {
+    let mut attributes = Attributes {
+        range: Some(TextRange::new(start, start + 1)),
+        ..Attributes::default()
+    };
+    let mut cursor = start + 1;
+    let mut first = true;
+    let mut closed = false;
+
+    loop {
+        while matches!(source.as_bytes().get(cursor), Some(b' ' | b'\t' | b'\r' | b'\n')) {
+            cursor += 1;
+        }
+        if source.as_bytes().get(cursor) == Some(&b']') {
+            cursor += 1;
+            closed = true;
+            break;
+        }
+        let item_start = cursor;
+        let parsed = match source.as_bytes().get(cursor) {
+            Some(b'#') => parse_prefixed_name(source, cursor, AttributeKind::Tag),
+            Some(b'.') => parse_prefixed_name(source, cursor, AttributeKind::Class),
+            Some(_) => parse_bare_attribute(source, cursor, first),
+            None => None,
+        };
+        match parsed {
+            Some(ParsedAttribute::Id(id, end)) => {
+                attributes.id = Some(id);
+                cursor = end;
+            }
+            Some(ParsedAttribute::Item(item, end)) => {
+                attributes.items.push(item);
+                cursor = end;
+            }
+            None => {
+                errors.push(SyntaxError {
+                    message: if first {
+                        "expected an ID, tag, class, or key-value attribute in `@[...]`".into()
+                    } else {
+                        "expected a tag, class, or key-value attribute after `,`".into()
+                    },
+                    range: TextRange::new(item_start, next_char_end(source, item_start)),
+                });
+                cursor = next_char_end(source, item_start);
+                break;
+            }
+        }
+        first = false;
+        while matches!(source.as_bytes().get(cursor), Some(b' ' | b'\t' | b'\r' | b'\n')) {
+            cursor += 1;
+        }
+        match source.as_bytes().get(cursor) {
+            Some(b']') => {
+                cursor += 1;
+                closed = true;
+                break;
+            }
+            Some(b',') => cursor += 1,
+            _ => {
+                errors.push(SyntaxError {
+                    message: "expected `,` or `]` in annotation block".into(),
+                    range: TextRange::new(cursor, next_char_end(source, cursor)),
+                });
+                break;
+            }
+        }
+    }
+
+    let range = TextRange::new(start, cursor);
+    attributes.range = Some(range);
+    (attributes, range, closed)
+}
+
 pub(crate) fn parse_attributes(
     source: &str,
     start: usize,
@@ -138,8 +221,20 @@ fn parse_bare_attribute(source: &str, start: usize, first: bool) -> Option<Parse
         range: TextRange::new(start, name_end),
     };
 
-    if source.as_bytes().get(name_end) == Some(&b'=') {
-        let (value, end) = parse_attribute_value(source, name_end + 1)?;
+    // `key = value`: whitespace is allowed around the `=` (D0006).
+    let mut cursor = name_end;
+    while matches!(source.as_bytes().get(cursor), Some(b' ' | b'\t' | b'\r' | b'\n')) {
+        cursor += 1;
+    }
+    if source.as_bytes().get(cursor) == Some(&b'=') {
+        let mut value_start = cursor + 1;
+        while matches!(
+            source.as_bytes().get(value_start),
+            Some(b' ' | b'\t' | b'\r' | b'\n')
+        ) {
+            value_start += 1;
+        }
+        let (value, end) = parse_attribute_value(source, value_start)?;
         let range = TextRange::new(start, end);
         return Some(ParsedAttribute::Item(
             Attribute::KeyValue {

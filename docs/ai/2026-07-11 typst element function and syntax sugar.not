@@ -8,7 +8,7 @@
 
 Typst 并不是简单地把所有语法都转换为普通函数调用。更准确的描述是：
 
-#quote[
+\#quote[
 可展示的内容最终统一表示为 `Content` 和 Element；Element 的构造器同时以函数形式暴露给用户，常用 Element 再提供简洁的标记语法糖。
 ]
 

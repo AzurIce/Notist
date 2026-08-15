@@ -1,4 +1,4 @@
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::io;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
@@ -6,11 +6,14 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::{Duration, Instant};
 
 use notist_analysis::{
-    AnalyzerConfiguration, CompletionKind, DiagnosticKind, DocumentVersions, SignatureSet,
-    SourceOverlays, WorkspaceSnapshot, WorkspaceSymbolKind,
+    AnalyzerConfiguration, CompletionKind, DiagnosticKind, DocumentVersions, ResourceFile,
+    ResourceKind, SignatureSet, SourceOverlays, WorkspaceSnapshot, WorkspaceSymbolKind,
 };
-use notist_html::{RenderOptions, render_with_resolvers};
+use notist_html::{
+    RenderOptions, RenderedAnnotation, module_anchors, outline_entries, render_with_resolvers,
+};
 use notist_model::{DefaultValue, FunctionSignature, ModulePath, Parameter, TextRange, Type};
+use notist_syntax::Attribute;
 use percent_encoding::{AsciiSet, CONTROLS, NON_ALPHANUMERIC, utf8_percent_encode};
 use serde::{Deserialize, Serialize};
 
@@ -156,6 +159,11 @@ pub enum CoreRequest {
         expected_fingerprint: String,
         idempotency_key: String,
     },
+    ResolveReference {
+        view_id: ServiceViewId,
+        source_module: String,
+        url: String,
+    },
 }
 
 impl CoreRequest {
@@ -171,6 +179,7 @@ impl CoreRequest {
             | Self::ReloadDiskView { view_id }
             | Self::Diagnostics { view_id }
             | Self::DiagnosticsPage { view_id, .. }
+            | Self::ResolveReference { view_id, .. }
             | Self::FingerprintSource { view_id, .. }
             | Self::Inspect { view_id }
             | Self::DebugInspect { view_id, .. }
@@ -251,11 +260,9 @@ pub enum TypeRecord {
     Float,
     String,
     Content,
-    Array(Box<TypeRecord>),
-    Dict(Box<TypeRecord>, Box<TypeRecord>),
     Function,
     Optional(Box<TypeRecord>),
-    Union(Vec<TypeRecord>),
+    Inferred,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -305,15 +312,9 @@ impl From<TypeRecord> for Type {
             TypeRecord::Float => Self::Float,
             TypeRecord::String => Self::String,
             TypeRecord::Content => Self::Content,
-            TypeRecord::Array(item) => Self::Array(Box::new((*item).into())),
-            TypeRecord::Dict(key, value) => {
-                Self::Dict(Box::new((*key).into()), Box::new((*value).into()))
-            }
             TypeRecord::Function => Self::Function,
             TypeRecord::Optional(inner) => Self::Optional(Box::new((*inner).into())),
-            TypeRecord::Union(members) => {
-                Self::Union(members.into_iter().map(Into::into).collect())
-            }
+            TypeRecord::Inferred => Self::Inferred,
         }
     }
 }
@@ -360,6 +361,7 @@ pub enum CoreResponse {
     SourcePage(crate::query::QueryPage<crate::query::SourceChunk>),
     ReferencesPage(crate::query::QueryPage<crate::query::ReferenceItem>),
     WorkspaceSymbols(Vec<WorkspaceSymbolRecord>),
+    ResolvedReference(RefTargetRecord),
     Search(Vec<SearchRecord>),
     SearchPage(crate::query::QueryPage<crate::query::SearchHit>),
     IndexStatus(crate::query::IndexStatusRecord),
@@ -412,12 +414,33 @@ impl From<ByteRange> for TextRange {
     }
 }
 
+/// Discriminated reference target (D0004 RefTarget) in serialized form.
+#[derive(Clone, Debug, Default, Serialize, Deserialize)]
+pub struct RefTargetRecord {
+    /// module | scope | resource | external | missing
+    pub kind: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub module: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub id: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub name: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub resource_kind: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub url: Option<String>,
+    /// nonexistent | ambiguous | unsupported
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub reason: Option<String>,
+}
+
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct DiagnosticRecord {
     pub path: Option<PathBuf>,
     pub source: Option<String>,
     pub range: Option<ByteRange>,
     pub code: String,
+    pub severity: String,
     pub message: String,
 }
 
@@ -441,6 +464,24 @@ pub struct ModuleRecord {
     pub logical_path: String,
     pub source_path: Option<PathBuf>,
     pub virtual_module: bool,
+    /// Root binding names (D0004 ModuleResult.bindings), sorted.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub bindings: Vec<String>,
+    /// Module attributes declared by `@![...]` (D0006), in source order.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub attributes: Vec<AttributeRecord>,
+}
+
+/// One module or scope attribute set on the wire (D0006).
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct AttributeRecord {
+    pub id: Option<String>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub tags: Vec<String>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub classes: Vec<String>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub properties: Vec<(String, String)>,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -507,13 +548,39 @@ pub struct SearchRecord {
 pub struct RenderedWorkspaceRecord {
     pub site_name: String,
     pub pages: Vec<RenderedPageRecord>,
+    /// Analysis diagnostics captured from the same snapshot as the pages (D0010).
+    pub analysis_diagnostics: Vec<DiagnosticRecord>,
     pub evaluation_diagnostics: Vec<DiagnosticRecord>,
+    /// Every module resource file, copied wholesale by the build layer.
+    pub resources: Vec<RenderedResourceRecord>,
+}
+
+/// One resource file to copy into the owning module's output directory.
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct RenderedResourceRecord {
+    pub module_segments: Vec<String>,
+    /// The real on-disk file name, used verbatim for the copied artifact.
+    pub name: String,
+    /// `"image"` or `"file"`.
+    pub kind: String,
+    pub source_path: PathBuf,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct RenderedPageRecord {
     pub module_segments: Vec<String>,
     pub fragment: String,
+    /// Plain text of the first heading, or `None` when the page has no heading.
+    pub title: Option<String>,
+    /// Top-level headings of the page with their assigned HTML anchors.
+    pub headings: Vec<RenderedHeadingRecord>,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+pub struct RenderedHeadingRecord {
+    pub level: u8,
+    pub id: String,
+    pub text: String,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -907,6 +974,7 @@ impl NotistService {
                             }),
                             range: diagnostic.range.map(Into::into),
                             code: diagnostic_code(&diagnostic.kind).into(),
+                            severity: diagnostic.kind.severity_label().into(),
                             message: diagnostic.message.clone(),
                         })
                         .collect()
@@ -945,10 +1013,23 @@ impl NotistService {
                     self.with_snapshot(view_id, |workspace| InspectRecord {
                         modules: workspace
                             .modules()
-                            .map(|module| ModuleRecord {
-                                logical_path: module.logical_path.to_string(),
-                                source_path: module.source_path.clone(),
-                                virtual_module: module.source_path.is_none(),
+                            .map(|module| {
+                                let mut bindings: Vec<String> = workspace
+                                    .module_bindings(module.id)
+                                    .map(|bindings| {
+                                        bindings.keys().cloned().collect()
+                                    })
+                                    .unwrap_or_default();
+                                bindings.sort();
+                                ModuleRecord {
+                                    logical_path: module.logical_path.to_string(),
+                                    source_path: module.source_path.clone(),
+                                    virtual_module: module.source_path.is_none(),
+                                    bindings,
+                                    attributes: attribute_records(
+                                        workspace.module_attributes(module.id),
+                                    ),
+                                }
                             })
                             .collect(),
                         references: workspace
@@ -1253,6 +1334,32 @@ impl NotistService {
                     snapshot,
                     response: match result {
                         Ok(page) => CoreResponse::ReferencesPage(page),
+                        Err(error) => CoreResponse::QueryError(error),
+                    },
+                })
+            }
+            CoreRequest::ResolveReference {
+                view_id,
+                source_module,
+                url,
+            } => {
+                let (snapshot, result) = self.with_snapshot(view_id, |workspace| {
+                    let source = crate::query::parse_absolute_module_path(&source_module)
+                        .ok_or_else(|| {
+                            crate::query::ToolError::new(
+                                "invalid_selector",
+                                "source module must be an absolute ModulePath",
+                            )
+                        })?;
+                    Ok::<_, crate::query::ToolError>(crate::query::ref_target_record(
+                        workspace,
+                        workspace.resolve_reference(&source, &url),
+                    ))
+                })?;
+                Ok(CoreReply {
+                    snapshot,
+                    response: match result {
+                        Ok(record) => CoreResponse::ResolvedReference(record),
                         Err(error) => CoreResponse::QueryError(error),
                     },
                 })
@@ -1883,8 +1990,13 @@ fn render_workspace(
         .file_name()
         .map(|name| name.to_string_lossy().into_owned())
         .unwrap_or_else(|| "Notist".into());
-    let mut pages = Vec::new();
     let mut evaluation_diagnostics = Vec::new();
+
+    // Precompute every module's annotations and label-to-anchor mapping so that
+    // reference resolution and fragment rendering share one anchor assignment.
+    let mut prepared = Vec::with_capacity(modules.len());
+    let mut anchor_maps = BTreeMap::new();
+    let mut titles = BTreeMap::new();
     for module in &modules {
         if cancelled.load(Ordering::Acquire) {
             return Err(io::Error::new(
@@ -1892,73 +2004,220 @@ fn render_workspace(
                 "request cancelled",
             ));
         }
-        let fragment = if let (Some(source_path), Some(source)) =
-            (&module.source_path, module.source.as_deref())
-        {
+        let mut module_prepared = None;
+        if let (Some(source_path), Some(source)) = (&module.source_path, module.source.as_deref()) {
             let structured = workspace
                 .structured_module(module.id)
                 .expect("source-backed modules have structured results");
-            let current = &module.logical_path;
-            let resolver = |target: &ModulePath, label: Option<&str>| {
-                known
-                    .contains(target)
-                    .then(|| module_href(current, target, label))
-            };
-            let source_ids = module
+            let annotations = module
                 .parse
                 .as_ref()
+                .map(|parse| rendered_annotations(parse))
+                .unwrap_or_default();
+            let anchors = module_anchors(&structured.document, &annotations);
+            anchor_maps.insert(
+                module.logical_path.clone(),
+                anchors.into_iter().collect::<BTreeMap<_, _>>(),
+            );
+            let headings = outline_entries(&structured.document, &annotations)
                 .into_iter()
-                .flat_map(|parse| parse.annotations())
-                .filter_map(|annotation| {
-                    annotation
-                        .attributes
-                        .id
-                        .as_ref()
-                        .map(|id| (annotation.scope_range, id.value.clone()))
+                .map(|heading| RenderedHeadingRecord {
+                    level: heading.level,
+                    id: heading.id,
+                    text: heading.text,
                 })
                 .collect::<Vec<_>>();
-            let source_id_resolver = |range: TextRange| {
-                source_ids
-                    .iter()
-                    .find(|(scope_range, _)| {
-                        scope_range.start <= range.start && range.end <= scope_range.end
-                    })
-                    .map(|(_, id)| id.clone())
-            };
-            for diagnostic in structured.diagnostics {
+            if let Some(title) = headings.first() {
+                titles.insert(module.logical_path.clone(), title.text.clone());
+            }
+            for diagnostic in &structured.diagnostics {
                 evaluation_diagnostics.push(DiagnosticRecord {
                     path: Some(source_path.clone()),
                     source: Some(source.to_owned()),
                     range: Some(diagnostic.range.into()),
                     code: "evaluation".into(),
-                    message: diagnostic.message,
+                    severity: "error".into(),
+                    message: diagnostic.message.clone(),
                 });
             }
-            render_with_resolvers(
-                &structured.document,
-                &RenderOptions {
-                    current_module: Some(current),
-                    module_url_prefix: "",
-                },
-                &resolver,
-                &source_id_resolver,
-            )
-        } else {
-            virtual_module_fragment(&module.logical_path, &modules)
+            module_prepared = Some((structured, annotations, headings));
+        }
+        prepared.push(module_prepared);
+    }
+
+    // Resource files resolve by exact file name after anchors; the build layer
+    // copies every resource next to its module page.
+    let mut resource_names: BTreeMap<&ModulePath, BTreeSet<&str>> = BTreeMap::new();
+    let mut resources = Vec::new();
+    for module in &modules {
+        if module.resources.is_empty() {
+            continue;
+        }
+        resource_names.insert(
+            &module.logical_path,
+            module
+                .resources
+                .iter()
+                .map(|resource| resource.name.as_str())
+                .collect(),
+        );
+        resources.extend(module.resources.iter().map(|resource| RenderedResourceRecord {
+            module_segments: module.logical_path.segments().to_vec(),
+            name: resource.name.clone(),
+            kind: resource_kind_name(resource.kind).to_owned(),
+            source_path: resource.path.clone(),
+        }));
+    }
+
+    let mut pages = Vec::new();
+    for (module, prepared) in modules.iter().zip(prepared) {
+        if cancelled.load(Ordering::Acquire) {
+            return Err(io::Error::new(
+                io::ErrorKind::Interrupted,
+                "request cancelled",
+            ));
+        }
+        let Some((structured, annotations, headings)) = prepared else {
+            pages.push(RenderedPageRecord {
+                module_segments: module.logical_path.segments().to_vec(),
+                fragment: virtual_module_fragment(
+                    &module.logical_path,
+                    &modules,
+                    &titles,
+                    &module.resources,
+                ),
+                title: None,
+                headings: Vec::new(),
+            });
+            continue;
         };
+        let current = &module.logical_path;
+        let resolver = |target: &ModulePath, label: Option<&str>| {
+            if !known.contains(target) {
+                return None;
+            }
+            match label {
+                None => Some(module_href(current, target, None)),
+                Some(label) => anchor_maps
+                    .get(target)
+                    .and_then(|anchors| anchors.get(label))
+                    .map(|anchor| module_href(current, target, Some(anchor)))
+                    .or_else(|| {
+                        resource_names
+                            .get(target)
+                            .filter(|names| names.contains(label))
+                            .map(|_| resource_href(current, target, label))
+                    }),
+            }
+        };
+        let fragment = render_with_resolvers(
+            &structured.document,
+            &RenderOptions {
+                current_module: Some(current),
+                module_url_prefix: "",
+            },
+            &resolver,
+            &annotations,
+        );
         pages.push(RenderedPageRecord {
             module_segments: module.logical_path.segments().to_vec(),
             fragment,
+            title: headings.first().map(|heading| heading.text.clone()),
+            headings,
         });
     }
+    // Analysis diagnostics are captured from the same snapshot the pages
+    // were rendered from, so build/preview never read a newer revision (D0010).
+    let analysis_diagnostics = workspace
+        .diagnostics()
+        .iter()
+        .map(|diagnostic| DiagnosticRecord {
+            path: diagnostic.source_path.clone(),
+            source: diagnostic.source_path.as_ref().and_then(|path| {
+                let file_id = workspace.file_id(path)?;
+                Some(workspace.source(file_id)?.text.to_string())
+            }),
+            range: diagnostic.range.map(Into::into),
+            code: diagnostic_code(&diagnostic.kind).into(),
+            severity: diagnostic.kind.severity_label().into(),
+            message: diagnostic.message.clone(),
+        })
+        .collect();
     Ok(RenderedWorkspaceRecord {
         site_name,
         pages,
+        analysis_diagnostics,
         evaluation_diagnostics,
+        resources,
     })
 }
 
-fn virtual_module_fragment(current: &ModulePath, modules: &[&notist_analysis::Module]) -> String {
+/// Projects `@![...]` module attributes onto the wire record (D0006).
+fn attribute_records(attributes: &[notist_syntax::Attributes]) -> Vec<AttributeRecord> {
+    attributes
+        .iter()
+        .map(|attributes| {
+            let mut tags = Vec::new();
+            let mut classes = Vec::new();
+            let mut properties = Vec::new();
+            for item in &attributes.items {
+                match item {
+                    Attribute::Class(name) => classes.push(name.value.clone()),
+                    Attribute::Tag(name) => tags.push(name.value.clone()),
+                    Attribute::KeyValue { key, value, .. } => {
+                        properties.push((key.value.clone(), value.raw.clone()));
+                    }
+                }
+            }
+            AttributeRecord {
+                id: attributes.id.as_ref().map(|id| id.value.clone()),
+                tags,
+                classes,
+                properties,
+            }
+        })
+        .collect()
+}
+
+/// Projects the syntax-level annotation table onto renderer annotations.
+fn rendered_annotations(parse: &notist_syntax::Parse) -> Vec<RenderedAnnotation> {
+    parse
+        .annotations()
+        .into_iter()
+        .map(|annotation| {
+            let mut classes = Vec::new();
+            let mut tags = Vec::new();
+            let mut properties = Vec::new();
+            for item in &annotation.attributes.items {
+                match item {
+                    Attribute::Class(name) => classes.push(name.value.clone()),
+                    Attribute::Tag(name) => tags.push(name.value.clone()),
+                    Attribute::KeyValue { key, value, .. } => {
+                        properties.push((key.value.clone(), value.raw.clone()));
+                    }
+                }
+            }
+            RenderedAnnotation {
+                scope: annotation.scope_range,
+                id: annotation
+                    .attributes
+                    .id
+                    .as_ref()
+                    .map(|id| id.value.clone()),
+                classes,
+                tags,
+                properties,
+            }
+        })
+        .collect()
+}
+
+fn virtual_module_fragment(
+    current: &ModulePath,
+    modules: &[&notist_analysis::Module],
+    titles: &BTreeMap<ModulePath, String>,
+    resources: &[ResourceFile],
+) -> String {
     let mut output = String::from("<h1>");
     if let Some(name) = current.segments().last() {
         escape_html(&mut output, name);
@@ -1973,15 +2232,43 @@ fn virtual_module_fragment(current: &ModulePath, modules: &[&notist_analysis::Mo
             output.push_str("<li><a href=\"");
             escape_attribute(&mut output, &module_href(current, path, None));
             output.push_str("\">");
-            escape_html(
-                &mut output,
-                path.segments().last().expect("child has a name"),
-            );
+            let name = titles
+                .get(path)
+                .map(String::as_str)
+                .unwrap_or_else(|| path.segments().last().expect("child has a name"));
+            escape_html(&mut output, name);
             output.push_str("</a></li>");
         }
     }
     output.push_str("</ul>");
+    if !resources.is_empty() {
+        // Resource files live next to this index page; the file name is both
+        // the link text and the (percent-encoded) relative URL.
+        output.push_str(
+            "<h2 class=\"module-index-resources-title\">Resources</h2><ul class=\"module-index module-resource-index\">",
+        );
+        for resource in resources {
+            output.push_str("<li><a href=\"");
+            let encoded = utf8_percent_encode(&resource.name, URL_PATH_SEGMENT_ENCODE_SET)
+                .collect::<String>();
+            escape_attribute(&mut output, &encoded);
+            output.push_str("\" data-notist-kind=\"");
+            output.push_str(resource_kind_name(resource.kind));
+            output.push_str("\">");
+            escape_html(&mut output, &resource.name);
+            output.push_str("</a></li>");
+        }
+        output.push_str("</ul>");
+    }
     output
+}
+
+/// The protocol-level resource kind string.
+fn resource_kind_name(kind: ResourceKind) -> &'static str {
+    match kind {
+        ResourceKind::Image => "image",
+        ResourceKind::File => "file",
+    }
 }
 
 fn module_href(current: &ModulePath, target: &ModulePath, label: Option<&str>) -> String {
@@ -1997,6 +2284,14 @@ fn module_href(current: &ModulePath, target: &ModulePath, label: Option<&str>) -
         href.push('#');
         href.extend(utf8_percent_encode(label, NON_ALPHANUMERIC));
     }
+    href
+}
+
+/// Relative URL of a resource file copied into the target module's page
+/// directory; the real file name is percent-encoded as one extra segment.
+fn resource_href(current: &ModulePath, target: &ModulePath, name: &str) -> String {
+    let mut href = module_href(current, target, None);
+    href.extend(utf8_percent_encode(name, URL_PATH_SEGMENT_ENCODE_SET));
     href
 }
 
@@ -2070,6 +2365,7 @@ fn diagnostic_code(kind: &DiagnosticKind) -> &'static str {
         DiagnosticKind::InvalidSyntax => "invalid-syntax",
         DiagnosticKind::UnresolvedModule => "unresolved-module",
         DiagnosticKind::UnresolvedLabel => "unresolved-label",
+        DiagnosticKind::AmbiguousLabel => "ambiguous-label",
         DiagnosticKind::UnknownFunction => "unknown-function",
         DiagnosticKind::DuplicateFunction => "duplicate-function",
         DiagnosticKind::UnresolvedName => "unresolved-name",
@@ -2077,6 +2373,8 @@ fn diagnostic_code(kind: &DiagnosticKind) -> &'static str {
         DiagnosticKind::InvalidArguments => "invalid-arguments",
         DiagnosticKind::TypeMismatch => "type-mismatch",
         DiagnosticKind::Evaluation => "evaluation",
+        DiagnosticKind::ExternalReferenceUnsupported => "external-reference-unsupported",
+        DiagnosticKind::ImportCycle => "import-cycle",
     }
 }
 
@@ -2337,6 +2635,173 @@ mod tests {
             )
             .unwrap_err();
         assert_eq!(error.kind(), io::ErrorKind::Interrupted);
+    }
+
+    #[test]
+    fn renders_heading_text_labels_and_virtual_module_titles() {
+        let root = tempfile::TempDir::new_in(std::env::current_dir().unwrap()).unwrap();
+        fs::write(root.path().join("Notist.toml"), "").unwrap();
+        fs::write(
+            root.path().join("README.not"),
+            "= 首页\n\nSee [[guide#简介]] and [[guide#不存在]].",
+        )
+        .unwrap();
+        fs::write(root.path().join("guide.not"), "= 指南\n\n== 简介\n\n内容").unwrap();
+        fs::create_dir(root.path().join("notes")).unwrap();
+        fs::write(root.path().join("notes/chapter.not"), "= 第一章").unwrap();
+        let service = NotistService::new();
+        let opened = service
+            .execute(CoreRequest::OpenView {
+                root: root.path().to_path_buf(),
+                kind: ProtocolViewKind::Disk,
+            })
+            .unwrap();
+        let CoreResponse::Opened { view_id, .. } = opened.response else {
+            panic!("expected opened view")
+        };
+        let reply = service
+            .execute(CoreRequest::RenderWorkspace { view_id })
+            .unwrap();
+        let CoreResponse::RenderedWorkspace(rendered) = reply.response else {
+            panic!("expected rendered workspace")
+        };
+        let page = |segments: &[&str]| {
+            rendered
+                .pages
+                .iter()
+                .find(|page| page.module_segments == segments)
+                .expect("page exists")
+        };
+
+        let home = page(&[]);
+        assert_eq!(home.title.as_deref(), Some("首页"));
+        assert_eq!(
+            home.headings,
+            vec![RenderedHeadingRecord {
+                level: 1,
+                id: "首页".into(),
+                text: "首页".into(),
+            }]
+        );
+        // Heading-text labels resolve to the target module's anchor.
+        assert!(
+            home.fragment.contains("href=\"guide/#%E7%AE%80%E4%BB%8B\""),
+            "{}",
+            home.fragment
+        );
+        // Unknown labels stay visible but unclickable.
+        assert!(home.fragment.contains("notist-reference-unresolved"));
+        assert!(home.fragment.contains("guide#不存在"));
+        assert!(!home.fragment.contains("#%E4%B8%8D%E5%AD%98%E5%9C%A8"));
+
+        let guide = page(&["guide"]);
+        assert_eq!(guide.title.as_deref(), Some("指南"));
+        assert!(guide.fragment.contains("id=\"简介\""));
+        assert!(
+            guide
+                .headings
+                .iter()
+                .any(|heading| heading.level == 2
+                    && heading.id == "简介"
+                    && heading.text == "简介")
+        );
+
+        // The virtual module index lists child modules by their semantic title.
+        let notes = page(&["notes"]);
+        assert_eq!(notes.title, None);
+        assert!(notes.headings.is_empty());
+        assert!(notes.fragment.contains(">第一章</a>"), "{}", notes.fragment);
+    }
+
+    #[test]
+    fn renders_resource_links_and_collects_resource_records() {
+        let root = tempfile::TempDir::new_in(std::env::current_dir().unwrap()).unwrap();
+        fs::write(root.path().join("Notist.toml"), "").unwrap();
+        fs::write(
+            root.path().join("README.not"),
+            "= Home\n\nLogo: [[vault::images#logo.png]], spec: [[vault::images#spec sheet.pdf]].",
+        )
+        .unwrap();
+        fs::create_dir(root.path().join("images")).unwrap();
+        fs::write(root.path().join("images/logo.png"), [0x89, 0x50]).unwrap();
+        fs::write(root.path().join("images/spec sheet.pdf"), b"pdf").unwrap();
+        let service = NotistService::new();
+        let opened = service
+            .execute(CoreRequest::OpenView {
+                root: root.path().to_path_buf(),
+                kind: ProtocolViewKind::Disk,
+            })
+            .unwrap();
+        let CoreResponse::Opened { view_id, .. } = opened.response else {
+            panic!("expected opened view")
+        };
+        let reply = service
+            .execute(CoreRequest::RenderWorkspace { view_id })
+            .unwrap();
+        let CoreResponse::RenderedWorkspace(rendered) = reply.response else {
+            panic!("expected rendered workspace")
+        };
+        let page = |segments: &[&str]| {
+            rendered
+                .pages
+                .iter()
+                .find(|page| page.module_segments == segments)
+                .expect("page exists")
+        };
+
+        // References to resource files become relative links to the copied file.
+        let home = page(&[]);
+        assert!(
+            home.fragment.contains("href=\"images/logo.png\""),
+            "{}",
+            home.fragment
+        );
+        assert!(
+            home.fragment.contains("href=\"images/spec%20sheet.pdf\""),
+            "{}",
+            home.fragment
+        );
+
+        // The record carries every resource for the build layer to copy.
+        assert_eq!(rendered.resources.len(), 2);
+        let logo = rendered
+            .resources
+            .iter()
+            .find(|resource| resource.name == "logo.png")
+            .expect("logo resource recorded");
+        assert_eq!(logo.module_segments, ["images"]);
+        assert_eq!(logo.kind, "image");
+        assert!(logo.source_path.ends_with("logo.png"));
+        let spec = rendered
+            .resources
+            .iter()
+            .find(|resource| resource.name == "spec sheet.pdf")
+            .expect("spec resource recorded");
+        assert_eq!(spec.kind, "file");
+
+        // The virtual module index lists the resources after the child modules.
+        let images = page(&["images"]);
+        assert!(
+            images
+                .fragment
+                .contains("<ul class=\"module-index module-resource-index\">"),
+            "{}",
+            images.fragment
+        );
+        assert!(
+            images
+                .fragment
+                .contains("<a href=\"logo.png\" data-notist-kind=\"image\">logo.png</a>"),
+            "{}",
+            images.fragment
+        );
+        assert!(
+            images
+                .fragment
+                .contains("href=\"spec%20sheet.pdf\" data-notist-kind=\"file\""),
+            "{}",
+            images.fragment
+        );
     }
 
     #[test]

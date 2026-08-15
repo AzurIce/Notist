@@ -1,0 +1,124 @@
+= 实现-设计一致性审查与裁决
+
+== 摘要
+
+2026-08-14 对 [[vault::designs]]（新一代设计序列 D0001–D0010）与当前实现（7 个 crate 工作树）及官方文档 Vault（docs 顶层 .not）做了一轮完整一致性审查：7 个并行子代理按 crate/文档分组审计 + 主代理通读全部设计文档交叉核实，关键发现经端到端验证（如 D0001 最小示例 `#let accent = "violet"` 在当前实现下产生 5 个诊断；`vault::designs::D0002#属性表` selector 返回 not_found；SKILL.md 示例路径 not_found）。
+
+核心结构判断：三代状态并存——设计序列定义目标语言；syntax/eval/model 三个语言核心 crate 仍是旧世代实现；官方文档描述旧世代（与代码互相一致、与新设计处处矛盾）；而 service/CLI/构建层已高度对齐 D0005/D0008/D0009/D0010。即：外围已迁移，语言核心未迁移。
+
+原始发现消重后约 42 个根因（major 30 / minor ~30 / info ~25），另有 15 项设计自身歧义与约 15 项待验证。本文记录根因清单、24 项裁决（R01–R15、E01–E09）与执行状态；实现侧修复另行排期。
+
+== 分区域根因清单（major）
+
+=== 语言表面与核心语法（D0001/D0007）
+
+- 一般 `let` 绑定不存在（`ExpressionKind` 只有 `LetFunction`，syntax/argument.rs:41）；D0001 最小示例不可解析
+- `if`、lambda、`{...}` Code block 全部缺失
+- 运算符仅 `+ - * /`（比较/相等/逻辑/一元 not 缺失）；嵌入边界规则相反（`#1 + 2` 贪心解析为 3，`;` 不消费）
+- 命名实参只认 `name=value`，设计示例全用 `name: value`
+- 设计禁止的字面量 `.5`/`1.` 被接受且有测试固化；转义 `\#` 保留反斜杠
+- `//`、`/* */` 注释在所有 Markup 上下文吞掉正文（设计从未定义）
+- `fn(...) -> R` 类型不可解析；Array/Dict/Union 反而已实现（设计推迟）
+
+=== 求值模型与类型系统（D0002/D0003）
+
+- 求值结果三元组缺 bindings 与 AnnotationTable（eval/lib.rs:22-28 只有 content+diagnostics）
+- 函数值是裸名字不是闭包（`Value::Function(String)`）；无静态检查阶段；无 scope 树
+- positional/named 排他性未强制（`#heading(2)` 可过）；全局 hoist 而非顺序词法作用域
+- 插入规则相反（Int/Float/Bool 报错而非 toString）；成型删除个体（违反属性表区间稳定性前提）
+- Section 节归组不存在（`Block` 只有 Element 变体）
+- 糖不在语法前端：求值器重扫 source 识别标题/表格/列表/强调；`---` rule 糖缺失；`raw` 签名不符；`item` 被 list::item/enum::item 取代
+- 设计推迟的功能全部实现：task/math/kbd/quote/table/inline raw/link/裸 URL；Element ~35 个遗留种类；Array/Dict/Union 类型
+
+=== Vault/Module/分析层（D0004/D0009）
+
+- import 机制完全缺失（无语法、无 import graph、无环诊断）；ModuleResult/bindings 不存在
+- RefTarget 产物类型缺失（资源引用与 scope 引用同形）；`snapshot.resolve_reference` 不存在
+- `references_in` 查询缺失；结构化求值忽略快照配置的 schema（同一快照两个语义世界）
+
+=== 服务/CLI/LSP（D0005/D0008/D0009）
+
+- `resolve_reference` core request 缺失
+- `#id` selector 只解析显式 id，标题默认 id 缺失（D0008 自己的示例 not_found）
+- MCP 仍完整存在（mcp.rs 1330 行 + ClientKind::Mcp + cli.not 文档），D0008 明确"无 MCP"
+- `check --severity` 无效、severity 硬编码 error、无 hint；export 缺 jsonl；`--fields id` 报错（实现叫 label）
+- cursor 只绑 view_kind 不绑 daemon instance；source_set_fingerprint 不含配置身份；Session View 全量重建索引
+- LSP 诊断 severity 钉死 ERROR、无 relatedInformation；DocumentSymbol 只有 heading；SKILL.md 缺编辑安全教学且示例路径失效
+
+=== 渲染与构建（D0010）
+
+- Section → section 缺失（同节归组根因）；节级属性投影无目标（扇形投影到每个块）
+- Callout 输出 aside data-notist-kind（与设计 div data-kind 不符）；跨元素行内包裹不切分部分覆盖元素
+- 资源复制策略由 service 固定，无"CLI 决定"点
+
+=== 官方文档 Vault
+
+- 与代码一致、与新设计全面矛盾：MCP/quote/task/math/kbd/link/table/inline raw 被文档化；`1.`/`.5` 合法；负数字面量；`name=value`；Int 插入报错；level 1..=6；无 fn 类型；`label` 改名；`@[...]`/`@![...]`/`{...}` 无文档；标注被定性为"source span metadata 不进入求值"（与 D0002/D0006 的值绑定模型相反）
+- 文档把已归档的旧设计 D0015/D0016 当权威引用；`::` 限定名已文档化（D0003 说命名空间未定）
+
+== 设计歧义裁决（24 项，2026-08-14 用户确认）
+
+=== R01–R15 核心裁决
+
+- R01 空格规则分层：D0001 管裸 `#` 嵌入顶层边界（空白终止、二元运算须加括号）；D0007 管 Code 内部词法（`my - var` 是减法）
+- R02 调用点命名实参用 `name: value`（冒号）；`=` 只用于签名默认值与标注 `key = value`
+- R03 Content literal：Markup 正文裸 `[`/`]` 是普通文本；Markup 中书写形式是 `#[...]`（手动 scope）；Code 模式 `[...]` 仍是字面量；`[[...]]` 引用与 `\[` 转义不变
+- R04 Quote/Table 整体排除出 v1（元素+构造器+糖）；D0002 元素树删行
+- R05 禁止交错：位置实参必须全部在具名实参之前；trailing Content block 是唯一例外；D0002 原示例修正为 `#f(kind: "warning")[内容]`
+- R06 Code block 语句以 `;` 或换行分隔，同行必须 `;`
+- R07 类型表面收敛：None/Bool/Int/Float/String/Content + T? + fn(签名) -> R；删除 Array/Dict/Union
+- R08 虚拟模块条件：`.not` 后代或资源文件后代
+- R09 Notist.toml 配置内容模型推迟到 D0011（core namespace 与 plugin 边界）；此前保持空标记/未知键预留
+- R10 外部 URL 语法合法，解析为 RefTarget::External，v1 给 info 级 `external-reference-unsupported` 诊断而非语法错误
+- R11 跨 Vault 引用对外表现为 unresolved，不探测边界外
+- R12 designs/README 索引删 MCP 字样
+- R13 resolve_reference 保留为 core request 但无 CLI 命令；references_in 投影为 references --direction outgoing
+- R14 D0008/SKILL.md 示例改指当前模块；目录名以实际 old-designs/ 为准
+- R15 D0010 统一 data-notist-* 前缀（Callout 为 aside data-notist-kind）；映射表是当前内置集合的封闭映射
+
+=== E01–E09 补充裁决
+
+- E01 heading 糖：`=` 串后必须空白（或行尾）；`=foo` 是普通文本
+- E02 let 值绑定：同名遮蔽允许（最近绑定者胜出）
+- E03 SnapshotStamp daemon_instance 必填（embedded 用合成实例 id）
+- E04 Location 不重复 snapshot（由 QueryPage 携带）；id 字段按设计命名
+- E05 cursor 为 opaque 恢复位置，但必须绑定 daemon instance 与 View identity；source_set_fingerprint 纳入配置身份
+- E06 索引 manifest 的 Vault identity 加载时校验
+- E07 modules --prefix 按段边界匹配
+- E08 loc-N 回退锚点改为 `loc-<起始字节偏移>`（源码位置纯函数）
+- E09 注释仅 Code 上下文；Markup 文本流中 // 与 /* 是普通文本
+
+== 执行状态
+
+- 设计文档已按裁决修订（D0002–D0008、D0010、README 共 9 个文件 35 处编辑，notist check 诊断数与基线一致、无新增）
+- Skill 与 MCP：SKILL.md 已同步（示例改指 vault::designs::D0005-daemon-architecture、删 MCP、补 propose→check→apply 编辑教学）；MCP 全仓移除（main.rs 命令面、mcp.rs、ClientKind::Mcp、cli.not 章节、README 索引）；docs 诊断 87→84
+- 服务契约：diagnostic severity 分类（kind 级、Info 用于外部引用）+ `--severity` 过滤 + hint 字段 + error_count；export 新增 `--export-format json|jsonl`（与全局 `--format` 冲突，D0008 相应改旗标名）；modules `--prefix` 段边界；索引 manifest 加载校验 vault identity；cursor 绑 daemon instance + view identity（schema v3）；source_set_fingerprint 纳入配置身份
+- 分析层：RefTarget（Module/Scope/Resource/External/Missing+reason）与 `resolve_reference`/`resolve_module_label`/`label_scope_range`；`[[https://...]]` 语法合法并分类 External（R10，info 级 external-reference-unsupported 诊断）；selector 支持标题默认 id（`vault::designs::D0002#属性表` 已可解析）与 ambiguous_selector；references_in 响应带 relation/url/target_kind；新增 CoreRequest::ResolveReference
+- 命名与分析层：label→id 公开面收敛（Location.id/OutlineItem.id/SearchField::Id/`--fields id`/help 与 cli.not），`id` 字段索引标题默认 id；wiki 引用 `#id` 补全（显式 id + 标题默认 id）；WorkspaceSymbol 纳入标题默认 id；document_symbols 层级待 LSP 批次
+- 渲染层：回退锚点改 `loc-<起始字节偏移>`（E08）；Parbreak 渲染臂移除；build/preview 的诊断改为与页面同一 snapshot（RenderedWorkspaceRecord.analysis_diagnostics + DiagnosticRecord.severity，退出码只计 error）
+- 语言核心 Phase A 进行中（2026-08-14 续）：R02 冒号命名实参（过渡期同时接受 `=`）；D0007 完整运算符集（比较/相等/and/or 短路/一元 not，parser+eval+静态检查）；R01 嵌入顶层边界（空白终止、`;` 消费、运算符须相邻——修复 `==` 吞 Markdown 标题 `===` 的回归）；R05 trailing 例外落地（具名实参后的 positional Content 绑定声明 trailing 形参）；新增 3 个语法测试
+- 语言核心 Phase A 完成（续）：Code block `{...}`（语句 `;`/换行分隔、join 语义、词法作用域）；一般 `let name[: T] = expr`（Evaluation.bindings 进入求值结果，绑定跨 fragment 可见——D0001 最小示例 `#let accent = "violet"` + `= #accent` 端到端通过，heading 输出 violet）；`if` 表达式（Code/Content 分支、else-if、无 else → None）；lambda（解析 + 静态类型，闭包求值待 Phase B）；新增 3 个 eval 回归测试
+- Phase B 进行中（续）：插入规则落地（Int/Float/Bool → toString Text，静态与求值双侧）；`(T?)?` 折叠为 `T?`（parser）；**闭包 Function 值落地**——`Value::Function(Box<FunctionValue>)`（signature + implementation（Builtin/User）+ 捕获环境），callee 为一等值按环境解析、闭包调用以捕获环境 + 形参 scope 求值 body；`#let make_title = heading` 与 lambda `(x: Int) => x * 2` 端到端零诊断；LetFunction 将闭包绑定进当前 scope（hoisting 保留为过渡回退）；空 Union 作为推断类型接受任意值；新增闭包回归测试
+- Phase B 继续（续）：**顺序 scope 语义落地**——全局 hoist 移除（eval 的 collect_user_functions 停用、checker 改按声明顺序注册 signatures，前向引用产生 unknown function/unresolved name 诊断）；**属性表落地**（Evaluation.annotations：标注在求值期绑定到值、收尾转写为旁置表，fragment/嵌套求值合并传播）；heading level 无上限（D0003：`======= 标题` 合法，渲染折叠为 h6，锚点正常）
+- Phase C 开始（续）：**Section 节归组落地**——`Block::Section { level, heading, body }` 与 `Block::range()`；成型按 heading 层级递归归组；渲染器输出嵌套 `<section data-notist-start/end>`；节级属性投影到最小完全覆盖的 Section 节点（AnchorPlan 父优先 + 叶级行内包裹回退）；outline/heading 默认 id/DocumentSymbol 全链路递归穿透 Section；docs 站点 47 页正常构建（嵌套 section、锚点、`#属性表` selector 均验证）；新增 section 回归测试。D0010 两个 major 至此闭环
+- Phase D 开始（续）：**import 机制**——语法落地（`#import path::{name, name as alias}`，显式选择器、无 wildcard，`path::{` 分隔正确处理，含语法测试）；分析层 ImportEdge 图（求值前解析、目标缺失报 imported module was not found、跨 Vault 逃逸诊断）；**import 环检测**（DFS 回边 → import-cycle 诊断，实测 c↔d 环恰报 1 个）；`snapshot.imports()` 访问器；eval 的 Import 臂暂为 no-op（跨模块求值编排待下轮）
+- import 求值编排完成（续）：快照构建期按 DAG 一次性求值每个模块（`module_import_seeds`，每快照至多一次、环断为空绑定）；`Evaluator::evaluate_parsed_with_bindings` 播种文档 scope；structured_module/heading 默认 id/label 解析全部走种子求值；checker 预置导入名（Union([]) 未检类型，插入与调用均放行）；safe_evaluation_diagnostics 带种子。端到端：`#import super::b::{shared as s}` 后 `= #s` 渲染 violet、导入函数别名调用正常、check 零诊断
+- 小项收敛（续）：**行内标注切分落地**——部分覆盖的 Text 节点按标注边界切分为片段、仅覆盖片段包裹 notist-annotated span（F4 闭环，含回归测试）；**ModuleResult.bindings 暴露**——`snapshot.module_bindings()` + InspectRecord 模块记录带排序 bindings 名（export snapshot 实测 vault::a = [hm, s]、vault::b = [heading_maker, shared]）；D0010 资源复制决策点裁定（当前 CLI 决策：默认整体复制，无额外旗标，设计已记录）
+- 元素集合收敛完成：Element 枚举收敛到设计集合（保留 Text/Reference/Parbreak/Paragraph/Strong/Emph/Strike/Underline/Rule/Heading/ListItem/List/EnumItem/Callout/Details/Raw/Custom/UnresolvedCall），非测试代码与全部测试均不再引用已删变体；notist-html 的 15 个 ignored 测试为有意保留的 legacy 标记
+- 内置函数签名收敛完成（D0003 11 个构造器）：signature.rs 收敛为 ref(url)/heading/raw(source, lang, block)/rule/callout/details/item(ordered)/strong/emph/underline/strike；删除 text/paragraph/code/quote/task/table/kbd/math/link/image/figure/linebreak/parbreak/pagebreak 等全部遗留签名；实现侧同步（list::item/enum::item/list/enum 四构造器删除、新增 item(ordered)、raw 换 source+block 并落 D0003 构造器校验（inline raw 含换行报错）、ref 实参改名 url）；checker 与求值器 surface 一致（此前 \#quote 能过 check 却在求值期报错的 divergence 关闭）；相关测试（eval/html/check/completion）同步改写，补 raw 校验回归测试
+- E09 注释语义落地：Markup 文本流中 // 与 /* */ 是普通文本（parse_markup 删除注释剥离分支）；Code 上下文 trivia（skip_trivia：行注释 + 嵌套块注释，未闭合报错）；求值器行内重扫的 emph 边界对齐 D0003（开符后非空白、闭符前非空白），修复 /* ... */ 被误判为强调；语法/求值测试改写并新增 Code trivia 回归测试
+- 官方文档侧消除已删 builtin 的求值诊断（\#quote/\#kbd 转义为字面文本），notist check docs 稳定在 84 基线（全部 unresolved-module，官方文档重写批次清理）；cargo test --workspace 全绿（201 passed + 15 ignored）
+- 引用基线清零（预存 84 个 unresolved-module 全部修复，notist check docs 现为 0 诊断 / 47 源，build 47 页）：
+  - designs/*.not 的 37 处 self::D00XX 兄弟引用改为绝对 vault::designs::D00XX（self:: ≡ 裸名 = 当前模块路径前缀，指虚拟子模块，与设计文档的兄弟意图不符）；
+  - ai/*.not 与 old-designs/ 的 vault::old-designs::D00XX 引用补上 archive:: 段（D0008-D0016 实际位于 docs/old-designs/archive/）；D0004-core-functions-and-syntax-sugar 保持非 archive；
+  - 官方文档（grammar/functions/types）对旧设计 D0015/D0016/D0010/D0006 的引用同步修正；官方文档重写批次进行中（子代理），重写后仍须保持 0 诊断
+- 官方文档重写完成（子代理，2026-08-14 续）：intro（277→196）、grammar（324→264）、functions（302→200）、types（385→175）、cheatsheet（221→141）五件全部重写为收敛后 surface（11 构造器、fn() 类型、E09 注释、R01 边界、标注冒号/等号对照、无管道表——速查改围栏代码块）；README 索引更新；notist check docs 保持 0 诊断 / 47 源，build 47 页；grep 验证无已删 surface 残留；cheatsheet 嵌入边界行按 R01 修订
+- 糖进前端落地（本轮，D0003 结构承诺）：heading/rule/list 糖从求值器 source 重扫迁移到 syntax frontend——MarkupItem 新增 Heading/Rule/List 三种糖节点（含 ListSugarRow 缩进嵌套），parser 在行首识别（行首标志逐字符维护、糖行消费自身换行、setext 连续等号按 D0003 边界成为空 body heading、连续减号成为 rule、=foo 保持文本、内容字面量内同样生效）；求值器删除 heading_source_spans/list_source_spans/lower_markup_fragment 整套重扫机制，改由 item 直降（heading/list body 作为嵌套 Markup 求值）；checker 与符号解析递归进入糖 body（此前 heading 内嵌入不被静态检查，现在 heading 内未知名会产生诊断）；Parse.calls()/user_functions()/imports() 等访问器经 visit_markup 递归覆盖糖 body；三减号 rule 糖从缺失变为落地（thematic_breaks 测试改为设计语义：三减号是 rule、星号与下划线保持文本）；新增语法 2 测（前端糖节点、嵌套缩进与 setext 边界）；cargo test 全绿（211 passed + 15 ignored），check docs 0 诊断 / 47 源，build 47 页
+- D0006 模块属性发布落地（本轮）：snapshot 在依赖序求值 pass 中按模块捕获 `@![...]` 属性（module_attributes 表 + module_attributes(module_id) 访问器）；服务侧 ModuleRecord 新增 attributes 字段（AttributeRecord：id/tags/classes/properties 线格式）；export snapshot 实测 vault::guide 输出 attributes（tags: design，properties: status）；新增 snapshot 发布测试，cargo test 全绿（209 passed + 15 ignored），check docs 保持 0 诊断
+- D0006 scope 语法 Phase 1 落地（本轮）：Markup 新增 `@[...]` 块级前缀与 `@![...]` 模块标注两种 token 序列（仅行首、`@` 后跟标识符仍为文本、`@!` 必须跟 `[`、模块标注必须在首个有意义 token 之前）；新增 parse_annotation_block（属性列表，key = value 允许等号两侧空白）；Markup 裸 `{...}` Code block 以 join 值进入内容流；求值器落地块级前缀绑定（下一个块级节点的区间条目、同块堆叠共享、先后分离、Parbreak/块级元素收束、悬空标注诊断）与模块属性（Evaluation.module_attributes，快照发布待接线）；嵌套 fragment 不重复绑定；新增语法 3 测 + 求值 4 测，cargo test 全绿（208 passed + 15 ignored）
+- R07 类型表面收敛完成：Type 枚举删除 Array/Dict/Union（Value::Array/Value::Dict 一并删除，集合类型整体退出语言）；`fn(形参表) -> R` 写入类型落地（D0007 类型语法，trailing 与 `=` 可省略标记校验后丢弃为 Function 标记，签名细节由符号元数据携带）；裸名 `Function` 与 Array/Dict/Union 名称不再可写；空 Union 推断哨兵统一替换为内部 `Type::Inferred` 标记（不进入书写表面、accepts 双向放行，checker prelude/占位值/lambda 运行时签名等 8 处迁移）；服务协议 TypeRecord 同步收敛（Inferred 替代 Union/Array/Dict）；新增 fn 类型解析、旧名报错与 checker 端到端回归测试
+- scope 语义收敛完成（本轮）：元素 scope 与 Content literal 的词法边界落地——heading/item/list body 的 `let` 不再泄漏进文档 scope（删除 merge_fragment_bindings 过渡回退与死代码 inline_source_fragment），Code block 与 Content literal 的局部性此前已成立；`#[...]@id` 手动 scope 身份端到端解析（snapshot.resolve_reference 命中 Scope 目标，LabelDefinition 索引已有）；透明 scope 溶解为区间条目 + 渲染投影此前已落地。表示层说明：求值期环境以 scope 帧栈实现（栈即节点祖先链，顺序求值下与节点链语义等价），节点绑定只存在于求值期、不进入结构树（D0002 明确），可观测契约（根 bindings、属性表、词法边界、shadowing）全部满足；新增词法边界 3 断言 + 手动 scope id 解析测试；cargo test 全绿（213 passed + 15 ignored）、0 warning，check docs 0 诊断 / 47 源，build 47 页
+
+== 收敛完成总结（2026-08-14）
+
+R01-R15 与 E01-E09 全部落地：语言核心（运算符/实参/代码块/闭包/import/Section 归组/顺序 scope/插入规则/属性表）、元素集合收敛（18 个保留变体）、内置函数收敛（11 个构造器）、R07 类型表面（含 fn() 类型与内部 Inferred 标记）、E08 loc 锚点、E09 注释上下文、R10 外部 URL、D0006 标注与模块属性全链路、糖进前端（heading/rule/list 糖节点，求值器停止重扫）、scope 语义。官方文档五件套重写、SKILL.md 对齐、MCP 移除、服务协议（severity/hint/error_count/TypeRecord/ModuleRecord.attributes）收敛。84 基线清零后 notist check docs 持续 0 诊断；cargo test --workspace 持续全绿

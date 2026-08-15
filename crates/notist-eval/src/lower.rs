@@ -3,17 +3,18 @@
 use std::collections::HashMap;
 
 use notist_model::{
-    Content, DefaultValue, Element, ElementNode, FunctionSignature, Parameter, TableAlignment,
-    TextRange, Type,
+    Content, DefaultValue, Element, ElementNode, FunctionSignature, Parameter, TextRange, Type,
 };
 use notist_syntax::{
-    BinaryOperator, BodyForm, Call, ContentBlock, EmbeddedExpression, Expression, ExpressionKind,
-    Markup, MarkupItem, RawLiteral, RawLiteralForm, UserFunctionDefinition,
+    Attributes, BinaryOperator, BodyForm, Call, ContentBlock, EmbeddedExpression, Expression,
+    ExpressionKind, Markup, MarkupItem, RawLiteral, RawLiteralForm, UnaryOperator,
+    UserFunctionDefinition, UserParameter,
 };
 
-use crate::builtin::citation_key_is_valid;
-use crate::function::{FunctionContext, FunctionInput, FunctionRegistry};
-use crate::type_system::{Value, ValueOrigin, bind_arguments, evaluate_literal};
+use crate::function::{Function, FunctionContext, FunctionInput, FunctionRegistry};
+use crate::type_system::{
+    FunctionImplementation, FunctionValue, Value, ValueOrigin, bind_arguments, evaluate_literal,
+};
 use crate::{EvalDiagnostic, Evaluation};
 
 pub(crate) fn evaluate_markup(
@@ -23,9 +24,22 @@ pub(crate) fn evaluate_markup(
     registry: &FunctionRegistry,
     depth: usize,
 ) -> Evaluation {
-    let mut user_functions = HashMap::new();
-    collect_user_functions(markup, &mut user_functions);
-    user_functions.retain(|name, _| registry.get(name).is_none());
+    evaluate_markup_with_bindings(source, markup, base_offset, registry, depth, HashMap::new())
+}
+
+/// Evaluates markup with a pre-seeded document scope: the analysis layer uses
+/// this to inject imported bindings before evaluation (D0004).
+pub(crate) fn evaluate_markup_with_bindings(
+    source: &str,
+    markup: &Markup,
+    base_offset: usize,
+    registry: &FunctionRegistry,
+    depth: usize,
+    bindings: HashMap<String, Value>,
+) -> Evaluation {
+    // D0002 sequential scope: bindings (including function definitions) are
+    // visible only after their declaration point; hoisting is gone.
+    let user_functions = HashMap::new();
     evaluate_markup_in_environment(
         source,
         markup,
@@ -33,7 +47,8 @@ pub(crate) fn evaluate_markup(
         registry,
         depth,
         &user_functions,
-        Vec::new(),
+        vec![bindings],
+        true,
     )
 }
 
@@ -45,6 +60,7 @@ fn evaluate_markup_in_environment(
     depth: usize,
     user_functions: &HashMap<String, UserFunctionDefinition>,
     variables: Vec<HashMap<String, Value>>,
+    handle_annotations: bool,
 ) -> Evaluation {
     let mut state = LowerState {
         source,
@@ -55,11 +71,22 @@ fn evaluate_markup_in_environment(
         variables,
         content: Content::default(),
         diagnostics: Vec::new(),
+        annotations: Vec::new(),
+        handle_annotations,
+        pending_annotations: Vec::new(),
+        pending_block_start: None,
+        pending_block_end: 0,
+        module_attributes: Vec::new(),
     };
     state.lower_markup(markup);
+    state.finish_annotations();
+    let bindings = state.variables.first().cloned().unwrap_or_default();
     Evaluation {
         content: state.content,
         diagnostics: state.diagnostics,
+        bindings,
+        annotations: state.annotations,
+        module_attributes: state.module_attributes,
     }
 }
 
@@ -72,6 +99,19 @@ struct LowerState<'a> {
     variables: Vec<HashMap<String, Value>>,
     content: Content,
     diagnostics: Vec<EvalDiagnostic>,
+    annotations: Vec<crate::AnnotationEntry>,
+    /// Whether this state processes `@[...]` / `@![...]` annotations. Only
+    /// the document-level state does: nested fragment evaluations re-parse
+    /// the same source and must not double-bind them.
+    handle_annotations: bool,
+    /// Block-prefix annotations awaiting their block, in source order.
+    pending_annotations: Vec<(Attributes, TextRange)>,
+    /// Range of the block currently being annotated, once it has started.
+    pending_block_start: Option<TextRange>,
+    /// Exclusive end of the block currently being annotated.
+    pending_block_end: usize,
+    /// Module annotations collected from `@![...]` items.
+    module_attributes: Vec<Attributes>,
 }
 
 fn collect_user_functions(
@@ -79,10 +119,18 @@ fn collect_user_functions(
     functions: &mut HashMap<String, UserFunctionDefinition>,
 ) {
     for item in &markup.items {
-        let MarkupItem::Embedded(embedded) = item else {
-            continue;
-        };
-        collect_expression_functions(&embedded.expression, functions);
+        match item {
+            MarkupItem::Embedded(embedded) => {
+                collect_expression_functions(&embedded.expression, functions);
+            }
+            MarkupItem::Heading(sugar) => collect_user_functions(&sugar.body, functions),
+            MarkupItem::List(sugar) => {
+                for row in &sugar.rows {
+                    collect_user_functions(&row.body, functions);
+                }
+            }
+            _ => {}
+        }
     }
 }
 
@@ -136,6 +184,22 @@ fn signature_for_user_function(definition: &UserFunctionDefinition) -> FunctionS
     }
 }
 
+fn user_function_value(
+    definition: &UserFunctionDefinition,
+    variables: &[HashMap<String, Value>],
+) -> FunctionValue {
+    let signature = signature_for_user_function(definition);
+    FunctionValue {
+        signature,
+        implementation: FunctionImplementation::User {
+            parameters: definition.parameters.clone(),
+            result: definition.result.clone(),
+            body: definition.body.clone(),
+        },
+        captured: variables.first().cloned().unwrap_or_default(),
+    }
+}
+
 fn expression_default(expression: &Expression) -> Option<DefaultValue> {
     match &expression.kind {
         ExpressionKind::None => Some(DefaultValue::None),
@@ -148,6 +212,36 @@ fn expression_default(expression: &Expression) -> Option<DefaultValue> {
     }
 }
 
+fn is_arithmetic(operator: BinaryOperator) -> bool {
+    matches!(
+        operator,
+        BinaryOperator::Add
+            | BinaryOperator::Subtract
+            | BinaryOperator::Multiply
+            | BinaryOperator::Divide
+    )
+}
+
+fn compare_ints(operator: BinaryOperator, left: i64, right: i64) -> bool {
+    match operator {
+        BinaryOperator::Less => left < right,
+        BinaryOperator::LessEqual => left <= right,
+        BinaryOperator::Greater => left > right,
+        BinaryOperator::GreaterEqual => left >= right,
+        _ => unreachable!("compare_ints only handles ordering operators"),
+    }
+}
+
+fn compare_floats(operator: BinaryOperator, left: f64, right: f64) -> bool {
+    match operator {
+        BinaryOperator::Less => left < right,
+        BinaryOperator::LessEqual => left <= right,
+        BinaryOperator::Greater => left > right,
+        BinaryOperator::GreaterEqual => left >= right,
+        _ => unreachable!("compare_floats only handles ordering operators"),
+    }
+}
+
 fn float_binary(operator: BinaryOperator, left: f64, right: f64) -> Option<f64> {
     match operator {
         BinaryOperator::Add => Some(left + right),
@@ -155,46 +249,27 @@ fn float_binary(operator: BinaryOperator, left: f64, right: f64) -> Option<f64> 
         BinaryOperator::Multiply => Some(left * right),
         BinaryOperator::Divide if right == 0.0 => None,
         BinaryOperator::Divide => Some(left / right),
+        _ => None,
     }
 }
 
 impl LowerState<'_> {
     fn lower_markup(&mut self, markup: &Markup) {
-        let table_spans = table_source_spans(self.source, markup);
-        let heading_spans = heading_source_spans(self.source, markup, &table_spans);
-        let list_spans = list_source_spans(self.source, markup, &table_spans);
-        if !table_spans.is_empty() || !heading_spans.is_empty() || !list_spans.is_empty() {
-            let mut source_spans = table_spans
-                .iter()
-                .map(|span| (span.start, span.end, SourceSugarKind::Table))
-                .chain(
-                    heading_spans
-                        .iter()
-                        .map(|span| (span.start, span.end, SourceSugarKind::Heading)),
-                )
-                .chain(
-                    list_spans
-                        .iter()
-                        .map(|span| (span.start, span.end, span.kind)),
-                )
-                .collect::<Vec<_>>();
-            source_spans.sort_by_key(|(start, _, _)| *start);
-            let mut cursor = markup.range.start;
-            for (start, end, kind) in source_spans {
-                self.lower_markup_fragment(cursor, start);
-                let lowered = match kind {
-                    SourceSugarKind::Table => self.lower_table_source(start, end),
-                    SourceSugarKind::Heading => self.lower_heading_source(start, end),
-                    SourceSugarKind::List => self.lower_list_sugar(start, end),
-                    SourceSugarKind::Task => self.lower_task_sugar(start, end),
-                };
-                if !lowered {
-                    self.lower_markup_fragment(start, end);
+        // D0006: block-prefix and module annotations are collected once from
+        // the document-level parse; nested fragment re-parses skip them.
+        if self.handle_annotations {
+            for item in &markup.items {
+                match item {
+                    MarkupItem::BlockAnnotation(annotation) => {
+                        self.pending_annotations
+                            .push((annotation.attributes.clone(), annotation.range));
+                    }
+                    MarkupItem::ModuleAnnotation(annotation) => {
+                        self.module_attributes.push(annotation.attributes.clone());
+                    }
+                    _ => {}
                 }
-                cursor = end;
             }
-            self.lower_markup_fragment(cursor, markup.range.end);
-            return;
         }
 
         for item in &markup.items {
@@ -208,33 +283,51 @@ impl LowerState<'_> {
                 }
                 MarkupItem::Raw(raw) => self.lower_raw(raw),
                 MarkupItem::Embedded(embedded) => self.lower_embedded(embedded),
+                MarkupItem::Heading(sugar) => self.lower_heading_sugar(sugar),
+                MarkupItem::Rule(range) => {
+                    self.push_element(Element::Rule, range.shifted(self.base_offset));
+                }
+                MarkupItem::List(sugar) => self.lower_list_sugar(sugar),
+                // Annotations were collected ahead of the content loop.
+                MarkupItem::BlockAnnotation(_) | MarkupItem::ModuleAnnotation(_) => {}
             }
         }
     }
 
-    fn lower_markup_fragment(&mut self, start: usize, end: usize) {
-        if start >= end {
-            return;
-        }
-        let source = &self.source[start..end];
-        let parse = notist_syntax::parse(source);
+    /// Lowers a heading sugar node (D0003): the body Markup is evaluated as a
+    /// nested fragment and becomes the heading body.
+    fn lower_heading_sugar(&mut self, sugar: &notist_syntax::HeadingSugar) {
         let evaluation = evaluate_markup_in_environment(
-            source,
-            &parse.root,
-            self.base_offset + start,
+            self.source,
+            &sugar.body,
+            self.base_offset,
             self.registry,
-            self.depth,
+            self.depth + 1,
             self.user_functions,
             self.variables.clone(),
+            false,
         );
-        self.content.elements.extend(evaluation.content.elements);
+        self.annotations.extend(evaluation.annotations);
         self.diagnostics.extend(evaluation.diagnostics);
+        self.push_element(
+            Element::Heading {
+                level: sugar.level as u8,
+                body: evaluation.content,
+            },
+            sugar.range.shifted(self.base_offset),
+        );
     }
 
     fn lower_embedded(&mut self, embedded: &EmbeddedExpression) {
         let (value, _, mut diagnostics) =
             self.evaluate_expression(&embedded.expression, embedded.scope_range);
         self.diagnostics.append(&mut diagnostics);
+        if !embedded.attributes.items.is_empty() || embedded.attributes.id.is_some() {
+            self.annotations.push(crate::AnnotationEntry {
+                range: embedded.scope_range.shifted(self.base_offset),
+                attributes: embedded.attributes.clone(),
+            });
+        }
         match value {
             Value::Content(content) => {
                 self.content.elements.extend(content.elements);
@@ -247,10 +340,24 @@ impl LowerState<'_> {
             }
             Value::None => {}
             other => {
-                self.diagnostics.push(EvalDiagnostic {
-                    message: format!("cannot insert {} into Markup", other.ty()),
-                    range: embedded.expression.range.shifted(self.base_offset),
-                });
+                // D0002 insertion rules: Int / Float / Bool stringify into
+                // Text; only Function (and legacy collection values) refuse.
+                let text = match other {
+                    Value::Int(value) => Some(value.to_string()),
+                    Value::Float(value) => Some(value.to_string()),
+                    Value::Bool(value) => Some(value.to_string()),
+                    _ => None,
+                };
+                match text {
+                    Some(text) => self.push_element(
+                        Element::Text(text),
+                        embedded.scope_range.shifted(self.base_offset),
+                    ),
+                    None => self.diagnostics.push(EvalDiagnostic {
+                        message: format!("cannot insert {} into Markup", other.ty()),
+                        range: embedded.expression.range.shifted(self.base_offset),
+                    }),
+                }
             }
         }
     }
@@ -304,9 +411,15 @@ impl LowerState<'_> {
                     .find_map(|scope| scope.get(&name.value))
                     .cloned()
                     .or_else(|| {
-                        (self.user_functions.contains_key(&name.value)
-                            || self.registry.get(&name.value).is_some())
-                        .then(|| Value::Function(name.value.clone()))
+                        self.registry.get(&name.value).map(|function| {
+                            Value::Function(Box::new(FunctionValue {
+                                signature: function.signature(),
+                                implementation: FunctionImplementation::Builtin(
+                                    name.value.clone(),
+                                ),
+                                captured: self.variables.first().cloned().unwrap_or_default(),
+                            }))
+                        })
                     });
                 match value {
                     Some(value) => (value, ValueOrigin::Default, Vec::new()),
@@ -329,7 +442,163 @@ impl LowerState<'_> {
                     self.evaluate_binary(*operator, left, right, expression_range);
                 (value, ValueOrigin::Default, diagnostics)
             }
-            ExpressionKind::LetFunction(_) => (Value::None, ValueOrigin::Default, Vec::new()),
+            ExpressionKind::Unary { operator, operand } => {
+                let (value, _, mut diagnostics) = self.evaluate_expression(operand, operand.range);
+                match (operator, value) {
+                    (UnaryOperator::Not, Value::Bool(value)) => {
+                        (Value::Bool(!value), ValueOrigin::Default, diagnostics)
+                    }
+                    (UnaryOperator::Not, other) => {
+                        diagnostics.push(EvalDiagnostic {
+                            message: format!("`not` requires a Bool operand, got {}", other.ty()),
+                            range: expression_range.shifted(self.base_offset),
+                        });
+                        (Value::None, ValueOrigin::Default, diagnostics)
+                    }
+                }
+            }
+            ExpressionKind::Block(statements) => {
+                // D0006: the block value is the join of its statement values;
+                // `let` yields none and does not participate. Blocks are
+                // lexical scopes: bindings do not escape.
+                let mut joined: Option<Value> = None;
+                let mut diagnostics = Vec::new();
+                self.variables.push(HashMap::new());
+                for statement in statements {
+                    let (value, _, mut statement_diagnostics) =
+                        self.evaluate_expression(statement, statement.range);
+                    diagnostics.append(&mut statement_diagnostics);
+                    match value {
+                        Value::None => {}
+                        Value::Content(content) => match &mut joined {
+                            None => joined = Some(Value::Content(content)),
+                            Some(Value::Content(existing)) => {
+                                existing.elements.extend(content.elements);
+                            }
+                            Some(other) => diagnostics.push(EvalDiagnostic {
+                                message: format!(
+                                    "cannot combine Content with {} in a code block",
+                                    other.ty()
+                                ),
+                                range: expression_range.shifted(self.base_offset),
+                            }),
+                        },
+                        value => match &mut joined {
+                            None => joined = Some(value),
+                            Some(existing) => diagnostics.push(EvalDiagnostic {
+                                message: format!(
+                                    "cannot combine {} with {} in a code block",
+                                    existing.ty(),
+                                    value.ty()
+                                ),
+                                range: expression_range.shifted(self.base_offset),
+                            }),
+                        },
+                    }
+                }
+                self.variables.pop();
+                (joined.unwrap_or(Value::None), ValueOrigin::Default, diagnostics)
+            }
+            ExpressionKind::Let { name, value, .. } => {
+                let (value, _, diagnostics) = self.evaluate_expression(value, value.range);
+                // Document-level bindings need a base scope; nested blocks and
+                // content literals already carry one (cloned) scope stack.
+                if self.variables.is_empty() {
+                    self.variables.push(HashMap::new());
+                }
+                if let Some(scope) = self.variables.last_mut() {
+                    scope.insert(name.value.clone(), value);
+                }
+                (Value::None, ValueOrigin::Default, diagnostics)
+            }
+            ExpressionKind::If {
+                condition,
+                then_branch,
+                else_branch,
+            } => {
+                let (condition_value, _, mut diagnostics) =
+                    self.evaluate_expression(condition, condition.range);
+                match condition_value {
+                    Value::Bool(true) => {
+                        let (value, origin, mut branch_diagnostics) =
+                            self.evaluate_expression(then_branch, then_branch.range);
+                        diagnostics.append(&mut branch_diagnostics);
+                        (value, origin, diagnostics)
+                    }
+                    Value::Bool(false) => match else_branch {
+                        Some(branch) => {
+                            let (value, origin, mut branch_diagnostics) =
+                                self.evaluate_expression(branch, branch.range);
+                            diagnostics.append(&mut branch_diagnostics);
+                            (value, origin, diagnostics)
+                        }
+                        None => (Value::None, ValueOrigin::Default, diagnostics),
+                    },
+                    other => {
+                        diagnostics.push(EvalDiagnostic {
+                            message: format!("`if` condition must be a Bool, got {}", other.ty()),
+                            range: expression_range.shifted(self.base_offset),
+                        });
+                        (Value::None, ValueOrigin::Default, diagnostics)
+                    }
+                }
+            }
+            ExpressionKind::Lambda { parameters, body } => {
+                let signature = FunctionSignature {
+                    parameters: parameters
+                        .iter()
+                        .map(|parameter| Parameter {
+                            name: parameter.name.value.clone(),
+                            ty: parameter.ty.clone(),
+                            default: parameter.default.as_ref().and_then(expression_default),
+                        })
+                        .collect(),
+                    trailing_content: parameters
+                        .last()
+                        .filter(|parameter| parameter.ty == Type::Content)
+                        .map(|parameter| parameter.name.value.clone()),
+                    // The result type is inferred by the static checker; at
+                    // runtime the internal Inferred marker accepts any value
+                    // (R07: inference stays outside the written surface).
+                    result: Type::Inferred,
+                };
+                let captured = self.variables.first().cloned().unwrap_or_default();
+                let function = FunctionValue {
+                    signature: signature.clone(),
+                    implementation: FunctionImplementation::User {
+                        parameters: parameters.clone(),
+                        result: signature.result,
+                        body: (**body).clone(),
+                    },
+                    captured,
+                };
+                (
+                    Value::Function(Box::new(function)),
+                    ValueOrigin::Default,
+                    Vec::new(),
+                )
+            }
+            ExpressionKind::Import { .. } => {
+                // Imports resolve only within a vault context: the analysis
+                // layer orchestrates cross-module evaluation and seeds the
+                // imported bindings (D0004). Standalone evaluation is a no-op.
+                (Value::None, ValueOrigin::Default, Vec::new())
+            }
+            ExpressionKind::LetFunction(definition) => {
+                // D0002: the definition binds a first-class closure into the
+                // current scope (hoisting remains as a transitional fallback).
+                if self.variables.is_empty() {
+                    self.variables.push(HashMap::new());
+                }
+                let function = user_function_value(definition, &self.variables);
+                if let Some(scope) = self.variables.last_mut() {
+                    scope.insert(
+                        definition.name.value.clone(),
+                        Value::Function(Box::new(function)),
+                    );
+                }
+                (Value::None, ValueOrigin::Default, Vec::new())
+            }
             ExpressionKind::Parenthesized(inner) => self.evaluate_expression(inner, inner.range),
             ExpressionKind::Error => (Value::None, ValueOrigin::Default, Vec::new()),
             ExpressionKind::None
@@ -350,6 +619,35 @@ impl LowerState<'_> {
         range: TextRange,
     ) -> (Value, Vec<EvalDiagnostic>) {
         let (left, _, mut diagnostics) = self.evaluate_expression(left, left.range);
+        // `and` / `or` short-circuit (D0007): the right side is only evaluated
+        // when the left side does not already decide the result.
+        if matches!(operator, BinaryOperator::And | BinaryOperator::Or) {
+            let Value::Bool(left_bool) = left else {
+                diagnostics.push(EvalDiagnostic {
+                    message: format!("operator {operator:?} requires Bool operands"),
+                    range: range.shifted(self.base_offset),
+                });
+                return (Value::None, diagnostics);
+            };
+            if (operator == BinaryOperator::And && !left_bool)
+                || (operator == BinaryOperator::Or && left_bool)
+            {
+                return (Value::Bool(left_bool), diagnostics);
+            }
+            let (right, _, mut right_diagnostics) = self.evaluate_expression(right, right.range);
+            diagnostics.append(&mut right_diagnostics);
+            if !diagnostics.is_empty() {
+                return (Value::None, diagnostics);
+            }
+            let Value::Bool(right_bool) = right else {
+                diagnostics.push(EvalDiagnostic {
+                    message: format!("operator {operator:?} requires Bool operands"),
+                    range: range.shifted(self.base_offset),
+                });
+                return (Value::None, diagnostics);
+            };
+            return (Value::Bool(right_bool), diagnostics);
+        }
         let (right, _, mut right_diagnostics) = self.evaluate_expression(right, right.range);
         diagnostics.append(&mut right_diagnostics);
         if !diagnostics.is_empty() {
@@ -357,6 +655,30 @@ impl LowerState<'_> {
         }
 
         let value = match (operator, left, right) {
+            (
+                BinaryOperator::Equal | BinaryOperator::NotEqual,
+                ref left,
+                ref right,
+            ) => {
+                if matches!(left, Value::Content(_) | Value::Function(_))
+                    || matches!(right, Value::Content(_) | Value::Function(_))
+                {
+                    diagnostics.push(EvalDiagnostic {
+                        message: format!(
+                            "operator {operator:?} is not defined for Content or Function values"
+                        ),
+                        range: range.shifted(self.base_offset),
+                    });
+                    return (Value::None, diagnostics);
+                }
+                // Same-family equality; cross-family values are unequal (D0007).
+                let equal = left == right;
+                Value::Bool(if operator == BinaryOperator::Equal {
+                    equal
+                } else {
+                    !equal
+                })
+            }
             (BinaryOperator::Add, Value::String(left), Value::String(right)) => {
                 Value::String(left + &right)
             }
@@ -387,24 +709,56 @@ impl LowerState<'_> {
                 };
                 Value::Int(value)
             }
-            (operator, Value::Int(left), Value::Float(right)) => {
+            (operator, Value::Int(left), Value::Float(right)) if is_arithmetic(operator) => {
                 match float_binary(operator, left as f64, right) {
                     Some(value) => Value::Float(value),
                     None => return self.division_by_zero(range, diagnostics),
                 }
             }
-            (operator, Value::Float(left), Value::Int(right)) => {
+            (operator, Value::Float(left), Value::Int(right)) if is_arithmetic(operator) => {
                 match float_binary(operator, left, right as f64) {
                     Some(value) => Value::Float(value),
                     None => return self.division_by_zero(range, diagnostics),
                 }
             }
-            (operator, Value::Float(left), Value::Float(right)) => {
+            (operator, Value::Float(left), Value::Float(right)) if is_arithmetic(operator) => {
                 match float_binary(operator, left, right) {
                     Some(value) => Value::Float(value),
                     None => return self.division_by_zero(range, diagnostics),
                 }
             }
+            (
+                BinaryOperator::Less
+                | BinaryOperator::LessEqual
+                | BinaryOperator::Greater
+                | BinaryOperator::GreaterEqual,
+                Value::Int(left),
+                Value::Int(right),
+            ) => Value::Bool(compare_ints(operator, left, right)),
+            (
+                BinaryOperator::Less
+                | BinaryOperator::LessEqual
+                | BinaryOperator::Greater
+                | BinaryOperator::GreaterEqual,
+                Value::Int(left),
+                Value::Float(right),
+            ) => Value::Bool(compare_floats(operator, left as f64, right)),
+            (
+                BinaryOperator::Less
+                | BinaryOperator::LessEqual
+                | BinaryOperator::Greater
+                | BinaryOperator::GreaterEqual,
+                Value::Float(left),
+                Value::Int(right),
+            ) => Value::Bool(compare_floats(operator, left, right as f64)),
+            (
+                BinaryOperator::Less
+                | BinaryOperator::LessEqual
+                | BinaryOperator::Greater
+                | BinaryOperator::GreaterEqual,
+                Value::Float(left),
+                Value::Float(right),
+            ) => Value::Bool(compare_floats(operator, left, right)),
             (_, left, right) => {
                 diagnostics.push(EvalDiagnostic {
                     message: format!(
@@ -453,8 +807,10 @@ impl LowerState<'_> {
             self.depth,
             self.user_functions,
             self.variables.clone(),
+            false,
         );
         let diagnostics = evaluation.diagnostics;
+        self.annotations.extend(evaluation.annotations);
         (Value::Content(evaluation.content), diagnostics)
     }
 
@@ -463,15 +819,33 @@ impl LowerState<'_> {
         call: &Call,
         site_range: TextRange,
     ) -> (Value, Vec<EvalDiagnostic>) {
-        let mut diagnostics = Vec::new();
         let name = &call.name.value;
 
-        if let Some(definition) = self.user_functions.get(name).cloned() {
-            return self.evaluate_user_function(&definition, call, site_range);
+        // D0002: the callee is a first-class value resolved in the current
+        // environment; closures dispatch on their implementation.
+        if let Some(value) = self
+            .variables
+            .iter()
+            .rev()
+            .find_map(|scope| scope.get(name).cloned())
+        {
+            return match value {
+                Value::Function(function) => {
+                    self.evaluate_function_value(&function, call, site_range)
+                }
+                other => (
+                    Value::None,
+                    vec![EvalDiagnostic {
+                        message: format!("`{name}` is not callable ({})", other.ty()),
+                        range: call.name.range.shifted(self.base_offset),
+                    }],
+                ),
+            };
         }
 
         let Some(function) = self.registry.get(name) else {
-            self.diagnostics.push(EvalDiagnostic {
+            let mut diagnostics = Vec::new();
+            diagnostics.push(EvalDiagnostic {
                 message: format!("unknown function `{name}`"),
                 range: call.name.range.shifted(self.base_offset),
             });
@@ -495,7 +869,53 @@ impl LowerState<'_> {
             );
             return (Value::Content(content), diagnostics);
         };
+        self.evaluate_builtin(function, name, call, site_range)
+    }
 
+    /// Dispatches a first-class function value (D0002).
+    fn evaluate_function_value(
+        &mut self,
+        function: &FunctionValue,
+        call: &Call,
+        site_range: TextRange,
+    ) -> (Value, Vec<EvalDiagnostic>) {
+        match &function.implementation {
+            FunctionImplementation::Builtin(name) => match self.registry.get(name) {
+                Some(builtin) => self.evaluate_builtin(builtin, name, call, site_range),
+                None => (
+                    Value::None,
+                    vec![EvalDiagnostic {
+                        message: format!("unknown builtin `{name}`"),
+                        range: call.name.range.shifted(self.base_offset),
+                    }],
+                ),
+            },
+            FunctionImplementation::User {
+                parameters,
+                result,
+                body,
+            } => self.evaluate_closure_body(
+                &call.name.value,
+                &function.signature,
+                parameters,
+                result,
+                body,
+                &function.captured,
+                call,
+                site_range,
+            ),
+        }
+    }
+
+    /// Evaluates a call against a registered builtin function.
+    fn evaluate_builtin(
+        &mut self,
+        function: &dyn Function,
+        name: &str,
+        call: &Call,
+        site_range: TextRange,
+    ) -> (Value, Vec<EvalDiagnostic>) {
+        let mut diagnostics = Vec::new();
         let signature = function.signature();
         let (trailing_content, mut trailing_diagnostics) = self.evaluate_trailing(&call.trailing);
         diagnostics.append(&mut trailing_diagnostics);
@@ -554,29 +974,33 @@ impl LowerState<'_> {
         }
     }
 
-    fn evaluate_user_function(
+    /// Evaluates a user-defined body as a closure call: arguments bind per the
+    /// signature, then the body runs with the captured environment below the
+    /// parameter scope (D0002).
+    #[allow(clippy::too_many_arguments)]
+    fn evaluate_closure_body(
         &mut self,
-        definition: &UserFunctionDefinition,
+        name: &str,
+        signature: &FunctionSignature,
+        _parameters: &[UserParameter],
+        result: &Type,
+        body: &Expression,
+        captured: &HashMap<String, Value>,
         call: &Call,
         site_range: TextRange,
     ) -> (Value, Vec<EvalDiagnostic>) {
         let mut diagnostics = Vec::new();
         if self.depth >= 64 {
             diagnostics.push(EvalDiagnostic {
-                message: format!(
-                    "function `{}` exceeded the evaluation depth limit",
-                    definition.name.value
-                ),
+                message: format!("function `{name}` exceeded the evaluation depth limit"),
                 range: site_range.shifted(self.base_offset),
             });
             return (Value::None, diagnostics);
         }
-
-        let signature = signature_for_user_function(definition);
         let (trailing_content, mut trailing_diagnostics) = self.evaluate_trailing(&call.trailing);
         diagnostics.append(&mut trailing_diagnostics);
         let bound = match bind_arguments(
-            &signature,
+            signature,
             &call.arguments,
             trailing_content,
             call.name.range,
@@ -598,20 +1022,20 @@ impl LowerState<'_> {
             }
         };
 
+        self.variables.push(captured.clone());
         self.variables.push(bound.into_values());
         self.depth += 1;
-        let (value, _, mut body_diagnostics) =
-            self.evaluate_expression(&definition.body, definition.body.range);
+        let (value, _, mut body_diagnostics) = self.evaluate_expression(body, body.range);
         self.depth -= 1;
         self.variables.pop();
+        self.variables.pop();
         diagnostics.append(&mut body_diagnostics);
-        if !signature.result.accepts(&value.ty()) {
+        if !result.accepts(&value.ty()) {
             diagnostics.push(EvalDiagnostic {
                 message: format!(
-                    "function `{}` returned {}, expected {}",
-                    definition.name.value,
+                    "function `{name}` returned {}, expected {}",
                     value.ty(),
-                    signature.result
+                    result
                 ),
                 range: site_range.shifted(self.base_offset),
             });
@@ -635,8 +1059,10 @@ impl LowerState<'_> {
                 self.depth + 1,
                 self.user_functions,
                 self.variables.clone(),
+                false,
             );
             diagnostics.extend(evaluation.diagnostics);
+            self.annotations.extend(evaluation.annotations);
             let range = block.payload_range.shifted(self.base_offset);
             result.push((evaluation.content, range));
         }
@@ -644,37 +1070,85 @@ impl LowerState<'_> {
     }
 
     fn push_element(&mut self, element: Element, range: TextRange) {
+        let inline = element.is_inline();
+        let parbreak = matches!(element, Element::Parbreak);
+        let blank = matches!(&element, Element::Text(text) if text.trim().is_empty());
         self.content.elements.push(ElementNode { element, range });
+        self.track_pending_annotation(range, inline, parbreak, blank);
     }
 
-    fn lower_abbr_sugar(&mut self, text: &notist_syntax::SpannedText) -> bool {
-        let line = text.value.trim_end_matches(['\r', '\n']).trim();
-        let Some(rest) = line.strip_prefix("*[") else {
-            return false;
-        };
-        let Some((term, expansion)) = rest.split_once("]: ") else {
-            return false;
-        };
-        let term = term.trim();
-        let expansion = expansion.trim();
-        if term.is_empty() || expansion.is_empty() {
-            return false;
+    /// Advances the block-annotation tracking for one produced element: the
+    /// first non-Parbreak element starts the annotated block, inline elements
+    /// extend it, and a Parbreak or a block-level element closes it (D0006:
+    /// `@[...]` binds the immediately following block-level node).
+    fn track_pending_annotation(&mut self, range: TextRange, inline: bool, parbreak: bool, blank: bool) {
+        if self.pending_annotations.is_empty() {
+            return;
         }
-        self.push_element(
-            Element::Abbr {
-                term: term.to_owned(),
-                expansion: expansion.to_owned(),
-            },
-            self.text_range(text, 0, line.len()),
-        );
-        true
+        if self.pending_block_start.is_none() {
+            if parbreak || blank {
+                return;
+            }
+            self.pending_block_start = Some(range);
+            self.pending_block_end = range.end;
+            if !inline {
+                let end = self.pending_block_end;
+                self.flush_pending_annotations(end);
+            }
+            return;
+        }
+        if parbreak || !inline {
+            let end = self.pending_block_end;
+            self.flush_pending_annotations(end);
+        } else {
+            self.pending_block_end = range.end;
+        }
     }
 
-    fn lower_list_sugar(&mut self, source_start: usize, source_end: usize) -> bool {
+    /// Emits annotation-table entries for the tracked block `[start, end)` to
+    /// every pending `@[...]` annotation that precedes the block start; later
+    /// annotations stay pending for their own following block (D0006: stacked
+    /// annotations share one block, separate annotations get separate blocks).
+    fn flush_pending_annotations(&mut self, block_end: usize) {
+        let Some(start) = self.pending_block_start.take() else {
+            return;
+        };
+        let mut remaining = Vec::new();
+        for (attributes, annotation_range) in self.pending_annotations.drain(..) {
+            if annotation_range.start < start.start {
+                self.annotations.push(crate::AnnotationEntry {
+                    range: TextRange::new(start.start, block_end),
+                    attributes,
+                });
+            } else {
+                remaining.push((attributes, annotation_range));
+            }
+        }
+        self.pending_annotations = remaining;
+    }
+
+    /// Finishes block-annotation tracking at the end of a markup sequence:
+    /// a block extending to the end flushes normally; annotations with no
+    /// following block are dangling (D0006 error recovery).
+    fn finish_annotations(&mut self) {
+        if self.pending_block_start.is_some() {
+            let end = self.pending_block_end;
+            self.flush_pending_annotations(end);
+        }
+        for (_, range) in self.pending_annotations.drain(..) {
+            self.diagnostics.push(EvalDiagnostic {
+                message: "block annotation `@[...]` is not followed by a block".into(),
+                range,
+            });
+        }
+    }
+
+    /// Lowers a list sugar node (D0003): each row body is evaluated as a
+    /// nested fragment, and indentation nests items into their parent bodies.
+    fn lower_list_sugar(&mut self, sugar: &notist_syntax::ListSugar) {
         struct ListRow {
             indent: usize,
             ordered: bool,
-            value: Option<u32>,
             body: Content,
             range: TextRange,
         }
@@ -704,7 +1178,7 @@ impl LowerState<'_> {
                 items.push(ElementNode {
                     element: if row.ordered {
                         Element::EnumItem {
-                            value: row.value,
+                            value: None,
                             body: row.body,
                         }
                     } else {
@@ -716,388 +1190,38 @@ impl LowerState<'_> {
             Some(items)
         }
 
-        let mut rows = std::collections::VecDeque::new();
-        let mut offset = 0usize;
-        let source = &self.source[source_start..source_end];
-        for line in source.split_inclusive('\n') {
-            let line_without_newline = line.trim_end_matches(['\r', '\n']);
-            if line_without_newline.trim().is_empty() {
-                return false;
-            }
-            let trimmed = line_without_newline.trim_start_matches([' ', '\t']);
-            let (ordered, value, marker_len, body) = if let Some(body) = trimmed.strip_prefix("- ")
-            {
-                (false, None, 2, body)
-            } else if let Some(body) = trimmed.strip_prefix("+ ") {
-                (true, None, 2, body)
-            } else {
-                return false;
-            };
-            let indent = line_without_newline.len() - trimmed.len();
-            let body_start = offset + indent + marker_len;
-            let body = body.trim_end_matches([' ', '\t']);
-            if body.is_empty() {
-                return false;
-            }
-            let content = self.inline_source_fragment(
-                source_start + body_start,
-                source_start + body_start + body.len(),
-            );
-            let item_range = TextRange::new(
-                self.base_offset + source_start + offset,
-                self.base_offset + source_start + offset + line_without_newline.len(),
-            );
-            rows.push_back(ListRow {
-                indent,
-                ordered,
-                value,
-                body: content,
-                range: item_range,
-            });
-            offset += line.len();
-        }
-        let mut items = Vec::new();
-        while let Some(base_indent) = rows.front().map(|row| row.indent) {
-            let Some(mut root_items) = nested_items(&mut rows, base_indent) else {
-                return false;
-            };
-            if root_items.is_empty() {
-                return false;
-            }
-            items.append(&mut root_items);
-        }
-        self.content.elements.extend(items);
-        true
-    }
-
-    fn lower_terms_sugar(&mut self, text: &notist_syntax::SpannedText) -> bool {
-        struct TermRow {
-            indent: usize,
-            term: Content,
-            description: Content,
-            range: TextRange,
-        }
-
-        fn nested_terms(
-            rows: &mut std::collections::VecDeque<TermRow>,
-            indent: usize,
-        ) -> Option<Vec<ElementNode>> {
-            let mut items: Vec<ElementNode> = Vec::new();
-            while let Some(row) = rows.front() {
-                if row.indent < indent {
-                    break;
-                }
-                if row.indent > indent {
-                    let child_indent = row.indent;
-                    let children = nested_terms(rows, child_indent)?;
-                    let parent = items.last_mut()?;
-                    let Element::TermItem { description, .. } = &mut parent.element else {
-                        return None;
-                    };
-                    description.elements.extend(children);
-                    continue;
-                }
-                let row = rows.pop_front().unwrap();
-                items.push(ElementNode {
-                    element: Element::TermItem {
-                        term: row.term,
-                        description: row.description,
-                    },
-                    range: row.range,
-                });
-            }
-            Some(items)
-        }
-
-        let mut rows = std::collections::VecDeque::new();
-        let mut offset = 0usize;
-        for line in text.value.split_inclusive('\n') {
-            let line_without_newline = line.trim_end_matches(['\r', '\n']);
-            let trimmed = line_without_newline.trim_start_matches([' ', '\t']);
-            let Some(body) = trimmed.strip_prefix("/ ") else {
-                return false;
-            };
-            let Some(separator) = body.find(": ") else {
-                return false;
-            };
-            let term = body[..separator].trim();
-            let description = body[separator + 2..].trim();
-            if term.is_empty() || description.is_empty() {
-                return false;
-            }
-            let indent = line_without_newline.len() - trimmed.len();
-            let term_leading = body[..separator].len() - body[..separator].trim_start().len();
-            let description_source = &body[separator + 2..];
-            let description_leading =
-                description_source.len() - description_source.trim_start().len();
-            let term_start = offset + indent + 2 + term_leading;
-            let description_start = offset + indent + 2 + separator + 2 + description_leading;
-            let range = self.text_range(text, offset, offset + line_without_newline.len());
-            rows.push_back(TermRow {
-                indent,
-                term: self.inline_content(text, term_start, term_start + term.len()),
-                description: self.inline_content(
-                    text,
-                    description_start,
-                    description_start + description.len(),
-                ),
-                range,
-            });
-            offset += line.len();
-        }
-        let mut items = Vec::new();
-        while let Some(base_indent) = rows.front().map(|row| row.indent) {
-            let Some(mut root_items) = nested_terms(&mut rows, base_indent) else {
-                return false;
-            };
-            if root_items.is_empty() {
-                return false;
-            }
-            items.append(&mut root_items);
-        }
-        self.content.elements.extend(items);
-        true
-    }
-
-    fn lower_task_sugar(&mut self, source_start: usize, source_end: usize) -> bool {
-        struct TaskRow {
-            indent: usize,
-            checked: bool,
-            body: Content,
-            range: TextRange,
-        }
-
-        fn nested_tasks(
-            rows: &mut std::collections::VecDeque<TaskRow>,
-            indent: usize,
-        ) -> Option<Vec<ElementNode>> {
-            let mut items: Vec<ElementNode> = Vec::new();
-            while let Some(row) = rows.front() {
-                if row.indent < indent {
-                    break;
-                }
-                if row.indent > indent {
-                    let child_indent = row.indent;
-                    let children = nested_tasks(rows, child_indent)?;
-                    let parent = items.last_mut()?;
-                    let Element::TaskItem { body, .. } = &mut parent.element else {
-                        return None;
-                    };
-                    body.elements.extend(children);
-                    continue;
-                }
-                let row = rows.pop_front().unwrap();
-                items.push(ElementNode {
-                    element: Element::TaskItem {
-                        checked: row.checked,
-                        body: row.body,
-                    },
-                    range: row.range,
-                });
-            }
-            Some(items)
-        }
-
-        let mut rows = std::collections::VecDeque::new();
-        let mut offset = 0usize;
-        let source = &self.source[source_start..source_end];
-        for line in source.split_inclusive('\n') {
-            let line_without_newline = line.trim_end_matches(['\r', '\n']);
-            let trimmed = line_without_newline.trim_start_matches([' ', '\t']);
-            let (checked, body) = if let Some(body) = trimmed.strip_prefix("- [ ] ") {
-                (false, body)
-            } else if let Some(body) = trimmed.strip_prefix("- [x] ") {
-                (true, body)
-            } else if let Some(body) = trimmed.strip_prefix("- [X] ") {
-                (true, body)
-            } else {
-                return false;
-            };
-            let body = body.trim_end();
-            if body.is_empty() {
-                return false;
-            }
-            let indent = line_without_newline.len() - trimmed.len();
-            let body_start = offset + indent + 6;
-            let range = TextRange::new(
-                self.base_offset + source_start + offset,
-                self.base_offset + source_start + offset + line_without_newline.len(),
-            );
-            rows.push_back(TaskRow {
-                indent,
-                checked,
-                body: self.inline_source_fragment(
-                    source_start + body_start,
-                    source_start + body_start + body.len(),
-                ),
-                range,
-            });
-            offset += line.len();
-        }
-        let mut items = Vec::new();
-        while let Some(base_indent) = rows.front().map(|row| row.indent) {
-            let Some(mut root_items) = nested_tasks(&mut rows, base_indent) else {
-                return false;
-            };
-            if root_items.is_empty() {
-                return false;
-            }
-            items.append(&mut root_items);
-        }
-        self.content.elements.extend(items);
-        true
-    }
-
-    fn lower_heading_source(&mut self, source_start: usize, source_end: usize) -> bool {
-        let line = self.source[source_start..source_end].trim_end_matches(['\r', '\n']);
-        let trimmed = line.trim_start_matches([' ', '\t']);
-        let level = trimmed.bytes().take_while(|byte| *byte == b'=').count();
-        if !(1..=6).contains(&level) || trimmed.as_bytes().get(level) != Some(&b' ') {
-            return false;
-        }
-        let body_source = &trimmed[level + 1..];
-        let body = body_source.trim();
-        if body.is_empty() {
-            return false;
-        }
-        let indent = line.len() - trimmed.len();
-        let leading = body_source.len() - body_source.trim_start().len();
-        let body_start = source_start + indent + level + 1 + leading;
-        let body_end = body_start + body.len();
-        let body = self.inline_source_fragment(body_start, body_end);
-        self.push_element(
-            Element::Heading {
-                level: level as u8,
-                body,
-            },
-            TextRange::new(
-                self.base_offset + source_start,
-                self.base_offset + source_start + line.len(),
-            ),
-        );
-        true
-    }
-
-    fn lower_table_source(&mut self, source_start: usize, source_end: usize) -> bool {
-        let source = &self.source[source_start..source_end];
-        let mut rows = Vec::new();
-        let mut columns = None;
-        let mut caption_range = None;
-        let mut offset = 0usize;
-        let mut lines = source.split_inclusive('\n').peekable();
-        while let Some(line) = lines.next() {
-            let line_without_newline = line.trim_end_matches(['\r', '\n']);
-            let trimmed = line_without_newline.trim();
-            if lines.peek().is_none() {
-                let caption_trimmed = line_without_newline.trim_start_matches([' ', '\t']);
-                if let Some(caption_source) = caption_trimmed.strip_prefix(": ") {
-                    let caption = caption_source.trim();
-                    if caption.is_empty() {
-                        return false;
-                    }
-                    let indent = line_without_newline.len() - caption_trimmed.len();
-                    let leading = caption_source.len() - caption_source.trim_start().len();
-                    caption_range = Some((offset + indent + 2 + leading, caption.len()));
-                    offset += line.len();
-                    continue;
-                }
-            }
-            if trimmed.is_empty() || !trimmed.starts_with('|') || !trimmed.ends_with('|') {
-                return false;
-            }
-            let content_start = line_without_newline.find('|').unwrap() + 1;
-            let content_end = line_without_newline.rfind('|').unwrap();
-            let parts = table_cell_ranges(line_without_newline, content_start, content_end);
-            if parts.is_empty() {
-                return false;
-            }
-            columns = Some(columns.unwrap_or(0).max(parts.len()));
-            let mut row = Vec::new();
-            for (part_start, part_end) in parts {
-                let part = &line_without_newline[part_start..part_end];
-                let leading = part.len() - part.trim_start_matches([' ', '\t']).len();
-                let value = part.trim();
-                let start = offset + part_start + leading;
-                row.push((start, value.len()));
-            }
-            rows.push(row);
-            offset += line.len();
-        }
-        let Some(columns) = columns else { return false };
-        if columns > u16::MAX as usize || rows.is_empty() {
-            return false;
-        }
-        let header_alignments = rows.get(1).and_then(|row| {
-            let mut alignments = row
-                .iter()
-                .map(|(start, len)| table_separator_alignment(&source[*start..*start + *len]))
-                .collect::<Option<Vec<_>>>()?;
-            alignments.resize(columns, TableAlignment::Default);
-            Some(alignments)
-        });
-        let header = header_alignments.is_some();
-        let alignments =
-            header_alignments.unwrap_or_else(|| vec![TableAlignment::Default; columns]);
-        for row in &mut rows {
-            let padding_start = row.last().map_or(0, |(start, len)| start + len);
-            row.resize(columns, (padding_start, 0));
-        }
-        if header {
-            rows.remove(1);
-        }
-        let mut cells = Vec::new();
-        for row in rows {
-            for (start, len) in row {
-                let range = TextRange::new(
-                    self.base_offset + source_start + start,
-                    self.base_offset + source_start + start + len,
+        let mut rows: std::collections::VecDeque<ListRow> = sugar
+            .rows
+            .iter()
+            .map(|row| {
+                let evaluation = evaluate_markup_in_environment(
+                    self.source,
+                    &row.body,
+                    self.base_offset,
+                    self.registry,
+                    self.depth + 1,
+                    self.user_functions,
+                    self.variables.clone(),
+                    false,
                 );
-                cells.push(ElementNode {
-                    element: Element::TableCell {
-                        body: self.inline_source_fragment(
-                            source_start + start,
-                            source_start + start + len,
-                        ),
-                        colspan: 1,
-                        rowspan: 1,
-                    },
-                    range,
-                });
-            }
+                self.annotations.extend(evaluation.annotations);
+                self.diagnostics.extend(evaluation.diagnostics);
+                ListRow {
+                    indent: row.indent,
+                    ordered: row.ordered,
+                    body: evaluation.content,
+                    range: row.range.shifted(self.base_offset),
+                }
+            })
+            .collect();
+        let mut items = Vec::new();
+        while let Some(base_indent) = rows.front().map(|row| row.indent) {
+            let Some(root_items) = nested_items(&mut rows, base_indent) else {
+                return;
+            };
+            items.extend(root_items);
         }
-        let caption = caption_range.map(|(start, len)| {
-            self.inline_source_fragment(source_start + start, source_start + start + len)
-        });
-        self.push_element(
-            Element::Table {
-                columns: columns as u16,
-                header,
-                alignments,
-                caption,
-                cells,
-            },
-            TextRange::new(
-                self.base_offset + source_start,
-                self.base_offset + source_end,
-            ),
-        );
-        true
-    }
-
-    fn inline_source_fragment(&mut self, start: usize, end: usize) -> Content {
-        let source = &self.source[start..end];
-        let parse = notist_syntax::parse(source);
-        let evaluation = evaluate_markup_in_environment(
-            source,
-            &parse.root,
-            self.base_offset + start,
-            self.registry,
-            self.depth + 1,
-            self.user_functions,
-            self.variables.clone(),
-        );
-        self.diagnostics.extend(evaluation.diagnostics);
-        evaluation.content
+        self.content.elements.extend(items);
     }
 
     fn push_text_with_parbreaks(&mut self, text: &notist_syntax::SpannedText) {
@@ -1133,41 +1257,6 @@ impl LowerState<'_> {
         let mut plain_start = start;
         let mut cursor = start;
         while cursor < end {
-            if bytes[cursor..end].starts_with(b"$$")
-                && (cursor == start || bytes[cursor - 1] != b'\\')
-                && let Some(closing) = find_unescaped_sequence(bytes, cursor + 2, end, b"$$")
-                && closing > cursor + 2
-            {
-                self.push_plain_text(text, plain_start, cursor);
-                self.push_element(
-                    Element::Math {
-                        text: text.value[cursor + 2..closing].trim().to_owned(),
-                        block: true,
-                    },
-                    self.text_range(text, cursor, closing + 2),
-                );
-                cursor = closing + 2;
-                plain_start = cursor;
-                continue;
-            }
-            if bytes[cursor] == b'$'
-                && (cursor == start || bytes[cursor - 1] != b'\\')
-                && let Some(closing) = find_unescaped_sequence(bytes, cursor + 1, end, b"$")
-                && closing > cursor + 1
-            {
-                self.push_plain_text(text, plain_start, cursor);
-                self.push_element(
-                    Element::Math {
-                        text: text.value[cursor + 1..closing].to_owned(),
-                        block: false,
-                    },
-                    self.text_range(text, cursor, closing + 1),
-                );
-                cursor = closing + 1;
-                plain_start = cursor;
-                continue;
-            }
-
             if bytes[cursor..end].starts_with(b"~~")
                 && (cursor == start || bytes[cursor - 1] != b'\\')
                 && let Some(closing) = find_unescaped_sequence(bytes, cursor + 2, end, b"~~")
@@ -1210,17 +1299,6 @@ impl LowerState<'_> {
             }
 
             if bytes[cursor] == b'\\'
-                && newline_end(bytes, cursor + 1).is_some_and(|after| after <= end)
-            {
-                self.push_plain_text(text, plain_start, cursor);
-                let after = newline_end(bytes, cursor + 1).unwrap();
-                self.push_element(Element::Linebreak, self.text_range(text, cursor, after));
-                cursor = after;
-                plain_start = cursor;
-                continue;
-            }
-
-            if bytes[cursor] == b'\\'
                 && let Some(&escaped) = bytes.get(cursor + 1)
                 && escaped.is_ascii_punctuation()
             {
@@ -1236,10 +1314,14 @@ impl LowerState<'_> {
 
             if matches!(bytes[cursor], b'*' | b'_')
                 && (cursor == start || bytes[cursor - 1] != b'\\')
+                && bytes
+                    .get(cursor + 1)
+                    .is_some_and(|&next| !next.is_ascii_whitespace() && next != bytes[cursor])
             {
                 let delimiter = bytes[cursor];
                 if let Some(closing) = find_unescaped_sequence(bytes, cursor + 1, end, &[delimiter])
                     && closing > cursor + 1
+                    && !bytes[closing - 1].is_ascii_whitespace()
                 {
                     self.push_plain_text(text, plain_start, cursor);
                     let body = self.inline_content(text, cursor + 1, closing);
@@ -1255,62 +1337,6 @@ impl LowerState<'_> {
                     plain_start = cursor;
                     continue;
                 }
-            }
-
-            if (cursor == start || !is_email_character(bytes[cursor - 1]))
-                && let Some(email_end) = bare_email_end(bytes, cursor, end)
-            {
-                self.push_plain_text(text, plain_start, cursor);
-                let range = self.text_range(text, cursor, email_end);
-                let address = text.value[cursor..email_end].to_owned();
-                self.push_element(
-                    Element::Link {
-                        destination: format!("mailto:{address}"),
-                        title: None,
-                        body: Content::single(Element::Text(address), range),
-                    },
-                    range,
-                );
-                cursor = email_end;
-                plain_start = cursor;
-                continue;
-            }
-
-            if (bytes[cursor..end].starts_with(b"https://")
-                || bytes[cursor..end].starts_with(b"http://"))
-                && (cursor == start || bytes[cursor - 1].is_ascii_whitespace())
-            {
-                self.push_plain_text(text, plain_start, cursor);
-                let mut url_end = cursor;
-                while url_end < end
-                    && !bytes[url_end].is_ascii_whitespace()
-                    && !(bytes[url_end] == b'\\'
-                        && newline_end(bytes, url_end + 1).is_some_and(|after| after <= end))
-                {
-                    url_end += 1;
-                }
-                while url_end > cursor
-                    && matches!(
-                        bytes[url_end - 1],
-                        b'.' | b',' | b';' | b'!' | b'?' | b')' | b']'
-                    )
-                {
-                    url_end -= 1;
-                }
-                let range = self.text_range(text, cursor, url_end);
-                let destination = text.value[cursor..url_end].to_owned();
-                let body = Content::single(Element::Text(destination.clone()), range);
-                self.push_element(
-                    Element::Link {
-                        destination,
-                        title: None,
-                        body,
-                    },
-                    range,
-                );
-                cursor = url_end;
-                plain_start = cursor;
-                continue;
             }
 
             cursor += 1;
@@ -1342,6 +1368,12 @@ impl LowerState<'_> {
             variables: self.variables.clone(),
             content: Content::new(),
             diagnostics: Vec::new(),
+            annotations: Vec::new(),
+            handle_annotations: false,
+            pending_annotations: Vec::new(),
+            pending_block_start: None,
+            pending_block_end: 0,
+            module_attributes: Vec::new(),
         };
         state.push_inline_text(text, start, end);
         state.content
@@ -1363,302 +1395,6 @@ fn newline_end(bytes: &[u8], cursor: usize) -> Option<usize> {
     }
 }
 
-#[derive(Clone, Copy)]
-struct TableSourceSpan {
-    start: usize,
-    end: usize,
-}
-
-#[derive(Clone, Copy, PartialEq, Eq)]
-enum SourceSugarKind {
-    Heading,
-    Table,
-    List,
-    Task,
-}
-
-#[derive(Clone, Copy)]
-struct ListSourceSpan {
-    start: usize,
-    end: usize,
-    kind: SourceSugarKind,
-}
-
-fn table_source_spans(source: &str, markup: &Markup) -> Vec<TableSourceSpan> {
-    let mut lines = Vec::new();
-    let mut offset = markup.range.start;
-    for line in source[markup.range.start..markup.range.end].split_inclusive('\n') {
-        let end = offset + line.len();
-        lines.push((offset, end, line.trim_end_matches(['\r', '\n'])));
-        offset = end;
-    }
-    if offset < markup.range.end {
-        lines.push((offset, markup.range.end, &source[offset..markup.range.end]));
-    }
-
-    let marker_is_text = |position: usize| {
-        markup.items.iter().any(|item| {
-            matches!(item, MarkupItem::Text(text)
-                if text.range.start <= position && position < text.range.end)
-        })
-    };
-
-    let mut spans = Vec::new();
-    let mut index = 0usize;
-    while index < lines.len() {
-        let (start, _, line) = lines[index];
-        let trimmed = line.trim();
-        let marker = start + line.len().saturating_sub(line.trim_start().len());
-        if !trimmed.starts_with('|') || !trimmed.ends_with('|') || !marker_is_text(marker) {
-            index += 1;
-            continue;
-        }
-
-        let span_start = start;
-        let mut span_end = lines[index].1;
-        index += 1;
-        while index < lines.len() {
-            let candidate = lines[index].2.trim();
-            if !candidate.starts_with('|') || !candidate.ends_with('|') {
-                break;
-            }
-            span_end = lines[index].1;
-            index += 1;
-        }
-        if index < lines.len()
-            && lines[index]
-                .2
-                .trim_start_matches([' ', '\t'])
-                .starts_with(": ")
-        {
-            span_end = lines[index].1;
-            index += 1;
-        }
-        spans.push(TableSourceSpan {
-            start: span_start,
-            end: span_end,
-        });
-    }
-    spans
-}
-
-fn heading_source_spans(
-    source: &str,
-    markup: &Markup,
-    table_spans: &[TableSourceSpan],
-) -> Vec<TableSourceSpan> {
-    let marker_is_text = |position: usize| {
-        markup.items.iter().any(|item| {
-            matches!(item, MarkupItem::Text(text)
-                if text.range.start <= position && position < text.range.end)
-        })
-    };
-
-    let mut spans = Vec::new();
-    let mut offset = markup.range.start;
-    for line in source[markup.range.start..markup.range.end].split_inclusive('\n') {
-        let end = offset + line.len();
-        let line_without_newline = line.trim_end_matches(['\r', '\n']);
-        let trimmed = line_without_newline.trim_start_matches([' ', '\t']);
-        let level = trimmed.bytes().take_while(|byte| *byte == b'=').count();
-        let marker = offset + line_without_newline.len().saturating_sub(trimmed.len());
-        let inside_table = table_spans
-            .iter()
-            .any(|span| span.start <= marker && marker < span.end);
-        if !inside_table
-            && marker_is_text(marker)
-            && (1..=6).contains(&level)
-            && trimmed.as_bytes().get(level) == Some(&b' ')
-            && !trimmed[level + 1..].trim().is_empty()
-        {
-            spans.push(TableSourceSpan { start: offset, end });
-        }
-        offset = end;
-    }
-    spans
-}
-
-fn list_source_spans(
-    source: &str,
-    markup: &Markup,
-    table_spans: &[TableSourceSpan],
-) -> Vec<ListSourceSpan> {
-    let marker_is_text = |position: usize| {
-        markup.items.iter().any(|item| {
-            matches!(item, MarkupItem::Text(text)
-                if text.range.start <= position && position < text.range.end)
-        })
-    };
-    let line_kind = |line: &str| {
-        let trimmed = line
-            .trim_end_matches(['\r', '\n'])
-            .trim_start_matches([' ', '\t']);
-        if ["- [ ] ", "- [x] ", "- [X] "].iter().any(|marker| {
-            trimmed
-                .strip_prefix(marker)
-                .is_some_and(|body| !body.trim().is_empty())
-        }) {
-            Some(SourceSugarKind::Task)
-        } else if ["- ", "+ "].iter().any(|marker| {
-            trimmed
-                .strip_prefix(marker)
-                .is_some_and(|body| !body.trim().is_empty())
-        }) {
-            Some(SourceSugarKind::List)
-        } else {
-            None
-        }
-    };
-
-    let mut lines = Vec::new();
-    let mut offset = markup.range.start;
-    for line in source[markup.range.start..markup.range.end].split_inclusive('\n') {
-        let end = offset + line.len();
-        lines.push((offset, end, line));
-        offset = end;
-    }
-
-    let mut spans = Vec::new();
-    let mut index = 0usize;
-    while index < lines.len() {
-        let (start, end, line) = lines[index];
-        let marker = start
-            + line.trim_end_matches(['\r', '\n']).len().saturating_sub(
-                line.trim_end_matches(['\r', '\n'])
-                    .trim_start_matches([' ', '\t'])
-                    .len(),
-            );
-        let inside_table = table_spans
-            .iter()
-            .any(|span| span.start <= marker && marker < span.end);
-        let Some(kind) = (!inside_table && marker_is_text(marker))
-            .then(|| line_kind(line))
-            .flatten()
-        else {
-            index += 1;
-            continue;
-        };
-
-        let span_start = start;
-        let mut span_end = end;
-        index += 1;
-        while index < lines.len() {
-            let (candidate_start, candidate_end, candidate) = lines[index];
-            let candidate_line = candidate.trim_end_matches(['\r', '\n']);
-            let candidate_marker = candidate_start
-                + candidate_line
-                    .len()
-                    .saturating_sub(candidate_line.trim_start_matches([' ', '\t']).len());
-            if !marker_is_text(candidate_marker) || line_kind(candidate) != Some(kind) {
-                break;
-            }
-            span_end = candidate_end;
-            index += 1;
-        }
-        spans.push(ListSourceSpan {
-            start: span_start,
-            end: span_end,
-            kind,
-        });
-    }
-    spans
-}
-
-fn table_separator_alignment(value: &str) -> Option<TableAlignment> {
-    let value = value.trim();
-    let left = value.starts_with(':');
-    let right = value.ends_with(':');
-    let value = value.strip_prefix(':').unwrap_or(value);
-    let value = value.strip_suffix(':').unwrap_or(value);
-    (value.len() >= 3 && value.bytes().all(|byte| byte == b'-')).then_some(match (left, right) {
-        (true, false) => TableAlignment::Left,
-        (false, true) => TableAlignment::Right,
-        (true, true) => TableAlignment::Center,
-        (false, false) => TableAlignment::Default,
-    })
-}
-
-fn table_cell_ranges(source: &str, start: usize, end: usize) -> Vec<(usize, usize)> {
-    let bytes = source.as_bytes();
-    let mut cells = Vec::new();
-    let mut cell_start = start;
-    let mut cursor = start;
-    let mut raw_ticks = 0usize;
-    let mut quoted = false;
-    let mut square_depth = 0usize;
-    let mut paren_depth = 0usize;
-
-    while cursor < end {
-        if raw_ticks > 0 {
-            if bytes[cursor] == b'`' {
-                let run = bytes[cursor..end]
-                    .iter()
-                    .take_while(|byte| **byte == b'`')
-                    .count();
-                if run == raw_ticks {
-                    raw_ticks = 0;
-                }
-                cursor += run;
-            } else {
-                cursor += 1;
-            }
-            continue;
-        }
-
-        if quoted {
-            match bytes[cursor] {
-                b'\\' if cursor + 1 < end => cursor += 2,
-                b'"' => {
-                    quoted = false;
-                    cursor += 1;
-                }
-                _ => cursor += 1,
-            }
-            continue;
-        }
-
-        match bytes[cursor] {
-            b'`' => {
-                raw_ticks = bytes[cursor..end]
-                    .iter()
-                    .take_while(|byte| **byte == b'`')
-                    .count();
-                cursor += raw_ticks;
-            }
-            b'"' => {
-                quoted = true;
-                cursor += 1;
-            }
-            b'[' => {
-                square_depth += 1;
-                cursor += 1;
-            }
-            b']' => {
-                square_depth = square_depth.saturating_sub(1);
-                cursor += 1;
-            }
-            b'(' => {
-                paren_depth += 1;
-                cursor += 1;
-            }
-            b')' => {
-                paren_depth = paren_depth.saturating_sub(1);
-                cursor += 1;
-            }
-            b'|' if square_depth == 0
-                && paren_depth == 0
-                && preceding_backslashes(bytes, start, cursor).is_multiple_of(2) =>
-            {
-                cells.push((cell_start, cursor));
-                cell_start = cursor + 1;
-                cursor += 1;
-            }
-            _ => cursor += 1,
-        }
-    }
-    cells.push((cell_start, end));
-    cells
-}
 
 fn preceding_backslashes(bytes: &[u8], start: usize, cursor: usize) -> usize {
     bytes[start..cursor]
@@ -1681,85 +1417,4 @@ fn find_unescaped_sequence(
         bytes[cursor..].starts_with(delimiter)
             && preceding_backslashes(bytes, 0, cursor).is_multiple_of(2)
     })
-}
-
-fn bare_email_end(bytes: &[u8], start: usize, end: usize) -> Option<usize> {
-    let mut candidate_end = start;
-    while candidate_end < end && is_email_character(bytes[candidate_end]) {
-        candidate_end += 1;
-    }
-    while candidate_end > start && bytes[candidate_end - 1] == b'.' {
-        candidate_end -= 1;
-    }
-    let candidate = &bytes[start..candidate_end];
-    let at = candidate.iter().position(|byte| *byte == b'@')?;
-    if candidate[at + 1..].contains(&b'@') || at == 0 {
-        return None;
-    }
-    let local = &candidate[..at];
-    let domain = &candidate[at + 1..];
-    if local.first() == Some(&b'.')
-        || local.last() == Some(&b'.')
-        || !local.iter().all(|byte| is_email_local_character(*byte))
-    {
-        return None;
-    }
-    let labels: Vec<_> = domain.split(|byte| *byte == b'.').collect();
-    if labels.len() < 2
-        || labels.iter().any(|label| {
-            label.is_empty()
-                || !label.first().is_some_and(u8::is_ascii_alphanumeric)
-                || !label.last().is_some_and(u8::is_ascii_alphanumeric)
-                || !label
-                    .iter()
-                    .all(|byte| byte.is_ascii_alphanumeric() || *byte == b'-')
-        })
-    {
-        return None;
-    }
-    Some(candidate_end)
-}
-
-fn is_email_character(byte: u8) -> bool {
-    is_email_local_character(byte) || byte == b'@'
-}
-
-fn is_email_local_character(byte: u8) -> bool {
-    byte.is_ascii_alphanumeric()
-        || matches!(
-            byte,
-            b'.' | b'!'
-                | b'#'
-                | b'$'
-                | b'%'
-                | b'&'
-                | b'\''
-                | b'*'
-                | b'+'
-                | b'-'
-                | b'/'
-                | b'='
-                | b'?'
-                | b'^'
-                | b'_'
-                | b'`'
-                | b'{'
-                | b'|'
-                | b'}'
-                | b'~'
-        )
-}
-
-fn citation_parts(value: &str) -> Option<(&str, Option<&str>)> {
-    let (key, locator) = match value.split_once(',') {
-        Some((key, locator)) => {
-            let locator = locator.trim();
-            if locator.is_empty() {
-                return None;
-            }
-            (key.trim(), Some(locator))
-        }
-        None => (value.trim(), None),
-    };
-    citation_key_is_valid(key).then_some((key, locator))
 }

@@ -23,6 +23,9 @@ enum ClientMessage {
     Handshake { handshake: Handshake },
     Request { id: u64, request: CoreRequest },
     Cancel { id: u64 },
+    /// Ask the daemon to stop serving. `force` overrides the "no other active
+    /// clients" guard used by automatic stale-daemon recycling.
+    Shutdown { force: bool },
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -38,6 +41,22 @@ enum ServerMessage {
         id: u64,
         result: Result<CoreReply, String>,
     },
+    ShutdownAccepted {
+        pid: u32,
+    },
+    ShutdownRejected {
+        message: String,
+    },
+}
+
+/// Outcome of a daemon shutdown request.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub enum ShutdownReply {
+    /// The daemon accepted the shutdown and is exiting. `pid` is the daemon
+    /// process id when the acknowledgment arrived before the process exited.
+    Accepted { pid: Option<u32> },
+    /// The daemon refused to stop, with the reason it reported.
+    Rejected { message: String },
 }
 
 pub struct DaemonClient {
@@ -62,10 +81,12 @@ impl DaemonClient {
             ServerMessage::HandshakeRejected { message } => {
                 return Err(io::Error::new(io::ErrorKind::Unsupported, message));
             }
-            ServerMessage::Response { .. } => {
+            ServerMessage::Response { .. }
+            | ServerMessage::ShutdownAccepted { .. }
+            | ServerMessage::ShutdownRejected { .. } => {
                 return Err(io::Error::new(
                     io::ErrorKind::InvalidData,
-                    "daemon sent a response before handshake",
+                    "daemon sent a control reply before handshake",
                 ));
             }
         };
@@ -92,10 +113,13 @@ impl DaemonClient {
                 io::ErrorKind::InvalidData,
                 "daemon returned an out-of-order response",
             )),
-            ServerMessage::HandshakeAccepted { .. } | ServerMessage::HandshakeRejected { .. } => {
+            ServerMessage::HandshakeAccepted { .. }
+            | ServerMessage::HandshakeRejected { .. }
+            | ServerMessage::ShutdownAccepted { .. }
+            | ServerMessage::ShutdownRejected { .. } => {
                 Err(io::Error::new(
                     io::ErrorKind::InvalidData,
-                    "daemon repeated the handshake",
+                    "daemon repeated the handshake or sent a control reply",
                 ))
             }
         }
@@ -103,6 +127,36 @@ impl DaemonClient {
 
     pub async fn cancel(&mut self, id: u64) -> io::Result<()> {
         write_frame(&mut self.stream, &ClientMessage::Cancel { id }).await
+    }
+
+    /// Ask the daemon to stop serving. A dropped connection after the request
+    /// is treated as acceptance: the daemon may exit before acknowledging.
+    pub async fn shutdown(&mut self, force: bool) -> io::Result<ShutdownReply> {
+        write_frame(&mut self.stream, &ClientMessage::Shutdown { force }).await?;
+        let reply = read_frame(&mut self.stream).await;
+        match reply {
+            Ok(ServerMessage::ShutdownAccepted { pid }) => {
+                Ok(ShutdownReply::Accepted { pid: Some(pid) })
+            }
+            Ok(ServerMessage::ShutdownRejected { message }) => {
+                Ok(ShutdownReply::Rejected { message })
+            }
+            Ok(_) => Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                "daemon returned an unexpected shutdown reply",
+            )),
+            Err(error)
+                if matches!(
+                    error.kind(),
+                    io::ErrorKind::UnexpectedEof
+                        | io::ErrorKind::ConnectionReset
+                        | io::ErrorKind::BrokenPipe
+                ) =>
+            {
+                Ok(ShutdownReply::Accepted { pid: None })
+            }
+            Err(error) => Err(error),
+        }
     }
 }
 
@@ -112,7 +166,15 @@ pub async fn serve(
     idle_timeout: Option<Duration>,
     vault_generation: Option<String>,
 ) -> io::Result<()> {
-    serve_platform(root, service, idle_timeout, Arc::new(vault_generation)).await
+    let daemon_binary_stamp = binary_stamp();
+    serve_platform(
+        root,
+        service,
+        idle_timeout,
+        Arc::new(vault_generation),
+        daemon_binary_stamp,
+    )
+    .await
 }
 
 async fn serve_connection<S>(
@@ -120,13 +182,18 @@ async fn serve_connection<S>(
     root: Arc<PathBuf>,
     service: Arc<NotistService>,
     vault_generation: Arc<Option<String>>,
+    active: Arc<AtomicUsize>,
+    shutdown: tokio::sync::watch::Sender<bool>,
+    daemon_binary_stamp: Option<u64>,
 ) -> io::Result<()>
 where
     S: AsyncRead + AsyncWrite + Unpin + Send + 'static,
 {
     let handshake = match read_frame::<_, ClientMessage>(&mut stream).await? {
         ClientMessage::Handshake { handshake } => handshake,
-        ClientMessage::Request { .. } | ClientMessage::Cancel { .. } => {
+        ClientMessage::Request { .. }
+        | ClientMessage::Cancel { .. }
+        | ClientMessage::Shutdown { .. } => {
             write_frame(
                 &mut stream,
                 &ServerMessage::HandshakeRejected {
@@ -169,6 +236,7 @@ where
         return Ok(());
     }
     accepted.daemon_instance = service.instance_id().0.clone();
+    accepted.daemon_binary_stamp = daemon_binary_stamp;
     write_frame(&mut stream, &ServerMessage::HandshakeAccepted { accepted }).await?;
 
     let (mut reader, mut writer) = tokio::io::split(stream);
@@ -192,6 +260,24 @@ where
         };
         match message {
             ClientMessage::Handshake { .. } => break,
+            ClientMessage::Shutdown { force } => {
+                if active.load(Ordering::Acquire) > 1 && !force {
+                    let _ = outgoing
+                        .send(ServerMessage::ShutdownRejected {
+                            message: "daemon has other active clients".into(),
+                        })
+                        .await;
+                    continue;
+                }
+                let _ = outgoing
+                    .send(ServerMessage::ShutdownAccepted {
+                        pid: std::process::id(),
+                    })
+                    .await;
+                let _ = shutdown.send(true);
+                requests.abort_all();
+                break;
+            }
             ClientMessage::Cancel { id } => {
                 if let Some(cancelled) = cancellations.lock().unwrap().get(&id) {
                     cancelled.store(true, Ordering::Release);
@@ -336,6 +422,44 @@ fn endpoint_discriminator(root: &Path, vault_generation: Option<&str>) -> String
     format!("{hash:016x}")
 }
 
+/// Fingerprint of a binary file, derived from its modification time and size.
+/// The daemon records this for its own executable at startup and returns it in
+/// the handshake; clients compare it against their own executable to detect a
+/// daemon that is serving stale code (see D0005).
+fn binary_stamp_for(path: &Path) -> Option<u64> {
+    let metadata = std::fs::metadata(path).ok()?;
+    let modified = metadata.modified().ok()?;
+    let nanos = modified
+        .duration_since(std::time::UNIX_EPOCH)
+        .ok()?
+        .as_nanos() as u64;
+    Some(nanos ^ metadata.len().wrapping_mul(0x9e37_79b9_7f4a_7c15))
+}
+
+/// Fingerprint of the current process's executable, when it can be read.
+pub fn binary_stamp() -> Option<u64> {
+    binary_stamp_for(&std::env::current_exe().ok()?)
+}
+
+/// Path of the daemon's diagnostics pid file for a vault endpoint. The file is
+/// informational only: it is never used as a lock or for authorization.
+pub fn daemon_pid_path(root: &Path, vault_generation: Option<&str>) -> io::Result<PathBuf> {
+    #[cfg(unix)]
+    {
+        Ok(unix_endpoint(root, vault_generation)?.with_extension("pid"))
+    }
+    #[cfg(windows)]
+    {
+        let base = std::env::var_os("LOCALAPPDATA")
+            .map(PathBuf::from)
+            .unwrap_or_else(std::env::temp_dir);
+        Ok(base.join("notist").join(format!(
+            "daemon-{}.pid",
+            endpoint_discriminator(root, vault_generation)
+        )))
+    }
+}
+
 #[cfg(windows)]
 type ClientStream = tokio::net::windows::named_pipe::NamedPipeClient;
 
@@ -366,6 +490,7 @@ async fn serve_platform(
     service: Arc<NotistService>,
     idle_timeout: Option<Duration>,
     vault_generation: Arc<Option<String>>,
+    daemon_binary_stamp: Option<u64>,
 ) -> io::Result<()> {
     use tokio::net::windows::named_pipe::ServerOptions;
 
@@ -375,23 +500,39 @@ async fn serve_platform(
     );
     let root = Arc::new(root);
     let active = Arc::new(AtomicUsize::new(0));
-    let mut first = true;
-    loop {
+    let (shutdown_tx, mut shutdown_rx) = tokio::sync::watch::channel(false);
+    let pid_path = daemon_pid_path(root.as_ref(), vault_generation.as_deref())?;
+    if let Some(parent) = pid_path.parent() {
+        std::fs::create_dir_all(parent)?;
+    }
+    std::fs::write(&pid_path, format!("{}\n", std::process::id()))?;
+    let result: io::Result<()> = async {
+        let mut first = true;
+        loop {
         let mut options = ServerOptions::new();
         options
             .first_pipe_instance(first)
             .reject_remote_clients(true);
         let server = options.create(&endpoint)?;
         first = false;
-        if let Some(idle_timeout) = idle_timeout {
-            match tokio::time::timeout(idle_timeout, server.connect()).await {
-                Ok(result) => result?,
-                Err(_) if active.load(Ordering::Acquire) == 0 => return Ok(()),
-                Err(_) => continue,
+        let connected = if let Some(idle_timeout) = idle_timeout {
+            tokio::select! {
+                _ = shutdown_rx.changed() => break,
+                result = tokio::time::timeout(idle_timeout, server.connect()) => match result {
+                    Ok(result) => Some(result?),
+                    Err(_) if active.load(Ordering::Acquire) == 0 => None,
+                    Err(_) => continue,
+                },
             }
         } else {
-            server.connect().await?;
-        }
+            tokio::select! {
+                _ = shutdown_rx.changed() => break,
+                result = server.connect() => Some(result?),
+            }
+        };
+        let Some(()) = connected else {
+            break;
+        };
         if !windows_client_is_current_user(&server) {
             continue;
         }
@@ -400,11 +541,26 @@ async fn serve_platform(
         let root = root.clone();
         let service = service.clone();
         let vault_generation = vault_generation.clone();
+        let shutdown = shutdown_tx.clone();
         tokio::spawn(async move {
-            let _ = serve_connection(server, root, service, vault_generation).await;
+            let _ = serve_connection(
+                server,
+                root,
+                service,
+                vault_generation,
+                connection_active,
+                shutdown,
+                daemon_binary_stamp,
+            )
+            .await;
             connection_active.fetch_sub(1, Ordering::AcqRel);
         });
+        }
+        Ok(())
     }
+    .await;
+    let _ = std::fs::remove_file(&pid_path);
+    result
 }
 
 #[cfg(windows)]
@@ -507,6 +663,7 @@ async fn serve_platform(
     service: Arc<NotistService>,
     idle_timeout: Option<Duration>,
     vault_generation: Arc<Option<String>>,
+    daemon_binary_stamp: Option<u64>,
 ) -> io::Result<()> {
     use std::os::unix::fs::{MetadataExt, PermissionsExt};
 
@@ -535,36 +692,63 @@ async fn serve_platform(
     }
     let listener = tokio::net::UnixListener::bind(&endpoint)?;
     let active = Arc::new(AtomicUsize::new(0));
-    loop {
-        let accepted = if let Some(idle_timeout) = idle_timeout {
-            match tokio::time::timeout(idle_timeout, listener.accept()).await {
-                Ok(result) => Some(result?),
-                Err(_) if active.load(Ordering::Acquire) == 0 => None,
-                Err(_) => continue,
-            }
-        } else {
-            Some(listener.accept().await?)
-        };
-        let Some((stream, _)) = accepted else {
-            break;
-        };
-        let credentials = stream.peer_cred()?;
-        if credentials.uid() != unsafe { libc::geteuid() } {
-            continue;
-        }
-        active.fetch_add(1, Ordering::AcqRel);
-        let connection_active = active.clone();
-        let root = root.clone();
-        let service = service.clone();
-        let vault_generation = vault_generation.clone();
-        tokio::spawn(async move {
-            let _ = serve_connection(stream, root, service, vault_generation).await;
-            connection_active.fetch_sub(1, Ordering::AcqRel);
-        });
+    let (shutdown_tx, mut shutdown_rx) = tokio::sync::watch::channel(false);
+    let pid_path = daemon_pid_path(root.as_ref(), vault_generation.as_deref())?;
+    if let Some(parent) = pid_path.parent() {
+        std::fs::create_dir_all(parent)?;
     }
+    std::fs::write(&pid_path, format!("{}\n", std::process::id()))?;
+    let result: io::Result<()> = async {
+        loop {
+            let accepted = if let Some(idle_timeout) = idle_timeout {
+                tokio::select! {
+                    _ = shutdown_rx.changed() => break,
+                    result = tokio::time::timeout(idle_timeout, listener.accept()) => match result {
+                        Ok(result) => Some(result?),
+                        Err(_) if active.load(Ordering::Acquire) == 0 => None,
+                        Err(_) => continue,
+                    },
+                }
+            } else {
+                tokio::select! {
+                    _ = shutdown_rx.changed() => break,
+                    result = listener.accept() => Some(result?),
+                }
+            };
+            let Some((stream, _)) = accepted else {
+                break;
+            };
+            let credentials = stream.peer_cred()?;
+            if credentials.uid() != unsafe { libc::geteuid() } {
+                continue;
+            }
+            active.fetch_add(1, Ordering::AcqRel);
+            let connection_active = active.clone();
+            let root = root.clone();
+            let service = service.clone();
+            let vault_generation = vault_generation.clone();
+            let shutdown = shutdown_tx.clone();
+            tokio::spawn(async move {
+                let _ = serve_connection(
+                    stream,
+                    root,
+                    service,
+                    vault_generation,
+                    connection_active.clone(),
+                    shutdown,
+                    daemon_binary_stamp,
+                )
+                .await;
+                connection_active.fetch_sub(1, Ordering::AcqRel);
+            });
+        }
+        Ok(())
+    }
+    .await;
     drop(listener);
-    std::fs::remove_file(endpoint)?;
-    Ok(())
+    let _ = std::fs::remove_file(&endpoint);
+    let _ = std::fs::remove_file(&pid_path);
+    result
 }
 
 #[cfg(test)]
@@ -616,6 +800,9 @@ mod tests {
                 Arc::new(first_root),
                 Arc::new(NotistService::new()),
                 Arc::new(None),
+                Arc::new(AtomicUsize::new(1)),
+                tokio::sync::watch::channel(false).0,
+                None,
             ));
             write_frame(
                 &mut client,
@@ -650,6 +837,9 @@ mod tests {
                 Arc::new(root.clone()),
                 Arc::new(NotistService::new()),
                 Arc::new(Some("current".into())),
+                Arc::new(AtomicUsize::new(1)),
+                tokio::sync::watch::channel(false).0,
+                None,
             ));
             write_frame(
                 &mut client,
@@ -681,5 +871,117 @@ mod tests {
         runtime
             .block_on(serve(root, service, Some(Duration::from_millis(20)), None))
             .unwrap();
+    }
+
+    fn test_handshake(root: &str) -> Handshake {
+        Handshake {
+            protocol_version: ProtocolVersion::CURRENT,
+            client_kind: ClientKind::Test,
+            client_version: "test".into(),
+            vault_root: PathBuf::from(root),
+            vault_generation: None,
+            requested_capabilities: Vec::new(),
+        }
+    }
+
+    #[test]
+    fn daemon_accepts_shutdown_when_alone_and_rejects_when_busy() {
+        let runtime = tokio::runtime::Runtime::new().unwrap();
+        runtime.block_on(async {
+            // A daemon with no other active clients accepts a non-forced shutdown.
+            let active = Arc::new(AtomicUsize::new(1));
+            let (mut client, server) = tokio::io::duplex(4096);
+            let (shutdown_tx, _shutdown_rx) = tokio::sync::watch::channel(false);
+            let task = tokio::spawn(serve_connection(
+                server,
+                Arc::new(PathBuf::from("/test")),
+                Arc::new(NotistService::new()),
+                Arc::new(None),
+                active.clone(),
+                shutdown_tx,
+                None,
+            ));
+            write_frame(
+                &mut client,
+                &ClientMessage::Handshake {
+                    handshake: test_handshake("/test"),
+                },
+            )
+            .await
+            .unwrap();
+            let response: ServerMessage = read_frame(&mut client).await.unwrap();
+            assert!(matches!(response, ServerMessage::HandshakeAccepted { .. }));
+            write_frame(&mut client, &ClientMessage::Shutdown { force: false })
+                .await
+                .unwrap();
+            let response: ServerMessage = read_frame(&mut client).await.unwrap();
+            assert!(matches!(
+                response,
+                ServerMessage::ShutdownAccepted { pid: _ }
+            ));
+            task.await.unwrap().unwrap();
+
+            // A busy daemon rejects a non-forced shutdown but accepts a forced one.
+            let active = Arc::new(AtomicUsize::new(2));
+            let (mut client, server) = tokio::io::duplex(4096);
+            let (shutdown_tx, shutdown_rx) = tokio::sync::watch::channel(false);
+            let task = tokio::spawn(serve_connection(
+                server,
+                Arc::new(PathBuf::from("/test")),
+                Arc::new(NotistService::new()),
+                Arc::new(None),
+                active.clone(),
+                shutdown_tx,
+                None,
+            ));
+            write_frame(
+                &mut client,
+                &ClientMessage::Handshake {
+                    handshake: test_handshake("/test"),
+                },
+            )
+            .await
+            .unwrap();
+            let response: ServerMessage = read_frame(&mut client).await.unwrap();
+            assert!(matches!(response, ServerMessage::HandshakeAccepted { .. }));
+            write_frame(&mut client, &ClientMessage::Shutdown { force: false })
+                .await
+                .unwrap();
+            let response: ServerMessage = read_frame(&mut client).await.unwrap();
+            assert!(matches!(response, ServerMessage::ShutdownRejected { .. }));
+            write_frame(&mut client, &ClientMessage::Shutdown { force: true })
+                .await
+                .unwrap();
+            let response: ServerMessage = read_frame(&mut client).await.unwrap();
+            assert!(matches!(
+                response,
+                ServerMessage::ShutdownAccepted { pid: _ }
+            ));
+            task.await.unwrap().unwrap();
+            // The shutdown signal is published for the accept loop to observe.
+            assert_eq!(*shutdown_rx.borrow(), true);
+        });
+    }
+
+    #[test]
+    fn binary_stamp_detects_different_files() {
+        let first = tempfile::TempDir::new_in(std::env::current_dir().unwrap()).unwrap();
+        let second = tempfile::TempDir::new_in(std::env::current_dir().unwrap()).unwrap();
+        let first_path = first.path().join("binary");
+        let second_path = second.path().join("binary");
+        std::fs::write(&first_path, b"notist-v1").unwrap();
+        std::fs::write(&second_path, b"notist-v2-longer").unwrap();
+        let first_stamp = binary_stamp_for(&first_path).unwrap();
+        assert_ne!(first_stamp, binary_stamp_for(&second_path).unwrap());
+        assert_eq!(binary_stamp_for(&first_path), Some(first_stamp));
+    }
+
+    #[test]
+    fn handshake_accepted_missing_stamp_defaults_to_none() {
+        let accepted: HandshakeAccepted = serde_json::from_str(
+            r#"{"protocol_version":{"major":3,"minor":2},"daemon_instance":"i","capabilities":[]}"#,
+        )
+        .unwrap();
+        assert_eq!(accepted.daemon_binary_stamp, None);
     }
 }

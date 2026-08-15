@@ -1,6 +1,6 @@
 = D0006: Scope Syntax and Annotations
 
-本文承接 [[self::D0002-evaluation-model-and-type-system]]：那里定义了 scope 是值层节点（节点即环境，承担内容与名字两种角色），属性不挂在树上、以旁置的属性表存在；[[self::D0004-vault-module-and-scope]] 定义了带 id 的 scope 承担模块内身份。本文把这些概念落到语法上：scope 在源码中如何书写，属性如何绑定到值。
+本文承接 [[vault::designs::D0002-evaluation-model-and-type-system]]：那里定义了 scope 是值层节点（节点即环境，承担内容与名字两种角色），属性不挂在树上、以旁置的属性表存在；[[vault::designs::D0004-vault-module-and-scope]] 定义了带 id 的 scope 承担模块内身份。本文把这些概念落到语法上：scope 在源码中如何书写，属性如何绑定到值。
 
 动线：先列出 scope 的语法形态（每种 scope 的书写形式），再定义属性语法——属性列表（一套语法）、三种挂载位置（行内 postfix、块级前缀、模块）、属性在求值与成型后的存在方式，最后给出语法边界。
 
@@ -10,7 +10,7 @@ scope 是值层节点，源码中有五种书写形态：
 
 ```text
 根 scope       模块本身（一个文件）；模块属性挂在这里
-Content literal  [...]
+Content literal  [...]（Code 表达式；Markup 中写作 #[...] 手动 scope）
 Code block       {...}
 手动 scope      #[...]
 元素 scope      heading、callout 等构造器产生的节点
@@ -22,21 +22,21 @@ Code block       {...}
 
 === Content literal
 
-`[...]`：方括号内回到 Markup 模式，结果是 Content 值。在 Markup 中裸用；在 Code 中是字面量表达式（`#let x = [内容]`）。
+`[...]`：方括号内回到 Markup 模式，结果是 Content 值。它是 Code 模式的字面量表达式（`#let x = [内容]`、实参与 trailing block）；Markup 正文中裸 `[` 与 `]` 是普通文本，Markup 里创建 Content literal 的书写形式是 `#[...]`（手动 scope，见下）。
 
 === Code block
 
-`{...}`：Content literal 的对偶——方括号切到内容模式，花括号切到代码模式，两者都在 Markup 中裸用。Code block 装多条语句，用途：
+`{...}`：Content literal 的对偶——方括号切到内容模式，花括号切到代码模式。`{...}` 在 Markup 中裸用（Content literal 在 Markup 中的书写形式是 `#[...]`，见上）。Code block 装多条语句，用途：
 
 - 多语句计算：`#` 只能嵌入单表达式，需要中间 `let` 绑定时用块；
 - 局部作用域：块内绑定挂在块节点上，不出块（词法边界）；
 - 控制流的 body（引入控制流后）。
 
-块的值采用 join 语义（同 typst）：块内各表达式的值按插入规则组合，`let` 产生 `none`，不参与组合——中间表达式常常就是想插入文档的内容。块值作为普通表达式可用（`#let f = { ... }`）。
+块的值采用 join 语义（同 typst）：块内各表达式的值按插入规则组合，`let` 产生 `none`，不参与组合——中间表达式常常就是想插入文档的内容。块值作为普通表达式可用（`#let f = { ... }`）。语句分隔：`;` 与换行皆可分隔语句（贪婪解析每条表达式）；同一行多个语句必须用 `;`；尾随 `;` 合法。
 
 === 手动 scope
 
-`#[...]`：Code 模式下的 Content literal——显式创建 scope 节点：封装一段内容、自带词法边界、可承载属性、渲染上不产生可见元素（D0002）。与裸 Content literal 的区别在显式节点：内容挂在自身的节点上，可以承载属性与绑定。它属于透明 scope，成型时溶解，属性与身份以区间条目进入属性表。
+`#[...]`：Code 模式下的 Content literal（Markup 正文中 Content literal 的书写形式）——显式创建 scope 节点：封装一段内容、自带词法边界、可承载属性、渲染上不产生可见元素（D0002）。与裸 Content literal 的区别在显式节点：内容挂在自身的节点上，可以承载属性与绑定。它属于透明 scope，成型时溶解，属性与身份以区间条目进入属性表。
 
 === 元素 scope
 

@@ -12,7 +12,6 @@ use sha2::{Digest, Sha256};
 
 mod build;
 mod lsp;
-mod mcp;
 mod official_docs;
 mod output;
 mod preview;
@@ -47,8 +46,10 @@ struct Cli {
 
 #[derive(Debug, Subcommand)]
 enum Command {
-    /// Run the shared local Notist daemon for one vault.
+    /// Run the shared local Notist daemon for one vault, or stop the running one.
     Daemon {
+        #[command(subcommand)]
+        action: Option<DaemonAction>,
         /// Root directory of the vault this daemon serves.
         #[arg(default_value = ".")]
         root: PathBuf,
@@ -57,14 +58,6 @@ enum Command {
     },
     /// Run the Notist language server over standard input and output.
     Lsp,
-    /// Run the Notist MCP server over standard input and output.
-    Mcp {
-        #[arg(default_value = ".")]
-        root: PathBuf,
-        /// Control the compatibility TextContent copy of structured tool results.
-        #[arg(long, value_enum, default_value_t)]
-        text_mirror: McpTextMirrorArg,
-    },
     /// Create resources that teach an Agent how to use Notist.
     Skill {
         #[command(subcommand)]
@@ -160,9 +153,9 @@ enum Command {
         #[command(flatten)]
         page: OutlinePageArgs,
     },
-    /// Read bounded authored source by module, path, label, line, or byte range.
+    /// Read bounded authored source by module, path, id, line, or byte range.
     Read {
-        /// Exact ModulePath, path, or `module#label` selector.
+        /// Exact ModulePath, path, or `module#id` selector.
         selector: String,
         #[arg(default_value = ".")]
         root: PathBuf,
@@ -177,7 +170,7 @@ enum Command {
     },
     /// Find references to a logical module.
     References {
-        /// Exact ModulePath or `module#label` selector.
+        /// Exact ModulePath or `module#id` selector.
         selector: String,
         #[arg(default_value = ".")]
         root: PathBuf,
@@ -239,18 +232,21 @@ enum Command {
         /// TCP port. Zero asks the operating system for an available port.
         #[arg(long, default_value_t = 0)]
         port: u16,
-        /// Do not open the preview URL in the default browser.
+        /// Open the preview URL in the default browser.
         #[arg(long)]
-        no_open: bool,
+        open: bool,
     },
 }
 
 impl Command {
     fn name(&self) -> &'static str {
         match self {
+            Self::Daemon {
+                action: Some(DaemonAction::Stop { .. }),
+                ..
+            } => "daemon stop",
             Self::Daemon { .. } => "daemon",
             Self::Lsp => "lsp",
-            Self::Mcp { .. } => "mcp",
             Self::Skill { .. } => "skill init",
             Self::Status { .. } => "status",
             Self::Modules { .. } => "modules",
@@ -273,6 +269,16 @@ impl Command {
             Self::Preview { .. } => "preview",
         }
     }
+}
+
+#[derive(Debug, Subcommand)]
+enum DaemonAction {
+    /// Stop the daemon currently serving a vault.
+    Stop {
+        /// Root directory of the vault whose daemon should stop.
+        #[arg(default_value = ".")]
+        root: PathBuf,
+    },
 }
 
 #[derive(Debug, Subcommand)]
@@ -393,13 +399,6 @@ enum PagerChoice {
     Never,
 }
 
-#[derive(Clone, Copy, Debug, Default, ValueEnum)]
-enum McpTextMirrorArg {
-    #[default]
-    Full,
-    Brief,
-}
-
 impl From<PageArgs> for notist_service::PageRequest {
     fn from(value: PageArgs) -> Self {
         Self {
@@ -515,7 +514,7 @@ impl From<SearchGroupArg> for notist_service::SearchGroup {
 enum SearchFieldArg {
     Title,
     Heading,
-    Label,
+    Id,
     Module,
     Path,
     Tag,
@@ -529,7 +528,7 @@ impl From<SearchFieldArg> for notist_service::SearchField {
         match value {
             SearchFieldArg::Title => Self::Title,
             SearchFieldArg::Heading => Self::Heading,
-            SearchFieldArg::Label => Self::Label,
+            SearchFieldArg::Id => Self::Id,
             SearchFieldArg::Module => Self::Module,
             SearchFieldArg::Path => Self::Path,
             SearchFieldArg::Tag => Self::Tag,
@@ -617,27 +616,40 @@ enum DebugSection {
 
 #[derive(Debug, Subcommand)]
 enum ExportCommand {
-    /// Export the complete diagnostic artifact as JSON Lines.
+    /// Export the complete diagnostic artifact.
     Diagnostics {
         #[arg(default_value = ".")]
         root: PathBuf,
         #[arg(short, long)]
         output: PathBuf,
+        #[arg(long = "export-format", value_enum, default_value_t)]
+        export_format: ExportFormatArg,
     },
-    /// Export the complete legacy snapshot projection as JSON Lines.
+    /// Export the complete snapshot projection.
     Snapshot {
         #[arg(default_value = ".")]
         root: PathBuf,
         #[arg(short, long)]
         output: PathBuf,
+        #[arg(long = "export-format", value_enum, default_value_t)]
+        export_format: ExportFormatArg,
     },
-    /// Export the complete Vault outline as JSON Lines.
+    /// Export the complete Vault outline.
     Outline {
         #[arg(default_value = ".")]
         root: PathBuf,
         #[arg(short, long)]
         output: PathBuf,
+        #[arg(long = "export-format", value_enum, default_value_t)]
+        export_format: ExportFormatArg,
     },
+}
+
+#[derive(Clone, Copy, Debug, Default, ValueEnum)]
+enum ExportFormatArg {
+    #[default]
+    Json,
+    Jsonl,
 }
 
 fn parse_byte_range(value: &str) -> Result<notist_service::ByteRange, String> {
@@ -756,7 +768,7 @@ fn maybe_run_with_pager() -> Option<ExitCode> {
         || arguments.iter().any(|argument| {
             matches!(
                 argument.to_string_lossy().as_ref(),
-                "daemon" | "lsp" | "mcp" | "preview"
+                "daemon" | "lsp" | "preview"
             )
         })
     {
@@ -839,20 +851,20 @@ fn run(cli: Cli) -> Result<ExitCode, Box<dyn std::error::Error>> {
     official_docs::ensure_synced()?;
     match cli.command {
         Command::Daemon {
+            action: Some(DaemonAction::Stop { root }),
+            ..
+        } => {
+            service::stop_daemon(resolve_vault_root(&root)?, cli.format)?;
+            Ok(ExitCode::SUCCESS)
+        }
+        Command::Daemon {
             root,
             background_child,
+            ..
         } => service::run_daemon(resolve_vault_root(&root)?, background_child, cli.format),
         Command::Lsp => {
             require_protocol_format(cli.format, "lsp")?;
             lsp::run(cli.no_daemon)
-        }
-        Command::Mcp { root, text_mirror } => {
-            require_protocol_format(cli.format, "mcp")?;
-            mcp::run(
-                resolve_vault_root(&root)?,
-                cli.no_daemon,
-                matches!(text_mirror, McpTextMirrorArg::Brief),
-            )
         }
         Command::Skill {
             command: SkillCommand::Init { output, force },
@@ -891,6 +903,17 @@ fn run(cli: Cli) -> Result<ExitCode, Box<dyn std::error::Error>> {
                     "Index        {} ({} units)",
                     status.index.health, status.index.unit_count
                 );
+                let generation = crate::official_docs::generation_for_root(&root)
+                    .ok()
+                    .flatten();
+                if let Ok(pid_path) =
+                    notist_service::transport::daemon_pid_path(&root, generation.as_deref())
+                {
+                    match std::fs::read_to_string(pid_path) {
+                        Ok(pid) => println!("Daemon       pid {}", pid.trim()),
+                        Err(_) => println!("Daemon       not running"),
+                    }
+                }
             }
             let _ = root;
             Ok(ExitCode::SUCCESS)
@@ -954,7 +977,7 @@ fn run(cli: Cli) -> Result<ExitCode, Box<dyn std::error::Error>> {
             let CoreResponse::DiagnosticsPage(result) = reply.response else {
                 return query_response_error("check", reply.response, cli.format);
             };
-            let ok = result.summary.total_diagnostics == 0;
+            let ok = result.summary.error_count == 0;
             if cli.format.is_json() {
                 output::emit_result("check", ok, &result)?;
             } else {
@@ -1569,12 +1592,12 @@ fn run(cli: Cli) -> Result<ExitCode, Box<dyn std::error::Error>> {
             root,
             host,
             port,
-            no_open,
+            open,
         } => preview::run(
             resolve_vault_root(&root)?,
             host,
             port,
-            no_open,
+            open,
             cli.color,
             cli.no_daemon,
             cli.format,
@@ -1725,10 +1748,22 @@ fn export_command(
     no_daemon: bool,
     format: OutputFormat,
 ) -> Result<ExitCode, Box<dyn std::error::Error>> {
-    let (kind, root, output_path) = match command {
-        ExportCommand::Diagnostics { root, output } => ("diagnostics", root, output),
-        ExportCommand::Snapshot { root, output } => ("snapshot", root, output),
-        ExportCommand::Outline { root, output } => ("outline", root, output),
+    let (kind, root, output_path, artifact_format) = match command {
+        ExportCommand::Diagnostics {
+            root,
+            output,
+            export_format,
+        } => ("diagnostics", root, output, export_format),
+        ExportCommand::Snapshot {
+            root,
+            output,
+            export_format,
+        } => ("snapshot", root, output, export_format),
+        ExportCommand::Outline {
+            root,
+            output,
+            export_format,
+        } => ("outline", root, output, export_format),
     };
     let (root, mut client, view_id) = connect_cli(root, no_daemon)?;
     let reply = match kind {
@@ -1750,12 +1785,59 @@ fn export_command(
     };
     let snapshot = reply.snapshot.clone();
     let value = serde_json::to_value(&reply.response)?;
-    let bytes = serde_json::to_vec(&serde_json::json!({
-        "schemaVersion": 2,
-        "kind": kind,
-        "snapshot": snapshot.clone(),
-        "result": value,
-    }))?;
+    let bytes = match artifact_format {
+        ExportFormatArg::Json => serde_json::to_vec(&serde_json::json!({
+            "schemaVersion": 2,
+            "kind": kind,
+            "snapshot": snapshot.clone(),
+            "result": value,
+        }))?,
+        ExportFormatArg::Jsonl => {
+            let mut lines: Vec<u8> = Vec::new();
+            match &reply.response {
+                CoreResponse::Diagnostics(items) => {
+                    for item in items {
+                        lines.extend_from_slice(&serde_json::to_vec(&serde_json::json!({
+                            "schemaVersion": 2,
+                            "kind": kind,
+                            "snapshot": snapshot.clone(),
+                            "item": item,
+                        }))?);
+                        lines.push(b'\n');
+                    }
+                }
+                CoreResponse::Outline(documents) => {
+                    for document in documents {
+                        let module = document
+                            .path
+                            .strip_prefix(&root)
+                            .unwrap_or(&document.path);
+                        for symbol in &document.symbols {
+                            lines.extend_from_slice(&serde_json::to_vec(&serde_json::json!({
+                                "schemaVersion": 2,
+                                "kind": kind,
+                                "snapshot": snapshot.clone(),
+                                "module": module,
+                                "item": symbol,
+                            }))?);
+                            lines.push(b'\n');
+                        }
+                    }
+                }
+                CoreResponse::Inspect(_) => {
+                    lines.extend_from_slice(&serde_json::to_vec(&serde_json::json!({
+                        "schemaVersion": 2,
+                        "kind": kind,
+                        "snapshot": snapshot.clone(),
+                        "result": value,
+                    }))?);
+                    lines.push(b'\n');
+                }
+                _ => {}
+            }
+            lines
+        }
+    };
     let mut hasher = Sha256::new();
     hasher.update(&bytes);
     let checksum = hasher

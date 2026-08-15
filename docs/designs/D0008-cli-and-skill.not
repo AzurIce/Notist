@@ -1,6 +1,6 @@
 = D0008: CLI and Skill
 
-本文承接 [[self::D0005-daemon-architecture]]（daemon 进程形态与 core request 表）与 [[self::D0004-vault-module-and-scope]]（Module 与引用寻址）。Agent 接口不引入独立协议（无 MCP）：Agent 通过 CLI 命令与官方 Skill 使用 Notist，与人类共用同一套查询语义。本文定义查询产品形态、Core Query Contract（预算、cursor、stamp）、Selector 与 Citation、Search 四种模式、CLI 命令面，以及官方 Skill 与内置文档 Vault 的分发。
+本文承接 [[vault::designs::D0005-daemon-architecture]]（daemon 进程形态与 core request 表）与 [[vault::designs::D0004-vault-module-and-scope]]（Module 与引用寻址）。Agent 接口不引入独立协议（无 MCP）：Agent 通过 CLI 命令与官方 Skill 使用 Notist，与人类共用同一套查询语义。本文定义查询产品形态、Core Query Contract（预算、cursor、stamp）、Selector 与 Citation、Search 四种模式、CLI 命令面，以及官方 Skill 与内置文档 Vault 的分发。
 
 动线：先定查询产品形态（普通查询 / 人类渲染 / 显式导出），再定义协议无关的查询契约（预算、cursor、stamp），然后定义 selector 与引用、search 模式、CLI 命令面，最后定义 Agent 的入口——官方 Skill 与文档 Vault 的发布方式。
 
@@ -81,13 +81,13 @@ SnapshotStamp {
   view_kind
   revision
   source_set_fingerprint
-  daemon_instance?
+  daemon_instance
 }
 ```
 
-Revision 只在所属 View 与 daemon instance 内有意义；`source_set_fingerprint` 覆盖参与该 snapshot 的 source identity、内容 fingerprint 与影响查询的配置 identity，使 `--no-daemon` 的独立进程也能判断当前 source set 是否仍是同一个语义世界。
+`daemon_instance` 必填：daemon 模式为实例 id，embedded 模式为本次调用合成的实例 id。Revision 只在所属 View 与 daemon instance 内有意义；`source_set_fingerprint` 覆盖参与该 snapshot 的 source identity、内容 fingerprint 与影响查询的配置 identity，使 `--no-daemon` 的独立进程也能判断当前 source set 是否仍是同一个语义世界。
 
-Cursor 是 opaque、self-contained、带 schema version 和完整性校验的 token（紧凑 binary + base64url）。它绑定 Vault/View/source-set fingerprint、operation/selector/query/filter/mode 与排序 fingerprint、tokenizer/ranking/index schema version，以及上一 item 的稳定排序 key。`limit`、`max_bytes` 与 excerpt 大小可以在翻页时改变；任何改变匹配集合或排序的参数必须与 cursor 一致。source set 变化返回 `cursor_stale`，schema 或 query fingerprint 不匹配返回 `invalid_cursor`。服务不能在新 snapshot 中猜测相近 byte offset 继续，也不能把 cursor 当成权限凭证。
+Cursor 是 opaque、self-contained、带 schema version 和完整性校验的 token（紧凑 binary + base64url）。它绑定 Vault/View identity（含 daemon instance 与 View identity）、source-set fingerprint、operation/selector/query/filter/mode 与排序 fingerprint、tokenizer/ranking/index schema version，以及上一 item 的稳定排序位置——token 内可自由选择表示（如预排序结果中的恢复偏移），跨页稳定性契约不变。`limit`、`max_bytes` 与 excerpt 大小可以在翻页时改变；任何改变匹配集合或排序的参数必须与 cursor 一致。source set 变化返回 `cursor_stale`，schema 或 query fingerprint 不匹配返回 `invalid_cursor`。服务不能在新 snapshot 中猜测相近 byte offset 继续，也不能把 cursor 当成权限凭证。
 
 Source-order query 的稳定 key 是 ModulePath、Vault-relative path、match range 与 record kind；ranked query 的 key 是固定精度 score 的降序值、ModulePath、range 与 search-unit identity——浮点 backend score 必须先按 ranking version 量化再参与排序，使 tie 不依赖 hash 顺序或线程调度。
 
@@ -113,11 +113,10 @@ Location {
   line_range?
   id?
   source_fingerprint
-  snapshot
 }
 ```
 
-Machine result 默认不返回 canonical absolute path，也不为每个 location 重复整篇 source。excerpt 是候选选择信息，不是独立事实来源；search 与 references 的结果必须引导调用者在形成事实性回答前使用 `read`。读取结果保留精确 byte range 与 fingerprint，使引用、后续 query 与 edit precondition 能指向同一 authored source。
+snapshot 由所在 QueryPage 统一携带，Location 不再重复。Machine result 默认不返回 canonical absolute path，也不为每个 location 重复整篇 source。excerpt 是候选选择信息，不是独立事实来源；search 与 references 的结果必须引导调用者在形成事实性回答前使用 `read`。读取结果保留精确 byte range 与 fingerprint，使引用、后续 query 与 edit precondition 能指向同一 authored source。
 
 == Search 不是一种模式
 
@@ -185,7 +184,7 @@ WorkspaceSnapshot
 
 `SearchUnitBuilder` 从 snapshot 已捕获的 source、parse、Module/Heading/属性 facts 构造检索单元，不执行有外部副作用的 plugin。普通 paragraph、list item、Heading section 与 Raw block 优先成为独立 unit；超过 4 KiB 的单元按 source-safe boundary 切分（至多 256 bytes overlap）。每个 unit 存储 FileId、ModuleId、ModulePath、relative path、source fingerprint、source range、Heading ancestry 与 typed field text；完整 source 不复制进 index，excerpt 始终从捕获的 snapshot 读取。
 
-Disk View 的 index 用 WorkspaceDelta 增量更新，写入新 generation 后原子发布 reader；删除 source 产生 tombstone。持久化 index 位于 Notist user cache（按 Vault identity 分区），manifest 记录 index schema、tokenizer、ranking version、Vault identity、source-set fingerprint 与每个 source fingerprint——任何不匹配都触发丢弃或重建。Session View 在 disk generation 上叠加小型 in-memory overlay segment，用 FileId tombstone 屏蔽被 overlay 替换或删除的 unit；overlay 释放后整个派生 segment 可丢弃。
+Disk View 的 index 用 WorkspaceDelta 增量更新，写入新 generation 后原子发布 reader；删除 source 产生 tombstone。持久化 index 位于 Notist user cache（按 Vault identity 分区），manifest 记录 index schema、tokenizer、ranking version、Vault identity、source-set fingerprint 与每个 source fingerprint——任何一项在加载时校验不匹配都触发丢弃或重建。Session View 在 disk generation 上叠加小型 in-memory overlay segment，用 FileId tombstone 屏蔽被 overlay 替换或删除的 unit；overlay 释放后整个派生 segment 可丢弃。
 
 Lexical/fuzzy query 只在 `IndexStamp.source_set_fingerprint` 与捕获 snapshot 相同时执行；index lag 时按 `--wait-index` 在短 deadline（默认 2s、最大 10s）内等待，超时返回 typed `index_not_ready` 与 exact fallback hint，绝不把 stale result 当成当前 snapshot。Exact/regex 直接扫描 snapshot，不受 index health 影响。
 
@@ -206,7 +205,7 @@ Collection 命令共享 `-n, --limit`、`--max-bytes` 与 `--cursor`（help 展�
 === 探索与读取命令
 
 - `notist status [ROOT]`：Vault identity、snapshot stamp、source/module/diagnostic counts、daemon mode、index health；固定 8 KiB 上限。
-- `notist modules [ROOT] [--prefix MODULE] [--kind any|source|virtual]`：Module record 只含 ModulePath、relative path、kind、可选语义标题与 fingerprint；按 ModulePath 排序。
+- `notist modules [ROOT] [--prefix MODULE] [--kind any|source|virtual]`：`--prefix` 按段边界匹配（与 search 的 `--scope` 一致）。Module record 只含 ModulePath、relative path、kind、可选语义标题与 fingerprint；按 ModulePath 排序。
 - `notist search <QUERY> [ROOT] [--mode ...] [--scope MODULE]... [--fields ...] [--operator all|any] [--ignore-case] [--fuzzy-distance 1|2] [--group-by source|section|match] [--wait-index DURATION] [--snippet-bytes N]`：无关参数是 usage error。
 - `notist outline <MODULE|PATH> [ROOT] [--depth 1..6]`：Heading record 返回 name、level、id、location、parent identity 与 subtree range；全 Vault outline 不是普通 query（用 export）。
 - `notist read <MODULE|PATH|MODULE#ID> [ROOT] [--from-line N --lines N | --byte-range S..E]`：默认从 selector 起点读 120 行；line window 面向人、byte range 面向 citation/edit；带 id 的 selector 读取对应节（含标题默认 id）。返回原始 authored source、实际范围、fingerprint 与 next cursor。
@@ -228,7 +227,7 @@ Collection 命令共享 `-n, --limit`、`--max-bytes` 与 `--cursor`（help 展�
 | `skill init <OUTPUT> [--force]` | 见下节 |
 | `build [ROOT] -o DIR [--clean]` | 输出目录是显式 artifact；`--clean` 只允许清理已解析、验证位于目标内的 build artifact |
 | `preview [ROOT] [--host IP] [--port N] [--no-open]` | bounded event stream + browser preview；非 loopback host 需要显式选择 |
-| `export snapshot\|diagnostics\|outline [ROOT] --output FILE [--format json\|jsonl]` | 显式 artifact，不属于 ordinary query |
+| `export snapshot\|diagnostics\|outline [ROOT] --output FILE [--export-format json\|jsonl]` | 显式 artifact，不属于 ordinary query |
 
 Debug 与 export 不进入 Agent 的默认 discovery。
 
@@ -254,7 +253,7 @@ Notist 管理的用户数据
 
 ```shell
 notist search "WorkspaceSnapshot" ~/.notist/docs
-notist references vault::old-designs::D0012 ~/.notist/docs
+notist references vault::designs::D0005-daemon-architecture ~/.notist/docs
 notist check ~/.notist/docs
 ```
 
@@ -278,7 +277,7 @@ Skill 的 authored source 放在仓库 `skills/notist/`（当前只有 `SKILL.md
 
 官方 docs 保留仓库 `docs/` 下的完整 authored corpus、相对目录与 Module 关系（公开语言文档、活动设计、历史设计、`docs/ai` 调研），不打包人工挑选的摘要，也不把 HTML/CSS/JS 产物当作知识源。完整保留不等于一次读入上下文——Agent 仍然先搜索、再读取候选。
 
-完整 corpus 中来源具有不同权威性：`grammar.not`/`functions.not`/`types.not`/`cli.not` 描述当前公开行为；活动 `designs/` 描述当前治理方向；`docs/ai/` 是带日期的调研；`designs/archive/` 解释历史选择。这些区别由 Skill 教给 Agent；旧调研不能覆盖当前规范，任何正文自然语言也不能仅因被检索到就成为 Agent 指令。
+完整 corpus 中来源具有不同权威性：`grammar.not`/`functions.not`/`types.not`/`cli.not` 描述当前公开行为；活动 `designs/` 描述当前治理方向；`docs/ai/` 是带日期的调研；`old-designs/` 解释历史选择。这些区别由 Skill 教给 Agent；旧调研不能覆盖当前规范，任何正文自然语言也不能仅因被检索到就成为 Agent 指令。
 
 官方 docs 没有专用的 `notist docs search` 等命令——增加这类命令会复制 Vault root、query、snapshot、daemon 与输出格式的概念。它唯一特殊的地方是来源与同步方式。
 

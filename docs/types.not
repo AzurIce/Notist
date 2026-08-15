@@ -1,10 +1,10 @@
 = Type System
 
-本文定义 Markup/Code 双 Mode 下当前工具 surface 保证的类型与求值模型。精确语法见 [[vault::grammar]]，内置 Function 签名见 [[vault::functions]]。可编程文档语言的目标语义由 [[vault::old-designs::D0015-programmable-documents-and-language-core]] 与 [[vault::old-designs::D0006-type-system]] 定义；代码库中的实验性 Value-returning Function、User Function、operator 与 collection Type 在经过 typed HIR 重构前不构成稳定契约。
+本文定义当前工具保证的类型与求值模型。精确语法见 [[vault::grammar]]，内置构造器签名见 [[vault::functions]]，日常速查见 [[vault::cheatsheet]]。完整设计见 [[vault::designs::D0002-evaluation-model-and-type-system]]。
 
-== 核心判断
+== 三个阶段
 
-Notist Document 是一个隐式 Markup expression。整篇文档具有静态类型 `Content`，求值结果也是 `Content`：
+一段源代码经过解析、静态检查、求值三个阶段：
 
 ```text
 source Document
@@ -15,371 +15,159 @@ source Document
 -> Content
 ```
 
-形式化地写：
+静态检查在求值之前运行：它解析名称、推断并检查类型、把每个调用点解析为确定的已解析调用；求值器只消费这份语义输入，不重新猜测。整篇文档是隐式的 Markup 表达式，静态类型与求值结果均为 `Content`。
+
+== Type 与 Value 对应
+
+类型是值的静态投影：每个类型描述一类值，类型系统与值宇宙共享同一套概念。
 
 ```text
-Γ ⊢ document : Content
-Γ ⊢ document ⇓ content
+Type                          Value
+None                          none
+Bool                          true | false
+Int                           十进制整数
+Float                         十进制浮点
+String                        UTF-8 字符串（四种字面量形态）
+Content                       文档内容，元素的有序组合
+fn(形参表) -> R                Function（闭包：签名 + 实现 + 捕获环境）
 ```
 
-其中 Annotation 是独立的 source span metadata，不参与上述类型判断和求值关系。
+集合类型与联合类型暂不进入语言；可空由独立的内置类型构造 `T?` 承担（见下）。
 
-== Markup 与 Code 的类型边界
-
-Document 默认处于 Markup。Markup 中的普通文字和宿主语法直接产生 Content：
-
-```text
-Text                 : Content
-Wiki Reference       : Content
-Inline/Fenced Raw    : Content
-Embedded Expression  : Content
-Markup sequence      : Content
-```
-
-`#` 在 Markup 中开始一个 EmbeddedExpression，并切换到 Code。CodeExpression 先按自己的类型求值，再通过 Content insertion 规则进入外层 Markup。
-
-```text
-Markup:  Before #expr after
-                  │
-                  └─ CodeExpression
-```
-
-`#` 不是运行时 unary operator，也不改变 expression 自身的类型。它是语法 mode switch 和插值边界。
-
-== Content Literal
-
-Code mode 中的 `[...]` 是 Content literal。方括号内部切回 Markup，因此可以包含 Text、Reference、Raw、Function Call 和嵌套 EmbeddedExpression。
-
-```not
-#[Plain Content]
-
-#[Outer #[inner]@inner Content]
-
-#quote[Body with [[vault::grammar]] and #raw(text="code").]
-```
-
-类型规则：
-
-```text
-Γ ⊢ markup : Content
-──────────────────────
-Γ ⊢ [markup] : Content
-```
-
-在普通 Markup 中，裸 `[abc]` 是包含方括号的文字，不是 Content literal。只有进入 Code 后，`[...]` 才具有 literal 含义：
-
-```not
-[abc]   // Markup text containing brackets
-#[abc]  // embedded Content literal
-```
-
-未来变量系统可以直接复用相同规则：
-
-```not
-#let x = [stored Content]
-#x
-```
-
-`let` 本身不属于当前阶段，但不需要为它重新设计 Content literal。
-
-== Content 插入规则
-
-EmbeddedExpression 的结果必须能够进入外层 Content。本阶段定义三个允许的结果：
-
-```text
-Content -> 原样插入
-String  -> 转换为一个 Text Element
-None    -> 空 Content
-```
-
-形式化规则：
-
-```text
-Γ ⊢ e : Content
-────────────────
-Γ ⊢ #e : Content
-
-Γ ⊢ e : String
-─────────────────────────
-Γ ⊢ #e : Content(Text(e))
-
-Γ ⊢ e : None
-────────────────────
-Γ ⊢ #e : Content()
-```
-
-Bool、Int、Float 和其他未来 Value 不自动 stringify；直接插入时产生 type diagnostic。需要显示时应显式转换为 String。这样避免 Agent 和 renderer 依赖隐式格式化规则。
-
-```not
-#"text"     // String -> Text Content
-#[content]  // Content -> Content
-#none       // empty Content
-#42         // type error in Markup position
-```
-
-== Static Type
-
-本阶段静态类型集合为：
+=== 类型语法
 
 ```text
 Type
-├─ None
-├─ Bool
-├─ Int
-├─ Float
-├─ String
-├─ Content
-└─ Optional<T>
+├─ None / Bool / Int / Float / String / Content
+├─ T?                    # 可空
+└─ fn(形参表) -> R       # 形参：名字: 类型，带 = 表示可省略
 ```
 
-`Type` 描述 CodeExpression、Function parameter 和 Function result 可以产生或接受的值。显示名称使用 `None`、`Bool`、`Int`、`Float`、`String`、`Content`；`Optional<T>` 显示为 `T?`。
-
-=== None 与 Optional
-
-`None` 是 literal `none` 的类型。`T?` 接受 `none` 或 `T`，不是独立运行时容器：
+标注位置：`let name: T = ...`、函数形参、函数返回类型、lambda 形参。函数类型就是定义签名去掉 default 表达式：
 
 ```text
-String? accepts None
-String? accepts String
-String? rejects Int
+定义签名:  fn(kind: String = "note", title: Content? = none, trailing body: Content) -> Content
+函数类型:  fn(kind: String =, title: Content? =, trailing body: Content) -> Content
 ```
 
-可选类型不等于具有 default。是否允许省略由 Function signature 的 default 决定：
+函数的可调用签名包含：形参的名称与类型、是否带默认值而可省略、显式声明的 trailing Content 形参、结果类型。函数值的具体签名由符号元数据携带；`fn(...) -> R` 是书写层面上的函数类型。
+
+== 可空与可省略
+
+`T?` 是可空类型：值空间等于 T 的值空间并上 `None`。规则：
+
+- `None` 可提升到任意 `T?`（`None` 字面量的类型是 `None`）；
+- `T` → `T?` 是隐式提升（widening）；
+- `T?` → `T` 没有隐式降级——使用前需要显式处理；
+- `(T?)?` 折叠为 `T?`。
+
+「可省略」与可空正交：可省略由形参是否带默认值决定。函数类型签名中 `?` 只用于可空；有 default 的形参用 `=`（不带值）标记。四种形参形态：
 
 ```text
-lang: String? = none
+kind: String      必填，位置绑定（positional）
+kind: String =    可省略（有 default），具名绑定（named）
+kind: String?     必填但值可为 None，位置绑定
+kind: String? =   可省略且值可为 None（default 通常为 none），具名绑定
 ```
 
-`String?` 允许显式传入 `none`，`= none` 允许完全省略 `lang`。
+可省略与位置绑定互斥：位置实参按声明顺序依次填充、无法跳过——任何可以省略的形参都必须具名绑定。因此 positional 的 `T?` 是必填但可空的形参：调用必须显式传 `none` 或值。
 
-=== 数值兼容
+== 调用与绑定
 
-Int 和 Float 是不同类型。Binding 允许 Int 实参用于 Float parameter，但不允许 Float 用于 Int parameter：
+必填即 positional、可选即 named，两种表面不互通。调用点按位或按名绑定：
 
-```text
-Float accepts Float
-Float accepts Int
-Int accepts Int
-Int rejects Float
-```
+- 具名实参写作 `name: value`；
+- positional 实参按声明顺序依次填充 positional 形参，named 实参按名字匹配 named 形参；
+- 位置实参必须全部出现在具名实参之前，具名实参之间可任意排序；trailing Content block 是唯一例外——它是恒为最后的 positional 实参，允许跟在具名实参之后；
+- 默认值表达式在定义时求值（捕获定义处环境），不能引用形参。
 
-兼容绑定必须明确定义运行时行为。目标实现应在绑定时把 Int widening 为 `Value::Float`，或者为 Function API 暴露统一的 checked numeric accessor；不能让 signature 声明 Float、实际却在无约定的情况下传入 Int variant。
-
-== Runtime Value
-
-CodeExpression 求值产生 Value：
-
-```text
-Value
-├─ None
-├─ Bool(bool)
-├─ Int(i64)
-├─ Float(f64)
-├─ String(String)
-└─ Content(Content)
-```
-
-Optional 没有对应 Value variant；运行时使用 `Value::None` 或具体 Value。
-
-Content 是有顺序的语义 Element sequence，不是 String，也不是待重新解析的源码。Content literal 内的 Markup 在产生 `Value::Content` 前已经完成递归 parse、analysis 和 evaluation。
-
-== String 与 Markup Text
-
-String literal 只存在于 Code mode：
+调用点检查拒绝四类错误：重复绑定（同一形参被绑定两次）、未知实参（签名中不存在的名字）、缺失实参（无默认值的必填形参未被提供）、绑定方式不匹配（positional 实参没有剩余可填充的形参，或 named 实参指向 positional 形参）——绝不静默忽略或改绑。
 
 ```not
-"abc"    // Markup Text，保留 quote
-#"abc"   // Code String，插入时转成 Text("abc")
+#heading(level: 2)[标题]
+#callout(kind: "warning")[内容]          // trailing block 跟在具名实参之后
+#callout(kind: "warning", [内容])        // 与上一行等价
+#heading(2, [标题])                       // 位置实参按声明顺序填充
 ```
 
-四种 String literal 都具有同一个 `String` 类型与 `Value::String`：
+=== 赋值兼容与 coercion
 
-| Form | Escape style | Type |
-| --- | --- | --- |
-| `"..."` | Escaped | String |
-| triple quote 后立即换行 | Escaped | String |
-| `r#"..."#` | Raw | String |
-| `r#` + triple quote 后立即换行 | Raw | String |
+相同类型直接赋值；不做隐式函数 subtyping，也不做全局 subtyping。唯一的 coercion 是数值方向：`Int` 传给 `Float` 形参时，静态检查在解析结果中插入显式数值 coercion。普通函数要求 Content 参数时仍然拒绝 String——「可展示」不会渗透成所有 API 的隐式转换规则。
 
-Inline/Multiline 与 Escaped/Raw 是 literal provenance，不是不同类型。Binder 可以保留：
+== Content 类型
 
-- 完整 literal range。
-- payload range。
-- Inline/Multiline form。
-- Escaped/Raw style。
-
-这些信息不改变 String 类型，但 `raw` 等 native Function 可以读取。默认值和未来计算产生的 String 不保证具有 literal provenance。
-
-== Function Signature
-
-Function signature 包含：
-
-- 有顺序的 parameters。
-- parameter name、Type 和可选 default。
-- trailing Content parameter binding。
-- result Type。
-
-部分内置 Function：
+`Content` 是不透明类型：一个类型涵盖所有元素组合，元素结构（种类、嵌套、参数）是运行时数据，静态检查不追踪它。元素按种类区分，每个元素携带自己的构造器身份与参数：
 
 ```text
-heading(level: Int = 1, body: Content) -> Content
-raw(text: String, lang: String? = none) -> Content
-quote(attribution: Content? = none, body: Content) -> Content
-callout(kind: String = "note", title: Content? = none, body: Content) -> Content
-details(summary: Content? = none, open: Bool = false, body: Content) -> Content
+Element
+├─ Text          # 文本；String 经插入规则转换产生
+├─ Parbreak      # 段间分隔；成型时不进入结构树
+├─ Reference     # 引用（ref 构造器）
+├─ Heading       # 标题（heading 构造器）
+├─ Raw           # 代码（raw 构造器；行内/块级由 block 参数决定）
+├─ Rule          # 分割线（rule 构造器）
+├─ ListItem      # 列表条目；相邻同类条目由成型组合为 List/Enum
+├─ Callout       # 提示框（callout 构造器）
+├─ Details       # 折叠内容（details 构造器）
+├─ Strong / Emph / Underline / Strike
+├─ Custom        # 扩展元素：渲染器对未知种类有兜底
+└─ UnresolvedCall # 未知函数调用：保留供预览与工具恢复
 ```
 
-Function Call 是 CodeExpression。普通 arguments 在 Code mode 中解析；紧随调用的 `[...]` 是普通 Content literal，并作为 trailing argument 参与 signature binding：
+内置集合是封闭的：内置元素可以穷举匹配；扩展（插件等）走 `Custom`，不改变内置集合。内置元素以 first-class 构造器函数的形式存在——`callout(kind: ..., body: ...)` 产生一个 callout 节点，其类型就是 `Content`；用户函数与内置构造器因此同构，渲染与查询按节点身份消费结果，不区分来源。
+
+== 插入规则
+
+嵌入表达式的结果按插入规则进入外层 Content：
+
+```text
+Content  原样插入
+String   转为 Text 元素
+Int / Float / Bool   经 toString 转为 Text，与 String 同路
+None     产生空内容
+Function 不能插入，产生诊断
+```
 
 ```not
-#heading(level=2)[Title]
-#quote[Quoted Content]
+值: #42  #(1.5)  #true  #"字符串"  #none
 ```
 
-等价的类型视图：
+插入转换只在 Markup insertion 边界成立——普通函数要求 Content 参数时仍然拒绝 String。
+
+== 求值模型
+
+=== scope：节点即环境
+
+值层组合树上的每个节点同时就是一个 scope，承担两种角色：内容的容器与名字的容器。名称解析沿节点链自内向外进行，最近绑定者胜出；`let` 绑定从声明处开始对后续节点可见——没有全局 hoist，前向引用产生诊断。scope 按来源分为根、Content literal、Code block、元素形成的 scope 与手动 scope（`#[...]`）。
+
+=== 顺序求值
+
+声明与正文按源码顺序求值：`let` 绑定扩展后续节点的环境；可展示的 Markup 与嵌入表达式通过 Content insertion 追加内容。函数应用遵循统一顺序：求值 callee → 按源码顺序求值显式实参与 trailing Content → 按形参声明顺序建立绑定（应用 coercion 或代入默认值）→ 调用函数值 → 校验返回值。每个表达式只求值一次。
+
+=== 求值结果
+
+求值结果是三元组：
 
 ```text
-heading(level=2, body=[Title])
-quote(attribution=none, body=[Quoted Content])
+求值结果 {
+  bindings:    Environment,      // 根 scope 自有的 binding
+  content:     Content,          // 文档内容，成型后供渲染、检索与查询
+  annotations: AnnotationTable,  // 属性表：元素区间 → 属性集
+}
 ```
 
-Parser 不根据 Function name 或 signature 改变 `[...]` 的语法。Analysis 负责确认 trailing Content 能绑定到哪个 parameter。
+每个 Module 独立求值后，这三者成为 ModuleResult；bindings 可被其他 Module import，content 供渲染与查询消费，annotations 是标注与模块元数据的唯一入口。见 [[vault::designs::D0004-vault-module-and-scope]]。
 
-== Function Result
+=== 成型
 
-Function result Type 必须是真实契约，而不能只用于 Hover 显示：
+求值收尾时，成型规则把元素序列组成结构树：连续的行内元素组成段落，段间分隔（Parbreak）断开段落，相邻同类条目组成列表或枚举；heading 与其后内容（直到下一个同级或更高级 heading 之前）归组为 Section 节点——节归组递归作用于任何内容序列。块级元素独立存在，其到来前先收束当前段落；成型只重组元素，不合并、不删除个体——属性表区间在成型前后稳定。
 
-```text
-arguments satisfy signature
-Function::call(arguments) -> value
-value.type satisfies signature.result
-```
+== 属性表
 
-当前 native Function 都产生 Content。在 Markup 中嵌入 Call 时，其结果还必须满足 Content insertion 规则。
+属性（标注）在求值期绑定到值，求值收尾转写为旁置的属性表：以元素序列区间为键、属性集为值的映射。树不携带属性——属性是位置注解，与结构解耦。三类条目：元素条目（实元素上的属性 → 单元素区间）、区间条目（透明 scope 溶解后的属性与身份 → 内容覆盖的区间）、节条目（修饰节头部 heading 的属性 → 该节覆盖的区间）。
 
-```text
-foo() -> Content  // 可直接 #foo()
-bar() -> String   // 可直接 #bar()，转成 Text
-count() -> Int    // #count() 是 Content-position type error
-```
+属性是值的属性：绑定在值上的属性随值复制——`#let alert = [注意]@wip` 后 `#alert #alert` 产生两个元素个体，属性表里有两条 `wip` 条目。标注语法见 [[vault::designs::D0006-scope-and-annotation-syntax]]。
 
-如果第一阶段继续使用只返回 FunctionOutput/Content 的 trait，则 Registry 必须强制 `result == Content`；等一般 Value-returning Function 实现后，再把 runtime API 扩展为返回 Value。
+== 诊断与恢复
 
-== Argument Binding
-
-参数按以下规则绑定：
-
-+ Positional argument 按 parameter 顺序绑定。
-+ Named argument 按名称绑定。
-+ 第一个 named argument 后不能再出现 positional argument。
-+ Trailing Content literal 绑定到 signature 指定的 Content parameter。
-+ 同一个 parameter 不能由 positional、named 或 trailing argument 重复提供。
-+ 未提供的 parameter 使用 default；无 default 则产生 missing argument diagnostic。
-+ 所有 Value 必须满足 parameter Type。
-+ Default 本身必须在 Function 注册时满足 parameter Type。
-
-Binding 在 Function 执行前报告：
-
-- unknown argument。
-- positional after named。
-- too many positional arguments。
-- duplicate argument。
-- missing required argument。
-- type mismatch。
-- Function 不接受 trailing Content。
-- 非法 signature/default/result。
-
-任何 binding diagnostic 都会阻止 Function 执行。Parser 遇到缺失或非法 CodeExpression 时必须先产生 syntax diagnostic，不能静默丢弃 argument 后让 default 掩盖错误。
-
-== Document 的类型与求值
-
-Markup sequence 的组合规则是 Content concatenation：
-
-```text
-Γ ⊢ a : Content    Γ ⊢ b : Content
-──────────────────────────────────
-Γ ⊢ concat(a, b) : Content
-```
-
-Document 可以建模为隐式 Content expression：
-
-```text
-Document
-└─ Concat
-   ├─ Text Content
-   ├─ Reference Content
-   ├─ Embedded Code output converted to Content
-   ├─ Raw Content
-   └─ Text Content
-```
-
-目标管线：
-
-```text
-Source
--> mode-aware Syntax Tree
--> name resolution
--> Function signature resolution
--> static type checking
--> Typed Document : Content
--> evaluation
--> Content
--> structuring
--> StructuredDocument
-```
-
-静态 analysis 不执行 Function runtime。LSP diagnostics 应使用 resolved signatures 和 typed tree；只有 preview/build 等 evaluation 路径执行 native、user 或 plugin Function。
-
-== 错误恢复与 Partial Content
-
-Syntax、name resolution 或 type diagnostic 不应让整篇文档不可分析。实现可以保留 Error/Unknown typed node，并在 evaluation 或 preview 中产生可恢复的 UnresolvedCall。
-
-但恢复必须显式：
-
-- 非法 expression 不能静默消失。
-- 错误 argument 不能偷偷回退到 default。
-- Function result Type 不匹配不能当作 Content 插入。
-- `notist check`、LSP 和 build 必须共享同一套静态 diagnostics。
-
-Evaluation 可以同时返回 partial Content 和 diagnostics，但成功状态由 diagnostics 决定，不得因为存在 partial Content 就报告检查成功。
-
-== Annotation 不属于类型与求值
-
-`@...` 是 EmbeddedExpression source scope 上的独立 metadata。它不属于：
-
-- Type。
-- Value。
-- Content。
-- Function argument。
-- Function result。
-- 类型推断或 Function execution。
-
-```not
-#[Content]@concept,#important
-#quote[Content]@citation,source="book"
-```
-
-Analysis 可以建立 Annotation index，供 Agent query、LSP 和 renderer source-range projection 使用。忽略 Annotation 后，typed tree 与 evaluation Content 必须保持不变：
-
-```text
-type_of(erase_annotations(document)) == type_of(document)
-eval(erase_annotations(document)) == eval(document)
-```
-
-Annotation 的 delimiter nesting 属于 syntax well-formedness，而不是类型兼容规则。
-
-== 当前 surface 边界
-
-当前稳定参考包括 literal Expression、None/Bool/Int/Float/String/Content/Optional、Function signature、positional/named/default/trailing binding、Markup insertion 与 Annotation/evaluation 正交性。
-
-以下能力不属于当前稳定类型契约：
-
-- `let`、变量和 lexical scope。
-- 一般 unary/binary Expression。
-- Array、Dict、record、union 和用户定义类型。
-- Function Type、Function Value 和 User Function。
-- 控制流与完整类型推断。
-- 跨 Module value import。
-- Annotation 作为 Value 或 Content metadata。
-
-这些能力不能继续沿用“扫描 name、复制 static/runtime binder、用 empty union 恢复错误”之类的实验性行为。它们重新进入 reference 时必须满足 D0006 的 Type/Value 对应、Function signature、CallPlan、Error Type 和 lexical scope 规则。两个边界保持稳定：Code expression 在插入 Markup 前具有可检查的 Type；Document/Module 最终仍静态检查并求值为 Content。
+语法、未解析名称与类型错误允许产生 partial 结果，使编辑器与预览能继续处理其他源码；恢复节点保留自己的错误状态——错误实参不使用默认值，错误 callee 不伪装成返回 `None` 的成功函数。未知函数的调用保留为 `UnresolvedCall` 元素并产生 unknown function 诊断。

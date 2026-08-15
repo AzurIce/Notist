@@ -2,7 +2,7 @@
 
 Notist 的 LSP 是编辑器与 `notist-analysis` 之间的协议适配层。它负责文档同步、LSP position 转换、请求路由和结果发布，不负责重新实现 parser、模块解析、类型检查或求值语义。
 
-Analyzer 的输入、revision 发布、不可变 WorkspaceSnapshot 与核心 query identity 由 [[vault::old-designs::D0011-analyzer-and-workspace-snapshot]] 定义；本文只说明 LSP 如何提供输入并消费这些查询。
+Analyzer 的输入、revision 发布、不可变 WorkspaceSnapshot 与核心 query identity 由 [[vault::old-designs::archive::D0011-analyzer-and-workspace-snapshot]] 定义；本文只说明 LSP 如何提供输入并消费这些查询。
 
 Language server 作为现有 CLI 的子命令发布：
 
@@ -10,7 +10,7 @@ Language server 作为现有 CLI 的子命令发布：
 notist lsp
 ```
 
-这样命令行、Zed、VS Code 和其他编辑器只需要安装一个版本一致的 `notist` 可执行文件。`notist lsp` 是跟随编辑器生命周期的协议 adapter；共享 VaultEngine、daemon discovery 与 embedded fallback 由 [[vault::old-designs::D0012-daemon-and-client-interfaces]] 定义。
+这样命令行、Zed、VS Code 和其他编辑器只需要安装一个版本一致的 `notist` 可执行文件。`notist lsp` 是跟随编辑器生命周期的协议 adapter；共享 VaultEngine、daemon discovery 与 embedded fallback 由 [[vault::old-designs::archive::D0012-daemon-and-client-interfaces]] 定义。
 
 
 == Ownership
@@ -63,7 +63,7 @@ editor worktree
 
 一个 source 归属于最近祖先 marker。嵌套 marker 会建立新的 vault，外层 Workspace 扫描到该目录时停止递归。这样同一个 source 不会同时进入两个 Module graph。
 
-如果 worktree 中没有 marker，server 将 worktree root 作为单个 implicit vault，保持轻量用法兼容。有关 marker 与 CLI discovery 的完整规则见 [[vault::old-designs::D0007-notist-toml]]。
+如果 worktree 中没有 marker，server 将 worktree root 作为单个 implicit vault，保持轻量用法兼容。有关 marker 与 CLI discovery 的完整规则见 [[vault::old-designs::archive::D0007-notist-toml]]。
 
 每个 vault 的 Analyzer View 都接收属于自己的 open document overlays：
 

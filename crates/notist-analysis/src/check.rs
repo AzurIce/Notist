@@ -3,7 +3,7 @@ use std::collections::HashMap;
 use notist_model::{DefaultValue, FunctionSignature, Parameter, Type, builtin_signatures};
 use notist_syntax::{
     BinaryOperator, Call, Expression, ExpressionKind, Markup, MarkupItem, Parse,
-    UserFunctionDefinition,
+    UnaryOperator, UserFunctionDefinition,
 };
 
 use crate::DiagnosticKind;
@@ -152,8 +152,17 @@ impl SymbolResolver {
 
     fn resolve_markup(&mut self, markup: &Markup) {
         for item in &markup.items {
-            if let MarkupItem::Embedded(embedded) = item {
-                self.resolve_expression(&embedded.expression);
+            match item {
+                MarkupItem::Embedded(embedded) => {
+                    self.resolve_expression(&embedded.expression);
+                }
+                MarkupItem::Heading(sugar) => self.resolve_markup(&sugar.body),
+                MarkupItem::List(sugar) => {
+                    for row in &sugar.rows {
+                        self.resolve_markup(&row.body);
+                    }
+                }
+                _ => {}
             }
         }
     }
@@ -186,6 +195,32 @@ impl SymbolResolver {
             ExpressionKind::Binary { left, right, .. } => {
                 self.resolve_expression(left);
                 self.resolve_expression(right);
+            }
+            ExpressionKind::Unary { operand, .. } => {
+                self.resolve_expression(operand);
+            }
+            ExpressionKind::Import { .. } => {}
+            ExpressionKind::Block(statements) => {
+                for statement in statements {
+                    self.resolve_expression(statement);
+                }
+            }
+            ExpressionKind::Let { value, .. } => {
+                self.resolve_expression(value);
+            }
+            ExpressionKind::If {
+                condition,
+                then_branch,
+                else_branch,
+            } => {
+                self.resolve_expression(condition);
+                self.resolve_expression(then_branch);
+                if let Some(branch) = else_branch {
+                    self.resolve_expression(branch);
+                }
+            }
+            ExpressionKind::Lambda { body, .. } => {
+                self.resolve_expression(body);
             }
             ExpressionKind::LetFunction(definition) => {
                 for parameter in &definition.parameters {
@@ -235,13 +270,24 @@ impl SymbolResolver {
 /// insertion checks without ever executing a function, so it is safe to run
 /// on the LSP and `notist check` diagnostic paths.
 pub fn check_module(parse: &Parse, signatures: &SignatureSet) -> Vec<CheckDiagnostic> {
-    let mut signatures = signatures.clone();
-    let mut diagnostics = signatures.extend_with_user_functions(parse);
+    check_module_with_prelude(parse, signatures, HashMap::new())
+}
+
+/// Statically checks a module whose document scope is pre-seeded with
+/// imported names (D0004): imported values carry an unchecked type until the
+/// target module's real type information is available.
+pub fn check_module_with_prelude(
+    parse: &Parse,
+    signatures: &SignatureSet,
+    prelude: HashMap<String, Type>,
+) -> Vec<CheckDiagnostic> {
     let mut checker = Checker {
-        signatures: &signatures,
+        signatures,
+        functions: HashMap::new(),
         diagnostics: Vec::new(),
-        variables: Vec::new(),
+        variables: vec![prelude],
     };
+    let mut diagnostics = Vec::new();
     checker.check_markup(&parse.root);
     diagnostics.extend(checker.diagnostics);
     diagnostics
@@ -282,6 +328,9 @@ fn default_value(expression: &Expression) -> Option<DefaultValue> {
 
 struct Checker<'a> {
     signatures: &'a SignatureSet,
+    /// Source-defined function signatures registered in declaration order
+    /// (D0002 sequential scope: no hoisting).
+    functions: HashMap<String, FunctionSignature>,
     diagnostics: Vec<CheckDiagnostic>,
     variables: Vec<HashMap<String, Type>>,
 }
@@ -289,10 +338,29 @@ struct Checker<'a> {
 impl Checker<'_> {
     fn check_markup(&mut self, markup: &Markup) {
         for item in &markup.items {
+            if let notist_syntax::MarkupItem::Heading(sugar) = item {
+                self.check_markup(&sugar.body);
+                continue;
+            }
+            if let notist_syntax::MarkupItem::List(sugar) = item {
+                for row in &sugar.rows {
+                    self.check_markup(&row.body);
+                }
+                continue;
+            }
             if let notist_syntax::MarkupItem::Embedded(embedded) = item {
                 let checked = self.type_of_expression(&embedded.expression);
                 if let Some(ty) = checked.ty {
-                    let insertable = matches!(ty, Type::Content | Type::String | Type::None);
+                    let insertable = match &ty {
+                        Type::Content
+                        | Type::String
+                        | Type::None
+                        | Type::Int
+                        | Type::Float
+                        | Type::Bool
+                        | Type::Inferred => true,
+                        _ => false,
+                    };
                     if !insertable {
                         self.push(
                             DiagnosticKind::TypeMismatch,
@@ -330,9 +398,127 @@ impl Checker<'_> {
             } => self.check_binary(*operator, left, right, expression.range),
             ExpressionKind::LetFunction(definition) => {
                 self.check_user_function(definition);
+                let signature = signature_for_user_function(definition);
+                if self
+                    .functions
+                    .insert(definition.name.value.clone(), signature)
+                    .is_some()
+                {
+                    self.push(
+                        DiagnosticKind::DuplicateFunction,
+                        format!("duplicate function `{}`", definition.name.value),
+                        definition.name.range,
+                    );
+                }
                 CheckedType::known(Type::None)
             }
             ExpressionKind::Parenthesized(inner) => self.type_of_expression(inner),
+            ExpressionKind::Unary { operator, operand } => {
+                let operand_type = self.type_of_expression(operand);
+                if let Some(ty) = &operand_type.ty
+                    && (!matches!(operator, UnaryOperator::Not) || *ty != Type::Bool)
+                {
+                    self.diagnostics.push(CheckDiagnostic {
+                        kind: DiagnosticKind::TypeMismatch,
+                        message: format!("`{operator:?}` requires a Bool operand, found {ty}"),
+                        range: expression.range,
+                    });
+                }
+                CheckedType::known(Type::Bool)
+            }
+            ExpressionKind::Block(statements) => {
+                // D0006 join semantics: Content combines; `let` yields None;
+                // a single non-Content value is the block value.
+                self.variables.push(HashMap::new());
+                let mut result = CheckedType::known(Type::None);
+                for statement in statements {
+                    let statement_type = self.type_of_expression(statement);
+                    result = match (result.ty.clone(), statement_type.ty.clone()) {
+                        (None, ty) | (ty, None) => CheckedType { ty },
+                        (Some(Type::None), Some(ty)) => CheckedType { ty: Some(ty) },
+                        (Some(ty), Some(Type::None)) => CheckedType { ty: Some(ty) },
+                        (Some(Type::Content), Some(Type::Content)) => {
+                            CheckedType::known(Type::Content)
+                        }
+                        (Some(left), Some(right)) => {
+                            self.push(
+                                DiagnosticKind::TypeMismatch,
+                                format!("cannot combine {left} with {right} in a code block"),
+                                statement.range,
+                            );
+                            CheckedType::unknown()
+                        }
+                    };
+                }
+                self.variables.pop();
+                result
+            }
+            ExpressionKind::Let {
+                name,
+                annotation,
+                value,
+            } => {
+                let value_type = self.type_of_expression(value);
+                let ty = annotation.clone().or_else(|| value_type.ty.clone());
+                if self.variables.is_empty() {
+                    self.variables.push(HashMap::new());
+                }
+                if let (Some(ty), Some(scope)) = (ty, self.variables.last_mut()) {
+                    scope.insert(name.value.clone(), ty);
+                }
+                CheckedType::known(Type::None)
+            }
+            ExpressionKind::If {
+                condition,
+                then_branch,
+                else_branch,
+            } => {
+                let condition_type = self.type_of_expression(condition);
+                if let Some(ty) = &condition_type.ty
+                    && *ty != Type::Bool
+                {
+                    self.push(
+                        DiagnosticKind::TypeMismatch,
+                        format!("`if` condition must be a Bool, found {ty}"),
+                        condition.range,
+                    );
+                }
+                let then_type = self.type_of_expression(then_branch);
+                match else_branch {
+                    Some(branch) => {
+                        let else_type = self.type_of_expression(branch);
+                        match (then_type.ty.clone(), else_type.ty) {
+                            (Some(left), Some(right)) if left == right => {
+                                CheckedType::known(left)
+                            }
+                            (Some(Type::Content), _) | (_, Some(Type::Content)) => {
+                                CheckedType::known(Type::Content)
+                            }
+                            (Some(_), Some(_)) => CheckedType::unknown(),
+                            (ty, None) | (None, ty) => CheckedType { ty },
+                        }
+                    }
+                    None => match then_type.ty {
+                        // D0007: without `else` a Code branch type promotes to
+                        // T?; a Content branch stays Content (empty is legal).
+                        Some(Type::Content) => CheckedType::known(Type::Content),
+                        Some(ty) => CheckedType::known(Type::Optional(Box::new(ty))),
+                        None => CheckedType::unknown(),
+                    },
+                }
+            }
+            ExpressionKind::Lambda { parameters, body } => {
+                self.variables.push(HashMap::new());
+                for parameter in parameters {
+                    if let Some(scope) = self.variables.last_mut() {
+                        scope.insert(parameter.name.value.clone(), parameter.ty.clone());
+                    }
+                }
+                let _ = self.type_of_expression(body);
+                self.variables.pop();
+                CheckedType::known(Type::Function)
+            }
+            ExpressionKind::Import { .. } => CheckedType::known(Type::None),
             ExpressionKind::Error => CheckedType::unknown(),
         }
     }
@@ -345,6 +531,9 @@ impl Checker<'_> {
             .find_map(|scope| scope.get(&name.value))
         {
             return CheckedType::known(ty.clone());
+        }
+        if self.functions.contains_key(&name.value) {
+            return CheckedType::known(Type::Function);
         }
         if self.signatures.get(&name.value).is_some() {
             return CheckedType::known(Type::Function);
@@ -371,6 +560,26 @@ impl Checker<'_> {
         };
         let result = match (operator, &left, &right) {
             (BinaryOperator::Add, Type::String, Type::String) => Some(Type::String),
+            (
+                BinaryOperator::Equal | BinaryOperator::NotEqual,
+                left,
+                right,
+            ) if !matches!(left, Type::Content | Type::Function)
+                && !matches!(right, Type::Content | Type::Function) =>
+            {
+                Some(Type::Bool)
+            }
+            (
+                BinaryOperator::Less
+                | BinaryOperator::LessEqual
+                | BinaryOperator::Greater
+                | BinaryOperator::GreaterEqual,
+                Type::Int | Type::Float,
+                Type::Int | Type::Float,
+            ) => Some(Type::Bool),
+            (BinaryOperator::And | BinaryOperator::Or, Type::Bool, Type::Bool) => {
+                Some(Type::Bool)
+            }
             (_, Type::Int, Type::Int) => Some(Type::Int),
             (_, Type::Int | Type::Float, Type::Int | Type::Float) => Some(Type::Float),
             _ => None,
@@ -433,7 +642,26 @@ impl Checker<'_> {
 
     fn check_call(&mut self, call: &Call) -> CheckedType {
         let name = &call.name.value;
-        let Some(signature) = self.signatures.get(name) else {
+        // Calls to a `let`-bound function value (D0002 closures) are known
+        // callables: their runtime closure carries the signature, so static
+        // checking only validates the argument expressions.
+        if self.variables.iter().rev().any(|scope| {
+            matches!(scope.get(name), Some(Type::Function | Type::Inferred))
+        }) {
+            for argument in &call.arguments {
+                self.type_of_expression(&argument.expression);
+            }
+            for block in &call.trailing {
+                self.check_markup(&block.markup);
+            }
+            return CheckedType::known(Type::Content);
+        }
+        let Some(signature) = self
+            .functions
+            .get(name)
+            .cloned()
+            .or_else(|| self.signatures.get(name).cloned())
+        else {
             self.push(
                 DiagnosticKind::UnknownFunction,
                 format!("unknown function `{name}`"),
@@ -471,6 +699,29 @@ impl Checker<'_> {
                     clean = false;
                 }
                 found
+            } else if saw_named
+                && matches!(argument.expression.kind, ExpressionKind::Content(_))
+            {
+                // R05: the trailing Content block is the one positional
+                // argument allowed after named arguments.
+                let trailing = signature
+                    .trailing_content
+                    .as_deref()
+                    .and_then(|name| {
+                        signature
+                            .parameters
+                            .iter()
+                            .find(|parameter| parameter.name == name)
+                    });
+                if trailing.is_none() {
+                    self.push(
+                        DiagnosticKind::InvalidArguments,
+                        "positional arguments cannot follow named arguments".into(),
+                        argument.range,
+                    );
+                    clean = false;
+                }
+                trailing
             } else if saw_named {
                 self.push(
                     DiagnosticKind::InvalidArguments,
@@ -632,10 +883,12 @@ mod tests {
     fn accepts_well_typed_documents() {
         assert!(check("#heading(level=2)[Title]").is_empty());
         assert!(check("#heading[Default level]").is_empty());
-        assert!(check("#raw(text=\"code\", lang=\"rust\")").is_empty());
-        assert!(check("#quote[Quoted [[vault::target]]]").is_empty());
+        assert!(check("#raw(source=\"code\", lang=\"rust\")").is_empty());
+        assert!(check("#details[Quoted [[vault::target]]]").is_empty());
         assert!(check("a#\"string\"#[content]#none z").is_empty());
-        assert!(check("#quote(body=[ordinary])").is_empty());
+        assert!(check("#details(body=[ordinary])").is_empty());
+        // D0007: `fn(parameters) -> R` is the written function type (R07).
+        assert!(check("#let f: fn(x: Int =, trailing body: Content) -> Content = (x: Int) => x * 2").is_empty());
     }
 
     #[test]
@@ -654,11 +907,16 @@ mod tests {
     }
 
     #[test]
-    fn rejects_non_content_values_in_markup_position() {
-        let diagnostics = check("value: #42");
+    fn stringifies_scalars_and_rejects_functions_in_markup_position() {
+        // D0002 insertion rules: Int/Float/Bool stringify into Text.
+        assert!(check("value: #42").is_empty());
+        assert!(check("value: #(1.5)").is_empty());
+        assert!(check("value: #true").is_empty());
+        // Functions cannot be inserted.
+        let diagnostics = check("value: #heading");
         assert_eq!(diagnostics.len(), 1);
         assert_eq!(diagnostics[0].kind, DiagnosticKind::TypeMismatch);
-        assert_eq!(diagnostics[0].message, "cannot insert Int into Markup");
+        assert_eq!(diagnostics[0].message, "cannot insert Function into Markup");
     }
 
     #[test]
@@ -678,7 +936,7 @@ mod tests {
         assert!(
             missing
                 .iter()
-                .any(|d| d.message == "missing required argument `text`")
+                .any(|d| d.message == "missing required argument `source`")
         );
 
         let too_many = check("#heading(1, [body], true)");
@@ -695,26 +953,26 @@ mod tests {
                 .any(|d| d.message == "positional arguments cannot follow named arguments")
         );
 
-        let duplicate = check("#quote(body=[a])[b]");
+        let duplicate = check("#details(body=[a])[b]");
         assert!(
             duplicate
                 .iter()
                 .any(|d| d.message == "argument `body` was provided more than once")
         );
 
-        let multiple_trailing = check("#quote[a][b]");
+        let multiple_trailing = check("#details[a][b]");
         assert!(multiple_trailing.iter().any(|diagnostic| {
             diagnostic.message == "argument `body` was provided more than once"
         }));
 
-        let unknown = check("#quote(source=\"book\")[text]");
+        let unknown = check("#details(source=\"book\")[text]");
         assert!(
             unknown
                 .iter()
                 .any(|d| d.message == "unknown argument `source`")
         );
 
-        let trailing = check("#raw(text=\"x\")[content]");
+        let trailing = check("#raw(source=\"x\")[content]");
         assert!(
             trailing
                 .iter()
@@ -724,7 +982,7 @@ mod tests {
 
     #[test]
     fn checks_nested_calls_and_trailing_content() {
-        let nested_mismatch = check("#quote[#heading(level=\"x\")[T]]");
+        let nested_mismatch = check("#details[#heading(level=\"x\")[T]]");
         assert!(
             nested_mismatch
                 .iter()
@@ -732,7 +990,7 @@ mod tests {
                     == "type mismatch for argument `level`: expected Int, found String")
         );
 
-        let trailing_unknown = check("#quote[#missing()]");
+        let trailing_unknown = check("#details[#missing()]");
         assert!(
             trailing_unknown
                 .iter()
@@ -744,7 +1002,7 @@ mod tests {
     fn signatures_can_be_extended() {
         let mut signatures = SignatureSet::with_builtins();
         signatures.insert(
-            "math",
+            "formula",
             FunctionSignature {
                 parameters: vec![notist_model::Parameter {
                     name: "formula".into(),
@@ -755,7 +1013,7 @@ mod tests {
                 result: Type::Content,
             },
         );
-        let parse = notist_syntax::parse("#math(formula=\"x+1\")");
+        let parse = notist_syntax::parse("#formula(formula=\"x+1\")");
         assert!(check_module(&parse, &signatures).is_empty());
     }
 

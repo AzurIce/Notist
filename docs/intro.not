@@ -1,42 +1,75 @@
 = 认识 Notist
 
-Notist 是一种面向知识库的结构化文本语言。普通文字可以直接书写；Module 引用把多篇文档连接起来；Function 构造标题、引用、代码等内容；Scope 和 Attributes 为内容附加可查询的元数据。
+Notist 是一门带有静态类型系统的文档编程语言。它只有两个语法模式：默认处于 Markup 模式书写正文，`#` 把求值表达式嵌入正文（Code 模式）——写法与感受像标记语言，能力却来自真实的求值。
 
-一个 `.not` 文件既是可读的文本，也是一个有类型的文档程序。Notist 会把它求值为 `Content`，再用于检查、预览或构建静态页面。
+一个 `.not` 文件既是可读的文本，也是一个有类型的文档程序：解析、静态检查、求值三个阶段把源码变成一棵 `Content` 树（文档）、一个环境（bindings）与一张属性表（annotations）。检查、预览与静态站点构建都消费这同一份求值结果。
 
-本文从写作者的角度介绍 Notist 的核心机制。精确的字符、空白和 delimiter 规则见 [[vault::grammar]]。
+本文从写作者的角度介绍核心机制。精确的字符、空白与分隔规则见 [[vault::grammar]]；类型与求值规则见 [[vault::types]]；内置构造器见 [[vault::functions]]；日常速查见 [[vault::cheatsheet]]；命令行见 [[vault::cli]]。
+
+== 最小示例
+
+下面这段代码同时展示了三种能力：`let` 绑定变量、函数定义与调用、把计算结果插入正文：
+
+```not
+#let accent = "violet"
+
+= #accent
+
+#let warning(body: Content) -> Content =
+  callout(kind: "warning", body)
+
+#warning[这是一段可以通过函数构造的内容。]
+```
+
+它求值后得到三个产物：
+
+```text
+bindings = {
+  accent = "violet"
+  warning = (body: Content) -> Content
+}
+
+content = [
+  标题，内容为 "violet"
+  callout(kind: "warning")，内容为 "这是一段可以通过函数构造的内容。"
+]
+
+annotations = {}   // 示例中没有标注，属性表为空
+```
+
+`bindings` 是程序的一面——跨模块复用的入口；`content` 是文档的一面——渲染与查询消费的产物；`annotations` 是属性的一面——标注与模块元数据的唯一入口。三者来自同一次求值，却承担不同职责。这个结果如何产生，完整定义见 [[vault::designs::D0002-evaluation-model-and-type-system]]。
 
 == 一篇 Notist 文档
 
-下面的示例包含标题、Module 引用、元数据、引用块和代码：
+下面的示例包含标题、模块引用、标注、折叠内容与代码围栏：
 
 ````not
-#heading(level=1)[Project Notes]
+= Project Notes
 
 The language reference is [[vault::grammar]].
 
-#heading(level=2)[Status]
+== Status
 
-#[The documentation build passes.]@status,#verified,owner="Alice"
+#[The documentation build passes.]@status,#verified,owner = "Alice"
 
-#quote[
+#callout(kind: "warning", title: [发布前检查])[
 Run `cargo test` before publishing.
 ]
 
-#heading(level=2)[Example]
-
-```rust
-fn main() {
-    println!("hello");
-}
+#details(summary: [构建方式], open: false)[
+```text
+notist build docs
 ```
+]
 ````
 
-这仍然是一篇以普通文字为主体的文档。`#heading` 和 `#quote` 是产生内容的 Function；inline backtick 与 fenced code 是内置 Raw 语法；`[[vault::grammar]]` 是跨文档引用；`#[...]@...` 为一段内容附加元数据。
+这仍然是一篇以普通文字为主体的文档：`= ` 与 `== ` 是 `heading` 的语法糖；`#callout` 与 `#details` 是产生内容的构造器；行内反引号与围栏是内置 Raw 语法；`[[vault::grammar]]` 是跨文档引用；`#[...]@...` 为一段内容附加可查询的元数据。
 
 == Vault 与 Module
 
-一个目录就是一个 Vault。Vault 中的每个 `.not` 文件对应一个逻辑 Module：
+Vault 是运行边界。一个目录通过根目录下的 `Notist.toml` 声明为 vault 根（文件可以为空——存在本身就声明根）；没有 marker 时把 worktree 根作为单个隐式 vault。跨 Vault 一律不解析名称与引用。
+
+Vault 中的每个 `.not` 文件对应一个逻辑 Module：
 
 ```text
 docs/README.not          -> vault
@@ -45,222 +78,79 @@ docs/guide/setup.not     -> vault::guide::setup
 docs/guide/README.not    -> vault::guide
 ```
 
-普通文件名成为 ModulePath 的最后一段。`README.not` 表示它所在的目录，因此 `guide.not` 与 `guide/README.not` 都会映射到 `vault::guide`，不能同时存在。
+普通文件名成为 ModulePath 的最后一段；`README.not` 表示它所在的目录，因此 `guide.not` 与 `guide/README.not` 都映射到 `vault::guide`，不能同时存在。目录只要有 `.not` 后代或资源文件后代就形成 virtual module——只提供命名空间与 child identity，不凭空产生内容。资源文件（图片等）也通过目录模块加文件名寻址：`[[vault::guide::assets#logo.png]]`。
 
-只有子 Module、没有 `README.not` 的目录仍然可以出现在 Module 树中。例如存在 `guide/setup.not` 时，`vault::guide` 可以作为承载 `vault::guide::setup` 的目录 Module。
-
-ModulePath 是文档的稳定逻辑名称。引用和工具使用 `vault::guide::setup`，而不是依赖操作系统路径写法。
+Module 是求值单元：每个 source-backed Module 独立求值，产生 `bindings`、`content` 与 `annotations`。跨模块的连接有两条边：程序面的 import（取目标 Module 的 root bindings）与知识面的 Reference（链接内容）。详见 [[vault::designs::D0004-vault-module-and-scope]]。
 
 == 引用其他 Module
 
 使用 `[[...]]` 引用 Module。假设当前文档是 `vault::guide`：
 
 ```not
-[[setup]]
-[[self::setup]]
-[[super::intro]]
-[[vault::grammar]]
+[[setup]]                        # 裸名：从当前模块解析
+[[self::setup]]                  # 当前模块路径前缀
+[[super::intro]]                 # 父级
+[[vault::grammar]]               # 绝对路径
+[[vault::guide#install]]         # 绝对路径 + 模块内目标（scope id）
 ```
 
-- `[[setup]]` 从当前 Module 查找 child，即 `vault::guide::setup`。
-- `[[self::setup]]` 同样从当前 Module 开始，但把起点写得更明确。
-- `[[super::intro]]` 先回到父 Module，再找到 `vault::intro`。
+- `[[setup]]` 从当前 Module 查找 child，即 `vault::guide::setup`；
+- `[[self::setup]]` 同样从当前 Module 开始，只是把起点写得更明确；
+- `[[super::intro]]` 先回到父 Module，再找到 `vault::intro`；
 - `[[vault::grammar]]` 从 Vault 根开始，不受当前文档位置影响。
 
-路径使用 `::` 分段。连续的 `super` 可以继续向上，例如 `[[super::super::shared]]`。引用还可以带 label：`[[vault::guide#install]]` 指向目标 Module 内的 `install`。
+`#id` 后缀指向目标模块内的 scope（带 id 的节点）。标题额外拥有默认 id——标题文本本身即可作为 id 使用：`[[vault::guide#安装]]` 可以直达标题为「安装」的节。重复标题产生歧义诊断，作者用显式 `@id` 标注消歧。带 scheme 的外部 URL（`https://` 等）语法合法，v1 渲染为未解析的可见文本并产生 info 级诊断。
 
-== Function 调用
+== 用构造器产生内容
 
-Function 通过普通参数接收值并产生 Content。圆括号中的 arguments 可以独立构成完整调用：
-
-```not
-#pagebreak()
-#raw(text="cargo test")
-#raw(text=r#"fn main() {}"#, lang="rust")
-```
-
-Function 还可以接收一个 trailing Content：
+内置元素以 first-class 构造器函数的形式存在。命名实参写作 `name: value`，trailing Content 写在方括号里：
 
 ```not
-#quote[Quoted content.]
-
-#heading(level=2)[Title]
+#heading(level: 2)[标题]
 
 #callout(
-  kind="warning"
+  kind: "warning",
 )[
 Read [[vault::grammar]] before editing the syntax.
 Run `notist check docs` after editing.
 ]
 ```
 
-`#name(args)[Content]` 中的 `[...]` 先递归求值为结构化 `Content`，再绑定到 Function signature 指定的 `trailing_content` 参数。它不是普通位置参数，因此可以跟在 named arguments 之后。`#name[Content]` 是省略圆括号的常用形式。`#name(args)` 不要求 trailing Content；是否缺少必需参数由类型检查决定，而不是 parser 决定。
+`#name(args)[Content]` 中的 `[...]` 先递归求值为结构化 `Content`，再绑定到签名声明的 trailing 形参：`#f(kind: "warning")[内容]` 与 `#f(kind: "warning", [内容])` 等价——trailing block 只是追加一个位置实参的语法糖，它是唯一允许跟在具名实参之后的位置实参。
 
-例如签名可以写成：
+位置实参必须全部出现在具名实参之前；重复实参、未知实参、缺失必填实参与类型不匹配都产生指向调用位置的诊断。签名记号的完整规则见 [[vault::types]]，内置构造器的逐一说明见 [[vault::functions]]。
 
-```text
-heading(level: Int = 1, body: Content) -> Content
-quote(attribution: Content? = none, body: Content) -> Content
-callout(kind: String = "note", title: Content? = none, body: Content) -> Content
-details(summary: Content? = none, open: Bool = false, body: Content) -> Content
-raw(text: String, lang: String? = none) -> Content
-```
+== Markup 语法糖
 
-因此 `#quote("text")` 是类型错误，因为 String 不能替代 Content；`#raw[parsed content]` 也是类型错误，因为 trailing Content 不能绑定到 `text: String`。源码不再通过特殊 Raw body 传递，旧的 `#name![...]!` 已从语法中删除。
-
-Function 名称可以使用 `::` 分段。插件可以提供普通调用，例如：
-
-```not
-#diagram::mermaid(
-  source=r#"""
-graph TD
-    A --> B
-"""#,
-  theme="neutral"
-)
-```
-
-其中 `source` 与其他参数一样是 String；宿主 parser 不根据 Function 名称切换 body grammar。
-
-== String Literal
-
-Notist 提供四种 String literal，四者都产生同一个 `String` 类型：
-
-| 形式 | 用途 |
-| --- | --- |
-| `"text\n"` | 单行 escaped String |
-| `"""` 后立即换行 | 多行 escaped String |
-| `r#"text with \ and \""#` | 单行 raw String |
-| `r#"""` 后立即换行 | 多行 raw String |
-
-Escaped String 支持 `\"`、`\\`、`\n`、`\r`、`\t`。Raw String 不处理反斜杠；至少使用一个 `#`，closing delimiter 必须使用完全相同数量的 `#`。正文可能包含 closing-like 文本时提高 hash level：
+标题、代码围栏、分割线、列表、引用与强调等都是内置构造器的语法糖：
 
 ````not
-#raw(text=r##"contains "# without closing"##)
+= 一级标题
+== 二级标题
 
-#raw(
-  text=r##"""
-contains """# without closing
-and keeps every backslash \ unchanged
-"""##,
-  lang="text",
-)
-````
-
-Inline 与 Multiline 是 literal 的源码形态，不是不同的 String 类型。只有 triple quote 后立即出现 LF 或 CRLF 时才进入 Multiline；这个 required opening framing newline，以及 closing delimiter 前紧邻的一个 framing newline，会从 value 中裁掉。除此之外不裁剪空白，也不执行 dedent。
-
-要求 opening line break 是为了消除 raw form 的歧义。`r#"""#` 是值为 `"` 的 Inline Raw String；`r#"""text"""#` 也是 Inline，值为 `""text""`。Multiline 必须写成实际多行：
-
-```not
-r#"""
-text
-"""#
-```
-
-== Raw 内容
-
-日常文档中的代码不需要显式调用 `raw`。一对相同长度的 backtick 直接产生 inline Raw Element：
-
-````text
-Run `cargo test` before publishing.
-Use ``two ` delimiters`` when the payload contains a backtick.
-````
-
-三个或更多 backtick 构成 fenced Raw。opening line 上的 tag 成为 language，fence 产生 block Raw Element：
-
-````not
 ```rust
-fn main() {}
+println!("Hello");
 ```
+
+---
+
+- 无序条目
++ 有序条目
+
+[[target]]  *加粗*  _斜体_  __下划线__  ~~删除线~~
 ````
 
-Backtick 和 fence 是核心 grammar 的内置语法糖。它们直接归一到 Raw Element 构造逻辑，不查找名为 `raw` 的 Function，也不能出现在 Function arguments 中充当值。
+糖的语义不经过名字查找：`= 标题` 不是「调用名为 heading 的函数」，而是语法层构造。每个糖的完整规格见 [[vault::designs::D0003-builtin-functions-and-syntax-sugar]]，速查见 [[vault::cheatsheet]]。
 
-需要以普通函数方式构造 Raw 时，把源码作为 String 参数传给 `raw`：
+== 标注
 
-```not
-#raw(text="cargo test")
-
-#raw(
-  text=r#"""
-fn main() {
-    println!("hello");
-}
-"""#,
-  lang="rust",
-)
-```
-
-直接传入的 Inline String literal 产生 inline Raw，Multiline String literal 产生 block Raw。Raw String 只改变 escape 行为；一对 quote 是 Inline，triple quote 只有紧跟 opening line break 时才是 Multiline。裸 fence 的 info tag 直接属于语法糖产生的 Raw Element，因此不存在它与显式 `raw(..., lang=...)` 参数竞争的问题。
-
-== 类型系统
-
-Function 的参数、trailing Content 和返回值由同一套类型系统描述。Notist 的核心类型包括：
-
-| 类型 | 常见值或来源 | 含义 |
-| --- | --- | --- |
-| `None` | `none` | 没有值 |
-| `Bool` | `true`, `false` | 布尔值 |
-| `Int` | `2`, `-1` | 整数 |
-| `Float` | `1.5` | 浮点数 |
-| `String` | `"rust"`, `r#"source"#`, multiline variants | UTF-8 字符串；literal 保留 form/style provenance |
-| `Content` | Module 求值结果、trailing Content 或 Function 返回值 | 结构化的 Notist 文档内容 |
-| `Optional(T)` | `none` 或一个 `T` | 可选值，例如 `String?` |
-
-`Content` 是文档的基础类型。一篇 Module 求值后得到 Content；普通文字、Reference、Raw syntax 和 Function 结果按顺序组成它。Content 不是源码字符串，而是已经具有文档意义、可以继续组合和渲染的内容。
-
-源码参数使用 String，不再引入仅能出现在 body position 的 `RawSource` 类型。Raw String 与 escaped String 的差别仅在词法阶段；求值后都参与同一套参数绑定和 String 类型检查。
-
-== 参数与绑定
-
-参数写在 Function 名称后的圆括号中：
+标注把属性绑定到求值结果（值）上，用于分类与查询：
 
 ```not
-#heading(2)[Positional argument]
-#heading(level=2)[Named argument]
-#raw(text=r#"fn main() {}"#, lang="rust")
+#[The documentation build passes.]@status,#verified,.highlight,owner = "Alice"
 ```
 
-位置参数按签名中的顺序绑定，命名参数按名称绑定。命名参数之后不能再出现位置参数，但 signature 指定的 trailing Content 可以继续跟在 named arguments 之后。Function 可以为参数提供默认值，因此 `#heading[Title]` 会使用默认的 `level=1`，`#raw(text="text")` 会使用默认的 `lang=none`。
-
-参数同样经过类型检查。未知参数、重复参数、缺少必需参数或类型不匹配都会指向对应的调用位置。Int 可以传给要求 Float 的参数，`Optional(T)` 接受 `none` 或 `T`。
-
-== Scope 与 Attributes
-
-Function 用来产生内容；Transparent Scope `#[...]` 用来标注文档中的一段范围。Scope 不改变内部 Content，只为它附加 Attributes：
-
-```not
-#[The documentation build passes.]@status,#verified,.highlight,owner="Alice"
-```
-
-上例包含四种元数据：
-
-- `status` 是 ID，用于稳定标识这段内容。
-- `#verified` 是 tag，用于分类和查询。
-- `.highlight` 是 class，可供 renderer 选择展示样式。
-- `owner="Alice"` 是 key-value property。
-
-Attributes 也可以跟在 Function 结果后：
-
-```not
-#quote[Keep references stable.]@principle,#design,owner="Alice"
-#raw(text="cargo test")@command,#verified
-```
-
-圆括号中的 arguments 控制 Function 如何产生内容；结尾的 attributes 描述这段内容是什么。`level=2` 是 `heading` 的参数，而 `#design` 是输出内容的 tag。
-
-== 段落与块
-
-普通文字和 inline content 会组成段落。单个换行仍属于同一段，空行结束当前段落：
-
-```text
-first line
-second line
-
-new paragraph
-```
-
-Heading、Quote、fenced Raw 和显式 multiline Raw 等 block content 会结束当前段落并独立展示。这样文档结构由 Content 中各元素的意义决定，而不只是由最终 HTML 决定。
+四种条目：`@id` 赋 scope id（模块内唯一）；`#tag` 是标签；`.class` 是类名；`key = value` 是键值属性。三种挂载位置：行内 postfix（紧贴在值之后）、块级前缀 `@[...]`（修饰下一个块级节点）、模块属性 `@![...]`（文件开头）。完整语法见 [[vault::designs::D0006-scope-and-annotation-syntax]]。
 
 == 检查、构建与预览
 
@@ -272,6 +162,12 @@ notist build docs -o dist
 notist preview docs
 ```
 
-`check` 检查 Module、引用、调用和类型问题。`build` 把整个 Vault 构建为静态站点。`preview` 在本地展示相同的页面，并在文档变化后刷新。
+`check` 检查模块、引用、调用与类型问题；`build` 把整个 Vault 构建为静态站点；`preview` 在本地展示相同的页面并在文档变化后刷新。命令与 daemon 的详细说明见 [[vault::cli]]。
 
-日常写作主要围绕四个概念：用 Module 组织知识，用 Reference 连接文档，用 Function 从有类型的参数与 trailing Content 产生 Content，用 Scope 和 Attributes 描述内容。需要确认某一语法形式的严格定义时，查阅 [[vault::grammar]]。
+== 下一步
+
+- 精确语法：[[vault::grammar]]
+- 内置构造器：[[vault::functions]]
+- 类型与求值：[[vault::types]]
+- 日常速查：[[vault::cheatsheet]]
+- 语言设计记录：[[vault::designs::D0001-language-overview]] 起

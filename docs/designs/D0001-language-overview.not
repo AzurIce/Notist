@@ -95,4 +95,4 @@ annotations = {}   // 示例中没有标注，属性表为空
 
 标题来自变量 `accent` 的值，callout 的内容由函数调用构造——文档里的每一处内容都来自同一次求值。`bindings` 是程序的一面，`content` 是文档的一面，`annotations` 是标注的一面；三者来自同一次求值，却承担不同职责。
 
-这个结果如何产生——求值模型与类型系统的完整定义见 [[self::D0002-evaluation-model-and-type-system]]。
+这个结果如何产生——求值模型与类型系统的完整定义见 [[vault::designs::D0002-evaluation-model-and-type-system]]。

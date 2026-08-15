@@ -33,7 +33,7 @@ Content literal 可以包含文字、Reference、Raw syntax、Function call 以�
 
 == Function Call
 
-Function call 使用 [[vault::old-designs::D0015-programmable-documents-and-language-core]] 定义的一般 Code expression 模型：
+Function call 使用 [[vault::old-designs::archive::D0015-programmable-documents-and-language-core]] 定义的一般 Code expression 模型：
 
 ```not
 #heading(level=2)[Typed evaluation]

@@ -3,11 +3,11 @@ Note + ist -> notist(also not an ist)
 .not
 
 - Notist 介绍与核心概念 [[intro]]
-- 命令行、daemon、LSP 与 MCP 使用说明 [[cli]]
+- 语法参考：Markup/Code 双模式与核心文法 [[vault::grammar]]
+- 内置构造器：11 个 built-in 的签名与示例 [[vault::functions]]
+- 类型系统与求值模型 [[vault::types]]
+- 日常语法速查 [[vault::cheatsheet]]
+- 命令行、daemon 与 LSP 使用说明 [[cli]]
 - AI 的一些调查整理 [[ai]]
 - 设计记录 [[vault::designs]]
-- 当前语法规范 [[vault::grammar]]
-- 当前内置函数 [[vault::functions]]
-- 日常语法速查 [[vault::cheatsheet]]
-- 当前类型系统 [[vault::types]]
 - 早期 Markdown/Rua 模块与标注构想（历史） [[vault::old-designs::archive::D0001-rua-markdown-module-scope]]

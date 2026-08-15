@@ -1,324 +1,253 @@
 = Notist Grammar
 
-本文定义当前工具与写作者可以依赖的语法 surface。语言包含 Markup 与 Code 两种模式：文档默认处于 Markup，`#` 将一个 Code expression 嵌入当前内容，Code 中的 `[...]` 创建 Content literal 并暂时切回 Markup。概念说明见 [[vault::intro]]，类型与求值规则见 [[vault::types]]；可编程文档语言的目标模型与下一版 core grammar 分别见 [[vault::old-designs::D0015-programmable-documents-and-language-core]] 和 [[vault::old-designs::D0016-surface-language-and-core-grammar]]。
+本文定义当前工具与写作者可以依赖的语法 surface。语言包含 Markup 与 Code 两种模式：文档默认处于 Markup，`#` 把一个 Code 表达式嵌入当前内容，Code 中的 `[...]` 创建 Content literal 并暂时切回 Markup。概念说明见 [[vault::intro]]，类型与求值规则见 [[vault::types]]，内置构造器见 [[vault::functions]]，日常速查见 [[vault::cheatsheet]]。
 
-== 规范状态
+Markup 模式只定义最小骨架——文本流、段落分隔、`#` 嵌入与转义；其余一切 Markup 构造（标题、围栏、分割线、列表、引用、强调等）都是语法糖或标注，见文末的引用索引。Code 模式是本文的主体，定义完整的字面量、运算符、表达式、声明与类型语法。
 
-本文是 parser、analysis 与 evaluator 对外保证的现行参考。当前实现已支持本文描述的 mode-aware syntax tree 与一般 EmbeddedExpression，以及 Function call、trailing Content、String literal、Wiki Reference、Raw syntax 和 Attributes。
+== 两种 lexical context
 
-本次参考只承诺 Markup 与 Code 两种模式，以及下文列出的 Code expression 子集。代码库中的实验性 variable、`let`、operator、Value-returning Function 或 User Function 不构成稳定语言契约；它们将按 D0015/D0016 的 lexical binding、first-class Function 和 typed HIR 模型重新进入规范。Markup/Code boundary 保持稳定，避免重构再次修改 Content quotation 的基本含义。
-
-== 记号
-
-- `"text"` 表示固定字符。
-- `A B` 表示顺序连接，`A | B` 表示选择。
-- `A?`、`A*`、`A+` 分别表示零或一次、零或多次、一次或多次。
-- SameHashes、SameBackticks 和括号配对等上下文相关规则由正文定义。
-
-== 源文件与 Document
-
-源文件是 UTF-8 文本，换行符可以是 LF 或 CRLF。源码位置使用半开 byte range：start 包含，end 不包含。
-
-```ebnf
-Document = Markup ;
-Markup = MarkupItem* ;
-MarkupItem = Text
-           | WikiLink
-           | RawSyntax
-           | EmbeddedExpression ;
-```
-
-Document 是一个隐式的 Markup sequence。普通 Markup、Reference、Raw syntax 和 EmbeddedExpression 的输出按源码顺序连接，整篇 Document 的静态类型与求值结果均为 `Content`。
-
-未被其他 Markup 结构占用的源码是 Text。在顶层 Markup 中，普通 `[` 与 `]` 是文字；只有 Code mode 中的 `[` 才开始 Content literal。
-
-== Markup 与 Code Mode
-
-Notist 只有两种语法模式：
-
-| Mode | 作用 | 进入方式 |
-| --- | --- | --- |
-| Markup | 书写普通文档、Reference 和 Raw syntax | Document 默认；Code 中使用 `[...]` |
-| Code | 书写 literal、Function call 和其他 expression | Markup 中使用 `#` |
-
-```ebnf
-EmbeddedExpression = "#" CodeExpression Attributes? ;
-ContentBlock = "[" Markup "]" ;
-
-```
-
-ContentBlock 内未转义的 `]` 结束当前 block；需要文字 `]` 时使用 `\]`。Markup 中由 EmbeddedExpression 引入的嵌套 ContentBlock 按各自 delimiter 正确配对。
-
-`#` 不是一个普通 unary operator。它在 Markup 中开始一个 EmbeddedExpression，使 parser 切换到 Code；expression 结束后恢复 Markup。Code expression 的结果必须能够插入 Content，具体类型规则见 [[vault::types]]。
-
-Code 中的 ContentBlock 使用 `[...]` 创建 `Content` literal。`[` 后进入 Markup，匹配的 `]` 结束该 literal 并恢复外层 Code。
-
-```not
-Plain [brackets] stay markup text.
-
-#[This is a Content literal embedded into the document.]
-
-#quote[The trailing argument is the same kind of Content literal.]
-```
-
-因此 `#[body]` 不再是独立的 TransparentScope grammar。它是 `#` 嵌入一个 ContentBlock；无 Attributes 时，其求值效果等同于直接插入 body Content。有 Attributes 时，它同时建立一个可供 analysis 查询的显式源码 scope。
-
-Mode 可以递归嵌套：
-
-```not
-#[Outer markup with #[inner markup]@inner.]@outer
-```
-
-解析模式依次为 Markup → Code → Markup → Code → Markup。
-
-== Code Expression 子集
-
-本阶段目标 Code grammar 为：
-
-```ebnf
-CodeExpression = NoneLiteral
-               | BoolLiteral
-               | IntLiteral
-               | FloatLiteral
-               | StringLiteral
-               | ContentBlock
-               | CallExpression
-               | ParenthesizedExpression ;
-
-ParenthesizedExpression = "(" CodeExpression ")" ;
-```
-
-`let`、变量访问、一般 binary/unary operator、Array、Dict、控制流和 User Function 将来都可以作为新的 CodeExpression 加入，但不改变 `#` 与 ContentBlock 的模式规则。
-
-在 Code mode 内不重复书写 `#`。例如 Function arguments 本身已经处于 Code：
-
-```not
-#raw(text="cargo test", lang="text")
-```
-
-这里两个 String 都是 Code literal，而不是 Markup text。
-
-== 标识符与名称
-
-```ebnf
-Identifier = (UnicodeAlphanumeric | "_" | "-")+ ;
-QualifiedName = Identifier ("::" Identifier)* ;
-```
-
-`::` 两侧不允许空白。当前目标保留 Identifier 可由数字开头的行为；以后引入一般变量与 `let` 前，应重新确认 identifier start 规则，避免数字 literal 与 Name expression 重叠。
-
-== Function Call
-
-Function Call 是 CodeExpression，而不是独立的 Markup 节点：
-
-```ebnf
-CallExpression = QualifiedName (Arguments ContentBlock* | ContentBlock+) ;
-Arguments = "(" Whitespace* ArgumentList? Whitespace* ")" ;
-ArgumentList = Argument (Whitespace* "," Whitespace* Argument)*
-               (Whitespace* ",")? ;
-Argument = NamedArgument | PositionalArgument ;
-NamedArgument = Identifier Whitespace* "=" Whitespace* CodeExpression ;
-PositionalArgument = CodeExpression ;
-```
-
-当前 Function signature 最多声明一个 trailing Content parameter，因此现阶段实现只需接受零或一个 trailing ContentBlock；grammar 使用 `*` 是为了保留一般 Function call 的统一形态，是否允许多个由 signature binding 决定。
-
-由于 ContentBlock 本身是 CodeExpression，Content 也可以显式写在普通 argument list 中：
-
-```not
-#quote(body=[Quoted Content.])
-#heading(level=2, body=[Title])
-```
-
-Trailing ContentBlock 是该普通 Content argument 的紧凑调用形式，不是另一种 body type 或 parser mode。
-
-以下写法共享同一 CallExpression 模型：
-
-```not
-#pagebreak()
-#raw(text="cargo test")
-#quote[Quoted Content.]
-#heading(level=2)[Title]
-```
-
-`#name(args)[body]` 的解析过程是：
+语义模式只有两个，递归 quotation：
 
 ```text
-Markup
--> # enters Code
--> parse Function Call
--> parse ordinary arguments in Code
--> [body] enters Markup and produces Content
--> bind Content as a trailing argument
--> insert Function result into outer Markup
+Markup —— 产生 Content 片段（文档根；Code 中的 [...] 回到这里）
+Code   —— 产生 Value（Markup 中的 # 进入这里；{...} Code block）
 ```
 
-Parser 不读取 Function signature 来决定 `[...]` 的语法。它始终是 Content literal；analysis 再检查该 Function 是否接受 trailing Content。
+不存在第三种语义 context。围栏代码块与 String 字面量的内部是词法层的字面量载荷，不识别任何 Markup/Code 构造，不参与 quotation。
 
-== Argument Literal
+== Markup 最小骨架
 
-```ebnf
-NoneLiteral = "none" ;
-BoolLiteral = "true" | "false" ;
-IntLiteral = "-"? ASCII_DIGIT+ ;
-FloatLiteral = "-"? (ASCII_DIGIT+ "." ASCII_DIGIT*
-                    | ASCII_DIGIT* "." ASCII_DIGIT+) ;
-```
+- **文本流**：连续文本成为 `Text` 元素——表达式嵌入、标注、元素构造与段间分隔处切开；
+- **段落分隔**：空行产生 `Parbreak`；单个换行仍属于同一段；
+- **`#` 嵌入式表达式**：边界规则见下；
+- **块构造**：`{...}` Code block 与 `#[...]` 手动 scope（Markup 中 Content literal 的书写形式），见 [[vault::designs::D0006-scope-and-annotation-syntax]]；裸 `[` 与 `]` 是普通文本；
+- **转义**：`\` 转义 `#`、`[`、`]`、`@` 与 `\` 本身；转义不产生额外输出（`\#` 输出一个 `#`）；
+- **注释**：Markup 文本流中 `//` 与 `/*` 是普通文本——注释是 Code 上下文的词法 trivia（见下）。
 
-Float 必须包含一个 `.` 且至少包含一个 digit，因此 `1.0`、`1.`、`.5` 和 `-.5` 合法，`.` 与 `-.` 非法。
+=== `#` 嵌入的边界
 
-Arguments 允许空白、换行和 trailing comma。Named argument 之后不允许 positional argument。Trailing ContentBlock 是 Function call 的 trailing argument，不受该限制。
+`#` 后的表达式有自己的边界规则：
 
-Backtick 与 fenced Raw 属于 Markup syntax，不是 CodeExpression；需要把源码传入 Function 时使用 String literal。
-
-== String Literal
-
-String literal 只在 Code mode 中成立。在 Markup 中，普通 quote 是 Text；例如 `"abc"` 会保留 quote 字符，而 `#"abc"` 会创建 String value 并将其作为文字插入 Content。
-
-四种 String form 都产生同一个 `String` 类型：
-
-```ebnf
-StringLiteral = EscapedInlineString
-              | EscapedMultilineString
-              | RawInlineString
-              | RawMultilineString ;
-
-EscapedInlineString = '"' EscapedInlineCharacter* '"' ;
-EscapedMultilineString = '"""' Newline EscapedMultilineCharacter* '"""' ;
-RawInlineString = "r" Hashes '"' RawInlineCharacter* '"' SameHashes ;
-RawMultilineString = "r" Hashes '"""' Newline RawMultilineCharacter* '"""' SameHashes ;
-Hashes = "#"+ ;
-Newline = LF | CRLF ;
-```
-
-Inline String 不允许 LF 或 CRLF。只有 triple quote 后立即出现 LF 或 CRLF 时才选择 Multiline form；opening framing newline 不属于 value，closing delimiter 前紧邻的一个 LF 或 CRLF 同样被裁掉。除此之外不裁剪空白，也不执行 dedent。
-
-Escaped String 支持 `\"`、`\\`、`\n`、`\r`、`\t`。其他或不完整的 escape 产生 SyntaxError。Raw String 至少包含一个 `#`，不处理反斜杠，closing delimiter 必须使用与 opener 完全相同的 hash count。
-
-Inline/Multiline 与 Escaped/Raw 是 literal provenance，不是不同的公开类型。
-
-== Wiki Reference
-
-Wiki Reference 是 Markup syntax：
-
-```ebnf
-WikiLink = "[[" WikiReferenceBody "]]" ;
-WikiReferenceBody = ModulePart ("#" Label)? ;
-ModulePart = ModuleReference | EmptyWhenLabelExists ;
-
-ModuleReference = AbsoluteReference
-                | ParentReference
-                | SelfReference
-                | RelativeReference ;
-AbsoluteReference = "vault" ("::" ModuleSegment)* ;
-ParentReference = "super" ("::" "super")* ("::" ModuleSegment)* ;
-SelfReference = "self" ("::" ModuleSegment)* ;
-RelativeReference = ModuleSegment ("::" ModuleSegment)* ;
-```
-
-ModulePart 和 Label 两侧会 trim whitespace。引用最多包含一个 `#`；Label 不能为空，只有带 Label 时 ModulePart 才能为空。
-
-ModuleSegment 不能包含 control character、`/`、`\`、`#`、`[` 或 `]`。按 `::` 分段后每段会 trim，空段非法。`vault`、`super`、`self` 是只允许出现在路径开头的保留段。
-
-显式 `ref(target: String)` 使用同一个 `parse_wiki_reference` 入口，target 不包含外围 `[[` / `]]`。因此 `[[vault::guide]]` 与 `#ref("vault::guide")` 直接产生同一种 Reference Element；analysis 也会索引 String literal 形式的显式调用。
-
-== Inline Raw 与 Fenced Raw
-
-Backtick syntax 只在 Markup 中构造内置 Raw Element，不是 String，也不是 CodeExpression。
-
-```ebnf
-RawSyntax = InlineRaw | FencedRaw ;
-InlineRaw = Backticks InlineRawBody SameBackticks ;
-FencedRaw = FenceOpen Newline FencedRawBody Newline FenceClose ;
-Backticks = "`"+ ;
-FenceOpen = BackticksAtLeast3 InfoTag? ;
-FenceClose = BackticksAtLeastOpeningLength ;
-```
-
-InlineRaw 使用完全相同长度的 backtick run 关闭。FencedRaw opener 至少三个 backtick；opening line 的非空文本经 horizontal trim 后成为 info tag。Closing fence 可以缩进，长度不得小于 opener，之后只能有 horizontal whitespace 或行尾。Opening 后和 closing 前各一个 framing newline 不属于 payload。
-
-Raw syntax 内不扫描 Notist Markup 或 Code。即使 payload 包含 `#`、`[[...]]`、`[...]` 或 `@...`，也保持原文。
-
-== 源码注释
-
-注释是 lexer/parser trivia，不产生 Content，也不通过 FunctionRegistry 解析：
-
-```ebnf
-Comment = LineComment | BlockComment ;
-LineComment = "//" LineCharacter* ;
-BlockComment = "/*" (BlockComment | BlockCommentCharacter)* "*/" ;
-```
-
-BlockComment 可以嵌套。Raw syntax 和 String literal 内不识别注释；Markup 中 URL 的 `https://` 也不能把其中的 `//` 误判为 LineComment。
-
-== Attributes 与源码 Annotation
-
-Attributes 是 EmbeddedExpression 的统一 postfix：
-
-```ebnf
-Attributes = "@" FirstAttribute ("," AttributeItem)* ;
-FirstAttribute = Id | AttributeItem ;
-AttributeItem = Tag | Class | KeyValue ;
-Id = Identifier ;
-Tag = "#" Identifier ;
-Class = "." Identifier ;
-KeyValue = Identifier "=" AttributeValue ;
-AttributeValue = Identifier | QuotedAttributeValue ;
-QuotedAttributeValue = '"' AttributeCharacter* '"' ;
-```
-
-Attributes 中不允许空白。可选 ID 只能是第一个 bare Identifier；Tag、Class 和 KeyValue 可以重复并保持源码顺序。
-
-所有 Attributes 都只建立独立的 source annotation：
+- 标识符由 Unicode 字母（含中文）、数字、`-`、`_` 组成，表达式到标识符字符集结束处为止——`#ver。` 中全角标点不是标识符字符，`。` 作为文本继续（中文标点天然断开表达式）；
+- 紧跟汉字、字母或数字时需要 `;` 或括号结束表达式：`第一段#accent;文字`、`第一段#(accent)文字`——`;` 被消费但不产生输出；
+- 空格不是语法工具：它终止表达式，同时自身成为文本内容——`#1 + 2` 的 `1` 在空格处结束，` + 2` 是文本；二元运算等完整表达式用括号嵌入：`#(1 + 2)` 输出 3；
+- 表达式的结果按插入规则进入外层 Content（见 [[vault::types]]）。
 
 ```not
-#[arbitrary Content]@concept,#knowledge,.highlight
-#quote[quoted Content]@citation,source="book"
-#raw(text="cargo test")@command,#verified
+#let accent = "violet"
+
+= #accent
+
+第一段#accent;文字 与 第一段#(accent)文字 输出相同的标题文本。
 ```
 
-它们统一附着到前一个 EmbeddedExpression 的 source scope，不进入 Function arguments、`Content`、`Value`、静态类型或 FunctionOutput。删除或忽略 Annotation 不得改变 expression 的类型与求值结果：
+== Code 核心语法
+
+=== 标识符
+
+标识符由 Unicode 字母（含中文）、数字、`-`、`_` 组成，首字符不能是数字或 `-`。`-` 属于标识符字符：`my-var` 是一个名字，不是减法——想写减法要加空格（`my - var`）。`::` 两侧不允许空白，用于限定名（`vault::path`）与函数命名空间。
+
+=== 注释
+
+`//` 行注释与 `/* ... */` 嵌套块注释是 Code 上下文的词法 trivia，不进入值或 Content：
+
+```not
+#let total = 1 + /* 外层 /* 嵌套 */ 注释 */ 2 // 行注释
+```
+
+=== 字面量
 
 ```text
-eval(erase_annotations(document)) == eval(document)
+Int       十进制数字序列
+Float     数字 + . + 数字（0.5；.5、1. 不合法，写 0.5、1.0）
+Bool      true | false
+None      none
+String    见下（四种形态）
+Content   [...]（回到 Markup）
 ```
 
-第一个 bare ID 同时声明该 module 内的 label；它仍然不改变求值结果。`[[#id]]` 指向当前 module，`[[path#id]]` 指向目标 module，`#ref("#id")` 与 `#ref("path#id")` 完全等价。analysis 会索引 declaration、报告重复或未解析的 label，并为跳转提供 ID 的源码范围；站点构建把声明 ID 赋给其 scope 中第一个 HTML semantic element，使 module URL 的 `#id` fragment 可导航。
+负数是一元 `-` 运算符（字面量本身无符号）。String 字面量四种形态：
 
-Annotation scope 与其他显式语法结构必须正确嵌套或分离，不允许两个范围形成非嵌套交叉。一个 Annotation 可以包含多个完整 inline Element、Function Call、Paragraph 或 block，但不能从另一个显式结构内部开始并在其外部结束。
+```text
+"..."          转义 inline
+"""..."""      转义多行（opening 三引号后立即换行才进入多行形态）
+r#"..."#       raw inline（hash 级别可升级：r##"..."##）
+r#"""..."""#   raw 多行（同样要求 opening 后立即换行）
+```
 
-== 文本、拼接与段落
+- 转义集：`\"` `\\` `\n` `\r` `\t`；raw 形态不做任何转义处理；
+- 多行形态的 opening framing newline 不属于值；closing 前紧邻的一个 framing newline 被裁掉；除此之外不裁空白、不 dedent；
+- 四种形态产生同一个 `String` 类型——form/style 是字面量 provenance，不影响值语义。
 
-Markup 中相邻的 Text、Reference、Raw 和 EmbeddedExpression 输出按源码顺序连接为 Content。普通文本直接生成与 `text(value)` 函数相同的 Text Element；实现可以在 lowering 后合并相邻 Text Element，但不得改变 source provenance。
+=== 运算符
 
-普通单换行属于 Text。一个或多个空行产生 Parbreak；structuring 将 Parbreak 之间相邻的 inline Element 组合成与 `paragraph(body)` 相同的 Paragraph Element。LF 与 CRLF 必须得到相同语义，framing CR 或多余 newline 不进入相邻 Text。
+```text
+一元：-    not
+乘除：*    /
+加减：+    -
+比较：<   <=   >   >=
+相等：==   !=
+逻辑：and  or（短路）
+```
 
-当前核心 Markup sugar 为：`= heading`、`- list item`、`+ enum item`、`- [ ] task`、inline/fenced backtick、`$math$`、`*strong*`、`_emphasis_`、`__underline__`、`~~strike~~`、Wiki Reference、裸 HTTP(S) URL、bare email、管道表格和行末反斜线换行。Quote、Callout 与 Details 只使用显式 Function。图片、命名链接、分隔线和分页同样使用显式 Function。
+优先级从高到低：一元（`-`、`not`）→ `* /` → `+ -` → 比较与相等 → `and` → `or`：
 
-这些语法在 lowering 阶段产生统一的 Content/Element。Backtick/fence 与显式 `code` 共享 Raw Element；相邻的普通、有序或任务 item 分别组合成与显式 `list`、`enum`、`task` 相同的容器 Element。缩进增加时，item 嵌套到此前最近的较浅 item；孤儿缩进 item 作为新的根 item 宽容恢复，之后较浅的 item 结束当前嵌套而不会使解析递归或崩溃。管道表格允许单元格包含 Raw、Wiki Reference 与 EmbeddedExpression；分隔器扫描会跳过反引号、String、括号和 Content block 内部的 `|`。同一管道表格的列数取最宽行，缺少的尾单元格补为空 cell；若分隔行只缺尾列，仍视为表头，缺失列使用默认对齐。每个语法糖 TableCell 使用 `colspan=1`、`rowspan=1`，跨列或跨行通过显式 `table::cell` 表达，并与显式表格共享 rowspan-aware 网格算法。
+- `-a * b` 是 `(-a) * b`；
+- `not a == b` 是 `not (a == b)`；
+- `a and not b` 是 `a and (not b)`；
+- 相等定义在 None/Bool/Int/Float/String 上（同族值比较，跨族不等）；Content 与 Function 没有自动相等。
 
-`> quote`、`!!! callout`、`??? details`、定义列表、footnote、citation、abbreviation、insert、spoiler、highlight、super/sub、video/audio 和 `%% comment %%` 均不是当前宿主语法。Setext 标题、`* item`、数字列表、Markdown `[label](URL)`、`![alt](source)` 与 `---` thematic break 也保持普通文本。
+=== 调用
+
+`callee(实参)` 加可选 trailing block `[...]`。命名实参写作 `name: value`；位置实参必须全部出现在具名实参之前，trailing Content block 是唯一例外——它是恒为最后的 positional 实参。绑定、默认值、coercion 与调用点检查见 [[vault::types]]。
+
+=== if
+
+```not
+#if 条件 { ... } else { ... }
+#if 条件 [内容] else [内容]
+```
+
+- 分支是 Code block（求值为值）或 Content block（求值为内容），复用既有块语法；
+- `else` 可省略：无 `else` 时条件为假产生 `None`——Code block 分支的类型 `T` 提升为 `T?`（Content 分支无 else 时类型仍是 `Content`，空内容合法）；
+- 条件必须是 `Bool`。
+
+=== lambda
+
+```not
+#let double = (x: Int) => x * 2
+#let add = (a: Int, b: Int) => a + b
+```
+
+- 形参必须声明类型；返回类型由 body 推断；
+- 参数列表括号必写（单参数省略括号暂不支持）；
+- lambda 是普通 Function 值：可以绑定、传递、调用。
+
+=== 声明
+
+**let**：`let name = 表达式` 或 `let name: T = 表达式`——右侧先在旧环境中求值，绑定对后续可见；类型标注可选（未标注时由右侧推断）。同名遮蔽允许（最近绑定者胜出）；没有全局 hoist——名字按声明顺序可见，前向引用产生诊断。
+
+**函数定义糖**：`let name(形参表) -> R = body`，与 `let name = (形参表) => body` 等价。形参带 `=` 的是 named 可省略，不带的是 positional 必填。
+
+```not
+#let double(x: Int) -> Int = x * 2
+#let double = (x: Int) => x * 2   // 与上一行等价
+```
+
+**代码块**：`{...}` 是多语句的 Code 表达式——语句以 `;` 或换行分隔（同一行多个语句必须用 `;`，尾随 `;` 合法）。块的值采用 join 语义：块内各表达式的值按插入规则组合，`let` 产生 `None`、不参与组合。块内绑定挂在块节点上，不出块。
+
+**import**：`#import path::{name, name as alias}`——显式选择器，无 wildcard；花括号左侧是 ModulePath，`as` 把名字映射为合法 Code 标识符。import 扩展当前根 scope 后续节点的环境，产生空 Content；依赖边在求值前进入 import graph，import 环一律是诊断。见 [[vault::designs::D0004-vault-module-and-scope]]。
+
+```not
+#import self::theme::{warning, accent as highlight}
+```
+
+**模块属性**：`@![...]` 见 [[vault::designs::D0006-scope-and-annotation-syntax]]。
+
+=== 类型语法
+
+```text
+Type
+├─ None / Bool / Int / Float / String / Content
+├─ T?                    # 可空
+└─ fn(形参表) -> R       # 形参：名字: 类型，带 = 表示可省略
+```
+
+标注位置：`let name: T = ...`、函数形参、函数返回类型、lambda 形参。函数类型就是定义签名去掉 default 表达式：
+
+```text
+定义签名:  fn(kind: String = "note", title: Content? = none, trailing body: Content) -> Content
+函数类型:  fn(kind: String =, title: Content? =, trailing body: Content) -> Content
+```
+
+`trailing` 前缀标记末尾 Content 形参。`(T?)?` 折叠为 `T?`。可空与可省略的完整规则见 [[vault::types]]。
+
+== Wiki 引用
+
+```not
+[[setup]]                        # 裸名：从当前模块解析
+[[self::setup]]                  # 当前模块路径前缀
+[[super::intro]]                 # 父级
+[[vault::guide#install]]         # 绝对路径 + scope id
+[[vault::guide::assets#logo.png]] # 资源文件（完整文件名）
+```
+
+- `[[` 与 `]]` 之间是字面 url 字符串——不解析 markup、不嵌套 `[[`；
+- `#id` 后缀是「模块内目标」：文档模块中是带 id 的 scope，资源目录中是完整文件名；引用最多包含一个 `#`，id 不能为空；
+- `vault`、`self`、`super` 是只允许出现在路径开头的保留段；路径段不能包含 control character、`/`、`\`、`#`、`[` 或 `]`；
+- 标题拥有默认 id：`[[vault::guide#安装]]` 按标题文本精确匹配，重复标题产生歧义诊断；
+- 带 scheme（`https://` 等）的外部目标语法合法：解析为 External 目标，v1 渲染为未解析的可见文本并产生 info 级 `external-reference-unsupported` 诊断——不是语法错误。
+
+显式构造 `ref(url: String)` 使用同一个引用解析入口：`[[vault::guide]]` 与 `#ref("vault::guide")` 产生同一种 Reference 元素。
+
+== 行内 Raw 与围栏
+
+Backtick 语法在 Markup 中直接构造 Raw 元素：
+
+- 行内：一对相同长度的 backtick run 包裹 payload——``Run `cargo test` before publishing.`` 中的反引号片段是行内 Raw（block 为 false）；payload 含反引号时用更长的 run：```Use ``two ` delimiters`` when the payload contains a backtick.```；
+- 围栏：行首三个以上反引号开始，opening line 上的非空文本经横向 trim 后成为语言标注；closing fence 长度不得小于 opener，之后只能有横向空白或行尾；opening 后与 closing 前各一个 framing newline 不属于 payload；围栏产生 block Raw（block 为 true）；
+- Raw 语法内不扫描 Notist Markup 或 Code——payload 中的 `#`、`[[...]]`、`[...]`、`@...` 都保持原文。
+
+````not
+Run `cargo test` before publishing.
+
+```rust
+fn main() {}
+```
+````
+
+需要以普通函数方式构造 Raw 时，把源码作为 String 实参传给 `raw`（见 [[vault::functions]]）。
+
+== 标注与 scope 形态
+
+属性列表只有一套语法，挂载位置是变体：
+
+```text
+属性列表 = 条目（逗号分隔）
+条目     = id | #tag | .class | key = value
+```
+
+- 行内 postfix：`@...` 贴在行内元素或表达式之后，绑定到前面紧接着的求值结果；
+- 块级前缀：`@[...]` 独立成行或行首，绑定到紧接着的下一个块级节点；
+- 模块：`@![...]` 文件开头，绑定为模块属性（根 scope）；
+- 手动 scope：`#[...]` 显式创建 scope 节点——封装一段内容、自带词法边界、可承载属性、渲染上不产生可见元素。
+
+```not
+文字内容@note
+
+@[wip]
+= 标题
+
+@![#design, #wip, status = "draft"]
+
+#[一段内容]@install
+```
+
+完整规则见 [[vault::designs::D0006-scope-and-annotation-syntax]]。
+
+== 引用索引
+
+Markup 中除最小骨架外的一切构造，定义处如下：
+
+```text
+= Title / == Title         → heading（D0003 heading 节，含默认 id）
+```lang ... ```            → raw（D0003 raw 节）
+---                        → rule（D0003 rule 节）
+- A / + A                  → item（D0003 item 节）
+[[target]]                 → ref（D0003 ref 节）
+*text* / _text_            → strong / emph（D0003）
+__text__ / ~~text~~        → underline / strike（D0003）
+@id,#tag,.class,key=value  → 标注（D0006）
+@[...] / @![...]           → 标注（D0006）
+{...} / #[...]             → scope 语法形态（D0006）
+#scope-id 引用寻址         → D0004
+# 表达式边界               → D0001
+```
 
 == 错误与恢复
 
-未闭合或非法的 Wiki Reference、ContentBlock、Arguments、String、Raw syntax 和 Attributes 产生 SyntaxError。Code expression 缺失或无法识别时必须产生 diagnostic，不得静默丢弃后回退到 Function default。
+未闭合或非法的引用、Content block、实参、String、Raw 语法与标注产生 SyntaxError。Code 表达式缺失或无法识别时必须产生诊断，不得静默丢弃后回退到默认值。
 
-未知 Function 不是 syntax error。analysis 负责名称解析、signature binding 和静态类型诊断；evaluator 可以保留 UnresolvedCall 以支持预览和工具恢复。
+未知函数不是语法错误：调用按 `UnresolvedCall` 元素保留（渲染器有兜底），analysis 同时产生 unknown function 诊断——预览与工具恢复都能继续处理其余源码。
 
-Markup 中的 `\` 后接 ASCII punctuation 时，二者共同产生一个 literal punctuation Text；该 punctuation 不再参与 inline delimiter、URL、表格 cell separator 等识别。`\` 后紧接单个 newline 的既有含义不变，产生强制 line break。管道表格按未转义的 `|` 分列，因此 `\|` 留在当前 cell 并按该 escaping 规则显示为 `|`；偶数个连续反斜线会使之后的 `|` 再次成为分隔符。
-
-Markup、Code 和 Raw 的边界必须由 parser 在本地确定，不依赖 Function registry 或插件 runtime。
-
-== 当前 surface 不承诺的语法
-
-以下能力不属于当前稳定 surface；实验性 parser/evaluator 行为不能作为兼容性依据：
-
-- `let` 与变量访问。
-- 一般 unary/binary expression。
-- Array、Dict、record 和 Function value。
-- User Function、控制流与 import。
-- 插件修改宿主 grammar。
-- Annotation 任意非嵌套交叉。
-- 完整 formatter trivia model。
-
-这些能力按 [[vault::old-designs::D0015-programmable-documents-and-language-core]] 与 [[vault::old-designs::D0016-surface-language-and-core-grammar]] 扩展 Code item、expression、lexical analysis 与 typed HIR，不改变 `#`、Content literal 与 Markup quotation 的基本模式语义。
+Markup 中的 `\` 后接标点字符时，二者共同产生一个字面标点 Text；该标点不再参与任何 sugar 识别。Markup、Code 与 Raw 的边界由 parser 在本地确定，不依赖函数注册表或插件运行时。

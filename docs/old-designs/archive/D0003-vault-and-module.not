@@ -2,7 +2,7 @@
 
 Notist Module 同时是知识库中的稳定逻辑节点和可编程文档的 evaluation unit。作者用 ModulePath 连接知识，用 import 取得另一个 Module 的 root binding；两者都建立在同一 Module identity 上，却产生不同语义。
 
-最初的知识库构思见历史记录 [[vault::old-designs::archive::D0001-rua-markdown-module-scope]]，Module 作为程序的求值模型见 [[vault::old-designs::D0015-programmable-documents-and-language-core]]。
+最初的知识库构思见历史记录 [[vault::old-designs::archive::D0001-rua-markdown-module-scope]]，Module 作为程序的求值模型见 [[vault::old-designs::archive::D0015-programmable-documents-and-language-core]]。
 
 == Source Tree 与 Module Tree
 
@@ -114,6 +114,6 @@ Import 可以通过 `as` 把 Module root name 映射为合法 Code identifier。
 
 == Vault Boundary
 
-Vault 决定 Module tree 的根、discovery boundary、language version、prelude/plugin environment 与允许的 capability。根 marker、nested Vault 和 CLI/LSP root assignment 由 [[vault::old-designs::D0007-notist-toml]] 定义。
+Vault 决定 Module tree 的根、discovery boundary、language version、prelude/plugin environment 与允许的 capability。根 marker、nested Vault 和 CLI/LSP root assignment 由 [[vault::old-designs::archive::D0007-notist-toml]] 定义。
 
 不同 Vault 不共享 Module environment；当前语言也不解析跨 Vault Reference 或 import。相邻目录和同一 daemon process 都不能自动扩大名称解析范围。

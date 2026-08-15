@@ -1,6 +1,6 @@
 = D0004: Core Functions and Syntax Sugar
 
-Notist 的内容构造能力不是一组只有 evaluator 知道的 Processor。Heading、Raw、Quote 等 constructor 作为真正的 Function Value 暴露在稳定 `core` namespace 中；User Function、native Function 与 plugin Function 共享 [[vault::old-designs::D0006-type-system]] 定义的 call model。
+Notist 的内容构造能力不是一组只有 evaluator 知道的 Processor。Heading、Raw、Quote 等 constructor 作为真正的 Function Value 暴露在稳定 `core` namespace 中；User Function、native Function 与 plugin Function 共享 [[vault::old-designs::archive::D0006-type-system]] 定义的 call model。
 
 ```not
 #core::heading(level=2)[Language model]

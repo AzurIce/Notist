@@ -380,6 +380,15 @@ fn snapshot_fingerprint(snapshot: &WorkspaceSnapshot) -> String {
             }
         }
     }
+    // Configuration identity participates in the source-set fingerprint (D0008):
+    // two views with identical sources but different configuration are different
+    // semantic worlds for cursors and index stamps.
+    if let Some(configuration) = snapshot.configuration() {
+        for byte in configuration.as_bytes() {
+            hash ^= u64::from(*byte);
+            hash = hash.wrapping_mul(0x100000001b3);
+        }
+    }
     format!("{hash:016x}")
 }
 

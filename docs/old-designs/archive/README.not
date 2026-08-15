@@ -4,4 +4,4 @@
 
 == 历史设计
 
-- [[self::D0001-rua-markdown-module-scope]]：以 Markdown/Rua、`#[...]{}` scope 与 page-level attributes 为基础的早期方案；现行 Module 与 Annotation 模型见 [[vault::old-designs::D0002-scope-and-attrs]]、[[vault::old-designs::D0003-vault-and-module]] 和 [[vault::old-designs::D0007-notist-toml]]。
+- [[self::D0001-rua-markdown-module-scope]]：以 Markdown/Rua、`#[...]{}` scope 与 page-level attributes 为基础的早期方案；现行 Module 与 Annotation 模型见 [[vault::old-designs::archive::D0002-scope-and-attrs]]、[[vault::old-designs::archive::D0003-vault-and-module]] 和 [[vault::old-designs::archive::D0007-notist-toml]]。
