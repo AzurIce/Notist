@@ -1,17 +1,12 @@
-= Old Design Records（第一代设计档案）
+= Old Design Records（历史说明）
 
-本目录保存 Notist 第一代设计记录（D0001–D0016）。它们是项目早期随实现逐步积累的设计，缺少全局一致的视野（例如后来的"文档即程序"求值模型在原设计中并不存在），因此在 2026-07 被整体归档，不再治理当前项目。当前设计序列从 [[vault::designs::overview]] 开始，并按语义目录组织。
+本目录不再保存第一代设计文档的全文。第一代设计已经由当前 [[vault::designs]] 完整吸收、推翻或重新设计；其历史文件只保留在 Git 历史中，不留在工作树里。
 
-本目录仅作历史与演进证据保留。[[vault::grammar]]、[[vault::functions]] 与 [[vault::types]] 仍是当前工具 surface 的精确参考；设计层面的当前方向见 [[vault::designs]]。
+需要追溯时，在旧提交中查看：
 
-其中 D0002（scope 与标注）、D0003（vault 与 module）、D0005（lowering 与 structuring）、D0006（type system）、D0007（Notist.toml）、D0008（language server）、D0009（preview 与 HTML）、D0010（String 字面量与 raw）、D0011（Analyzer 与 snapshot）、D0012（daemon 与 client interface）、D0013（Agent Skill）、D0014（agent-facing CLI/MCP/search）、D0015（可编程文档核心）、D0016（表面语言与核心语法）的内容已被当前设计序列（[[vault::designs]]）完整吸收或明确推翻，已移入 [[self::archive]]；其中 D0006 的 Array/Dict/Union 等推迟主题将在未来重新设计（不从此篇恢复），D0014 的 MCP 部分因产品决策（不做 MCP）而作废。
+```shell
+git log --oneline -- docs/old-designs/archive
+git show <commit>:docs/old-designs/archive/<file>.not
+```
 
-== 第一代历史设计
-
-第一代设计已被新一代设计吸收、推翻或推迟重写；core namespace 与 plugin 边界也已在 [[vault::designs::world::core-namespace-plugin-boundary]] 重新成稿。旧混合文档的历史全文保留在 Git 中；旧编号到语义路径的映射见 [[vault::designs::archive]]。
-
-- [[self::archive::D0004-core-functions-and-syntax-sugar]]：第一代 core namespace 与 plugin 边界参考，已被 [[vault::designs::world::core-namespace-plugin-boundary]] 吸收后归档。
-
-== 更早的历史记录
-
-第一代早期方案（Markdown/Rua）见 [[self::archive]]，其中保存了更早失效的基础假设。
+当前设计的入口是 [[vault::designs]]，语义目录为 `language/`、`world/` 与 `host/`。

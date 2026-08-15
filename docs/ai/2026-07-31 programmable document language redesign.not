@@ -2,7 +2,7 @@
 
 Notist 当前已经拥有许多语言外观，但这些外观还没有全部建立在同一套 binding、Value、Function、Module 与 Content 定律上。继续直接补 parser/evaluator case，会让每个新功能都把偶然实现进一步固化；重构应先写出语言宪法和可判定的 conformance example，再逐层替换实现。
 
-长期语义已经整理到 [[vault::old-designs::archive::D0015-programmable-documents-and-language-core]]，目标 surface grammar 已整理到 [[vault::old-designs::archive::D0016-surface-language-and-core-grammar]]。本文保存本次代码调查、学习顺序和迁移路线；它是 dated engineering record，不反过来定义语言规范。
+长期语义已经整理到 `vault::old-designs::archive::D0015-programmable-documents-and-language-core`，目标 surface grammar 已整理到 `vault::old-designs::archive::D0016-surface-language-and-core-grammar`。本文保存本次代码调查、学习顺序和迁移路线；它是 dated engineering record，不反过来定义语言规范。
 
 == 关键判断
 

@@ -1,6 +1,6 @@
 = CLI Token 成本与 Search 人机工学改进评估
 
-本轮改进建立在 [[vault::old-designs::archive::D0014-agent-facing-cli-mcp-and-search]] 的 bounded query contract 上。此前的重设计已经消除了 megabyte 级无界输出，但默认 search 仍一次返回 20 个 512-byte excerpt，ranked hit 又逐条重复 index provenance；同时官方 Skill 要求只要 `coverage.complete=false` 就翻页，会让较小默认页产生更多历史回放。
+本轮改进建立在 `vault::old-designs::archive::D0014-agent-facing-cli-mcp-and-search` 的 bounded query contract 上。此前的重设计已经消除了 megabyte 级无界输出，但默认 search 仍一次返回 20 个 512-byte excerpt，ranked hit 又逐条重复 index provenance；同时官方 Skill 要求只要 `coverage.complete=false` 就翻页，会让较小默认页产生更多历史回放。
 
 目标不是让单次调用看起来最小，而是在保留事实查找成功率、穷举能力和人类可理解性的前提下，降低一次完整 Agent 任务的总输入成本。
 

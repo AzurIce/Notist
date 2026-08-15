@@ -1,6 +1,6 @@
 = Agent-facing CLI and MCP interface redesign
 
-这份提案把 [[vault::ai::2026-07-26 agent-friendly CLI output and Notist improvements]] 的成本取证收束成一套可实施的接口。它仍然是研究提案，不是新的 governing design；方向确认后，应把稳定结论更新进 [[vault::old-designs::archive::D0012-daemon-and-client-interfaces]] 与 [[vault::old-designs::archive::D0013-self-contained-agent-skill]]。
+这份提案把 [[vault::ai::2026-07-26 agent-friendly CLI output and Notist improvements]] 的成本取证收束成一套可实施的接口。它仍然是研究提案，不是新的 governing design；方向确认后，应把稳定结论更新进 `vault::old-designs::archive::D0012-daemon-and-client-interfaces` 与 `vault::old-designs::archive::D0013-self-contained-agent-skill`。
 
 要解决的不是“给现有命令加几个 limit”，而是同时满足四类调用者：
 

@@ -91,7 +91,7 @@
 
 - 当前没有整篇 D 可以归档：每篇至少还有一节是现行真相。
 - 已可视为“节级归档”：D0002\#函数类型（唯一真相已迁 D0015）。
-- [[vault::old-designs::archive::D0004-core-functions-and-syntax-sugar]] 已在 V5 成稿后移入 archive。
+- `vault::old-designs::archive::D0004-core-functions-and-syntax-sugar` 已在 V5 成稿后移入 archive。
 - D0001 即使移出嵌入边界也不归档，保留为语言阅读入口。
 
 == 建议的拆分顺序
@@ -118,7 +118,7 @@
 - D0009 已完成 A1/A5 拆分：Analyzer/Snapshot → [[vault::designs::host::analyzer-snapshot]]；LSP → [[vault::designs::host::lsp-adapter]]；CLI 适配归入 D0024。D0009 保留全部 anchor 作 redirect。
 - D0010 已完成 A6/A7 拆分：HTML 渲染 → [[vault::designs::host::html-renderer]]；构建/预览 → [[vault::designs::host::build-preview]]。D0010 保留全部 anchor 作 redirect。
 - D0001 的 `#` 嵌入边界已迁入 D0007；D0001 降为纯阅读入口，不再承载规范。
-- V5 已起草：core namespace / prelude / Custom 契约 / capability / 插件边界 / Notist.toml 配置模型 → [[vault::designs::world::core-namespace-plugin-boundary]]；第一代 [[vault::old-designs::archive::D0004-core-functions-and-syntax-sugar]] 已移入 archive。
+- V5 已起草：core namespace / prelude / Custom 契约 / capability / 插件边界 / Notist.toml 配置模型 → [[vault::designs::world::core-namespace-plugin-boundary]]；第一代 `vault::old-designs::archive::D0004-core-functions-and-syntax-sugar` 已移入 archive。
 - D0003 已拆分 L9 双主题：内置构造器 → [[vault::designs::language::builtin-constructors]]；Markup 语法糖 → [[vault::designs::language::syntax-sugar]]。D0003 已移入 [[vault::designs::archive]]。
 
 == 完成判定（审计后补充）
@@ -184,7 +184,7 @@
 - 归档稿完整性：[[vault::designs::archive]] 下 D0002–D0010 全部为 redirect 壳；D0003/D0005/D0007 三篇由残留全文改为保留原 heading anchors 的 redirect 壳，所有文档 ≤150 行。
 - 拆分残留修正：D0014 状态注记的语法依赖 D0033 → D0034；D0032 的出处 D0023 → 已归档 `D0008`；D0033 移除“Code 模式是本文主体 / 引用索引 / 字面量载荷”等 D0007 残留表述；D0034 的裸 `#` 嵌入边界指向 D0033；D0035 动线不再包含已移入 D0036 的 client/protocol 段落；D0023/D0024/D0026 的 core request 指向统一到 D0036。
 - 自引用与旧编号清理：D0018 不再引用自身；D0033 正文内自引用改为本文内指向；`docs/grammar.not` 引用索引 D0003/D0006/D0004 → D0031/D0018/D0033/D0022；SKILL.md 示例 D0005 → D0035。
-- README 结构：[[vault::designs]] 增加状态记号、当前世代 archive、实现切片与未来主题分区；[[vault::designs::archive]] 目录改为可解析的 `self::` 链接索引；[[vault::old-designs::archive]] 补全第一代 16 篇索引；`docs/README.not` 增加设计 archive 入口。
+- README 结构：[[vault::designs]] 增加状态记号、当前世代 archive、实现切片与未来主题分区；[[vault::designs::archive]] 目录改为可解析的 `self::` 链接索引；`vault::old-designs::archive` 补全第一代 16 篇索引；`docs/README.not` 增加设计 archive 入口。
 - 验证：active designs 27 篇、archive 9 篇全部 ≤150 行；`notist check docs` 0 diagnostics / 75 sources；`notist build docs` 75 pages；`cargo test --workspace` 233 passed + 15 ignored；`git diff --check` 通过。
 - 遗留：统一模板的 Conformance / 已裁定待定覆盖率为 5/27（D0001 为概览，其余后续按篇补齐）；[[vault::designs::language::collection-types]] 仍为草案；table/figure 进入 current surface 的决策目前只记录在 D0030/D0031，尚无单独 dated 裁决记录。
 

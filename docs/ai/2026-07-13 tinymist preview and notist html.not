@@ -1,6 +1,6 @@
 = Tinymist Preview 调查
 
-本文调查 Tinymist 的预览能力和实现分层。调查基于 Tinymist 官方仓库 2026-07-12 的主分支代码和 crates.io 上的 `0.15.2` 版本。Notist 自身的设计记录在 [[vault::old-designs::archive::D0009-preview-and-html]]。
+本文调查 Tinymist 的预览能力和实现分层。调查基于 Tinymist 官方仓库 2026-07-12 的主分支代码和 crates.io 上的 `0.15.2` 版本。Notist 自身的设计记录在 `vault::old-designs::archive::D0009-preview-and-html`。
 
 == 结论
 
@@ -71,7 +71,7 @@ Tinymist 的 LSP 可以启动和停止 preview，并向预览端发送滚动、�
 - 实时更新协议应匹配输出模型；矢量页面适合增量图形协议，HTML 文档未必需要同样复杂度。
 - 源码同步依赖稳定的 source span，而不是前端猜测源码位置。
 
-Notist 对这些原则的具体取舍见 [[vault::old-designs::archive::D0009-preview-and-html]]。
+Notist 对这些原则的具体取舍见 `vault::old-designs::archive::D0009-preview-and-html`。
 
 == 资料
 

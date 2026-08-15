@@ -27,7 +27,7 @@ Content   [...]（回到 Markup）
 
 负数是一元 `-` 运算符（字面量本身无符号）。科学计数法暂缓。
 
-String 字面量四种形态（继承旧设计 [[vault::old-designs::archive::D0010-string-literals-and-raw-syntax]] 的决定）：
+String 字面量四种形态（继承旧字符串字面量设计的历史决定）：
 
 ```text
 "..."          转义 inline
