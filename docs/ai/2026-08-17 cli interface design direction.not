@@ -1,0 +1,68 @@
+= CLI 接口设计与实现方向综合分析
+
+本文综合 docs/ai 下全部 CLI 相关文档（[[vault::ai::2026-07-26 agent-friendly CLI output and Notist improvements]]、[[vault::ai::2026-07-27 agent-facing CLI and MCP interface redesign]]、[[vault::ai::2026-07-27 cli token cost and search ergonomics evaluation]]、[[vault::ai::2026-08-14 implementation design audit and rulings]]、[[vault::ai::2026-08-15 cli agent navigation and retrieval interface]]、[[vault::ai::2026-08-15 cli v3 clean interface redesign]]），结合对 2025–2026 年面向 Agent 的外部 CLI 实践（InfoQ agent-driven CLI 综述、cli-output-spec、agentnative-cli、gh、kubectl、ripgrep、QMD、RTK、Repomix、MCP 规范、Anthropic 工具设计指南）的接口调查，并对照当前代码现状（crates/notist-cli、crates/notist-service），给出设计方向判断与实现路径建议。
+
+== 内部想法的演进主线
+
+六份文档是一条收敛链，而非平行想法：
+
+- 07-26 成本取证：720 次 Agent run 实测，根因是“把调试视图当检索接口”（MCP search 单次最大 13.8 MB）。确立总原则：普通查询服务端硬上界 + 显式 export + 稳定续读句柄。
+- 07-27 v2 落地：`PageRequest{limit,max_bytes,cursor}` + `QueryPage{snapshot,items,page,budget,coverage}`，实测默认 search 输出 -72%（23,974B → 6,647B）。这是当前代码状态。
+- 08-14 裁决：外围层对齐设计，砍掉 MCP；cursor 绑定 daemon instance + View identity。
+- 08-15 审计：发现 G1–G9 检索正确性缺口，但主张“保持命令面、增量补 flag”。
+- 08-15 v3 裁决：同日推翻增量路线——问题本质不是缺 flag，而是三个关注点搅在同一层：语义意图（搜什么）、运行时策略（给多少）、输出投影（怎么显示）。v3 三层分离：语义命令只表达意图；`--limit/--max-bytes/--cursor/--mode/--format` 全部删除；分页收敛为唯一 `notist next <TOKEN>`；JSON 收敛为 `{items, next, complete, matched, hints}`；预算下沉为 daemon 侧版本化 runtime policy。
+
+判断：v3 的方向判断是对的。v2 解决了“无界”这个生死问题，但把硬上界的机制（limit/cursor/byte budget）直接暴露成了接口。对 Agent 调用者来说，`--limit 8 --max-bytes 16384 --cursor eyJ...` 是每次调用都要做的无信息决策——模型既不知道 8 对不对，也只能机械透传 cursor。这正是“策略侵入语义面”。
+
+== 外部调查的印证
+
+v3 核心主张全部获得独立来源印证：
+
+- 语义命令、预算内定：QMD 用 `search/vsearch/query` 三个意图档位覆盖四种检索后端，融合策略（RRF、top-rank bonus）全部内置；Anthropic 明确“合并工具优于堆砌工具”；RTK 证明“压缩是中间层职责、不下放调用者”已是业界共识。
+- 唯一 next 分页：k8s 的 `limit/continue`（不透明 token、不可跳页、空值即结束、过期返回 `410 Gone`）与 GraphQL cursor 是最成熟样板，`next + complete` 正是它们的 CLI 化形态。
+- `hints` 字段：dtctl 的 `context.suggestions`、cli-output-spec 错误对象的 `suggestions`、QMD 的 fuzzy suggestions——“输出附下一步建议”已是 2026 年新兴惯例，提升为顶层字段是顺势。
+- 极简信封：cli-output-spec 与 dockup 都用 `ok` + 数据 + 错误码的固定信封，五字段设计与之同构且更克制。
+
+== 外部调查提出的四个补强点
+
+- Schema 版本化与自描述：anc（`schema_version` + `emit schema`）、semgrep（顶层 `version`）、InfoQ（“输出即契约 + CI 校验”）均强调输出带版本且可运行时获取。v3 信封已保留 `schemaVersion: 3`；建议补 `notist schema`（或 `help --json`）自描述命令——agents query capabilities; they don't read docs。
+- 错误路径形状：v3 沿用 v2 的 `{code, message, retryable, hint, candidates}` 错误信封，已符合外部最佳实践（cli-output-spec 的 `recoverable` + `suggestions`）；需确认错误时的 `hint`/`candidates` 与成功时 `hints` 语义一致。
+- `next` 失效语义：k8s `410 Gone` 表明续传 token 必须有明确过期故事。v3 已定义 `cursor_expired`（daemon 重启）/ `cursor_stale`（source 变化）+ hint 重跑查询，覆盖到位；验收标准里要写实测场景。
+- 确定性排序：cli-output-spec 的“无内部重试”与 agent 生态对“跨次运行确定性输出”的要求，意味着 ranking 必须同查询同序。v2 已有 score + ModulePath + range 稳定排序；v3 Phase C 改 ranking v4 时必须保留 tie-breaker 并纳入 version 拒绝逻辑。
+
+== 现状差距：地基比想象中好
+
+对照代码（crates/notist-cli/src/main.rs、crates/notist-service/src/query.rs），代码基本停在 v2 完整实现状态，但有一个关键事实降低 v3 实施风险：
+
+预算执行早已下沉 service 层。`page<T>()`（query.rs:2572）统一做逐项序列化 + byte 预算截断，`PageRequest` 已是独立结构体，硬上限是版本化常量，CLI 只是把 flag 透传进去。所以 Phase B 的“下沉”在执行层已经完成，真正要做的只是：
+
+- 接口层删除：7 处 flatten 的 PageArgs/SearchPageArgs/OutlinePageArgs/ReadPageArgs 从 clap 命令面移除，default/hard cap 表变为 runtime policy。
+- 新增 `next` 命令——唯一实质新机制。
+- JSON 信封换形：删 page/budget/coverage/snapshot 四件套，加 `matched`。
+- Phase A 命令面清理：`query definition` → `definition`、`references` → `refs`、`search` 拆出 `locate`、`--fields`→`--field`、`--operator`→`--any`、全局参数 help 隐藏。
+
+== 关键裁决建议：next 不一定需要 page-session
+
+v3 设计把 `next` 建立在 daemon 侧 page-session LRU 上（token 是随机 handle，绑定 daemon 内存中的会话）。这是 v3 方案里唯一成本大于收益、且与外部先例不完全对齐的决策：
+
+- 当前 v2 的 cursor（query.rs:802 `encode_cursor`）已经是自包含的：operation + query fingerprint + offset + snapshot fingerprint，packed binary + base64url 约 103 字符，包含恢复原查询继续翻页所需的全部信息。
+- 因此 `notist next <TOKEN>` 完全可以用现有无状态 cursor 实现——`next` 解析 cursor，重放原查询并从 offset 续起，不需要 daemon 保存任何分页状态。
+- k8s 的 continue token 也是同样思路：编码 resourceVersion + 位置，server 不保存客户端会话。
+- page-session LRU 的增量收益只是 token 更短（103 字符已够短）和内部表示可演进；代价却是：`--no-daemon` 模式降级、daemon 重启/session 被 LRU 逐出即 `cursor_expired`、新增一类状态管理 bug 面。
+
+建议：Phase B 先用现有自包含 cursor 实现 `next`（改个入口，零新状态），page-session LRU 砍掉或降级为可选优化。Phase B 由此从“新增有状态子系统”变成“接口换形”，风险大降；`cursor_expired` 错误码仍保留（cursor 格式版本过期），`cursor_stale` 语义不变。将来若确实需要服务端会话（如流式大结果集），再 additive 引入。
+
+== 实现路径建议
+
+在 v3 的 Phase A–D 框架上，结合代码现状：
+
+- Phase A（语义面清理）先行，纯 CLI 层工作，无 service 依赖。`refs`/`definition` 新命令 + 旧名 alias 保留一个 release；`locate` 作为 search 的 precision 投影；全局参数从子命令 help 隐藏（clap `hide = true`）。独立可验收：`search --help` 只剩意图参数。
+- Phase B（翻页与信封换形）按上述简化版做。删 PageArgs → runtime policy 表（固定常量先进代码，环境变量/Notist.toml 覆盖后做）；`next` 基于自包含 cursor；JSON v3 信封；`export search`。`--format json` 作 `--json` 的 deprecated alias。
+- Phase C（检索正确性）最重也最有价值，吸收 G1–G5、G8：节范围修复、module 级候选 + unit 级证据的 ranking v4、authority prior、exact/lexical 字段语义对齐、`matched` 计数、section context。验收用既有 14 概念查询基准（目标 top-10 达 14/14）。ranking/index version 提升后旧 token 一律拒绝而非猜测。
+- Phase D（Skill + 成本回归）：Skill 教学切换 + 固定任务/模型/seed 的 v2 vs v3 per-task bytes 对比。
+
+全程贯穿的契约纪律（来自外部调查）：错误 envelope 不变；零结果 = exit 0；TTY 永不改语义；stdout 纯数据、stderr 纯上下文；schema 演进只做 additive change，breaking 必须升 `schemaVersion`。
+
+== 结论
+
+v3 的设计判断（三层分离、唯一 next、极简信封、预算下沉）方向正确且被外部实践充分印证；现状代码的地基（service 层单点预算执行、自包含 cursor、typed error）比文档显示的更好；主要实现风险集中在 page-session LRU（建议砍掉）和 Phase C 的 ranking v4（建议保留确定性 tie-breaker）。

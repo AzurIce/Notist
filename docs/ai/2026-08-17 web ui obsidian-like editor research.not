@@ -1,0 +1,107 @@
+= 基于 Web UI 的类 Obsidian 编辑器技术预调研
+
+回应 [[vault::designs::thoughts]] 中「Web Editor：基于 Web 实现编辑能力」与「Web UI 信息增强」两条想法，预调研用 Web 技术栈做出类 Obsidian 编辑器的技术方案。与 [[vault::ai::2026-07-20 notist native desktop architecture research]] 的关系：那篇以原生桌面为目标、把「编辑器 pane 换成 CodeMirror 6 WebView」列为保底路线；本文反过来以 Web 为第一目标。两篇在「编辑器内核选 CodeMirror 6」与「预览渲染复用 notist-html、前端不重新解释 .not 源码」两点上结论一致。
+
+== 仓库现状（与 Web UI 相关的既有资产）
+
+- `notist-service` 已是协议无关的共享应用服务：`NotistService` 管理每 vault 一个 VaultHost，提供 Disk/Session View、不可变 snapshot、编辑计划、Tantivy 索引；daemon 走 Unix domain socket + length-delimited JSON 帧（`crates/notist-service/src/transport.rs`），`CoreRequest/CoreResponse` 枚举已覆盖 status、modules、diagnostics、search、view 与编辑操作。CLI 通过 `LocalNotistClient` 在 daemon 与 embedded 间透明切换。
+- 唯一 HTTP 服务是 `notist preview`（axum，`crates/notist-cli/src/preview.rs`）：整站静态构建 + SSE 整页 live reload，只读，无 WebSocket、无增量 DOM、无编辑。
+- `notist-html` 输出 HTML fragment，`ReferenceResolver` 把模块引用解析为 URL，`RenderedAnnotation` 把源码 TextRange 投影到 DOM（`data-notist-*`）；站点 CSS/JS 内嵌在 `crates/notist-cli/src/build.rs`。
+- `notist-syntax` 是一次性手写解析器：整篇 parse，无增量 reparse 接口；但 AST 节点全带 byte TextRange，错误可恢复且带精确 range。增量性目前由上层 overlay/snapshot 按整文档替换处理。
+- 全 workspace 无任何 WASM 构建配置；没有专门的编辑器或 Web UI 设计文档（`docs/designs/host/` 下最接近的是 `client-interface-protocol`、`build-preview`、`lsp-adapter`）。
+
+== 编辑器内核选型
+
+核心分野是两种范式：**源码+装饰**（文本字节即真相，渲染是视图层装饰）与**文档模型**（JSON 文档即真相，Markdown 只是序列化格式）。Obsidian 的 Live Preview 属于前者，且 Obsidian 官方插件文档明确其定制路径就是 CM6 的 ViewPlugin + Decoration。
+
+=== CodeMirror 6（MIT）—— Obsidian 同款，推荐
+
+- Live Preview 机制：ViewPlugin 监听文档/视口/选区变化，遍历 Lezer 增量语法树（syntaxTree + visibleRanges），对光标范围外的语法区段挂 Decoration.replace/widget 渲染富内容，光标进入即还原源码；装饰仅在视图层，文本字节不变，round-trip 安全。
+- 自定义语法：`@lezer/markdown` 提供 MarkdownConfig（parseBlock/parseInline/defineNodes）扩展点；超出扩展点时可写独立 Lezer grammar（见下文「.not 语法接入」）。
+- 移动端有 Obsidian mobile 背书；体积为候选中最小（核心 + Markdown 语言包约 100KB min+gzip 级）；Joplin 等亦采用，生态活跃。
+- 代价：CM6/Lezer 学习曲线陡；@lezer/markdown 的 CommonMark flank 规则对 CJK 加粗有已知缺陷（若走独立 grammar 则不受影响）。
+
+=== 文档模型阵营（ProseMirror/Tiptap、Milkdown、BlockNote、Lexical）
+
+- 共同问题：Markdown 只是 import/export，schema 外的源码信息（自定义标记、注释、空行）round-trip 会丢；做 Obsidian 式「行内源码/渲染混合」与范式冲突，只能做纯 WYSIWYG + 独立源码模式。自定义语法需要 node/mark + input rule + serializer 整套，成本高于 CM6 装饰路线。
+- Tiptap（MIT，38k stars，headless、框架无关）是「最快做出漂亮 WYSIWYG」的选择；BlockNote（核心 MPL-2.0，XL 包 AGPL/商业）UI 开箱即用但块模型离 Markdown 源文件最远；Milkdown 需 remark 插件 + PM schema 双份工作量，社区抱怨 API 不稳定；Lexical 的 Markdown transformer 是正则实现、round-trip bug 多（新版 @lexical/mdast 基于 micromark 有改善），生态 React 优先。
+
+=== 其他
+
+- Vditor（MIT，思源笔记内核）：三模式中的 IR（即时渲染）是 Typora 式块级即时渲染，体验最接近 Obsidian 且开箱即用；但解析依赖 Lute（Go 编译 JS），自定义 .not 语法需改 Lute，成本高，bundle 大（数百 KB–1MB 级）。
+- Toast UI Editor：源码/WYSIWYG 双模式切换（非混合），2024-08 后基本停更，不建议新选型。
+- OverType/EasyMDE 等 textarea overlay 方案只能着色、无法 widget 替换渲染，天花板低；Monaco 是代码编辑器定位，无富文本装饰能力，不适合。
+- Slate 仍在维护但生态已让位 Lexical/Tiptap。
+
+=== 内核结论
+
+目标「最接近 Obsidian 体验 + 支持 .not 自定义语法」唯一合理选择是 CodeMirror 6：它是唯一「源码即真相」的候选，Live Preview 正是其 decoration 机制的本职。这也与 2026-07-20 调研的保底路线收敛，两条路线可以共享编辑器内核投入。
+
+== .not 语法接入 CM6 的两条路径
+
+.not 不是 Markdown 超集（`=` 标题、`@![]` annotation、`[[wiki]]` 引用、函数调用等），直接扩展 @lezer/markdown 的 MarkdownConfig 覆盖有限，更现实的是二选一：
+
+- 独立 Lezer grammar：为 .not 写一份 Lezer 语法，浏览器内增量解析、与 CM6 高亮/折叠/Live Preview 装饰天然集成。代价是维护第二份解析器，存在与 notist-syntax 语义漂移的风险；但 Lezer 只需覆盖「编辑时展示」所需的语法形状，不需要求值语义。
+- notist-syntax 编译 WASM：单一事实来源、零漂移；但 notist-syntax 目前是整篇一次性解析，无增量 reparse，每次击键全量 parse（笔记级文档体量下大概率可接受，需 spike 实测）；且 wasm-bindgen 包体在数百 KB–数 MB 级。
+
+建议 spike 同时验证两条路径的解析延迟与装饰渲染效果后再定。语义级能力（诊断、补全、引用跳转、符号表）无论如何都走后端，不依赖前端解析的完整性。
+
+== 整体架构与集成
+
+=== 参考实现
+
+- SilverBullet：Deno 服务端 + PWA 前端、CM6 + Live Preview、纯 Markdown 文件存储——「服务端 + 浏览器 UI」形态与我们「Rust daemon + Web UI」几乎同构，其 service worker 离线镜像与插件架构值得细读。
+- 思源笔记：Go 内核开 HTTP API + WebSocket 推送，TypeScript SPA 前端同一套代码跑浏览器与 Electron——正是「内核服务化、前端统一 Web 技术栈、桌面壳可选」的形态。
+- AFFiNE 的 Rust local-first 引擎（OctoBase + Yjs）证明「Rust 后端 + Web 前端 + CRDT」可行，供二期协同参考。
+
+=== 外壳形态
+
+- 纯 Web/PWA：零安装、天然跨端；本地文件访问靠 File System Access API（仅 Chromium 完整支持，Firefox/Safari 不支持），OPFS 全浏览器可用但非真实目录。对 Notist 而言文件本就由 daemon 管理、前端不直接碰文件系统，该限制不关键。
+- Tauri：Rust 后端天然一家，IPC（command+event）零网络开销、原生多窗口与文件系统无限制；代价是 WebView 差异（Linux webkitgtk）与分发签名。
+- Electron：兼容性最好但包体/内存大，且与 Rust 后端是双运行时。
+- 建议：核心做 PWA（思源模式），桌面体验需求用 Tauri 包同一套前端。
+
+=== 后端连接方式
+
+- 主选：daemon 增加 HTTP + WebSocket 服务层。现有 CoreRequest/CoreResponse 已是协议无关枚举，transport.rs 之上加一个 WS/HTTP 适配即可，preview 的 axum 可作为载体；跨进程延迟对补全/诊断足够（LSP 本就如此设计），且支持远程部署。
+- 辅助：LSP over WebSocket（monaco-languageclient、lsp-ws-proxy 等生态成熟）可复用现有 lsp-adapter 的语义能力，但 LSP 面向代码、不含双链/搜索/块操作，不能当唯一 API。
+- 局部用法：解析器编 WASM 下沉前端做高亮/Live Preview（见上节）；整个后端编 WASM 不建议（包体数 MB–10MB 级，文件 IO 与 daemon 状态难搬进浏览器）。
+- Tauri IPC 仅当选 Tauri 壳时可用，本质是零网络版 IPC。
+
+=== 协同与渲染增强（二期）
+
+- 协同选 Yjs 生态：y-codemirror.next 官方 CM6 绑定，服务端可用 Rust 的 yrs；Automerge 富文本/大文档仍弱。
+- 公式 KaTeX、图 Mermaid、代码高亮 Shiki/highlight.js；在 Live Preview 中以 CM6 widget decoration 惰性渲染（进视口才渲染），各自 CSS/字体按 chunk 懒加载，渲染失败降级显示源码。
+
+== 针对 Notist 的建议路线
+
+- 阶段 0（spike）：CM6 + .not 语法接入（Lezer grammar 与 syntax-WASM 各做一次），验证 Live Preview 装饰对 `=` 标题、wiki 引用、annotation、函数调用的覆盖与编辑延迟。
+- 阶段 1：daemon 加 HTTP/WS 服务层，Web UI 只读浏览——复用 notist-html 渲染结果与 data-notist-* 投影（维持「前端不重新解释 .not」原则），替代/升级现有 preview 的整页 SSE 重载。
+- 阶段 2：接入 CM6 编辑器，编辑走 service 已有的编辑计划/应用记录与 byte range 协议；诊断/补全/引用跳转走 WS（可顺带以 LSP-over-WS 暴露）。
+- 阶段 3：thoughts.not 的信息增强（符号表、出链入链、scope 与属性显示）；Tauri 壳；可选 Yjs/yrs 协同。
+
+== 主要风险与开放问题
+
+- 双解析器漂移：Lezer grammar 与 notist-syntax 的语法覆盖需要同步机制（如共享语法测试用例集）。
+- Live Preview 与求值语义的边界：函数调用求值结果能否/何时反映到编辑器装饰中，需要设计（装饰数据来自前端语法树还是后端 StructuredDocument）。
+- CM6/Lezer 学习曲线与团队投入。
+- 协同编辑会冲击现有不可变 snapshot/编辑计划模型，需单独设计。
+
+== 参考来源
+
+- Obsidian 插件文档（Editor extensions）：https://docs.obsidian.md/Plugins/Editor/Editor+extensions
+- CM6 Live Preview 开源复刻：https://github.com/blueberrycongee/codemirror-live-markdown
+- atomic-editor（view-only、round-trip 验证）：https://github.com/kenforthewin/atomic-editor
+- @lezer/markdown MarkdownConfig：https://npmx.dev/package/@lezer/markdown
+- CM6 lang-package 示例：https://codemirror.net/examples/lang-package/
+- SilverBullet：https://silverbullet.md ；评测：https://lwn.net/Articles/1030941/
+- 思源架构说明：https://github.com/siyuan-note/siyuan/blob/master/AGENTS.md
+- Vditor：https://b3log.org/vditor ；https://github.com/Vanessa219/vditor
+- Tiptap：https://github.com/ueberdosis/tiptap ；BlockNote：https://github.com/TypeCellOS/BlockNote
+- Lexical：https://github.com/facebook/lexical ；mdast 序列化：https://lexical.dev/docs/serialization/markdown-mdast
+- Toast UI Editor releases：https://github.com/nhn/tui.editor/releases
+- File System Access API 兼容性：https://github.com/Fyrd/caniuse/issues/6615
+- LSP over WebSocket：https://github.com/TypeFox/monaco-languageclient ；https://github.com/qualified/lsp-ws-proxy
+- WASM 先例（tinymist 讨论）：https://github.com/zed-industries/zed/discussions/51633
+- Yjs vs Automerge vs Loro 综述：https://www.pkgpulse.com/guides/yjs-vs-automerge-vs-loro-crdt-libraries-2026
+- 2025 富文本框架对比：https://liveblocks.io/blog/which-rich-text-editor-framework-should-you-choose-in-2025
