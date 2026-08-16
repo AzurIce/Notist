@@ -1,0 +1,55 @@
+@![#example, status = "stable"]
+= Notist 语法示例
+
+本页简明演示 Notist 的全部基础语法与功能，可直接用 `notist preview` 预览；精确规则见 [[vault::cheatsheet]] 与 [[vault::grammar]]。
+
+== 标题与行内样式
+
+`=` / `==` 是标题糖。行内支持 *粗体*、_斜体_、__下划线__、~~删除线~~、`行内代码`；裸 [ 与 ] 按文本处理，转义用 \#、\[、\]、\@、\\。
+
+== 列表与表格
+
+- 无序条目 A
+- 无序条目 B
+
++ 有序条目一
++ 有序条目二
+
+| 名称 | 数值 |
+| - | - |
+| one | 1 |
+| two | 2 |
+
+== 分隔线与代码块
+
+---
+
+```rust
+fn main() {
+    println!("hello notist");
+}
+```
+
+== 显式调用
+
+#heading(level: 3)[调用形式标题]
+
+#callout(kind: "warning", title: [注意])[callout 正文内容。]
+
+#details(summary: [点击展开])[details 正文内容。]
+
+#figure(kind: "table", supplement: [表], caption: [内置表格])[
+#table(columns: 2, header: true)[
+#table-cell[名称] #table-cell[数值]
+#table-cell[answer] #table-cell[42]
+]
+]
+
+== Code 与标注
+
+- [[code]]：Code 模式——`#let` 绑定、lambda、运算符、String 四种形态、注释与 `#import`；
+- [[annotations]]：Scope 与标注——`@id` 锚点、`#tag`、`.class`、键值属性与模块属性。
+
+== 引用
+
+[[submodule]] 相对引用；[[self::submodule#target]] 带锚点；[[vault::cheatsheet]] 绝对路径。

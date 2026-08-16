@@ -323,6 +323,8 @@ notist preview [ROOT] [--host IP] [--port N] [--open]
 
 Build 从一个 captured snapshot 生成多页静态 HTML。`--clean` 只清理已经验证的 output directory。Preview 默认监听 `127.0.0.1`，port 0 让系统选择空闲端口；默认不打开浏览器，加 `--open` 才在默认浏览器中打开 preview URL。Preview 的 JSON 格式是持续 JSON Lines event，不是有限 query envelope。
 
+Preview 页面右上角是预览工具条：live reload 连接状态，以及 Enhanced 滑块开关。开启 Enhanced 后，右侧边栏出现与 On this page 同级的 Symbols 标签页，列出当前模块的锚点（显式 `@id` 与标题）、根 `let` 绑定（标量值或 `fn` 签名，即可以 `#import` 或模块路径引用的名字）与全部标注区域（tag/class/键值属性），锚点与标注条目点击跳转定位；文档中的标注区域以虚线描边高亮，悬停任意元素显示其元素类型、锚点、源码 byte range 与标注属性。开关状态在同一标签页的 live reload 重建之间保持。
+
 == Agent Skill 与官方文档
 
 ```shell

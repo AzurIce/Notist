@@ -8,8 +8,8 @@ use clap::ColorChoice;
 use notist_model::ModulePath;
 use notist_service::protocol::ClientKind;
 use notist_service::{
-    CoreRequest, CoreResponse, ProtocolViewKind, RenderedHeadingRecord, RenderedWorkspaceRecord,
-    ServiceViewId,
+    CoreRequest, CoreResponse, ProtocolViewKind, RenderedBindingRecord, RenderedHeadingRecord,
+    RenderedWorkspaceRecord, ServiceViewId,
 };
 use percent_encoding::{AsciiSet, CONTROLS, NON_ALPHANUMERIC, utf8_percent_encode};
 
@@ -115,6 +115,7 @@ pub(crate) fn write_rendered_site(
     fs::write(output.join("_notist/site.js"), SITE_SCRIPT)?;
     if options.live_reload {
         fs::write(output.join("_notist/reload.js"), LIVE_RELOAD_SCRIPT)?;
+        fs::write(output.join("_notist/inspect.js"), INSPECT_SCRIPT)?;
     }
     let pages = rendered
         .pages
@@ -124,6 +125,7 @@ pub(crate) fn write_rendered_site(
             title: page.title.as_deref(),
             headings: &page.headings,
             fragment: &page.fragment,
+            bindings: &page.bindings,
         })
         .collect::<Vec<_>>();
     for page in &pages {
@@ -192,6 +194,7 @@ struct PageView<'a> {
     title: Option<&'a str>,
     headings: &'a [RenderedHeadingRecord],
     fragment: &'a str,
+    bindings: &'a [RenderedBindingRecord],
 }
 
 impl PageView<'_> {
@@ -230,7 +233,9 @@ fn page_shell(
     if options.live_reload {
         html.push_str("<script src=\"");
         html.push_str(&asset_prefix);
-        html.push_str("_notist/reload.js\" defer></script>\n");
+        html.push_str("_notist/reload.js\" defer></script>\n<script src=\"");
+        html.push_str(&asset_prefix);
+        html.push_str("_notist/inspect.js\" defer></script>\n");
     }
     html.push_str(
         "</head>\n<body>\n<a class=\"skip-link\" href=\"#page-content\">Skip to content</a>\n",
@@ -243,6 +248,20 @@ fn page_shell(
     html.push_str("\">");
     escape_html(&mut html, site_name);
     html.push_str("</a></header>\n");
+
+    if options.live_reload {
+        html.push_str(
+            "<div class=\"preview-chrome\"><button class=\"inspect-toggle\" id=\"inspect-toggle\" type=\"button\" role=\"switch\" aria-checked=\"false\"><span class=\"inspect-switch\" aria-hidden=\"true\"></span><span>Enhanced</span></button></div>\n",
+        );
+        // The module's root bindings, consumed by inspect.js for the Symbols
+        // tab. `</` is escaped so a string value can never close the tag.
+        let bindings_json = serde_json::to_string(page.bindings)
+            .unwrap_or_else(|_| "[]".to_owned())
+            .replace("</", "<\\/");
+        html.push_str("<script type=\"application/json\" id=\"notist-bindings\">");
+        html.push_str(&bindings_json);
+        html.push_str("</script>\n");
+    }
 
     html.push_str("<div class=\"site-layout\">\n<aside class=\"site-sidebar\" id=\"site-sidebar\" aria-label=\"Site navigation\"><div class=\"sidebar-header\"><a class=\"site-name\" href=\"");
     escape_attribute(&mut html, &root_href);
@@ -262,7 +281,7 @@ fn page_shell(
     html.push_str("</article>\n<footer class=\"page-footer\"><span>Built with Notist</span><span class=\"page-module\">");
     escape_html(&mut html, &page.module.to_string());
     html.push_str("</span></footer>\n</main>\n");
-    html.push_str(&page_toc(page));
+    html.push_str(&page_rail(page, options));
     html.push_str("\n</div>\n</div>\n<button class=\"icon-button to-top\" id=\"to-top\" type=\"button\" aria-label=\"Back to top\">");
     html.push_str(ICON_ARROW_UP);
     html.push_str("</button>\n</body>\n</html>\n");
@@ -348,33 +367,62 @@ fn breadcrumb(site_name: &str, page: &PageView<'_>) -> String {
     output
 }
 
-fn page_toc(page: &PageView<'_>) -> String {
-    if !page
+/// The right rail: the page TOC, plus — in preview only — a tab strip with a
+/// "Symbols" tab that hosts the enhanced-mode inspector. Static builds keep
+/// the plain TOC aside; preview always renders the rail so the inspector tab
+/// has a home even on pages without headings.
+fn page_rail(page: &PageView<'_>, options: SiteOptions) -> String {
+    let has_toc = page
         .headings
         .iter()
-        .any(|heading| (2..=5).contains(&heading.level))
-    {
+        .any(|heading| (2..=5).contains(&heading.level));
+    if !has_toc && !options.live_reload {
         return String::new();
     }
-    let mut output = String::from(
-        "<aside class=\"page-toc\" aria-label=\"On this page\"><div class=\"toc-title\">On this page</div><ol>",
-    );
-    for heading in page.headings {
-        if !(2..=5).contains(&heading.level) {
-            continue;
-        }
-        write!(
-            output,
-            "<li style=\"--toc-level:{}\"><a href=\"#",
-            heading.level
-        )
-        .unwrap();
-        escape_attribute(&mut output, &heading.id);
-        output.push_str("\">");
-        escape_html(&mut output, &heading.text);
-        output.push_str("</a></li>");
+    let mut output = String::from("<aside class=\"page-rail\"");
+    if !has_toc {
+        output.push_str(" data-empty-toc");
     }
-    output.push_str("</ol></aside>");
+    output.push('>');
+    if options.live_reload {
+        output.push_str(
+            "<div class=\"rail-tabs\" role=\"tablist\" aria-label=\"Page rail\"><button class=\"rail-tab\" id=\"rail-tab-toc\" type=\"button\" role=\"tab\" aria-selected=\"true\" aria-controls=\"rail-panel-toc\">On this page</button><button class=\"rail-tab\" id=\"rail-tab-inspector\" type=\"button\" role=\"tab\" aria-selected=\"false\" aria-controls=\"rail-panel-inspector\">Symbols</button></div>",
+        );
+        output.push_str(
+            "<div class=\"page-toc\" id=\"rail-panel-toc\" role=\"tabpanel\" aria-labelledby=\"rail-tab-toc\">",
+        );
+    } else {
+        output.push_str("<div class=\"page-toc\">");
+    }
+    output.push_str("<div class=\"toc-title\">On this page</div>");
+    if has_toc {
+        output.push_str("<ol>");
+        for heading in page.headings {
+            if !(2..=5).contains(&heading.level) {
+                continue;
+            }
+            write!(
+                output,
+                "<li style=\"--toc-level:{}\"><a href=\"#",
+                heading.level
+            )
+            .unwrap();
+            escape_attribute(&mut output, &heading.id);
+            output.push_str("\">");
+            escape_html(&mut output, &heading.text);
+            output.push_str("</a></li>");
+        }
+        output.push_str("</ol>");
+    } else {
+        output.push_str("<div class=\"toc-empty\">No headings</div>");
+    }
+    output.push_str("</div>");
+    if options.live_reload {
+        output.push_str(
+            "<div class=\"inspector-panel\" id=\"rail-panel-inspector\" role=\"tabpanel\" aria-labelledby=\"rail-tab-inspector\" hidden></div>",
+        );
+    }
+    output.push_str("</aside>");
     output
 }
 
@@ -643,7 +691,9 @@ const LIVE_RELOAD_SCRIPT: &str = r#"(() => {
     label.textContent = text;
   };
   setState("down", "Connecting…");
-  document.body.append(pill);
+  // The pill lives in the top-right preview toolbar next to the enhanced-mode
+  // switch; the body fallback only matters for pages without the chrome.
+  (document.querySelector(".preview-chrome") ?? document.body).append(pill);
 
   // Restore the reading position after a rebuild-triggered reload.
   const scrollKey = `notist-scroll:${location.pathname}`;
@@ -694,6 +744,372 @@ const LIVE_RELOAD_SCRIPT: &str = r#"(() => {
   });
 
   if (document.visibilityState !== "hidden") openEvents();
+})();
+"#;
+
+/// Enhanced mode: a client-side document inspector. The toggle switch lives in
+/// the top-right preview toolbar; when on, annotated regions are outlined, the
+/// right rail gains a "Symbols" tab listing the page's anchors and annotation
+/// regions, and hovering any rendered element shows its source range, anchor,
+/// tags, and annotation properties. All data comes from the `data-notist-*`
+/// attributes the renderer already emits, so rebuilds need no extra protocol
+/// round-trips.
+const INSPECT_SCRIPT: &str = r#"(() => {
+  "use strict";
+  const toggle = document.getElementById("inspect-toggle");
+  const article = document.querySelector(".notist-document");
+  const tocTab = document.getElementById("rail-tab-toc");
+  const inspectorTab = document.getElementById("rail-tab-inspector");
+  const tocPanel = document.getElementById("rail-panel-toc");
+  const inspectorPanel = document.getElementById("rail-panel-inspector");
+  if (!toggle || !article || !inspectorPanel) return;
+
+  const STORAGE_KEY = "notist-enhanced";
+  // Renderer-reserved dataset keys; every other data-notist-* attribute is a
+  // user-defined annotation property.
+  const RESERVED = new Set([
+    "notistStart",
+    "notistEnd",
+    "notistTag",
+    "notistKind",
+    "notistName",
+    "notistArguments",
+    "notistColumns",
+  ]);
+
+  let tooltip = null;
+  let hoverElement = null;
+  let hoverInner = null;
+  let moveTicking = false;
+  let lastX = 0;
+  let lastY = 0;
+
+  const enhanced = () => document.body.classList.contains("enhanced");
+
+  const setEnhanced = (on) => {
+    document.body.classList.toggle("enhanced", on);
+    toggle.setAttribute("aria-checked", on ? "true" : "false");
+    try {
+      sessionStorage.setItem(STORAGE_KEY, on ? "1" : "0");
+    } catch {}
+    if (on) openPanel();
+    else teardown();
+  };
+
+  toggle.addEventListener("click", () => setEnhanced(!enhanced()));
+
+  // --- rail tabs ---
+  const switchTab = (which) => {
+    const showInspector = which === "inspector";
+    tocTab?.setAttribute("aria-selected", showInspector ? "false" : "true");
+    inspectorTab?.setAttribute("aria-selected", showInspector ? "true" : "false");
+    if (tocPanel) tocPanel.hidden = showInspector;
+    inspectorPanel.hidden = !showInspector;
+  };
+  tocTab?.addEventListener("click", () => switchTab("toc"));
+  inspectorTab?.addEventListener("click", () => switchTab("inspector"));
+
+  // --- data extraction ---
+  const propertiesOf = (element) =>
+    Object.entries(element.dataset).filter(([key]) => !RESERVED.has(key));
+
+  const tagsOf = (element) =>
+    (element.dataset.notistTag || "").split(/\s+/).filter(Boolean);
+
+  const isAnnotated = (element) =>
+    element.classList.contains("notist-annotated") ||
+    element.hasAttribute("data-notist-tag") ||
+    propertiesOf(element).length > 0;
+
+  // An element worth inspecting on its own: carries an anchor or annotation
+  // attributes, not just a source range.
+  const isMeaningful = (element) => !!element.id || isAnnotated(element);
+
+  const sameRange = (a, b) =>
+    a.hasAttribute("data-notist-start") &&
+    b.hasAttribute("data-notist-start") &&
+    a.dataset.notistStart === b.dataset.notistStart &&
+    a.dataset.notistEnd === b.dataset.notistEnd;
+
+  const tightlyWraps = (parent, child) =>
+    parent.children.length === 1 && parent.firstElementChild === child;
+
+  // Resolves a hovered innermost ranged element to the scope the user means:
+  // the nearest meaningful ancestor-or-self, continuing outward only through
+  // tightly-coincident elements — same-range projections, and single-child
+  // chains involving a rangeless annotation wrapper (the heading carrying the
+  // id around its wrapper). Nested scopes stop at the inner one: an annotated
+  // wrapper with siblings is a scope of its own, not part of the parent.
+  const resolveHover = (inner) => {
+    let current = inner;
+    while (current && current !== article) {
+      if (isMeaningful(current)) {
+        let resolved = current;
+        let next = current.parentElement;
+        while (
+          next &&
+          next !== article &&
+          isMeaningful(next) &&
+          (sameRange(current, next) ||
+            (tightlyWraps(next, current) &&
+              (!next.hasAttribute("data-notist-start") ||
+                !current.hasAttribute("data-notist-start"))))
+        ) {
+          current = next;
+          resolved = next;
+          next = next.parentElement;
+        }
+        return resolved;
+      }
+      current = current.parentElement;
+    }
+    return inner;
+  };
+
+  // Merges the id, range, tags, and properties scattered across the chain
+  // from the innermost element up to the resolved scope: the renderer splits
+  // them (id on the heading, tags on its wrapper), but the scope is one unit.
+  const collectInfo = (inner, resolved) => {
+    let id = null;
+    let range = null;
+    const tags = [];
+    const properties = new Map();
+    let current = inner;
+    while (current) {
+      if (!id && current.id) id = current.id;
+      if (current.hasAttribute("data-notist-start")) range = rangeOf(current);
+      for (const tag of tagsOf(current)) {
+        if (!tags.includes(tag)) tags.push(tag);
+      }
+      for (const [key, value] of propertiesOf(current)) {
+        if (!properties.has(key)) properties.set(key, value);
+      }
+      if (current === resolved) break;
+      current = current.parentElement;
+    }
+    return { id, range, tags, properties };
+  };
+
+  const kindOf = (element) => element.tagName.toLowerCase();
+
+  const rangeOf = (element) =>
+    element.dataset.notistStart !== undefined
+      ? `${element.dataset.notistStart}–${element.dataset.notistEnd}`
+      : null;
+
+  const propertyName = (key) =>
+    key.replace(/^notist/, "").replace(/[A-Z]/g, (c) => `-${c.toLowerCase()}`);
+
+  const span = (className, text) => {
+    const node = document.createElement("span");
+    node.className = className;
+    node.textContent = text;
+    return node;
+  };
+
+  // The module's root bindings, embedded by the page shell as JSON.
+  const pageBindings = (() => {
+    const node = document.getElementById("notist-bindings");
+    if (!node) return [];
+    try {
+      const parsed = JSON.parse(node.textContent);
+      return Array.isArray(parsed) ? parsed : [];
+    } catch {
+      return [];
+    }
+  })();
+
+  // --- inspector panel ---
+  const section = (title, empty, items) => {
+    const block = document.createElement("section");
+    block.className = "inspector-section";
+    const heading = document.createElement("div");
+    heading.className = "inspector-heading";
+    heading.textContent = `${title} (${items.length})`;
+    block.append(heading);
+    if (items.length === 0) {
+      block.append(span("inspector-empty", empty));
+      return block;
+    }
+    const list = document.createElement("ol");
+    for (const item of items) {
+      const entry = document.createElement("li");
+      // Items with a DOM target are jump buttons; informational items
+      // (bindings produce no rendered element) are static rows.
+      const row = document.createElement(item.element ? "button" : "div");
+      row.className = item.element
+        ? "inspector-item"
+        : "inspector-item inspector-static";
+      if (item.element) {
+        row.type = "button";
+        row.addEventListener("click", () => jumpTo(item.element));
+      }
+      row.append(...item.nodes);
+      entry.append(row);
+      list.append(entry);
+    }
+    block.append(list);
+    return block;
+  };
+
+  const symbolItems = () =>
+    Array.from(article.querySelectorAll("[id]")).map((element) => ({
+      element,
+      nodes: [span("inspector-id", `#${element.id}`), span("inspector-kind", kindOf(element))],
+    }));
+
+  const bindingItems = () =>
+    pageBindings.map((binding) => ({
+      element: null,
+      nodes: [
+        span("inspector-id", binding.name),
+        span("inspector-kind", binding.detail),
+      ],
+    }));
+
+  const annotationItems = () =>
+    Array.from(article.querySelectorAll("[data-notist-start]"))
+      .filter(isAnnotated)
+      .map((element) => {
+        const tags = tagsOf(element);
+        const properties = propertiesOf(element);
+        const label =
+          tags.length > 0
+            ? tags.map((tag) => `@${tag}`).join(" ")
+            : properties.length > 0
+              ? properties.map(([key]) => propertyName(key)).join(" ")
+              : "annotation";
+        const nodes = [span("inspector-id", label), span("inspector-kind", kindOf(element))];
+        const range = rangeOf(element);
+        if (range) nodes.push(span("inspector-range", range));
+        return { element, nodes };
+      });
+
+  const openPanel = () => {
+    inspectorPanel.replaceChildren(
+      section("Anchors", "No anchors on this page", symbolItems()),
+      section("Bindings", "No bindings in this module", bindingItems()),
+      section("Annotations", "No annotations on this page", annotationItems()),
+    );
+    switchTab("inspector");
+  };
+
+  const teardown = () => {
+    inspectorPanel.replaceChildren();
+    switchTab("toc");
+    hideTooltip();
+    clearHover();
+  };
+
+  const jumpTo = (element) => {
+    element.scrollIntoView({
+      block: "center",
+      behavior: matchMedia("(prefers-reduced-motion: reduce)").matches
+        ? "auto"
+        : "smooth",
+    });
+    // Restart the flash animation even for repeated jumps to the same element.
+    element.classList.remove("inspect-flash");
+    void element.offsetWidth;
+    element.classList.add("inspect-flash");
+  };
+
+  // --- hover tooltip ---
+  const describe = (inner, resolved) => {
+    const info = collectInfo(inner, resolved);
+    const rows = [];
+    const head = document.createElement("div");
+    head.className = "tt-head";
+    head.append(span("tt-kind", kindOf(resolved)));
+    if (info.id) head.append(span("tt-id", `#${info.id}`));
+    if (info.range) head.append(span("tt-range", `[${info.range})`));
+    rows.push(head);
+    for (const tag of info.tags) {
+      const row = document.createElement("div");
+      row.append(span("tt-key", "tag"), document.createTextNode(` ${tag}`));
+      rows.push(row);
+    }
+    for (const [key, value] of info.properties) {
+      const row = document.createElement("div");
+      row.append(
+        span("tt-key", propertyName(key)),
+        document.createTextNode(` = ${value}`),
+      );
+      rows.push(row);
+    }
+    return rows;
+  };
+
+  const showTooltip = (x, y) => {
+    if (!tooltip) {
+      tooltip = document.createElement("div");
+      tooltip.className = "inspect-tooltip";
+      tooltip.setAttribute("aria-hidden", "true");
+      document.body.append(tooltip);
+    }
+    tooltip.replaceChildren(...describe(hoverInner, hoverElement));
+    tooltip.style.left = "0px";
+    tooltip.style.top = "0px";
+    const width = tooltip.offsetWidth;
+    const height = tooltip.offsetHeight;
+    let left = x + 14;
+    let top = y + 16;
+    if (left + width > innerWidth - 8) left = x - width - 14;
+    if (top + height > innerHeight - 8) top = y - height - 16;
+    tooltip.style.left = `${Math.max(8, left)}px`;
+    tooltip.style.top = `${Math.max(8, top)}px`;
+  };
+
+  const hideTooltip = () => {
+    tooltip?.remove();
+    tooltip = null;
+  };
+
+  const clearHover = () => {
+    hoverElement?.classList.remove("inspect-hover");
+    hoverElement = null;
+    hoverInner = null;
+  };
+
+  article.addEventListener("mouseover", (event) => {
+    if (!enhanced()) return;
+    const inner =
+      event.target instanceof Element
+        ? event.target.closest("[data-notist-start]")
+        : null;
+    const resolved = inner ? resolveHover(inner) : null;
+    if (resolved === hoverElement) return;
+    clearHover();
+    hoverElement = resolved;
+    hoverInner = inner;
+    hoverElement?.classList.add("inspect-hover");
+    if (!hoverElement) hideTooltip();
+  });
+
+  article.addEventListener("mousemove", (event) => {
+    if (!enhanced()) return;
+    lastX = event.clientX;
+    lastY = event.clientY;
+    if (moveTicking) return;
+    moveTicking = true;
+    requestAnimationFrame(() => {
+      moveTicking = false;
+      if (hoverElement && enhanced()) showTooltip(lastX, lastY);
+    });
+  });
+
+  article.addEventListener("mouseleave", () => {
+    clearHover();
+    hideTooltip();
+  });
+  addEventListener("scroll", hideTooltip, { capture: true, passive: true });
+
+  // Persisted across the reloads that live rebuilds trigger.
+  let saved = null;
+  try {
+    saved = sessionStorage.getItem(STORAGE_KEY);
+  } catch {}
+  if (saved === "1") setEnhanced(true);
 })();
 "#;
 
@@ -834,7 +1250,7 @@ button { font: inherit; }
   padding: 44px 48px 96px;
 }
 .page-main { width: min(100%, 46rem); }
-.page-toc {
+.page-rail {
   flex: none;
   width: 15rem;
   position: sticky;
@@ -845,10 +1261,38 @@ button { font: inherit; }
   overflow-y: auto;
   padding-bottom: 24px;
 }
+/* Preview pages without headings hide the rail until enhanced mode needs it. */
+.page-rail[data-empty-toc] { display: none; }
+body.enhanced .page-rail[data-empty-toc] { display: block; }
 @media (max-width: 1240px) {
-  .page-toc { display: none; }
+  .page-rail { display: none; }
   .page-body { gap: 0; }
 }
+
+/* rail tabs (enhanced mode only; the strip is hidden otherwise) */
+.rail-tabs { display: flex; gap: 4px; margin-bottom: 14px; }
+body:not(.enhanced) .rail-tabs { display: none; }
+body.enhanced .toc-title { display: none; }
+.rail-tab {
+  flex: 1;
+  padding: 5px 8px;
+  border: 1px solid var(--border-soft);
+  border-radius: 7px;
+  background: transparent;
+  color: var(--muted);
+  font-size: 12px;
+  line-height: 1.4;
+  cursor: pointer;
+  transition: background-color 0.12s ease, color 0.12s ease;
+}
+.rail-tab:hover { background: var(--sunken); color: var(--text); }
+.rail-tab[aria-selected="true"] {
+  border-color: transparent;
+  background: var(--accent-soft);
+  color: var(--accent-strong);
+  font-weight: 600;
+}
+.toc-empty { padding-left: 14px; color: var(--faint); font-size: 12.5px; }
 
 /* ---------- sidebar ---------- */
 .sidebar-header {
@@ -1009,11 +1453,18 @@ button { font: inherit; }
 .to-top.visible { opacity: 1; translate: 0; pointer-events: auto; }
 .to-top:hover { border-color: var(--accent); color: var(--accent-strong); }
 
-.live-status {
+/* ---------- preview chrome (preview only) ---------- */
+.preview-chrome {
   position: fixed;
-  left: 20px;
-  bottom: 20px;
-  z-index: 70;
+  top: 14px;
+  right: 20px;
+  z-index: 80;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+
+.live-status {
   display: flex;
   align-items: center;
   gap: 8px;
@@ -1037,6 +1488,143 @@ button { font: inherit; }
   animation: live-pulse 1s ease-in-out infinite;
 }
 @keyframes live-pulse { 50% { opacity: 0.3; } }
+
+/* enhanced-mode switch */
+.inspect-toggle {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  padding: 6px 12px;
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  background: var(--surface);
+  box-shadow: var(--shadow-sm);
+  color: var(--muted);
+  font-size: 12px;
+  line-height: 1;
+  cursor: pointer;
+  transition: color 0.12s ease, border-color 0.12s ease, background-color 0.12s ease;
+}
+.inspect-toggle:hover { color: var(--text); border-color: var(--accent); }
+.inspect-toggle[aria-checked="true"] {
+  border-color: var(--accent);
+  background: var(--accent-soft);
+  color: var(--accent-strong);
+  font-weight: 600;
+}
+.inspect-switch {
+  position: relative;
+  flex: none;
+  width: 26px;
+  height: 15px;
+  border-radius: 999px;
+  background: var(--border);
+  transition: background-color 0.15s ease;
+}
+.inspect-switch::after {
+  content: "";
+  position: absolute;
+  top: 2px;
+  left: 2px;
+  width: 11px;
+  height: 11px;
+  border-radius: 50%;
+  background: var(--surface);
+  box-shadow: var(--shadow-sm);
+  transition: translate 0.15s ease;
+}
+.inspect-toggle[aria-checked="true"] .inspect-switch { background: var(--accent); }
+.inspect-toggle[aria-checked="true"] .inspect-switch::after { translate: 11px 0; }
+
+/* enhanced-mode document highlights */
+body.enhanced .notist-document [data-notist-tag],
+body.enhanced .notist-document .notist-annotated {
+  outline: 1px dashed color-mix(in srgb, var(--accent) 60%, transparent);
+  outline-offset: 2px;
+  border-radius: 3px;
+}
+/* The hover marker must beat the dashed annotation outline above, so it gets
+   one more class-level selector than that rule. */
+body.enhanced .notist-document [data-notist-start].inspect-hover,
+body.enhanced .notist-document .notist-annotated.inspect-hover {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+  border-radius: 3px;
+  background-color: color-mix(in srgb, var(--accent) 7%, transparent);
+}
+@keyframes inspect-flash {
+  0%, 100% { background-color: transparent; }
+  25% { background-color: color-mix(in srgb, var(--accent) 18%, transparent); }
+}
+.inspect-flash { animation: inspect-flash 0.9s ease; border-radius: 4px; }
+
+/* inspector panel (a rail tab panel in preview) */
+.inspector-panel { font-size: 12.5px; }
+.inspector-heading {
+  margin: 12px 0 6px;
+  padding-left: 14px;
+  color: var(--faint);
+  font-size: 11px;
+  font-weight: 700;
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+}
+.inspector-section:first-child .inspector-heading { margin-top: 0; }
+.inspector-panel ol { margin: 0; padding: 0; list-style: none; }
+.inspector-item {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+  width: 100%;
+  padding: 5px 8px;
+  border: 0;
+  border-radius: 6px;
+  background: transparent;
+  color: var(--text);
+  font-size: 12px;
+  line-height: 1.5;
+  text-align: left;
+  cursor: pointer;
+}
+.inspector-item:hover { background: var(--sunken); }
+.inspector-item.inspector-static { cursor: default; }
+.inspector-item.inspector-static:hover { background: transparent; }
+.inspector-id {
+  color: var(--accent-strong);
+  font-family: var(--font-mono);
+  font-size: 11.5px;
+  overflow-wrap: anywhere;
+}
+.inspector-kind { flex: none; color: var(--faint); font-size: 11px; }
+.inspector-range {
+  flex: none;
+  margin-left: auto;
+  color: var(--faint);
+  font-family: var(--font-mono);
+  font-size: 11px;
+}
+.inspector-empty { padding: 2px 8px 6px; color: var(--faint); font-size: 12px; }
+
+/* hover tooltip */
+.inspect-tooltip {
+  position: fixed;
+  z-index: 90;
+  max-width: 340px;
+  padding: 8px 11px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: var(--surface);
+  box-shadow: var(--shadow-md);
+  color: var(--text);
+  font: 11.5px/1.65 var(--font-mono);
+  overflow-wrap: anywhere;
+  pointer-events: none;
+}
+.tt-head { display: flex; flex-wrap: wrap; align-items: baseline; gap: 8px; }
+.tt-kind { color: var(--accent-strong); font-weight: 700; }
+.tt-id { color: var(--text-strong); }
+.tt-range { color: var(--faint); }
+.tt-key { color: var(--muted); }
 
 /* ---------- topbar & drawer (mobile) ---------- */
 .topbar { display: none; }
@@ -1088,6 +1676,7 @@ button { font: inherit; }
   }
   body.nav-open .sidebar-scrim { opacity: 1; pointer-events: auto; }
   .page-body { padding: 30px 20px 72px; }
+  .preview-chrome { top: 64px; right: 12px; }
 }
 
 /* ---------- document typography ---------- */
@@ -1373,10 +1962,14 @@ div.notist-math { margin: 1.1em 0; overflow-x: auto; text-align: center; }
 
 /* ---------- print ---------- */
 @media print {
-  .site-sidebar, .page-toc, .topbar, .to-top, .skip-link, .live-status, .breadcrumb, .page-footer {
+  .site-sidebar, .page-rail, .topbar, .to-top, .skip-link, .live-status, .breadcrumb, .page-footer,
+  .preview-chrome, .inspect-tooltip {
     display: none !important;
   }
   body { padding: 0; background: #fff; }
+  body.enhanced .notist-document [data-notist-tag],
+  body.enhanced .notist-document .notist-annotated,
+  body.enhanced .notist-document .inspect-hover { outline: none !important; background: none; }
   .page-body { padding: 0; }
   .page-main { width: 100%; }
   .notist-document pre,
@@ -1464,6 +2057,58 @@ mod tests {
     }
 
     #[test]
+    fn preview_pages_include_the_enhanced_mode_chrome() {
+        let root = tempfile::TempDir::new_in(std::env::current_dir().unwrap()).unwrap();
+        fs::write(
+            root.path().join("README.not"),
+            "#heading[Home]\n\n#let answer = 42\n#let double(x: Int) -> Int = x * 2",
+        )
+        .unwrap();
+        let output = root.path().join("site");
+        let rendered = render(root.path());
+
+        write_rendered_site(
+            &rendered,
+            &output.join("preview"),
+            SiteOptions { live_reload: true },
+        )
+        .unwrap();
+        let inspect = fs::read_to_string(output.join("preview/_notist/inspect.js")).unwrap();
+        assert!(inspect.contains("inspect-toggle"));
+        assert!(inspect.contains("rail-panel-inspector"));
+        assert!(inspect.contains("notist-enhanced"));
+        let home = fs::read_to_string(output.join("preview/index.html")).unwrap();
+        assert!(home.contains("class=\"preview-chrome\""));
+        assert!(home.contains("role=\"switch\""));
+        assert!(home.contains("_notist/inspect.js"));
+        // The inspector lives in a rail tab next to the TOC, even on pages
+        // without headings (the rail is then hidden until enhanced mode).
+        assert!(home.contains("class=\"page-rail\" data-empty-toc"));
+        assert!(home.contains("id=\"rail-tab-inspector\""));
+        assert!(home.contains("id=\"rail-panel-inspector\""));
+        // Root bindings ship as embedded JSON for the inspector's symbol table.
+        assert!(home.contains("id=\"notist-bindings\""));
+        assert!(home.contains("\"name\":\"answer\""), "{home}");
+        assert!(home.contains("Int = 42"), "{home}");
+        assert!(home.contains("fn(x: Int) -> Int"), "{home}");
+        let styles = fs::read_to_string(output.join("preview/_notist/style.css")).unwrap();
+        assert!(styles.contains(".preview-chrome"));
+        assert!(styles.contains(".rail-tab"));
+        assert!(styles.contains(".inspector-panel"));
+
+        // Static builds stay clean: no preview chrome, no inspector script,
+        // no bindings payload, and no rail at all on a page without
+        // TOC-level headings.
+        write_rendered_site(&rendered, &output.join("static"), SiteOptions::default()).unwrap();
+        let static_home = fs::read_to_string(output.join("static/index.html")).unwrap();
+        assert!(!static_home.contains("preview-chrome"));
+        assert!(!static_home.contains("rail-tab"));
+        assert!(!static_home.contains("page-rail"));
+        assert!(!static_home.contains("notist-bindings"));
+        assert!(!output.join("static/_notist/inspect.js").exists());
+    }
+
+    #[test]
     fn page_shell_includes_breadcrumb_toc_and_semantic_labels() {
         let root = tempfile::TempDir::new_in(std::env::current_dir().unwrap()).unwrap();
         fs::create_dir(root.path().join("guide")).unwrap();
@@ -1510,6 +2155,30 @@ mod tests {
         assert!(home.contains("href=\"guide/#intro\""));
         assert!(home.contains("id=\"home\""));
         assert!(guide.contains("id=\"intro\""));
+    }
+
+    #[test]
+    fn builds_block_prefix_annotations_into_the_page() {
+        let root = tempfile::TempDir::new_in(std::env::current_dir().unwrap()).unwrap();
+        fs::write(
+            root.path().join("README.not"),
+            "= Home\n\n@[bid,#wip,.hero,priority=1]\n== Section\n\n#[scoped]@sid,#tag-a,k=2 text.",
+        )
+        .unwrap();
+        let output = root.path().join("site");
+        let rendered = render(root.path());
+        write_rendered_site(&rendered, &output, SiteOptions::default()).unwrap();
+
+        let home = fs::read_to_string(output.join("index.html")).unwrap();
+        // Block-prefix `@[...]`: id on the heading, attributes on the inline wrapper.
+        assert!(home.contains("id=\"bid\""), "{home}");
+        assert!(home.contains("notist-annotated hero"), "{home}");
+        assert!(home.contains("data-notist-tag=\"wip\""), "{home}");
+        assert!(home.contains("data-notist-priority=\"1\""), "{home}");
+        // Postfix `@...` on a manual scope keeps working through the same table.
+        assert!(home.contains("id=\"sid\""), "{home}");
+        assert!(home.contains("data-notist-tag=\"tag-a\""), "{home}");
+        assert!(home.contains("data-notist-k=\"2\""), "{home}");
     }
 
     #[test]

@@ -56,12 +56,15 @@ pub struct EvalDiagnostic {
 }
 
 /// A structured document together with diagnostics preserved from evaluation.
-#[derive(Clone, Debug, Default, Eq, PartialEq)]
+#[derive(Clone, Debug, Default, PartialEq)]
 pub struct StructuredEvaluation {
     /// The paragraph, list, and block structure derived from evaluated content.
     pub document: notist_model::StructuredDocument,
     /// Diagnostics produced before and during function evaluation.
     pub diagnostics: Vec<EvalDiagnostic>,
+    /// The side annotation table (D0002/D0006): postfix `@...` and
+    /// block-prefix `@[...]` attribute sets over absolute source ranges.
+    pub annotations: Vec<AnnotationEntry>,
 }
 
 /// Evaluates Notist source with an empty function registry.

@@ -6,8 +6,9 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::{Duration, Instant};
 
 use notist_analysis::{
-    AnalyzerConfiguration, CompletionKind, DiagnosticKind, DocumentVersions, ResourceFile,
-    ResourceKind, SignatureSet, SourceOverlays, WorkspaceSnapshot, WorkspaceSymbolKind,
+    AnalyzerConfiguration, AnnotationEntry, CompletionKind, DiagnosticKind, DocumentVersions,
+    ResourceFile, ResourceKind, SignatureSet, SourceOverlays, Value, WorkspaceSnapshot,
+    WorkspaceSymbolKind,
 };
 use notist_html::{
     RenderOptions, RenderedAnnotation, module_anchors, outline_entries, render_with_resolvers,
@@ -574,6 +575,19 @@ pub struct RenderedPageRecord {
     pub title: Option<String>,
     /// Top-level headings of the page with their assigned HTML anchors.
     pub headings: Vec<RenderedHeadingRecord>,
+    /// The module's root `let` bindings (own plus imported, D0004), sorted by
+    /// name, for the preview inspector's symbol table.
+    #[serde(default)]
+    pub bindings: Vec<RenderedBindingRecord>,
+}
+
+/// One module root binding shown in the preview inspector.
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+pub struct RenderedBindingRecord {
+    pub name: String,
+    /// Compact type/value summary: a scalar literal, `Content`, or a
+    /// `fn(...) -> R` signature.
+    pub detail: String,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
@@ -2007,11 +2021,7 @@ fn render_workspace(
             let structured = workspace
                 .structured_module(module.id)
                 .expect("source-backed modules have structured results");
-            let annotations = module
-                .parse
-                .as_ref()
-                .map(rendered_annotations)
-                .unwrap_or_default();
+            let annotations = rendered_annotations(&structured.annotations);
             let anchors = module_anchors(&structured.document, &annotations);
             anchor_maps.insert(
                 module.logical_path.clone(),
@@ -2028,6 +2038,19 @@ fn render_workspace(
             if let Some(title) = headings.first() {
                 titles.insert(module.logical_path.clone(), title.text.clone());
             }
+            let mut bindings: Vec<RenderedBindingRecord> = workspace
+                .module_bindings(module.id)
+                .map(|module_bindings| {
+                    module_bindings
+                        .iter()
+                        .map(|(name, value)| RenderedBindingRecord {
+                            name: name.clone(),
+                            detail: binding_detail(value),
+                        })
+                        .collect()
+                })
+                .unwrap_or_default();
+            bindings.sort_by(|a, b| a.name.cmp(&b.name));
             for diagnostic in &structured.diagnostics {
                 evaluation_diagnostics.push(DiagnosticRecord {
                     path: Some(source_path.clone()),
@@ -2038,7 +2061,7 @@ fn render_workspace(
                     message: diagnostic.message.clone(),
                 });
             }
-            module_prepared = Some((structured, annotations, headings));
+            module_prepared = Some((structured, annotations, headings, bindings));
         }
         prepared.push(module_prepared);
     }
@@ -2080,7 +2103,7 @@ fn render_workspace(
                 "request cancelled",
             ));
         }
-        let Some((structured, annotations, headings)) = prepared else {
+        let Some((structured, annotations, headings, bindings)) = prepared else {
             pages.push(RenderedPageRecord {
                 module_segments: module.logical_path.segments().to_vec(),
                 fragment: virtual_module_fragment(
@@ -2091,6 +2114,7 @@ fn render_workspace(
                 ),
                 title: None,
                 headings: Vec::new(),
+                bindings: Vec::new(),
             });
             continue;
         };
@@ -2127,6 +2151,7 @@ fn render_workspace(
             fragment,
             title: headings.first().map(|heading| heading.text.clone()),
             headings,
+            bindings,
         });
     }
     // Analysis diagnostics are captured from the same snapshot the pages
@@ -2182,16 +2207,16 @@ fn attribute_records(attributes: &[notist_syntax::Attributes]) -> Vec<AttributeR
         .collect()
 }
 
-/// Projects the syntax-level annotation table onto renderer annotations.
-fn rendered_annotations(parse: &notist_syntax::Parse) -> Vec<RenderedAnnotation> {
-    parse
-        .annotations()
-        .into_iter()
-        .map(|annotation| {
+/// Projects the evaluation annotation table (postfix `@...` and block-prefix
+/// `@[...]`, D0002/D0006) onto renderer annotations.
+fn rendered_annotations(entries: &[AnnotationEntry]) -> Vec<RenderedAnnotation> {
+    entries
+        .iter()
+        .map(|entry| {
             let mut classes = Vec::new();
             let mut tags = Vec::new();
             let mut properties = Vec::new();
-            for item in &annotation.attributes.items {
+            for item in &entry.attributes.items {
                 match item {
                     Attribute::Class(name) => classes.push(name.value.clone()),
                     Attribute::Tag(name) => tags.push(name.value.clone()),
@@ -2201,14 +2226,74 @@ fn rendered_annotations(parse: &notist_syntax::Parse) -> Vec<RenderedAnnotation>
                 }
             }
             RenderedAnnotation {
-                scope: annotation.scope_range,
-                id: annotation.attributes.id.as_ref().map(|id| id.value.clone()),
+                scope: entry.range,
+                id: entry.attributes.id.as_ref().map(|id| id.value.clone()),
                 classes,
                 tags,
                 properties,
             }
         })
         .collect()
+}
+
+/// Compact one-line summary of a root binding for the preview inspector:
+/// scalar literals with their value, `Content`, or a `fn(...) -> R` signature.
+fn binding_detail(value: &Value) -> String {
+    match value {
+        Value::None => "None".into(),
+        Value::Bool(value) => format!("Bool = {value}"),
+        Value::Int(value) => format!("Int = {value}"),
+        Value::Float(value) => format!("Float = {value}"),
+        Value::String(value) => format!("String = {}", truncated_string(value)),
+        Value::Content(_) => "Content".into(),
+        Value::Function(function) => format_signature(&function.signature),
+    }
+}
+
+/// Renders a string literal for the inspector: first line only, escaped and
+/// truncated so multi-line or long strings stay on one line.
+fn truncated_string(value: &str) -> String {
+    let first_line = value.lines().next().unwrap_or("");
+    let mut output = String::from("\"");
+    for character in first_line.chars().take(24) {
+        match character {
+            '\\' => output.push_str("\\\\"),
+            '"' => output.push_str("\\\""),
+            _ => output.push(character),
+        }
+    }
+    if first_line.chars().count() > 24 || value.lines().count() > 1 {
+        output.push('…');
+    }
+    output.push('"');
+    output
+}
+
+/// The D0007 written form of a function signature: `fn(x: Int) -> Int`, with
+/// ` =` marking defaulted parameters and `trailing` the Content parameter.
+fn format_signature(signature: &FunctionSignature) -> String {
+    let mut output = String::from("fn(");
+    for (index, parameter) in signature.parameters.iter().enumerate() {
+        if index > 0 {
+            output.push_str(", ");
+        }
+        if signature.trailing_content.as_deref() == Some(parameter.name.as_str()) {
+            output.push_str("trailing ");
+        }
+        output.push_str(&parameter.name);
+        output.push_str(": ");
+        output.push_str(&parameter.ty.to_string());
+        if parameter.default.is_some() {
+            output.push_str(" =");
+        }
+    }
+    if signature.result != Type::Inferred {
+        output.push_str(") -> ");
+        output.push_str(&signature.result.to_string());
+    } else {
+        output.push(')');
+    }
+    output
 }
 
 fn virtual_module_fragment(

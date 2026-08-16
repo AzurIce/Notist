@@ -40,6 +40,7 @@ pub fn structure(evaluation: Evaluation) -> StructuredEvaluation {
     StructuredEvaluation {
         document: StructuredDocument { blocks },
         diagnostics: evaluation.diagnostics,
+        annotations: evaluation.annotations,
     }
 }
 

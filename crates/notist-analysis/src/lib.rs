@@ -7,7 +7,7 @@ use std::sync::{Arc, Mutex};
 
 use notist_eval::{
     EvalDiagnostic, Evaluator, Function, FunctionContext, FunctionInput, FunctionOutput,
-    FunctionRegistry, Value, structure,
+    FunctionRegistry, structure,
 };
 use notist_model::{
     Block, Content, DefaultValue, Element, ElementNode, FunctionSignature, ModulePath,
@@ -21,6 +21,7 @@ pub use check::{
     CheckDiagnostic, LocalSymbolId, ModuleSemanticIndex, SignatureSet, SymbolDefinition,
     SymbolKind, SymbolReference, check_module, check_module_with_prelude, resolve_module_symbols,
 };
+pub use notist_eval::{AnnotationEntry, Value};
 
 /// The marker file whose containing directory is a Notist vault root.
 pub const MANIFEST_FILE: &str = "Notist.toml";
@@ -563,6 +564,9 @@ pub struct StructuredModule {
     pub function_environment: FunctionEnvironmentId,
     pub document: StructuredDocument,
     pub diagnostics: Vec<EvalDiagnostic>,
+    /// The evaluation annotation table (D0002/D0006): postfix `@...` and
+    /// block-prefix `@[...]` attribute sets over absolute source ranges.
+    pub annotations: Vec<notist_eval::AnnotationEntry>,
 }
 
 /// Semantic changes derived from two complete snapshots.
@@ -1406,6 +1410,7 @@ impl WorkspaceSnapshot {
             function_environment: self.function_environment,
             document: structured.document,
             diagnostics: structured.diagnostics,
+            annotations: structured.annotations,
         })
     }
 
