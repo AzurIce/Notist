@@ -39,7 +39,7 @@
           p.rust-bin.selectLatestNightlyWith (
             toolchain:
             toolchain.default.override {
-              targets = [ "wasm32-unknown-unknown" ];
+              targets = [ "wasm32-unknown-unknown" "wasm32-wasip2" ];
               extensions = [ "rust-src" ];
             }
           )
