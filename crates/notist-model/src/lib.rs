@@ -4,8 +4,8 @@ mod content;
 mod signature;
 
 pub use content::{
-    Block, Content, Element, ElementNode, StructuredDocument, TableAlignment, TableCellPlacement,
-    TableLayoutError, table_layout,
+    Block, Content, CustomField, Element, ElementNode, ElementValue, StructuredDocument,
+    TableAlignment, TableCellPlacement, TableLayoutError, table_layout,
 };
 pub use signature::{
     DefaultValue, FunctionSignature, Parameter, Type, builtin_signatures, callout_signature,

@@ -3,7 +3,7 @@ use std::error::Error;
 use std::fs;
 use std::io;
 use std::net::{IpAddr, Ipv4Addr, SocketAddr};
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, RwLock};
@@ -60,10 +60,11 @@ pub fn run(
         return Err("service returned an unexpected open-view response".into());
     };
     let initial_snapshot_revision = opened.snapshot.revision;
-    let diagnostics = rebuild_preview_site(&mut client, view_id, &site, color)?;
+    let diagnostics = rebuild_preview_site(&mut client, view_id, &site, &root, color)?;
     print_rebuild_status(format, 1, &diagnostics)?;
 
     let rebuild_site = site.clone();
+    let rebuild_root = root.clone();
     let rebuild_revision = revision.clone();
     let rebuild_updates = updates.clone();
     let rebuild_stop = Arc::new(AtomicBool::new(false));
@@ -92,7 +93,7 @@ pub fn run(
                     continue;
                 }
                 snapshot_revision = summary.snapshot.revision;
-                let rebuilt = rebuild_preview_site(&mut client, view_id, &rebuild_site, color);
+                let rebuilt = rebuild_preview_site(&mut client, view_id, &rebuild_site, &rebuild_root, color);
                 match rebuilt {
                     Ok(diagnostics) => {
                         let revision = rebuild_revision.fetch_add(1, Ordering::SeqCst) + 1;
@@ -137,12 +138,14 @@ fn rebuild_preview_site(
     client: &mut LocalNotistClient,
     view_id: ServiceViewId,
     site: &PublishedSite,
+    root: &Path,
     _color: ColorChoice,
 ) -> Result<Vec<notist_service::DiagnosticRecord>, Box<dyn Error>> {
     let staging = site.next_generation_path();
     fs::create_dir_all(&staging)?;
 
     let rendered = render_workspace(client, view_id)?;
+    crate::build::copy_plugin_assets(root, &staging)?;
     write_rendered_site(&rendered, &staging, SiteOptions { live_reload: true })?;
     let mut diagnostics = rendered.analysis_diagnostics;
     merge_diagnostics(&mut diagnostics, rendered.evaluation_diagnostics);
@@ -477,7 +480,7 @@ mod tests {
         };
 
         let diagnostics =
-            rebuild_preview_site(&mut client, view_id, &site, ColorChoice::Never).unwrap();
+            rebuild_preview_site(&mut client, view_id, &site, root.path(), ColorChoice::Never).unwrap();
 
         assert!(diagnostics.is_empty());
         let first_generation = site.capture();
@@ -491,7 +494,7 @@ mod tests {
         client
             .request(CoreRequest::ReloadDiskView { view_id })
             .unwrap();
-        rebuild_preview_site(&mut client, view_id, &site, ColorChoice::Never).unwrap();
+        rebuild_preview_site(&mut client, view_id, &site, root.path(), ColorChoice::Never).unwrap();
         let second_generation = site.capture();
         let second = fs::read_to_string(second_generation.path.join("index.html")).unwrap();
         assert!(second.contains(">Second</span>"));

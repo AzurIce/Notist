@@ -45,7 +45,7 @@ URL 中的路径 segment 单独 percent encode；页面之间使用相对链接�
 - **虚拟目录模块**生成索引页（列出子模块与资源）；
 - 引用在构建时解析：目标存在输出链接，不存在保留可见文本与 unresolved 样式；
 - syntax/analysis/evaluation diagnostics 不阻止生成其他可用页面，但 `notist build` 输出 diagnostics 并返回非零退出码；
-- 默认不清空整个输出目录（只创建或覆盖本次 Vault 对应的页面与 `_notist` 资源），删除旧产物必须显式 `--clean`；`--clean` 只允许清理已解析、验证位于目标 output root 内的 artifact（[[vault::designs::host::cli-command-surface-skill-distribution#CLI 命令面]]）。
+- 默认不清空整个输出目录（只创建或覆盖本次 Vault 对应的页面与 `_notist` 资源），删除旧产物必须显式 `--clean`；`--clean` 只允许清理已解析、验证位于目标 output root 内的 artifact（[[vault::cli#build]]）。
 
 站点级职责（完整 HTML page shell、vault 名称与模块导航、`_notist/style.css` 等共享资源）属于 CLI build 层，不进入 fragment renderer。
 

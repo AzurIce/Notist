@@ -21,6 +21,7 @@ notify-debouncer-mini.workspace = true
 notist-analysis.workspace = true
 notist-eval.workspace = true
 notist-html.workspace = true
+notist-plugin-host.workspace = true
 notist-service.workspace = true
 notist-model.workspace = true
 notist-syntax.workspace = true

@@ -1,0 +1,24 @@
+# shader plugin package
+
+This directory is the distributable Notist Wasm plugin package:
+
+- `plugin.json` declares the Wasm module and element schema.
+- `semantic.wasm` is a small core WebAssembly module implementing the plugin ABI.
+- `semantic.wat` is the human-readable WAT source for `semantic.wasm`.
+- `assets/shader.js` and `assets/shader.css` are the WebGPU/Web Component assets for HTML targets.
+
+The Wasm module is loaded at runtime by `notist-plugin-host` through Wasmtime.
+The HTML target uses WebGPU/WGSL (the browser standard implemented by `wgpu`) to render the shader canvas.
+
+Load it from `Notist.toml`:
+
+```toml
+[plugins.shader]
+path = "../plugins/shader"
+```
+
+Regenerate `semantic.wasm` from WAT with `wat`:
+
+```bash
+wat::parse_str(include_str!("semantic.wat"))
+```

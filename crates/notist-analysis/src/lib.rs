@@ -188,6 +188,9 @@ impl FunctionEnvironmentId {
 pub struct AnalyzerConfiguration {
     pub manifest_override: Option<Arc<str>>,
     pub signatures: SignatureSet,
+    /// Runtime function registry used for evaluation. This is the plugin
+    /// system's eval-side contribution point.
+    pub function_registry: Arc<FunctionRegistry>,
 }
 
 struct SchemaFunction {
@@ -242,8 +245,9 @@ fn safe_evaluation_diagnostics(
     parse: &notist_syntax::Parse,
     signatures: &SignatureSet,
     seeds: &HashMap<String, Value>,
+    function_registry: &FunctionRegistry,
 ) -> Vec<EvalDiagnostic> {
-    let mut registry = FunctionRegistry::with_builtins();
+    let mut registry = function_registry.clone();
     for (name, signature) in signatures.iter() {
         if registry.get(name).is_none() {
             let _ = registry.register(SchemaFunction {
@@ -265,6 +269,7 @@ impl Default for AnalyzerConfiguration {
         Self {
             manifest_override: None,
             signatures: SignatureSet::with_builtins(),
+            function_registry: Arc::new(FunctionRegistry::with_builtins()),
         }
     }
 }
@@ -610,6 +615,7 @@ pub struct WorkspaceSnapshot {
     module_attributes: BTreeMap<ModuleId, Vec<notist_syntax::Attributes>>,
     diagnostics: Vec<Diagnostic>,
     signatures: SignatureSet,
+    function_registry: Arc<FunctionRegistry>,
     module_signatures: BTreeMap<ModuleId, SignatureSet>,
     module_semantics: BTreeMap<ModuleId, ModuleSemanticIndex>,
     attribute_keys: BTreeSet<String>,
@@ -680,6 +686,18 @@ impl WorkspaceSnapshot {
                 .then(|| fs::read_to_string(configuration_path).map(Arc::from))
                 .transpose()?
         };
+        let mut function_registry = (*analyzer_configuration.function_registry).clone();
+        let mut signatures = analyzer_configuration.signatures.clone();
+        let loaded_plugins =
+            notist_plugin_host::load_plugins_from_vault(&root, configuration.as_deref())
+                .map_err(|error| io::Error::new(io::ErrorKind::InvalidInput, error))?;
+        notist_plugin_host::register_loaded(&mut function_registry, &loaded_plugins)
+            .map_err(|error| io::Error::new(io::ErrorKind::InvalidInput, format!("{error:?}")))?;
+        for plugin in &loaded_plugins {
+            for function in &plugin.functions {
+                signatures.insert(function.name(), function.signature());
+            }
+        }
         let mut workspace = Self {
             root: root.clone(),
             configuration,
@@ -693,7 +711,8 @@ impl WorkspaceSnapshot {
             module_import_seeds: BTreeMap::new(),
             module_attributes: BTreeMap::new(),
             diagnostics: Vec::new(),
-            signatures: analyzer_configuration.signatures.clone(),
+            signatures,
+            function_registry: Arc::new(function_registry),
             module_signatures: BTreeMap::new(),
             module_semantics: BTreeMap::new(),
             attribute_keys: BTreeSet::new(),
@@ -1399,7 +1418,8 @@ impl WorkspaceSnapshot {
             .get(&module_id)
             .cloned()
             .unwrap_or_default();
-        let structured = structure(Evaluator::default().evaluate_parsed_with_bindings(
+        let evaluator = Evaluator::new((*self.function_registry).clone());
+        let structured = structure(evaluator.evaluate_parsed_with_bindings(
             source,
             module.parse.as_ref()?,
             seeds,
@@ -2279,7 +2299,13 @@ impl WorkspaceSnapshot {
                 .get(&module.id)
                 .cloned()
                 .unwrap_or_default();
-            let runtime = safe_evaluation_diagnostics(source, parse, &signatures, &seeds);
+            let runtime = safe_evaluation_diagnostics(
+                source,
+                parse,
+                &signatures,
+                &seeds,
+                &self.function_registry,
+            );
             diagnostics.extend(checks.iter().cloned().map(|diagnostic| Diagnostic {
                 kind: diagnostic.kind,
                 message: diagnostic.message,
@@ -4400,6 +4426,7 @@ mod tests {
                 AnalyzerConfiguration {
                     manifest_override: Some(Arc::from("editor = true")),
                     signatures,
+                    function_registry: Arc::new(FunctionRegistry::with_builtins()),
                 },
             )
             .unwrap();

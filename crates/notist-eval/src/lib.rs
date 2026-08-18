@@ -295,6 +295,7 @@ mod tests {
                     name: "quote".into(),
                     body,
                     block: true,
+                    fields: Vec::new(),
                 },
                 input.range,
             )))

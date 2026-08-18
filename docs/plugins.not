@@ -1,0 +1,63 @@
+= 插件示例：Shader
+
+本文演示 Notist 插件系统的一个 Wasm 插件包闭环：`shader` 插件是一个通过 `docs/Notist.toml` 声明加载的 WebAssembly 插件，LSP/analysis 会因此认识 `shader` 函数。
+
+== 插件声明
+
+在 `Notist.toml` 中声明要加载的插件包：
+
+```toml
+[plugins.shader]
+path = "../plugins/shader"
+```
+
+插件包目录包含：
+
+```text
+plugins/shader/
+├── plugin.json
+├── semantic.wasm
+├── semantic.wat
+└── assets/
+    ├── shader.js
+    └── shader.css
+```
+
+`plugin.json` 描述元素 schema、Wasm module 和 HTML contribution。宿主在打开 vault 时读取 `Notist.toml`，用 Wasmtime 加载 `semantic.wasm`，并把 `shader` 注册进当前分析的函数环境。
+
+== 调用方式
+
+`shader` 是一个插件函数，签名等价于：
+
+```text
+shader(source: String, width: Int = 800, height: Int = 600,
+       trailing body: Content) -> Content
+```
+
+`source` 是 WGSL fragment 主函数：
+
+```wgsl
+fn mainImage(fragCoord: vec2<f32>) -> vec4<f32> {
+    let uv = fragCoord / vec2<f32>(800.0, 600.0);
+    return vec4<f32>(uv, 0.5, 1.0);
+}
+```
+
+== 实际效果
+
+下面这段文档会渲染为一个可交互的 shader canvas：
+
+#shader(
+  source: r#"""
+fn mainImage(fragCoord: vec2<f32>) -> vec4<f32> {
+    let uv = fragCoord / vec2<f32>(800.0, 600.0);
+    return vec4<f32>(uv, 0.5, 1.0);
+}
+"""#,
+  width: 800,
+  height: 600,
+)[
+这是一个用 WGSL 写的渐变 shader。
+]
+
+如果看到普通 fallback，说明当前浏览器不支持 WebGPU，或 Wasm 插件没有被正确加载。

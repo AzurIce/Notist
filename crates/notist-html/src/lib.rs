@@ -4,8 +4,8 @@ use std::collections::{HashMap, HashSet};
 use std::fmt::Write;
 
 use notist_model::{
-    Block, Content, Element, ElementNode, ModulePath, ModuleReference, StructuredDocument,
-    TableAlignment, TableCellPlacement, TextRange, WikiReference, table_layout,
+    Block, Content, CustomField, Element, ElementNode, ModulePath, ModuleReference,
+    StructuredDocument, TableAlignment, TableCellPlacement, TextRange, WikiReference, table_layout,
 };
 use percent_encoding::{NON_ALPHANUMERIC, utf8_percent_encode};
 
@@ -58,6 +58,108 @@ impl Default for RenderOptions<'_> {
     }
 }
 
+/// Input passed to a custom HTML renderer for one plugin element.
+pub struct CustomRenderInput<'a> {
+    /// The plugin element name.
+    pub name: &'a str,
+    /// The evaluated body content.
+    pub body: &'a Content,
+    /// Whether the element is block-level.
+    pub block: bool,
+    /// Serialized constructor fields.
+    pub fields: &'a [CustomField],
+}
+
+/// A target-specific renderer for a plugin element.
+pub trait CustomHtmlRenderer: Send + Sync {
+    /// The plugin element name this renderer handles.
+    fn element_name(&self) -> &str;
+
+    /// Renders the element into `output`. Return `true` if handled.
+    fn render(&self, input: &CustomRenderInput<'_>, output: &mut String) -> bool;
+}
+
+/// A registry of plugin HTML renderers.
+pub struct HtmlRendererRegistry {
+    renderers: Vec<Box<dyn CustomHtmlRenderer>>,
+}
+
+impl Default for HtmlRendererRegistry {
+    fn default() -> Self {
+        let mut registry = Self {
+            renderers: Vec::new(),
+        };
+        registry.register(ShaderHtmlRenderer);
+        registry
+    }
+}
+
+impl HtmlRendererRegistry {
+    /// Creates an empty registry.
+    pub fn new() -> Self {
+        Self {
+            renderers: Vec::new(),
+        }
+    }
+
+    /// Registers a renderer.
+    pub fn register(&mut self, renderer: impl CustomHtmlRenderer + 'static) {
+        self.renderers.push(Box::new(renderer));
+    }
+
+    /// Tries all renderers matching the element name.
+    pub fn render(&self, input: &CustomRenderInput<'_>, output: &mut String) -> bool {
+        for renderer in &self.renderers {
+            if renderer.element_name() == input.name && renderer.render(input, output) {
+                return true;
+            }
+        }
+        false
+    }
+}
+
+/// Built-in Shadertoy-like renderer for the `shader` plugin.
+struct ShaderHtmlRenderer;
+
+impl CustomHtmlRenderer for ShaderHtmlRenderer {
+    fn element_name(&self) -> &str {
+        "shader"
+    }
+
+    fn render(&self, input: &CustomRenderInput<'_>, output: &mut String) -> bool {
+        let mut source = String::new();
+        let mut width = 800i64;
+        let mut height = 600i64;
+        for field in input.fields {
+            match (field.name.as_str(), &field.value) {
+                ("source", notist_model::ElementValue::String(value)) => source = value.clone(),
+                ("width", notist_model::ElementValue::Int(value)) => width = *value,
+                ("height", notist_model::ElementValue::Int(value)) => height = *value,
+                _ => {}
+            }
+        }
+        if source.is_empty() {
+            return false;
+        }
+
+        output.push_str("<notist-shader class=\"notist-shader\" data-shader-source=\"");
+        escape_attribute(output, &source);
+        output.push_str("\" data-width=\"");
+        write!(output, "{width}").unwrap();
+        output.push_str("\" data-height=\"");
+        write!(output, "{height}").unwrap();
+        output.push_str("\">");
+        if !input.body.elements.is_empty() {
+            let fallback = content_plain_text(input.body);
+            output.push_str("<p>");
+            escape_text(output, &fallback);
+            output.push_str("</p>");
+        }
+        output.push_str("</notist-shader>");
+        true
+    }
+}
+
 /// Renders a structured document using the default options.
 pub fn render(document: &StructuredDocument) -> String {
     render_with_options(document, &RenderOptions::default())
@@ -65,7 +167,7 @@ pub fn render(document: &StructuredDocument) -> String {
 
 /// Renders a structured document as an HTML fragment.
 pub fn render_with_options(document: &StructuredDocument, options: &RenderOptions<'_>) -> String {
-    render_internal(document, options, None, &[])
+    render_internal(document, options, None, &[], &HtmlRendererRegistry::default())
 }
 
 /// Renders a document using a caller-provided module reference URL resolver.
@@ -76,7 +178,13 @@ pub fn render_with_reference_resolver(
     options: &RenderOptions<'_>,
     resolver: &ReferenceResolver<'_>,
 ) -> String {
-    render_internal(document, options, Some(resolver), &[])
+    render_internal(
+        document,
+        options,
+        Some(resolver),
+        &[],
+        &HtmlRendererRegistry::default(),
+    )
 }
 
 /// Renders a document with caller-resolved module-reference URLs and source annotations.
@@ -86,7 +194,30 @@ pub fn render_with_resolvers(
     reference_resolver: &ReferenceResolver<'_>,
     annotations: &[RenderedAnnotation],
 ) -> String {
-    render_internal(document, options, Some(reference_resolver), annotations)
+    render_internal(
+        document,
+        options,
+        Some(reference_resolver),
+        annotations,
+        &HtmlRendererRegistry::default(),
+    )
+}
+
+/// Renders a document with a custom plugin renderer registry.
+pub fn render_with_renderers(
+    document: &StructuredDocument,
+    options: &RenderOptions<'_>,
+    reference_resolver: &ReferenceResolver<'_>,
+    annotations: &[RenderedAnnotation],
+    renderers: &HtmlRendererRegistry,
+) -> String {
+    render_internal(
+        document,
+        options,
+        Some(reference_resolver),
+        annotations,
+        renderers,
+    )
 }
 
 /// Computes the resolvable anchor labels of a document: explicit scope ids first,
@@ -112,6 +243,7 @@ fn render_internal<'a>(
     options: &'a RenderOptions<'a>,
     resolver: Option<&'a ReferenceResolver<'a>>,
     annotations: &'a [RenderedAnnotation],
+    renderers: &'a HtmlRendererRegistry,
 ) -> String {
     let plan = AnchorPlan::compute(document, annotations);
     let mut renderer = Renderer {
@@ -119,6 +251,7 @@ fn render_internal<'a>(
         options,
         reference_resolver: resolver,
         annotations,
+        renderers,
         plan,
         current_block: None,
         inherited_coverage: Vec::new(),
@@ -132,6 +265,7 @@ struct Renderer<'a, 'options> {
     options: &'options RenderOptions<'a>,
     reference_resolver: Option<&'options ReferenceResolver<'options>>,
     annotations: &'options [RenderedAnnotation],
+    renderers: &'options HtmlRendererRegistry,
     plan: AnchorPlan,
     /// Range key of the top-level block currently being rendered, used to look
     /// up inline wrapper candidates. `None` outside block rendering.
@@ -761,7 +895,21 @@ impl Renderer<'_, '_> {
                 block,
                 language,
             } => self.raw(text, *block, language.as_deref(), node),
-            Element::Custom { name, body, block } => {
+            Element::Custom {
+                name,
+                body,
+                block,
+                fields,
+            } => {
+                let input = CustomRenderInput {
+                    name,
+                    body,
+                    block: *block,
+                    fields,
+                };
+                if self.renderers.render(&input, &mut self.output) {
+                    return;
+                }
                 let tag = container_tag(*block, position);
                 self.output.push('<');
                 self.output.push_str(tag);
@@ -1456,6 +1604,49 @@ mod tests {
     }
 
     #[test]
+    fn renders_shader_plugin_as_webgpu_canvas() {
+        let document = StructuredDocument {
+            blocks: vec![Block::Element(node(
+                Element::Custom {
+                    name: "shader".into(),
+                    body: Content::single(
+                        Element::Text("fallback".into()),
+                        TextRange::new(2, 10),
+                    ),
+                    block: true,
+                    fields: vec![
+                        CustomField {
+                            name: "source".into(),
+                            value: notist_model::ElementValue::String(
+                                "fn mainImage(fragCoord: vec2<f32>) -> vec4<f32> { return vec4<f32>(fragCoord, 0.0, 1.0); }".into(),
+                            ),
+                        },
+                        CustomField {
+                            name: "width".into(),
+                            value: notist_model::ElementValue::Int(320),
+                        },
+                        CustomField {
+                            name: "height".into(),
+                            value: notist_model::ElementValue::Int(200),
+                        },
+                    ],
+                },
+                0,
+                5,
+            ))],
+        };
+
+        let html = render(&document);
+        assert!(html.contains("<notist-shader"));
+        assert!(html.contains("class=\"notist-shader\""));
+        assert!(html.contains("data-shader-source="));
+        assert!(html.contains("data-width=\"320\""));
+        assert!(html.contains("data-height=\"200\""));
+        assert!(html.contains("</notist-shader>"));
+        assert!(!html.contains("<script"));
+    }
+
+    #[test]
     fn partially_covered_text_nodes_split_into_wrapped_fragments() {
         // D0010: a text node straddling an annotation boundary is split; only
         // the covered fragment is wrapped.
@@ -1524,6 +1715,7 @@ mod tests {
                     name: "x\" onclick=\"bad".into(),
                     body: Content::single(Element::Text("<&>".into()), TextRange::new(2, 5)),
                     block: true,
+                    fields: Vec::new(),
                 },
                 0,
                 5,

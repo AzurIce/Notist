@@ -1,0 +1,57 @@
+{
+  "package": "shader",
+  "version": "0.1.0",
+  "api-version": "0.1",
+  "interfaces": {
+    "semantic": {
+      "elements": [
+        {
+          "name": "shader",
+          "version": 1,
+          "block": true,
+          "parameters": [
+            {
+              "name": "source",
+              "ty": "String"
+            },
+            {
+              "name": "width",
+              "ty": "Int",
+              "default": 800
+            },
+            {
+              "name": "height",
+              "ty": "Int",
+              "default": 600
+            }
+          ],
+          "trailing-content": "body"
+        }
+      ]
+    },
+    "render": {
+      "html": {
+        "contributions": [
+          {
+            "element": "shader",
+            "trusted": true,
+            "web-component": {
+              "tag": "notist-shader",
+              "module": "assets/shader.js",
+              "style": "assets/shader.css"
+            }
+          }
+        ]
+      }
+    }
+  },
+  "capabilities": {
+    "request": [
+      "html:render",
+      "html:asset"
+    ]
+  },
+  "wasm": {
+    "module": "semantic.wasm"
+  }
+}

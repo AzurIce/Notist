@@ -1,4 +1,4 @@
-@![implementation = "aligned"]
+@![implementation = "partial"]
 = Search Modes and Retrieval Index
 
 本文是 A2 检索语义与索引的独立成篇，从归档的历史混合文档中独立成篇。分页预算、cursor 与 selector 见 [[vault::designs::host::query-contract]]；Analyzer 与 snapshot 见 [[vault::designs::host::analyzer-snapshot]]。
@@ -15,7 +15,7 @@
 | `fuzzy` | lexical BM25 + bounded term expansion | relevance | 拼写错误（`langauge`、`WorkspaceSnaphot`） |
 | `regex` | Rust-compatible regular expression | source order | CLI 专家级源码调查 |
 
-规范参数是 `--mode lexical|exact|fuzzy|regex`；`--exact`、`--fuzzy`、`--regex` 是互斥的可读 alias。默认 `lexical`。Lexical 不提供隐藏 query mini-language（引号、冒号、减号默认是待分词文本），默认 `--operator all`、可 `any`；不做 stop-word 删除与 stemming——否则 `not`、类型名、数字和缩写会在知识库中丢失真实含义。
+Core query 保留四种模式：`lexical|exact|fuzzy|regex`。CLI 不再暴露 `--mode` 与 alias：lexical/fuzzy 投影为 `notist search`，exact/regex 投影为 `notist locate`；完整 CLI 参数见 [[vault::cli]]。默认 `lexical`。Lexical 不提供隐藏 query mini-language（引号、冒号、减号默认是待分词文本），默认 `operator=all`，CLI 用 `--any` 切换到 any；不做 stop-word 删除与 stemming——否则 `not`、类型名、数字和缩写会在知识库中丢失真实含义。
 
 可检索字段（权重属于 ranking version）：
 
@@ -31,15 +31,15 @@
 | `raw` | Raw 内容 | 0.7 |
 | `comment` | source comment | 不默认检索 |
 
-`--fields` 控制参与匹配的字段，不控制 response projection；未知字段立即报 usage error。属性检索字段（class、key=value）随属性索引扩展。
+`--field` 控制参与匹配的字段，不控制 response projection；未知字段立即报 usage error。属性检索字段（class、key=value）随属性索引扩展。
 
 Tokenizer 对 index 与 query 使用同一套 versioned pipeline：Unicode NFKC 与 case folding 生成匹配 term 但保留原 byte offsets；Latin/数字按 punctuation、snake/kebab/camelCase 边界拆分并保留完整 identifier 与组成部分为同一 term group 的 variant；连续 Han 字符用 overlapping bigram（混合中英文在 script boundary 分开）；路径与 ModulePath 额外保留 path/segment/stem 分段。不做语言猜测、远程分词或词干还原；替换 tokenizer 必须提升 version 并使旧 cursor 失效。
 
-Exact 默认大小写敏感，`--ignore-case` 显式启用；不依赖全文索引（index 重建时仍可用）。Fuzzy 先执行与 lexical 相同的分词和 boolean 语义，再对适合纠错的 term 查询词典：默认 Damerau-Levenshtein distance 1（`--fuzzy-distance 2` 是上限），长度 <4 的 term、纯数字、单个 Han 字符与结构 delimiter 不扩展，每 term 至多 32 候选、每 query 至多 128，达到上限返回 `expansion_limited=true`。Regex 使用 Rust regex 语义（无 backreference/look-around），pattern 长度、编译大小、扫描时间与响应 bytes 都有上限——它是 CLI 专家能力，Skill 引导 Agent 优先使用 exact/lexical/fuzzy。
+Exact（CLI `locate`）默认大小写敏感，`--ignore-case` 显式启用；不依赖全文索引（index 重建时仍可用）。Fuzzy 先执行与 lexical 相同的分词和 boolean 语义，再对适合纠错的 term 查询词典：默认 Damerau-Levenshtein distance 1（runtime policy 上限 2），长度 <4 的 term、纯数字、单个 Han 字符与结构 delimiter 不扩展，每 term 至多 32 候选、每 query 至多 128，达到上限返回 `expansion_limited=true`。Regex 使用 Rust regex 语义（无 backreference/look-around），pattern 长度、编译大小、扫描时间与响应 bytes 都有上限——它是 CLI 专家能力，Skill 引导 Agent 优先使用 exact/lexical/fuzzy。
 
 === Scope、Excerpt 与分组
 
-`--scope` 是精确 ModulePath prefix，可重复取并集；`--fields` 与访问控制在 candidate generation 前生效（Vault 外路径永远不进入 index 或 result）。
+`--scope` 与 `--exclude-scope` 都接受精确绝对 ModulePath prefix，可重复：include 取并集，exclude 在 include 之后生效。匹配按段边界进行——`vault::foo` 只命中自身与 `vault::foo::*`，不命中 `vault::foobar`；完整 CLI 语义见 [[vault::cli#Selector、Scope 与 Citation]]。`--field`、scope 与访问控制在 candidate generation 前生效（Vault 外路径永远不进入 index 或 result），不能先取全 Vault 候选再过滤。
 
 ```text
 SearchHit {
@@ -54,7 +54,7 @@ SearchHit {
 }
 ```
 
-默认 excerpt 上限 256 bytes（`--snippet-bytes` 64–2048），截取优先以实际 query term 的 source range 为中心；单行超限在 UTF-8 scalar boundary 截断。`group_by` 控制首页多样性：`source` 每 Module 保留最佳 hit（lexical/fuzzy 默认）、`section` 以最近 Heading 为边界、`match` 返回每个独立 region（exact/regex 默认）。分组属于 query identity，翻页不能改变。零结果仍是成功，hint 只建议（如 operator=any、--exact），不自动重试、不把零结果改成 error。
+默认 excerpt 上限 256 bytes（runtime policy，不进入 CLI 参数），截取优先以实际 query term 的 source range 为中心；单行超限在 UTF-8 scalar boundary 截断。`group_by` 控制首页多样性：`source` 每 Module 保留最佳 hit（lexical/fuzzy 默认）、`section` 以最近 Heading 为边界、`match` 返回每个独立 region（exact/regex 默认）。scope、exclude-scope、grouping 与 fields 都属于 query identity，翻页不能改变。零结果仍是成功，hint 只建议（如 `--any`、改用 `locate`），不自动重试、不把零结果改成 error。
 
 == 检索单元与索引
 
@@ -72,6 +72,6 @@ WorkspaceSnapshot
 
 Disk View 的 index 用 WorkspaceDelta 增量更新，写入新 generation 后原子发布 reader；删除 source 产生 tombstone。持久化 index 位于 Notist user cache（按 Vault identity 分区），manifest 记录 index schema、tokenizer、ranking version、Vault identity、source-set fingerprint 与每个 source fingerprint——任何一项在加载时校验不匹配都触发丢弃或重建。Session View 在 disk generation 上叠加小型 in-memory overlay segment，用 FileId tombstone 屏蔽被 overlay 替换或删除的 unit；overlay 释放后整个派生 segment 可丢弃。
 
-Lexical/fuzzy query 只在 `IndexStamp.source_set_fingerprint` 与捕获 snapshot 相同时执行；index lag 时按 `--wait-index` 在短 deadline（默认 2s、最大 10s）内等待，超时返回 typed `index_not_ready` 与 exact fallback hint，绝不把 stale result 当成当前 snapshot。Exact/regex 直接扫描 snapshot，不受 index health 影响。
+Lexical/fuzzy query 只在 `IndexStamp.source_set_fingerprint` 与捕获 snapshot 相同时执行；index lag 时按 runtime policy 在短 deadline（默认 2s、最大 10s）内等待，超时返回 typed `index_not_ready` 与 exact fallback hint，绝不把 stale result 当成当前 snapshot。Exact/regex 直接扫描 snapshot，不受 index health 影响。
 
 向量、semantic 与 hybrid mode 不属于默认契约：未来只有在版本化 benchmark 上相对 lexical 明确提升 Recall、nDCG 与 Agent task success，并保留 citation、ACL、snapshot 与 output budget 后，才能增加显式 mode。

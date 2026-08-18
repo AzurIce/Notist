@@ -1,0 +1,226 @@
+= Plugin Call Reduction Design
+
+本文记录 Notist 插件求值模型的统一 Call + Reduction 设计。它解决的核心问题是：如果所有内容元素本质上都是“函数调用”，那么插件之间应该如何互相调用，以及插件如何组合 `details`、`raw`、`shader` 等任意内容。
+
+== 核心转变
+
+当前模型：
+
+```text
+插件返回最终 Element
+  → 宿主包成 Custom
+  → 渲染
+```
+
+目标模型：
+
+```text
+所有内容 = 函数调用
+求值 = 调用规约
+```
+
+```text
+details(...)
+├── raw(...)
+└── shader(...)
+```
+
+每个节点都是：
+
+```text
+name + arguments + body
+```
+
+求值就是：
+
+```text
+根据 name 查 FunctionRegistry
+调用对应函数
+得到新的调用树或最终 Content
+递归规约
+```
+
+== 中间表示
+
+=== Call
+
+```rust
+pub struct Call {
+    pub name: String,
+    pub arguments: Vec<Argument>,
+    pub body: Option<CallContent>,
+    pub range: TextRange,
+}
+
+pub struct Argument {
+    pub name: String,
+    pub value: Value,
+}
+```
+
+=== CallContent
+
+```rust
+pub struct CallContent {
+    pub nodes: Vec<CallNode>,
+}
+
+pub enum CallNode {
+    Call(Call),
+    /// 已经是最终元素的节点，可以短路，不需要继续规约
+    Element(ElementNode),
+}
+```
+
+=== Value
+
+复用现有 `notist_eval::Value`。
+
+== 求值规约
+
+所有内置函数和插件函数注册在同一个 `FunctionRegistry` 中。
+
+```rust
+fn reduce(call: Call, registry: &FunctionRegistry) -> Result<Content, Vec<EvalDiagnostic>> {
+    let function = registry.get(&call.name)?;
+    let output = function.call(context, input)?;
+
+    match output {
+        FunctionOutput::Content(content) => Ok(content),
+        FunctionOutput::Calls(call_content) => reduce_calls(call_content, registry),
+    }
+}
+```
+
+内置函数推荐直接返回最终 `Element`；插件函数返回 `CallContent`，从而获得组合能力。
+
+== 插件如何返回 Call
+
+插件 Wasm 不再返回“最终元素描述”，而是返回一串 `Call`。
+
+例如 `shader` 插件想生成：
+
+```text
+details(
+  summary: "Shader",
+  body: [
+    raw(wgsl, lang: "wgsl", block: true),
+    shader(wgsl),
+  ]
+)
+```
+
+插件返回的 Call 树由宿主递归规约，最终得到真正的 `notist_model::Content`。
+
+== WIT 草案
+
+WIT 不需要枚举所有内置元素，只需要表达 `call`：
+
+```wit
+package notist:plugin;
+
+interface types {
+    type content = list<node>;
+
+    variant node {
+        call(call),
+    }
+
+    record call {
+        name: string,
+        arguments: list<argument>,
+        body: option<content>,
+    }
+
+    record argument {
+        name: string,
+        value: value,
+    }
+
+    variant value {
+        none,
+        bool(bool),
+        int(s64),
+        float(f64),
+        string(string),
+        content(content),
+    }
+}
+
+world semantic {
+    export evaluate: func(request: call-request) -> result<content, string>;
+
+    record call-request {
+        function-name: string,
+        arguments: list<argument>,
+        trailing-content: option<content>,
+    }
+}
+```
+
+== 插件之间调用的能力控制
+
+虽然所有东西都是 Call，但不代表插件可以随意调用任何函数。
+
+插件 manifest 需要声明可调用范围：
+
+```json
+{
+  "capabilities": {
+    "request": [
+      "call:details",
+      "call:raw",
+      "call:shader"
+    ]
+  }
+}
+```
+
+宿主在规约时检查插件是否有权调用对应名字。
+
+== 终止性与安全
+
+- 调用深度限制，例如 `MAX_REDUCTION_DEPTH = 64`；
+- 循环调用检测：同一 `(plugin_id, function_name)` 出现在调用栈中时报错；
+- 插件保持纯函数约束，便于 memoize 和并行。
+
+== 与现有架构的关系
+
+最终规约完成后仍然得到：
+
+```text
+notist_model::Content
+→ structure()
+→ StructuredDocument
+→ HTML
+```
+
+成型、渲染、LSP 不需要大改。改动核心在 eval：从“Call 直接构造 Element”变成“Call 查 registry 后递归 reduce”。
+
+`Element::Details` 仍然是最终结果，只是它由宿主在规约 `details(...)` 时构造，而不是由插件手工构造并返回。
+
+== 实施路径
+
+=== Phase A：内部 IR 改造
+
+- 在 `notist-eval` 引入 `Call` / `CallContent`
+- 把内置函数改成可返回 `CallContent` 或 `Content`
+- 先不接 Wasm，验证 `details(raw, shader)` 这类组合
+
+=== Phase B：插件 ABI 改为返回 CallContent
+
+- Wasm 插件返回值从“字段”升级为“CallContent 序列化”
+- 宿主把插件返回的 Call 递归 reduce
+- 支持插件调用内置函数
+
+=== Phase C：插件调用插件
+
+- 所有插件函数进入同一个 registry
+- 规约时允许一个插件返回调用另一个插件的 Call
+- 加入 capability 和循环检测
+
+=== Phase D：WIT 正式化
+
+- 把 `call` / `content` 定义成正式 WIT
+- 用 wit-bindgen 生成 host/guest 绑定
+- 替换当前手写二进制 ABI

@@ -56,6 +56,37 @@ pub struct ElementNode {
     pub range: TextRange,
 }
 
+/// A serializable value stored on a plugin-defined element.
+#[derive(Clone, Debug, PartialEq)]
+pub enum ElementValue {
+    /// The absence of a value.
+    None,
+    /// A boolean value.
+    Bool(bool),
+    /// A signed integer value.
+    Int(i64),
+    /// A floating-point value.
+    Float(f64),
+    /// A UTF-8 string value.
+    String(String),
+    /// Nested Notist content.
+    Content(Content),
+    /// A list of element values.
+    Array(Vec<ElementValue>),
+}
+
+
+impl Eq for ElementValue {}
+
+/// One named field on a plugin-defined element.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct CustomField {
+    /// The field name, matching a schema parameter.
+    pub name: String,
+    /// The serializable field value.
+    pub value: ElementValue,
+}
+
 /// A semantic element produced by lowering or function evaluation.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum Element {
@@ -166,6 +197,8 @@ pub enum Element {
         body: Content,
         /// Whether the custom element interrupts paragraph flow.
         block: bool,
+        /// Serialized constructor arguments available to target renderers.
+        fields: Vec<CustomField>,
     },
     /// A call for which no function was registered.
     UnresolvedCall {

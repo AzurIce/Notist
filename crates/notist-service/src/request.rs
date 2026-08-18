@@ -297,10 +297,10 @@ impl ConfigurationRecord {
                 },
             );
         }
-        AnalyzerConfiguration {
-            manifest_override: self.manifest_override.map(Arc::from),
-            signatures,
-        }
+        let mut configuration = AnalyzerConfiguration::default();
+        configuration.manifest_override = self.manifest_override.map(Arc::from);
+        configuration.signatures = signatures;
+        configuration
     }
 }
 

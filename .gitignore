@@ -2,3 +2,4 @@
 dist
 .direnv
 result
+plugins/*/lib/

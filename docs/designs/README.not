@@ -40,6 +40,10 @@ archive/   已退休的旧设计；当前为空
 4. [[vault::designs::world::reference-ref-target]]：引用寻址与 RefTarget。
 5. [[vault::designs::world::core-namespace-plugin-boundary]]：core namespace、prelude 与插件边界。
 
+=== 插件层
+
+1. [[vault::designs::plugin-call-reduction]]：插件求值模型：统一 Call + Reduction。
+
 === 宿主层
 
 1. [[vault::designs::host::analyzer-snapshot]]：分析层与 WorkspaceSnapshot。
@@ -47,7 +51,7 @@ archive/   已退休的旧设计；当前为空
 3. [[vault::designs::host::search-retrieval-index]]：Search 模式与检索索引。
 4. [[vault::designs::host::daemon-process-views]]：daemon 进程与 Analyzer View。
 5. [[vault::designs::host::client-interface-protocol]]：client interface、本地协议与生命周期。
-6. [[vault::designs::host::cli-command-surface-skill-distribution]]：CLI 命令面与官方 Skill 分发。
+6. [[vault::designs::host::cli-command-surface-skill-distribution]]：CLI 产品边界与官方 Skill 分发；完整逐命令规范和使用文档在 [[vault::cli]]。
 7. [[vault::designs::host::lsp-adapter]]：LSP 适配。
 8. [[vault::designs::host::html-renderer]]：HTML 渲染。
 9. [[vault::designs::host::build-preview]]：静态构建与本地预览。
@@ -73,6 +77,10 @@ archive/   已退休的旧设计；当前为空
 - [[vault::designs::language::collection-types]]：`missing`
 - [[vault::designs::language::call-model]]：`partial`（rest 调用模型未实现）
 - [[vault::designs::world::core-namespace-plugin-boundary]]：`partial`（`core::` qualified call 未启用）
+- [[vault::designs::host::query-contract]]：`partial`（text-only 投影、`read` citation footer 与 `--exclude-scope` 尚未完整实现）
+- [[vault::designs::host::search-retrieval-index]]：`partial`（`--exclude-scope` 未实现）
+- [[vault::designs::host::cli-command-surface-skill-distribution]]：`partial`（v3 命令面未落地：`next`/`locate`/`refs`/`definition` 与 text-only 投影待实现）
+- [[vault::cli]]：`partial`（完整 CLI 命令设计+使用规范；目标 v3，当前 binary 仍为过渡 surface）
 - [[vault::designs::host::lsp-adapter]]：`partial`（Document Symbol 尚未覆盖函数与变量）
 
 位置本身表达治理状态：active 目录中的文档是现行设计；移入 [[vault::designs::archive]] 的文档即退休。Git 是完整历史，不维护编号 ID 或 `Design:` trailer。

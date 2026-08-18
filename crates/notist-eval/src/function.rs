@@ -59,6 +59,23 @@ pub struct FunctionRegistry {
     functions: HashMap<String, Arc<dyn Function>>,
 }
 
+impl Clone for FunctionRegistry {
+    fn clone(&self) -> Self {
+        Self {
+            functions: self.functions.clone(),
+        }
+    }
+}
+
+impl std::fmt::Debug for FunctionRegistry {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter
+            .debug_struct("FunctionRegistry")
+            .field("functions", &self.functions.keys().collect::<Vec<_>>())
+            .finish()
+    }
+}
+
 impl FunctionRegistry {
     /// Creates an empty function registry.
     pub fn new() -> Self {
@@ -75,6 +92,11 @@ impl FunctionRegistry {
 
     /// Registers a function after validating its signature, and rejects duplicate names.
     pub fn register(&mut self, function: impl Function + 'static) -> Result<(), RegistryError> {
+        self.register_arc(Arc::new(function))
+    }
+
+    /// Registers an already-allocated function object.
+    pub fn register_arc(&mut self, function: Arc<dyn Function>) -> Result<(), RegistryError> {
         let name = function.name().to_owned();
         if self.functions.contains_key(&name) {
             return Err(RegistryError {
@@ -86,7 +108,7 @@ impl FunctionRegistry {
         if let Some(reason) = validate_signature(&signature) {
             return Err(RegistryError { name, reason });
         }
-        self.functions.insert(name, Arc::new(function));
+        self.functions.insert(name, function);
         Ok(())
     }
 

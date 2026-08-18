@@ -8,8 +8,8 @@ use clap::ColorChoice;
 use notist_model::ModulePath;
 use notist_service::protocol::ClientKind;
 use notist_service::{
-    CoreRequest, CoreResponse, ProtocolViewKind, RenderedBindingRecord, RenderedHeadingRecord,
-    RenderedWorkspaceRecord, ServiceViewId,
+    AttributeRecord, CoreRequest, CoreResponse, InspectRecord, ProtocolViewKind,
+    RenderedBindingRecord, RenderedHeadingRecord, RenderedWorkspaceRecord, ServiceViewId,
 };
 use percent_encoding::{AsciiSet, CONTROLS, NON_ALPHANUMERIC, utf8_percent_encode};
 
@@ -26,6 +26,66 @@ const URL_PATH_SEGMENT_ENCODE_SET: &AsciiSet = &CONTROLS
     .add(b'<')
     .add(b'>')
     .add(b'"');
+
+/// Module attribute key for explicit sibling ordering.
+const NAV_ORDER_KEY: &str = "order";
+/// Module tag (or bare id) that pins a module to the top of its sibling list.
+const NAV_TOP_MARKER: &str = "top";
+
+/// Returns whether a module's attributes mark it as pinned/top.
+fn module_attributes_pinned(attributes: &[AttributeRecord]) -> bool {
+    attributes.iter().any(|attribute| {
+        attribute.tags.iter().any(|tag| tag == NAV_TOP_MARKER)
+            || attribute.id.as_deref() == Some(NAV_TOP_MARKER)
+    })
+}
+
+/// Returns the explicit sibling order from a module's attributes.
+fn module_attributes_order(attributes: &[AttributeRecord]) -> Option<i64> {
+    attributes.iter().find_map(|attribute| {
+        attribute.properties.iter().find_map(|(key, value)| {
+            if key == NAV_ORDER_KEY {
+                value.trim_matches('"').parse::<i64>().ok()
+            } else {
+                None
+            }
+        })
+    })
+}
+
+/// Sort key used only by the CLI site/preview layer.
+///
+/// Pinned modules come first, then explicit `order` values ascending, then
+/// modules without `order` (still deterministic by path). The vault root stays
+/// at the top of rendered pages/navigation.
+fn module_nav_sort_key(
+    module_segments: &[String],
+    attributes: &[AttributeRecord],
+) -> (bool, bool, i64, ModulePath) {
+    let path = ModulePath::from_segments(module_segments.to_vec());
+    if module_segments.is_empty() {
+        return (false, false, i64::MIN, path);
+    }
+    let pinned = module_attributes_pinned(attributes);
+    let order = module_attributes_order(attributes);
+    (!pinned, order.is_none(), order.unwrap_or(0), path)
+}
+
+/// Builds a module-path -> navigation attributes map from an Inspect record.
+fn module_navigation_map(
+    inspect: &InspectRecord,
+) -> std::collections::BTreeMap<ModulePath, Vec<AttributeRecord>> {
+    inspect
+        .modules
+        .iter()
+        .map(|module| {
+            let path = ModulePath::from_segments(
+                module.logical_path.split("::").skip(1).map(str::to_owned),
+            );
+            (path, module.attributes.clone())
+        })
+        .collect()
+}
 
 pub fn run(
     root: PathBuf,
@@ -49,6 +109,7 @@ pub fn run(
         clean_output_root(&output)?;
     }
     let result = write_rendered_site(&rendered, &output, SiteOptions::default())?;
+    copy_plugin_assets(&root, &output)?;
     let mut diagnostics = rendered.analysis_diagnostics.clone();
     merge_diagnostics(&mut diagnostics, rendered.evaluation_diagnostics.clone());
     let error_count = diagnostics
@@ -99,10 +160,64 @@ pub(crate) fn render_workspace(
     view_id: ServiceViewId,
 ) -> Result<RenderedWorkspaceRecord, Box<dyn Error>> {
     let reply = client.request(CoreRequest::RenderWorkspace { view_id })?;
-    let CoreResponse::RenderedWorkspace(rendered) = reply.response else {
+    let CoreResponse::RenderedWorkspace(mut rendered) = reply.response else {
         return Err("service returned an unexpected render response".into());
     };
+
+    // Navigation ordering is presentation concern of the CLI site/preview
+    // layer, not part of the core render contract. Read module attributes
+    // through Inspect and sort only the pages handed to site generation.
+    let inspect_reply = client.request(CoreRequest::Inspect { view_id })?;
+    let CoreResponse::Inspect(inspect) = inspect_reply.response else {
+        return Err("service returned an unexpected inspect response".into());
+    };
+    let navigation = module_navigation_map(&inspect);
+    rendered.pages.sort_by(|left, right| {
+        let left_attributes = navigation
+            .get(&ModulePath::from_segments(left.module_segments.clone()))
+            .map(Vec::as_slice)
+            .unwrap_or(&[]);
+        let right_attributes = navigation
+            .get(&ModulePath::from_segments(right.module_segments.clone()))
+            .map(Vec::as_slice)
+            .unwrap_or(&[]);
+        module_nav_sort_key(&left.module_segments, left_attributes).cmp(&module_nav_sort_key(
+            &right.module_segments,
+            right_attributes,
+        ))
+    });
+
     Ok(rendered)
+}
+
+/// Copies plugin package assets into the generated site.
+///
+/// This is a first concrete step toward per-plugin asset injection. It reads
+/// the vault `Notist.toml`, and for each known plugin copies `assets/*` into
+/// `_notist/plugins/<name>/`.
+pub(crate) fn copy_plugin_assets(root: &Path, output: &Path) -> Result<(), Box<dyn Error>> {
+    let config_path = root.join("Notist.toml");
+    if !config_path.is_file() {
+        return Ok(());
+    }
+    let config_text = std::fs::read_to_string(&config_path)?;
+    let packages = notist_plugin_host::plugin_package_dirs(root, Some(&config_text))?;
+    for (name, package_dir) in packages {
+        let assets_dir = package_dir.join("assets");
+        if !assets_dir.is_dir() {
+            continue;
+        }
+        let target_dir = output.join("_notist/plugins").join(&name);
+        fs::create_dir_all(&target_dir)?;
+        for entry in std::fs::read_dir(&assets_dir)? {
+            let entry = entry?;
+            let path = entry.path();
+            if path.is_file() {
+                fs::copy(&path, target_dir.join(entry.file_name()))?;
+            }
+        }
+    }
+    Ok(())
 }
 
 pub(crate) fn write_rendered_site(
@@ -230,6 +345,13 @@ fn page_shell(
     html.push_str("_notist/style.css\">\n<script src=\"");
     html.push_str(&asset_prefix);
     html.push_str("_notist/site.js\" defer></script>\n");
+    if page.fragment.contains("notist-shader") {
+        html.push_str("<link rel=\"stylesheet\" href=\"");
+        html.push_str(&asset_prefix);
+        html.push_str("_notist/plugins/shader/shader.css\">\n<script type=\"module\" src=\"");
+        html.push_str(&asset_prefix);
+        html.push_str("_notist/plugins/shader/shader.js\"></script>\n");
+    }
     if options.live_reload {
         html.push_str("<script src=\"");
         html.push_str(&asset_prefix);
@@ -2259,5 +2381,43 @@ mod tests {
         assert!(output.is_dir());
         assert!(!output.join("stale.html").exists());
         assert!(root.path().is_dir());
+    }
+
+    #[test]
+    fn render_workspace_orders_pages_from_module_attributes() {
+        let root = tempfile::TempDir::new_in(std::env::current_dir().unwrap()).unwrap();
+        fs::write(root.path().join("Notist.toml"), "").unwrap();
+        fs::write(root.path().join("README.not"), "= Home").unwrap();
+        fs::write(root.path().join("alpha.not"), "@![#top]\n= Alpha").unwrap();
+        fs::write(root.path().join("beta.not"), "@![order = 10]\n= Beta").unwrap();
+        fs::write(root.path().join("gamma.not"), "@![order = 5]\n= Gamma").unwrap();
+        fs::write(root.path().join("delta.not"), "= Delta").unwrap();
+        fs::write(root.path().join("zeta.not"), "= Zeta").unwrap();
+
+        let rendered = render(root.path());
+
+        // Root remains first in the rendered page list.
+        assert_eq!(rendered.pages[0].module_segments, Vec::<String>::new());
+        let top_level: Vec<Vec<&str>> = rendered
+            .pages
+            .iter()
+            .filter(|page| page.module_segments.len() == 1)
+            .map(|page| {
+                page.module_segments
+                    .iter()
+                    .map(String::as_str)
+                    .collect::<Vec<_>>()
+            })
+            .collect();
+        assert_eq!(
+            top_level,
+            vec![
+                vec!["alpha"],
+                vec!["gamma"],
+                vec!["beta"],
+                vec!["delta"],
+                vec!["zeta"],
+            ]
+        );
     }
 }

@@ -1,0 +1,603 @@
+= Notist 插件系统设计：eval 与 html 的双面 ABI
+
+本文把 Notist 插件系统收敛为一个明确范围：插件扩展两个面——求值面与 HTML 展示面。SSG、模板、gallery、native 等多目标呈现暂不进入本设计；它们作为未来消费者，只要求本设计留下的 `target` 与 fallback 边界不被破坏。
+
+== 范围声明
+
+当前只讨论：
+
+- eval 面：内容函数如何定义、校验、求值，并产出 `Content / Element`。
+- html 面：`Custom` 元素如何在 HTML target 下呈现。
+- 两侧之间的 ABI、包格式、装载与分发。
+- 内置内容函数如何与第三方插件共享同一模型。
+
+明确排除：
+
+- `notist-ssg` 的 crate 设计与模板引擎。
+- gallery、blog、mdbook 等站点扩展。
+- native、PDF 等未来 target 的具体实现。
+- 语法糖扩展。
+
+这些排除项只要求：元素模型支持多 target，且任何 target 缺失 renderer 时有 total fallback。
+
+== 当前实现的两个面
+
+=== eval 面
+
+`notist-eval` 已经有可扩展的 `FunctionRegistry`：
+
+```text
+Function {
+  name
+  signature
+  call(context, input) -> FunctionOutput
+}
+```
+
+当前内置内容函数集中在 `crates/notist-eval/src/builtin.rs`，静态注册：
+
+```text
+ref、heading、raw、callout、details、item、table-cell、
+table、figure、strong、emph、strike、underline、rule
+```
+
+这些函数产出的不是 HTML，而是 `Element::Reference/Heading/Raw/Callout/...` 等语义元素。
+
+=== html 面
+
+`notist-html` 消费 `StructuredDocument`，把语义元素映射为 HTML fragment。它对未知 `Element::Custom` 已有递归 fallback：
+
+```text
+Custom { name, body, block }
+  -> <div|span class="notist-custom" data-notist-name="...">
+       body 按 flow/inline 递归渲染
+     </div|span>
+```
+
+但当前没有 renderer registry；`Element::Custom` 只能走 fallback，无法按 `name` 分发给插件渲染器。
+
+=== 当前差距
+
+- `Element::Custom` 只有 `name/body/block`，函数参数无法传递给渲染器。
+- `AnalyzerConfiguration` 只有静态签名，没有 runtime function registry。
+- `WorkspaceSnapshot::structured_module()` 写死 `Evaluator::default()`。
+- 没有插件 manifest、包格式、装载器与 capability 模型。
+- `notist-html` 没有自定义渲染 SPI。
+
+== 核心模型：内置函数也是插件
+
+用户已经意识到的关键点，本文固定为设计前提：
+
+> 没有语法糖的内容函数，本质上都是插件。它的实现天然分成两个 contribution：eval 贡献产出语义元素，html 贡献决定如何把该语义元素转成 HTML。
+
+据此建立统一视角：
+
+```text
+内容函数插件 = eval contribution + 零个或多个 target renderer contribution
+
+eval contribution    -> FunctionRegistry
+html contribution    -> notist-html 的 CustomRendererRegistry
+```
+
+内置函数与第三方插件使用同一条路径：
+
+- `callout` 是 core 插件：eval 实现在 `notist-eval`，html 映射在 `notist-html`。
+- 第三方 `shader` 插件：eval 贡献可能只是一个 schema，html 贡献是一个 renderer component。
+- 语法糖（`= Heading`、`- item` 等）不经过函数查找，直接构造 core Element；它们只消费 html 面的 core renderer，不是完整插件。
+
+`notist-html` 因此定位为：
+
+> HTML target 的投影宿主 + core 元素的展示贡献 + Custom renderer registry。
+
+它不是某个插件，而是所有 html renderer contribution 的运行环境。
+
+== 语义模型扩展
+
+=== ElementSchema
+
+元素 schema 放在 `notist-model`，作为插件 eval 贡献与 renderer 贡献的共同契约：
+
+```text
+ElementSchema {
+  name: String
+  version: u32
+  block: Bool
+  signature: FunctionSignature
+}
+```
+
+- 函数参数默认映射为元素字段。
+- `trailing_content` 映射为 `Custom.body`。
+- 其他 Content 参数映射为 Content-typed 字段。
+- `Function` 类型参数不允许成为元素字段。
+
+=== Custom.fields 与 ElementValue
+
+`notist-model::Element::Custom` 扩展为：
+
+```text
+Custom {
+  name: String
+  body: Content
+  block: Bool
+  fields: Vec<CustomField>
+}
+
+CustomField {
+  name: String
+  value: ElementValue
+}
+
+ElementValue =
+  None | Bool | Int | Float | String | Content | Array<ElementValue>...
+```
+
+`ElementValue` 可序列化、可跨插件边界；`Value::Function` 不进入字段值域。
+
+=== ElementDeclaration
+
+语义宿主在导出模型中附带：
+
+```text
+ElementDeclaration {
+  name: String
+  schema: ElementSchema
+  plugin_id: String
+  package_hash: String
+}
+```
+
+投影宿主据此匹配 renderer 版本，并在 renderer 缺失时用 fields 做通用 fallback。
+
+=== 成型阶段
+
+成型（structure）仍由 core 拥有：
+
+- 段落、列表归组与 Section 归组是语言不变量，不让插件重写。
+- Custom 通过 schema 的 `block: Bool` 参与段落流判断，这是成型阶段对插件的唯一入口。
+- Custom.body 是普通 Content，由 target 投影递归渲染；当前不进入 Section 归组。
+- 若未来插件需要更细的 body shaping，可作为 additive 的 `shaping` 贡献讨论；v1 不开放。
+
+== eval contribution：schema 自动生成与复杂函数
+
+=== ElementFunction
+
+简单元素不需要手写 eval：
+
+```text
+ElementFunction {
+  schema: ElementSchema
+  plugin_id: String
+  package_hash: String
+}
+
+impl Function for ElementFunction {
+  signature() = schema.signature
+  call(input) = 校验参数、填默认值
+              -> Content::single(Custom { name, body, block, fields })
+}
+```
+
+装载器对 manifest 中每个 element 自动生成一个 `ElementFunction`。
+
+=== 复杂函数
+
+只有需要计算、验证或数据访问时，插件才导出真实 `evaluate`：
+
+```text
+#slugify(...)
+#read-csv(...)
+#format-date(...)
+```
+
+它们由 Wasm component 的 `evaluate` 实现，宿主用 `WasmFunction` 适配到 `Function` trait。
+
+=== 静态检查
+
+- manifest 中每个函数与元素都生成 `FunctionSignature`，进入 `SignatureSet`。
+- 静态检查不执行 Wasm。
+- 运行时签名校验、默认值填充与返回类型检查仍在 host 边界执行。
+
+=== 需要的代码改动
+
+- `notist-analysis::AnalyzerConfiguration` 增加 runtime function registry。
+- `WorkspaceSnapshot::structured_module()` 使用 snapshot 捕获的函数环境，而不是 `Evaluator::default()`。
+- `FunctionEnvironmentId` 绑定插件集指纹；插件变化产生新的语义世界。
+
+== html contribution：renderer registry 与 fallback
+
+=== CustomHtmlRenderer SPI
+
+`notist-html` 公开：
+
+```text
+CustomHtmlRenderer {
+  element_name: String
+  schema_version_range: VersionRange
+  render(
+    input: CustomRenderInput,
+    context: &mut dyn HtmlRenderContext,
+  ) -> Result<Option<String>, RenderError>
+}
+```
+
+`notist-html` 渲染 `Element::Custom` 时：
+
+```text
+match registry.get(name) {
+  Some(renderer) 且 schema 兼容
+    -> renderer.render(input, context)
+  _ -> generic_custom_fallback(custom)
+}
+```
+
+=== HtmlRenderContext
+
+renderer 只写自己的外壳，子内容仍由宿主投影：
+
+```text
+HtmlRenderContext {
+  render_flow_content(&mut self, content: &Content) -> String
+  render_inline_content(&mut self, content: &Content) -> String
+  resolve_reference(&mut self, reference: &WikiReference) -> Option<String>
+  resource_href(&mut self, module: &ModulePath, name: &str) -> Option<String>
+}
+```
+
+这保证插件作者不需要重写段落、列表、表格、引用与标注的 HTML 映射。
+
+=== 信任边界
+
+- core renderer 直接写入 `notist-html` 输出。
+- Wasm renderer 输出只有在插件持有 `html:render` capability 时才是 trusted HTML。
+- `host.render_flow_content(body)` 的结果由宿主生成，天然 trusted。
+
+== 插件形态调研：载体、信任与渲染边界
+
+在确定包格式之前，先回答一个更基础的问题：插件最终的存在形式是什么——一个 `.wasm`？一段脚本？一个 native 动态库？本节系统调研了 VS Code、Zed、Neovim、Obsidian、Typst、Helix、Figma、Blender、Jupyter、VST 等系统的插件机制，重点考察「未来 native target 的内容渲染扩展」这一约束。
+
+=== 各系统形态一览
+
+| 系统 | 载体形态 | 隔离机制 | 渲染扩展方式 |
+| --- | --- | --- | --- |
+| VS Code | vsix（zip）= package.json + 单文件 JS bundle（`main`/`browser` 双入口） | Extension Host 独立 Node 进程；渲染面 iframe + postMessage | Webview / Custom Editor / Notebook Renderer：宿主给隔离容器与挂载点，按 mimetype 分发 renderer |
+| Zed | registry 打包 archive.tar.gz = extension.toml + extension.wasm（component）+ grammar.wasm + 声明式资源 | Wasmtime + WIT；WIT import 即能力清单，用户 glob 白名单 | 无 UI 扩展（GPUI 无廉价 HTML 路径）；社区讨论方向是「扩展认领区块、host 替换渲染」 |
+| Neovim | runtimepath 目录：Lua 内嵌为主 + remote plugin（msgpack-RPC 进程）+ tree-sitter `.so` | Lua 无隔离；remote 进程级 | extmark / decoration provider：插件只声明装饰，core 合成字符网格；external UI 消费 redraw 事件流 |
+| Obsidian | 目录 = main.js + manifest.json | 无沙箱（Electron 同权限），靠 Restricted Mode + 上架人工审核 | MarkdownPostProcessor：渲染成 HTML 后拿活 DOM 子树改写，绑定 DOM |
+| Typst | 单个 32-bit core wasm（非 component、零 WASI import），bytes in / bytes out | Wasm 沙箱 + 纯函数契约（memoize / 并行前提） | 不参与渲染；CeTZ 等包把图形降级为宿主矢量原语，渲染始终归宿主 |
+| Helix | 内嵌 Steel Scheme 脚本（方案两年未落地） | 无 | 直接操作编辑器 UI |
+| Figma | JS 跑在编译进 wasm 的 JS VM（双层沙箱） | wasm | 插件只改 scene graph，宿主统一渲染（web canvas 与 native 同一渲染器） |
+| Blender / VST / 游戏 mod | Python 脚本 / native 动态库 | 无（同进程） | 插件直接发 OpenGL 命令 / 宿主给窗口句柄，插件自绘 |
+
+=== 三条收敛规律
+
+形态规律：几乎所有系统的插件最终形态都是「包 + manifest + 若干载体产物」，而非单一文件。vsix、Zed archive、Obsidian 目录莫不如此；连 Typst 的裸 wasm 也需要 `.typ` 包装层才能可用。manifest 是懒加载（VS Code activationEvents、Zed extension.toml）、能力声明与版本协商的锚点——宿主先读声明式元数据，再决定加载哪些二进制。
+
+信任光谱：无沙箱脚本/native（Obsidian、Neovim Lua、Helix、Blender）— 进程隔离（VS Code Extension Host）— wasm 沙箱（Zed、Typst、Figma、oxideterm）。wasm 是「可运行不可信插件」一侧唯一成熟的答案，且天然跨平台单产物（对照 VS Code native `.node` 模块导致的按平台分发碎片化）。代价是一切交互跨 ABI 序列化：Neovim 的 remote plugin 生态输给内嵌 Lua 的教训是，RPC 式接口若需高频细粒度回调会拖垮体验，接口必须设计为批量、粗粒度——一次求值整段内容、一次返回整棵渲染树。
+
+渲染规律：能跨 target 的系统清一色采用「插件产出语义/声明，宿主渲染」——Neovim extmark 压平进 grid 同时喂 TUI 与 GUI、Figma 插件只改 scene graph、CeTZ 产出宿主矢量原语、Jupyter 的 mimetype bundle + 前端 mime renderer、VS Code Notebook Renderer 的 `renderOutputItem(data, element)`（宿主拥有 element，插件只填内容）。反过来，让插件直接输出像素/DOM/HTML 的系统（Obsidian post-processor、Blender GL、VST 自绘）全部绑定单一后端，无法迁移。
+
+=== 关键推论：render 契约不应是 HTML 字符串
+
+当前设计中 `render-html.wasm` 返回 HTML 字符串，这会把渲染贡献锁死在 html target：native GUI 无法消费 HTML 字符串（除非嵌入 webview，即 tinymist 预览的路线：Rust 产出 vector IR，webview 内增量绘制 SVG/Canvas）。上面的渲染规律给出更稳的形态：
+
+```text
+renderer contribution 输出「后端无关的渲染描述」（样式化片段 / 布局树 / draw list）
+  -> html emitter 把描述序列化为 HTML
+  -> 未来的 native painter 把同一描述解释为原生绘制
+```
+
+这与 Figma 架构同构，也是 Zed 社区对「自定义文档渲染」讨论收敛出的形态（host 拥有布局与文档结构，扩展渲染受限区块）。代价是需要设计一层 render IR；HTML 直出可保留为 trusted escape hatch（持有 `html:render` capability 的插件），但不应是唯一契约。wasm 侧其余路径的代价分级：声明式 IR（推荐，Figma/CeTZ 验证）> webview 嵌入（tinymist 验证，但等于放弃真 native）> immediate-mode 绘制回调（跨边界逐命令调用，复杂内容成本高）> wasi-webgpu 纹理输出（能力最强，proposal 尚在 phase 2，远期再议）。
+
+=== 载体决策
+
+插件的最终存在形式不是单一 `.wasm`，而是包：
+
+```text
+shader-plugin/  (目录或 zip 单一制品)
+├── plugin.json        # manifest：id / version / api-version / 贡献面 / capability
+├── semantic.wasm      # 可选：Wasm component（wasm32-wasip2 + WIT）
+├── render-html.wasm   # 可选：Wasm component
+└── assets/            # html 资产（JS/CSS）
+```
+
+- 按 interface 拆分 component，投影宿主只加载自己需要的面（与 Zed 的 extension.wasm / grammar.wasm 分管线同理）。
+- 纯声明式贡献（主题、只含 schema 的元素）可以完全没有 wasm。
+- eval 面继承 Typst 的纯函数约束：相同输入必得相同输出，因为宿主会 memoize 与并行求值；这一纯度要求要写进 WIT 契约。
+- WIT 版本化照抄 Zed：`since_vX.Y.Z` 目录保留多版本，manifest 记录 api-version，host 按版本选择 instantiate 路径。
+- capability 写入 manifest 静态声明（oxideterm / Zed / VS Code 的 `capabilities.*` 同模式），不做运行时拦截。
+
+=== 参考资料
+
+- VS Code 扩展架构：https://code.visualstudio.com/api/working-with-extensions/bundling-extension ；https://code.visualstudio.com/api/extension-guides/web-extensions ；https://code.visualstudio.com/api/extension-guides/notebook
+- Zed 扩展机制：https://zed.dev/blog/zed-decoded-extensions ；https://zed.dev/docs/extensions/capabilities ；自定义渲染讨论 https://github.com/zed-industries/zed/discussions/37270
+- Neovim UI 架构：https://github.com/neovim/neovim/wiki/Plugin-UI-architecture ；external UI protocol https://neo.vimhelp.org/ui.txt.html
+- Obsidian：https://docs.obsidian.md/Plugins/Getting+started/Build+a+plugin ；https://docs.obsidian.md/Plugins/Editor/Markdown+post+processing
+- Typst 插件：https://typst.app/docs/reference/foundations/plugin/ ；https://crates.io/crates/wasm-minimal-protocol
+- Helix Steel 插件：https://github.com/helix-editor/helix/pull/8675
+- Figma 插件系统：https://www.figma.com/blog/how-we-built-the-figma-plugin-system/ ；https://www.figma.com/blog/an-update-on-plugin-security/
+- tinymist / reflexo：https://www.myriad-dreamin.com/en/article/tinymist-2024-language-part/
+- wasi-webgpu：https://github.com/WebAssembly/WASI/issues/285
+
+== 插件包与 ABI
+
+=== 包格式
+
+插件包是目录或 zip，按 interface 拆分 Wasm component：
+
+```text
+shader-plugin/
+├── plugin.json
+├── semantic.wasm          # 可选
+├── render-html.wasm       # 可选
+└── assets/                # html 资产，如 JS/CSS
+```
+
+`plugin.json`：
+
+```json
+{
+  "package": "shader",
+  "version": "0.1.0",
+  "api-version": "0.1",
+  "interfaces": {
+    "semantic": {
+      "component": "semantic.wasm",
+      "elements": [
+        {
+          "name": "shader",
+          "version": 1,
+          "block": true,
+          "parameters": [
+            { "name": "code", "ty": "String" },
+            { "name": "caption", "ty": "Content?", "default": "none" }
+          ],
+          "trailing-content": "caption"
+        }
+      ]
+    },
+    "render": {
+      "html": {
+        "component": "render-html.wasm",
+        "contributions": [
+          { "element": "shader", "export": "render", "trusted": true }
+        ]
+      }
+    }
+  },
+  "capabilities": {
+    "request": ["vault:read-resource", "html:render"]
+  }
+}
+```
+
+==== WIT：semantic function
+
+```wit
+package notist:plugin-semantic@0.1.0;
+
+world semantic-function {
+  export evaluate: func(request: call-request) -> result<value, string>;
+
+  record call-request {
+    function-name: string,
+    arguments: list<argument>,
+    trailing-content: option<content>,
+  }
+
+  record argument {
+    name: string,
+    value: value,
+  }
+
+  variant value {
+    none,
+    boolean(bool),
+    integer(s64),
+    float(f64),
+    string(string),
+    content(content),
+  }
+
+  type content = list<element-node>;
+  // 递归镜像 notist-model::Content
+}
+```
+
+==== WIT：html renderer
+
+```wit
+package notist:plugin-render-html@0.1.0;
+
+world render-html {
+  export render: func(input: render-request) -> result<string, string>;
+
+  import host: interface {
+    render-flow-content: func(content: content) -> result<string, string>;
+    render-inline-content: func(content: content) -> result<string, string>;
+    resolve-reference: func(reference: reference) -> option<string>;
+    read-resource: func(id: string) -> result<list<u8>, string>;
+  }
+
+  record render-request {
+    element-name: string,
+    schema-version: u32,
+    body: option<content>,
+    fields: list<field>,
+    block: bool,
+  }
+}
+```
+
+==== 双宿主分载
+
+```text
+Notist 进程（evaluator host）
+  -> 加载 semantic interface
+  -> 产出 Custom 与 ElementDeclaration
+
+任意投影宿主（当前是 notist-html）
+  -> 加载 render.html interface
+  -> 把 Custom 投影为 HTML
+
+同一进程：一份 PluginSet，两个 registry。
+跨进程：各自加载所需 interface。
+```
+
+缺失语义：
+
+- evaluator 缺少函数插件：`unknown function` 硬错误。
+- 投影宿主缺少 renderer：fallback，build 继续，只降级呈现。
+
+== PluginSet 与装载
+
+=== PluginSet
+
+```text
+PluginSet {
+  fingerprint: u64
+  packages: Vec<PluginPackageRecord>
+  functions: FunctionRegistry
+  elements: ElementRegistry
+  renderers: BTreeMap<TargetId, RendererRegistry>
+  handles: Vec<PluginHandle>
+}
+```
+
+当前 `TargetId` 实际只有 `"html"`；类型上仍保留 map，以便未来增加 target。
+
+=== 装载流程
+
+```text
+Notist.toml
+  -> 解析 [plugins.*]
+  -> 发现 package 目录或 zip
+  -> 读取 plugin.json
+  -> 校验重名、schema、api version、hash
+  -> 合并 capability
+  -> 编译并缓存 Wasm component
+  -> 生成 ElementFunction
+  -> 实例化 semantic component（若存在）
+  -> 实例化 html renderer component（若存在）
+  -> 构建 PluginSet
+  -> 注入 AnalyzerConfiguration / notist-html RenderOptions
+```
+
+=== 内置插件
+
+core 内容函数以静态 `builtin` package 参与同一 PluginSet：
+
+```text
+PluginPackageRecord {
+  id: "notist-core"
+  source: Builtin
+  elements: [...]
+  functions: [...]
+}
+```
+
+它们的 eval 实现和 html 映射仍分别在 `notist-eval` 与 `notist-html`，但注册、签名与清单统一走 PluginSet。这样 loader、检查器与渲染器不需要为内置函数保留第二套逻辑。
+
+=== 重载
+
+- package、manifest 或权限变化 -> 重新构建 PluginSet。
+- 分配新 `FunctionEnvironmentId`，发布新 snapshot revision。
+- `notist-html` 替换 renderer registry，触发 preview rebuild。
+- Wasm 编译产物按 hash 缓存；Store 按 build generation 隔离。
+
+== Capability 模型
+
+| capability | 说明 |
+| --- | --- |
+| `semantic:function` | 允许作为 Notist 函数参与求值 |
+| `semantic:read-resource` | 读取 Vault 资源字节 |
+| `html:render` | 允许产出 trusted HTML |
+| `html:asset` | 允许注入 JS/CSS 资产 |
+| `vault:read-source` | 读取 `.not` 源文本 |
+| `network:<origin>` | 默认永不授予 |
+| `process:spawn` | v1 不提供 |
+
+有效权限 = 插件请求 ∩ 站点配置授予。Wasm 不获得原始 WASI preopen；Rust std 所需的 WASI 0.2 imports 由宿主以空 `WasiCtx` 满足。
+
+== Cordis 架构的适用性分析
+
+Cordis 的核心概念：
+
+- `Context`：动态服务容器，属性读取经过 proxy 解析。
+- `Service`：注册到 Context 的命名能力。
+- `Plugin`：函数、类或 `{ apply }` 对象；通过 `inject` 声明依赖。
+- `Fiber`：一次插件加载的生命周期，负责 dispose 与重载。
+- Events：`emit/parallel/serial/bail/waterfall` 多种分发模式。
+- `isolate/intercept`：服务作用域隔离与配置拦截覆盖。
+
+=== 可以借鉴的部分
+
+| Cordis 概念 | Notist 对应 |
+| --- | --- |
+| `Context` | `PluginContext`：vault、capabilities、registry handles |
+| `Service` | 类型化 host capability：`FunctionRegistry`、`HtmlRenderContext`、`ResourceReader` |
+| `Plugin + inject` | plugin manifest 声明 interface 与 capability；load 期静态检查依赖 |
+| `Fiber / dispose` | `PluginHandle` 与 `PluginSet` 生命周期；preview 重载时安全替换 |
+| Events | 未来管线 hooks；例如 renderer resolution、build lifecycle |
+| `isolate / intercept` | 未来 per-vault / per-theme 的 renderer 覆盖；v1 可不做 |
+
+`bail/waterfall` 尤其适合描述 renderer 解析链：
+
+```text
+render Custom
+  -> exact renderer 贡献
+  -> theme override
+  -> generic fallback
+```
+
+但 Rust 侧可以用有序 registry 和 `Option` 返回值实现，不必引入通用字符串事件总线。
+
+=== 不建议直接移植的部分
+
+- 动态 proxy DI 不适合 Rust，类型系统可以静态完成依赖检查。
+- 字符串事件名与动态 listener 不适合核心语义路径；我们只需要少量 typed hooks。
+- 通用 schema transform、动态 isolate/intercept 在插件数量少时是过度设计。
+- Cordis 的 loader/HMR 在 Wasm 插件场景需要重新实现，不能直接复用 JS 生态。
+
+结论：Cordis 适合作为“插件生命周期 + 能力注入 + 可扩展 hook”的参照，但 Notist 应实现一个最小类型化 host，而不是移植 Cordis 本身。
+
+== 成型阶段与插件的关系
+
+- 求值后的 `Content` 先由 core `structure()` 成型为 `StructuredDocument`。
+- 段落、列表归组、Section 归组继续由 core 拥有。
+- 插件通过 `ElementSchema.block` 表达自己是 block 还是 inline，这是成型识别插件的唯一机制。
+- 插件不应在 v1 重写或钩入成型算法；否则属性表区间、目录结构与语义索引的一致性会被破坏。
+- 若未来需要自定义成型，应作为 additive 的 `shape` contribution 单独设计，而不是把 `structure()` 变成可替换插件。
+
+== 当前代码到目标架构的最小迁移
+
+- `notist-model`：增加 `ElementSchema`、`ElementValue`、`CustomField`，扩展 `Custom.fields`。
+- `notist-eval`：增加 `ElementFunction`；把 builtin 注册路径改造成 PluginSet 注入。
+- `notist-analysis`：`AnalyzerConfiguration` 携带 runtime function registry；snapshot 使用捕获的函数环境。
+- `notist-html`：增加 `CustomHtmlRenderer` SPI 与 registry；保持当前 fallback。
+- `notist-plugin-api`：manifest、capability 常量、host/guest 共享类型。
+- `notist-plugin-host`：目录/zip 装载、Wasmtime 实例化、PluginSet 构建。
+- `notist-plugin`：SDK facade 与 guest 宏。
+
+== 实施顺序
+
+- Phase 0：`Custom.fields` + `ElementSchema` + `ElementFunction`，内置函数改由 PluginSet 注册，不引入 Wasm。
+- Phase 1：`notist-html` registry + fallback；用 Rust 内置 renderer 验证一个 `shader` 或 `card` 插件。
+- Phase 2：`notist-plugin-api` 与 manifest；目录 package 格式与 builtin package 统一。
+- Phase 3：`notist-plugin-host` 接入 Wasmtime；打通 semantic 与 html renderer 两个最小 component。
+- Phase 4：preview/daemon 的插件重载与 capability 校验。
+- 后续：多 target、SSG、gallery 等作为插件系统之上的消费者重新讨论。
+
+== 待决事项
+
+- `Custom.name` 是否强制命名空间，例如 `plugin-id::element-name`。
+- `ElementValue` v1 是否包含 Array/Dict，还是只允许标量与 Content。
+- 插件包 v1 使用目录还是 zip 单一制品。
+- render 契约的返回类型：v1 就把 renderer 输出定义为后端无关的渲染描述（代价：需先设计 render IR），还是先返回 HTML 字符串、把 render IR 留作 v2（代价：ABI 演进或双轨并存）。这是「插件形态调研」一节最关键的张力，直接决定未来 native target 是否需要推翻 html 面 ABI。
+- 内置函数是否立即全部迁移到 PluginSet，还是先只让第三方插件走新路径。
+- Cordis 式 typed hooks 是否进入 v1，还是先用显式 registry + trait 调用，hooks 留到需要时再加。
+- Custom.body 是否需要 `shaping` 声明，还是永远只按 flow content 递归渲染。
+
+== 结论
+
+Notist 插件系统第一版只需要两条 ABI：semantic function 与 html renderer。插件的最终存在形式是「包」——manifest + 按 interface 拆分的 Wasm component + assets——而不是单一 `.wasm`；这一形态得到 VS Code（vsix）、Zed（archive.tar.gz）、Obsidian（插件目录）的一致印证。内置内容函数与第三方插件共享同一 PluginSet；`notist-html` 是 html target 的投影宿主；`ElementSchema` 是两侧之间的稳定契约；renderer 缺失永远有 fallback。跨系统调研还暴露出一个比包格式更深的决策：渲染贡献若要覆盖未来 native target，契约应是「后端无关的渲染描述 + 宿主渲染」（Figma / Neovim / CeTZ 共同验证的模式），HTML 直出降级为 trusted escape hatch；该取舍已列入待决事项。Cordis 的生命周期与 hook 思想值得借鉴，但实现应是一个最小类型化 Rust host，而不是移植动态 DI 框架。成型继续由 core 拥有，插件通过 block 声明与 Custom.body 参与其中。

@@ -17,7 +17,7 @@ notist check docs
 notist references vault::designs::host::daemon-process-views
 ```
 
-编辑器与 Agent 同时工作时，也不应该为同一个 Vault 维护两份 watcher、Module 图与索引。Notist 为每个活动 Vault 使用一个本地 daemon 持有长期状态；CLI 与 LSP 是面向不同调用者的 client interface，Agent 通过 CLI 命令与官方 Skill 使用（见 [[vault::designs::host::cli-command-surface-skill-distribution#CLI 命令面]]）。
+编辑器与 Agent 同时工作时，也不应该为同一个 Vault 维护两份 watcher、Module 图与索引。Notist 为每个活动 Vault 使用一个本地 daemon 持有长期状态；CLI 与 LSP 是面向不同调用者的 client interface，Agent 通过 CLI 命令与官方 Skill 使用（见 [[vault::cli#daemon]]）。
 
 这个形态类似 ADB：短命令是 client，后台进程保存可复用状态。类比只到进程拓扑为止：Notist daemon 绑定一个 Vault，而不是当前用户访问过的所有知识库。
 
