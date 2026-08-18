@@ -20,20 +20,28 @@ pub struct FunctionInput<'a> {
 
 /// Evaluated value returned by a native, user, or plugin function.
 #[derive(Clone, Debug, PartialEq)]
-pub struct FunctionOutput {
-    pub value: Value,
+pub enum FunctionOutput {
+    /// A final runtime value.
+    Value(Value),
+    /// A final Content value.
+    Content(Content),
+    /// A not-yet-reduced sequence of calls.
+    Calls(crate::call::CallContent),
 }
 
 impl FunctionOutput {
     /// Creates a Content-valued output.
     pub fn content(content: Content) -> Self {
-        Self {
-            value: Value::Content(content),
-        }
+        Self::Content(content)
     }
 
     pub fn value(value: Value) -> Self {
-        Self { value }
+        Self::Value(value)
+    }
+
+    /// Creates a call-content output that the host should reduce.
+    pub fn calls(calls: crate::call::CallContent) -> Self {
+        Self::Calls(calls)
     }
 }
 

@@ -92,6 +92,25 @@ pub struct BoundArguments {
 }
 
 impl BoundArguments {
+    /// Creates bound arguments directly from evaluated values, used by the
+    /// uniform call reduction path.
+    pub fn from_values(values: std::collections::HashMap<String, Value>) -> Self {
+        Self {
+            values: values
+                .into_iter()
+                .map(|(name, value)| {
+                    (
+                        name,
+                        BoundValue {
+                            value,
+                            origin: ValueOrigin::Default,
+                        },
+                    )
+                })
+                .collect(),
+        }
+    }
+
     pub fn get(&self, name: &str) -> Option<&Value> {
         self.values.get(name).map(|bound| &bound.value)
     }

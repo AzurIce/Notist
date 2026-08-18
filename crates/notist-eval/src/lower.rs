@@ -11,7 +11,7 @@ use notist_syntax::{
     UserFunctionDefinition, UserParameter,
 };
 
-use crate::function::{Function, FunctionContext, FunctionInput, FunctionRegistry};
+use crate::function::{Function, FunctionContext, FunctionInput, FunctionOutput, FunctionRegistry};
 use crate::type_system::{
     FunctionImplementation, FunctionValue, Value, ValueOrigin, bind_arguments, evaluate_literal,
 };
@@ -963,19 +963,59 @@ impl LowerState<'_> {
             range: site_range.shifted(self.base_offset),
         };
         match function.call(&context, input) {
-            Ok(output) if signature.result.accepts(&output.value.ty()) => {
-                (output.value, diagnostics)
+            Ok(FunctionOutput::Value(value)) if signature.result.accepts(&value.ty()) => {
+                (value, diagnostics)
             }
-            Ok(output) => {
+            Ok(FunctionOutput::Value(value)) => {
                 diagnostics.push(EvalDiagnostic {
                     message: format!(
                         "function `{name}` returned {}, expected {}",
-                        output.value.ty(),
+                        value.ty(),
                         signature.result
                     ),
                     range: site_range.shifted(self.base_offset),
                 });
                 (Value::None, diagnostics)
+            }
+            Ok(FunctionOutput::Content(content)) => {
+                let value = Value::Content(content);
+                if signature.result.accepts(&value.ty()) {
+                    (value, diagnostics)
+                } else {
+                    diagnostics.push(EvalDiagnostic {
+                        message: format!(
+                            "function `{name}` returned {}, expected {}",
+                            value.ty(),
+                            signature.result
+                        ),
+                        range: site_range.shifted(self.base_offset),
+                    });
+                    (Value::None, diagnostics)
+                }
+            }
+            Ok(FunctionOutput::Calls(calls)) => {
+                match crate::call::reduce_content(&calls, self.registry) {
+                    Ok(content) => {
+                        let value = Value::Content(content);
+                        if signature.result.accepts(&value.ty()) {
+                            (value, diagnostics)
+                        } else {
+                            diagnostics.push(EvalDiagnostic {
+                                message: format!(
+                                    "function `{name}` returned {}, expected {}",
+                                    value.ty(),
+                                    signature.result
+                                ),
+                                range: site_range.shifted(self.base_offset),
+                            });
+                            (Value::None, diagnostics)
+                        }
+                    }
+                    Err(mut errors) => {
+                        diagnostics.append(&mut errors);
+                        (Value::None, diagnostics)
+                    }
+                }
             }
             Err(mut errors) => {
                 diagnostics.append(&mut errors);

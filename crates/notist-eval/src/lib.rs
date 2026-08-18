@@ -1,6 +1,7 @@
 //! Evaluation and structural normalization for Notist documents.
 
 mod builtin;
+mod call;
 mod function;
 mod lower;
 mod structure;
@@ -11,6 +12,7 @@ use std::collections::HashMap;
 use notist_model::{Content, TextRange};
 use notist_syntax::Parse;
 
+pub use call::{Argument, Call, CallContent, CallNode, reduce, reduce_content};
 pub use function::{
     Function, FunctionContext, FunctionInput, FunctionOutput, FunctionRegistry, RegistryError,
     RegistryErrorReason,
