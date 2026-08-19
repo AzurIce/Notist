@@ -75,6 +75,7 @@ archive/   已退休的旧设计；当前为空
 当前已知的非 `aligned` 文档：
 
 - [[vault::designs::language::collection-types]]：`missing`
+- [[vault::designs::language::evaluation-model]]：`partial`（Call Reduction 骨架已引入，完整规约与插件返回 CallContent 尚未落地）
 - [[vault::designs::language::call-model]]：`partial`（rest 调用模型未实现）
 - [[vault::designs::world::core-namespace-plugin-boundary]]：`partial`（`core::` qualified call 未启用）
 - [[vault::designs::host::query-contract]]：`partial`（text-only 投影、`read` citation footer 与 `--exclude-scope` 尚未完整实现）

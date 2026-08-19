@@ -6,6 +6,7 @@ use crate::{
     BoundArguments, EvalDiagnostic, FunctionContext, FunctionInput, FunctionOutput,
     FunctionRegistry, Value,
 };
+use crate::type_system::default_to_value;
 
 /// A function call in the uniform reduction model.
 #[derive(Clone, Debug, PartialEq)]
@@ -72,6 +73,13 @@ pub fn reduce(call: &Call, registry: &FunctionRegistry) -> Result<Content, Vec<E
         let content = reduce_content(body, registry)?;
         if let Some(trailing_name) = signature.trailing_content.as_deref() {
             values.insert(trailing_name.to_owned(), Value::Content(content));
+        }
+    }
+    for parameter in &signature.parameters {
+        if !values.contains_key(&parameter.name) {
+            if let Some(default) = &parameter.default {
+                values.insert(parameter.name.clone(), default_to_value(default));
+            }
         }
     }
     let arguments = BoundArguments::from_values(values);
@@ -189,6 +197,98 @@ mod tests {
                 ],
             }))
         }
+    }
+
+    struct TestShaderFunction;
+
+    impl Function for TestShaderFunction {
+        fn name(&self) -> &str {
+            "shader"
+        }
+
+        fn signature(&self) -> FunctionSignature {
+            FunctionSignature {
+                parameters: vec![Parameter {
+                    name: "source".into(),
+                    ty: Type::String,
+                    default: None,
+                }],
+                trailing_content: None,
+                result: Type::Content,
+            }
+        }
+
+        fn call(
+            &self,
+            _context: &FunctionContext<'_>,
+            input: FunctionInput<'_>,
+        ) -> Result<FunctionOutput, Vec<EvalDiagnostic>> {
+            let source = input.arguments.string("source").to_owned();
+            Ok(FunctionOutput::content(Content::single(
+                Element::Custom {
+                    name: "shader".into(),
+                    body: Content::new(),
+                    block: true,
+                    fields: vec![notist_model::CustomField {
+                        name: "source".into(),
+                        value: notist_model::ElementValue::String(source),
+                    }],
+                },
+                input.range,
+            )))
+        }
+    }
+
+    #[test]
+    fn reduce_composes_details_raw_and_shader() {
+        let mut registry = FunctionRegistry::with_builtins();
+        registry.register(TestShaderFunction).unwrap();
+
+        let call = Call {
+            name: "details".into(),
+            arguments: Vec::new(),
+            body: Some(CallContent {
+                nodes: vec![
+                    CallNode::Call(Call {
+                        name: "raw".into(),
+                        arguments: vec![
+                            Argument {
+                                name: "source".into(),
+                                value: Value::String("fn main() {}".into()),
+                            },
+                            Argument {
+                                name: "lang".into(),
+                                value: Value::String("wgsl".into()),
+                            },
+                            Argument {
+                                name: "block".into(),
+                                value: Value::Bool(true),
+                            },
+                        ],
+                        body: None,
+                        range: TextRange::new(0, 0),
+                    }),
+                    CallNode::Call(Call {
+                        name: "shader".into(),
+                        arguments: vec![Argument {
+                            name: "source".into(),
+                            value: Value::String("fn mainImage(...) {}".into()),
+                        }],
+                        body: None,
+                        range: TextRange::new(0, 0),
+                    }),
+                ],
+            }),
+            range: TextRange::new(0, 0),
+        };
+
+        let content = reduce(&call, &registry).unwrap();
+        assert_eq!(content.elements.len(), 1);
+        let Element::Details { body, .. } = &content.elements[0].element else {
+            panic!("expected details element");
+        };
+        assert!(body.elements.iter().any(|node| matches!(node.element, Element::Raw { .. })));
+        assert!(body.elements.iter().any(|node| matches!(&node.element, Element::Custom { name, .. } if name == "shader")));
     }
 
     #[test]

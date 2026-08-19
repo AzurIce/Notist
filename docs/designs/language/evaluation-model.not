@@ -1,4 +1,4 @@
-@![implementation = "aligned"]
+@![implementation = "partial"]
 = Evaluation Model and Content Sequence
 
 本文承接 [[vault::designs::language::type-system#静态检查]]（静态检查：名称解析、类型、已解析调用）与 [[vault::designs::language::scope-environment#名称解析]]（scope 与词法环境）。本文定义求值阶段：在 scope 链上执行静态检查的产物，产生求值结果三元组；其中的 `content` 是元素序列，作为 [[vault::designs::language::shaping-structure-tree#输入与输出]] 的输入。
@@ -76,6 +76,52 @@ Markup insertion 边界上，嵌入表达式的结果按规则插入外层 Conte
 
 插入转换只存在于 Markup insertion 边界；普通函数要求 Content 参数时仍然拒绝 String——"可展示"不会渗透成所有 API 的隐式转换规则（[[vault::designs::language::type-system#Content 类型]] Content 类型）。
 
+== 统一调用与规约（Call Reduction）
+
+求值过程不仅包含“直接构造 Element”，还包含“函数调用规约”。在统一模型中，内容元素本质上是函数调用：
+
+```text
+details(...)
+├── raw(...)
+└── shader(...)
+```
+
+中间表示：
+
+```text
+Call {
+  name: String
+  arguments: Vec<Argument>
+  body: Option<CallContent>
+}
+
+CallContent {
+  nodes: Vec<CallNode>
+}
+
+CallNode =
+  | Call(Call)
+  | Element(ElementNode)   // 已规约完成的最终元素，可短路
+```
+
+函数调用的返回值可以是：
+
+- `Content`：已经是最终内容；
+- `CallContent`：尚未规约完的调用序列。
+
+求值器负责递归规约：
+
+```text
+Call
+  → 查 FunctionRegistry
+  → 调用函数
+  → 得到 Content 或 CallContent
+  → 如果是 CallContent，继续递归
+  → 最终得到 Content
+```
+
+内置函数与插件函数在 registry 中地位相同，因此插件可以调用 `details`、`raw` 等其它函数。详细设计见 [[vault::designs::plugin-call-reduction]]。
+
 == 求值规则
 
 - **E1 顺序**：声明与正文按源码顺序求值；`let` 绑定扩展后续节点的环境（[[vault::designs::language::scope-environment#名称解析]]），可展示的 Markup 与嵌入表达式通过 Content insertion 追加内容。
@@ -113,3 +159,4 @@ Markup insertion 边界上，嵌入表达式的结果按规则插入外层 Conte
 - 已裁定：求值器只消费静态检查产物；插入转换只存在于 Markup insertion 边界；每个表达式只求值一次。
 - 已裁定：`content` 是元素序列（值层真相），结构树是 [[vault::designs::language::shaping-structure-tree#不变量]] 的可重建投影。
 - 待定：递归绑定引入后，`let rec` 的求值规则与 scope 可见性由 [[vault::designs::language::scope-environment#名称解析]] 与本文共同补充。
+- 待定：Call Reduction 的完整实现尚未落地；当前仅引入 `Call` / `CallContent` 骨架，插件返回 `CallContent` 的 ABI 与内置函数返回 CallContent 的改造仍在进行。
