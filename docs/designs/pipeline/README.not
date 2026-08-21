@@ -1,4 +1,4 @@
-@![implementation = "partial"]
+@![implementation = "aligned"]
 = Compilation Pipeline Overview
 
 本文是 Notist 编译管线的总入口：把一篇 source 如何一步步变成可投影文档讲清楚。各阶段细节分别由自己的文档定义；本文只规定阶段边界、输入输出、所有权与不变量。
@@ -85,4 +85,4 @@ parse 错误记录在 `Parse.errors`；check/evaluate 错误进入 `Evaluation.d
 
 - 已裁定：管线阶段为 parse → check → lower → reduce → structure → project；各阶段只消费上一阶段产物。
 - 已裁定：语义真相是 Leaf 流与属性表；结构树是可重建投影。
-- 待定：完全移除 legacy `Content` / `StructuredDocument` 桥接；recovering Stream reduction 已保留失败调用旁的兄弟节点。
+- 兼容：`render(StructuredDocument)` 作为旧 API 保留，但它不是 canonical pipeline 的阶段输入。

@@ -1,4 +1,4 @@
-@![implementation = "partial"]
+@![implementation = "aligned"]
 = Structure Stage
 
 本文承接 [[vault::designs::pipeline::evaluate#求值结果]]（求值结果 `content` 与 Leaf 流）、[[vault::designs::language::property-table]]（`annotations` 属性表）和 [[vault::designs::language::annotation-syntax#属性]]（属性区间与挂载语义）。[[vault::designs::pipeline::evaluate#Content 值]] 定义值层：求值结束时的 `content` 是 Leaf 的有序流；[[vault::designs::language::property-table]] 定义属性不挂在树上。本文定义 [[vault::designs::pipeline]] 的成型阶段（shaping）：把 Leaf 流折叠成 Leaf 树，并规定投影必须保持的区间稳定不变量。

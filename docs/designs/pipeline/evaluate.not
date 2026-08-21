@@ -1,4 +1,4 @@
-@![implementation = "partial"]
+@![implementation = "aligned"]
 = Evaluation and Reduction Stage
 
 本文承接 [[vault::designs::language::type-system#静态检查]]（静态检查：名称解析、类型、已解析调用）与 [[vault::designs::language::scope-environment#名称解析]]（scope 与词法环境）。本文定义 [[vault::designs::pipeline]] 的求值阶段：在 scope 链上执行静态检查的产物，把源码 lower 成 Leaf 流，并把流中的 Call 递归规约为 Leaf；结果交给 [[vault::designs::pipeline::structure]] 递归成型。

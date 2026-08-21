@@ -1,4 +1,4 @@
-@![implementation = "partial"]
+@![implementation = "aligned"]
 = Plugin System
 
 本文是 Notist 插件系统的完整设计。它回答：一个插件 package 如何声明自己、插件能导入哪些宿主类型、插件如何实现语义与投影、宿主如何保证 capability / 终止性 / 确定性，以及 core 为什么只是第一个特权 package。

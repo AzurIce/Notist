@@ -1,4 +1,4 @@
-@![implementation = "partial"]
+@![implementation = "aligned"]
 = Plugin Call Reduction: Stream, Leaf, and Shaping
 
 本文记录 Notist 插件求值模型。它把三个问题合并成一个模型：插件如何调用内置或其它插件、插件如何组合任意内容、以及求值结果如何进入成型。

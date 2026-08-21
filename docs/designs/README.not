@@ -81,13 +81,8 @@ archive/      已退休的旧设计；当前为空
 
 当前已知的非 `aligned` 文档：
 
-- [[vault::designs::pipeline]]：`partial`（主 reduction 已走 Stream 引擎；project 已 aligned，剩余兼容投影仅存在于 legacy `StructuredDocument` 查询路径）
 
 - [[vault::designs::language::collection-types]]：`missing`
-- [[vault::designs::pipeline::evaluate]]：`partial`（`ElementInstance`、Stream reduction engine、`stream_lower` 与 `evaluate_stream` 已引入；Markup 各项已直接产流，求值主路径走 recovering Stream reduction；仅空结果失败时回退 legacy）
-- [[vault::designs::pipeline::structure]]：`partial`（新 Leaf 树的递归成型已实现；`StructuredModule` 同时携带 canonical tree 与 legacy 兼容投影，渲染入口接收 tree）
-- [[vault::designs::pipeline::plugin-call-reduction]]：`partial`（Stream + Leaf reduction engine、core 别名与终止预算已实现；Wasm ABI 与 capability 尚未迁移）
-- [[vault::designs::pipeline::plugin-system]]：`partial`（shaping registry、capability checker、声明式 ElementFunction、HTML contribution 注入、core native package 镜像、WIT `evaluate` component loader 与 `host.call` 均已实现）
 - [[vault::designs::language::call-model]]：`partial`（rest 调用模型未实现）
 - [[vault::designs::world::core-namespace-plugin-boundary]]：`partial`（core namespace 与 qualified call 已启用；插件 namespace 冲突与 prelude 隔离仍待统一 PluginSet 治理）
 - [[vault::designs::host::html-renderer]]：`partial`（目标为按 `ElementName` 分发 Leaf 投影，当前仍按 legacy Element 渲染）
