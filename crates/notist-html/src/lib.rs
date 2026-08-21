@@ -3,7 +3,9 @@
 use std::collections::{HashMap, HashSet};
 use std::fmt::Write;
 
-use notist_eval::{ElementTree, instance_node_to_legacy, instances_to_legacy_content};
+use notist_eval::{
+    ElementTree, field_value_to_element_value, instance_node_to_legacy, instances_to_legacy_content,
+};
 use notist_model::{
     Block, Content, CustomField, Element, ElementNode, FieldValue, InstanceNode, ModulePath,
     ModuleReference, StructuredDocument, TableAlignment, TableCellPlacement, TextRange,
@@ -479,10 +481,56 @@ impl Renderer<'_, '_> {
     fn tree_element(&mut self, node: &InstanceNode, position: RenderPosition) {
         let instance = &node.instance;
         let Some(local) = instance.name.core_local() else {
-            let Some(legacy) = instance_node_to_legacy(node) else {
+            let flat_body = instance
+                .body
+                .iter()
+                .flat_map(|child| {
+                    if child.instance.is_core("paragraph") {
+                        child.instance.body.clone()
+                    } else {
+                        vec![child.clone()]
+                    }
+                })
+                .collect::<Vec<_>>();
+            let Some(body) = instances_to_legacy_content(&flat_body) else {
                 return;
             };
-            self.element(&legacy.element, &legacy, position);
+            let name = instance.name.to_string();
+            let fields = instance
+                .fields
+                .iter()
+                .filter_map(|field| {
+                    Some(CustomField {
+                        name: field.name.clone(),
+                        value: field_value_to_element_value(&field.value)?,
+                    })
+                })
+                .collect::<Vec<_>>();
+            let input = CustomRenderInput {
+                name: &name,
+                body: &body,
+                block: instance.block,
+                fields: &fields,
+            };
+            if self.renderers.render(&input, &mut self.output) {
+                return;
+            }
+            let tag = container_tag(instance.block, position);
+            self.output.push('<');
+            self.output.push_str(tag);
+            self.output.push_str(" class=\"notist-custom");
+            self.projected_class_suffix_range(node.range);
+            self.output.push_str("\" data-notist-name=\"");
+            escape_attribute(&mut self.output, &name);
+            self.output.push('"');
+            self.range_attributes_range(node.range);
+            self.output.push('>');
+            if tag == "div" {
+                self.flow_content(&body);
+            } else {
+                self.inline_content(&body);
+            }
+            write!(self.output, "</{tag}>").unwrap();
             return;
         };
         match local {
@@ -536,6 +584,134 @@ impl Renderer<'_, '_> {
                 self.output.push_str("<hr class=\"notist-rule\"");
                 self.range_attributes_range(node.range);
                 self.output.push('>');
+            }
+            "reference" => {
+                let Some(FieldValue::String(url)) = instance.field("url") else {
+                    return;
+                };
+                if let Ok(reference) = notist_syntax::parse_wiki_reference(url) {
+                    self.reference_range(&reference, node.range);
+                }
+            }
+            "raw" => {
+                let Some(FieldValue::String(text)) = instance.field("source") else {
+                    return;
+                };
+                let block = matches!(instance.field("block"), Some(FieldValue::Bool(true)));
+                let language = match instance.field("lang") {
+                    Some(FieldValue::String(language)) => Some(language.as_str()),
+                    _ => None,
+                };
+                self.raw_range(text, block, language, node.range);
+            }
+            "callout" => {
+                let kind = match instance.field("kind") {
+                    Some(FieldValue::String(kind)) => kind.as_str(),
+                    _ => "note",
+                };
+                let title = match instance.field("title") {
+                    Some(FieldValue::Content(nodes)) => instances_to_legacy_content(nodes),
+                    _ => None,
+                };
+                let Some(body) = instances_to_legacy_content(&instance.body) else {
+                    return;
+                };
+                self.output.push_str("<aside class=\"notist-callout");
+                self.projected_class_suffix_range(node.range);
+                self.output.push_str("\" data-notist-kind=\"");
+                escape_attribute(&mut self.output, kind);
+                self.output.push('"');
+                self.range_attributes_range(node.range);
+                self.output.push('>');
+                if let Some(title) = title {
+                    self.output.push_str("<div class=\"notist-callout-title\">");
+                    self.inline_content(&title);
+                    self.output.push_str("</div>");
+                }
+                self.flow_content(&body);
+                self.output.push_str("</aside>");
+            }
+            "details" => {
+                let summary = match instance.field("summary") {
+                    Some(FieldValue::Content(nodes)) => instances_to_legacy_content(nodes),
+                    _ => None,
+                };
+                let open = matches!(instance.field("open"), Some(FieldValue::Bool(true)));
+                let Some(body) = instances_to_legacy_content(&instance.body) else {
+                    return;
+                };
+                self.output.push_str("<details class=\"notist-details");
+                self.projected_class_suffix_range(node.range);
+                self.output.push('"');
+                if open {
+                    self.output.push_str(" open");
+                }
+                self.range_attributes_range(node.range);
+                self.output.push_str("><summary>");
+                if let Some(summary) = summary {
+                    self.inline_content(&summary);
+                } else {
+                    escape_text(&mut self.output, "Details");
+                }
+                self.output.push_str("</summary>");
+                self.flow_content(&body);
+                self.output.push_str("</details>");
+            }
+            "figure" => {
+                let kind = match instance.field("kind") {
+                    Some(FieldValue::String(kind)) => kind.clone(),
+                    _ => "figure".to_owned(),
+                };
+                let supplement = match instance.field("supplement") {
+                    Some(FieldValue::Content(nodes)) => instances_to_legacy_content(nodes),
+                    _ => None,
+                };
+                let caption = match instance.field("caption") {
+                    Some(FieldValue::Content(nodes)) => instances_to_legacy_content(nodes),
+                    _ => None,
+                };
+                let Some(body) = instances_to_legacy_content(&instance.body) else {
+                    return;
+                };
+                self.output.push_str("<figure class=\"notist-figure");
+                self.projected_class_suffix_range(node.range);
+                self.output.push_str("\" data-notist-kind=\"");
+                escape_attribute(&mut self.output, &kind);
+                self.output.push('"');
+                self.range_attributes_range(node.range);
+                self.output.push('>');
+                self.figure_body(&body);
+                if let Some(caption) = caption {
+                    self.output.push_str("<figcaption>");
+                    if let Some(supplement) = supplement {
+                        self.inline_content(&supplement);
+                        escape_text(&mut self.output, ": ");
+                    }
+                    self.inline_content(&caption);
+                    self.output.push_str("</figcaption>");
+                }
+                self.output.push_str("</figure>");
+            }
+            "unresolved-call" => {
+                let Some(FieldValue::String(name)) = instance.field("name") else {
+                    return;
+                };
+                let arguments = match instance.field("arguments") {
+                    Some(FieldValue::String(arguments)) => Some(arguments.as_str()),
+                    _ => None,
+                };
+                let trailing = (!instance.body.is_empty())
+                    .then(|| instances_to_legacy_content(&instance.body))
+                    .flatten();
+                let block = instance.block;
+                self.unresolved_call_range(
+                    name,
+                    arguments,
+                    trailing.as_ref(),
+                    block,
+                    node.range,
+                    position,
+                );
             }
             _ => {
                 let Some(legacy) = instance_node_to_legacy(node) else {
@@ -1216,6 +1392,10 @@ impl Renderer<'_, '_> {
     }
 
     fn reference(&mut self, reference: &WikiReference, node: &ElementNode) {
+        self.reference_range(reference, node.range);
+    }
+
+    fn reference_range(&mut self, reference: &WikiReference, range: TextRange) {
         let target = match &reference.module {
             ModuleReference::Absolute(_) => reference.module.resolve_from(&ModulePath::root()),
             _ => self
@@ -1241,7 +1421,7 @@ impl Renderer<'_, '_> {
                 .push_str("<span class=\"notist-reference notist-reference-unresolved\"");
         }
 
-        self.range_attributes(node);
+        self.range_attributes_range(range);
         self.output.push('>');
         self.reference_text(reference);
 
@@ -1272,14 +1452,18 @@ impl Renderer<'_, '_> {
     }
 
     fn raw(&mut self, text: &str, block: bool, language: Option<&str>, node: &ElementNode) {
+        self.raw_range(text, block, language, node.range);
+    }
+
+    fn raw_range(&mut self, text: &str, block: bool, language: Option<&str>, range: TextRange) {
         if block {
             self.output.push_str("<pre");
-            self.projected_class_attribute(node);
-            self.range_attributes(node);
+            self.projected_class_attribute_range(range);
+            self.range_attributes_range(range);
             self.output.push_str("><code");
         } else {
             self.output.push_str("<code");
-            self.range_attributes(node);
+            self.range_attributes_range(range);
         }
         if let Some(language) = language {
             self.output.push_str(" class=\"language-");
@@ -1318,6 +1502,40 @@ impl Renderer<'_, '_> {
             self.output.push('"');
         }
         self.range_attributes(node);
+        self.output.push('>');
+        if let Some(body) = trailing {
+            if tag == "div" {
+                self.flow_content(body);
+            } else {
+                self.inline_content(body);
+            }
+        }
+        write!(self.output, "</{tag}>").unwrap();
+    }
+
+    fn unresolved_call_range(
+        &mut self,
+        name: &str,
+        arguments: Option<&str>,
+        trailing: Option<&Content>,
+        block: bool,
+        range: TextRange,
+        position: RenderPosition,
+    ) {
+        let tag = container_tag(block, position);
+        self.output.push('<');
+        self.output.push_str(tag);
+        self.output.push_str(" class=\"notist-unresolved-call");
+        self.projected_class_suffix_range(range);
+        self.output.push_str("\" data-notist-name=\"");
+        escape_attribute(&mut self.output, name);
+        self.output.push('"');
+        if let Some(arguments) = arguments {
+            self.output.push_str(" data-notist-arguments=\"");
+            escape_attribute(&mut self.output, arguments);
+            self.output.push('"');
+        }
+        self.range_attributes_range(range);
         self.output.push('>');
         if let Some(body) = trailing {
             if tag == "div" {
@@ -1378,6 +1596,16 @@ impl Renderer<'_, '_> {
         self.output.push_str(" class=\"");
         escape_attribute(&mut self.output, &projection.classes.join(" "));
         self.output.push('"');
+    }
+
+    fn projected_class_suffix_range(&mut self, range: TextRange) {
+        let Some(projection) = self.plan.projections.get(&range_key(range)) else {
+            return;
+        };
+        for class in &projection.classes {
+            self.output.push(' ');
+            escape_attribute(&mut self.output, class);
+        }
     }
 
     /// Appends the classes projected onto an element to a fixed `class`

@@ -23,9 +23,9 @@ pub use function::{
 pub use leaf::{
     CapabilityPolicy, ElementTree, FlatContent, LeafEvaluation, Principal, ReduceFrame,
     ReduceLimits, ShapingRegistry, StreamArgument, StreamCall, StreamEvaluation, StreamNode,
-    StreamValue, element_tree_to_document, instance_node_to_legacy, instances_to_legacy_content,
-    legacy_content_to_nodes, reduce_call, reduce_flat, reduce_flat_recovering, shape_flat,
-    shape_flat_with,
+    StreamValue, element_tree_to_document, field_value_to_element_value, instance_node_to_legacy,
+    instances_to_legacy_content, legacy_content_to_nodes, reduce_call, reduce_flat,
+    reduce_flat_recovering, shape_flat, shape_flat_with,
 };
 pub use structure::structure;
 pub use type_system::{

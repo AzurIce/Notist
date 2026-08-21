@@ -7,6 +7,7 @@ license.workspace = true
 [dependencies]
 notist-eval.workspace = true
 notist-model.workspace = true
+notist-syntax.workspace = true
 percent-encoding.workspace = true
 
 [dev-dependencies]

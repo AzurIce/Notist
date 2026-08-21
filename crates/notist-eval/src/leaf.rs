@@ -1197,7 +1197,7 @@ fn nodes_to_legacy_flow_content(nodes: &[InstanceNode]) -> Option<Vec<ElementNod
     Some(output)
 }
 
-fn field_value_to_element_value(value: &FieldValue) -> Option<ElementValue> {
+pub fn field_value_to_element_value(value: &FieldValue) -> Option<ElementValue> {
     let converted = match value {
         FieldValue::None => ElementValue::None,
         FieldValue::Bool(value) => ElementValue::Bool(*value),
