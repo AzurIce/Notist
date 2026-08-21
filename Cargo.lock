@@ -1456,6 +1456,7 @@ dependencies = [
  "notist-analysis",
  "notist-html",
  "notist-model",
+ "notist-plugin-host",
  "notist-syntax",
  "percent-encoding",
  "regex",

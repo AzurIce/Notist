@@ -1,7 +1,7 @@
 // 分割线之上的为基本确定的不再更改表述的内容（除非用户主动要求）。
 = Language Overview
 
-Notist 是一门带有静态类型系统的文档编程语言，它具有两个语法模式：Markup 和 Code（类似 typst）。
+Notist 是一门带有静态类型系统的文档编程语言，它具有两个语法模式：Markup 和 Code（类似 typst）。完整编译管线见 [[vault::designs::pipeline]]。
 
 默认处于 Markup 模式，此时体验与简单的标记语言基本无异：
 
@@ -95,4 +95,4 @@ annotations = {}   // 示例中没有标注，属性表为空
 
 标题来自变量 `accent` 的值，callout 的内容由函数调用构造——文档里的每一处内容都来自同一次求值。`bindings` 是程序的一面，`content` 是文档的一面，`annotations` 是标注的一面；三者来自同一次求值，却承担不同职责。
 
-这个结果如何产生——类型系统见 [[vault::designs::language::type-system#类型系统]]，属性表见 [[vault::designs::language::property-table]]，求值模型与元素序列见 [[vault::designs::language::evaluation-model#求值规则]]，scope 与词法环境见 [[vault::designs::language::scope-environment#scope 是值层节点]]。
+这个结果如何产生——类型系统见 [[vault::designs::language::type-system#类型系统]]，属性表见 [[vault::designs::language::property-table]]，求值模型与元素序列见 [[vault::designs::pipeline::evaluate#求值规则]]，scope 与词法环境见 [[vault::designs::language::scope-environment#scope 是值层节点]]。

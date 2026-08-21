@@ -1,0 +1,4 @@
+= component-echo
+
+这是 `semantic.wasm` WIT component 的最小示例：`evaluate` 忽略请求并返回一个
+`demo::echo` Leaf 流。宿主通过 `wasmtime::component` 装载并解码 bytes ABI。

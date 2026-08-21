@@ -1,0 +1,25 @@
+package notist:plugin;
+
+/// The v1 semantic ABI is bytes in / bytes out.
+///
+/// WIT does not permit the recursive `Stream<Call | Leaf>` shape directly, so
+/// the host and guest exchange the canonical `Call` request and `Stream`
+/// response encoded with the shared `notist-plugin-api` serde schema. Keeping
+/// the component boundary opaque also matches the Typst
+/// `wasm-minimal-protocol` precedent and leaves room for a bincode/JSON
+/// payload version byte without changing the component signature.
+world semantic {
+    export evaluate: func(request: list<u8>) -> result<list<u8>, string>;
+}
+
+interface host {
+    /// Calls another registered semantic function on behalf of the current
+    /// plugin principal. Request and response use the same encoded schema as
+    /// `evaluate`.
+    call: func(request: list<u8>) -> result<list<u8>, string>;
+}
+
+world semantic-host {
+    import host;
+    export evaluate: func(request: list<u8>) -> result<list<u8>, string>;
+}

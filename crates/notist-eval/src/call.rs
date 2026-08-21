@@ -2,11 +2,7 @@
 
 use notist_model::{Content, ElementNode, TextRange};
 
-use crate::{
-    BoundArguments, EvalDiagnostic, FunctionContext, FunctionInput, FunctionOutput,
-    FunctionRegistry, Value,
-};
-use crate::type_system::default_to_value;
+use crate::{EvalDiagnostic, FunctionOwner, FunctionRegistry, Principal, Value};
 
 /// A function call in the uniform reduction model.
 #[derive(Clone, Debug, PartialEq)]
@@ -56,68 +52,60 @@ pub enum CallNode {
 
 /// Reduces a single call to final Notist content.
 pub fn reduce(call: &Call, registry: &FunctionRegistry) -> Result<Content, Vec<EvalDiagnostic>> {
-    let function = registry.get(&call.name).ok_or_else(|| {
-        vec![EvalDiagnostic {
-            message: format!("unknown function `{}`", call.name),
-            range: call.range,
-        }]
-    })?;
-
-    let mut values: std::collections::HashMap<String, Value> = call
-        .arguments
-        .iter()
-        .map(|argument| (argument.name.clone(), argument.value.clone()))
-        .collect();
-    let signature = function.signature();
-    if let Some(body) = &call.body {
-        let content = reduce_content(body, registry)?;
-        if let Some(trailing_name) = signature.trailing_content.as_deref() {
-            values.insert(trailing_name.to_owned(), Value::Content(content));
-        }
-    }
-    for parameter in &signature.parameters {
-        if !values.contains_key(&parameter.name) {
-            if let Some(default) = &parameter.default {
-                values.insert(parameter.name.clone(), default_to_value(default));
-            }
-        }
-    }
-    let arguments = BoundArguments::from_values(values);
-
-    let context = FunctionContext {
+    reduce_content(
+        &CallContent {
+            nodes: vec![CallNode::Call(call.clone())],
+        },
         registry,
-        depth: 0,
-    };
-    let input = FunctionInput {
-        name: &call.name,
-        arguments,
-        range: call.range,
-    };
-    let output = function.call(&context, input)?;
-
-    match output {
-        FunctionOutput::Content(content) => Ok(content),
-        FunctionOutput::Calls(calls) => reduce_content(&calls, registry),
-        FunctionOutput::Value(_) => Err(vec![EvalDiagnostic {
-            message: format!("function `{}` did not return Content", call.name),
-            range: call.range,
-        }]),
-    }
+    )
 }
 
 /// Reduces a sequence of calls to final Notist content.
+///
+/// This is the compatibility entry point for native code that still returns
+/// the legacy `CallContent`. Reduction is delegated to the Stream + Leaf
+/// engine, which validates arguments, threads depth/fuel, and lowers the
+/// reduced leaves back into legacy `Content`.
 pub fn reduce_content(
     content: &CallContent,
     registry: &FunctionRegistry,
 ) -> Result<Content, Vec<EvalDiagnostic>> {
-    let mut output = Content::new();
-    for node in &content.nodes {
-        match node {
-            CallNode::Call(call) => output.extend(reduce(call, registry)?),
-            CallNode::Element(element) => output.elements.push(element.clone()),
+    reduce_content_as(content, registry, &FunctionOwner::Host)
+}
+
+/// Reduces legacy call content on behalf of `owner`.
+///
+/// Calls returned by a plugin are reduced under that plugin's principal and
+/// the registry's capability policy; calls returned by host functions keep
+/// host authority.
+pub fn reduce_content_as(
+    content: &CallContent,
+    registry: &FunctionRegistry,
+    owner: &FunctionOwner,
+) -> Result<Content, Vec<EvalDiagnostic>> {
+    let limits = crate::leaf::ReduceLimits::default();
+    let mut frame = match owner {
+        FunctionOwner::Host => crate::leaf::ReduceFrame::root(&limits),
+        FunctionOwner::Plugin(_) => {
+            crate::leaf::ReduceFrame::restricted(&limits, Principal::from(owner), registry.policy())
         }
-    }
-    Ok(output)
+    };
+    let stream = crate::leaf::legacy_calls_to_stream(content);
+    let nodes = crate::leaf::reduce_flat(&stream, registry, &limits, &mut frame)?;
+    crate::leaf::instances_to_legacy_content(&nodes).ok_or_else(|| {
+        vec![EvalDiagnostic {
+            message: "reduced content contains leaves that cannot be lowered to legacy elements"
+                .into(),
+            range: content
+                .nodes
+                .first()
+                .map(|node| match node {
+                    CallNode::Call(call) => call.range,
+                    CallNode::Element(element) => element.range,
+                })
+                .unwrap_or(notist_model::TextRange::new(0, 0)),
+        }]
+    })
 }
 
 #[cfg(test)]
@@ -125,7 +113,10 @@ mod tests {
     use notist_model::{Content, Element, ElementNode, TextRange};
 
     use super::*;
-    use crate::{Function, FunctionOutput, FunctionRegistry, FunctionSignature, Parameter, Type};
+    use crate::{
+        Function, FunctionContext, FunctionInput, FunctionOutput, FunctionRegistry,
+        FunctionSignature, Parameter, Type,
+    };
 
     struct TextFunction;
 
@@ -287,8 +278,16 @@ mod tests {
         let Element::Details { body, .. } = &content.elements[0].element else {
             panic!("expected details element");
         };
-        assert!(body.elements.iter().any(|node| matches!(node.element, Element::Raw { .. })));
-        assert!(body.elements.iter().any(|node| matches!(&node.element, Element::Custom { name, .. } if name == "shader")));
+        assert!(
+            body.elements
+                .iter()
+                .any(|node| matches!(node.element, Element::Raw { .. }))
+        );
+        assert!(
+            body.elements.iter().any(
+                |node| matches!(&node.element, Element::Custom { name, .. } if name == "shader")
+            )
+        );
     }
 
     #[test]

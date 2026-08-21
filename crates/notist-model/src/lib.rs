@@ -1,11 +1,16 @@
 use std::fmt;
 
 mod content;
+mod leaf;
 mod signature;
 
 pub use content::{
     Block, Content, CustomField, Element, ElementNode, ElementValue, StructuredDocument,
     TableAlignment, TableCellPlacement, TableLayoutError, table_layout,
+};
+pub use leaf::{
+    BodyMode, ElementInstance, ElementName, ElementNamespace, ElementSchema, Field, FieldValue,
+    InstanceNode, ShapingKind, ShapingRole,
 };
 pub use signature::{
     DefaultValue, FunctionSignature, Parameter, Type, builtin_signatures, callout_signature,

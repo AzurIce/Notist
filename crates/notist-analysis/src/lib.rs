@@ -7,7 +7,8 @@ use std::sync::{Arc, Mutex};
 
 use notist_eval::{
     EvalDiagnostic, Evaluator, Function, FunctionContext, FunctionInput, FunctionOutput,
-    FunctionRegistry, structure,
+    FunctionRegistry, ShapingRegistry, StreamNode, instances_to_legacy_content,
+    legacy_content_to_nodes, shape_flat, structure,
 };
 use notist_model::{
     Block, Content, DefaultValue, Element, ElementNode, FunctionSignature, ModulePath,
@@ -180,6 +181,65 @@ impl FunctionEnvironmentId {
 
     pub const fn raw(self) -> u64 {
         self.0
+    }
+}
+
+/// Computes the semantic-world identity for one snapshot.
+///
+/// The caller-provided id acts as a view-local salt (zero for disk views, a
+/// monotonically allocated value for configured views). The salt is combined
+/// with the effective plugin surface, configuration text, and static signature
+/// set, so plugin/package changes always produce a new semantic world while
+/// separate views over the same surface remain distinguishable.
+fn function_environment_for(
+    salt: FunctionEnvironmentId,
+    configuration: Option<&str>,
+    signatures: &SignatureSet,
+    plugins: &[notist_plugin_host::LoadedPlugin],
+) -> FunctionEnvironmentId {
+    let mut parts = Vec::new();
+    parts.push(format!("salt:{}", salt.raw()));
+    parts.push(format!("config:{}", configuration.unwrap_or_default()));
+    let mut signatures = signatures
+        .iter()
+        .map(|(name, signature)| format!("{name}={signature:?}"))
+        .collect::<Vec<_>>();
+    signatures.sort();
+    parts.extend(signatures);
+    for plugin in plugins {
+        parts.push(format!(
+            "plugin:{}@{} api={}",
+            plugin.id, plugin.version, plugin.api_version
+        ));
+        let mut capabilities = plugin.capabilities.clone();
+        capabilities.sort();
+        parts.push(format!("capabilities:{}", capabilities.join(",")));
+        for function in &plugin.functions {
+            parts.push(format!(
+                "function:{}:{:?}",
+                function.name(),
+                function.signature()
+            ));
+        }
+        for schema in &plugin.elements {
+            parts.push(format!("schema:{schema:?}"));
+        }
+        for contribution in &plugin.html_contributions {
+            parts.push(format!("html:{contribution:?}"));
+        }
+    }
+    let mut hash = 0xcbf29ce484222325u64;
+    for part in parts {
+        for byte in part.as_bytes() {
+            hash ^= u64::from(*byte);
+            hash = hash.wrapping_mul(0x100000001b3);
+        }
+        hash ^= 0xff;
+    }
+    if hash == 0 {
+        FunctionEnvironmentId(1)
+    } else {
+        FunctionEnvironmentId(hash)
     }
 }
 
@@ -568,6 +628,10 @@ pub struct StructuredModule {
     pub module_id: ModuleId,
     pub function_environment: FunctionEnvironmentId,
     pub document: StructuredDocument,
+    /// Canonical recursively shaped Leaf tree. Clean parses produce this
+    /// directly from the Stream pipeline; recovery parses project the legacy
+    /// evaluation result.
+    pub tree: notist_eval::ElementTree,
     pub diagnostics: Vec<EvalDiagnostic>,
     /// The evaluation annotation table (D0002/D0006): postfix `@...` and
     /// block-prefix `@[...]` attribute sets over absolute source ranges.
@@ -616,6 +680,8 @@ pub struct WorkspaceSnapshot {
     diagnostics: Vec<Diagnostic>,
     signatures: SignatureSet,
     function_registry: Arc<FunctionRegistry>,
+    shaping_registry: Arc<ShapingRegistry>,
+    html_contributions: Vec<notist_plugin_host::HtmlContribution>,
     module_signatures: BTreeMap<ModuleId, SignatureSet>,
     module_semantics: BTreeMap<ModuleId, ModuleSemanticIndex>,
     attribute_keys: BTreeSet<String>,
@@ -693,11 +759,35 @@ impl WorkspaceSnapshot {
                 .map_err(|error| io::Error::new(io::ErrorKind::InvalidInput, error))?;
         notist_plugin_host::register_loaded(&mut function_registry, &loaded_plugins)
             .map_err(|error| io::Error::new(io::ErrorKind::InvalidInput, format!("{error:?}")))?;
+        let mut shaping_registry = ShapingRegistry::new();
+        notist_plugin_host::register_loaded_shaping(&mut shaping_registry, &loaded_plugins);
+        let html_contributions = loaded_plugins
+            .iter()
+            .flat_map(|plugin| plugin.html_contributions.iter().cloned())
+            .collect();
         for plugin in &loaded_plugins {
             for function in &plugin.functions {
                 signatures.insert(function.name(), function.signature());
+                if let Some((package, element)) = function.name().split_once("::")
+                    && let Some(alias) = notist_plugin_host::plugin_legacy_alias(package, element)
+                {
+                    signatures.insert(&alias, function.signature());
+                }
             }
         }
+        let function_environment = if function_environment == FunctionEnvironmentId::BUILTINS
+            && configuration.is_none()
+            && loaded_plugins.is_empty()
+        {
+            FunctionEnvironmentId::BUILTINS
+        } else {
+            function_environment_for(
+                function_environment,
+                configuration.as_deref(),
+                &signatures,
+                &loaded_plugins,
+            )
+        };
         let mut workspace = Self {
             root: root.clone(),
             configuration,
@@ -713,6 +803,8 @@ impl WorkspaceSnapshot {
             diagnostics: Vec::new(),
             signatures,
             function_registry: Arc::new(function_registry),
+            shaping_registry: Arc::new(shaping_registry),
+            html_contributions,
             module_signatures: BTreeMap::new(),
             module_semantics: BTreeMap::new(),
             attribute_keys: BTreeSet::new(),
@@ -767,6 +859,20 @@ impl WorkspaceSnapshot {
 
     pub fn function_environment(&self) -> FunctionEnvironmentId {
         self.function_environment
+    }
+
+    /// Returns the shaping registry captured by this snapshot, including
+    /// package-contributed schemas. Core fallbacks are resolved by the
+    /// registry itself, so callers do not need a second lookup.
+    pub fn shaping_registry(&self) -> &ShapingRegistry {
+        &self.shaping_registry
+    }
+
+    /// Returns manifest-declared HTML renderer contributions captured by this
+    /// snapshot. Projection hosts use this list to build their renderer
+    /// registries without re-reading package directories.
+    pub fn html_contributions(&self) -> &[notist_plugin_host::HtmlContribution] {
+        &self.html_contributions
     }
 
     pub fn sources(&self) -> impl Iterator<Item = &SourceInput> {
@@ -1419,16 +1525,52 @@ impl WorkspaceSnapshot {
             .cloned()
             .unwrap_or_default();
         let evaluator = Evaluator::new((*self.function_registry).clone());
-        let structured = structure(evaluator.evaluate_parsed_with_bindings(
-            source,
-            module.parse.as_ref()?,
-            seeds,
-        ));
+        let parse = module.parse.as_ref()?;
+        // Prefer the new Stream + Leaf reduction engine for clean parses. The
+        // legacy evaluator remains the recovery path for syntax errors and
+        // reduction failures so diagnostics still surface unresolved calls.
+        let mut tree = None;
+        let mut structured = None;
+        if parse.errors.is_empty() {
+            let stream = evaluator.evaluate_parsed_stream_with_bindings(
+                source,
+                parse,
+                seeds.clone(),
+                &self.shaping_registry,
+            );
+            if !stream.reduction_failed {
+                let leaves = stream
+                    .reduced
+                    .nodes
+                    .iter()
+                    .filter_map(|node| match node {
+                        StreamNode::Leaf(leaf) => Some(leaf.clone()),
+                        StreamNode::Call(_) => None,
+                    })
+                    .collect::<Vec<_>>();
+                if let Some(content) = instances_to_legacy_content(&leaves) {
+                    tree = Some(stream.tree.clone());
+                    structured = Some(structure(notist_eval::Evaluation {
+                        content,
+                        diagnostics: stream.diagnostics,
+                        bindings: stream.bindings,
+                        annotations: stream.annotations,
+                        module_attributes: stream.module_attributes,
+                    }));
+                }
+            }
+        }
+        let structured = structured.unwrap_or_else(|| {
+            let evaluation = evaluator.evaluate_parsed_with_bindings(source, parse, seeds);
+            tree = Some(shape_flat(&legacy_content_to_nodes(&evaluation.content)));
+            structure(evaluation)
+        });
         Some(StructuredModule {
             revision: self.revision,
             module_id,
             function_environment: self.function_environment,
             document: structured.document,
+            tree: tree.unwrap_or_default(),
             diagnostics: structured.diagnostics,
             annotations: structured.annotations,
         })
@@ -2779,6 +2921,12 @@ fn same_source_content(a: &WorkspaceSnapshot, b: &WorkspaceSnapshot) -> bool {
     if a.configuration != b.configuration {
         return false;
     }
+    // Plugin package changes alter the semantic world even though they may not
+    // touch any `.not` source file; the function-environment fingerprint
+    // includes package versions, schemas, render contributions, and grants.
+    if a.function_environment != b.function_environment {
+        return false;
+    }
     if a.sources.len() != b.sources.len() {
         return false;
     }
@@ -3648,6 +3796,33 @@ mod tests {
     use tempfile::TempDir;
 
     #[test]
+    fn structured_modules_expose_the_canonical_element_tree() {
+        let root = TempDir::new().unwrap();
+        fs::write(root.path().join("README.not"), "= Title\n\nBody").unwrap();
+        let snapshot = WorkspaceSnapshot::load(root.path()).unwrap();
+        let module = snapshot.modules().next().unwrap();
+        let structured = snapshot.structured_module(module.id).unwrap();
+        assert_eq!(structured.tree.roots.len(), 1);
+        assert!(structured.tree.roots[0].instance.is_core("section"));
+        assert_eq!(structured.document.blocks.len(), 1);
+    }
+
+    #[test]
+    fn static_checker_recognizes_qualified_core_names() {
+        let root = TempDir::new().unwrap();
+        fs::write(root.path().join("README.not"), "#core::details[Hi]").unwrap();
+        let snapshot = WorkspaceSnapshot::load(root.path()).unwrap();
+        assert!(
+            snapshot
+                .diagnostics()
+                .iter()
+                .all(|diagnostic| diagnostic.kind != DiagnosticKind::UnknownFunction),
+            "{:?}",
+            snapshot.diagnostics()
+        );
+    }
+
+    #[test]
     fn maps_files_and_resolves_relative_absolute_and_parent_paths() {
         let root = TempDir::new().unwrap();
         fs::create_dir(root.path().join("pages")).unwrap();
@@ -4401,6 +4576,111 @@ mod tests {
         let new_path = dunce::canonicalize(&new_path).unwrap();
 
         assert_eq!(new_snapshot.file_id(&new_path), Some(old_id));
+    }
+
+    #[test]
+    fn plugin_package_changes_allocate_a_new_function_environment() {
+        let base = TempDir::new().unwrap();
+        let root = base.path().join("vault");
+        let package = base.path().join("pkg");
+        fs::create_dir(&root).unwrap();
+        fs::create_dir(&package).unwrap();
+        let manifest = |version: &str| {
+            format!(
+                r#"{{
+                    "package": "demo",
+                    "version": "{version}",
+                    "api-version": "0.1",
+                    "interfaces": {{
+                        "semantic": {{
+                            "elements": [{{
+                                "name": "box",
+                                "version": 1,
+                                "block": true,
+                                "parameters": [{{
+                                    "name": "source",
+                                    "ty": "String"
+                                }}],
+                                "trailing-content": "body"
+                            }}]
+                        }}
+                    }}
+                }}"#
+            )
+        };
+        fs::write(package.join("plugin.json"), manifest("0.1.0")).unwrap();
+        fs::write(
+            root.join(MANIFEST_FILE),
+            "[plugins.demo]\npath = \"../pkg\"\n",
+        )
+        .unwrap();
+        fs::write(root.join("README.not"), "#demo::box(source: \"x\")[Hi]").unwrap();
+
+        let first = WorkspaceSnapshot::load(&root).unwrap();
+        fs::write(package.join("plugin.json"), manifest("0.2.0")).unwrap();
+        let second = WorkspaceSnapshot::load(&root).unwrap();
+        assert_ne!(
+            first.function_environment(),
+            second.function_environment(),
+            "plugin package changes must create a new semantic world"
+        );
+        assert_eq!(
+            second.function_environment(),
+            WorkspaceSnapshot::load(&root)
+                .unwrap()
+                .function_environment(),
+            "the same plugin surface must produce a stable semantic world"
+        );
+    }
+
+    #[test]
+    fn snapshot_captures_plugin_contributed_shaping_schemas() {
+        let base = TempDir::new().unwrap();
+        let root = base.path().join("vault");
+        let package = base.path().join("pkg");
+        fs::create_dir(&root).unwrap();
+        fs::create_dir(&package).unwrap();
+        fs::write(
+            package.join("plugin.json"),
+            r#"{
+                "package": "demo",
+                "version": "0.1.0",
+                "api-version": "0.1",
+                "interfaces": {
+                    "semantic": {
+                        "elements": [{
+                            "name": "box",
+                            "version": 1,
+                            "block": true,
+                            "parameters": [{ "name": "source", "ty": "String" }],
+                            "trailing-content": "body",
+                            "body-mode": "flow"
+                        }]
+                    }
+                }
+            }"#,
+        )
+        .unwrap();
+        fs::write(
+            root.join(MANIFEST_FILE),
+            "[plugins.demo]\npath = \"../pkg\"\n",
+        )
+        .unwrap();
+        fs::write(root.join("README.not"), "#demo::box(source: \"x\")[Hi]").unwrap();
+
+        let snapshot = WorkspaceSnapshot::load(&root).unwrap();
+        let schema = snapshot
+            .shaping_registry()
+            .get(&notist_model::ElementName::plugin("demo", "box"))
+            .expect("plugin shaping schema should be captured");
+        assert_eq!(schema.body_mode, notist_model::BodyMode::Flow);
+        assert_eq!(schema.kind, notist_model::ShapingKind::Block);
+        assert!(
+            snapshot
+                .diagnostics()
+                .iter()
+                .all(|diagnostic| diagnostic.kind != DiagnosticKind::UnknownFunction)
+        );
     }
 
     #[test]

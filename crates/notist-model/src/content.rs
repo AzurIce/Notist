@@ -75,7 +75,6 @@ pub enum ElementValue {
     Array(Vec<ElementValue>),
 }
 
-
 impl Eq for ElementValue {}
 
 /// One named field on a plugin-defined element.

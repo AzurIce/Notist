@@ -3,15 +3,15 @@
 
 本文是 L2 核心类型系统的独立成篇，从归档的历史混合文档中独立成篇。函数签名与调用模型见 [[vault::designs::language::call-model]]；集合类型目标设计见 [[vault::designs::language::collection-types]]；属性表见 [[vault::designs::language::property-table]]。
 
-一段源代码经过三个阶段：解析、静态检查、求值。解析把源码变成语法结构；静态检查解析名称、推断并检查类型，并把每个调用点解析为确定的已解析调用；求值器只消费静态检查的产物，产生元素序列后由成型投影为结构树。本文只定义类型系统：类型是值的静态投影，静态检查产出求值器唯一的语义输入。
+一段源代码经过 [[vault::designs::pipeline]] 中的解析、静态检查、求值等阶段。解析把源码变成语法结构；静态检查解析名称、推断并检查类型，并把每个调用点解析为确定的已解析调用；求值器只消费静态检查的产物，产生元素序列后由成型投影为结构树。本文只定义类型系统：类型是值的静态投影，静态检查产出求值器唯一的语义输入。
 
 == 类型系统
 
-静态检查在求值之前运行：它以类型判断（type judgment）Γ ⊢ e : T 描述"表达式 e 产出什么值"，并产出求值器唯一消费的语义输入。类型是值的静态投影；名称解析沿 scope 链进行——scope 与词法环境见 [[vault::designs::language::scope-environment#scope 是值层节点]]，值的定义见 [[vault::designs::language::evaluation-model#值的宇宙]]。
+静态检查在求值之前运行：它以类型判断（type judgment）Γ ⊢ e : T 描述"表达式 e 产出什么值"，并产出求值器唯一消费的语义输入。类型是值的静态投影；名称解析沿 scope 链进行——scope 与词法环境见 [[vault::designs::language::scope-environment#scope 是值层节点]]，值的定义见 [[vault::designs::pipeline::evaluate#值的宇宙]]。
 
 === Type 与 Value 对应
 
-类型是值的静态投影：每个类型描述一类值；求值阶段的值宇宙（[[vault::designs::language::evaluation-model#值的宇宙]]）与类型系统共享同一套概念，类型系统是它的静态面。
+类型是值的静态投影：每个类型描述一类值；求值阶段的值宇宙（[[vault::designs::pipeline::evaluate#值的宇宙]]）与类型系统共享同一套概念，类型系统是它的静态面。
 
 ```text
 Type
@@ -37,7 +37,7 @@ Type
 
 === Content 类型
 
-`Content` 是不透明类型：一个类型涵盖所有元素组合，元素结构（种类、嵌套、参数）是运行时数据，静态检查不追踪它；元素清单见 [[vault::designs::language::evaluation-model#Content 值]]。树中的每个节点携带自己的构造器身份；builtin 元素以 first-class 构造器函数的形式存在——`callout(kind: ..., body: ...)` 产生一个 callout 节点，其类型就是 `Content`。（内置构造器的命名空间尚未决定，本文暂以裸名书写。）用户函数与 builtin 构造器因此同构：`warning` 与 `callout` 遵守同一套签名、调用与求值规则，渲染与查询按节点身份消费结果，不区分来源。
+`Content` 是不透明类型：一个类型涵盖所有元素组合，元素结构（种类、嵌套、参数）是运行时数据，静态检查不追踪它；元素清单见 [[vault::designs::pipeline::evaluate#Content 值]]。树中的每个节点携带自己的构造器身份；builtin 元素以 first-class 构造器函数的形式存在——`callout(kind: ..., body: ...)` 产生一个 callout 节点，其类型就是 `Content`。（内置构造器的命名空间尚未决定，本文暂以裸名书写。）用户函数与 builtin 构造器因此同构：`warning` 与 `callout` 遵守同一套签名、调用与求值规则，渲染与查询按节点身份消费结果，不区分来源。
 
 插入转换只在 Markup insertion 边界成立：
 
@@ -47,7 +47,7 @@ Type
 Γ ⊢ #e : Content(Text(e))
 ```
 
-普通函数要求 Content 参数时仍然拒绝 String——"可展示"不会渗透成所有 API 的隐式转换规则；插入转换只存在于 Markup insertion 边界（[[vault::designs::language::evaluation-model]]）。
+普通函数要求 Content 参数时仍然拒绝 String——"可展示"不会渗透成所有 API 的隐式转换规则；插入转换只存在于 Markup insertion 边界（[[vault::designs::pipeline::evaluate]]）。
 
 === 静态检查
 
@@ -59,4 +59,4 @@ Type
 
 错误恢复：语法、未解析名称与类型错误允许产生 partial HIR，使编辑器与预览能继续处理其他源码；恢复节点保留自己的 Error 状态——错误实参不使用默认值，错误 callee 不伪装成返回 `None` 的成功函数。
 
-静态检查的产物——名称解析结果、类型与已解析调用——构成求值器唯一的语义输入：求值器不重新猜测名字指向哪个函数、实参如何绑定，只执行这份输入。求值如何消费这份输入见 [[vault::designs::language::evaluation-model#求值规则]]。
+静态检查的产物——名称解析结果、类型与已解析调用——构成求值器唯一的语义输入：求值器不重新猜测名字指向哪个函数、实参如何绑定，只执行这份输入。求值如何消费这份输入见 [[vault::designs::pipeline::evaluate#求值规则]]。

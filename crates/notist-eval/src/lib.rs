@@ -1,9 +1,12 @@
 //! Evaluation and structural normalization for Notist documents.
 
-mod builtin;
 mod call;
+#[path = "../../../plugins/core/lib.rs"]
+mod core;
 mod function;
+mod leaf;
 mod lower;
+mod stream_lower;
 mod structure;
 mod type_system;
 
@@ -12,10 +15,17 @@ use std::collections::HashMap;
 use notist_model::{Content, TextRange};
 use notist_syntax::Parse;
 
-pub use call::{Argument, Call, CallContent, CallNode, reduce, reduce_content};
+pub use call::{Argument, Call, CallContent, CallNode, reduce, reduce_content, reduce_content_as};
 pub use function::{
-    Function, FunctionContext, FunctionInput, FunctionOutput, FunctionRegistry, RegistryError,
-    RegistryErrorReason,
+    ElementFunction, Function, FunctionContext, FunctionInput, FunctionOutput, FunctionOwner,
+    FunctionRegistry, RegistryError, RegistryErrorReason,
+};
+pub use leaf::{
+    CapabilityPolicy, ElementTree, FlatContent, LeafEvaluation, Principal, ReduceFrame,
+    ReduceLimits, ShapingRegistry, StreamArgument, StreamCall, StreamEvaluation, StreamNode,
+    StreamValue, element_tree_to_document, instance_node_to_legacy, instances_to_legacy_content,
+    legacy_content_to_nodes, reduce_call, reduce_flat, reduce_flat_recovering, shape_flat,
+    shape_flat_with,
 };
 pub use structure::structure;
 pub use type_system::{
@@ -110,6 +120,81 @@ impl Evaluator {
         bindings: HashMap<String, Value>,
     ) -> Evaluation {
         lower::evaluate_markup_with_bindings(source, &parse.root, 0, &self.registry, 0, bindings)
+    }
+
+    /// Evaluates source and recursively shapes it into the unified Leaf tree.
+    pub fn evaluate_leaf(&self, source: &str) -> LeafEvaluation {
+        LeafEvaluation::from_evaluation(&self.evaluate(source))
+    }
+
+    /// Runs the full Stream pipeline: parse → lower → reduce → shape.
+    pub fn evaluate_stream(&self, source: &str) -> StreamEvaluation {
+        self.evaluate_stream_with_shaping(source, ShapingRegistry::core())
+    }
+
+    /// Runs the Stream pipeline with a caller-provided shaping registry.
+    ///
+    /// Plugin packages contribute their element schemas through the snapshot
+    /// shaping registry; this is the entry point that applies them while
+    /// folding the reduced Leaf stream into the canonical tree.
+    pub fn evaluate_stream_with_shaping(
+        &self,
+        source: &str,
+        shaping: &ShapingRegistry,
+    ) -> StreamEvaluation {
+        let parse = notist_syntax::parse(source);
+        self.evaluate_parsed_stream_with_bindings(source, &parse, HashMap::new(), shaping)
+    }
+
+    /// Runs the Stream pipeline for an already parsed source with pre-seeded
+    /// root bindings and a caller-provided shaping registry.
+    pub fn evaluate_parsed_stream_with_bindings(
+        &self,
+        source: &str,
+        parse: &Parse,
+        bindings: HashMap<String, Value>,
+        shaping: &ShapingRegistry,
+    ) -> StreamEvaluation {
+        let lowered = stream_lower::lower_markup_stream_with_bindings(
+            source,
+            &parse.root,
+            0,
+            &self.registry,
+            bindings,
+        );
+        let limits = ReduceLimits::default();
+        let mut frame = ReduceFrame::root_with_policy(&limits, self.registry.policy());
+        let (leaves, reduce_diagnostics) =
+            leaf::reduce_flat_recovering(&lowered.flat, &self.registry, &limits, &mut frame);
+        // A stream that still produced some leaves is a recoverable partial
+        // result; only an entirely failed reduction falls back to legacy.
+        let reduction_failed = leaves.is_empty() && !reduce_diagnostics.is_empty();
+        let reduced = FlatContent {
+            nodes: leaves.iter().cloned().map(StreamNode::Leaf).collect(),
+        };
+        let tree = leaf::shape_flat_with(&leaves, shaping);
+        let mut diagnostics = Vec::new();
+        diagnostics.extend(parse.errors.iter().cloned().map(|error| EvalDiagnostic {
+            message: error.message,
+            range: error.range,
+        }));
+        diagnostics.extend(lowered.diagnostics);
+        diagnostics.extend(reduce_diagnostics);
+        StreamEvaluation {
+            lowered: lowered.flat,
+            reduced,
+            tree,
+            diagnostics,
+            bindings: lowered.bindings,
+            annotations: lowered.annotations,
+            module_attributes: lowered.module_attributes,
+            reduction_failed,
+        }
+    }
+
+    /// Evaluates parsed source and recursively shapes it into the unified Leaf tree.
+    pub fn evaluate_parsed_leaf(&self, source: &str, parse: &Parse) -> LeafEvaluation {
+        LeafEvaluation::from_evaluation(&self.evaluate_parsed(source, parse))
     }
 
     /// Returns the function registry used by this evaluator.
@@ -1091,6 +1176,216 @@ mod tests {
         registry.register(QuoteFunction).unwrap();
         let error = registry.register(QuoteFunction).unwrap_err();
         assert_eq!(error.name, "test::quote");
+    }
+
+    #[test]
+    fn element_function_projects_schema_fields_and_trailing_content() {
+        let signature = FunctionSignature {
+            parameters: vec![
+                Parameter {
+                    name: "source".into(),
+                    ty: Type::String,
+                    default: None,
+                },
+                Parameter {
+                    name: "width".into(),
+                    ty: Type::Int,
+                    default: Some(DefaultValue::Int(800)),
+                },
+                Parameter {
+                    name: "body".into(),
+                    ty: Type::Content,
+                    default: None,
+                },
+            ],
+            trailing_content: Some("body".into()),
+            result: Type::Content,
+        };
+        let mut registry = FunctionRegistry::new();
+        registry
+            .register(ElementFunction::new(
+                "demo::box",
+                signature,
+                true,
+                FunctionOwner::Plugin("demo".into()),
+            ))
+            .unwrap();
+        let evaluation = Evaluator::new(registry).evaluate("#demo::box(source: \"wgsl\")[Hi]");
+        assert!(
+            evaluation.diagnostics.is_empty(),
+            "{:?}",
+            evaluation.diagnostics
+        );
+        let Element::Custom {
+            name,
+            body,
+            block,
+            fields,
+        } = &evaluation.content.elements[0].element
+        else {
+            panic!(
+                "expected custom element, got {:?}",
+                evaluation.content.elements
+            )
+        };
+        assert_eq!(name, "demo::box");
+        assert!(*block);
+        assert!(matches!(&body.elements[0].element, Element::Text(text) if text == "Hi"));
+        assert!(fields.iter().any(|field| field.name == "source"
+            && matches!(&field.value, notist_model::ElementValue::String(value) if value == "wgsl")));
+        assert!(fields.iter().any(|field| field.name == "width"
+            && matches!(&field.value, notist_model::ElementValue::Int(value) if *value == 800)));
+    }
+
+    #[test]
+    fn element_function_without_trailing_content_stays_bodyless() {
+        let signature = FunctionSignature {
+            parameters: vec![Parameter {
+                name: "label".into(),
+                ty: Type::String,
+                default: None,
+            }],
+            trailing_content: None,
+            result: Type::Content,
+        };
+        let mut registry = FunctionRegistry::new();
+        registry
+            .register(ElementFunction::new(
+                "demo::badge",
+                signature,
+                false,
+                FunctionOwner::Plugin("demo".into()),
+            ))
+            .unwrap();
+        let evaluation = Evaluator::new(registry).evaluate("#demo::badge(label: \"x\")");
+        assert!(
+            evaluation.diagnostics.is_empty(),
+            "{:?}",
+            evaluation.diagnostics
+        );
+        let Element::Custom { body, fields, .. } = &evaluation.content.elements[0].element else {
+            panic!("expected custom element")
+        };
+        assert!(body.elements.is_empty());
+        assert_eq!(fields.len(), 1);
+    }
+
+    struct DelegatingPluginFunction;
+
+    impl Function for DelegatingPluginFunction {
+        fn name(&self) -> &str {
+            "demo::entry"
+        }
+
+        fn signature(&self) -> FunctionSignature {
+            FunctionSignature {
+                parameters: Vec::new(),
+                trailing_content: None,
+                result: Type::Content,
+            }
+        }
+
+        fn owner(&self) -> FunctionOwner {
+            FunctionOwner::Plugin("demo".into())
+        }
+
+        fn call(
+            &self,
+            _context: &FunctionContext<'_>,
+            input: FunctionInput<'_>,
+        ) -> Result<FunctionOutput, Vec<EvalDiagnostic>> {
+            Ok(FunctionOutput::calls(crate::CallContent {
+                nodes: vec![crate::CallNode::Call(crate::Call {
+                    name: "core::text".into(),
+                    arguments: vec![crate::Argument {
+                        name: "text".into(),
+                        value: Value::String("delegated".into()),
+                    }],
+                    body: None,
+                    range: input.range,
+                })],
+            }))
+        }
+    }
+
+    #[test]
+    fn legacy_reduction_enforces_plugin_capabilities() {
+        let mut denied = FunctionRegistry::with_builtins();
+        denied.register(DelegatingPluginFunction).unwrap();
+        let evaluation = Evaluator::new(denied).evaluate("#demo::entry()");
+        assert!(
+            evaluation.diagnostics.iter().any(|diagnostic| diagnostic
+                .message
+                .contains("not allowed to call `core::text`")),
+            "{:?}",
+            evaluation.diagnostics
+        );
+
+        let mut allowed = FunctionRegistry::with_builtins();
+        allowed.register(DelegatingPluginFunction).unwrap();
+        allowed.allow(Principal::Plugin("demo".into()), "core::text");
+        let evaluation = Evaluator::new(allowed).evaluate("#demo::entry()");
+        assert!(
+            evaluation.diagnostics.is_empty(),
+            "{:?}",
+            evaluation.diagnostics
+        );
+        assert!(matches!(
+            &evaluation.content.elements[0].element,
+            Element::Text(text) if text == "delegated"
+        ));
+    }
+
+    #[test]
+    fn stream_reduction_preserves_siblings_around_failed_calls() {
+        let evaluation =
+            Evaluator::default().evaluate_stream("Before\n\n#heading(level: 0)[bad]\n\nAfter");
+        assert!(
+            evaluation
+                .diagnostics
+                .iter()
+                .any(|diagnostic| diagnostic.message.contains("heading level")),
+            "{:?}",
+            evaluation.diagnostics
+        );
+        assert!(!evaluation.reduction_failed);
+        assert!(
+            evaluation.reduced.nodes.iter().any(
+                |node| matches!(node, StreamNode::Leaf(leaf) if leaf.instance.is_core("text"))
+            ),
+            "{:#?}",
+            evaluation.reduced
+        );
+        assert_eq!(evaluation.tree.roots.len(), 2);
+    }
+
+    #[test]
+    fn parsed_stream_evaluation_accepts_import_seed_bindings() {
+        let source = "#heading[#title]";
+        let parse = notist_syntax::parse(source);
+        let bindings = HashMap::from([("title".to_owned(), Value::String("Imported".to_owned()))]);
+        let evaluation = Evaluator::default().evaluate_parsed_stream_with_bindings(
+            source,
+            &parse,
+            bindings,
+            ShapingRegistry::core(),
+        );
+        assert!(
+            evaluation.diagnostics.is_empty(),
+            "{:?}",
+            evaluation.diagnostics
+        );
+        assert_eq!(evaluation.tree.roots.len(), 1);
+        let section = &evaluation.tree.roots[0].instance;
+        assert!(section.is_core("section"));
+        let heading = section
+            .body
+            .iter()
+            .find(|node| node.instance.is_core("heading"))
+            .expect("section contains its heading");
+        assert!(heading.instance.body.iter().any(|node| {
+            matches!(&node.instance.field("text"), Some(notist_model::FieldValue::String(text)) if text == "Imported")
+        }));
     }
 
     #[test]

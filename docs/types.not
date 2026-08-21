@@ -1,6 +1,6 @@
 = Type System
 
-本文定义当前工具保证的类型与求值模型。精确语法见 [[vault::grammar]]，内置构造器签名见 [[vault::functions]]，日常速查见 [[vault::cheatsheet]]。完整设计见 [[vault::designs::language::type-system]]（类型）、[[vault::designs::language::call-model]]（调用模型）、[[vault::designs::language::property-table]]（属性表）与 [[vault::designs::language::evaluation-model]]（求值模型）。
+本文定义当前工具保证的类型与求值模型。精确语法见 [[vault::grammar]]，内置构造器签名见 [[vault::functions]]，日常速查见 [[vault::cheatsheet]]。完整设计见 [[vault::designs::language::type-system]]（类型）、[[vault::designs::language::call-model]]（调用模型）、[[vault::designs::language::property-table]]（属性表）与 [[vault::designs::pipeline::evaluate]]（求值模型）。
 
 == 三个阶段
 

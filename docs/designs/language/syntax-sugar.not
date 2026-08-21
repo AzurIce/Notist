@@ -1,7 +1,7 @@
 @![implementation = "aligned"]
 = Syntax Sugar
 
-本文是 L9 Markup 语法糖的独立成篇，从归档的历史混合文档中独立成篇。每个糖降低到的构造器签名与校验见 [[vault::designs::language::builtin-constructors]]；元素序列与求值见 [[vault::designs::language::evaluation-model]]。
+本文是 L9 Markup 语法糖的独立成篇，从归档的历史混合文档中独立成篇。每个糖降低到的构造器签名与校验见 [[vault::designs::language::builtin-constructors]]；元素序列与求值见 [[vault::designs::pipeline::evaluate]]。
 
 == 设计原则
 
@@ -70,7 +70,7 @@
 - error recovery：符号后无内容 → 空条目；缩进嵌套由 parser 结构化处理；
 - editor consequence：条目符号显示；缩进由格式化处理。
 
-item 是 structural sugar：相邻同类条目由成型组合为 List/Enum；动态 `item` 进入同一算法（[[vault::designs::language::shaping-structure-tree]]）。
+item 是 structural sugar：相邻同类条目由成型组合为 List/Enum；动态 `item` 进入同一算法（[[vault::designs::pipeline::structure]]）。
 
 === table
 

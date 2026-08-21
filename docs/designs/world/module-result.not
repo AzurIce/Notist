@@ -31,7 +31,7 @@ vault-root/
 
 === ModuleResult
 
-每个 source-backed Module 在自己的根 scope 中按源码顺序求值（[[vault::designs::language::evaluation-model#求值规则]]，scope 见 [[vault::designs::language::scope-environment#scope 是值层节点]]），得到：
+每个 source-backed Module 在自己的根 scope 中按源码顺序求值（[[vault::designs::pipeline::evaluate#求值规则]]，scope 见 [[vault::designs::language::scope-environment#scope 是值层节点]]），得到：
 
 ```text
 ModuleResult {
@@ -41,7 +41,7 @@ ModuleResult {
 }
 ```
 
-[[vault::designs::language::evaluation-model#求值结果]] 中单文件的"求值结果"在此正式成为 ModuleResult。bindings 是程序的一面——跨模块复用的入口；content 是文档的一面——渲染与查询消费的产物；annotations 是属性的一面——标注与模块元数据的唯一入口。
+[[vault::designs::pipeline::evaluate#求值结果]] 中单文件的"求值结果"在此正式成为 ModuleResult。bindings 是程序的一面——跨模块复用的入口；content 是文档的一面——渲染与查询消费的产物；annotations 是属性的一面——标注与模块元数据的唯一入口。
 
 === bindings ownership
 

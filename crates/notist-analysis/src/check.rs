@@ -16,10 +16,14 @@ pub struct SignatureSet {
 
 impl SignatureSet {
     /// Creates a signature set containing all built-in functions.
+    ///
+    /// Both the prelude short name and the canonical `core::*` qualified name
+    /// are statically visible, matching the runtime registry aliases.
     pub fn with_builtins() -> Self {
         let mut set = Self::default();
         for (name, signature) in builtin_signatures() {
-            set.signatures.insert(name.to_owned(), signature);
+            set.signatures.insert(name.to_owned(), signature.clone());
+            set.signatures.insert(format!("core::{name}"), signature);
         }
         set
     }

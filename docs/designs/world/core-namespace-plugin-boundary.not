@@ -26,7 +26,7 @@ core::strong / emph / underline / strike
 - 短名 prelude 可以把常用构造器以裸名带入当前 Module scope；
 - 短名遵守普通 lexical shadowing；qualified `core::...` 永远指向语言定义。
 
-当前实现尚未启用 `core::` qualified call；在 V5 落地前，builtin-constructors 中的裸名即 prelude 短名。宿主语法糖（`= Title`、pipe table 等）始终取得对应 core intrinsic identity，不经过名字查找，因此 local binding 不影响糖。
+当前实现中 `core::` qualified call 与 prelude 裸名均已启用；宿主语法糖（`= Title`、pipe table 等）始终取得对应 core intrinsic identity，不经过名字查找，因此 local binding 不影响糖。
 
 == Prelude
 
@@ -36,24 +36,28 @@ Prelude 是每个 Module root 自动获得的普通 binding 层，不是第二�
 - import 显式 selector 可以引入非 prelude 的 core 短名；
 - prelude 内容随语言版本变化，并在 WorkspaceSnapshot 的 function environment identity 中记录（[[vault::designs::host::analyzer-snapshot]]）。
 
-== Custom Element Contract
+== Leaf Contract
 
-插件不改变内置 Element 集合（[[vault::designs::language::evaluation-model#Content 值]]）。扩展内容走 `Custom`：
+所有内容统一为一种 Leaf 类型，不再有内置 Element 变体与 `Custom` 的区分（[[vault::designs::pipeline::evaluate#Content 值]]）：
 
 ```text
-Custom {
-  name: String          // 全局有意义的稳定名字
-  body: Content         // 已求值的嵌套内容
-  block: Bool           // 是否中断段落流
+ElementInstance {
+  name: ElementName      // core::* 或 {package}::*
+  fields: Vec<Field>     // 名称 + 带类型的 args
+  body: Vec<InstanceNode>
+  block: Bool
 }
 ```
 
-- `name` 由插件 schema 声明，进入索引与渲染兜底；
-- `body` 是普通 Content，不是 source string，也不重新 parse；
+- 内置内容使用 `core::*` Leaf；插件内容使用 `{package}::*` Leaf；
+- `name` 与 field schema 由构造器或插件 manifest 声明，进入索引与渲染兜底；
+- `body` 是已求值的 Leaf 流，不是 source string，也不重新 parse；
 - `block` 是语义参数，不由 call-site delimiter 猜测；
-- renderer 对未知 Custom 有安全兜底；真正富渲染必须经过 trusted renderer 边界。
+- renderer 对未知插件 Leaf 有安全兜底；真正富渲染必须经过 trusted renderer 边界。
 
 == Capability 即权限面
+
+完整插件 package 模型与宿主 ABI 见 [[vault::designs::pipeline::plugin-system]]。
 
 插件 Function 是带 signature、implementation 与 capability schema 的普通 Function Value。capability 不进入 Type identity，与签名正交：
 

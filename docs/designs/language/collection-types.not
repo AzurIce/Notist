@@ -5,7 +5,7 @@
 本文是集合类型的目标设计草案；当前 surface 尚未实现。进入实现切片后，本文与 [[vault::designs::language::type-system]]、[[vault::designs::language::code-grammar]] 同步成为现行规范。
 ]
 
-本文承接 [[vault::designs::language::type-system#类型系统]]（Type/Value 对应与 assignability）、[[vault::designs::language::code-grammar#Code 核心语法]]（literal 与类型语法）与 [[vault::designs::language::evaluation-model#值的宇宙]]（Value 宇宙）。本文重新打开 R07 中 Array/Dict/Union 的集合类型部分：不是回到旧实现，而是先把“值、类型、字面量”作为一个完整切片定义清楚。rest 参数与调用顺序属于函数模型，见 [[vault::designs::language::call-model]]。
+本文承接 [[vault::designs::language::type-system#类型系统]]（Type/Value 对应与 assignability）、[[vault::designs::language::code-grammar#Code 核心语法]]（literal 与类型语法）与 [[vault::designs::pipeline::evaluate#值的宇宙]]（Value 宇宙）。本文重新打开 R07 中 Array/Dict/Union 的集合类型部分：不是回到旧实现，而是先把“值、类型、字面量”作为一个完整切片定义清楚。rest 参数与调用顺序属于函数模型，见 [[vault::designs::language::call-model]]。
 
 == 动机
 

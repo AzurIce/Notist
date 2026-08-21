@@ -55,7 +55,7 @@ VaultEngine 持有适合在客户端之间复用的状态：
 - 全文、向量、reference graph 与摘要等可重建派生索引；
 - 对磁盘写入、rename 与索引发布的串行化入口。
 
-Daemon 不成为 authored source 的真相来源。`.not` source 与明确的 editor overlay 仍是输入；缓存、索引与 daemon 内存都可以在进程退出后重建——这是求值确定性的推论：求值（[[vault::designs::language::evaluation-model#求值规则]]）与成型（[[vault::designs::language::shaping-structure-tree#输入与输出]]）是纯函数，增量更新只属于分析层的优化，不进入求值语义。持久化索引必须记录 schema、模型、Vault identity 与 source fingerprint，版本不匹配时丢弃或迁移，不能静默解释为新数据。
+Daemon 不成为 authored source 的真相来源。`.not` source 与明确的 editor overlay 仍是输入；缓存、索引与 daemon 内存都可以在进程退出后重建——这是求值确定性的推论：求值（[[vault::designs::pipeline::evaluate#求值规则]]）与成型（[[vault::designs::pipeline::structure#输入与输出]]）是纯函数，增量更新只属于分析层的优化，不进入求值语义。持久化索引必须记录 schema、模型、Vault identity 与 source fingerprint，版本不匹配时丢弃或迁移，不能静默解释为新数据。
 
 == 共享 Engine，不共享 Overlay
 

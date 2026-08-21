@@ -24,7 +24,9 @@ use tokio::sync::broadcast;
 use tokio_stream::wrappers::BroadcastStream;
 use tokio_stream::{StreamExt, once};
 
-use crate::build::{SiteOptions, merge_diagnostics, render_workspace, write_rendered_site};
+use crate::build::{
+    SiteOptions, merge_diagnostics, render_workspace, write_rendered_site_with_plugins,
+};
 use crate::output::OutputFormat;
 use crate::service::LocalNotistClient;
 
@@ -93,7 +95,8 @@ pub fn run(
                     continue;
                 }
                 snapshot_revision = summary.snapshot.revision;
-                let rebuilt = rebuild_preview_site(&mut client, view_id, &rebuild_site, &rebuild_root, color);
+                let rebuilt =
+                    rebuild_preview_site(&mut client, view_id, &rebuild_site, &rebuild_root, color);
                 match rebuilt {
                     Ok(diagnostics) => {
                         let revision = rebuild_revision.fetch_add(1, Ordering::SeqCst) + 1;
@@ -145,8 +148,21 @@ fn rebuild_preview_site(
     fs::create_dir_all(&staging)?;
 
     let rendered = render_workspace(client, view_id)?;
+    let config_text = fs::read_to_string(root.join("Notist.toml")).ok();
+    let plugin_assets = notist_plugin_host::plugin_html_assets(root, config_text.as_deref())
+        .map_err(|error| {
+            std::io::Error::new(
+                std::io::ErrorKind::InvalidInput,
+                format!("invalid plugin manifest: {error}"),
+            )
+        })?;
     crate::build::copy_plugin_assets(root, &staging)?;
-    write_rendered_site(&rendered, &staging, SiteOptions { live_reload: true })?;
+    write_rendered_site_with_plugins(
+        &rendered,
+        &staging,
+        SiteOptions { live_reload: true },
+        &plugin_assets,
+    )?;
     let mut diagnostics = rendered.analysis_diagnostics;
     merge_diagnostics(&mut diagnostics, rendered.evaluation_diagnostics);
 
@@ -480,13 +496,17 @@ mod tests {
         };
 
         let diagnostics =
-            rebuild_preview_site(&mut client, view_id, &site, root.path(), ColorChoice::Never).unwrap();
+            rebuild_preview_site(&mut client, view_id, &site, root.path(), ColorChoice::Never)
+                .unwrap();
 
         assert!(diagnostics.is_empty());
         let first_generation = site.capture();
         assert!(first_generation.path.join("_notist/reload.js").is_file());
         let first = fs::read_to_string(first_generation.path.join("index.html")).unwrap();
-        assert!(!first.contains("#heading"));
+        // The raw source is embedded for the preview source toggle, while the
+        // rendered fragment remains the article content.
+        assert!(first.contains("id=\"notist-source\""));
+        assert!(first.contains("#heading[First]"));
         assert!(first.contains(">First</span>"));
         assert!(first.contains("_notist/reload.js"));
 

@@ -18,7 +18,7 @@ Notist 的基本单位是 vault/module，HTML 输出以整个 Vault 为单位：
 
 ```text
 .not source
-  -> 静态检查与类型（type system）→ 求值（[[vault::designs::language::evaluation-model]]）
+  -> 静态检查与类型（type system）→ 求值（[[vault::designs::pipeline::evaluate]]）
   -> 成型结构树 + 属性表
   -> notist-html
 ```

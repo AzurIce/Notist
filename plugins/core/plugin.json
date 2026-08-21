@@ -1,0 +1,171 @@
+{
+  "package": "core",
+  "version": "0.1.0",
+  "api-version": "0.1",
+  "source": "builtin",
+  "interfaces": {
+    "semantic": {
+      "elements": [
+        {
+          "name": "text",
+          "version": 1,
+          "block": false,
+          "kind": "inline",
+          "body-mode": "none",
+          "role": "none",
+          "parameters": [{ "name": "text", "ty": "String" }]
+        },
+        {
+          "name": "parbreak",
+          "version": 1,
+          "block": false,
+          "kind": "separator",
+          "body-mode": "none",
+          "role": "none"
+        },
+        {
+          "name": "ref",
+          "version": 1,
+          "block": false,
+          "body-mode": "none",
+          "role": "none",
+          "parameters": [{ "name": "url", "ty": "String" }]
+        },
+        {
+          "name": "heading",
+          "version": 1,
+          "block": true,
+          "body-mode": "inline",
+          "role": "heading",
+          "parameters": [{ "name": "level", "ty": "Int", "default": 1 }],
+          "trailing-content": "body"
+        },
+        {
+          "name": "raw",
+          "version": 1,
+          "block": false,
+          "body-mode": "none",
+          "role": "none",
+          "parameters": [
+            { "name": "source", "ty": "String" },
+            { "name": "lang", "ty": "String?", "default": null },
+            { "name": "block", "ty": "Bool", "default": false }
+          ]
+        },
+        {
+          "name": "rule",
+          "version": 1,
+          "block": true,
+          "body-mode": "none",
+          "role": "none"
+        },
+        {
+          "name": "callout",
+          "version": 1,
+          "block": true,
+          "body-mode": "flow",
+          "role": "none",
+          "parameters": [
+            { "name": "kind", "ty": "String", "default": "note" },
+            { "name": "title", "ty": "Content?", "default": null }
+          ],
+          "trailing-content": "body"
+        },
+        {
+          "name": "details",
+          "version": 1,
+          "block": true,
+          "body-mode": "flow",
+          "role": "none",
+          "parameters": [
+            { "name": "summary", "ty": "Content?", "default": null },
+            { "name": "open", "ty": "Bool", "default": false }
+          ],
+          "trailing-content": "body"
+        },
+        {
+          "name": "item",
+          "version": 1,
+          "block": true,
+          "body-mode": "flow",
+          "role": "item",
+          "parameters": [{ "name": "ordered", "ty": "Bool", "default": false }],
+          "trailing-content": "body"
+        },
+        {
+          "name": "table-cell",
+          "version": 1,
+          "block": true,
+          "body-mode": "flow",
+          "role": "none",
+          "parameters": [
+            { "name": "colspan", "ty": "Int", "default": 1 },
+            { "name": "rowspan", "ty": "Int", "default": 1 }
+          ],
+          "trailing-content": "body"
+        },
+        {
+          "name": "table",
+          "version": 1,
+          "block": true,
+          "body-mode": "cells",
+          "role": "none",
+          "parameters": [
+            { "name": "columns", "ty": "Int" },
+            { "name": "header", "ty": "Bool", "default": false },
+            { "name": "align", "ty": "String?", "default": null }
+          ],
+          "trailing-content": "body"
+        },
+        {
+          "name": "figure",
+          "version": 1,
+          "block": true,
+          "body-mode": "flow",
+          "role": "none",
+          "parameters": [
+            { "name": "kind", "ty": "String?", "default": null },
+            { "name": "supplement", "ty": "Content?", "default": null },
+            { "name": "caption", "ty": "Content?", "default": null }
+          ],
+          "trailing-content": "body"
+        },
+        {
+          "name": "strong",
+          "version": 1,
+          "block": false,
+          "body-mode": "inline",
+          "role": "none",
+          "trailing-content": "body"
+        },
+        {
+          "name": "emph",
+          "version": 1,
+          "block": false,
+          "body-mode": "inline",
+          "role": "none",
+          "trailing-content": "body"
+        },
+        {
+          "name": "underline",
+          "version": 1,
+          "block": false,
+          "body-mode": "inline",
+          "role": "none",
+          "trailing-content": "body"
+        },
+        {
+          "name": "strike",
+          "version": 1,
+          "block": false,
+          "body-mode": "inline",
+          "role": "none",
+          "trailing-content": "body"
+        }
+      ]
+    }
+  },
+  "capabilities": {
+    "request": []
+  }
+}

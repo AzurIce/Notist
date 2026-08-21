@@ -3,7 +3,7 @@
 
 本文是 L1 Markup 表面语法的独立成篇，从归档的历史混合文档中独立成篇。Code 核心语法见 [[vault::designs::language::code-grammar]]；语法糖见 [[vault::designs::language::syntax-sugar]]；标注语法见 [[vault::designs::language::annotation-syntax]]。
 
-本文定义 Markup 表面语法与 scope 书写形态。承接：[[vault::designs::overview]]（双模式与表达式边界）、[[vault::designs::language::evaluation-model#求值规则]]（求值模型）、[[vault::designs::language::type-system#类型系统]]（类型）与 [[vault::designs::language::call-model]]（调用）、[[vault::designs::language::syntax-sugar]]（语法糖）、[[vault::designs::world::module-result]]（Module）与 [[vault::designs::world::reference-ref-target]]（引用寻址）；scope 书写形态见本文「scope 的语法形态」，标注语法见 [[vault::designs::language::annotation-syntax]]。
+本文定义 Markup 表面语法与 scope 书写形态。承接：[[vault::designs::overview]]（双模式与表达式边界）、[[vault::designs::pipeline::evaluate#求值规则]]（求值模型）、[[vault::designs::language::type-system#类型系统]]（类型）与 [[vault::designs::language::call-model]]（调用）、[[vault::designs::language::syntax-sugar]]（语法糖）、[[vault::designs::world::module-result]]（Module）与 [[vault::designs::world::reference-ref-target]]（引用寻址）；scope 书写形态见本文「scope 的语法形态」，标注语法见 [[vault::designs::language::annotation-syntax]]。
 
 Markup 模式只定义最小骨架（文本流、段落分隔、`#` 嵌入、转义）——其余一切 Markup 构造都是语法糖或标注，引用索引见 [[vault::designs::language::code-grammar#引用索引]]；Code 核心语法见 [[vault::designs::language::code-grammar]]。
 
@@ -50,7 +50,7 @@ Code block       {...}
 
 === 根 scope
 
-模块（文件）求值在根 scope 中进行：正文是隐式的 Content quotation（[[vault::designs::language::evaluation-model#Content 组合与插入规则]]）。根 scope 的属性由模块属性声明（[[vault::designs::language::annotation-syntax#三种挂载位置]]），随 ModuleResult 发布为模块元数据。
+模块（文件）求值在根 scope 中进行：正文是隐式的 Content quotation（[[vault::designs::pipeline::evaluate#Content 组合与插入规则]]）。根 scope 的属性由模块属性声明（[[vault::designs::language::annotation-syntax#三种挂载位置]]），随 ModuleResult 发布为模块元数据。
 
 === Content literal
 

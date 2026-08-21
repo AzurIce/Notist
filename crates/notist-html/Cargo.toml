@@ -5,9 +5,9 @@ edition.workspace = true
 license.workspace = true
 
 [dependencies]
+notist-eval.workspace = true
 notist-model.workspace = true
 percent-encoding.workspace = true
 
 [dev-dependencies]
-notist-eval.workspace = true
 

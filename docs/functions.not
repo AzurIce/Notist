@@ -71,7 +71,7 @@ heading(level: Int = 1, trailing body: Content) -> Content
 - 语法边界：行首 `=` 连续出现一个或多个，其后必须跟空白（或行尾），再后是标题 body；`=foo` 是普通文本；
 - 错误恢复：行首 `=` 后无内容 → 空 body 的 Heading；
 - 标题拥有默认 id：body 提取的纯文本（Text 元素按顺序拼接，含嵌套）——`= 安装指南` 默认即可被 `[[...#安装指南]]` 引用；显式 `@id` 覆盖默认 id；无效文本回退为 `loc-<起始字节偏移>` 锚点；
-- 同级标题与其后内容归组为嵌套的 Section 节点（见 [[vault::designs::language::shaping-structure-tree]] 与 [[vault::designs::host::html-renderer]]）。
+- 同级标题与其后内容归组为嵌套的 Section 节点（见 [[vault::designs::pipeline::structure]] 与 [[vault::designs::host::html-renderer]]）。
 
 == raw
 
@@ -263,4 +263,4 @@ graph TD
 """#)
 ```
 
-调用不会被静默丢弃——解析为 `UnresolvedCall` 元素保留在 Content 中，渲染器对其有兜底展示，预览与工具恢复可以继续处理其余源码。插件与扩展机制按 `Custom` 元素走渲染层兜底，不改变内置构造器集合（元素集合见 [[vault::designs::language::evaluation-model]]）。
+调用不会被静默丢弃——解析为 `UnresolvedCall` 元素保留在 Content 中，渲染器对其有兜底展示，预览与工具恢复可以继续处理其余源码。插件与扩展机制按 `Custom` 元素走渲染层兜底，不改变内置构造器集合（元素集合见 [[vault::designs::pipeline::evaluate]]）。

@@ -1,7 +1,7 @@
 @![implementation = "aligned"]
 = Builtin Constructors
 
-本文是 L9 内置构造器的独立成篇，从归档的历史混合文档中独立成篇。语法糖的完整规格见 [[vault::designs::language::syntax-sugar]]；元素种类清单见 [[vault::designs::language::evaluation-model#Content 值]]；调用模型见 [[vault::designs::language::call-model]]。
+本文是 L9 内置构造器的独立成篇，从归档的历史混合文档中独立成篇。语法糖的完整规格见 [[vault::designs::language::syntax-sugar]]；元素种类清单见 [[vault::designs::pipeline::evaluate#Content 值]]；调用模型见 [[vault::designs::language::call-model]]。
 
 == 设计原则
 
@@ -69,7 +69,7 @@ details(summary: Content? = none, open: Bool = false, trailing body: Content) ->
 item(ordered: Bool = false, trailing body: Content) -> Content
 ```
 
-`ordered` 为 false 时产生 ListItem，为 true 时产生 EnumItem。相邻同类条目由成型组合为 List/Enum（[[vault::designs::language::shaping-structure-tree]]）。糖见 [[vault::designs::language::syntax-sugar#item]]。
+`ordered` 为 false 时产生 ListItem，为 true 时产生 EnumItem。相邻同类条目由成型组合为 List/Enum（[[vault::designs::pipeline::structure]]）。糖见 [[vault::designs::language::syntax-sugar#item]]。
 
 === table-cell
 
@@ -102,7 +102,7 @@ figure(kind: String? = none, supplement: Content? = none,
        caption: Content? = none, trailing body: Content) -> Content
 ```
 
-产生 Figure：带可选 caption 的块级 wrapper，对齐 Typst 0.14 `figure`。`caption` 未提供时不渲染题注；`kind` 未提供时按 body 推断：Table → `"table"`、Raw → `"raw"`、block Custom → 其 name，其他 → `"figure"`，显式 `kind` 不能为空；`supplement` 提供时渲染为 `supplement + ": " + caption`。`placement` / `scope` / `gap` / `outlined` / `numbering` 依赖 float、counter 与 outline，暂不进入。无语法糖。
+产生 Figure：带可选 caption 的块级 wrapper，对齐 Typst 0.14 `figure`。`caption` 未提供时不渲染题注；`kind` 未提供时按 body 推断：Table → `"table"`、Raw → `"raw"`、block 插件 Leaf → 其 name，其他 → `"figure"`，显式 `kind` 不能为空；`supplement` 提供时渲染为 `supplement + ": " + caption`。`placement` / `scope` / `gap` / `outlined` / `numbering` 依赖 float、counter 与 outline，暂不进入。无语法糖。
 
 === strong / emph / underline / strike
 

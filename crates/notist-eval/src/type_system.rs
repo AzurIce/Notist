@@ -115,6 +115,13 @@ impl BoundArguments {
         self.values.get(name).map(|bound| &bound.value)
     }
 
+    /// Iterates over bound values in unspecified order.
+    pub fn iter(&self) -> impl Iterator<Item = (&str, &Value)> {
+        self.values
+            .iter()
+            .map(|(name, bound)| (name.as_str(), &bound.value))
+    }
+
     pub fn origin(&self, name: &str) -> Option<ValueOrigin> {
         self.values.get(name).map(|bound| bound.origin)
     }

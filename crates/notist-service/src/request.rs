@@ -11,7 +11,8 @@ use notist_analysis::{
     WorkspaceSymbolKind,
 };
 use notist_html::{
-    RenderOptions, RenderedAnnotation, module_anchors, outline_entries, render_with_resolvers,
+    HtmlRendererRegistry, RenderOptions, RenderedAnnotation, module_anchors_tree,
+    outline_entries_tree, register_web_component_renderer, render_element_tree_with_renderers,
 };
 use notist_model::{DefaultValue, FunctionSignature, ModulePath, Parameter, TextRange, Type};
 use notist_syntax::Attribute;
@@ -297,10 +298,11 @@ impl ConfigurationRecord {
                 },
             );
         }
-        let mut configuration = AnalyzerConfiguration::default();
-        configuration.manifest_override = self.manifest_override.map(Arc::from);
-        configuration.signatures = signatures;
-        configuration
+        AnalyzerConfiguration {
+            manifest_override: self.manifest_override.map(Arc::from),
+            signatures,
+            ..AnalyzerConfiguration::default()
+        }
     }
 }
 
@@ -579,6 +581,11 @@ pub struct RenderedPageRecord {
     /// name, for the preview inspector's symbol table.
     #[serde(default)]
     pub bindings: Vec<RenderedBindingRecord>,
+    /// The module's raw source text from the rendered snapshot, or `None` for
+    /// a virtual directory module. The preview page embeds it so the UI can
+    /// toggle between the rendered document and the `.not` source.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub source: Option<String>,
 }
 
 /// One module root binding shown in the preview inspector.
@@ -2004,6 +2011,13 @@ fn render_workspace(
         .unwrap_or_else(|| "Notist".into());
     let mut evaluation_diagnostics = Vec::new();
 
+    let mut renderers = HtmlRendererRegistry::default();
+    for contribution in workspace.html_contributions() {
+        if let Some(component) = &contribution.web_component {
+            register_web_component_renderer(&mut renderers, &contribution.element, &component.tag);
+        }
+    }
+
     // Precompute every module's annotations and label-to-anchor mapping so that
     // reference resolution and fragment rendering share one anchor assignment.
     let mut prepared = Vec::with_capacity(modules.len());
@@ -2022,12 +2036,12 @@ fn render_workspace(
                 .structured_module(module.id)
                 .expect("source-backed modules have structured results");
             let annotations = rendered_annotations(&structured.annotations);
-            let anchors = module_anchors(&structured.document, &annotations);
+            let anchors = module_anchors_tree(&structured.tree, &annotations);
             anchor_maps.insert(
                 module.logical_path.clone(),
                 anchors.into_iter().collect::<BTreeMap<_, _>>(),
             );
-            let headings = outline_entries(&structured.document, &annotations)
+            let headings = outline_entries_tree(&structured.tree, &annotations)
                 .into_iter()
                 .map(|heading| RenderedHeadingRecord {
                     level: heading.level,
@@ -2115,6 +2129,7 @@ fn render_workspace(
                 title: None,
                 headings: Vec::new(),
                 bindings: Vec::new(),
+                source: None,
             });
             continue;
         };
@@ -2137,14 +2152,15 @@ fn render_workspace(
                     }),
             }
         };
-        let fragment = render_with_resolvers(
-            &structured.document,
+        let fragment = render_element_tree_with_renderers(
+            &structured.tree,
             &RenderOptions {
                 current_module: Some(current),
                 module_url_prefix: "",
             },
             &resolver,
             &annotations,
+            &renderers,
         );
         pages.push(RenderedPageRecord {
             module_segments: module.logical_path.segments().to_vec(),
@@ -2152,6 +2168,7 @@ fn render_workspace(
             title: headings.first().map(|heading| heading.text.clone()),
             headings,
             bindings,
+            source: module.source.as_deref().map(str::to_owned),
         });
     }
     // Analysis diagnostics are captured from the same snapshot the pages
@@ -2722,6 +2739,154 @@ mod tests {
     }
 
     #[test]
+    fn disk_watcher_reloads_external_plugin_packages() {
+        let base = tempfile::TempDir::new_in(std::env::current_dir().unwrap()).unwrap();
+        let root = base.path().join("vault");
+        let package = base.path().join("pkg");
+        fs::create_dir(&root).unwrap();
+        fs::create_dir(&package).unwrap();
+        let manifest = |version: &str| {
+            format!(
+                r#"{{
+                    "package": "demo",
+                    "version": "{version}",
+                    "api-version": "0.1",
+                    "interfaces": {{
+                        "semantic": {{
+                            "elements": [{{
+                                "name": "box",
+                                "version": 1,
+                                "block": true,
+                                "parameters": [{{
+                                    "name": "source",
+                                    "ty": "String"
+                                }}],
+                                "trailing-content": "body"
+                            }}]
+                        }}
+                    }}
+                }}"#
+            )
+        };
+        fs::write(package.join("plugin.json"), manifest("0.1.0")).unwrap();
+        fs::write(
+            root.join("Notist.toml"),
+            "[plugins.demo]\npath = \"../pkg\"\n",
+        )
+        .unwrap();
+        fs::write(root.join("README.not"), "#demo::box(source: \"x\")[Hi]").unwrap();
+
+        let service = NotistService::new();
+        let opened = service
+            .execute(CoreRequest::OpenView {
+                root: root.clone(),
+                kind: ProtocolViewKind::Disk,
+            })
+            .unwrap();
+        let CoreResponse::Opened { view_id, .. } = opened.response else {
+            panic!("expected opened view")
+        };
+        let initial = service
+            .execute(CoreRequest::SnapshotSummary { view_id })
+            .unwrap();
+        let initial_revision = initial.snapshot.revision;
+
+        fs::write(package.join("plugin.json"), manifest("0.2.0")).unwrap();
+        let mut observed = initial_revision;
+        for _ in 0..20 {
+            std::thread::sleep(Duration::from_millis(100));
+            let reply = service
+                .execute(CoreRequest::SnapshotSummary { view_id })
+                .unwrap();
+            observed = reply.snapshot.revision;
+            if observed != initial_revision {
+                break;
+            }
+        }
+        assert_ne!(
+            observed, initial_revision,
+            "external plugin package changes should reload the disk snapshot"
+        );
+    }
+
+    #[test]
+    fn renders_manifest_web_component_contributions() {
+        let base = tempfile::TempDir::new_in(std::env::current_dir().unwrap()).unwrap();
+        let root = base.path().join("vault");
+        let package = base.path().join("pkg");
+        fs::create_dir(&root).unwrap();
+        fs::create_dir(&package).unwrap();
+        fs::write(
+            package.join("plugin.json"),
+            r#"{
+                "package": "card",
+                "version": "0.1.0",
+                "api-version": "0.1",
+                "interfaces": {
+                    "semantic": {
+                        "elements": [{
+                            "name": "card",
+                            "version": 1,
+                            "block": true,
+                            "parameters": [{ "name": "title", "ty": "String" }],
+                            "trailing-content": "body"
+                        }]
+                    },
+                    "render": {
+                        "html": {
+                            "contributions": [{
+                                "element": "card",
+                                "trusted": true,
+                                "web-component": {
+                                    "tag": "notist-card",
+                                    "module": "assets/card.js",
+                                    "style": "assets/card.css"
+                                }
+                            }]
+                        }
+                    }
+                }
+            }"#,
+        )
+        .unwrap();
+        fs::write(
+            root.join("Notist.toml"),
+            "[plugins.card]\npath = \"../pkg\"\n",
+        )
+        .unwrap();
+        fs::write(
+            root.join("README.not"),
+            "#card::card(title: \"Hello\")[body]",
+        )
+        .unwrap();
+
+        let service = NotistService::new();
+        let opened = service
+            .execute(CoreRequest::OpenView {
+                root,
+                kind: ProtocolViewKind::Disk,
+            })
+            .unwrap();
+        let CoreResponse::Opened { view_id, .. } = opened.response else {
+            panic!("expected opened view")
+        };
+        let reply = service
+            .execute(CoreRequest::RenderWorkspace { view_id })
+            .unwrap();
+        let CoreResponse::RenderedWorkspace(rendered) = reply.response else {
+            panic!("expected rendered workspace")
+        };
+        let home = rendered
+            .pages
+            .iter()
+            .find(|page| page.module_segments.is_empty())
+            .expect("home page");
+        assert!(home.fragment.contains("<notist-card"));
+        assert!(home.fragment.contains("data-title=\"Hello\""));
+        assert!(home.fragment.contains("<p>body</p>"));
+    }
+
+    #[test]
     fn renders_heading_text_labels_and_virtual_module_titles() {
         let root = tempfile::TempDir::new_in(std::env::current_dir().unwrap()).unwrap();
         fs::write(root.path().join("Notist.toml"), "").unwrap();
@@ -2760,6 +2925,10 @@ mod tests {
         let home = page(&[]);
         assert_eq!(home.title.as_deref(), Some("首页"));
         assert_eq!(
+            home.source.as_deref(),
+            Some("= 首页\n\nSee [[guide#简介]] and [[guide#不存在]].")
+        );
+        assert_eq!(
             home.headings,
             vec![RenderedHeadingRecord {
                 level: 1,
@@ -2790,6 +2959,7 @@ mod tests {
         // The virtual module index lists child modules by their semantic title.
         let notes = page(&["notes"]);
         assert_eq!(notes.title, None);
+        assert_eq!(notes.source, None);
         assert!(notes.headings.is_empty());
         assert!(notes.fragment.contains(">第一章</a>"), "{}", notes.fragment);
     }

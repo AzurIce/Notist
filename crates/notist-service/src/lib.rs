@@ -248,14 +248,31 @@ impl NotistService {
 
         let engine = VaultEngine::open(root)?;
         let disk = Arc::new(Mutex::new(engine.disk_view()?));
+        let plugin_dirs = std::fs::read_to_string(root.join(notist_analysis::MANIFEST_FILE))
+            .ok()
+            .map(|text| {
+                notist_plugin_host::plugin_package_dirs(root, Some(&text)).unwrap_or_default()
+            })
+            .unwrap_or_default();
         let sessions: Arc<Mutex<Vec<Weak<Mutex<AnalyzerView>>>>> = Arc::new(Mutex::new(Vec::new()));
         let watcher_disk = disk.clone();
         let watcher_sessions = sessions.clone();
+        let watcher_plugin_dirs = plugin_dirs
+            .iter()
+            .map(|(_, path)| dunce::canonicalize(path).unwrap_or_else(|_| path.clone()))
+            .collect::<Vec<_>>();
         let mut watcher = new_debouncer(
             Duration::from_millis(250),
             move |result: DebounceEventResult| {
                 let Ok(events) = result else {
                     return;
+                };
+                let is_plugin_event = |path: &std::path::Path| {
+                    dunce::canonicalize(path).is_ok_and(|path| {
+                        watcher_plugin_dirs
+                            .iter()
+                            .any(|plugin_dir| path.starts_with(plugin_dir))
+                    })
                 };
                 if !events.iter().any(|event| {
                     event
@@ -265,6 +282,7 @@ impl NotistService {
                         == Some("not")
                         || event.path.file_name().and_then(|name| name.to_str())
                             == Some(notist_analysis::MANIFEST_FILE)
+                        || is_plugin_event(&event.path)
                 }) {
                     return;
                 }
@@ -290,6 +308,14 @@ impl NotistService {
             .watcher()
             .watch(root, RecursiveMode::Recursive)
             .map_err(io::Error::other)?;
+        for (_, plugin_dir) in &plugin_dirs {
+            if plugin_dir.is_dir() {
+                watcher
+                    .watcher()
+                    .watch(plugin_dir, RecursiveMode::Recursive)
+                    .map_err(io::Error::other)?;
+            }
+        }
 
         let canonical_root = dunce::canonicalize(root)?;
         let identity = VaultIdentity {

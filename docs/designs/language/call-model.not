@@ -85,7 +85,7 @@ R05 被替换后：
 
 == 静态计划与求值
 
-静态检查为每个调用点生成唯一 binding plan：callee、parameter sources、defaults、coercions、trailing/rest target 与 result type。求值器先求值 callee，再按 source order 求值所有显式实参与 trailing block，最后按形参声明顺序建立绑定；每个表达式只求值一次。该规则继承 [[vault::designs::language::evaluation-model#求值规则]] 的 E1–E4。
+静态检查为每个调用点生成唯一 binding plan：callee、parameter sources、defaults、coercions、trailing/rest target 与 result type。求值器先求值 callee，再按 source order 求值所有显式实参与 trailing block，最后按形参声明顺序建立绑定；每个表达式只求值一次。该规则继承 [[vault::designs::pipeline::evaluate#求值规则]] 的 E1–E4。
 
 == Conformance 候选
 

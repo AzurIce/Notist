@@ -91,7 +91,7 @@ captured sources
   -> publish WorkspaceSnapshot
 ```
 
-Parse 保留源码事实与 recoverable syntax errors；静态分析验证调用与类型，但不为了回答编辑器查询而执行具有外部副作用的插件。求值（[[vault::designs::language::evaluation-model#求值规则]]）与成型（[[vault::designs::language::shaping-structure-tree#输入与输出]]）可以按 Module 惰性计算，但必须消费 snapshot 捕获或派生的 HIR，缓存 key 至少包含 snapshot revision、ModuleId、imported module-binding identities 与 Function environment identity。
+Parse 保留源码事实与 recoverable syntax errors；静态分析验证调用与类型，但不为了回答编辑器查询而执行具有外部副作用的插件。求值（[[vault::designs::pipeline::evaluate#求值规则]]）与成型（[[vault::designs::pipeline::structure#输入与输出]]）可以按 Module 惰性计算，但必须消费 snapshot 捕获或派生的 HIR，缓存 key 至少包含 snapshot revision、ModuleId、imported module-binding identities 与 Function environment identity。
 
 Analyzer 负责 orchestration，不成为新的语言语义层：Parser、checker、evaluator 的规则由各自组件（[[vault::designs]] 分层索引中的语言层）定义；Analyzer 只保证它们看到同一组输入，并把结果组织成可查询的世界。
 

@@ -53,7 +53,7 @@ pub(crate) fn evaluate_markup_with_bindings(
 }
 
 #[allow(clippy::too_many_arguments)]
-fn evaluate_markup_in_environment(
+pub(crate) fn evaluate_markup_in_environment(
     source: &str,
     markup: &Markup,
     base_offset: usize,
@@ -115,7 +115,35 @@ struct LowerState<'a> {
     module_attributes: Vec<Attributes>,
 }
 
-fn collect_user_functions(
+pub(crate) fn lower_inline_text(
+    source: &str,
+    text: &notist_syntax::SpannedText,
+    base_offset: usize,
+    registry: &FunctionRegistry,
+    user_functions: &HashMap<String, UserFunctionDefinition>,
+    variables: Vec<HashMap<String, Value>>,
+) -> (Content, Vec<crate::AnnotationEntry>, Vec<EvalDiagnostic>) {
+    let mut state = LowerState {
+        source,
+        base_offset,
+        registry,
+        depth: 0,
+        user_functions,
+        variables,
+        content: Content::new(),
+        diagnostics: Vec::new(),
+        annotations: Vec::new(),
+        handle_annotations: false,
+        pending_annotations: Vec::new(),
+        pending_block_start: None,
+        pending_block_end: 0,
+        module_attributes: Vec::new(),
+    };
+    state.push_text_with_parbreaks(text);
+    (state.content, state.annotations, state.diagnostics)
+}
+
+pub(crate) fn collect_user_functions(
     markup: &Markup,
     functions: &mut HashMap<String, UserFunctionDefinition>,
 ) {
@@ -195,7 +223,7 @@ fn signature_for_user_function(definition: &UserFunctionDefinition) -> FunctionS
     }
 }
 
-fn user_function_value(
+pub(crate) fn user_function_value(
     definition: &UserFunctionDefinition,
     variables: &[HashMap<String, Value>],
 ) -> FunctionValue {
@@ -262,6 +290,38 @@ fn float_binary(operator: BinaryOperator, left: f64, right: f64) -> Option<f64> 
         BinaryOperator::Divide => Some(left / right),
         _ => None,
     }
+}
+
+/// Evaluates one expression with an isolated LowerState, used by the
+/// Stream lowering pass to evaluate ordinary argument/let values while the
+/// document-level environment stays in the stream lowerer.
+pub(crate) fn evaluate_expression_fragment(
+    source: &str,
+    expression: &Expression,
+    base_offset: usize,
+    registry: &FunctionRegistry,
+    depth: usize,
+    user_functions: &HashMap<String, UserFunctionDefinition>,
+    variables: Vec<HashMap<String, Value>>,
+) -> (Value, Vec<EvalDiagnostic>) {
+    let mut state = LowerState {
+        source,
+        base_offset,
+        registry,
+        depth,
+        user_functions,
+        variables,
+        content: Content::default(),
+        diagnostics: Vec::new(),
+        annotations: Vec::new(),
+        handle_annotations: false,
+        pending_annotations: Vec::new(),
+        pending_block_start: None,
+        pending_block_end: 0,
+        module_attributes: Vec::new(),
+    };
+    let (value, _, diagnostics) = state.evaluate_expression(expression, expression.range);
+    (value, diagnostics)
 }
 
 impl LowerState<'_> {
@@ -994,7 +1054,8 @@ impl LowerState<'_> {
                 }
             }
             Ok(FunctionOutput::Calls(calls)) => {
-                match crate::call::reduce_content(&calls, self.registry) {
+                let owner = function.owner();
+                match crate::call::reduce_content_as(&calls, self.registry, &owner) {
                     Ok(content) => {
                         let value = Value::Content(content);
                         if signature.result.accepts(&value.ty()) {

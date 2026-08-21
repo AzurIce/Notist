@@ -1,0 +1,236 @@
+@![implementation = "partial"]
+= Plugin Call Reduction: Stream, Leaf, and Shaping
+
+本文记录 Notist 插件求值模型。它把三个问题合并成一个模型：插件如何调用内置或其它插件、插件如何组合任意内容、以及求值结果如何进入成型。
+
+核心公理是：
+
+```text
+文档先是一段由 Call 与 Leaf 组成的流。
+求值把 Call 流规约为 Leaf 流。
+成型把 Leaf 流折叠为 Leaf 树。
+```
+
+写作文档时，作者写的就是一个流：
+
+```text
+text("hello")
+parbreak()
+text("world")
+```
+
+其中 `parbreak` 不是杂质，而是流中合法的、成型后消失的 Leaf。
+
+== Pipeline
+
+```text
+source
+  → parse
+  → lower to Stream<Call | Leaf>        // 语法糖、文字、空行都变成节点
+  → reduce                              // 把 Call 递归规约为 Leaf
+  → FlatContent<Leaf>                   // 纯 Leaf 流，可能包含 core::parbreak
+  → structure（递归）                    // 消费 parbreak，生成 paragraph/list/section
+  → ElementTree<Leaf>                   // 规范树：无 Call、无 parbreak
+  → project                             // 按 name 分发给 target renderer
+```
+
+规约必须在成型之前：`raw(block: bool)`、插件返回内容、`heading` / `item` 的运行时参数都会影响成型，不执行函数就无法判断 inline/block 与归组关系。但对外公开的规范树是成型后的 `ElementTree`；成型前的流只是 eval 内部工作区。
+
+== 中间表示
+
+=== Stream 与 FlatContent
+
+规约过程中的节点只有两种：
+
+```rust
+pub enum StreamNode {
+    Call(Call),
+    Leaf(InstanceNode),
+}
+
+pub struct FlatContent {
+    pub nodes: Vec<StreamNode>,
+}
+```
+
+规约完成后的 `FlatContent` 只含 Leaf，但允许 `core::parbreak` 与未归组的 `core::item`。
+
+=== ElementInstance / Leaf
+
+唯一的终止节点类型是 `ElementInstance`。`Leaf` 是阶段概念，不单独作为类型名：
+
+```rust
+pub struct ElementInstance {
+    pub name: ElementName,
+    pub fields: Vec<Field>,
+    pub body: Vec<InstanceNode>,
+    pub block: bool,
+}
+
+pub struct Field {
+    pub name: String,
+    pub value: FieldValue,
+}
+
+pub struct InstanceNode {
+    pub instance: ElementInstance,
+    pub range: TextRange,
+}
+```
+
+`ElementName` 使用 qualified name，词表分三类：
+
+```text
+构造器来源：core::text / core::heading / core::raw / core::item / ...
+流控制：    core::parbreak / whitespace-only core::text
+成型来源：  core::paragraph / core::list / core::section
+插件来源：  {package}::{element}
+```
+
+=== Call
+
+```rust
+pub struct Call {
+    pub name: String,
+    pub arguments: Vec<Argument>,
+    pub body: Option<FlatContent>,
+    pub range: TextRange,
+}
+```
+
+`body` 对应 trailing Content。它本身也是一段流，在调用函数前按签名求值；不接受 body 的函数在 reduction 阶段直接产生诊断，不静默丢弃。
+
+=== ElementTree
+
+成型后的规范树只包含 Leaf：
+
+```rust
+pub struct ElementTree {
+    pub roots: Vec<InstanceNode>,
+}
+```
+
+规范树不变量：
+
+- 没有 `Call`；
+- 没有 `core::parbreak`；
+- `core::item` 只作为 `core::list` 的直接子节点存在；
+- 每个 body 都已按其容器类型递归成型。
+
+== 规约
+
+所有内置函数与插件函数注册在同一个 `FunctionRegistry` 中。规约函数支持两种返回：
+
+```rust
+pub enum FunctionOutput {
+    Value(Value),
+    Stream(FlatContent),
+}
+```
+
+单个 Leaf 就是长度为 1 的 Stream。规约规则：
+
+1. 先做 capability 检查，再做参数和 body 规约；
+2. 参数值中的嵌套流、`body` 中的流都先递归规约；
+3. 绑定后调用函数，得到 `Stream` 继续递归；
+4. 未知函数、类型错误、不接受 body 都产生诊断，不通过 accessor panic 假装成功；
+5. 每次 dispatch 消耗 fuel 并增加 depth。
+
+内置函数返回自己的 Leaf 流；插件函数返回 Call / 自有 Leaf 组成的流，从而获得组合能力。
+
+== 成型
+
+`structure` 是递归的流折叠：
+
+```text
+FlatContent<Leaf> → ElementTree<Leaf>
+```
+
+规则与 [[vault::designs::pipeline::structure]] 一致，但明确为递归：每个 body 都按其容器模式（flow / inline / table-cells 等）执行同一套成型，而不是只处理文档顶层。
+
+- `core::parbreak` 被消费，不进入 `ElementTree`；
+- 连续 inline Leaf 合并为 `core::paragraph`；
+- 相邻同类 `core::item` 合并为 `core::list`；
+- Heading 与其后内容归组为 `core::section`。
+
+== 投影
+
+`ElementTree` 按 `ElementName` 分发到 renderer registry。core Leaf 可以由宿主投影为原生 HTML 或 target node；插件 Leaf 可以投影为 Web Component。投影层统一，但 target 结果不强制全部是 Web Component。
+
+== 插件 ABI
+
+插件可见 IR 是 `call | leaf`。共享类型、WIT 定义、`export evaluate` 与 `import host.call` 的完整 ABI 见 [[vault::designs::pipeline::plugin-system]]。
+
+== Capability
+
+插件 manifest 声明可调用范围：
+
+```json
+{
+  "capabilities": {
+    "request": [
+      "core::details",
+      "core::raw",
+      "core::text",
+      "core::parbreak"
+    ]
+  }
+}
+```
+
+归属规则：
+
+- 插件 A 返回对 B 的调用，检查 `A → B`；
+- B 返回的 Calls 归属于 B；
+- 插件输出树中嵌套在 arguments / body 里的 Calls 归属于生成该子树的插件；
+- 内置函数自身展开出的 Calls 使用 host 权限。
+
+== 终止性
+
+- 最大调用深度与总调用 fuel；
+- 总输出节点数限制；
+- 不按同名函数直接判定循环：合法递归可以带不同参数收敛；可选对完全相同 `(function, 规范化参数)` 的重入做精确循环检测；
+- 插件保持纯函数约束，Wasm 调用返回后、锁释放后才继续嵌套规约。
+
+== 示例：shader 组合 details
+
+`shader` 插件收到：
+
+```text
+#shader(source: wgsl)[fallback]
+```
+
+它返回：
+
+```text
+Stream [
+  Call(core::details,
+    arguments: {
+      summary: Stream [Leaf(core::text, "Shader")],
+      open: false,
+    },
+    body: Stream [
+      Call(core::raw, source: wgsl, lang: "wgsl", block: true),
+      Leaf(shader::canvas, fields: { source: wgsl }),
+    ],
+  ),
+]
+```
+
+宿主规约 `core::details` 与 `core::raw`，保留 `shader::canvas` Leaf，递归成型后得到只有 Leaf 的 `ElementTree`。插件不再返回对自己的调用。
+
+== 实施路径
+
+- Phase A：把内部 IR 收敛为 `StreamNode = Call | Leaf`，`ElementInstance` 作为唯一 Leaf 类型；修复 reduction 的参数/body 校验、depth 与 fuel。已实现：`notist-model::ElementInstance`、`notist-eval::leaf` reduction engine、`Evaluator::evaluate_leaf`。
+- Phase B：让 `structure` 递归成型所有 body，产出 `ElementTree`；删除公开树中的 `core::parbreak`。已实现：`shape_flat` 递归成型；主 reduction 已迁移并支持 sibling recovery；主 structure/project 仍用 legacy 兼容投影。
+- Phase C：插件 ABI 改为 `call | leaf` 流；宿主递归规约并执行 capability 检查。尚未实现。
+- Phase D：插件调用插件与 qualified function name 落地。已实现：`FunctionRegistry::register_alias` 与 `core::*` 别名；插件 ABI 待迁移。
+- Phase E：WIT 正式化，用 wit-bindgen 替换手写 ABI。尚未实现。
+
+== 已裁定 / 待定
+
+- 已裁定：文档是 Leaf 流；`parbreak` 是 transient Leaf；成型前为 `FlatContent`，成型后为 `ElementTree`。
+- 已裁定：`ElementInstance` 是唯一终止节点类型；`Leaf` 只作为阶段术语。
+- 已裁定：插件可见 IR 为 `call | leaf`；插件不能直接产生 `core::*` Leaf。
+- 待定：Section 是否最终保留独立 `Block::Section` 包装，还是完全作为 `core::section` Leaf；当前设计记录选择后者。
+- 待定：whitespace-only `core::text` 的 framing 判定与丢弃规则，与 [[vault::designs::pipeline::structure#已裁定 / 待定]] 联动。

@@ -22,7 +22,83 @@ pub(crate) fn register_builtins(registry: &mut FunctionRegistry) -> Result<(), R
     registry.register(StrikeFunction)?;
     registry.register(UnderlineFunction)?;
     registry.register(RuleFunction)?;
+    registry.register(TextFunction)?;
+    registry.register(ParbreakFunction)?;
+    for (alias, target) in [
+        ("core::ref", "ref"),
+        ("core::heading", "heading"),
+        ("core::raw", "raw"),
+        ("core::callout", "callout"),
+        ("core::details", "details"),
+        ("core::item", "item"),
+        ("core::table-cell", "table-cell"),
+        ("core::table", "table"),
+        ("core::figure", "figure"),
+        ("core::strong", "strong"),
+        ("core::emph", "emph"),
+        ("core::strike", "strike"),
+        ("core::underline", "underline"),
+        ("core::rule", "rule"),
+        ("core::text", "text"),
+        ("core::parbreak", "parbreak"),
+    ] {
+        registry.register_alias(alias, target)?;
+    }
     Ok(())
+}
+
+struct TextFunction;
+
+impl Function for TextFunction {
+    fn name(&self) -> &str {
+        "text"
+    }
+
+    fn signature(&self) -> FunctionSignature {
+        notist_model::FunctionSignature {
+            parameters: vec![notist_model::Parameter {
+                name: "text".into(),
+                ty: crate::Type::String,
+                default: None,
+            }],
+            trailing_content: None,
+            result: crate::Type::Content,
+        }
+    }
+
+    fn call(
+        &self,
+        _context: &FunctionContext<'_>,
+        input: FunctionInput<'_>,
+    ) -> Result<FunctionOutput, Vec<EvalDiagnostic>> {
+        Ok(FunctionOutput::content(Content::single(
+            Element::Text(input.arguments.string("text").to_owned()),
+            input.range,
+        )))
+    }
+}
+
+struct ParbreakFunction;
+
+impl Function for ParbreakFunction {
+    fn name(&self) -> &str {
+        "parbreak"
+    }
+
+    fn signature(&self) -> FunctionSignature {
+        notist_model::empty_content_signature()
+    }
+
+    fn call(
+        &self,
+        _context: &FunctionContext<'_>,
+        input: FunctionInput<'_>,
+    ) -> Result<FunctionOutput, Vec<EvalDiagnostic>> {
+        Ok(FunctionOutput::content(Content::single(
+            Element::Parbreak,
+            input.range,
+        )))
+    }
 }
 
 struct RefFunction;

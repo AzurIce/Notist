@@ -1,7 +1,7 @@
 @![implementation = "aligned"]
 = Scope and Environment
 
-本文承接 [[vault::designs::language::type-system#静态检查]]（静态检查、类型与属性表）与 [[vault::designs::language::markup-surface#scope 的语法形态]]（scope 的语法形态）。本文定义值层 scope 与词法环境：节点如何同时承载内容与名字、名称如何解析、绑定如何可见，以及 scope 在进入成型（[[vault::designs::language::shaping-structure-tree#输入与输出]]）前如何落到元素序列与属性表。求值过程如何消费 scope 并产生元素序列见 [[vault::designs::language::evaluation-model#求值结果]]。
+本文承接 [[vault::designs::language::type-system#静态检查]]（静态检查、类型与属性表）与 [[vault::designs::language::markup-surface#scope 的语法形态]]（scope 的语法形态）。本文定义值层 scope 与词法环境：节点如何同时承载内容与名字、名称如何解析、绑定如何可见，以及 scope 在进入成型（[[vault::designs::pipeline::structure#输入与输出]]）前如何落到元素序列与属性表。求值过程如何消费 scope 并产生元素序列见 [[vault::designs::pipeline::evaluate#求值结果]]。
 
 == scope 是值层节点
 
@@ -18,7 +18,7 @@
 - **N2 遮蔽**：最近绑定者胜出（shadowing）；同名 `let` 允许在后续声明处建立新绑定并遮蔽外层或先前的同名绑定。
 - **N3 let 可见性**：`let` 绑定从声明处开始对同一 scope 的后续节点可见，声明之前的节点不可见。
 - **N4 递归暂缓**：`let` 的右侧看不到正在声明的名字；递归绑定待 `let rec` 引入。
-- **N5 根 bindings**：求值结束后，根 scope 自有的 binding 进入求值结果 `bindings`（[[vault::designs::language::evaluation-model#求值结果]]）；其他节点上的 binding 只是求值期的环境事实，成型后的结构树消费者不依赖它们。
+- **N5 根 bindings**：求值结束后，根 scope 自有的 binding 进入求值结果 `bindings`（[[vault::designs::pipeline::evaluate#求值结果]]）；其他节点上的 binding 只是求值期的环境事实，成型后的结构树消费者不依赖它们。
 
 == scope 形态
 
@@ -34,7 +34,7 @@ scope 按来源分为五类；语法书写见 [[vault::designs::language::markup
 
 - 手动 scope 与隐式 scope 是同一类东西，区别只在显式与隐式；它渲染上不产生可见元素。
 - Content literal 与 Code block 的词法边界是求值期事实：其内部 `let` 不出块；透明溶解是成型期事实，二者正交。
-- 元素 scope 是实元素：成型时保留为结构树节点，元素身份、参数与 body 继续存在（[[vault::designs::language::shaping-structure-tree#输入与输出]]）。
+- 元素 scope 是实元素：成型时保留为结构树节点，元素身份、参数与 body 继续存在（[[vault::designs::pipeline::structure#输入与输出]]）。
 
 == 与成型、属性表的关系
 

@@ -6,6 +6,7 @@ use std::process::ExitCode;
 
 use clap::ColorChoice;
 use notist_model::ModulePath;
+use notist_plugin_host::PluginHtmlAssets;
 use notist_service::protocol::ClientKind;
 use notist_service::{
     AttributeRecord, CoreRequest, CoreResponse, InspectRecord, ProtocolViewKind,
@@ -108,7 +109,20 @@ pub fn run(
     if clean {
         clean_output_root(&output)?;
     }
-    let result = write_rendered_site(&rendered, &output, SiteOptions::default())?;
+    let config_text = fs::read_to_string(root.join("Notist.toml")).ok();
+    let plugin_assets = notist_plugin_host::plugin_html_assets(&root, config_text.as_deref())
+        .map_err(|error| {
+            std::io::Error::new(
+                std::io::ErrorKind::InvalidInput,
+                format!("invalid plugin manifest: {error}"),
+            )
+        })?;
+    let result = write_rendered_site_with_plugins(
+        &rendered,
+        &output,
+        SiteOptions::default(),
+        &plugin_assets,
+    )?;
     copy_plugin_assets(&root, &output)?;
     let mut diagnostics = rendered.analysis_diagnostics.clone();
     merge_diagnostics(&mut diagnostics, rendered.evaluation_diagnostics.clone());
@@ -220,10 +234,22 @@ pub(crate) fn copy_plugin_assets(root: &Path, output: &Path) -> Result<(), Box<d
     Ok(())
 }
 
+/// Test-only convenience wrapper; production paths pass an explicit plugin
+/// asset set so page heads are generated from manifest contributions.
+#[allow(dead_code)]
 pub(crate) fn write_rendered_site(
     rendered: &RenderedWorkspaceRecord,
     output: &Path,
     options: SiteOptions,
+) -> Result<RenderedBuildResult, Box<dyn Error>> {
+    write_rendered_site_with_plugins(rendered, output, options, &[])
+}
+
+pub(crate) fn write_rendered_site_with_plugins(
+    rendered: &RenderedWorkspaceRecord,
+    output: &Path,
+    options: SiteOptions,
+    plugin_assets: &[PluginHtmlAssets],
 ) -> Result<RenderedBuildResult, Box<dyn Error>> {
     fs::create_dir_all(output.join("_notist"))?;
     fs::write(output.join("_notist/style.css"), STYLES)?;
@@ -231,6 +257,7 @@ pub(crate) fn write_rendered_site(
     if options.live_reload {
         fs::write(output.join("_notist/reload.js"), LIVE_RELOAD_SCRIPT)?;
         fs::write(output.join("_notist/inspect.js"), INSPECT_SCRIPT)?;
+        fs::write(output.join("_notist/source.js"), SOURCE_SCRIPT)?;
     }
     let pages = rendered
         .pages
@@ -241,6 +268,8 @@ pub(crate) fn write_rendered_site(
             headings: &page.headings,
             fragment: &page.fragment,
             bindings: &page.bindings,
+            source: page.source.as_deref(),
+            plugin_assets,
         })
         .collect::<Vec<_>>();
     for page in &pages {
@@ -310,6 +339,11 @@ struct PageView<'a> {
     headings: &'a [RenderedHeadingRecord],
     fragment: &'a str,
     bindings: &'a [RenderedBindingRecord],
+    /// Raw `.not` source from the rendered snapshot, `None` for virtual
+    /// directory modules. Only the preview shell embeds it.
+    source: Option<&'a str>,
+    /// Manifest-declared plugin HTML assets injected into the page head.
+    plugin_assets: &'a [PluginHtmlAssets],
 }
 
 impl PageView<'_> {
@@ -345,15 +379,40 @@ fn page_shell(
     html.push_str("_notist/style.css\">\n<script src=\"");
     html.push_str(&asset_prefix);
     html.push_str("_notist/site.js\" defer></script>\n");
-    if page.fragment.contains("notist-shader") {
-        html.push_str("<link rel=\"stylesheet\" href=\"");
-        html.push_str(&asset_prefix);
-        html.push_str("_notist/plugins/shader/shader.css\">\n<script type=\"module\" src=\"");
-        html.push_str(&asset_prefix);
-        html.push_str("_notist/plugins/shader/shader.js\"></script>\n");
+    for package in page.plugin_assets {
+        for contribution in &package.contributions {
+            let Some(component) = &contribution.web_component else {
+                continue;
+            };
+            if let Some(style) = &component.style
+                && let Some(file_name) = Path::new(style).file_name().and_then(|name| name.to_str())
+            {
+                html.push_str("<link rel=\"stylesheet\" href=\"");
+                html.push_str(&asset_prefix);
+                html.push_str("_notist/plugins/");
+                html.push_str(&package.name);
+                html.push('/');
+                html.push_str(file_name);
+                html.push_str("\">\n");
+            }
+            if let Some(file_name) = Path::new(&component.module)
+                .file_name()
+                .and_then(|name| name.to_str())
+            {
+                html.push_str("<script type=\"module\" src=\"");
+                html.push_str(&asset_prefix);
+                html.push_str("_notist/plugins/");
+                html.push_str(&package.name);
+                html.push('/');
+                html.push_str(file_name);
+                html.push_str("\"></script>\n");
+            }
+        }
     }
     if options.live_reload {
         html.push_str("<script src=\"");
+        html.push_str(&asset_prefix);
+        html.push_str("_notist/source.js\" defer></script>\n<script src=\"");
         html.push_str(&asset_prefix);
         html.push_str("_notist/reload.js\" defer></script>\n<script src=\"");
         html.push_str(&asset_prefix);
@@ -372,8 +431,19 @@ fn page_shell(
     html.push_str("</a></header>\n");
 
     if options.live_reload {
+        // Preview toolbar: the source/rendered toggle, then the inspector
+        // switch. Virtual directory modules have no `.not` source, so their
+        // source toggle is disabled.
         html.push_str(
-            "<div class=\"preview-chrome\"><button class=\"inspect-toggle\" id=\"inspect-toggle\" type=\"button\" role=\"switch\" aria-checked=\"false\"><span class=\"inspect-switch\" aria-hidden=\"true\"></span><span>Enhanced</span></button></div>\n",
+            "<div class=\"preview-chrome\"><button class=\"chrome-toggle\" id=\"source-toggle\" type=\"button\" role=\"switch\" aria-checked=\"false\"",
+        );
+        if page.source.is_some() {
+            html.push_str(" aria-controls=\"source-panel\"");
+        } else {
+            html.push_str(" disabled title=\"This virtual module has no .not source file\"");
+        }
+        html.push_str(
+            "><span class=\"chrome-switch\" aria-hidden=\"true\"></span><span>Source</span></button><button class=\"chrome-toggle\" id=\"inspect-toggle\" type=\"button\" role=\"switch\" aria-checked=\"false\"><span class=\"chrome-switch\" aria-hidden=\"true\"></span><span>Enhanced</span></button></div>\n",
         );
         // The module's root bindings, consumed by inspect.js for the Symbols
         // tab. `</` is escaped so a string value can never close the tag.
@@ -383,6 +453,16 @@ fn page_shell(
         html.push_str("<script type=\"application/json\" id=\"notist-bindings\">");
         html.push_str(&bindings_json);
         html.push_str("</script>\n");
+        // Raw `.not` source for source.js, from the same snapshot that
+        // produced the rendered fragment (never re-read from disk).
+        if let Some(source) = page.source {
+            let source_json = serde_json::to_string(source)
+                .unwrap_or_else(|_| "null".to_owned())
+                .replace("</", "<\\/");
+            html.push_str("<script type=\"application/json\" id=\"notist-source\">");
+            html.push_str(&source_json);
+            html.push_str("</script>\n");
+        }
     }
 
     html.push_str("<div class=\"site-layout\">\n<aside class=\"site-sidebar\" id=\"site-sidebar\" aria-label=\"Site navigation\"><div class=\"sidebar-header\"><a class=\"site-name\" href=\"");
@@ -400,7 +480,15 @@ fn page_shell(
     html.push_str(&breadcrumb(site_name, page));
     html.push_str("<article class=\"notist-document\">");
     html.push_str(page.fragment);
-    html.push_str("</article>\n<footer class=\"page-footer\"><span>Built with Notist</span><span class=\"page-module\">");
+    html.push_str("</article>\n");
+    if options.live_reload && page.source.is_some() {
+        html.push_str(
+            "<section class=\"source-panel\" id=\"source-panel\" aria-label=\"Notist source\" hidden><div class=\"source-head\"><span class=\"source-title\">Notist source</span><button class=\"source-copy\" id=\"source-copy\" type=\"button\">Copy</button></div><pre class=\"source-code\" id=\"source-code\"></pre></section>\n",
+        );
+    }
+    html.push_str(
+        "<footer class=\"page-footer\"><span>Built with Notist</span><span class=\"page-module\">",
+    );
     escape_html(&mut html, &page.module.to_string());
     html.push_str("</span></footer>\n</main>\n");
     html.push_str(&page_rail(page, options));
@@ -1235,6 +1323,93 @@ const INSPECT_SCRIPT: &str = r#"(() => {
 })();
 "#;
 
+/// Preview source toggle: switches the main column between the rendered
+/// document and the raw `.not` source embedded by the page shell. The source
+/// travels with the page (from the same snapshot as the fragment), so this
+/// needs no extra round-trip to the service.
+const SOURCE_SCRIPT: &str = r#"(() => {
+  "use strict";
+  const toggle = document.getElementById("source-toggle");
+  const article = document.querySelector(".notist-document");
+  const panel = document.getElementById("source-panel");
+  const code = document.getElementById("source-code");
+  if (!toggle || !article || !panel || !code) return;
+
+  const STORAGE_KEY = "notist-source";
+  const sourceNode = document.getElementById("notist-source");
+  let source = null;
+  if (sourceNode) {
+    try {
+      const parsed = JSON.parse(sourceNode.textContent);
+      source = typeof parsed === "string" ? parsed : null;
+    } catch {}
+  }
+  if (source === null) {
+    toggle.disabled = true;
+    toggle.title = "This virtual module has no .not source file";
+    return;
+  }
+
+  // One block per source line. CSS paints the line number in a hanging
+  // gutter, so long lines wrap with the same indentation as their first
+  // line. The copy button always copies the exact `source` text; only the
+  // display normalizes CRLF/CR line endings into LF.
+  const normalized = source.replace(/\r\n?/g, "\n");
+  const lines = normalized.split("\n");
+  if (lines.length > 1 && lines[lines.length - 1] === "") lines.pop();
+  const fragment = document.createDocumentFragment();
+  for (const text of lines) {
+    const line = document.createElement("span");
+    line.className = "source-line";
+    line.textContent = text;
+    fragment.append(line);
+  }
+  code.replaceChildren(fragment);
+
+  const sourceOpen = () => document.body.classList.contains("source-open");
+
+  const setSource = (on) => {
+    document.body.classList.toggle("source-open", on);
+    article.hidden = on;
+    panel.hidden = !on;
+    toggle.setAttribute("aria-checked", on ? "true" : "false");
+    try {
+      sessionStorage.setItem(STORAGE_KEY, on ? "1" : "0");
+    } catch {}
+    if (on) {
+      // The two views have different heights; start reading from the top.
+      document.getElementById("page-content")?.scrollIntoView();
+    }
+  };
+
+  toggle.addEventListener("click", () => setSource(!sourceOpen()));
+
+  const copy = document.getElementById("source-copy");
+  copy?.addEventListener("click", async () => {
+    const reset = () => {
+      copy.textContent = "Copy";
+      copy.classList.remove("copied");
+    };
+    try {
+      await navigator.clipboard.writeText(source);
+      copy.textContent = "Copied";
+      copy.classList.add("copied");
+      setTimeout(reset, 1600);
+    } catch {
+      copy.textContent = "Copy failed";
+      setTimeout(reset, 1600);
+    }
+  });
+
+  // Persisted across the reloads that live rebuilds trigger.
+  let saved = null;
+  try {
+    saved = sessionStorage.getItem(STORAGE_KEY);
+  } catch {}
+  if (saved === "1") setSource(true);
+})();
+"#;
+
 const STYLES: &str = r#"/* Notist site chrome + document styles (build & preview share this file). */
 
 /* ---------- design tokens ---------- */
@@ -1611,8 +1786,8 @@ body.enhanced .toc-title { display: none; }
 }
 @keyframes live-pulse { 50% { opacity: 0.3; } }
 
-/* enhanced-mode switch */
-.inspect-toggle {
+/* preview toolbar switches (source view + enhanced mode) */
+.chrome-toggle {
   display: inline-flex;
   align-items: center;
   gap: 8px;
@@ -1627,14 +1802,19 @@ body.enhanced .toc-title { display: none; }
   cursor: pointer;
   transition: color 0.12s ease, border-color 0.12s ease, background-color 0.12s ease;
 }
-.inspect-toggle:hover { color: var(--text); border-color: var(--accent); }
-.inspect-toggle[aria-checked="true"] {
+.chrome-toggle:hover { color: var(--text); border-color: var(--accent); }
+.chrome-toggle[aria-checked="true"] {
   border-color: var(--accent);
   background: var(--accent-soft);
   color: var(--accent-strong);
   font-weight: 600;
 }
-.inspect-switch {
+.chrome-toggle:disabled {
+  opacity: 0.55;
+  cursor: not-allowed;
+  box-shadow: none;
+}
+.chrome-switch {
   position: relative;
   flex: none;
   width: 26px;
@@ -1643,7 +1823,7 @@ body.enhanced .toc-title { display: none; }
   background: var(--border);
   transition: background-color 0.15s ease;
 }
-.inspect-switch::after {
+.chrome-switch::after {
   content: "";
   position: absolute;
   top: 2px;
@@ -1655,8 +1835,74 @@ body.enhanced .toc-title { display: none; }
   box-shadow: var(--shadow-sm);
   transition: translate 0.15s ease;
 }
-.inspect-toggle[aria-checked="true"] .inspect-switch { background: var(--accent); }
-.inspect-toggle[aria-checked="true"] .inspect-switch::after { translate: 11px 0; }
+.chrome-toggle[aria-checked="true"] .chrome-switch { background: var(--accent); }
+.chrome-toggle[aria-checked="true"] .chrome-switch::after { translate: 11px 0; }
+
+/* source view (preview only) */
+.source-panel {
+  overflow: hidden;
+  border: 1px solid var(--border-soft);
+  border-radius: var(--radius);
+  background: var(--surface);
+}
+.source-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  padding: 9px 14px;
+  border-bottom: 1px solid var(--border-soft);
+  background: var(--sunken);
+}
+.source-title {
+  color: var(--muted);
+  font-size: 11px;
+  font-weight: 700;
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+}
+.source-copy {
+  padding: 4px 10px;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background: var(--surface);
+  color: var(--muted);
+  font-size: 12px;
+  line-height: 1.4;
+  cursor: pointer;
+  transition: color 0.12s ease, border-color 0.12s ease;
+}
+.source-copy:hover { color: var(--text); border-color: var(--accent); }
+.source-copy.copied { color: var(--success); border-color: var(--success); }
+.source-code {
+  counter-reset: source-line;
+  margin: 0;
+  padding: 16px 18px;
+  overflow-x: auto;
+  color: var(--text);
+  font-family: var(--font-mono);
+  font-size: 13.5px;
+  line-height: 1.7;
+}
+.source-line {
+  counter-increment: source-line;
+  display: block;
+  padding-left: 4.5ch;
+  text-indent: -4.5ch;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+.source-line::before {
+  content: counter(source-line);
+  display: inline-block;
+  min-width: 3.5ch;
+  margin-right: 1ch;
+  color: var(--faint);
+  text-align: right;
+  user-select: none;
+}
+body.source-open .page-rail,
+body.source-open.enhanced .page-rail[data-empty-toc] { display: none; }
 
 /* enhanced-mode document highlights */
 body.enhanced .notist-document [data-notist-tag],
@@ -2199,10 +2445,15 @@ mod tests {
         assert!(inspect.contains("inspect-toggle"));
         assert!(inspect.contains("rail-panel-inspector"));
         assert!(inspect.contains("notist-enhanced"));
+        let source = fs::read_to_string(output.join("preview/_notist/source.js")).unwrap();
+        assert!(source.contains("source-toggle"));
+        assert!(source.contains("notist-source"));
+        assert!(source.contains("navigator.clipboard.writeText"));
         let home = fs::read_to_string(output.join("preview/index.html")).unwrap();
         assert!(home.contains("class=\"preview-chrome\""));
         assert!(home.contains("role=\"switch\""));
         assert!(home.contains("_notist/inspect.js"));
+        assert!(home.contains("_notist/source.js"));
         // The inspector lives in a rail tab next to the TOC, even on pages
         // without headings (the rail is then hidden until enhanced mode).
         assert!(home.contains("class=\"page-rail\" data-empty-toc"));
@@ -2213,21 +2464,85 @@ mod tests {
         assert!(home.contains("\"name\":\"answer\""), "{home}");
         assert!(home.contains("Int = 42"), "{home}");
         assert!(home.contains("fn(x: Int) -> Int"), "{home}");
+        // The source toggle owns the rendered/source switch, and the raw text
+        // ships from the same snapshot that produced the fragment.
+        assert!(home.contains("id=\"source-toggle\""));
+        assert!(home.contains("id=\"source-panel\""));
+        assert!(home.contains("id=\"notist-source\""));
+        assert!(home.contains("#heading[Home]"), "{home}");
+        assert!(home.contains("#let answer"), "{home}");
         let styles = fs::read_to_string(output.join("preview/_notist/style.css")).unwrap();
         assert!(styles.contains(".preview-chrome"));
         assert!(styles.contains(".rail-tab"));
         assert!(styles.contains(".inspector-panel"));
+        assert!(styles.contains(".chrome-toggle"));
+        assert!(styles.contains(".source-panel"));
+        assert!(styles.contains("white-space: pre-wrap"));
+        assert!(styles.contains("overflow-wrap: anywhere"));
+        assert!(styles.contains("body.source-open .page-rail"));
+        assert!(styles.contains("body.source-open.enhanced .page-rail[data-empty-toc]"));
 
         // Static builds stay clean: no preview chrome, no inspector script,
-        // no bindings payload, and no rail at all on a page without
-        // TOC-level headings.
+        // no bindings or source payloads, and no rail at all on a page
+        // without TOC-level headings.
         write_rendered_site(&rendered, &output.join("static"), SiteOptions::default()).unwrap();
         let static_home = fs::read_to_string(output.join("static/index.html")).unwrap();
         assert!(!static_home.contains("preview-chrome"));
         assert!(!static_home.contains("rail-tab"));
         assert!(!static_home.contains("page-rail"));
         assert!(!static_home.contains("notist-bindings"));
+        assert!(!static_home.contains("notist-source"));
+        assert!(!static_home.contains("source-toggle"));
+        assert!(!static_home.contains("source-panel"));
         assert!(!output.join("static/_notist/inspect.js").exists());
+        assert!(!output.join("static/_notist/source.js").exists());
+    }
+
+    #[test]
+    fn preview_virtual_modules_disable_the_source_toggle() {
+        let root = tempfile::TempDir::new_in(std::env::current_dir().unwrap()).unwrap();
+        fs::write(root.path().join("README.not"), "#heading[Home]").unwrap();
+        fs::create_dir(root.path().join("notes")).unwrap();
+        fs::write(root.path().join("notes/chapter.not"), "#heading[One]").unwrap();
+        let output = root.path().join("site");
+        let rendered = render(root.path());
+        write_rendered_site(&rendered, &output, SiteOptions { live_reload: true }).unwrap();
+
+        let home = fs::read_to_string(output.join("index.html")).unwrap();
+        assert!(home.contains("id=\"source-toggle\""));
+        assert!(home.contains("aria-controls=\"source-panel\""));
+        assert!(home.contains("id=\"notist-source\""));
+        assert!(home.contains("id=\"source-panel\""));
+        assert!(!home.contains("This virtual module has no .not source file"));
+
+        let notes = fs::read_to_string(output.join("notes/index.html")).unwrap();
+        assert!(notes.contains("id=\"source-toggle\""));
+        assert!(
+            notes.contains("disabled title=\"This virtual module has no .not source file\""),
+            "{notes}"
+        );
+        assert!(!notes.contains("id=\"notist-source\""));
+        assert!(!notes.contains("id=\"source-panel\""));
+    }
+
+    #[test]
+    fn preview_source_json_escapes_closing_script_tags() {
+        let root = tempfile::TempDir::new_in(std::env::current_dir().unwrap()).unwrap();
+        fs::write(
+            root.path().join("README.not"),
+            "Text </script> and <b>raw</b> markup.",
+        )
+        .unwrap();
+        let output = root.path().join("site");
+        let rendered = render(root.path());
+        write_rendered_site(&rendered, &output, SiteOptions { live_reload: true }).unwrap();
+
+        let home = fs::read_to_string(output.join("index.html")).unwrap();
+        assert!(home.contains("id=\"notist-source\""), "{home}");
+        // The embedded JSON must never let source text close the script tag.
+        assert!(home.contains("<\\/script>"), "{home}");
+        // The rendered article escapes the same text independently.
+        assert!(home.contains("&lt;/script&gt;"), "{home}");
     }
 
     #[test]

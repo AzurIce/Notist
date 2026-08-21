@@ -1,0 +1,9 @@
+= plugins/core
+
+`core` 是 Notist 的特权 native package。它不被 `Notist.toml` 作为第三方 Wasm 插件加载，而是随语言版本静态编译进 `notist-eval`。
+
+- 实现：`plugins/core/lib.rs`（所有内置内容函数，从 `notist-eval` 内部以 native module 编译）
+- 契约：`plugins/core/plugin.json`（签名与成型 schema 的声明式镜像）
+- 注册路径：`FunctionRegistry::with_builtins()`，同时注册 prelude 短名与 `core::*` 别名
+
+第三方插件与 `core` 共享同一 `Function` / `ElementInstance` / `ElementSchema` 模型，但 `core::*` 不可被插件覆盖。

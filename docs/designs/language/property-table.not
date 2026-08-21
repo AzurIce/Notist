@@ -13,13 +13,13 @@
 - `Parbreak`：段间分隔，也是元素；
 - 其他元素：每个构造调用一个个体；容器元素的 body 是子序列。
 
-序列是分层的（容器 body 是子序列），区间在同一层序列上，可以跨越段落边界。成型只重组元素，不合并、不删除个体（[[vault::designs::language::shaping-structure-tree]]）——区间在求值、成型与投影之间稳定（Text 拼接是渲染层优化，不是成型语义）。
+序列是分层的（容器 body 是子序列），区间在同一层序列上，可以跨越段落边界。成型只重组元素，不合并、不删除个体（[[vault::designs::pipeline::structure]]）——区间在求值、成型与投影之间稳定（Text 拼接是渲染层优化，不是成型语义）。
 
 三类条目：
 
 - 元素条目：实元素上的属性（`#callout[...]@danger`）→ 单元素区间；
 - 区间条目：透明 scope 溶解后的属性与身份（`#[...]@install`）→ 内容覆盖的区间；
-- 节条目：修饰节头部 heading 的属性（`@[#施工]`、`= 标题@安装`）→ 该节覆盖的区间——节边界由 heading 归组规则确定（[[vault::designs::language::shaping-structure-tree]]），节属性语义上作用于整个子树。
+- 节条目：修饰节头部 heading 的属性（`@[#施工]`、`= 标题@安装`）→ 该节覆盖的区间——节边界由 heading 归组规则确定（[[vault::designs::pipeline::structure]]），节属性语义上作用于整个子树。
 
 属性是值的属性：绑定在值上的属性随值复制——`#let alert = [注意]@wip` 后 `#alert #alert` 产生两个元素个体，属性表里有两条 `wip` 条目。
 
@@ -29,10 +29,10 @@
 
 求值期：标注语法求值时把属性绑定到"值"上——postfix 绑定前面紧接着的表达式结果，前缀绑定下一个块级节点，模块属性绑定根 scope。
 
-求值收尾：绑定转写为属性表条目——实元素属性是单元素区间条目，透明 scope（Content literal、手动 scope）溶解后其属性与身份是内容覆盖的区间条目，可以跨越段落边界；修饰节头部 heading 的属性上卷为节条目，节边界由成型归组规则确定（[[vault::designs::language::shaping-structure-tree#Section 归组]]），语义作用于整个节子树。属性是值的属性：绑定在值上的属性随值复制，每次插入产生独立条目。
+求值收尾：绑定转写为属性表条目——实元素属性是单元素区间条目，透明 scope（Content literal、手动 scope）溶解后其属性与身份是内容覆盖的区间条目，可以跨越段落边界；修饰节头部 heading 的属性上卷为节条目，节边界由成型归组规则确定（[[vault::designs::pipeline::structure#Section 归组]]），语义作用于整个节子树。属性是值的属性：绑定在值上的属性随值复制，每次插入产生独立条目。
 
 查询一律以区间命中（单元素区间是特例），没有节点命中与区间命中两种形状——属性表是唯一入口。
 
 == 与求值、成型的关系
 
-求值结果三元组与 `content` 元素序列的产生见 [[vault::designs::language::evaluation-model#求值结果]]；scope 溶解见 [[vault::designs::language::scope-environment#与成型、属性表的关系]]；结构树投影见 [[vault::designs::language::shaping-structure-tree#不变量]]。值层与属性表是唯一真相，成型后的结构树是它们的投影：可丢弃、可重建，任何消费者都不能把投影当作新的真相；消费端联合消费结构树与属性表。
+求值结果三元组与 `content` 元素序列的产生见 [[vault::designs::pipeline::evaluate#求值结果]]；scope 溶解见 [[vault::designs::language::scope-environment#与成型、属性表的关系]]；结构树投影见 [[vault::designs::pipeline::structure#不变量]]。值层与属性表是唯一真相，成型后的结构树是它们的投影：可丢弃、可重建，任何消费者都不能把投影当作新的真相；消费端联合消费结构树与属性表。

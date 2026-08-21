@@ -37,7 +37,7 @@ content = [
 annotations = {}   // 示例中没有标注，属性表为空
 ```
 
-`bindings` 是程序的一面——跨模块复用的入口；`content` 是文档的一面——渲染与查询消费的产物；`annotations` 是属性的一面——标注与模块元数据的唯一入口。三者来自同一次求值，却承担不同职责。这个结果如何产生：类型见 [[vault::designs::language::type-system]]，属性表见 [[vault::designs::language::property-table]]，求值模型见 [[vault::designs::language::evaluation-model]]，scope 见 [[vault::designs::language::scope-environment]]。
+`bindings` 是程序的一面——跨模块复用的入口；`content` 是文档的一面——渲染与查询消费的产物；`annotations` 是属性的一面——标注与模块元数据的唯一入口。三者来自同一次求值，却承担不同职责。这个结果如何产生：类型见 [[vault::designs::language::type-system]]，属性表见 [[vault::designs::language::property-table]]，求值模型见 [[vault::designs::pipeline::evaluate]]，scope 见 [[vault::designs::language::scope-environment]]。
 
 == 一篇 Notist 文档
 

@@ -1,2 +1,2 @@
-# [plugins.shader]
-# path = "../plugins/shader"
+[plugins.shader]
+path = "../plugins/shader"
