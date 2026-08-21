@@ -431,11 +431,8 @@ impl Renderer<'_, '_> {
             self.tree_section(node);
             return;
         }
-        let Some(element) = instance_node_to_legacy(node) else {
-            return;
-        };
         self.current_block = Some(range_key(node.range));
-        self.element(&element.element, &element, RenderPosition::Block);
+        self.tree_element(node, RenderPosition::Block);
     }
 
     fn tree_section(&mut self, node: &InstanceNode) {
@@ -477,6 +474,84 @@ impl Renderer<'_, '_> {
             self.tree_node(child);
         }
         self.output.push_str("</section>");
+    }
+
+    fn tree_element(&mut self, node: &InstanceNode, position: RenderPosition) {
+        let instance = &node.instance;
+        let Some(local) = instance.name.core_local() else {
+            let Some(legacy) = instance_node_to_legacy(node) else {
+                return;
+            };
+            self.element(&legacy.element, &legacy, position);
+            return;
+        };
+        match local {
+            "text" => {
+                let Some(FieldValue::String(text)) = instance.field("text") else {
+                    return;
+                };
+                self.output.push_str("<span class=\"notist-text\"");
+                self.range_attributes_range(node.range);
+                self.output.push('>');
+                escape_text(&mut self.output, text);
+                self.output.push_str("</span>");
+            }
+            "paragraph" => {
+                self.output.push_str("<p");
+                self.projected_class_attribute_range(node.range);
+                self.range_attributes_range(node.range);
+                self.output.push('>');
+                self.tree_body_inline_content(&instance.body);
+                self.output.push_str("</p>");
+            }
+            "heading" => {
+                let level = match instance.field("level") {
+                    Some(FieldValue::Int(level)) => (*level).clamp(1, 6),
+                    _ => 1,
+                };
+                write!(self.output, "<h{level}").unwrap();
+                self.projected_class_attribute_range(node.range);
+                self.range_attributes_range(node.range);
+                self.output.push('>');
+                self.tree_body_inline_content(&instance.body);
+                write!(self.output, "</h{level}>").unwrap();
+            }
+            "strong" | "emph" | "strike" | "underline" => {
+                let tag = match local {
+                    "strong" => "strong",
+                    "emph" => "em",
+                    "strike" => "s",
+                    _ => "u",
+                };
+                self.output.push('<');
+                self.output.push_str(tag);
+                self.range_attributes_range(node.range);
+                self.output.push('>');
+                self.tree_body_inline_content(&instance.body);
+                self.output.push_str("</");
+                self.output.push_str(tag);
+                self.output.push('>');
+            }
+            "rule" => {
+                self.output.push_str("<hr class=\"notist-rule\"");
+                self.range_attributes_range(node.range);
+                self.output.push('>');
+            }
+            _ => {
+                let Some(legacy) = instance_node_to_legacy(node) else {
+                    return;
+                };
+                self.element(&legacy.element, &legacy, position);
+            }
+        }
+    }
+
+    /// Projects a canonical inline body to legacy `Content` and renders it with
+    /// the existing coverage-aware inline renderer.
+    fn tree_body_inline_content(&mut self, body: &[InstanceNode]) {
+        if let Some(content) = instances_to_legacy_content(body) {
+            self.inline_content(&content);
+        }
     }
 
     fn block(&mut self, block: &Block) {
@@ -1255,7 +1330,11 @@ impl Renderer<'_, '_> {
     }
 
     fn range_attributes(&mut self, node: &ElementNode) {
-        let key = range_key(node.range);
+        self.range_attributes_range(node.range);
+    }
+
+    fn range_attributes_range(&mut self, range: TextRange) {
+        let key = range_key(range);
         if let Some(anchor) = self.plan.element_anchors.get(&key) {
             self.output.push_str(" id=\"");
             escape_attribute(&mut self.output, anchor);
@@ -1275,13 +1354,22 @@ impl Renderer<'_, '_> {
                 self.output.push('"');
             }
         }
-        self.range_data_attributes(node);
+        write!(
+            self.output,
+            " data-notist-start=\"{}\" data-notist-end=\"{}\"",
+            range.start, range.end
+        )
+        .unwrap();
     }
 
     /// Writes a complete `class` attribute holding the classes projected onto a
     /// block-level element that has no fixed class of its own.
     fn projected_class_attribute(&mut self, node: &ElementNode) {
-        let Some(projection) = self.plan.projections.get(&range_key(node.range)) else {
+        self.projected_class_attribute_range(node.range);
+    }
+
+    fn projected_class_attribute_range(&mut self, range: TextRange) {
+        let Some(projection) = self.plan.projections.get(&range_key(range)) else {
             return;
         };
         if projection.classes.is_empty() {
@@ -1302,15 +1390,6 @@ impl Renderer<'_, '_> {
             self.output.push(' ');
             escape_attribute(&mut self.output, class);
         }
-    }
-
-    fn range_data_attributes(&mut self, node: &ElementNode) {
-        write!(
-            self.output,
-            " data-notist-start=\"{}\" data-notist-end=\"{}\"",
-            node.range.start, node.range.end
-        )
-        .unwrap();
     }
 }
 
