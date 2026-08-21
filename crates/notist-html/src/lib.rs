@@ -3,7 +3,9 @@
 use std::collections::{HashMap, HashSet};
 use std::fmt::Write;
 
-use notist_eval::{ElementTree, field_value_to_element_value, instances_to_legacy_content};
+use notist_eval::{
+    ElementTree, field_value_to_element_value, instances_to_legacy_content, legacy_content_to_nodes,
+};
 use notist_model::{
     Block, Content, CustomField, Element, ElementNode, FieldValue, InstanceNode, ModulePath,
     ModuleReference, StructuredDocument, TableAlignment, TableCellPlacement, TableLayoutError,
@@ -64,8 +66,8 @@ impl Default for RenderOptions<'_> {
 pub struct CustomRenderInput<'a> {
     /// The plugin element name.
     pub name: &'a str,
-    /// The evaluated body content.
-    pub body: &'a Content,
+    /// The canonical evaluated body stream.
+    pub body: &'a [InstanceNode],
     /// Whether the element is block-level.
     pub block: bool,
     /// Serialized constructor fields.
@@ -178,8 +180,8 @@ impl CustomHtmlRenderer for WebComponentHtmlRenderer {
             output.push('"');
         }
         output.push('>');
-        if !input.body.elements.is_empty() {
-            let fallback = content_plain_text(input.body);
+        if !input.body.is_empty() {
+            let fallback = instance_plain_text(input.body);
             output.push_str("<p>");
             escape_text(output, &fallback);
             output.push_str("</p>");
@@ -222,8 +224,8 @@ impl CustomHtmlRenderer for ShaderHtmlRenderer {
         output.push_str("\" data-height=\"");
         write!(output, "{height}").unwrap();
         output.push_str("\">");
-        if !input.body.elements.is_empty() {
-            let fallback = content_plain_text(input.body);
+        if !input.body.is_empty() {
+            let fallback = instance_plain_text(input.body);
             output.push_str("<p>");
             escape_text(output, &fallback);
             output.push_str("</p>");
@@ -479,20 +481,6 @@ impl Renderer<'_, '_> {
     fn tree_element(&mut self, node: &InstanceNode, position: RenderPosition) {
         let instance = &node.instance;
         let Some(local) = instance.name.core_local() else {
-            let flat_body = instance
-                .body
-                .iter()
-                .flat_map(|child| {
-                    if child.instance.is_core("paragraph") {
-                        child.instance.body.clone()
-                    } else {
-                        vec![child.clone()]
-                    }
-                })
-                .collect::<Vec<_>>();
-            let Some(body) = instances_to_legacy_content(&flat_body) else {
-                return;
-            };
             let name = instance.name.to_string();
             let fields = instance
                 .fields
@@ -506,7 +494,7 @@ impl Renderer<'_, '_> {
                 .collect::<Vec<_>>();
             let input = CustomRenderInput {
                 name: &name,
-                body: &body,
+                body: &instance.body,
                 block: instance.block,
                 fields: &fields,
             };
@@ -524,9 +512,9 @@ impl Renderer<'_, '_> {
             self.range_attributes_range(node.range);
             self.output.push('>');
             if tag == "div" {
-                self.flow_content(&body);
+                self.tree_flow_content(&instance.body);
             } else {
-                self.inline_content(&body);
+                self.tree_inline_content(&instance.body);
             }
             write!(self.output, "</{tag}>").unwrap();
             return;
@@ -1627,9 +1615,10 @@ impl Renderer<'_, '_> {
                 block,
                 fields,
             } => {
+                let body_nodes = legacy_content_to_nodes(body);
                 let input = CustomRenderInput {
                     name,
-                    body,
+                    body: &body_nodes,
                     block: *block,
                     fields,
                 };
@@ -2609,7 +2598,7 @@ fn instance_plain_text(nodes: &[InstanceNode]) -> String {
                 Some(FieldValue::String(text)) => text.clone(),
                 _ => String::new(),
             },
-            Some("strong" | "emph" | "strike" | "underline") => {
+            Some("paragraph" | "strong" | "emph" | "strike" | "underline") => {
                 instance_plain_text(&node.instance.body)
             }
             _ => String::new(),

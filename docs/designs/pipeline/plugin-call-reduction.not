@@ -223,9 +223,9 @@ Stream [
 
 - Phase A：把内部 IR 收敛为 `StreamNode = Call | Leaf`，`ElementInstance` 作为唯一 Leaf 类型；修复 reduction 的参数/body 校验、depth 与 fuel。已实现：`notist-model::ElementInstance`、`notist-eval::leaf` reduction engine、`Evaluator::evaluate_leaf`。
 - Phase B：让 `structure` 递归成型所有 body，产出 `ElementTree`；删除公开树中的 `core::parbreak`。已实现：`shape_flat` 递归成型；主 reduction 已迁移并支持 sibling recovery；主 structure/project 仍用 legacy 兼容投影。
-- Phase C：插件 ABI 改为 `call | leaf` 流；宿主递归规约并执行 capability 检查。尚未实现。
+- Phase C：插件 ABI 改为 `call | leaf` 流；宿主递归规约并执行 capability 检查。已实现。
 - Phase D：插件调用插件与 qualified function name 落地。已实现：`FunctionRegistry::register_alias` 与 `core::*` 别名；插件 ABI 待迁移。
-- Phase E：WIT 正式化，用 wit-bindgen 替换手写 ABI。尚未实现。
+- Phase E：WIT 正式化，用 wit-bindgen 替换手写 ABI。已实现 bytes WIT + component evaluate/host.call。
 
 == 已裁定 / 待定
 
