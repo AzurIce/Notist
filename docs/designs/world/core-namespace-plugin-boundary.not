@@ -1,4 +1,4 @@
-@![implementation = "partial"]
+@![implementation = "aligned"]
 = Core Namespace and Plugin Boundary
 
 本文是 V5 core namespace 与插件边界的独立成篇，吸收第一代 core namespace 设计的裁决并更新到当前 surface。当前内置构造器见 [[vault::designs::language::builtin-constructors]]；函数签名与调用模型见 [[vault::designs::language::call-model]]；Vault 配置容器见 [[vault::designs::world::boundary-discovery]]。

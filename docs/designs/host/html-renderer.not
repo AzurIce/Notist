@@ -1,4 +1,4 @@
-@![implementation = "partial"]
+@![implementation = "aligned"]
 = HTML Renderer
 
 本文是 [[vault::designs::pipeline]] 的 HTML project 阶段独立成篇，从归档的历史混合文档中独立成篇。构建与预览见 [[vault::designs::host::build-preview]]；成型结构树见 [[vault::designs::pipeline::structure]]；属性表见 [[vault::designs::language::property-table]]；RefTarget 见 [[vault::designs::world::reference-ref-target]]。

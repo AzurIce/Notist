@@ -84,8 +84,6 @@ archive/      已退休的旧设计；当前为空
 
 - [[vault::designs::language::collection-types]]：`missing`
 - [[vault::designs::language::call-model]]：`partial`（rest 调用模型未实现）
-- [[vault::designs::world::core-namespace-plugin-boundary]]：`partial`（core namespace 与 qualified call 已启用；插件 namespace 冲突与 prelude 隔离仍待统一 PluginSet 治理）
-- [[vault::designs::host::html-renderer]]：`partial`（目标为按 `ElementName` 分发 Leaf 投影，当前仍按 legacy Element 渲染）
 - [[vault::designs::host::query-contract]]：`partial`（text-only 投影、`read` citation footer 与 `--exclude-scope` 尚未完整实现）
 - [[vault::designs::host::search-retrieval-index]]：`partial`（`--exclude-scope` 未实现）
 - [[vault::designs::host::cli-command-surface-skill-distribution]]：`partial`（v3 命令面未落地：`next`/`locate`/`refs`/`definition` 与 text-only 投影待实现）
