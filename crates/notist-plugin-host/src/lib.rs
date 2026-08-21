@@ -40,6 +40,10 @@ pub struct VaultPluginConfig {
     pub path: Option<String>,
     /// A future registry package name.
     pub package: Option<String>,
+    /// Site-granted capabilities for this plugin. Effective capabilities are
+    /// the intersection of this set with `plugin.json` `capabilities.request`.
+    #[serde(default)]
+    pub capabilities: Vec<String>,
 }
 
 #[derive(Clone, Debug, Default, Deserialize)]
@@ -243,7 +247,7 @@ pub fn load_plugins_from_vault(
                 ));
             }
         };
-        let plugin = load_package(&package_dir)?;
+        let plugin = load_package_with_grants(&package_dir, Some(&entry.capabilities))?;
         loaded.push(plugin);
     }
     Ok(loaded)
@@ -321,7 +325,40 @@ pub fn plugin_html_assets(
 /// package contributes element schemas and signatures; the host projects
 /// bound arguments through [`ElementFunction`] without executing guest code.
 pub fn load_package(package_dir: &Path) -> Result<LoadedPlugin, String> {
+    load_package_with_grants(package_dir, None)
+}
+
+/// Loads one plugin package with site-granted capabilities.
+///
+/// `None` preserves standalone-test compatibility by granting every requested
+/// capability. Vault loading always passes the site grant set from
+/// `Notist.toml`; effective permissions are the intersection with
+/// `plugin.json` `capabilities.request`.
+pub fn load_package_with_grants(
+    package_dir: &Path,
+    site_grants: Option<&[String]>,
+) -> Result<LoadedPlugin, String> {
     let manifest = read_manifest(package_dir)?;
+    let effective_capabilities = match site_grants {
+        None => manifest.capabilities.request.clone(),
+        Some(grants) => {
+            if grants.iter().any(|grant| grant == "*") {
+                manifest.capabilities.request.clone()
+            } else {
+                manifest
+                    .capabilities
+                    .request
+                    .iter()
+                    .filter(|requested| {
+                        grants
+                            .iter()
+                            .any(|grant| grant.as_str() == requested.as_str())
+                    })
+                    .cloned()
+                    .collect()
+            }
+        }
+    };
 
     let shared_registry = if manifest
         .wasm
@@ -420,7 +457,7 @@ pub fn load_package(package_dir: &Path) -> Result<LoadedPlugin, String> {
             }
         }
         let principal = Principal::Plugin(manifest.package.clone());
-        for capability in &manifest.capabilities.request {
+        for capability in &effective_capabilities {
             registry.allow(principal.clone(), capability.clone());
         }
     }
@@ -440,7 +477,7 @@ pub fn load_package(package_dir: &Path) -> Result<LoadedPlugin, String> {
         functions,
         elements,
         html_contributions,
-        capabilities: manifest.capabilities.request.clone(),
+        capabilities: effective_capabilities,
         shared_registry,
     })
 }
@@ -1534,6 +1571,36 @@ mod tests {
         assert_eq!(name, "demo::echo");
         assert!(fields.iter().any(|field| field.name == "message"
             && matches!(&field.value, ElementValue::String(value) if value == "hello from component")));
+    }
+
+    #[test]
+    fn vault_site_grants_intersect_plugin_capabilities() {
+        let package_dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("../../plugins/component-host-call")
+            .canonicalize()
+            .unwrap();
+        let granted =
+            load_package_with_grants(&package_dir, Some(&["core::text".to_owned()])).unwrap();
+        let mut registry = FunctionRegistry::with_builtins();
+        register_loaded(&mut registry, &[granted]).unwrap();
+        let evaluation = Evaluator::new(registry).evaluate("#component-host-call::passthrough()");
+        assert!(
+            evaluation.diagnostics.is_empty(),
+            "{:?}",
+            evaluation.diagnostics
+        );
+
+        let denied = load_package_with_grants(&package_dir, Some(&[])).unwrap();
+        let mut registry = FunctionRegistry::with_builtins();
+        register_loaded(&mut registry, &[denied]).unwrap();
+        let evaluation = Evaluator::new(registry).evaluate("#component-host-call::passthrough()");
+        assert!(
+            evaluation.diagnostics.iter().any(|diagnostic| diagnostic
+                .message
+                .contains("not allowed to call `core::text`")),
+            "{:?}",
+            evaluation.diagnostics
+        );
     }
 
     #[test]

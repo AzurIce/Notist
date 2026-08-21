@@ -2,3 +2,13 @@
 
 这是 `semantic-host` world 的最小示例：guest 调用 `host.call(core::text, ...)`，
 宿主按当前插件 principal 与 capability 策略规约，并把 Leaf 流返回给 guest。
+
+Vault 声明需要显式授予语义 capability：
+
+```toml
+[plugins.component-host-call]
+path = "../plugins/component-host-call"
+capabilities = ["core::text"]
+```
+
+有效权限 = 站点授予 ∩ plugin.json 请求。
