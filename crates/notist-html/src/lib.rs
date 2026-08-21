@@ -607,13 +607,6 @@ impl Renderer<'_, '_> {
                     Some(FieldValue::String(kind)) => kind.as_str(),
                     _ => "note",
                 };
-                let title = match instance.field("title") {
-                    Some(FieldValue::Content(nodes)) => instances_to_legacy_content(nodes),
-                    _ => None,
-                };
-                let Some(body) = instances_to_legacy_content(&instance.body) else {
-                    return;
-                };
                 self.output.push_str("<aside class=\"notist-callout");
                 self.projected_class_suffix_range(node.range);
                 self.output.push_str("\" data-notist-kind=\"");
@@ -621,23 +614,16 @@ impl Renderer<'_, '_> {
                 self.output.push('"');
                 self.range_attributes_range(node.range);
                 self.output.push('>');
-                if let Some(title) = title {
+                if let Some(FieldValue::Content(title)) = instance.field("title") {
                     self.output.push_str("<div class=\"notist-callout-title\">");
-                    self.inline_content(&title);
+                    self.tree_inline_content(title);
                     self.output.push_str("</div>");
                 }
-                self.flow_content(&body);
+                self.tree_flow_content(&instance.body);
                 self.output.push_str("</aside>");
             }
             "details" => {
-                let summary = match instance.field("summary") {
-                    Some(FieldValue::Content(nodes)) => instances_to_legacy_content(nodes),
-                    _ => None,
-                };
                 let open = matches!(instance.field("open"), Some(FieldValue::Bool(true)));
-                let Some(body) = instances_to_legacy_content(&instance.body) else {
-                    return;
-                };
                 self.output.push_str("<details class=\"notist-details");
                 self.projected_class_suffix_range(node.range);
                 self.output.push('"');
@@ -646,30 +632,19 @@ impl Renderer<'_, '_> {
                 }
                 self.range_attributes_range(node.range);
                 self.output.push_str("><summary>");
-                if let Some(summary) = summary {
-                    self.inline_content(&summary);
+                if let Some(FieldValue::Content(summary)) = instance.field("summary") {
+                    self.tree_inline_content(summary);
                 } else {
                     escape_text(&mut self.output, "Details");
                 }
                 self.output.push_str("</summary>");
-                self.flow_content(&body);
+                self.tree_flow_content(&instance.body);
                 self.output.push_str("</details>");
             }
             "figure" => {
                 let kind = match instance.field("kind") {
                     Some(FieldValue::String(kind)) => kind.clone(),
                     _ => "figure".to_owned(),
-                };
-                let supplement = match instance.field("supplement") {
-                    Some(FieldValue::Content(nodes)) => instances_to_legacy_content(nodes),
-                    _ => None,
-                };
-                let caption = match instance.field("caption") {
-                    Some(FieldValue::Content(nodes)) => instances_to_legacy_content(nodes),
-                    _ => None,
-                };
-                let Some(body) = instances_to_legacy_content(&instance.body) else {
-                    return;
                 };
                 self.output.push_str("<figure class=\"notist-figure");
                 self.projected_class_suffix_range(node.range);
@@ -678,14 +653,14 @@ impl Renderer<'_, '_> {
                 self.output.push('"');
                 self.range_attributes_range(node.range);
                 self.output.push('>');
-                self.figure_body(&body);
-                if let Some(caption) = caption {
+                self.tree_figure_body(&instance.body);
+                if let Some(FieldValue::Content(caption)) = instance.field("caption") {
                     self.output.push_str("<figcaption>");
-                    if let Some(supplement) = supplement {
-                        self.inline_content(&supplement);
+                    if let Some(FieldValue::Content(supplement)) = instance.field("supplement") {
+                        self.tree_inline_content(supplement);
                         escape_text(&mut self.output, ": ");
                     }
-                    self.inline_content(&caption);
+                    self.tree_inline_content(caption);
                     self.output.push_str("</figcaption>");
                 }
                 self.output.push_str("</figure>");
@@ -865,16 +840,172 @@ impl Renderer<'_, '_> {
 
     /// Projects a canonical inline body to legacy `Content` and renders it with
     /// the existing coverage-aware inline renderer.
-    fn tree_body_inline_content(&mut self, body: &[InstanceNode]) {
-        if let Some(content) = instances_to_legacy_content(body) {
-            self.inline_content(&content);
+    fn tree_inline_content(&mut self, nodes: &[InstanceNode]) {
+        let mut open_coverage = Vec::new();
+        for node in nodes {
+            self.tree_inline_element_with_coverage(node, &mut open_coverage);
+        }
+        self.annotation_span_close(&mut open_coverage);
+    }
+
+    fn tree_inline_element_with_coverage(
+        &mut self,
+        node: &InstanceNode,
+        open_coverage: &mut Vec<usize>,
+    ) {
+        let coverage = self.tree_inline_coverage(node);
+        if node.instance.is_core("text") {
+            let partial = self.tree_partial_coverage(node);
+            if !partial.is_empty()
+                && let Some(FieldValue::String(text)) = node.instance.field("text")
+            {
+                self.render_split_text(text, node.range, &coverage, &partial, open_coverage);
+                return;
+            }
+        }
+        if coverage != *open_coverage {
+            self.annotation_span_close(open_coverage);
+            if !coverage.is_empty() {
+                self.annotation_span_open(&coverage);
+            }
+            *open_coverage = coverage;
+        }
+        self.inherited_coverage.extend(open_coverage.iter());
+        self.tree_element(node, RenderPosition::Inline);
+        let inherited = self.inherited_coverage.len() - open_coverage.len();
+        self.inherited_coverage.truncate(inherited);
+    }
+
+    fn tree_inline_coverage(&self, node: &InstanceNode) -> Vec<usize> {
+        if !instance_is_inline(&node.instance) {
+            return Vec::new();
+        }
+        let Some(candidates) = self
+            .current_block
+            .and_then(|block| self.plan.inline_wrappers.get(&block))
+        else {
+            return Vec::new();
+        };
+        candidates
+            .iter()
+            .copied()
+            .filter(|index| {
+                !self.inherited_coverage.contains(index)
+                    && contains(self.annotations[*index].scope, node.range)
+            })
+            .collect()
+    }
+
+    fn tree_partial_coverage(&self, node: &InstanceNode) -> Vec<usize> {
+        if !instance_is_inline(&node.instance) {
+            return Vec::new();
+        }
+        let Some(candidates) = self
+            .current_block
+            .and_then(|block| self.plan.inline_wrappers.get(&block))
+        else {
+            return Vec::new();
+        };
+        candidates
+            .iter()
+            .copied()
+            .filter(|index| {
+                !self.inherited_coverage.contains(index)
+                    && !contains(self.annotations[*index].scope, node.range)
+                    && intersects(self.annotations[*index].scope, node.range)
+            })
+            .collect()
+    }
+
+    fn tree_flow_content(&mut self, nodes: &[InstanceNode]) {
+        let mut paragraph_open = false;
+        let mut open_coverage = Vec::new();
+        let mut index = 0;
+        while index < nodes.len() {
+            let node = &nodes[index];
+            if instance_is_inline(&node.instance) {
+                if !paragraph_open {
+                    self.output.push_str("<p>");
+                    paragraph_open = true;
+                }
+                self.tree_inline_element_with_coverage(node, &mut open_coverage);
+                index += 1;
+                continue;
+            }
+
+            if paragraph_open {
+                self.annotation_span_close(&mut open_coverage);
+                self.output.push_str("</p>");
+                paragraph_open = false;
+            }
+
+            if node.instance.is_core("parbreak") {
+                index += 1;
+                continue;
+            }
+            if node.instance.is_core("item") {
+                let ordered =
+                    matches!(node.instance.field("ordered"), Some(FieldValue::Bool(true)));
+                if ordered {
+                    self.output.push_str("<ol");
+                    if let Some(FieldValue::Int(value)) = node.instance.field("value") {
+                        write!(self.output, " start=\"{value}\"").unwrap();
+                    }
+                    self.output.push('>');
+                } else {
+                    self.output.push_str("<ul>");
+                }
+                while index < nodes.len() {
+                    let item = &nodes[index];
+                    if !item.instance.is_core("item")
+                        || !matches!(
+                            item.instance.field("ordered"),
+                            Some(FieldValue::Bool(value)) if *value == ordered
+                        )
+                    {
+                        break;
+                    }
+                    self.tree_list_item(item);
+                    index += 1;
+                }
+                self.output
+                    .push_str(if ordered { "</ol>" } else { "</ul>" });
+                continue;
+            }
+            self.tree_element(node, RenderPosition::Block);
+            index += 1;
+        }
+        if paragraph_open {
+            self.annotation_span_close(&mut open_coverage);
+            self.output.push_str("</p>");
         }
     }
 
+    fn tree_figure_body(&mut self, nodes: &[InstanceNode]) {
+        let is_framing = |node: &InstanceNode| {
+            node.instance.is_core("parbreak")
+                || (node.instance.is_core("text")
+                    && node.instance.field("text").is_some_and(
+                        |value| matches!(value, FieldValue::String(text) if text.trim().is_empty()),
+                    ))
+        };
+        let first = nodes
+            .iter()
+            .position(|node| !is_framing(node))
+            .unwrap_or(nodes.len());
+        let last = nodes
+            .iter()
+            .rposition(|node| !is_framing(node))
+            .map_or(first, |index| index + 1);
+        self.tree_flow_content(&nodes[first..last]);
+    }
+
+    fn tree_body_inline_content(&mut self, body: &[InstanceNode]) {
+        self.tree_inline_content(body);
+    }
+
     fn tree_body_flow_content(&mut self, body: &[InstanceNode]) {
-        if let Some(content) = instances_to_legacy_content(body) {
-            self.flow_content(&content);
-        }
+        self.tree_flow_content(body);
     }
 
     fn block(&mut self, block: &Block) {
@@ -2283,9 +2414,7 @@ fn tree_heading_text(node: &InstanceNode) -> Option<String> {
     if !node.instance.is_core("heading") {
         return None;
     }
-    Some(content_plain_text(
-        &instances_to_legacy_content(&node.instance.body).unwrap_or_default(),
-    ))
+    Some(instance_plain_text(&node.instance.body))
 }
 
 fn walk_tree_node(node: &InstanceNode, output: &mut Vec<WalkedElement>) {
@@ -2472,10 +2601,34 @@ fn content_plain_text(content: &Content) -> String {
         .collect()
 }
 
+fn instance_plain_text(nodes: &[InstanceNode]) -> String {
+    nodes
+        .iter()
+        .map(|node| match node.instance.name.core_local() {
+            Some("text") => match node.instance.field("text") {
+                Some(FieldValue::String(text)) => text.clone(),
+                _ => String::new(),
+            },
+            Some("strong" | "emph" | "strike" | "underline") => {
+                instance_plain_text(&node.instance.body)
+            }
+            _ => String::new(),
+        })
+        .collect()
+}
+
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 enum RenderPosition {
     Inline,
     Block,
+}
+
+fn instance_is_inline(instance: &notist_model::ElementInstance) -> bool {
+    match instance.name.core_local() {
+        Some("text" | "reference" | "strong" | "emph" | "strike" | "underline") => true,
+        Some(_) => false,
+        None => !instance.block,
+    }
 }
 
 fn container_tag(block: bool, position: RenderPosition) -> &'static str {

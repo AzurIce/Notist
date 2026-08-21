@@ -1,4 +1,4 @@
-@![implementation = "partial"]
+@![implementation = "aligned"]
 = Project Stage
 
 本文定义 [[vault::designs::pipeline]] 的最后阶段：把规范 `ElementTree<Leaf>` 投影为 target 可见的结果。HTML target 的完整映射见 [[vault::designs::host::html-renderer]]；插件 Leaf 的 namespace 契约见 [[vault::designs::world::core-namespace-plugin-boundary]]。

@@ -79,7 +79,7 @@ parse 错误记录在 `Parse.errors`；check/evaluate 错误进入 `Evaluation.d
 | lower | `notist-eval::stream_lower::lower_markup_stream` | 全部 Markup item 已直接产出 `Stream<Call | Leaf>`，不再走 legacy per-item fallback；text inline sugar 扫描复用 legacy leaf factory |
 | reduce | `notist-eval::leaf::reduce_*` | `structured_module` 对 clean parse 使用 Stream reduction；capability checker 已接入 |
 | structure | legacy `structure()` + `leaf::shape_flat` | `structured_module` 先经 Stream reduction，再走 legacy 兼容投影；`ElementTree` 已可用于新消费者 |
-| project | service 向 `notist-html::render_element_tree_with_renderers` 传 `ElementTree`；遍历、按 name 分发、anchor/outline/annotation 均基于 tree，节点实现复用 legacy 元素投影 |
+| project | service 向 `notist-html::render_element_tree_with_renderers` 传 `ElementTree`；遍历、按 name 分发、anchor/outline/annotation、flow/inline 与全部节点渲染均基于 tree |
 
 == 已裁定 / 待定
 
