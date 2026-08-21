@@ -3,13 +3,11 @@
 use std::collections::{HashMap, HashSet};
 use std::fmt::Write;
 
-use notist_eval::{
-    ElementTree, field_value_to_element_value, instance_node_to_legacy, instances_to_legacy_content,
-};
+use notist_eval::{ElementTree, field_value_to_element_value, instances_to_legacy_content};
 use notist_model::{
     Block, Content, CustomField, Element, ElementNode, FieldValue, InstanceNode, ModulePath,
-    ModuleReference, StructuredDocument, TableAlignment, TableCellPlacement, TextRange,
-    WikiReference, table_layout,
+    ModuleReference, StructuredDocument, TableAlignment, TableCellPlacement, TableLayoutError,
+    TextRange, WikiReference, table_layout,
 };
 use percent_encoding::{NON_ALPHANUMERIC, utf8_percent_encode};
 
@@ -713,13 +711,156 @@ impl Renderer<'_, '_> {
                     position,
                 );
             }
-            _ => {
-                let Some(legacy) = instance_node_to_legacy(node) else {
-                    return;
-                };
-                self.element(&legacy.element, &legacy, position);
+            "item" => self.tree_list_item(node),
+            "list" => self.tree_list(node),
+            "table-cell" => {
+                self.output.push_str("<div class=\"notist-table-cell");
+                self.projected_class_suffix_range(node.range);
+                self.output.push('"');
+                self.range_attributes_range(node.range);
+                self.output.push('>');
+                self.tree_body_flow_content(&instance.body);
+                self.output.push_str("</div>");
+            }
+            "table" => self.tree_table(node),
+            _ => {}
+        }
+    }
+
+    fn tree_list_item(&mut self, node: &InstanceNode) {
+        let ordered = matches!(node.instance.field("ordered"), Some(FieldValue::Bool(true)));
+        let value = match node.instance.field("value") {
+            Some(FieldValue::Int(value)) => Some(*value),
+            _ => None,
+        };
+        self.output.push_str("<li");
+        if let Some(value) = value {
+            write!(self.output, " value=\"{value}\"").unwrap();
+        }
+        self.projected_class_attribute_range(node.range);
+        self.range_attributes_range(node.range);
+        self.output.push('>');
+        self.tree_body_flow_content(&node.instance.body);
+        self.output.push_str("</li>");
+        let _ = ordered;
+    }
+
+    fn tree_list(&mut self, node: &InstanceNode) {
+        let ordered = matches!(node.instance.field("ordered"), Some(FieldValue::Bool(true)));
+        if ordered {
+            self.output.push_str("<ol");
+            if let Some(first) = node.instance.body.first()
+                && let Some(FieldValue::Int(value)) = first.instance.field("value")
+            {
+                write!(self.output, " start=\"{value}\"").unwrap();
+            }
+        } else {
+            self.output.push_str("<ul");
+        }
+        self.projected_class_attribute_range(node.range);
+        self.range_attributes_range(node.range);
+        self.output.push('>');
+        for child in &node.instance.body {
+            if child.instance.is_core("item") {
+                self.tree_list_item(child);
+            } else {
+                self.tree_node(child);
             }
         }
+        self.output
+            .push_str(if ordered { "</ol>" } else { "</ul>" });
+    }
+
+    fn tree_table_row(
+        &mut self,
+        cells: &[InstanceNode],
+        placements: &[TableCellPlacement],
+        tag: &str,
+        alignments: &[TableAlignment],
+    ) {
+        self.output.push_str("<tr>");
+        for placement in placements {
+            let Some(cell) = cells.get(placement.cell_index) else {
+                continue;
+            };
+            write!(self.output, "<{tag}").unwrap();
+            let colspan = match cell.instance.field("colspan") {
+                Some(FieldValue::Int(value)) => u16::try_from(*value).unwrap_or(1),
+                _ => 1,
+            };
+            let rowspan = match cell.instance.field("rowspan") {
+                Some(FieldValue::Int(value)) => u16::try_from(*value).unwrap_or(1),
+                _ => 1,
+            };
+            if let Some(class) = alignments
+                .get(placement.column as usize)
+                .and_then(|alignment| table_alignment_class(*alignment))
+            {
+                write!(self.output, " class=\"{class}\"").unwrap();
+            }
+            if colspan > 1 {
+                write!(self.output, " colspan=\"{colspan}\"").unwrap();
+            }
+            if rowspan > 1 {
+                write!(self.output, " rowspan=\"{rowspan}\"").unwrap();
+            }
+            self.range_attributes_range(cell.range);
+            self.output.push('>');
+            self.tree_body_flow_content(&cell.instance.body);
+            write!(self.output, "</{tag}>").unwrap();
+        }
+        self.output.push_str("</tr>");
+    }
+
+    fn tree_table(&mut self, node: &InstanceNode) {
+        let columns = match node.instance.field("columns") {
+            Some(FieldValue::Int(columns)) => u16::try_from(*columns).unwrap_or(1),
+            _ => 1,
+        };
+        let header = matches!(node.instance.field("header"), Some(FieldValue::Bool(true)));
+        let alignments = match node.instance.field("align") {
+            Some(FieldValue::String(align)) => tree_alignments(Some(align), columns as usize),
+            _ => tree_alignments(None, columns as usize),
+        };
+        let cells = &node.instance.body;
+        let rows = tree_table_layout(columns, cells).unwrap_or_else(|_| {
+            vec![
+                cells
+                    .iter()
+                    .enumerate()
+                    .map(|(cell_index, _)| TableCellPlacement {
+                        cell_index,
+                        column: cell_index.min(u16::MAX as usize) as u16,
+                    })
+                    .collect(),
+            ]
+        });
+
+        self.output.push_str("<div class=\"notist-table-wrapper");
+        self.projected_class_suffix_range(node.range);
+        write!(self.output, "\"><table data-notist-columns=\"{columns}\"").unwrap();
+        self.range_attributes_range(node.range);
+        self.output.push('>');
+        if header {
+            self.output.push_str("<thead>");
+            if let Some(row) = rows.first() {
+                self.tree_table_row(cells, row, "th", &alignments);
+            }
+            self.output.push_str("</thead>");
+        }
+        let body_rows = if header {
+            rows.iter().skip(1).collect::<Vec<_>>()
+        } else {
+            rows.iter().collect::<Vec<_>>()
+        };
+        if !body_rows.is_empty() {
+            self.output.push_str("<tbody>");
+            for row in body_rows {
+                self.tree_table_row(cells, row, "td", &alignments);
+            }
+            self.output.push_str("</tbody>");
+        }
+        self.output.push_str("</table></div>");
     }
 
     /// Projects a canonical inline body to legacy `Content` and renders it with
@@ -727,6 +868,12 @@ impl Renderer<'_, '_> {
     fn tree_body_inline_content(&mut self, body: &[InstanceNode]) {
         if let Some(content) = instances_to_legacy_content(body) {
             self.inline_content(&content);
+        }
+    }
+
+    fn tree_body_flow_content(&mut self, body: &[InstanceNode]) {
+        if let Some(content) = instances_to_legacy_content(body) {
+            self.flow_content(&content);
         }
     }
 
@@ -1891,6 +2038,94 @@ fn is_valid_anchor(label: &str) -> bool {
     };
     (first.is_alphabetic() || first == '_')
         && characters.all(|character| character.is_alphanumeric() || matches!(character, '-' | '_'))
+}
+
+fn tree_table_layout(
+    columns: u16,
+    cells: &[InstanceNode],
+) -> Result<Vec<Vec<TableCellPlacement>>, TableLayoutError> {
+    let columns = columns as usize;
+    let mut active = vec![0u16; columns];
+    let mut rows = Vec::new();
+    let mut cell_index = 0usize;
+
+    while cell_index < cells.len() {
+        let row_number = rows.len() + 1;
+        let mut occupied: Vec<_> = active.iter().map(|remaining| *remaining > 0).collect();
+        if occupied.iter().all(|occupied| *occupied) {
+            return Err(TableLayoutError::FullyCoveredRow { row: row_number });
+        }
+        let mut next_active: Vec<_> = active
+            .iter()
+            .map(|remaining| remaining.saturating_sub(1))
+            .collect();
+        let mut row = Vec::new();
+
+        while occupied.iter().any(|occupied| !occupied) {
+            let Some(cell) = cells.get(cell_index) else {
+                return Err(TableLayoutError::IncompleteRow { row: row_number });
+            };
+            if !cell.instance.is_core("table-cell") {
+                return Err(TableLayoutError::NonCell {
+                    cell: cell_index + 1,
+                });
+            }
+            let colspan = match cell.instance.field("colspan") {
+                Some(FieldValue::Int(value)) => u16::try_from(*value).unwrap_or(u16::MAX),
+                _ => 1,
+            };
+            let rowspan = match cell.instance.field("rowspan") {
+                Some(FieldValue::Int(value)) => u16::try_from(*value).unwrap_or(u16::MAX),
+                _ => 1,
+            };
+            let column = occupied.iter().position(|occupied| !occupied).unwrap();
+            let end = column + colspan as usize;
+            if end > columns || occupied[column..end].iter().any(|occupied| *occupied) {
+                return Err(TableLayoutError::CellDoesNotFit {
+                    row: row_number,
+                    cell: cell_index + 1,
+                    column: column as u16,
+                    colspan,
+                });
+            }
+            occupied[column..end].fill(true);
+            if rowspan > 1 {
+                for remaining in &mut next_active[column..end] {
+                    *remaining = (*remaining).max(rowspan - 1);
+                }
+            }
+            row.push(TableCellPlacement {
+                cell_index,
+                column: column as u16,
+            });
+            cell_index += 1;
+        }
+
+        rows.push(row);
+        active = next_active;
+    }
+
+    if active.iter().any(|remaining| *remaining > 0) {
+        return Err(TableLayoutError::RowspanBeyondTable);
+    }
+    Ok(rows)
+}
+
+fn tree_alignments(source: Option<&str>, columns: usize) -> Vec<TableAlignment> {
+    let Some(source) = source else {
+        return vec![TableAlignment::Default; columns];
+    };
+    source
+        .split(',')
+        .map(|value| match value.trim() {
+            "default" | "" => TableAlignment::Default,
+            "left" => TableAlignment::Left,
+            "center" => TableAlignment::Center,
+            "right" => TableAlignment::Right,
+            _ => TableAlignment::Default,
+        })
+        .take(columns)
+        .collect()
 }
 
 fn table_alignment_class(alignment: TableAlignment) -> Option<&'static str> {
