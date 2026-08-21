@@ -17,7 +17,8 @@
 //! not need a Wasm module at all and use [`ElementFunction`] instead.
 
 use std::collections::BTreeMap;
-use std::path::{Path, PathBuf};
+
+use std::path::{Component, Path, PathBuf};
 use std::sync::{Arc, Mutex};
 
 use notist_eval::{
@@ -30,7 +31,7 @@ use notist_model::{
     ElementValue, Parameter, ShapingKind, ShapingRole,
 };
 use serde::Deserialize;
-use wasmtime::component::{Component, HasSelf, Linker};
+use wasmtime::component::{Component as WasmComponent, HasSelf, Linker};
 use wasmtime::{Config, Engine, Func, Instance, Memory, Module, ResourceLimiter, Store, Val};
 
 /// A plugin entry in `Notist.toml`.
@@ -227,6 +228,94 @@ pub fn plugin_package_dirs(
     Ok(packages)
 }
 
+/// Resolves a plugin package path to a loadable directory.
+///
+/// Directory packages are returned unchanged. Zip packages are extracted into
+/// a deterministic cache directory under the system temp dir; extraction is
+/// skipped when the cached copy is at least as new as the zip file.
+pub fn resolve_package_dir(package_path: &Path) -> Result<PathBuf, String> {
+    if package_path.is_dir() {
+        return Ok(package_path.to_path_buf());
+    }
+    if package_path.extension().and_then(|ext| ext.to_str()) != Some("zip") {
+        return Err(format!(
+            "plugin package `{}` is neither a directory nor a zip file",
+            package_path.display()
+        ));
+    }
+    let source = package_path
+        .canonicalize()
+        .map_err(|error| format!("cannot resolve {}: {error}", package_path.display()))?;
+    let source_mtime = source
+        .metadata()
+        .and_then(|metadata| metadata.modified())
+        .map_err(|error| format!("cannot read {} metadata: {error}", source.display()))?;
+    let cache_root = std::env::temp_dir().join("notist-plugin-packages");
+    let cache_dir = cache_root.join(format!(
+        "{:016x}",
+        fnv1a(source.to_string_lossy().as_bytes())
+    ));
+    let marker = cache_dir.join(".source-mtime");
+    let fresh = cache_dir.join("plugin.json").is_file()
+        && std::fs::read_to_string(&marker).ok().as_deref() == Some(&format!("{source_mtime:?}"));
+    if fresh {
+        return Ok(cache_dir);
+    }
+
+    if cache_dir.exists() {
+        let _ = std::fs::remove_dir_all(&cache_dir);
+    }
+    std::fs::create_dir_all(&cache_dir)
+        .map_err(|error| format!("cannot create plugin cache: {error}"))?;
+    let file = std::fs::File::open(&source)
+        .map_err(|error| format!("cannot open {}: {error}", source.display()))?;
+    let mut archive = zip::ZipArchive::new(file)
+        .map_err(|error| format!("invalid plugin zip {}: {error}", source.display()))?;
+    for index in 0..archive.len() {
+        let mut entry = archive
+            .by_index(index)
+            .map_err(|error| format!("invalid plugin zip entry: {error}"))?;
+        let Some(name) = entry.enclosed_name() else {
+            continue;
+        };
+        let relative = name.as_path();
+        if relative.components().any(|component| {
+            matches!(
+                component,
+                Component::ParentDir | Component::RootDir | Component::Prefix(_)
+            )
+        }) {
+            return Err(format!("unsafe zip entry `{}`", name.display()));
+        }
+        let target = cache_dir.join(relative);
+        if entry.is_dir() {
+            std::fs::create_dir_all(&target)
+                .map_err(|error| format!("cannot create {}: {error}", target.display()))?;
+        } else {
+            if let Some(parent) = target.parent() {
+                std::fs::create_dir_all(parent)
+                    .map_err(|error| format!("cannot create {}: {error}", parent.display()))?;
+            }
+            let mut output = std::fs::File::create(&target)
+                .map_err(|error| format!("cannot create {}: {error}", target.display()))?;
+            std::io::copy(&mut entry, &mut output)
+                .map_err(|error| format!("cannot extract {}: {error}", target.display()))?;
+        }
+    }
+    std::fs::write(&marker, format!("{source_mtime:?}"))
+        .map_err(|error| format!("cannot write plugin cache marker: {error}"))?;
+    Ok(cache_dir)
+}
+
+fn fnv1a(bytes: &[u8]) -> u64 {
+    let mut hash = 0xcbf29ce484222325u64;
+    for byte in bytes {
+        hash ^= u64::from(*byte);
+        hash = hash.wrapping_mul(0x100000001b3);
+    }
+    hash
+}
+
 /// Loads all plugins declared in `Notist.toml`.
 pub fn load_plugins_from_vault(
     root: &Path,
@@ -303,7 +392,7 @@ pub fn plugin_html_assets(
 ) -> Result<Vec<PluginHtmlAssets>, String> {
     let mut assets = Vec::new();
     for (name, package_dir) in plugin_package_dirs(root, toml_text)? {
-        let manifest = read_manifest(&package_dir)?;
+        let manifest = read_manifest(&resolve_package_dir(&package_dir)?)?;
         let contributions = manifest
             .interfaces
             .render
@@ -359,7 +448,8 @@ pub fn load_package_with_grants(
     package_dir: &Path,
     site_grants: Option<&[String]>,
 ) -> Result<LoadedPlugin, String> {
-    let manifest = read_manifest(package_dir)?;
+    let package_dir = resolve_package_dir(package_dir)?;
+    let manifest = read_manifest(&package_dir)?;
     let effective_capabilities =
         effective_capabilities(&manifest.capabilities.request, site_grants);
 
@@ -523,7 +613,8 @@ pub fn load_package_schema_with_grants(
     package_dir: &Path,
     site_grants: Option<&[String]>,
 ) -> Result<LoadedPlugin, String> {
-    let manifest = read_manifest(package_dir)?;
+    let package_dir = resolve_package_dir(package_dir)?;
+    let manifest = read_manifest(&package_dir)?;
     let effective_capabilities =
         effective_capabilities(&manifest.capabilities.request, site_grants);
 
@@ -968,7 +1059,7 @@ fn load_component_runtime(
     config.consume_fuel(true);
     let engine = Engine::new(&config)
         .map_err(|error| format!("cannot create component engine for `{package}`: {error}"))?;
-    let component = Component::new(&engine, wasm_bytes)
+    let component = WasmComponent::new(&engine, wasm_bytes)
         .map_err(|error| format!("invalid component module {}: {error}", wasm_path.display()))?;
     let linker = Linker::new(&engine);
     let mut store = Store::new(&engine, ());
@@ -1033,7 +1124,7 @@ fn load_component_host_runtime(
     config.consume_fuel(true);
     let engine = Engine::new(&config)
         .map_err(|error| format!("cannot create component engine for `{package}`: {error}"))?;
-    let component = Component::new(&engine, wasm_bytes)
+    let component = WasmComponent::new(&engine, wasm_bytes)
         .map_err(|error| format!("invalid component module {}: {error}", wasm_path.display()))?;
     let mut linker = Linker::new(&engine);
     wit_bindings::SemanticHost::add_to_linker::<_, HasSelf<_>>(&mut linker, |state| state)
@@ -1654,6 +1745,55 @@ mod tests {
         assert_eq!(name, "demo::echo");
         assert!(fields.iter().any(|field| field.name == "message"
             && matches!(&field.value, ElementValue::String(value) if value == "hello from component")));
+    }
+
+    #[test]
+    fn zip_package_is_extracted_and_loaded() {
+        use std::io::Write as _;
+        let dir = temp_package_dir();
+        write_manifest(
+            &dir,
+            r#"{
+                "package": "zip-demo",
+                "version": "0.1.0",
+                "api-version": "0.1",
+                "interfaces": {
+                    "semantic": {
+                        "elements": [{
+                            "name": "box",
+                            "version": 1,
+                            "block": true,
+                            "parameters": [{ "name": "source", "ty": "String" }],
+                            "trailing-content": "body"
+                        }]
+                    }
+                }
+            }"#,
+        );
+        let zip_path = dir.join("package.zip");
+        let file = std::fs::File::create(&zip_path).unwrap();
+        let mut writer = zip::ZipWriter::new(file);
+        let options = zip::write::SimpleFileOptions::default()
+            .compression_method(zip::CompressionMethod::Stored);
+        writer.start_file("plugin.json", options).unwrap();
+        writer
+            .write_all(std::fs::read(dir.join("plugin.json")).unwrap().as_slice())
+            .unwrap();
+        writer.finish().unwrap();
+
+        let resolved = resolve_package_dir(&zip_path).unwrap();
+        assert_ne!(resolved, dir);
+        assert!(resolved.join("plugin.json").is_file());
+        let plugin = load_package(&zip_path).unwrap();
+        assert_eq!(plugin.id, "zip-demo");
+        let mut registry = FunctionRegistry::with_builtins();
+        register_loaded(&mut registry, &[plugin]).unwrap();
+        let evaluation = Evaluator::new(registry).evaluate("#zip-demo::box(source: \"x\")[Hi]");
+        assert!(
+            evaluation.diagnostics.is_empty(),
+            "{:?}",
+            evaluation.diagnostics
+        );
     }
 
     #[test]

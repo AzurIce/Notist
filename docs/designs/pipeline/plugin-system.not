@@ -254,7 +254,7 @@ Notist.toml
 | `FunctionRegistry` 与 `core::*` 别名 | 已实现 |
 | shaping registry / `body-mode` / `role` | 已实现 `ShapingRegistry` / `ElementSchema`；core schema 内置，插件 schema 可注册 |
 | WIT 类型包 + host `call` import | bytes-in/bytes-out WIT 已由 wasmtime bindgen 编译校验；`evaluate` 与 `host.call` 均已接入 loader（`plugins/component-echo` / `plugins/component-host-call` 端到端可用），host.call 走共享 registry + capability policy |
-| 插件 manifest 统一 package 描述 | 已解析 elements / body-mode / role / kind / capabilities / HTML render contributions，支持无 Wasm 的声明式 package 与 raw/component Wasm |
+| 插件 manifest 统一 package 描述 | 已解析 elements / body-mode / role / kind / capabilities / HTML render contributions，支持无 Wasm 的声明式 package 与 raw/component Wasm；package 支持目录与 zip |
 | `ElementFunction` 声明式 eval contribution | 已实现；无 Wasm package 由 host 投影为 `Custom` |
 | capability checker | 已实现 `Principal` / `CapabilityPolicy` 与 `Notist.toml` site grants；legacy、Stream reduction 与 component `host.call` 路径均检查 |
 | core native package 迁移 | `plugins/core/lib.rs` 承载全部内置内容函数，`plugins/core/plugin.json` 为其声明式镜像，并由 parity test 校验 |

@@ -217,6 +217,8 @@ pub(crate) fn copy_plugin_assets(root: &Path, output: &Path) -> Result<(), Box<d
     let config_text = std::fs::read_to_string(&config_path)?;
     let packages = notist_plugin_host::plugin_package_dirs(root, Some(&config_text))?;
     for (name, package_dir) in packages {
+        let package_dir = notist_plugin_host::resolve_package_dir(&package_dir)
+            .map_err(|error| std::io::Error::new(std::io::ErrorKind::InvalidInput, error))?;
         let assets_dir = package_dir.join("assets");
         if !assets_dir.is_dir() {
             continue;
