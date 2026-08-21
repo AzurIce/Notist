@@ -755,7 +755,7 @@ impl WorkspaceSnapshot {
         let mut function_registry = (*analyzer_configuration.function_registry).clone();
         let mut signatures = analyzer_configuration.signatures.clone();
         let loaded_plugins =
-            notist_plugin_host::load_plugins_from_vault(&root, configuration.as_deref())
+            notist_plugin_host::load_plugin_schemas_from_vault(&root, configuration.as_deref())
                 .map_err(|error| io::Error::new(io::ErrorKind::InvalidInput, error))?;
         notist_plugin_host::register_loaded(&mut function_registry, &loaded_plugins)
             .map_err(|error| io::Error::new(io::ErrorKind::InvalidInput, format!("{error:?}")))?;
@@ -1524,7 +1524,26 @@ impl WorkspaceSnapshot {
             .get(&module_id)
             .cloned()
             .unwrap_or_default();
-        let evaluator = Evaluator::new((*self.function_registry).clone());
+        // Snapshot builds are schema-only. Materialize runtime Wasm plugins on
+        // first actual evaluation so static analysis never starts guest code.
+        let mut runtime_registry = (*self.function_registry).clone();
+        if let Some(plugins) = self.configuration.as_deref().and_then(|configuration| {
+            notist_plugin_host::load_plugins_from_vault(&self.root, Some(configuration)).ok()
+        }) {
+            for plugin in &plugins {
+                for function in &plugin.functions {
+                    runtime_registry.unregister(function.name());
+                    if let Some((package, element)) = function.name().split_once("::")
+                        && let Some(alias) =
+                            notist_plugin_host::plugin_legacy_alias(package, element)
+                    {
+                        runtime_registry.unregister(&alias);
+                    }
+                }
+            }
+            let _ = notist_plugin_host::register_loaded(&mut runtime_registry, &plugins);
+        }
+        let evaluator = Evaluator::new(runtime_registry);
         let parse = module.parse.as_ref()?;
         // Prefer the new Stream + Leaf reduction engine for clean parses. The
         // legacy evaluator remains the recovery path for syntax errors and
@@ -4576,6 +4595,54 @@ mod tests {
         let new_path = dunce::canonicalize(&new_path).unwrap();
 
         assert_eq!(new_snapshot.file_id(&new_path), Some(old_id));
+    }
+
+    #[test]
+    fn snapshot_builds_read_plugin_schemas_without_instantiating_wasm() {
+        let base = TempDir::new().unwrap();
+        let root = base.path().join("vault");
+        let package = base.path().join("pkg");
+        fs::create_dir(&root).unwrap();
+        fs::create_dir(&package).unwrap();
+        fs::write(
+            package.join("plugin.json"),
+            r#"{
+                "package": "broken-wasm",
+                "version": "0.1.0",
+                "api-version": "0.1",
+                "interfaces": {
+                    "semantic": {
+                        "elements": [{
+                            "name": "echo",
+                            "version": 1,
+                            "block": false,
+                            "parameters": []
+                        }]
+                    }
+                },
+                "wasm": {
+                    "module": "missing.wasm",
+                    "component": true
+                }
+            }"#,
+        )
+        .unwrap();
+        fs::write(
+            root.join(MANIFEST_FILE),
+            "[plugins.broken-wasm]\npath = \"../pkg\"\n",
+        )
+        .unwrap();
+        fs::write(root.join("README.not"), "plain text").unwrap();
+
+        // Snapshot construction must not read or instantiate the missing Wasm.
+        let snapshot = WorkspaceSnapshot::load(&root).unwrap();
+        assert!(
+            snapshot.diagnostics().is_empty(),
+            "{:?}",
+            snapshot.diagnostics()
+        );
+        let module = snapshot.modules().next().unwrap();
+        assert!(snapshot.structured_module(module.id).is_some());
     }
 
     #[test]

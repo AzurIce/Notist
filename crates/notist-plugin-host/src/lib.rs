@@ -319,6 +319,27 @@ pub fn plugin_html_assets(
     Ok(assets)
 }
 
+fn effective_capabilities(requested: &[String], site_grants: Option<&[String]>) -> Vec<String> {
+    match site_grants {
+        None => requested.to_vec(),
+        Some(grants) => {
+            if grants.iter().any(|grant| grant == "*") {
+                requested.to_vec()
+            } else {
+                requested
+                    .iter()
+                    .filter(|requested| {
+                        grants
+                            .iter()
+                            .any(|grant| grant.as_str() == requested.as_str())
+                    })
+                    .cloned()
+                    .collect()
+            }
+        }
+    }
+}
+
 /// Loads one plugin package directory.
 ///
 /// Packages may be either Wasm-backed or purely declarative. A declarative
@@ -339,26 +360,8 @@ pub fn load_package_with_grants(
     site_grants: Option<&[String]>,
 ) -> Result<LoadedPlugin, String> {
     let manifest = read_manifest(package_dir)?;
-    let effective_capabilities = match site_grants {
-        None => manifest.capabilities.request.clone(),
-        Some(grants) => {
-            if grants.iter().any(|grant| grant == "*") {
-                manifest.capabilities.request.clone()
-            } else {
-                manifest
-                    .capabilities
-                    .request
-                    .iter()
-                    .filter(|requested| {
-                        grants
-                            .iter()
-                            .any(|grant| grant.as_str() == requested.as_str())
-                    })
-                    .cloned()
-                    .collect()
-            }
-        }
-    };
+    let effective_capabilities =
+        effective_capabilities(&manifest.capabilities.request, site_grants);
 
     let shared_registry = if manifest
         .wasm
@@ -479,6 +482,86 @@ pub fn load_package_with_grants(
         html_contributions,
         capabilities: effective_capabilities,
         shared_registry,
+    })
+}
+
+/// Loads only the declarative surface of vault plugins.
+///
+/// This path reads `plugin.json` and builds signatures, shaping schemas, HTML
+/// contributions, and schema-backed placeholder functions. It never reads,
+/// compiles, instantiates, or starts Wasm, so snapshot/static-analysis builds
+/// satisfy the "completion reads schemas without executing plugins" rule.
+pub fn load_plugin_schemas_from_vault(
+    root: &Path,
+    toml_text: Option<&str>,
+) -> Result<Vec<LoadedPlugin>, String> {
+    let Some(toml_text) = toml_text else {
+        return Ok(Vec::new());
+    };
+    let config: VaultConfig =
+        toml::from_str(toml_text).map_err(|error| format!("invalid Notist.toml: {error}"))?;
+    let mut loaded = Vec::new();
+    for (name, entry) in config.plugins {
+        let package_dir = match &entry.path {
+            Some(path) => root.join(path),
+            None => {
+                return Err(format!(
+                    "plugin `{name}` must declare a `path` in Notist.toml"
+                ));
+            }
+        };
+        loaded.push(load_package_schema_with_grants(
+            &package_dir,
+            Some(&entry.capabilities),
+        )?);
+    }
+    Ok(loaded)
+}
+
+/// Loads one package schema without reading its Wasm module.
+pub fn load_package_schema_with_grants(
+    package_dir: &Path,
+    site_grants: Option<&[String]>,
+) -> Result<LoadedPlugin, String> {
+    let manifest = read_manifest(package_dir)?;
+    let effective_capabilities =
+        effective_capabilities(&manifest.capabilities.request, site_grants);
+
+    let semantic = manifest.interfaces.semantic.as_ref();
+    let mut functions = Vec::new();
+    let mut elements = Vec::new();
+    if let Some(semantic) = semantic {
+        for element in &semantic.elements {
+            let signature = element_signature(element)?;
+            let element_name = plugin_element_name(&manifest.package, &element.name);
+            let owner = FunctionOwner::Plugin(manifest.package.clone());
+            functions.push(Arc::new(ElementFunction::new(
+                element_name.clone(),
+                signature,
+                element.block,
+                owner,
+            )) as Arc<dyn Function>);
+            elements.push(element_schema(&element_name, element, &manifest.package)?);
+        }
+    }
+
+    let html_contributions = manifest
+        .interfaces
+        .render
+        .as_ref()
+        .and_then(|render| render.html.as_ref())
+        .map(|html| html.contributions.clone())
+        .unwrap_or_default();
+
+    Ok(LoadedPlugin {
+        id: manifest.package.clone(),
+        version: manifest.version,
+        api_version: manifest.api_version,
+        functions,
+        elements,
+        html_contributions,
+        capabilities: effective_capabilities,
+        shared_registry: None,
     })
 }
 

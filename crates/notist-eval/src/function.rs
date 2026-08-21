@@ -266,6 +266,12 @@ impl FunctionRegistry {
         Ok(())
     }
 
+    /// Removes a function and any alias with the given name.
+    pub fn unregister(&mut self, name: &str) {
+        self.functions.remove(name);
+        self.aliases.remove(name);
+    }
+
     /// Looks up a function by name or alias.
     pub fn get(&self, name: &str) -> Option<&dyn Function> {
         let mut current = name;

@@ -260,6 +260,7 @@ Notist.toml
 | core native package 迁移 | `plugins/core/lib.rs` 承载全部内置内容函数，`plugins/core/plugin.json` 为其声明式镜像，并由 parity test 校验 |
 | PluginSet 指纹 | `FunctionEnvironmentId` 已结合 view salt、插件 surface、配置与签名集合；插件 package 变更会分配新语义世界 |
 | 插件文件 watcher | daemon 会递归 watch `Notist.toml` 声明的外部 package 目录；plugin.json / wasm / assets 变化触发 disk view reload |
+| 静态分析 schema-only | snapshot build 使用 `load_plugin_schemas_from_vault`，不读取/编译/实例化 Wasm；runtime 在首次 structured evaluation 时按需 materialize |
 | Wasm 终止/资源预算 | 已实现 fuel-per-call、16 MiB memory cap、table cap，以及 component response 1 MiB / 10k 节点上限 |
 
 == 实施顺序
