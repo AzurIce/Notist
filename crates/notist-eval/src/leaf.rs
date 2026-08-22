@@ -298,14 +298,26 @@ impl ReduceFrame {
         limits: &ReduceLimits,
         call: &StreamCall,
     ) -> Result<(), Vec<EvalDiagnostic>> {
-        if !self.policy.allows(&self.caller, &call.name) {
+        self.dispatch_entry(limits, &call.name, call.range)
+    }
+
+    /// Runs the three dispatch checks for one entry by name and range.
+    ///
+    /// Shared by the legacy stream engine and the unified node engine.
+    fn dispatch_entry(
+        &mut self,
+        limits: &ReduceLimits,
+        name: &str,
+        range: TextRange,
+    ) -> Result<(), Vec<EvalDiagnostic>> {
+        if !self.policy.allows(&self.caller, name) {
             return Err(vec![EvalDiagnostic {
                 message: format!(
                     "principal `{}` is not allowed to call `{}`",
                     self.caller_label(),
-                    call.name
+                    name
                 ),
-                range: call.range,
+                range,
             }]);
         }
         if self.depth >= limits.max_depth {
@@ -314,7 +326,7 @@ impl ReduceFrame {
                     "call reduction exceeded the maximum depth of {}",
                     limits.max_depth
                 ),
-                range: call.range,
+                range,
             }]);
         }
         if self.remaining_calls == 0 {
@@ -323,7 +335,7 @@ impl ReduceFrame {
                     "call reduction exceeded the maximum budget of {} calls",
                     limits.max_calls
                 ),
-                range: call.range,
+                range,
             }]);
         }
         self.remaining_calls -= 1;
@@ -1984,5 +1996,495 @@ Body text",
             diagnostic.message.contains("type mismatch")
                 || diagnostic.message.contains("unknown argument")
         }));
+    }
+}
+
+/// The unified-node reduction engine (Step 1 Phase 2).
+///
+/// Operates on `notist_model::Node` — the single representation where a call
+/// awaiting dispatch and a terminal leaf are the same shape. Reduction is a
+/// fixpoint iteration: a registered handler replaces the node with its
+/// output; a node nobody handles *is* a leaf, and its children and pending
+/// argument streams still reduce.
+pub mod node_engine {
+    use super::*;
+    use notist_model::{Node, NodeValue, node_from_instance, node_to_instance};
+
+    /// Converts lowering output into the unified node stream.
+    ///
+    /// Function-valued arguments cannot live on content nodes and surface as
+    /// errors; they belong to evaluator internals, not to the tree.
+    pub fn flat_content_to_nodes(content: &FlatContent) -> Result<Vec<Node>, String> {
+        let mut nodes = Vec::with_capacity(content.nodes.len());
+        for node in &content.nodes {
+            match node {
+                StreamNode::Leaf(leaf) => nodes.push(node_from_instance(leaf)),
+                StreamNode::Call(call) => {
+                    let mut args = Vec::with_capacity(call.arguments.len());
+                    for argument in &call.arguments {
+                        args.push((argument.name.clone(), node_value(&argument.value)?));
+                    }
+                    nodes.push(Node {
+                        name: call.name.clone(),
+                        args,
+                        children: flat_content_to_nodes(
+                            call.body.as_ref().unwrap_or(&FlatContent::new()),
+                        )?,
+                        block: false,
+                        range: call.range,
+                    });
+                }
+            }
+        }
+        Ok(nodes)
+    }
+
+    fn node_value(value: &StreamValue) -> Result<NodeValue, String> {
+        match value {
+            StreamValue::Value(Value::None) => Ok(NodeValue::None),
+            StreamValue::Value(Value::Bool(value)) => Ok(NodeValue::Bool(*value)),
+            StreamValue::Value(Value::Int(value)) => Ok(NodeValue::Int(*value)),
+            StreamValue::Value(Value::Float(value)) => Ok(NodeValue::Float(*value)),
+            StreamValue::Value(Value::String(value)) => Ok(NodeValue::String(value.clone())),
+            StreamValue::Value(Value::Content(content)) => {
+                Ok(NodeValue::Stream(legacy_to_nodes(content)?))
+            }
+            StreamValue::Value(Value::Function(_)) => {
+                Err("function values cannot live on content nodes".into())
+            }
+            StreamValue::Stream(stream) => Ok(NodeValue::Stream(flat_content_to_nodes(stream)?)),
+        }
+    }
+
+    fn legacy_to_nodes(content: &Content) -> Result<Vec<Node>, String> {
+        legacy_content_to_nodes(content)
+            .iter()
+            .map(node_from_instance)
+            .map(Ok)
+            .collect()
+    }
+
+    /// Maps a concrete node value onto the evaluator value domain.
+    ///
+    /// Pending streams are handled by the caller before dispatch, so they
+    /// never reach this function.
+    fn value_from_node_value(value: &NodeValue) -> Option<Value> {
+        match value {
+            NodeValue::None => Some(Value::None),
+            NodeValue::Bool(value) => Some(Value::Bool(*value)),
+            NodeValue::Int(value) => Some(Value::Int(*value)),
+            NodeValue::Float(value) => Some(Value::Float(*value)),
+            NodeValue::String(value) => Some(Value::String(value.clone())),
+            NodeValue::Stream(_) | NodeValue::Array(_) => None,
+        }
+    }
+
+    /// Reduces a unified node stream while preserving successful siblings.
+    pub fn reduce_nodes_recovering(
+        nodes: Vec<Node>,
+        registry: &FunctionRegistry,
+        limits: &ReduceLimits,
+        frame: &mut ReduceFrame,
+    ) -> (Vec<Node>, Vec<EvalDiagnostic>) {
+        let mut output = Vec::new();
+        let mut diagnostics = Vec::new();
+        for node in nodes {
+            match reduce_node(node, registry, limits, frame) {
+                Ok(mut reduced) => output.append(&mut reduced),
+                Err(mut errors) => diagnostics.append(&mut errors),
+            }
+        }
+        (output, diagnostics)
+    }
+
+    /// Strict variant: any diagnostic aborts the whole stream.
+    pub fn reduce_nodes(
+        nodes: Vec<Node>,
+        registry: &FunctionRegistry,
+        limits: &ReduceLimits,
+        frame: &mut ReduceFrame,
+    ) -> Result<Vec<Node>, Vec<EvalDiagnostic>> {
+        let (output, diagnostics) = reduce_nodes_recovering(nodes, registry, limits, frame);
+        if diagnostics.is_empty() {
+            Ok(output)
+        } else {
+            Err(diagnostics)
+        }
+    }
+
+    /// Reduces one node to its output.
+    ///
+    /// Children and pending argument streams reduce first; then a registered
+    /// handler consumes the node, or it survives as a leaf.
+    fn reduce_node(
+        mut node: Node,
+        registry: &FunctionRegistry,
+        limits: &ReduceLimits,
+        frame: &mut ReduceFrame,
+    ) -> Result<Vec<Node>, Vec<EvalDiagnostic>> {
+        // Descend first: pending argument streams and children always reduce,
+        // independent of whether this node itself has a handler.
+        for (_, value) in node.args.iter_mut() {
+            if let NodeValue::Stream(stream) = value {
+                let (reduced, errors) =
+                    reduce_nodes_recovering(std::mem::take(stream), registry, limits, frame);
+                *stream = reduced;
+                if !errors.is_empty() {
+                    return Err(errors);
+                }
+            }
+        }
+        if !node.children.is_empty() {
+            let (reduced, errors) = reduce_nodes_recovering(
+                std::mem::take(&mut node.children),
+                registry,
+                limits,
+                frame,
+            );
+            node.children = reduced;
+            if !errors.is_empty() {
+                return Err(errors);
+            }
+        }
+
+        // Fixpoint rule: nobody handles this name → it already is a leaf.
+        let Some(function) = registry.get(&node.name) else {
+            return Ok(vec![node]);
+        };
+
+        frame.dispatch_entry(limits, &node.name, node.range)?;
+        let result = dispatch_handler(node, function, registry, limits, frame);
+        frame.depth -= 1;
+        result
+    }
+
+    fn dispatch_handler(
+        node: Node,
+        function: &dyn crate::Function,
+        registry: &FunctionRegistry,
+        limits: &ReduceLimits,
+        frame: &mut ReduceFrame,
+    ) -> Result<Vec<Node>, Vec<EvalDiagnostic>> {
+        let signature = function.signature();
+        let mut provided: HashMap<String, StreamValue> = HashMap::new();
+        for (name, value) in &node.args {
+            let stream_value = match value {
+                NodeValue::Stream(stream) => {
+                    let instances = stream
+                        .iter()
+                        .map(node_to_instance)
+                        .collect::<Result<Vec<_>, String>>()
+                        .map_err(|error| {
+                            vec![EvalDiagnostic {
+                                message: format!("argument `{name}` is not reducible: {error}"),
+                                range: node.range,
+                            }]
+                        })?;
+                    let content = instances_to_legacy_content(&instances).ok_or_else(|| {
+                        vec![EvalDiagnostic {
+                            message: format!(
+                                "content argument `{name}` contains leaves that cannot be lowered"
+                            ),
+                            range: node.range,
+                        }]
+                    })?;
+                    StreamValue::Value(Value::Content(content))
+                }
+                concrete => match value_from_node_value(concrete) {
+                    Some(value) => StreamValue::Value(value),
+                    None => continue,
+                },
+            };
+            provided.insert(name.clone(), stream_value);
+        }
+
+        // Trailing body binds under the signature's parameter name.
+        if let Some(trailing) = signature.trailing_content.as_deref() {
+            let instances = node
+                .children
+                .iter()
+                .map(node_to_instance)
+                .collect::<Result<Vec<_>, String>>()
+                .map_err(|error| {
+                    vec![EvalDiagnostic {
+                        message: format!(
+                            "trailing content of `{}` is not reducible: {error}",
+                            node.name
+                        ),
+                        range: node.range,
+                    }]
+                })?;
+            let content = instances_to_legacy_content(&instances).ok_or_else(|| {
+                vec![EvalDiagnostic {
+                    message: format!(
+                        "trailing content for `{}` contains leaves that cannot be lowered",
+                        node.name
+                    ),
+                    range: node.range,
+                }]
+            })?;
+            provided.insert(
+                trailing.to_owned(),
+                StreamValue::Value(Value::Content(content)),
+            );
+        } else if !node.children.is_empty() {
+            return Err(vec![EvalDiagnostic {
+                message: format!("function `{}` does not accept trailing content", node.name),
+                range: node.range,
+            }]);
+        }
+
+        let mut diagnostics = Vec::new();
+        let values = bind_validated_arguments(
+            &signature,
+            &provided,
+            registry,
+            limits,
+            frame,
+            &node.name,
+            node.range,
+            &mut diagnostics,
+        );
+        if !diagnostics.is_empty() {
+            return Err(diagnostics);
+        }
+
+        let input = FunctionInput {
+            name: &node.name,
+            arguments: BoundArguments::from_values(values),
+            range: node.range,
+        };
+        let owner = function.owner();
+        match function.call(
+            &FunctionContext {
+                registry,
+                depth: frame.depth,
+            },
+            input,
+        ) {
+            Ok(FunctionOutput::Content(content))
+            | Ok(FunctionOutput::Value(Value::Content(content))) => legacy_to_nodes(&content)
+                .map_err(|error| {
+                    vec![EvalDiagnostic {
+                        message: error,
+                        range: node.range,
+                    }]
+                }),
+            Ok(FunctionOutput::Calls(calls)) => {
+                let stream = legacy_calls_to_stream(&calls);
+                let nodes = flat_content_to_nodes(&stream).map_err(|error| {
+                    vec![EvalDiagnostic {
+                        message: error,
+                        range: node.range,
+                    }]
+                })?;
+                let saved_caller = frame.caller.clone();
+                frame.caller = Principal::from(&owner);
+                let (reduced, errors) = reduce_nodes_recovering(nodes, registry, limits, frame);
+                frame.caller = saved_caller;
+                if errors.is_empty() {
+                    Ok(reduced)
+                } else {
+                    Err(errors)
+                }
+            }
+            Ok(FunctionOutput::Value(value)) => Err(vec![EvalDiagnostic {
+                message: format!(
+                    "function `{}` returned {}, expected Content",
+                    node.name,
+                    value.ty()
+                ),
+                range: node.range,
+            }]),
+            Err(errors) => Err(errors),
+        }
+    }
+
+    /// Builds shaped trees from a reduced node forest via the instance adapter.
+    pub fn nodes_to_element_tree(
+        nodes: &[Node],
+        shaping: &ShapingRegistry,
+    ) -> Result<ElementTree, String> {
+        let leaves = nodes
+            .iter()
+            .map(node_to_instance)
+            .collect::<Result<Vec<_>, String>>()?;
+        Ok(shape_flat_with(&leaves, shaping))
+    }
+
+    /// Full-pipeline result over the unified node representation.
+    #[derive(Clone, Debug, Default)]
+    pub struct NodeEvaluation {
+        /// Reduced unified-node forest.
+        pub forest: Vec<Node>,
+        /// The recursively shaped canonical tree, projected through the
+        /// instance adapter so existing consumers keep working.
+        pub tree: ElementTree,
+        /// Parse, lower, and reduction diagnostics.
+        pub diagnostics: Vec<EvalDiagnostic>,
+    }
+
+    /// Runs lowering output through the node engine and shapes the result.
+    pub fn evaluate_to_nodes(
+        lowered: &FlatContent,
+        registry: &FunctionRegistry,
+        shaping: &ShapingRegistry,
+    ) -> NodeEvaluation {
+        let limits = ReduceLimits::default();
+        let mut frame = ReduceFrame::root_with_policy(&limits, registry.policy());
+        let mut diagnostics = Vec::new();
+        let (forest, tree) = match flat_content_to_nodes(lowered) {
+            Ok(nodes) => {
+                let (forest, errors) =
+                    reduce_nodes_recovering(nodes, registry, &limits, &mut frame);
+                diagnostics.extend(errors);
+                let instances = forest
+                    .iter()
+                    .map(node_to_instance)
+                    .collect::<Result<Vec<_>, String>>();
+                match instances {
+                    Ok(leaves) => (forest, shape_flat_with(&leaves, shaping)),
+                    Err(error) => {
+                        diagnostics.push(EvalDiagnostic {
+                            message: format!("node tree projection failed: {error}"),
+                            range: crate::TextRange::new(0, 0),
+                        });
+                        (forest, ElementTree::default())
+                    }
+                }
+            }
+            Err(error) => {
+                diagnostics.push(EvalDiagnostic {
+                    message: error,
+                    range: crate::TextRange::new(0, 0),
+                });
+                (Vec::new(), ElementTree::default())
+            }
+        };
+        NodeEvaluation {
+            forest,
+            tree,
+            diagnostics,
+        }
+    }
+
+    /// Collects every node name in depth-first order.
+    pub fn collect_names(nodes: &[Node]) -> Vec<String> {
+        let mut names = Vec::new();
+        fn walk(node: &Node, names: &mut Vec<String>) {
+            names.push(node.name.clone());
+            for value in &node.args {
+                if let NodeValue::Stream(stream) = &value.1 {
+                    walk_stream(stream, names);
+                }
+            }
+            for child in &node.children {
+                walk(child, names);
+            }
+        }
+        fn walk_stream(nodes: &[Node], names: &mut Vec<String>) {
+            for node in nodes {
+                walk(node, names);
+            }
+        }
+        walk_stream(nodes, &mut names);
+        names
+    }
+
+    /// Whether every argument stream in the forest is empty (fully reduced).
+    pub fn fully_reduced(nodes: &[Node]) -> bool {
+        fn walk(node: &Node) -> bool {
+            node.args.iter().all(|(_, v)| match v {
+                NodeValue::Stream(stream) => stream.is_empty(),
+                _ => true,
+            }) && node.children.iter().all(walk)
+        }
+        nodes.iter().all(walk)
+    }
+}
+
+#[cfg(test)]
+mod engine_tests {
+    use super::node_engine::{collect_names, fully_reduced, reduce_nodes_recovering};
+    use crate::leaf::{FunctionRegistry, ReduceFrame, ReduceLimits};
+    use notist_model::{Node, NodeValue, TextRange};
+    use std::collections::HashMap;
+
+    #[test]
+    fn plain_text_flows_through_the_node_engine() {
+        let registry = FunctionRegistry::with_builtins();
+        let parse = notist_syntax::parse("hello");
+        let lowered = crate::stream_lower::lower_markup_stream_with_bindings(
+            "hello",
+            &parse.root,
+            0,
+            &registry,
+            HashMap::new(),
+        );
+        let evaluation = super::node_engine::evaluate_to_nodes(
+            &lowered.flat,
+            &registry,
+            crate::leaf::ShapingRegistry::core(),
+        );
+        assert!(
+            evaluation.diagnostics.is_empty(),
+            "{:?}",
+            evaluation.diagnostics
+        );
+        let names = collect_names(&evaluation.forest);
+        assert!(names.iter().any(|name| name.ends_with("text")), "{names:?}");
+        assert!(fully_reduced(&evaluation.forest));
+    }
+
+    #[test]
+    fn unknown_names_survive_as_leaves_with_reduced_children() {
+        let registry = FunctionRegistry::with_builtins();
+        let limits = ReduceLimits::default();
+        let mut frame = ReduceFrame::root(&limits);
+
+        let mystery = Node::block_call("mystery::widget", TextRange::new(0, 3))
+            .child(Node::call("core::text", TextRange::new(4, 6)).arg("text", "kept"));
+        let (output, errors) =
+            reduce_nodes_recovering(vec![mystery], &registry, &limits, &mut frame);
+        assert!(errors.is_empty(), "{errors:?}");
+        assert_eq!(output.len(), 1);
+        assert_eq!(output[0].name, "mystery::widget");
+        assert_eq!(output[0].children[0].name, "core::text");
+        assert!(matches!(
+            output[0].children[0].get("text"),
+            Some(NodeValue::String(value)) if value == "kept"
+        ));
+    }
+
+    #[test]
+    fn handler_dispatch_runs_on_the_node_path() {
+        let registry = FunctionRegistry::with_builtins();
+        let limits = ReduceLimits::default();
+        let mut frame = ReduceFrame::root(&limits);
+
+        // `rule` is a registered builtin with no arguments.
+        assert!(
+            registry.get("rule").is_some(),
+            "rule must be a registered builtin"
+        );
+        let call = Node::block_call("rule", TextRange::new(0, 6));
+        let (output, errors) = reduce_nodes_recovering(vec![call], &registry, &limits, &mut frame);
+        assert!(errors.is_empty(), "{errors:?}");
+        let names = collect_names(&output);
+        assert!(names.iter().any(|name| name.contains("rule")), "{names:?}");
+    }
+
+    #[test]
+    fn trailing_body_binds_and_children_reduce() {
+        let registry = FunctionRegistry::with_builtins();
+        let limits = ReduceLimits::default();
+        let mut frame = ReduceFrame::root(&limits);
+
+        let call = Node::block_call("details", TextRange::new(0, 9))
+            .arg("open", true)
+            .child(Node::call("core::text", TextRange::new(10, 14)).arg("text", "body"));
+        let (output, errors) = reduce_nodes_recovering(vec![call], &registry, &limits, &mut frame);
+        assert!(errors.is_empty(), "{errors:?}");
+        assert!(fully_reduced(&output));
     }
 }

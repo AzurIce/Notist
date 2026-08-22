@@ -20,6 +20,10 @@ pub use function::{
     ElementFunction, Function, FunctionContext, FunctionInput, FunctionOutput, FunctionOwner,
     FunctionRegistry, RegistryError, RegistryErrorReason,
 };
+pub use leaf::node_engine::{
+    NodeEvaluation, collect_names, evaluate_to_nodes, fully_reduced, nodes_to_element_tree,
+    reduce_nodes,
+};
 pub use leaf::{
     CapabilityPolicy, ElementTree, FlatContent, LeafEvaluation, Principal, ReduceFrame,
     ReduceLimits, ShapingRegistry, StreamArgument, StreamCall, StreamEvaluation, StreamNode,
@@ -144,6 +148,51 @@ impl Evaluator {
     ) -> StreamEvaluation {
         let parse = notist_syntax::parse(source);
         self.evaluate_parsed_stream_with_bindings(source, &parse, HashMap::new(), shaping)
+    }
+
+    /// Runs the unified-node pipeline: parse → lower → node reduction.
+    ///
+    /// The result carries both the reduced `Node` forest and the shaped
+    /// canonical tree projected through the instance adapter.
+    pub fn evaluate_nodes(&self, source: &str) -> NodeEvaluation {
+        self.evaluate_nodes_with_shaping(source, ShapingRegistry::core())
+    }
+
+    /// Like [`Self::evaluate_nodes`] with a caller-provided shaping registry.
+    pub fn evaluate_nodes_with_shaping(
+        &self,
+        source: &str,
+        shaping: &ShapingRegistry,
+    ) -> NodeEvaluation {
+        let parse = notist_syntax::parse(source);
+        self.evaluate_parsed_nodes_with_bindings(source, &parse, HashMap::new(), shaping)
+    }
+
+    /// Unified-node variant of the pre-parsed bindings entry point.
+    pub fn evaluate_parsed_nodes_with_bindings(
+        &self,
+        source: &str,
+        parse: &Parse,
+        bindings: HashMap<String, Value>,
+        shaping: &ShapingRegistry,
+    ) -> NodeEvaluation {
+        let lowered = stream_lower::lower_markup_stream_with_bindings(
+            source,
+            &parse.root,
+            0,
+            &self.registry,
+            bindings,
+        );
+        let mut evaluation =
+            leaf::node_engine::evaluate_to_nodes(&lowered.flat, &self.registry, shaping);
+        evaluation
+            .diagnostics
+            .extend(parse.errors.iter().cloned().map(|error| EvalDiagnostic {
+                message: error.message,
+                range: error.range,
+            }));
+        evaluation.diagnostics.extend(lowered.diagnostics);
+        evaluation
     }
 
     /// Runs the Stream pipeline for an already parsed source with pre-seeded

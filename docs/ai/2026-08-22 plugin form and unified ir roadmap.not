@@ -1,0 +1,73 @@
+= 插件形态定型、边界表示实证与统一 IR 路线
+
+本文记录 2026-08-22 插件系统的一次集中设计收敛：插件形态从「manifest 声明 semantic」演进为「Rust crate + SDK `init` 注册自描述」，用双端 bindgen spike 实证了 WIT 递归类型的不可行与 arena 拍平的可行性（与本日 [[vault::ai::2026-08-22 wit recursive types best practices]] 的上游调查互相印证），并裁定「native rlib / wasm component 双注册通道」与三步走路线。现行插件系统规范见 [[vault::designs::plugin-system]]；本文是过程与实证记录，规范以 designs 为准。
+
+== 形态演进：init 注册即自描述
+
+插件最终形态：**一个 Rust crate，编译为 wasip2 组件**。作者面对纯 Rust：
+
+```rust
+struct Shader;
+impl ElementFn for Shader {
+    fn decl(&self) -> ElementDecl { /* name/params/trailing/body-mode */ }
+    fn reduce(ctx: &mut EvalCtx, args: &Args, body: &[Node]) -> Result<Vec<Node>> { ... }
+}
+impl Plugin for Plugin {
+    fn init(registrar: &mut Registrar) { registrar.element(Shader); }
+}
+notist_sdk::export_plugin!("shader", Plugin);
+```
+
+关键裁决链：
+
+1. schema 真相来源是 guest 的 `init` 注册（装载后调用一次、fuel 界内、原子校验），manifest 缩水为信封（身份/wasm 装载参数/render 资产/capabilities），不再携带 semantic——「声明与实现漂移」问题被消解而非回答；
+2. `init` 返回声明列表而非逐条回调：注册内容是编译期已知的纯数据，一次性返回让装载原子化；
+3. 装载统一为「实例化 + init」单路径，不再维护不执行 Wasm 的 schema-only 快照路径；
+4. `EvalCtx::call_name()` 把被派发的限定名暴露给作者，返回叶子按它命名，保证同一二进制改包名重发时叶子名与宿主注册 namespace 天然对齐。
+
+实现落点：`crates/notist-plugin-sdk`（Plugin/ElementFn trait + Registrar + export 宏内嵌 WIT）、宿主 `init` 消费、wasmtime-wasi 空 `WasiCtx` 接入（落实 safety 既有裁定）、样例组件以 SDK 重写。
+
+== Spike 实证：递归类型不可行，arena 可行
+
+针对「能否让 Rust 类型直接进 WIT 边界」（消除手写序列化层），做了一次端到端 spike（`/tmp/opencode/wit-spike`）：
+
+| 方案 | host (wasmtime 47 bindgen) | guest (wit-bindgen 0.60) | 运行时 |
+|---|---|---|---|
+| 递归类型 `node { children: list<node> }` | ❌ "type node depends on itself" | ❌ 同错误 | - |
+| arena 拍平 `node { children: list<u32> }` + `request{nodes,root}` / `response{nodes,roots}` | ✅ | ✅ | ✅ round-trip 全绿 |
+
+arena 实测覆盖：三层嵌套树经 guest 重索引后宿主侧结构完好、参数变换可见、guest `Err` 穿越、fuel 计账、真实 wasip2 组件实例化。**边界上零手写序列化**，canonical ABI 自动编组。
+
+与本日 kimi 调查报告的差异修正：报告反对 arena 的主论据「guest ergonomics 差」在 notist 架构下不成立——作者走 SDK，宏在边界做嵌套 Node ↔ arena 转换，索引不可见。报告成立的部分：resource 句柄不适合请求/响应式小树（N+1 跨界调用）；schema 演化期 typed-WIT 的 `@since` 版本化代价高。
+
+== 裁决：bytes 边界维持，codec 解耦
+
+- **opaque-bytes 边界维持**：ABI 仍在快速演化期（本日之内三次改形），serde JSON 的宽松演化（`#[serde(default)]`）优于 WIT 的版本化纪律；
+- **把 bytes 与 JSON 解耦**：payload version byte 已预留，codec 是可替换实现细节；ABI 稳定后一行级换 postcard/bincode，是否需要由 core 定案后的实测说话；
+- **typed-WIT arena 归档为迁移候选**：spike 已验证可行，等上游 `box<T>`（component-model#56）落地再评估，届时 SDK 包装保证迁移只动一处。
+
+== 双通道注册：同一契约，两种载体
+
+```rust
+trait ElementFn { fn decl(); fn reduce(ctx, args, body) -> Vec<Node>; }
+trait Registrar { fn element<E: ElementFn>(&mut self, e: E); }
+```
+
+- **native 通道**：第一方代码以 rlib 直接 `reg.element(TextFn)`——零序列化、受信任；
+- **wasm 通道**：第三方 crate 经 SDK 导出组件，运行时加载、沙箱内执行。
+
+信任分层被显式化：first-party=native、third-party=wasm。`plugins/core` 不再是「住在 plugins/ 里的非插件」，而是该契约的参考实现，只是选择 native 后端。
+
+== 三步路线
+
+**进度（2026-08-22）**：Step 1 前两阶段已落地——① `notist-model::Node` 统一类型（`node.rs`：单一表示 + 与 `InstanceNode` 双向适配器 + 单测）；② `notist-eval` 新增 `leaf::node_engine` 统一节点规约引擎（fixpoint 语义：有 handler 则替换输出、无 handler 即叶子，子节点与 pending 参数流先于 dispatch 规约；dispatch 检查重构为共享 `ReduceFrame::dispatch_entry`），并暴露公共入口 `Evaluator::evaluate_nodes[_with_shaping]` 返回 `NodeEvaluation { forest, tree }`（tree 经 instance 适配器保持现有消费者可用）。四项引擎测试覆盖全管线、未知名字兜底、handler 派发、trailing body 绑定。行为零变化、292 测试全绿。**下一阶段**：lowering 迁移（未知调用改为产出 pending Node 而非走表达式路径，使兜底语义真正激活）→ html 消费端直读 Node 树 → 删除 `Element` 枚举与双 IR 转换层 → 之后进入 Step 2（core wasm 加载实验）与 Step 3（基准定案）。
+
+1. **IR 统一（基于 Box）**：单一 `Node { name, args, children }`，规约 = 不动点迭代，「leaf = 没有 handler 的节点」；消灭 `Element` 枚举与 `InstanceNode` 双 IR 及其转换层。待拍板语义：未知名字 check 阶段照旧报诊断、reduce 阶段兜底为叶子。
+2. **core 运行时加载实验**：core 以 wasm 通道装载（`include_bytes!` 嵌入 + 进程级 Engine 缓存 + 同步实例化），`with_builtins()` 改造为从此入口取 registry。已证递归不可行，边界即 arena；头号理论风险是 **body 重序列化的 O(深度) 成本**（嵌套 d 层的叶子最多穿越 d 次边界）。
+3. **基准对比定案**：冷装载 / 每 eval 延迟（扁平、中等、深嵌套三档语料）/ 边界流量随深度曲线 / 内存。裁决标准提前定死（如中等文档 eval 劣化 <15% 即接受）。若不达标，退路是分层采纳：hot 构造器留 native 通道、长尾元素走 wasm——双通道共享契约，混合不需要作者感知。
+
+== 参考
+
+- 实证代码：`/tmp/opencode/wit-spike`（host/guest 双 crate + round-trip 测试）
+- 上游调查与本日互证：[[vault::ai::2026-08-22 wit recursive types best practices]]
+- 现行规范：[[vault::designs::plugin-system]]、[[vault::designs::pipeline::plugin-call-reduction]]
