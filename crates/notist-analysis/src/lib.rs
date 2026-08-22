@@ -754,9 +754,19 @@ impl WorkspaceSnapshot {
         };
         let mut function_registry = (*analyzer_configuration.function_registry).clone();
         let mut signatures = analyzer_configuration.signatures.clone();
+        // Unified plugin loading: instantiate components and run guest `init`
+        // to collect the self-described semantic surface. A failing package
+        // degrades to a diagnostic instead of bricking the whole snapshot,
+        // so transient states while editing a package stay recoverable.
+        let mut plugin_load_diagnostics = Vec::new();
         let loaded_plugins =
-            notist_plugin_host::load_plugin_schemas_from_vault(&root, configuration.as_deref())
-                .map_err(|error| io::Error::new(io::ErrorKind::InvalidInput, error))?;
+            match notist_plugin_host::load_plugins_from_vault(&root, configuration.as_deref()) {
+                Ok(plugins) => plugins,
+                Err(error) => {
+                    plugin_load_diagnostics.push(format!("plugin package failed to load: {error}"));
+                    Vec::new()
+                }
+            };
         notist_plugin_host::register_loaded(&mut function_registry, &loaded_plugins)
             .map_err(|error| io::Error::new(io::ErrorKind::InvalidInput, format!("{error:?}")))?;
         let mut shaping_registry = ShapingRegistry::new();
@@ -812,6 +822,14 @@ impl WorkspaceSnapshot {
             view_id,
             revision,
         };
+        for message in plugin_load_diagnostics {
+            workspace.diagnostics.push(Diagnostic {
+                kind: DiagnosticKind::InvalidFunction,
+                message,
+                source_path: Some(root.join(MANIFEST_FILE)),
+                range: None,
+            });
+        }
         workspace.insert_virtual_module(engine, ModulePath::root());
         workspace.scan_directory(
             engine,
@@ -4598,7 +4616,7 @@ mod tests {
     }
 
     #[test]
-    fn snapshot_builds_read_plugin_schemas_without_instantiating_wasm() {
+    fn broken_plugin_packages_degrade_to_diagnostics() {
         let base = TempDir::new().unwrap();
         let root = base.path().join("vault");
         let package = base.path().join("pkg");
@@ -4610,16 +4628,6 @@ mod tests {
                 "package": "broken-wasm",
                 "version": "0.1.0",
                 "api-version": "0.1",
-                "interfaces": {
-                    "semantic": {
-                        "elements": [{
-                            "name": "echo",
-                            "version": 1,
-                            "block": false,
-                            "parameters": []
-                        }]
-                    }
-                },
                 "wasm": {
                     "module": "missing.wasm",
                     "component": true
@@ -4634,10 +4642,14 @@ mod tests {
         .unwrap();
         fs::write(root.join("README.not"), "plain text").unwrap();
 
-        // Snapshot construction must not read or instantiate the missing Wasm.
+        // A broken package surfaces as a diagnostic; the rest of the vault
+        // keeps working so transient edits stay recoverable.
         let snapshot = WorkspaceSnapshot::load(&root).unwrap();
         assert!(
-            snapshot.diagnostics().is_empty(),
+            snapshot
+                .diagnostics()
+                .iter()
+                .any(|diagnostic| diagnostic.message.contains("plugin package failed to load")),
             "{:?}",
             snapshot.diagnostics()
         );
@@ -4652,25 +4664,18 @@ mod tests {
         let package = base.path().join("pkg");
         fs::create_dir(&root).unwrap();
         fs::create_dir(&package).unwrap();
+        let echo_wasm = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("../../plugins/component-echo/semantic.wasm");
+        fs::copy(&echo_wasm, package.join("semantic.wasm")).unwrap();
         let manifest = |version: &str| {
             format!(
                 r#"{{
                     "package": "demo",
                     "version": "{version}",
                     "api-version": "0.1",
-                    "interfaces": {{
-                        "semantic": {{
-                            "elements": [{{
-                                "name": "box",
-                                "version": 1,
-                                "block": true,
-                                "parameters": [{{
-                                    "name": "source",
-                                    "ty": "String"
-                                }}],
-                                "trailing-content": "body"
-                            }}]
-                        }}
+                    "wasm": {{
+                        "module": "semantic.wasm",
+                        "component": true
                     }}
                 }}"#
             )
@@ -4681,9 +4686,10 @@ mod tests {
             "[plugins.demo]\npath = \"../pkg\"\n",
         )
         .unwrap();
-        fs::write(root.join("README.not"), "#demo::box(source: \"x\")[Hi]").unwrap();
+        fs::write(root.join("README.not"), "#demo::echo(message: \"x\")[Hi]").unwrap();
 
         let first = WorkspaceSnapshot::load(&root).unwrap();
+        assert!(first.diagnostics().is_empty(), "{:?}", first.diagnostics());
         fs::write(package.join("plugin.json"), manifest("0.2.0")).unwrap();
         let second = WorkspaceSnapshot::load(&root).unwrap();
         assert_ne!(
@@ -4707,23 +4713,18 @@ mod tests {
         let package = base.path().join("pkg");
         fs::create_dir(&root).unwrap();
         fs::create_dir(&package).unwrap();
+        let echo_wasm = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("../../plugins/component-echo/semantic.wasm");
+        fs::copy(&echo_wasm, package.join("semantic.wasm")).unwrap();
         fs::write(
             package.join("plugin.json"),
             r#"{
                 "package": "demo",
                 "version": "0.1.0",
                 "api-version": "0.1",
-                "interfaces": {
-                    "semantic": {
-                        "elements": [{
-                            "name": "box",
-                            "version": 1,
-                            "block": true,
-                            "parameters": [{ "name": "source", "ty": "String" }],
-                            "trailing-content": "body",
-                            "body-mode": "flow"
-                        }]
-                    }
+                "wasm": {
+                    "module": "semantic.wasm",
+                    "component": true
                 }
             }"#,
         )
@@ -4733,12 +4734,12 @@ mod tests {
             "[plugins.demo]\npath = \"../pkg\"\n",
         )
         .unwrap();
-        fs::write(root.join("README.not"), "#demo::box(source: \"x\")[Hi]").unwrap();
+        fs::write(root.join("README.not"), "#demo::echo(message: \"x\")[Hi]").unwrap();
 
         let snapshot = WorkspaceSnapshot::load(&root).unwrap();
         let schema = snapshot
             .shaping_registry()
-            .get(&notist_model::ElementName::plugin("demo", "box"))
+            .get(&notist_model::ElementName::plugin("demo", "echo"))
             .expect("plugin shaping schema should be captured");
         assert_eq!(schema.body_mode, notist_model::BodyMode::Flow);
         assert_eq!(schema.kind, notist_model::ShapingKind::Block);

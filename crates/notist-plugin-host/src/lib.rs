@@ -1,20 +1,17 @@
 //! Runtime Wasm plugin host for Notist.
 //!
 //! This loader reads `Notist.toml`, resolves plugin package directories,
-//! reads `plugin.json`, and loads a WebAssembly module with Wasmtime.
+//! reads the envelope `plugin.json`, and loads WebAssembly with Wasmtime.
 //!
-//! The current Wasm ABI is intentionally minimal:
+//! Component packages are self-describing: after instantiation the host calls
+//! `init()` exactly once to collect the element declarations the package
+//! contributes, validates them atomically, and registers the resulting
+//! functions and schemas. `plugin.json` no longer carries the semantic
+//! interface; it only describes the package envelope (identity, Wasm loading
+//! parameters, render assets, and capability requests).
 //!
-//! ```text
-//! evaluate(ptr: i32, len: i32) -> i32
-//! ```
-//!
-//! The host writes a binary request into Wasm memory, calls `evaluate`, and
-//! reads the plugin response from the returned pointer.
-//!
-//! The checked-in shader package uses the v0 binary response
-//! (`ok: u8`, `width: i32`, `height: i32`). Declarative element packages do
-//! not need a Wasm module at all and use [`ElementFunction`] instead.
+//! The legacy v0 raw core Wasm ABI (`evaluate(ptr, len) -> ptr`) remains only
+//! for the checked-in shader package.
 
 use std::collections::BTreeMap;
 
@@ -22,9 +19,8 @@ use std::path::{Component, Path, PathBuf};
 use std::sync::{Arc, Mutex};
 
 use notist_eval::{
-    ElementFunction, EvalDiagnostic, Function, FunctionContext, FunctionInput, FunctionOutput,
-    FunctionOwner, FunctionRegistry, FunctionSignature, Principal, RegistryError, ShapingRegistry,
-    Type,
+    EvalDiagnostic, Function, FunctionContext, FunctionInput, FunctionOutput, FunctionOwner,
+    FunctionRegistry, FunctionSignature, Principal, RegistryError, ShapingRegistry, Type,
 };
 use notist_model::{
     BodyMode, Content, CustomField, DefaultValue, Element, ElementName, ElementSchema,
@@ -33,6 +29,7 @@ use notist_model::{
 use serde::Deserialize;
 use wasmtime::component::{Component as WasmComponent, HasSelf, Linker};
 use wasmtime::{Config, Engine, Func, Instance, Memory, Module, ResourceLimiter, Store, Val};
+use wasmtime_wasi::{ResourceTable, WasiCtx, WasiCtxBuilder, WasiCtxView, WasiView, p2};
 
 /// A plugin entry in `Notist.toml`.
 #[derive(Clone, Debug, Default, Deserialize)]
@@ -47,10 +44,22 @@ pub struct VaultPluginConfig {
     pub capabilities: Vec<String>,
 }
 
+/// Site-level presentation configuration under `[site]` in `Notist.toml`.
+#[derive(Clone, Debug, Default, Deserialize)]
+struct VaultSiteConfig {
+    /// Extra stylesheets as vault-root-relative `/`-separated paths. The CLI
+    /// site layer copies each file into `_notist/styles/` and links it from
+    /// every page head after the built-in `_notist/style.css`.
+    #[serde(default)]
+    styles: Vec<String>,
+}
+
 #[derive(Clone, Debug, Default, Deserialize)]
 struct VaultConfig {
     #[serde(default)]
     plugins: BTreeMap<String, VaultPluginConfig>,
+    #[serde(default)]
+    site: VaultSiteConfig,
 }
 
 #[derive(Clone, Debug, Deserialize)]
@@ -61,10 +70,26 @@ pub struct PluginManifest {
     pub api_version: String,
     #[serde(default)]
     pub wasm: Option<WasmDecl>,
+    /// Envelope-style projection contributions (`render` at the manifest
+    /// top level). This is the canonical spelling for self-describing
+    /// packages.
+    #[serde(default)]
+    pub render: Option<ManifestRender>,
+    /// Legacy container that also nests `render`; kept so the checked-in
+    /// shader package keeps loading. New packages use the top-level field.
     #[serde(default)]
     pub interfaces: ManifestInterfaces,
     #[serde(default)]
     pub capabilities: ManifestCapabilities,
+}
+
+impl PluginManifest {
+    /// Returns the effective HTML render section regardless of whether the
+    /// package declared it at the envelope top level or in the legacy
+    /// `interfaces` nesting.
+    pub fn effective_render(&self) -> Option<&ManifestRender> {
+        self.render.as_ref().or(self.interfaces.render.as_ref())
+    }
 }
 
 #[derive(Clone, Debug, Deserialize)]
@@ -355,9 +380,7 @@ pub fn read_manifest(package_dir: &Path) -> Result<PluginManifest, String> {
 
 fn validate_html_contributions(manifest: &PluginManifest) -> Result<(), String> {
     let Some(html) = manifest
-        .interfaces
-        .render
-        .as_ref()
+        .effective_render()
         .and_then(|render| render.html.as_ref())
     else {
         return Ok(());
@@ -394,9 +417,7 @@ pub fn plugin_html_assets(
     for (name, package_dir) in plugin_package_dirs(root, toml_text)? {
         let manifest = read_manifest(&resolve_package_dir(&package_dir)?)?;
         let contributions = manifest
-            .interfaces
-            .render
-            .as_ref()
+            .effective_render()
             .and_then(|render| render.html.as_ref())
             .map(|html| html.contributions.clone())
             .unwrap_or_default();
@@ -406,6 +427,74 @@ pub fn plugin_html_assets(
         });
     }
     Ok(assets)
+}
+
+/// Returns the extra site stylesheets declared under `[site] styles`.
+///
+/// Entries are returned as normalized vault-root-relative `/`-separated paths
+/// in declaration order with duplicates removed. Validation rejects absolute
+/// paths, backslash separators, and any path that escapes the vault root.
+pub fn site_styles(toml_text: Option<&str>) -> Result<Vec<String>, String> {
+    let Some(toml_text) = toml_text else {
+        return Ok(Vec::new());
+    };
+    let config: VaultConfig =
+        toml::from_str(toml_text).map_err(|error| format!("invalid Notist.toml: {error}"))?;
+    let mut styles = Vec::new();
+    for style in config.site.styles {
+        let style = validate_site_style(&style)?;
+        if !styles.contains(&style) {
+            styles.push(style);
+        }
+    }
+    Ok(styles)
+}
+
+/// Validates one `[site] styles` entry and returns its normalized form.
+fn validate_site_style(style: &str) -> Result<String, String> {
+    if style.is_empty() {
+        return Err("`[site] styles` entry must not be empty".into());
+    }
+    if style.contains('\\') {
+        return Err(format!(
+            "`[site] styles` entry `{style}` must use `/` separators"
+        ));
+    }
+    let mut normalized = String::new();
+    for component in Path::new(style).components() {
+        match component {
+            Component::Normal(segment) => {
+                if !normalized.is_empty() {
+                    normalized.push('/');
+                }
+                normalized.push_str(&segment.to_string_lossy());
+            }
+            Component::RootDir | Component::Prefix(_) => {
+                return Err(format!(
+                    "`[site] styles` entry `{style}` must be relative to the vault root"
+                ));
+            }
+            Component::CurDir => continue,
+            Component::ParentDir => {
+                return Err(format!(
+                    "`[site] styles` entry `{style}` must stay inside the vault root"
+                ));
+            }
+        }
+    }
+    if normalized.is_empty() {
+        return Err("`[site] styles` entry must name a file".into());
+    }
+    if Path::new(&normalized)
+        .extension()
+        .and_then(|extension| extension.to_str())
+        != Some("css")
+    {
+        return Err(format!(
+            "`[site] styles` entry `{style}` must name a `.css` file"
+        ));
+    }
+    Ok(normalized)
 }
 
 fn effective_capabilities(requested: &[String], site_grants: Option<&[String]>) -> Vec<String> {
@@ -462,71 +551,88 @@ pub fn load_package_with_grants(
     } else {
         None
     };
-    let runtime = match &manifest.wasm {
+    let runtime: Option<(SemanticRuntime, Vec<ElementDecl>)> = match &manifest.wasm {
         Some(wasm) => {
             let wasm_path = package_dir.join(&wasm.module);
             let wasm_bytes = std::fs::read(&wasm_path)
                 .map_err(|error| format!("cannot read {}: {error}", wasm_path.display()))?;
             if wasm.component && wasm.host_call {
-                Some(SemanticRuntime::ComponentHost(Arc::new(Mutex::new(
-                    load_component_host_runtime(
-                        &manifest.package,
-                        &wasm_path,
-                        &wasm_bytes,
-                        Arc::clone(shared_registry.as_ref().unwrap()),
-                    )?,
-                ))))
+                let (runtime, declarations) = load_component_host_runtime(
+                    &manifest.package,
+                    &wasm_path,
+                    &wasm_bytes,
+                    Arc::clone(shared_registry.as_ref().unwrap()),
+                )?;
+                Some((
+                    SemanticRuntime::ComponentHost(Arc::new(Mutex::new(runtime))),
+                    declarations,
+                ))
             } else if wasm.component {
-                Some(SemanticRuntime::Component(Arc::new(Mutex::new(
-                    load_component_runtime(&manifest.package, &wasm_path, &wasm_bytes)?,
-                ))))
+                let (runtime, declarations) =
+                    load_component_runtime(&manifest.package, &wasm_path, &wasm_bytes)?;
+                Some((
+                    SemanticRuntime::Component(Arc::new(Mutex::new(runtime))),
+                    declarations,
+                ))
             } else {
-                Some(SemanticRuntime::Core(Arc::new(Mutex::new(
-                    load_wasm_runtime(&manifest.package, &wasm_path, &wasm_bytes)?,
-                ))))
+                let runtime = load_wasm_runtime(&manifest.package, &wasm_path, &wasm_bytes)?;
+                Some((
+                    SemanticRuntime::Core(Arc::new(Mutex::new(runtime))),
+                    Vec::new(),
+                ))
             }
         }
         None => None,
     };
 
-    let semantic = manifest.interfaces.semantic.as_ref();
+    // The semantic surface comes from component `init` registration. The
+    // manifest `interfaces.semantic` block is only consulted by the legacy v0
+    // raw Wasm path; component packages are self-describing and ignore it.
+    let declared: &[ElementDecl] = match &runtime {
+        Some((SemanticRuntime::Core(_), _)) => manifest
+            .interfaces
+            .semantic
+            .as_ref()
+            .map(|semantic| semantic.elements.as_slice())
+            .unwrap_or_default(),
+        Some((_, declarations)) => declarations.as_slice(),
+        None => {
+            return Err(format!(
+                "plugin `{}` declares no wasm module; packages must ship a self-describing component",
+                manifest.package
+            ));
+        }
+    };
     let mut functions = Vec::new();
     let mut elements = Vec::new();
-    if let Some(semantic) = semantic {
-        for element in &semantic.elements {
-            let signature = element_signature(element)?;
-            let element_name = plugin_element_name(&manifest.package, &element.name);
-            let owner = FunctionOwner::Plugin(manifest.package.clone());
-            let function: Arc<dyn Function> = match &runtime {
-                Some(SemanticRuntime::Core(runtime)) => Arc::new(WasmFunction {
-                    element_name: element_name.clone(),
-                    block: element.block,
-                    signature,
-                    runtime: Arc::clone(runtime),
-                    owner,
-                }),
-                Some(SemanticRuntime::Component(runtime)) => Arc::new(ComponentFunction {
-                    element_name: element_name.clone(),
-                    signature,
-                    runtime: Arc::clone(runtime),
-                    owner,
-                }),
-                Some(SemanticRuntime::ComponentHost(runtime)) => Arc::new(ComponentHostFunction {
-                    element_name: element_name.clone(),
-                    signature,
-                    runtime: Arc::clone(runtime),
-                    owner,
-                }),
-                None => Arc::new(ElementFunction::new(
-                    element_name.clone(),
-                    signature,
-                    element.block,
-                    owner,
-                )),
-            };
-            functions.push(function);
-            elements.push(element_schema(&element_name, element, &manifest.package)?);
-        }
+    for element in declared {
+        let signature = element_signature(element)?;
+        let element_name = plugin_element_name(&manifest.package, &element.name);
+        let owner = FunctionOwner::Plugin(manifest.package.clone());
+        let function: Arc<dyn Function> = match &runtime {
+            Some((SemanticRuntime::Core(runtime), _)) => Arc::new(WasmFunction {
+                element_name: element_name.clone(),
+                block: element.block,
+                signature,
+                runtime: Arc::clone(runtime),
+                owner,
+            }),
+            Some((SemanticRuntime::Component(runtime), _)) => Arc::new(ComponentFunction {
+                element_name: element_name.clone(),
+                signature,
+                runtime: Arc::clone(runtime),
+                owner,
+            }),
+            Some((SemanticRuntime::ComponentHost(runtime), _)) => Arc::new(ComponentHostFunction {
+                element_name: element_name.clone(),
+                signature,
+                runtime: Arc::clone(runtime),
+                owner,
+            }),
+            None => unreachable!("declarative packages are rejected above"),
+        };
+        functions.push(function);
+        elements.push(element_schema(&element_name, element, &manifest.package)?);
     }
 
     if let Some(shared) = &shared_registry {
@@ -556,9 +662,7 @@ pub fn load_package_with_grants(
     }
 
     let html_contributions = manifest
-        .interfaces
-        .render
-        .as_ref()
+        .effective_render()
         .and_then(|render| render.html.as_ref())
         .map(|html| html.contributions.clone())
         .unwrap_or_default();
@@ -572,87 +676,6 @@ pub fn load_package_with_grants(
         html_contributions,
         capabilities: effective_capabilities,
         shared_registry,
-    })
-}
-
-/// Loads only the declarative surface of vault plugins.
-///
-/// This path reads `plugin.json` and builds signatures, shaping schemas, HTML
-/// contributions, and schema-backed placeholder functions. It never reads,
-/// compiles, instantiates, or starts Wasm, so snapshot/static-analysis builds
-/// satisfy the "completion reads schemas without executing plugins" rule.
-pub fn load_plugin_schemas_from_vault(
-    root: &Path,
-    toml_text: Option<&str>,
-) -> Result<Vec<LoadedPlugin>, String> {
-    let Some(toml_text) = toml_text else {
-        return Ok(Vec::new());
-    };
-    let config: VaultConfig =
-        toml::from_str(toml_text).map_err(|error| format!("invalid Notist.toml: {error}"))?;
-    let mut loaded = Vec::new();
-    for (name, entry) in config.plugins {
-        let package_dir = match &entry.path {
-            Some(path) => root.join(path),
-            None => {
-                return Err(format!(
-                    "plugin `{name}` must declare a `path` in Notist.toml"
-                ));
-            }
-        };
-        loaded.push(load_package_schema_with_grants(
-            &package_dir,
-            Some(&entry.capabilities),
-        )?);
-    }
-    Ok(loaded)
-}
-
-/// Loads one package schema without reading its Wasm module.
-pub fn load_package_schema_with_grants(
-    package_dir: &Path,
-    site_grants: Option<&[String]>,
-) -> Result<LoadedPlugin, String> {
-    let package_dir = resolve_package_dir(package_dir)?;
-    let manifest = read_manifest(&package_dir)?;
-    let effective_capabilities =
-        effective_capabilities(&manifest.capabilities.request, site_grants);
-
-    let semantic = manifest.interfaces.semantic.as_ref();
-    let mut functions = Vec::new();
-    let mut elements = Vec::new();
-    if let Some(semantic) = semantic {
-        for element in &semantic.elements {
-            let signature = element_signature(element)?;
-            let element_name = plugin_element_name(&manifest.package, &element.name);
-            let owner = FunctionOwner::Plugin(manifest.package.clone());
-            functions.push(Arc::new(ElementFunction::new(
-                element_name.clone(),
-                signature,
-                element.block,
-                owner,
-            )) as Arc<dyn Function>);
-            elements.push(element_schema(&element_name, element, &manifest.package)?);
-        }
-    }
-
-    let html_contributions = manifest
-        .interfaces
-        .render
-        .as_ref()
-        .and_then(|render| render.html.as_ref())
-        .map(|html| html.contributions.clone())
-        .unwrap_or_default();
-
-    Ok(LoadedPlugin {
-        id: manifest.package.clone(),
-        version: manifest.version,
-        api_version: manifest.api_version,
-        functions,
-        elements,
-        html_contributions,
-        capabilities: effective_capabilities,
-        shared_registry: None,
     })
 }
 
@@ -1046,43 +1069,219 @@ enum SemanticRuntime {
 }
 
 struct ComponentRuntime {
-    store: Store<()>,
-    bindings: wit_bindings_semantic::Semantic,
+    store: Store<ComponentStoreState>,
+    bindings: wit_bindings_semantic::Plugin,
+}
+
+/// Store state for a plain `plugin` world component: resource limits plus the
+/// empty WASI context required by SDK-generated guests.
+struct ComponentStoreState {
+    limits: WasmStoreState,
+    table: ResourceTable,
+    wasi: WasiCtx,
+}
+
+impl WasiView for ComponentStoreState {
+    fn ctx(&mut self) -> WasiCtxView<'_> {
+        WasiCtxView {
+            ctx: &mut self.wasi,
+            table: &mut self.table,
+        }
+    }
+}
+
+impl ResourceLimiter for ComponentStoreState {
+    fn memory_growing(
+        &mut self,
+        current: usize,
+        desired: usize,
+        maximum: Option<usize>,
+    ) -> wasmtime::Result<bool> {
+        self.limits.memory_growing(current, desired, maximum)
+    }
+
+    fn table_growing(
+        &mut self,
+        current: usize,
+        desired: usize,
+        maximum: Option<usize>,
+    ) -> wasmtime::Result<bool> {
+        self.limits.table_growing(current, desired, maximum)
+    }
+}
+
+/// Calls guest `init` exactly once after instantiation, inside the same fuel
+/// budget as `evaluate`, and converts the returned declarations.
+macro_rules! run_component_init {
+    ($package:expr, $wasm_path:expr, $bindings:expr, $store:expr, $convert:expr) => {{
+        $store.set_fuel(WASM_FUEL_PER_CALL).map_err(|error| {
+            format!(
+                "cannot set component init fuel for {}: {error}",
+                $wasm_path.display()
+            )
+        })?;
+        let declarations = $bindings
+            .call_init($store)
+            .map_err(|error| component_init_error($package, $wasm_path, error))?
+            .into_iter()
+            .map($convert)
+            .collect::<Result<Vec<_>, String>>()?;
+        declarations
+    }};
+}
+
+fn component_init_error(package: &str, wasm_path: &Path, error: wasmtime::Error) -> String {
+    let reason = if error.to_string().contains("fuel") {
+        "component init exceeded its fuel budget"
+    } else {
+        "component init failed"
+    };
+    format!(
+        "plugin `{package}`: {reason} ({}): {error}",
+        wasm_path.display()
+    )
+}
+
+/// Validates one guest-declared element name. Guests can never escape their
+/// package namespace because the host prepends `{package}::`; rejecting empty
+/// names and qualified spellings keeps the namespace rule mechanical.
+fn validate_guest_element_name(package: &str, name: &str) -> Result<(), String> {
+    let valid = !name.is_empty()
+        && !name.contains("::")
+        && name
+            .bytes()
+            .all(|byte| byte.is_ascii_alphanumeric() || byte == b'-' || byte == b'_');
+    if valid {
+        Ok(())
+    } else {
+        Err(format!(
+            "plugin `{package}` declared invalid element name `{name}`"
+        ))
+    }
 }
 
 fn load_component_runtime(
     package: &str,
     wasm_path: &Path,
     wasm_bytes: &[u8],
-) -> Result<ComponentRuntime, String> {
+) -> Result<(ComponentRuntime, Vec<ElementDecl>), String> {
     let mut config = Config::new();
     config.consume_fuel(true);
     let engine = Engine::new(&config)
         .map_err(|error| format!("cannot create component engine for `{package}`: {error}"))?;
     let component = WasmComponent::new(&engine, wasm_bytes)
         .map_err(|error| format!("invalid component module {}: {error}", wasm_path.display()))?;
-    let linker = Linker::new(&engine);
-    let mut store = Store::new(&engine, ());
+    let mut linker = Linker::<ComponentStoreState>::new(&engine);
+    p2::add_to_linker_sync(&mut linker)
+        .map_err(|error| format!("cannot link component wasi imports: {error}"))?;
+    let mut store = Store::new(
+        &engine,
+        ComponentStoreState {
+            limits: WasmStoreState {
+                max_memory: WASM_MAX_MEMORY_BYTES,
+                max_table_elements: WASM_MAX_TABLE_ELEMENTS,
+            },
+            table: ResourceTable::new(),
+            wasi: WasiCtxBuilder::new().build(),
+        },
+    );
+    store.limiter(|state| state);
     store.set_fuel(WASM_FUEL_PER_CALL).map_err(|error| {
         format!(
             "cannot set component instantiation fuel for {}: {error}",
             wasm_path.display()
         )
     })?;
-    let bindings = wit_bindings_semantic::Semantic::instantiate(&mut store, &component, &linker)
+    let bindings = wit_bindings_semantic::Plugin::instantiate(&mut store, &component, &linker)
         .map_err(|error| {
             format!(
                 "cannot instantiate component {}: {error}",
                 wasm_path.display()
             )
         })?;
-    Ok(ComponentRuntime { store, bindings })
+    let declarations = run_component_init!(package, wasm_path, bindings, &mut store, |decl| {
+        convert_guest_decl(package, decl)
+    });
+    Ok((ComponentRuntime { store, bindings }, declarations))
+}
+
+/// Converts one guest-declared element into the host manifest shape so the
+/// same signature/schema builders serve both sources.
+fn convert_guest_decl(
+    package: &str,
+    guest: wit_bindings_semantic::ElementDecl,
+) -> Result<ElementDecl, String> {
+    validate_guest_element_name(package, &guest.name)?;
+    Ok(ElementDecl {
+        name: guest.name,
+        version: guest.version,
+        block: guest.block,
+        parameters: guest
+            .parameters
+            .into_iter()
+            .map(|param| {
+                let default = match param.default_json {
+                    Some(json) => Some(serde_json::from_str(&json).map_err(|error| {
+                        format!(
+                            "plugin `{package}` parameter `{}` declares invalid \
+                             default JSON `{json}`: {error}",
+                            param.name
+                        )
+                    })?),
+                    None => None,
+                };
+                Ok(ParamDecl {
+                    name: param.name,
+                    ty: param.ty,
+                    default,
+                })
+            })
+            .collect::<Result<Vec<_>, String>>()?,
+        trailing_content: guest.trailing_content,
+        body_mode: guest.body_mode,
+        role: guest.role,
+        kind: guest.kind,
+    })
 }
 
 struct ComponentHostState {
+    limits: WasmStoreState,
+    table: ResourceTable,
+    wasi: WasiCtx,
     registry: Arc<Mutex<FunctionRegistry>>,
     owner: FunctionOwner,
 }
+
+impl WasiView for ComponentHostState {
+    fn ctx(&mut self) -> WasiCtxView<'_> {
+        WasiCtxView {
+            ctx: &mut self.wasi,
+            table: &mut self.table,
+        }
+    }
+}
+
+impl ResourceLimiter for ComponentHostState {
+    fn memory_growing(
+        &mut self,
+        current: usize,
+        desired: usize,
+        maximum: Option<usize>,
+    ) -> wasmtime::Result<bool> {
+        self.limits.memory_growing(current, desired, maximum)
+    }
+
+    fn table_growing(
+        &mut self,
+        current: usize,
+        desired: usize,
+        maximum: Option<usize>,
+    ) -> wasmtime::Result<bool> {
+        self.limits.table_growing(current, desired, maximum)
+    }
+}
+
+impl wit_bindings::notist::plugin::types::Host for ComponentHostState {}
 
 impl wit_bindings::notist::plugin::host::Host for ComponentHostState {
     fn call(&mut self, request: Vec<u8>) -> Result<Vec<u8>, String> {
@@ -1111,7 +1310,7 @@ impl wit_bindings::notist::plugin::host::Host for ComponentHostState {
 
 struct ComponentHostRuntime {
     store: Store<ComponentHostState>,
-    bindings: wit_bindings::SemanticHost,
+    bindings: wit_bindings::PluginHost,
 }
 
 fn load_component_host_runtime(
@@ -1119,7 +1318,7 @@ fn load_component_host_runtime(
     wasm_path: &Path,
     wasm_bytes: &[u8],
     shared_registry: Arc<Mutex<FunctionRegistry>>,
-) -> Result<ComponentHostRuntime, String> {
+) -> Result<(ComponentHostRuntime, Vec<ElementDecl>), String> {
     let mut config = Config::new();
     config.consume_fuel(true);
     let engine = Engine::new(&config)
@@ -1127,29 +1326,81 @@ fn load_component_host_runtime(
     let component = WasmComponent::new(&engine, wasm_bytes)
         .map_err(|error| format!("invalid component module {}: {error}", wasm_path.display()))?;
     let mut linker = Linker::new(&engine);
-    wit_bindings::SemanticHost::add_to_linker::<_, HasSelf<_>>(&mut linker, |state| state)
+    wit_bindings::PluginHost::add_to_linker::<_, HasSelf<_>>(&mut linker, |state| state)
         .map_err(|error| format!("cannot link component host imports: {error}"))?;
+    p2::add_to_linker_sync(&mut linker)
+        .map_err(|error| format!("cannot link component wasi imports: {error}"))?;
     let mut store = Store::new(
         &engine,
         ComponentHostState {
+            limits: WasmStoreState {
+                max_memory: WASM_MAX_MEMORY_BYTES,
+                max_table_elements: WASM_MAX_TABLE_ELEMENTS,
+            },
+            table: ResourceTable::new(),
+            wasi: WasiCtxBuilder::new().build(),
             registry: shared_registry,
             owner: FunctionOwner::Plugin(package.to_owned()),
         },
     );
+    store.limiter(|state| state);
     store.set_fuel(WASM_FUEL_PER_CALL).map_err(|error| {
         format!(
             "cannot set component host instantiation fuel for {}: {error}",
             wasm_path.display()
         )
     })?;
-    let bindings = wit_bindings::SemanticHost::instantiate(&mut store, &component, &linker)
-        .map_err(|error| {
+    let bindings = wit_bindings::PluginHost::instantiate(&mut store, &component, &linker).map_err(
+        |error| {
             format!(
                 "cannot instantiate component {}: {error}",
                 wasm_path.display()
             )
-        })?;
-    Ok(ComponentHostRuntime { store, bindings })
+        },
+    )?;
+    let declarations = run_component_init!(package, wasm_path, bindings, &mut store, |decl| {
+        convert_guest_decl_host(package, decl)
+    });
+    Ok((ComponentHostRuntime { store, bindings }, declarations))
+}
+
+/// Same conversion as [`convert_guest_decl`], for the `plugin-host` world's
+/// generated declaration type.
+fn convert_guest_decl_host(
+    package: &str,
+    guest: wit_bindings::ElementDecl,
+) -> Result<ElementDecl, String> {
+    validate_guest_element_name(package, &guest.name)?;
+    Ok(ElementDecl {
+        name: guest.name,
+        version: guest.version,
+        block: guest.block,
+        parameters: guest
+            .parameters
+            .into_iter()
+            .map(|param| {
+                let default = match param.default_json {
+                    Some(json) => Some(serde_json::from_str(&json).map_err(|error| {
+                        format!(
+                            "plugin `{package}` parameter `{}` declares invalid \
+                             default JSON `{json}`: {error}",
+                            param.name
+                        )
+                    })?),
+                    None => None,
+                };
+                Ok(ParamDecl {
+                    name: param.name,
+                    ty: param.ty,
+                    default,
+                })
+            })
+            .collect::<Result<Vec<_>, String>>()?,
+        trailing_content: guest.trailing_content,
+        body_mode: guest.body_mode,
+        role: guest.role,
+        kind: guest.kind,
+    })
 }
 
 struct ComponentHostFunction {
@@ -1523,95 +1774,33 @@ mod tests {
     }
 
     #[test]
-    fn declarative_package_without_wasm_registers_and_evaluates() {
-        let dir = temp_package_dir();
-        write_manifest(
-            &dir,
-            r#"{
-                "package": "demo",
-                "version": "0.1.0",
-                "api-version": "0.1",
-                "interfaces": {
-                    "semantic": {
-                        "elements": [{
-                            "name": "box",
-                            "version": 1,
-                            "block": true,
-                            "parameters": [
-                                { "name": "source", "ty": "String" },
-                                { "name": "width", "ty": "Int", "default": 800 }
-                            ],
-                            "trailing-content": "body",
-                            "body-mode": "flow",
-                            "role": "none"
-                        }]
-                    }
-                }
-            }"#,
-        );
-
-        let plugin = load_package(&dir).unwrap();
-        assert_eq!(plugin.id, "demo");
+    fn component_init_registration_builds_signatures_and_schemas() {
+        let package_dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("../../plugins/component-echo")
+            .canonicalize()
+            .unwrap();
+        let plugin = load_package(&package_dir).unwrap();
+        assert_eq!(plugin.id, "component-echo");
         assert_eq!(plugin.functions.len(), 1);
-        assert_eq!(plugin.functions[0].name(), "demo::box");
+        assert_eq!(plugin.functions[0].name(), "component-echo::echo");
+        // The signature comes from guest `init`, not the manifest: the
+        // envelope plugin.json carries no semantic block at all.
+        let signature = plugin.functions[0].signature();
+        assert_eq!(signature.trailing_content.as_deref(), Some("body"));
+        let message = signature
+            .parameters
+            .iter()
+            .find(|parameter| parameter.name == "message")
+            .expect("message parameter registered from init");
+        assert!(matches!(
+            message.default,
+            Some(DefaultValue::String(ref value)) if value == "hello"
+        ));
         assert_eq!(plugin.elements.len(), 1);
-        assert_eq!(plugin.elements[0].name, ElementName::plugin("demo", "box"));
-
-        let mut registry = FunctionRegistry::with_builtins();
-        register_loaded(&mut registry, &[plugin]).unwrap();
-        let evaluation = Evaluator::new(registry).evaluate("#demo::box(source: \"wgsl\")[Hi]");
-        assert!(
-            evaluation.diagnostics.is_empty(),
-            "{:?}",
-            evaluation.diagnostics
+        assert_eq!(
+            plugin.elements[0].name,
+            ElementName::plugin("component-echo", "echo")
         );
-        let Element::Custom {
-            name, fields, body, ..
-        } = &evaluation.content.elements[0].element
-        else {
-            panic!("expected custom element")
-        };
-        assert_eq!(name, "demo::box");
-        assert!(fields.iter().any(|field| field.name == "width"
-            && matches!(field.value, ElementValue::Int(800))));
-        assert!(matches!(&body.elements[0].element, Element::Text(text) if text == "Hi"));
-    }
-
-    #[test]
-    fn declarative_bodyless_element_does_not_panic() {
-        let dir = temp_package_dir();
-        write_manifest(
-            &dir,
-            r#"{
-                "package": "demo",
-                "version": "0.1.0",
-                "api-version": "0.1",
-                "interfaces": {
-                    "semantic": {
-                        "elements": [{
-                            "name": "badge",
-                            "version": 1,
-                            "block": false,
-                            "parameters": [{ "name": "label", "ty": "String" }]
-                        }]
-                    }
-                }
-            }"#,
-        );
-
-        let plugin = load_package(&dir).unwrap();
-        let mut registry = FunctionRegistry::with_builtins();
-        register_loaded(&mut registry, &[plugin]).unwrap();
-        let evaluation = Evaluator::new(registry).evaluate("#demo::badge(label: \"x\")");
-        assert!(
-            evaluation.diagnostics.is_empty(),
-            "{:?}",
-            evaluation.diagnostics
-        );
-        let Element::Custom { body, .. } = &evaluation.content.elements[0].element else {
-            panic!("expected custom element")
-        };
-        assert!(body.elements.is_empty());
     }
 
     #[test]
@@ -1667,36 +1856,20 @@ mod tests {
 
     #[test]
     fn plugin_shaping_schema_applies_in_the_stream_pipeline() {
-        let dir = temp_package_dir();
-        write_manifest(
-            &dir,
-            r#"{
-                "package": "demo",
-                "version": "0.1.0",
-                "api-version": "0.1",
-                "interfaces": {
-                    "semantic": {
-                        "elements": [{
-                            "name": "box",
-                            "version": 1,
-                            "block": true,
-                            "parameters": [{ "name": "source", "ty": "String" }],
-                            "trailing-content": "body",
-                            "body-mode": "flow",
-                            "role": "none"
-                        }]
-                    }
-                }
-            }"#,
-        );
-        let plugins = [load_package(&dir).unwrap()];
+        let package_dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("../../plugins/component-echo")
+            .canonicalize()
+            .unwrap();
+        let plugins = [load_package(&package_dir).unwrap()];
         let mut registry = FunctionRegistry::with_builtins();
         register_loaded(&mut registry, &plugins).unwrap();
         let mut shaping = ShapingRegistry::new();
         register_loaded_shaping(&mut shaping, &plugins);
 
-        let evaluation = Evaluator::new(registry)
-            .evaluate_stream_with_shaping("#demo::box(source: \"x\")[first\n\nsecond]", &shaping);
+        let evaluation = Evaluator::new(registry).evaluate_stream_with_shaping(
+            "#component-echo::echo(message: \"x\")[first\n\nsecond]",
+            &shaping,
+        );
         assert!(
             evaluation.diagnostics.is_empty(),
             "{:?}",
@@ -1705,8 +1878,10 @@ mod tests {
         assert_eq!(evaluation.tree.roots.len(), 1);
         assert_eq!(
             evaluation.tree.roots[0].instance.name,
-            ElementName::plugin("demo", "box")
+            ElementName::plugin("component-echo", "echo")
         );
+        // The trailing body is echoed through the component and shaped by the
+        // guest-declared `body-mode: flow` schema.
         assert_eq!(evaluation.tree.roots[0].instance.body.len(), 2);
         assert!(
             evaluation.tree.roots[0]
@@ -1730,26 +1905,68 @@ mod tests {
         let mut registry = FunctionRegistry::with_builtins();
         register_loaded(&mut registry, &[plugin]).unwrap();
         let evaluation =
-            Evaluator::new(registry).evaluate("#component-echo::echo(message: \"hi\")");
+            Evaluator::new(registry).evaluate("#component-echo::echo(message: \"hi\")[body]");
         assert!(
             evaluation.diagnostics.is_empty(),
             "{:?}",
             evaluation.diagnostics
         );
-        let Element::Custom { name, fields, .. } = &evaluation.content.elements[0].element else {
+        let Element::Custom {
+            name, fields, body, ..
+        } = &evaluation.content.elements[0].element
+        else {
             panic!(
                 "expected custom element, got {:?}",
                 evaluation.content.elements
             )
         };
-        assert_eq!(name, "demo::echo");
+        assert_eq!(name, "component-echo::echo");
         assert!(fields.iter().any(|field| field.name == "message"
-            && matches!(&field.value, ElementValue::String(value) if value == "hello from component")));
+            && matches!(&field.value, ElementValue::String(value) if value == "hi")));
+        assert!(matches!(&body.elements[0].element, Element::Text(text) if text == "body"));
+    }
+
+    #[test]
+    fn envelope_render_contributions_parse_from_manifest() {
+        let echo_dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("../../plugins/component-echo")
+            .canonicalize()
+            .unwrap();
+        let dir = temp_package_dir();
+        std::fs::copy(echo_dir.join("semantic.wasm"), dir.join("semantic.wasm")).unwrap();
+        write_manifest(
+            &dir,
+            r#"{
+                "package": "card",
+                "version": "0.1.0",
+                "api-version": "0.1",
+                "render": {
+                    "html": {
+                        "contributions": [{
+                            "element": "echo",
+                            "trusted": true,
+                            "web-component": {
+                                "tag": "notist-card",
+                                "module": "assets/card.js"
+                            }
+                        }]
+                    }
+                },
+                "wasm": { "module": "semantic.wasm", "component": true }
+            }"#,
+        );
+        let plugin = load_package(&dir).unwrap();
+        assert_eq!(plugin.html_contributions.len(), 1);
+        assert!(plugin.html_contributions[0].trusted);
     }
 
     #[test]
     fn zip_package_is_extracted_and_loaded() {
         use std::io::Write as _;
+        let echo_dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("../../plugins/component-echo")
+            .canonicalize()
+            .unwrap();
         let dir = temp_package_dir();
         write_manifest(
             &dir,
@@ -1757,17 +1974,7 @@ mod tests {
                 "package": "zip-demo",
                 "version": "0.1.0",
                 "api-version": "0.1",
-                "interfaces": {
-                    "semantic": {
-                        "elements": [{
-                            "name": "box",
-                            "version": 1,
-                            "block": true,
-                            "parameters": [{ "name": "source", "ty": "String" }],
-                            "trailing-content": "body"
-                        }]
-                    }
-                }
+                "wasm": { "module": "semantic.wasm", "component": true }
             }"#,
         );
         let zip_path = dir.join("package.zip");
@@ -1779,16 +1986,27 @@ mod tests {
         writer
             .write_all(std::fs::read(dir.join("plugin.json")).unwrap().as_slice())
             .unwrap();
+        writer.start_file("semantic.wasm", options).unwrap();
+        writer
+            .write_all(
+                std::fs::read(echo_dir.join("semantic.wasm"))
+                    .unwrap()
+                    .as_slice(),
+            )
+            .unwrap();
         writer.finish().unwrap();
 
         let resolved = resolve_package_dir(&zip_path).unwrap();
         assert_ne!(resolved, dir);
         assert!(resolved.join("plugin.json").is_file());
+        // The envelope carries no semantic block; registration comes from
+        // guest init even for extracted zip packages.
         let plugin = load_package(&zip_path).unwrap();
         assert_eq!(plugin.id, "zip-demo");
+        assert_eq!(plugin.functions[0].name(), "zip-demo::echo");
         let mut registry = FunctionRegistry::with_builtins();
         register_loaded(&mut registry, &[plugin]).unwrap();
-        let evaluation = Evaluator::new(registry).evaluate("#zip-demo::box(source: \"x\")[Hi]");
+        let evaluation = Evaluator::new(registry).evaluate("#zip-demo::echo(message: \"m\")[]");
         assert!(
             evaluation.diagnostics.is_empty(),
             "{:?}",
@@ -1944,14 +2162,69 @@ mod tests {
             )
         );
     }
+
+    #[test]
+    fn site_styles_parses_normalizes_and_deduplicates() {
+        let styles = site_styles(Some(
+            r#"
+[site]
+styles = ["assets/user.css", "./theme/deep/nested.css", "assets/user.css"]
+"#,
+        ))
+        .unwrap();
+        assert_eq!(styles, vec!["assets/user.css", "theme/deep/nested.css"]);
+        assert!(
+            site_styles(Some(
+                r#"[plugins.demo]
+path = "demo""#
+            ))
+            .unwrap()
+            .is_empty()
+        );
+        assert!(site_styles(None).unwrap().is_empty());
+    }
+
+    #[test]
+    fn site_styles_rejects_unsafe_or_invalid_entries() {
+        for (config, expected) in [
+            (
+                r#"[site]
+styles = ["../escape.css"]"#,
+                "must stay inside the vault root",
+            ),
+            (
+                r#"[site]
+styles = ["/abs/user.css"]"#,
+                "must be relative to the vault root",
+            ),
+            (
+                r#"[site]
+styles = ['assets\user.css']"#,
+                "must use `/` separators",
+            ),
+            (
+                r#"[site]
+styles = ["assets/user.scss"]"#,
+                "must name a `.css` file",
+            ),
+            (
+                r#"[site]
+styles = [""]"#,
+                "must not be empty",
+            ),
+        ] {
+            let error = site_styles(Some(config)).unwrap_err();
+            assert!(error.contains(expected), "{config} -> {error}");
+        }
+    }
 }
 
 #[allow(dead_code, clippy::all)]
 mod wit_bindings {
-    wasmtime::component::bindgen!({ path: "wit/notist-plugin.wit", world: "semantic-host" });
+    wasmtime::component::bindgen!({ path: "wit/notist-plugin.wit", world: "plugin-host" });
 }
 
 #[allow(dead_code, clippy::all)]
 mod wit_bindings_semantic {
-    wasmtime::component::bindgen!({ path: "wit/notist-plugin.wit", world: "semantic" });
+    wasmtime::component::bindgen!({ path: "wit/notist-plugin.wit", world: "plugin" });
 }

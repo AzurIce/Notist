@@ -1,0 +1,66 @@
+@![implementation = "aligned"]
+= Projection Contribution
+
+本文定义插件元素如何声明 target 投影贡献。project 阶段按 name 分发 renderer，见 [[vault::designs::pipeline::project]]；HTML target 的宿主渲染环境见 [[vault::designs::host::html-renderer]]。
+
+== Render Contribution
+
+插件不输出 HTML 字符串。它声明后端无关的投影贡献，由宿主 target renderer 消费：
+
+```json
+{
+  "render": {
+    "html": {
+      "contributions": [
+        {
+          "element": "shader",
+          "trusted": true,
+          "web-component": {
+            "tag": "notist-shader",
+            "module": "assets/shader.js",
+            "style": "assets/shader.css"
+          }
+        }
+      ]
+    }
+  }
+}
+```
+
+- 宿主 renderer registry 按 `ElementName` 分发；
+- 未注册 renderer 的插件 Leaf 走安全 fallback；
+- 富渲染必须经过 trusted renderer 边界；
+- core Leaf 的 HTML 投影由宿主 native renderer 提供（`core::heading` → `<h1>` 等）。
+
+== 当前 HTML contribution
+
+v1 只开放声明式 Web Component projection：
+
+```text
+HtmlContribution {
+  element: String
+  trusted: Bool
+  web-component: Option<WebComponentDecl>
+}
+
+WebComponentDecl {
+  tag: String
+  module: String
+  style: Option<String>
+}
+```
+
+- host renderer 输出 custom element，并把标量字段转义为 `data-*` 属性；字段与 body 值保持与其他 HTML 投影相同的转义规则。
+- JS module 与 CSS 由 CLI build / preview 复制到 `_notist/plugins/<package>/` 并注入页面 head。
+- `tag` 必须是包含 `-` 的 lowercase custom-element 名，manifest 校验时拒绝非法 tag。
+- 任意 HTML 字符串 renderer 不进入 v1；`trusted` 是 manifest 声明的信任标记，未来用于 Wasm HTML renderer 的 gate。
+
+== Fallback
+
+renderer 缺失或 schema 不兼容时，投影降级为通用 fallback：保留可见文本与元素名，但不执行插件资产。fallback 永远 total，build 不失败。
+
+== 已裁定 / 待定
+
+- 已裁定：插件只声明投影贡献，target 结果由宿主生成。
+- 已裁定：HTML target 中富交互 Leaf 可投影为 Web Component，未注册 renderer 时保留安全 fallback。
+- 待定：HTML 之外 native target 的 render node 契约。

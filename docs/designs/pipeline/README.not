@@ -50,7 +50,7 @@ lower 是 evaluate 的前半段：它消费 check 后的语法树，产出统一
 
 == Reduce
 
-reduce 是 evaluate 的后半段：它把 `Stream<Call | Leaf>` 中的 `Call` 递归规约为 `ElementInstance` Leaf。规约后仍是流，允许 `core::parbreak` 与未归组的 `core::item`。插件调用、capability、终止预算与插件 ABI 见 [[vault::designs::pipeline::plugin-call-reduction]]；完整插件 package 模型见 [[vault::designs::pipeline::plugin-system]]。
+reduce 是 evaluate 的后半段：它把 `Stream<Call | Leaf>` 中的 `Call` 递归规约为 `ElementInstance` Leaf。规约后仍是流，允许 `core::parbreak` 与未归组的 `core::item`。插件调用、capability、终止预算与插件 ABI 见 [[vault::designs::pipeline::plugin-call-reduction]]；完整插件 package 模型见 [[vault::designs::plugin-system]]。
 
 == Structure
 
@@ -58,7 +58,7 @@ structure 是递归流折叠：消费 `core::parbreak`，把 inline Leaf 合并�
 
 == Project
 
-project 按 `ElementInstance.name` 分发到 target renderer。详细契约见 [[vault::designs::pipeline::project]]；HTML target 中 core Leaf 投影为原生 HTML，插件 Leaf 可以投影为 Web Component；投影层统一，但 target 结果不强制都是 Web Component。HTML 映射见 [[vault::designs::host::html-renderer]]；跨 target 投影边界见 [[vault::designs::world::core-namespace-plugin-boundary]]。
+project 按 `ElementInstance.name` 分发到 target renderer。详细契约见 [[vault::designs::pipeline::project]]；HTML target 中 core Leaf 投影为原生 HTML，插件 Leaf 可以投影为 Web Component；投影层统一，但 target 结果不强制都是 Web Component。HTML 映射见 [[vault::designs::host::html-renderer]]；插件投影贡献见 [[vault::designs::plugin-system::projection]]；跨 target 投影边界见 [[vault::designs::world::core-namespace-plugin-boundary]]。
 
 == 诊断流动
 

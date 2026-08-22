@@ -156,12 +156,16 @@ fn rebuild_preview_site(
                 format!("invalid plugin manifest: {error}"),
             )
         })?;
+    let site_styles = notist_plugin_host::site_styles(config_text.as_deref())
+        .map_err(|error| std::io::Error::new(std::io::ErrorKind::InvalidInput, error))?;
     crate::build::copy_plugin_assets(root, &staging)?;
+    let style_web_paths = crate::build::copy_site_styles(root, &staging, &site_styles)?;
     write_rendered_site_with_plugins(
         &rendered,
         &staging,
         SiteOptions { live_reload: true },
         &plugin_assets,
+        &style_web_paths,
     )?;
     let mut diagnostics = rendered.analysis_diagnostics;
     merge_diagnostics(&mut diagnostics, rendered.evaluation_diagnostics);
@@ -482,6 +486,17 @@ mod tests {
         let output = tempfile::TempDir::new_in(std::env::current_dir().unwrap()).unwrap();
         let site = PublishedSite::new(output.path().join("generations")).unwrap();
         fs::write(root.path().join("README.not"), "#heading[First]").unwrap();
+        fs::write(
+            root.path().join("Notist.toml"),
+            "[site]\nstyles = [\"assets/user.css\"]",
+        )
+        .unwrap();
+        fs::create_dir_all(root.path().join("assets")).unwrap();
+        fs::write(
+            root.path().join("assets/user.css"),
+            ".user { color: darkblue; }",
+        )
+        .unwrap();
         let mut client =
             LocalNotistClient::connect(true, ClientKind::Preview, root.path().to_path_buf())
                 .unwrap();
@@ -509,6 +524,20 @@ mod tests {
         assert!(first.contains("#heading[First]"));
         assert!(first.contains(">First</span>"));
         assert!(first.contains("_notist/reload.js"));
+        // `[site] styles` sheets are copied into every generation (keeping the
+        // declared relative structure) and linked after the built-in stylesheet.
+        let styled =
+            fs::read_to_string(first_generation.path.join("_notist/styles/assets/user.css"))
+                .unwrap();
+        assert!(styled.contains("darkblue"));
+        let builtin = first.find("_notist/style.css").unwrap();
+        let custom = first
+            .find("href=\"_notist/styles/assets/user.css\"")
+            .unwrap();
+        assert!(
+            custom > builtin,
+            "custom sheet must load after the built-in one"
+        );
 
         fs::write(root.path().join("README.not"), "#heading[Second]").unwrap();
         client

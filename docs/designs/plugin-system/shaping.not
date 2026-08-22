@@ -1,0 +1,73 @@
+@![implementation = "aligned"]
+= Shaping Contribution
+
+本文定义插件元素如何声明成型 schema。成型算法本身由 pipeline 的 structure 阶段拥有，见 [[vault::designs::pipeline::structure]]；插件 Leaf 如何从 Call 规约出来见 [[vault::designs::pipeline::plugin-call-reduction]]。
+
+== ElementDecl
+
+```json
+{
+  "name": "canvas",
+  "block": true,
+  "body-mode": "flow",
+  "role": "none",
+  "kind": "block"
+}
+```
+
+宿主把每个 ElementDecl 投影为 `ElementSchema { name, kind, body_mode, role }` 并注册进 `ShapingRegistry`。
+
+== kind
+
+`kind` 是段落流分类；未声明时由 `block` 推导：
+
+| kind | 成型行为 |
+|---|---|
+| `inline` | 加入当前 paragraph buffer |
+| `block` | flush 周围 inline run 后独立成块 |
+| `separator` | flush 周围 inline run 并被消费，不产出节点 |
+| `unspecified` | 回退到 `ElementInstance.block` |
+
+`core::parbreak` 是 `separator` 的特权条目。
+
+== body-mode
+
+`body-mode` 决定 body 的递归成型方式：
+
+| body-mode | 成型行为 |
+|---|---|
+| `inline` | body 是 inline 流，不产生 paragraph |
+| `flow` | body 执行完整 paragraph / list / section 折叠 |
+| `cells` | body 保持 cell 序列，不做段落组合 |
+| `none` | body 不参与成型 |
+
+== role
+
+| role | 成型行为 |
+|---|---|
+| `none` | 普通 Leaf |
+| `heading` | 开启 `core::section` 归组 |
+| `item` | 相邻同类合并为 `core::list` |
+
+== 成型所有权
+
+宿主成型引擎固定，规则全部来自 schema：
+
+```text
+shape_flat(stream, shaping_registry)
+```
+
+- 插件不能重写成型算法，只能通过 `kind` / `body-mode` / `role` 声明参与。
+- 每个 body 都按其容器模式递归成型，而不是只处理文档顶层。
+- core package 的 `core::parbreak` / `core::heading` / `core::item` 只是该 registry 中的特权条目。
+
+== 当前实现映射
+
+- `ShapingRegistry` / `ElementSchema` 已实现；core schema 内置，插件 schema 由组件 `init` 注册。
+- 组件声明支持 `block`、`body-mode`、`role`、`kind`。
+- 主 structure/project 仍使用 legacy 兼容投影，`ElementTree` 已可用于新消费者。
+
+== 已裁定 / 待定
+
+- 已裁定：成型引擎由宿主拥有；插件通过 schema 参与，不提供 v1 shaping hook。
+- 待定：若未来需要自定义 body shaping，作为 additive 的 shaping contribution 单独设计。

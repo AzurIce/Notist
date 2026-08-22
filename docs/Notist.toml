@@ -1,2 +1,5 @@
 [plugins.shader]
 path = "../plugins/shader"
+
+[site]
+styles = ["assets/main.css"]

@@ -3,11 +3,12 @@
 本目录是当前世代的设计文档。目录结构直接表达设计分层，README 负责阅读顺序；文档没有编号 ID，历史追溯交给 Git。
 
 ```text
-pipeline/     编译管线：parse → check → evaluate → structure → project
-language/     语言层：与实现宿主无关的语义规范
-world/        Vault 层：模块、引用与运行边界
-host/         宿主层：CLI、LSP、daemon、分析与渲染架构
-archive/      已退休的旧设计；当前为空
+pipeline/      编译管线：parse → check → evaluate → structure → project
+language/      语言层：与实现宿主无关的语义规范
+world/         Vault 层：模块、引用与运行边界
+host/          宿主层：CLI、LSP、daemon、分析与渲染架构
+plugin-system/ 插件系统：package、ABI、贡献、capability 与生命周期
+archive/       已退休的旧设计；当前为空
 ```
 
 == 阅读顺序
@@ -25,8 +26,20 @@ archive/      已退休的旧设计；当前为空
 2. [[vault::designs::pipeline::evaluate]]：求值 + Call Reduction 与 Leaf 流。
 3. [[vault::designs::pipeline::structure]]：递归成型与 Leaf 结构树。
 4. [[vault::designs::pipeline::project]]：按 name 分发到 target 投影。
-5. [[vault::designs::pipeline::plugin-call-reduction]]：插件 ABI、capability 与终止规则。
-6. [[vault::designs::pipeline::plugin-system]]：插件 package、共享类型、成型 schema 与投影贡献。
+5. [[vault::designs::pipeline::plugin-call-reduction]]：插件调用在 reduce 阶段如何规约。
+
+=== 插件系统
+
+按模块依赖阅读：
+
+1. [[vault::designs::plugin-system]]：PluginSystem 模块入口与 pipeline / world / host 边界。
+2. [[vault::designs::plugin-system::package]]：插件 package、manifest、core package 与生命周期。
+3. [[vault::designs::plugin-system::abi]]：共享类型、WIT 边界与语义 ABI。
+4. [[vault::designs::plugin-system::eval-contribution]]：语义函数贡献与 FunctionRegistry。
+5. [[vault::designs::plugin-system::capability]]：权限请求、站点授予与 dispatch 检查。
+6. [[vault::designs::plugin-system::safety]]：终止性、资源预算与确定性。
+7. [[vault::designs::plugin-system::shaping]]：成型 schema 贡献。
+8. [[vault::designs::plugin-system::projection]]：target 投影贡献与 fallback。
 
 === 语言层
 
@@ -94,7 +107,7 @@ archive/      已退休的旧设计；当前为空
 
 == 写作规范
 
-- 一篇文档回答一个概念或一组强耦合概念；目录层级只到 pipeline/language/world/host 为止，避免更深嵌套。
+- 一篇文档回答一个概念或一组强耦合概念；目录层级只到 pipeline/language/world/host/plugin-system 为止，避免更深嵌套。
 - 模块路径一旦发布，不因标题或阅读顺序调整而重命名；拆分或合并时才允许移动，并同步更新全部引用。
 - 使用语义文件名；需要区分同名退休设计时，archive 中可加日期前缀，如 `2026-08-15-type-system.not`。
 - 设计正文解释模型、边界与后果；实现状态只在文件头属性中声明，不写进行文。

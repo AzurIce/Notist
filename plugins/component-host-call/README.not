@@ -1,7 +1,9 @@
 = component-host-call
 
-这是 `semantic-host` world 的最小示例：guest 调用 `host.call(core::text, ...)`，
-宿主按当前插件 principal 与 capability 策略规约，并把 Leaf 流返回给 guest。
+这是 `plugin-host` world 的最小示例：guest 通过 `EvalCtx::call` 请求
+`core::text`，宿主按当前插件 principal 与 capability 策略规约，并把 Leaf 流
+返回给 guest。插件本体是用 `notist-plugin-sdk` 编写的 Rust crate（见
+`src/lib.rs`），以 `export_host_plugin!` 导出。
 
 Vault 声明需要显式授予语义 capability：
 
@@ -11,4 +13,11 @@ path = "../plugins/component-host-call"
 capabilities = ["core::text"]
 ```
 
-有效权限 = 站点授予 ∩ plugin.json 请求。
+有效权限 = 站点授予 ∩ plugin.json `capabilities.request`。
+
+重新构建组件：
+
+```sh
+cargo build --target wasm32-wasip2 --release
+cp target/wasm32-wasip2/release/*.wasm semantic.wasm
+```

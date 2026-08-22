@@ -1,5 +1,0 @@
-package notist:plugin;
-
-world semantic {
-    export evaluate: func(request: list<u8>) -> result<list<u8>, string>;
-}

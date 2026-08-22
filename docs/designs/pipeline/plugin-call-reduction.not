@@ -21,6 +21,8 @@ text("world")
 
 其中 `parbreak` 不是杂质，而是流中合法的、成型后消失的 Leaf。
 
+本文是 PluginSystem 与 pipeline 的 reduce 契约。完整 package / ABI / capability / safety 模型见 [[vault::designs::plugin-system]]。
+
 == Pipeline
 
 ```text
@@ -159,38 +161,15 @@ FlatContent<Leaf> → ElementTree<Leaf>
 
 == 插件 ABI
 
-插件可见 IR 是 `call | leaf`。共享类型、WIT 定义、`export evaluate` 与 `import host.call` 的完整 ABI 见 [[vault::designs::pipeline::plugin-system]]。
+插件可见 IR 是 `call | leaf`。共享类型、WIT 定义、`export evaluate` 与 `import host.call` 的完整 ABI 见 [[vault::designs::plugin-system::abi]]。
 
-== Capability
+== Capability 在 reduce 中的位置
 
-插件 manifest 声明可调用范围：
-
-```json
-{
-  "capabilities": {
-    "request": [
-      "core::details",
-      "core::raw",
-      "core::text",
-      "core::parbreak"
-    ]
-  }
-}
-```
-
-归属规则：
-
-- 插件 A 返回对 B 的调用，检查 `A → B`；
-- B 返回的 Calls 归属于 B；
-- 插件输出树中嵌套在 arguments / body 里的 Calls 归属于生成该子树的插件；
-- 内置函数自身展开出的 Calls 使用 host 权限。
+reduce 在每个 dispatch 之前执行 capability 检查，插件返回的 Call 流同样受控。权限的声明、授予与归属规则见 [[vault::designs::plugin-system::capability]]。
 
 == 终止性
 
-- 最大调用深度与总调用 fuel；
-- 总输出节点数限制；
-- 不按同名函数直接判定循环：合法递归可以带不同参数收敛；可选对完全相同 `(function, 规范化参数)` 的重入做精确循环检测；
-- 插件保持纯函数约束，Wasm 调用返回后、锁释放后才继续嵌套规约。
+reduce 消耗同一 depth / fuel 预算，每个 dispatch 都计入预算。完整终止性、资源预算与确定性见 [[vault::designs::plugin-system::safety]]。
 
 == 示例：shader 组合 details
 
@@ -217,15 +196,15 @@ Stream [
 ]
 ```
 
-宿主规约 `core::details` 与 `core::raw`，保留 `shader::canvas` Leaf，递归成型后得到只有 Leaf 的 `ElementTree`。插件不再返回对自己的调用。
+宿主规约 `core::details` 与 `core::raw`，保留 `shader::canvas` Leaf，递归成型后得到只有 Leaf 的 `ElementTree`。插件不再返回对自己的调用。该组合要求 `shader` 被授予 `core::details` 与 `core::raw`（[[vault::designs::plugin-system::capability]]）。
 
 == 实施路径
 
 - Phase A：把内部 IR 收敛为 `StreamNode = Call | Leaf`，`ElementInstance` 作为唯一 Leaf 类型；修复 reduction 的参数/body 校验、depth 与 fuel。已实现：`notist-model::ElementInstance`、`notist-eval::leaf` reduction engine、`Evaluator::evaluate_leaf`。
 - Phase B：让 `structure` 递归成型所有 body，产出 `ElementTree`；删除公开树中的 `core::parbreak`。已实现：`shape_flat` 递归成型；主 reduction 已迁移并支持 sibling recovery；主 structure/project 仍用 legacy 兼容投影。
 - Phase C：插件 ABI 改为 `call | leaf` 流；宿主递归规约并执行 capability 检查。已实现。
-- Phase D：插件调用插件与 qualified function name 落地。已实现：`FunctionRegistry::register_alias` 与 `core::*` 别名；插件 ABI 待迁移。
-- Phase E：WIT 正式化，用 wit-bindgen 替换手写 ABI。已实现 bytes WIT + component evaluate/host.call。
+- Phase D：插件调用插件与 qualified function name 落地。已实现：`FunctionRegistry::register_alias` 与 `core::*` 别名，插件 ABI 已迁移。
+- Phase E：WIT 正式化，用 wit-bindgen 替换手写 ABI。已实现 bytes WIT + component `init` 注册 / evaluate / host.call。
 
 == 已裁定 / 待定
 

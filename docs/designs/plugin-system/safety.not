@@ -1,0 +1,29 @@
+@![implementation = "aligned"]
+= Termination, Resource Limits, and Determinism
+
+本文定义插件执行的安全边界。capability 的 dispatch 检查见 [[vault::designs::plugin-system::capability]]；reduce 阶段如何消耗预算见 [[vault::designs::pipeline::plugin-call-reduction]]。
+
+== 终止性
+
+- `ReduceLimits`：最大调用深度 64，单次 reduction 最多 dispatch 10 000 次。
+- 每次 dispatch 消耗 fuel 并增加 depth；未知函数、类型错误与不接受 body 都产生诊断，不通过 accessor panic 假装成功。
+- 不按同名函数直接判定循环：合法递归可以带不同参数收敛；可选对完全相同 `(function, 规范化参数)` 的重入做精确循环检测。
+- Wasm 组件每次调用 reset fuel（10 000 000），即使 guest 不配合也能终止，不需要 timer 线程。
+
+== 资源预算
+
+- Wasm 线性内存上限 16 MiB；table 元素上限 64 Ki。
+- Component response 上限 1 MiB 编码字节 / 10 000 个节点；插件请求写入内存前检查 guest memory 是否足够。
+- 超出预算统一产生 host boundary diagnostic，不返回部分成功。
+
+== 确定性
+
+- Wasm 插件是纯函数：相同输入必须相同输出。
+- 不提供文件系统、网络、随机数、进程或 cache 等非确定性 import；WASI 0.2 imports 由宿主以空 `WasiCtx` 满足。
+- host import 与 export 之间不持有 Wasm store 锁，避免重入死锁；Wasm 调用返回并释放锁后才继续嵌套规约。
+- 满足以上条件后，语义函数可安全 memoize。
+
+== 已裁定 / 待定
+
+- 已裁定：所有 guest 代码必须可终止、有资源上限、可确定性重放。
+- 待定：精确循环检测是否进入默认 budget 路径，还是作为 debug / 诊断选项。

@@ -1,0 +1,76 @@
+@![implementation = "aligned"]
+= Capability Model
+
+本文定义插件权限的声明、授予、生效与 dispatch 检查。插件与核心函数边界的权限面见 [[vault::designs::world::core-namespace-plugin-boundary]]；reduce 阶段的检查顺序见 [[vault::designs::pipeline::plugin-call-reduction]]。
+
+== 声明与授予
+
+插件在 manifest 中声明请求：
+
+```json
+{
+  "capabilities": {
+    "request": [
+      "core::details",
+      "core::raw",
+      "core::text",
+      "core::parbreak",
+      "shader::canvas"
+    ]
+  }
+}
+```
+
+Vault 在 `Notist.toml` 中按插件显式授予：
+
+```toml
+[plugins.component-host-call]
+path = "../plugins/component-host-call"
+capabilities = ["core::text"]
+```
+
+有效权限 = 站点授予 ∩ manifest 请求：
+
+- `"*"` 表示授予该插件请求的全部 capability；
+- 站点不声明 grants 时，有效权限为空；
+- 直接以测试入口 `load_package` 加载时，为兼容 standalone test，所有请求项均被授予；Vault 加载始终走站点 grants 交集。
+
+== Capability 的含义
+
+v1 中 capability 是 **qualified function name**：授权插件 principal 调度 `core::text`、`shader::canvas` 等函数。目标模型中的 `html:render` / `html:asset` 等抽象 capability 保留在 manifest 与指纹中，并作为后续投影与资产注入面的 gate；`filesystem` / `network` / `process` / `randomness` 属于独立 capability 面，v1 默认全部关闭。
+
+== Principal 与归属规则
+
+- `Principal::Host` 永远允许任何 dispatch；插件 principal 默认全部拒绝，除非 policy 显式 allow。
+- capability 匹配支持精确名与 namespace 前缀通配 `shader::*`。
+- 归属规则：
+
+```text
+- 插件 A 返回对 B 的调用，检查 A → B；
+- B 返回的 Calls 归属于 B；
+- 嵌套在 arguments / body 里的 Calls 归属于生成该子树的插件；
+- 内置函数自身展开出的 Calls 使用 host 权限。
+```
+
+== 检查路径
+
+capability 检查由 `CapabilityPolicy` 统一执行，`FunctionRegistry` 持有该 policy：
+
+- Stream reduction：`ReduceFrame::dispatch` 在 depth / fuel 检查之前先执行 capability 检查。
+- legacy reduction：插件返回的 `FunctionOutput::Calls` 以 `reduce_content_as(owner)` 规约，frame caller 切换为插件 principal。
+- component `host.call`：`ComponentHostState::call` 把当前 package 的 principal 与共享 registry 一起交给 reduction。
+
+插件返回的 Call 流同样走上述检查，因此不能通过嵌套返回绕过 grants。
+
+== 当前实现映射
+
+- `Principal` / `CapabilityPolicy` / `FunctionRegistry::allow`：已实现。
+- `Notist.toml` site grants 与 manifest request 交集：已实现于 `notist-plugin-host`。
+- legacy、Stream reduction、component `host.call` 三条路径：均已接入检查。
+- plugin capabilities 进入 `FunctionEnvironmentId` 指纹，权限变化产生新的语义世界。
+
+== 已裁定 / 待定
+
+- 已裁定：capability 与函数类型身份正交，宿主在调用时检查，不编码成普通 String/Dict 参数。
+- 已裁定：插件默认无权限；Host 不受 policy 限制。
+- 待定：抽象 capability（`html:render` / `html:asset` / `vault:read-source` 等）何时替代或补充 qualified-name grants。

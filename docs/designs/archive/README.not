@@ -1,6 +1,6 @@
 = Design Archive
 
-本目录保存已退休的旧设计。当前为空：所有现行设计都在 `language/`、`world/` 与 `host/` 下，历史版本由 Git 保存。
+本目录保存已退休的旧设计。当前为空：所有现行设计都在 `pipeline/`、`language/`、`world/`、`host/` 与 `plugin-system/` 下，历史版本由 Git 保存。
 
 == 旧编号映射
 

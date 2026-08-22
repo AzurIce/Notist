@@ -2745,25 +2745,18 @@ mod tests {
         let package = base.path().join("pkg");
         fs::create_dir(&root).unwrap();
         fs::create_dir(&package).unwrap();
+        let echo_wasm = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("../../plugins/component-echo/semantic.wasm");
+        fs::copy(&echo_wasm, package.join("semantic.wasm")).unwrap();
         let manifest = |version: &str| {
             format!(
                 r#"{{
                     "package": "demo",
                     "version": "{version}",
                     "api-version": "0.1",
-                    "interfaces": {{
-                        "semantic": {{
-                            "elements": [{{
-                                "name": "box",
-                                "version": 1,
-                                "block": true,
-                                "parameters": [{{
-                                    "name": "source",
-                                    "ty": "String"
-                                }}],
-                                "trailing-content": "body"
-                            }}]
-                        }}
+                    "wasm": {{
+                        "module": "semantic.wasm",
+                        "component": true
                     }}
                 }}"#
             )
@@ -2774,7 +2767,7 @@ mod tests {
             "[plugins.demo]\npath = \"../pkg\"\n",
         )
         .unwrap();
-        fs::write(root.join("README.not"), "#demo::box(source: \"x\")[Hi]").unwrap();
+        fs::write(root.join("README.not"), "#demo::echo(message: \"x\")[Hi]").unwrap();
 
         let service = NotistService::new();
         let opened = service
@@ -2816,35 +2809,31 @@ mod tests {
         let package = base.path().join("pkg");
         fs::create_dir(&root).unwrap();
         fs::create_dir(&package).unwrap();
+        let echo_wasm = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("../../plugins/component-echo/semantic.wasm");
+        fs::copy(&echo_wasm, package.join("semantic.wasm")).unwrap();
         fs::write(
             package.join("plugin.json"),
             r#"{
                 "package": "card",
                 "version": "0.1.0",
                 "api-version": "0.1",
-                "interfaces": {
-                    "semantic": {
-                        "elements": [{
-                            "name": "card",
-                            "version": 1,
-                            "block": true,
-                            "parameters": [{ "name": "title", "ty": "String" }],
-                            "trailing-content": "body"
+                "render": {
+                    "html": {
+                        "contributions": [{
+                            "element": "echo",
+                            "trusted": true,
+                            "web-component": {
+                                "tag": "notist-card",
+                                "module": "assets/card.js",
+                                "style": "assets/card.css"
+                            }
                         }]
-                    },
-                    "render": {
-                        "html": {
-                            "contributions": [{
-                                "element": "card",
-                                "trusted": true,
-                                "web-component": {
-                                    "tag": "notist-card",
-                                    "module": "assets/card.js",
-                                    "style": "assets/card.css"
-                                }
-                            }]
-                        }
                     }
+                },
+                "wasm": {
+                    "module": "semantic.wasm",
+                    "component": true
                 }
             }"#,
         )
@@ -2856,7 +2845,7 @@ mod tests {
         .unwrap();
         fs::write(
             root.join("README.not"),
-            "#card::card(title: \"Hello\")[body]",
+            "#card::echo(message: \"Hello\")[body]",
         )
         .unwrap();
 
@@ -2881,8 +2870,12 @@ mod tests {
             .iter()
             .find(|page| page.module_segments.is_empty())
             .expect("home page");
-        assert!(home.fragment.contains("<notist-card"));
-        assert!(home.fragment.contains("data-title=\"Hello\""));
+        assert!(
+            home.fragment.contains("<notist-card"),
+            "fragment: {}",
+            home.fragment
+        );
+        assert!(home.fragment.contains("data-message=\"Hello\""));
         assert!(home.fragment.contains("<p>body</p>"));
     }
 

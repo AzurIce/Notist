@@ -1,0 +1,97 @@
+@![implementation = "aligned"]
+= Plugin System
+
+#[
+notist 的内容是求值的结果，而求值是函数式的规约过程（[[vault::designs::pipeline]]），因此所有的不同内容都可以被表示为各自独立的的“函数名”+“参数”的函数调用。
+
+于是 notist 具有了丰富且可控的拓展性：
+- 求值层面：新的内容类型本质是对对应类型函数调用规约的实现。
+- 显示层面：对应的 web component 呈现实现。
+
+notist 内置的全部内容函数（包括 text）都通过插件系统提供。
+]@type=user,.user
+
+#rule()
+
+本文是 Notist 插件系统设计的模块入口。它回答：一个插件 package 如何声明自己、插件能导入哪些宿主类型、插件如何实现语义与投影、宿主如何保证 capability / 终止性 / 确定性，以及 core 为什么只是第一个特权 package。
+
+== 定位
+
+插件系统不是 [[vault::designs::pipeline]] 的一个阶段，而是 pipeline 之外的横切扩展面。pipeline 拥有 `parse → check → lower → reduce → structure → project` 的阶段语义；插件系统负责定义 package、ABI 与贡献，并在三个固定阶段被 pipeline 消费：
+
+```text
+PluginSystem 贡献              pipeline 消费点
+─────────────────────────────────────────────────
+FunctionRegistry            → reduce
+ElementSchema / ShapingRegistry → structure
+RendererRegistry            → project
+```
+
+插件调用在 reduce 阶段如何被规约，是 PluginSystem 与 pipeline 的契约，见 [[vault::designs::pipeline::plugin-call-reduction]]。core namespace / prelude 与插件边界见 [[vault::designs::world::core-namespace-plugin-boundary]]；HTML target 的消费方式见 [[vault::designs::host::html-renderer]] 与 [[vault::designs::pipeline::project]]。
+
+== 目标
+
+```text
+插件 = Rust crate → wasip2 组件 package
+        ├── init 注册的函数 schema + 语义实现
+        ├── 成型 schema（block / body-mode / role / kind）
+        └── 投影贡献（renderer + assets）
+```
+
+三条原则：
+
+1. **统一 ABI**：core 与第三方插件共享 `Call` / `Leaf` / `Stream` 与同一 registry。
+2. **封闭 core**：core 是宿主拥有的特权 package；插件不能覆盖 `core::*`。
+3. **宿主执规约与成型**：插件贡献规则与实现，宿主执行 dispatch、shaping、capability 与终止检查。
+
+== 模块内容
+
+按依赖顺序阅读：
+
+1. [[vault::designs::plugin-system::package]]：插件 package、manifest、namespace、core package、装载与生命周期。
+2. [[vault::designs::plugin-system::abi]]：共享类型、WIT 边界与语义 ABI。
+3. [[vault::designs::plugin-system::eval-contribution]]：FunctionDecl 与语义函数的注册。
+4. [[vault::designs::plugin-system::capability]]：权限请求、站点授予与 dispatch 检查。
+5. [[vault::designs::plugin-system::safety]]：终止性、资源预算与确定性。
+6. [[vault::designs::plugin-system::shaping]]：ElementDecl 与成型 schema。
+7. [[vault::designs::plugin-system::projection]]：target 投影贡献与 fallback。
+
+面向用户的插件示例见 [[vault::plugins]]；插件系统的早期调研与设计过程见 [[vault::ai::2026-08-18 notist plugin system design]]。
+
+== 当前实现映射
+
+| 组件 | 状态 |
+|---|---|
+| `ElementInstance` / `FieldValue` / `ElementName` | 已实现 |
+| `StreamNode` / `FlatContent` / `ElementTree` | 已实现 |
+| Stream lowering | 全部 Markup item 已直接产出 `Stream<Call | Leaf>`；text 的 inline sugar 扫描仍复用 legacy leaf factory |
+| reduction engine（校验 / depth / fuel） | 已实现 |
+| `FunctionRegistry` 与 `core::*` 别名 | 已实现 |
+| shaping registry / `body-mode` / `role` / `kind` | 已实现 `ShapingRegistry` / `ElementSchema`；core schema 内置，插件 schema 可注册 |
+| WIT 类型包 + host `call` import | `plugin` / `plugin-host` 两个 world：`export init`（返回元素声明列表）+ `export evaluate`；组件装载后调用一次 `init`，原子校验后注册。`plugins/component-echo` / `plugins/component-host-call` 端到端可用，host.call 走共享 registry + capability policy |
+| 插件 manifest 信封 | manifest 只保留身份、Wasm 装载参数、HTML render contributions 与 capabilities；semantic 接口由组件 `init` 注册提供 |
+| 组件 eval contribution | 已实现：`init` 声明 + `evaluate` dispatcher；作者侧由 `notist-plugin-sdk` 提供 `Plugin::init(reg)` / `ElementFn::reduce` / `export_plugin!` |
+| capability checker | 已实现 `Principal` / `CapabilityPolicy` 与 `Notist.toml` site grants；legacy、Stream reduction 与 component `host.call` 路径均检查 |
+| core native package 迁移 | `plugins/core/lib.rs` 承载全部内置内容函数，宿主直接注册 |
+| PluginSet 指纹 | `FunctionEnvironmentId` 已结合 view salt、插件 surface、配置与签名集合；插件 package 变更会分配新语义世界 |
+| 插件文件 watcher | daemon 会递归 watch `Notist.toml` 声明的外部 package 目录；plugin.json / wasm / assets 变化触发 disk view reload |
+| 统一装载路径 | 装载 = 实例化 + `init` 一条路径；不再维护不执行 Wasm 的 schema-only 快照路径 |
+| Wasm 终止/资源预算 | 已实现 fuel-per-call（init 同预算）、16 MiB memory cap、table cap，以及 component response 1 MiB / 10k 节点上限 |
+
+== 实施顺序
+
+1. 把 `shape_flow` 的名字硬编码抽成 shaping schema registry；已完成。
+2. 发布共享 WIT 类型包；已完成。
+3. Wasm ABI 改为 `export evaluate` + `import host.call`；已完成。
+4. manifest 升级为统一 package 描述并注册 functions/elements/renderers；已完成。
+5. capability checker 接入 reduction frame；已完成。
+6. legacy List/Table lowering 迁移到直接产出 Stream；已完成。
+
+== 已裁定 / 待定
+
+- 已裁定：插件 = 信封 manifest + wasip2 Wasm 组件 + 可选 assets；core 是特权 native package。
+- 已裁定：作者以 Rust crate + SDK 编写插件，`init` 注册即自描述；manifest 不携带 semantic 接口，装载统一为实例化 + init 一条路径。
+- 已裁定：插件通过 schema 参与成型，成型引擎由宿主执行。
+- 已裁定：插件语义 ABI 为 `export init` + `export evaluate` + 可选 `import host.call`；插件不能直接产生 `core::*` Leaf。
+- 待定：host import 是否包含 `inspect` / `typecheck` 等更多接口；v1 只提供 `call`。
+- 待定：native target 的投影贡献 schema；HTML target 先行。

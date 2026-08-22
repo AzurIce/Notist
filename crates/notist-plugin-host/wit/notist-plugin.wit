@@ -1,25 +1,56 @@
 package notist:plugin;
 
-/// The v1 semantic ABI is bytes in / bytes out.
+/// 共享声明类型：组件在装载后通过 `init` 一次性返回的元素声明。
 ///
-/// WIT does not permit the recursive `Stream<Call | Leaf>` shape directly, so
-/// the host and guest exchange the canonical `Call` request and `Stream`
-/// response encoded with the shared `notist-plugin-api` serde schema. Keeping
-/// the component boundary opaque also matches the Typst
-/// `wasm-minimal-protocol` precedent and leaves room for a bincode/JSON
-/// payload version byte without changing the component signature.
-world semantic {
+/// 插件的 semantic surface 由 guest 代码自描述：`init` 返回本包贡献的
+/// 全部元素声明，宿主原子校验（namespace、参数类型、签名合法性）后注册。
+/// `plugin.json` 不再携带 semantic 接口，只保留信封字段。
+interface types {
+    /// One declared parameter of a plugin element.
+    record param-decl {
+        /// Parameter name.
+        name: string,
+        /// Notist type syntax: `None`, `Bool`, `Int`, `Float`, `String`,
+        /// `Content`, or `T?` for optional types.
+        ty: string,
+        /// JSON encoding of the declared default value, present only when
+        /// the parameter declares one.
+        default-json: option<string>,
+    }
+
+    /// One semantic element contributed by the plugin.
+    record element-decl {
+        /// Element name inside the package namespace.
+        name: string,
+        version: u32,
+        block: bool,
+        parameters: list<param-decl>,
+        trailing-content: option<string>,
+        body-mode: option<string>,
+        role: option<string>,
+        kind: option<string>,
+    }
+}
+
+/// 纯求值组件：无宿主导入。
+world plugin {
+    use types.{element-decl};
+    /// 装载后调用一次；消耗与 evaluate 相同的 fuel 预算，且必须确定。
+    export init: func() -> list<element-decl>;
+    /// 按 dispatcher 名字规约一次调用；字节进/字节出。
     export evaluate: func(request: list<u8>) -> result<list<u8>, string>;
 }
 
+/// 宿主回调：按当前插件 principal 检查 capability、消耗同一 depth/fuel
+/// 预算，并返回规约后的 Leaf 流字节或错误。
 interface host {
-    /// Calls another registered semantic function on behalf of the current
-    /// plugin principal. Request and response use the same encoded schema as
-    /// `evaluate`.
     call: func(request: list<u8>) -> result<list<u8>, string>;
 }
 
-world semantic-host {
+/// 需要互调的组件：import host.call 后可组合宿主规约结果。
+world plugin-host {
+    use types.{element-decl};
     import host;
+    export init: func() -> list<element-decl>;
     export evaluate: func(request: list<u8>) -> result<list<u8>, string>;
 }

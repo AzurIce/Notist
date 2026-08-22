@@ -1947,20 +1947,19 @@ impl AnchorPlan {
             }
         }
 
-        // Class/tag/property projection is classified per annotation against
-        // the top-level blocks:
+        // Class/tag/property projection is classified per node against the
+        // annotation scope:
         //
         // - A block fully contained in the annotation scope receives the
         //   projection on its own tag; a scope covering several blocks
-        //   projects onto every covered block.
+        //   projects onto every covered block, including blocks nested
+        //   inside partially covered sections.
         // - A block partially overlapped by the scope cannot carry the
         //   attributes on its tag. The annotation is registered as an inline
-        //   wrapper candidate for the block instead, and the renderer wraps
+        //   wrapper candidate for that block instead, and the renderer wraps
         //   the fully covered inline elements of the block into
         //   `<span class="notist-annotated">` fragments (see
         //   `Renderer::inline_coverage`).
-        //
-        // Annotations matching neither case produce no output.
         let mut projections: HashMap<(usize, usize), Projection> = HashMap::new();
         let mut inline_wrappers: HashMap<(usize, usize), Vec<usize>> = HashMap::new();
         for (annotation_index, annotation) in annotations.iter().enumerate() {
@@ -1968,26 +1967,13 @@ impl AnchorPlan {
                 continue;
             }
             for block in &document.blocks {
-                // D0010: a fully covered section receives the projection on
-                // its <section> node; partially covered blocks fall back to
-                // inline wrapping at their leaves.
-                if let Some(key) = projection_target(block, annotation.scope) {
-                    let projection = projections.entry(key).or_default();
-                    projection
-                        .classes
-                        .extend(annotation.classes.iter().cloned());
-                    projection.tags.extend(annotation.tags.iter().cloned());
-                    projection
-                        .properties
-                        .extend(annotation.properties.iter().cloned());
-                } else if intersects(annotation.scope, block.range()) {
-                    register_inline_wrappers(
-                        block,
-                        annotation.scope,
-                        annotation_index,
-                        &mut inline_wrappers,
-                    );
-                }
+                project_block_annotation(
+                    block,
+                    annotation,
+                    annotation_index,
+                    &mut projections,
+                    &mut inline_wrappers,
+                );
             }
         }
 
@@ -2061,23 +2047,13 @@ impl AnchorPlan {
                 continue;
             }
             for root in &tree.roots {
-                if let Some(key) = tree_projection_target(root, annotation.scope) {
-                    let projection = projections.entry(key).or_default();
-                    projection
-                        .classes
-                        .extend(annotation.classes.iter().cloned());
-                    projection.tags.extend(annotation.tags.iter().cloned());
-                    projection
-                        .properties
-                        .extend(annotation.properties.iter().cloned());
-                } else if intersects(annotation.scope, root.range) {
-                    tree_register_inline_wrappers(
-                        root,
-                        annotation.scope,
-                        annotation_index,
-                        &mut inline_wrappers,
-                    );
-                }
+                project_tree_annotation(
+                    root,
+                    annotation,
+                    annotation_index,
+                    &mut projections,
+                    &mut inline_wrappers,
+                );
             }
         }
 
@@ -2308,95 +2284,110 @@ fn walk_block(block: &Block, output: &mut Vec<WalkedElement>) {
 /// Returns the range key of the smallest block or section fully contained in
 /// `scope`, preferring the section itself when it is covered (D0010: section
 /// entries project onto the Section node).
-fn projection_target(block: &Block, scope: TextRange) -> Option<(usize, usize)> {
-    match block {
-        Block::Element(node) => contains(scope, node.range).then(|| range_key(node.range)),
-        Block::Section { body, .. } => {
-            if contains(scope, block.range()) {
-                return Some(range_key(block.range()));
-            }
-            for child in body {
-                if let Some(key) = projection_target(child, scope) {
-                    return Some(key);
-                }
-            }
-            None
-        }
-    }
+/// Extends one projection target with an annotation's classes, tags, and
+/// properties.
+fn extend_projection(projection: &mut Projection, annotation: &RenderedAnnotation) {
+    projection
+        .classes
+        .extend(annotation.classes.iter().cloned());
+    projection.tags.extend(annotation.tags.iter().cloned());
+    projection
+        .properties
+        .extend(annotation.properties.iter().cloned());
 }
 
-/// Registers inline wrapper candidates for every leaf element intersecting a
-/// partially covering annotation scope.
-fn register_inline_wrappers(
+/// Classifies every node of one block against an annotation scope (D0010):
+/// a fully covered node carries the projection on its own tag; a partially
+/// overlapped block falls back to inline wrapping at its leaves. Sections
+/// recurse, so a scope covering several blocks inside one section projects
+/// onto every covered block instead of only the first.
+fn project_block_annotation(
     block: &Block,
-    scope: TextRange,
+    annotation: &RenderedAnnotation,
     annotation_index: usize,
-    wrappers: &mut HashMap<(usize, usize), Vec<usize>>,
+    projections: &mut HashMap<(usize, usize), Projection>,
+    inline_wrappers: &mut HashMap<(usize, usize), Vec<usize>>,
 ) {
+    if contains(annotation.scope, block.range()) {
+        extend_projection(
+            projections.entry(range_key(block.range())).or_default(),
+            annotation,
+        );
+        return;
+    }
+    if !intersects(annotation.scope, block.range()) {
+        return;
+    }
     match block {
-        Block::Element(node) => {
-            wrappers
-                .entry(range_key(node.range))
+        Block::Element(_) => {
+            inline_wrappers
+                .entry(range_key(block.range()))
                 .or_default()
                 .push(annotation_index);
         }
         Block::Section { heading, body, .. } => {
-            if intersects(scope, heading.range) {
-                wrappers
+            if intersects(annotation.scope, heading.range) {
+                inline_wrappers
                     .entry(range_key(heading.range))
                     .or_default()
                     .push(annotation_index);
             }
             for child in body {
-                if intersects(scope, child.range()) {
-                    register_inline_wrappers(child, scope, annotation_index, wrappers);
+                if intersects(annotation.scope, child.range()) {
+                    project_block_annotation(
+                        child,
+                        annotation,
+                        annotation_index,
+                        projections,
+                        inline_wrappers,
+                    );
                 }
             }
         }
     }
 }
 
-fn tree_projection_target(node: &InstanceNode, scope: TextRange) -> Option<(usize, usize)> {
-    if node.instance.is_core("section") {
-        if contains(scope, node.range) {
-            return Some(range_key(node.range));
-        }
-        // The section heading is an inline-wrapper target in the legacy block
-        // model, not a projection child block; skip it here exactly like
-        // `projection_target(Block::Section)`.
-        for child in &node.instance.body[1..] {
-            if let Some(key) = tree_projection_target(child, scope) {
-                return Some(key);
-            }
-        }
-        return None;
-    }
-    contains(scope, node.range).then(|| range_key(node.range))
-}
-
-fn tree_register_inline_wrappers(
+/// The tree-model counterpart of [`project_block_annotation`]. A fully
+/// covered section takes the projection itself without descending; headings
+/// never carry tag projections and always fall back to inline wrapping.
+fn project_tree_annotation(
     node: &InstanceNode,
-    scope: TextRange,
+    annotation: &RenderedAnnotation,
     annotation_index: usize,
-    wrappers: &mut HashMap<(usize, usize), Vec<usize>>,
+    projections: &mut HashMap<(usize, usize), Projection>,
+    inline_wrappers: &mut HashMap<(usize, usize), Vec<usize>>,
 ) {
-    if node.instance.is_core("section") {
-        if !intersects(scope, node.range) {
-            return;
-        }
-        for child in &node.instance.body {
-            if intersects(scope, child.range) {
-                tree_register_inline_wrappers(child, scope, annotation_index, wrappers);
-            }
+    let key = range_key(node.range);
+    if contains(annotation.scope, node.range) {
+        if node.instance.is_core("heading") {
+            inline_wrappers
+                .entry(key)
+                .or_default()
+                .push(annotation_index);
+        } else {
+            extend_projection(projections.entry(key).or_default(), annotation);
         }
         return;
     }
-    if intersects(scope, node.range) {
-        wrappers
-            .entry(range_key(node.range))
-            .or_default()
-            .push(annotation_index);
+    if !intersects(annotation.scope, node.range) {
+        return;
     }
+    if node.instance.is_core("section") {
+        for child in &node.instance.body {
+            project_tree_annotation(
+                child,
+                annotation,
+                annotation_index,
+                projections,
+                inline_wrappers,
+            );
+        }
+        return;
+    }
+    inline_wrappers
+        .entry(key)
+        .or_default()
+        .push(annotation_index);
 }
 
 fn tree_heading_text(node: &InstanceNode) -> Option<String> {
@@ -3180,6 +3171,66 @@ mod tests {
         assert_eq!(html.matches("id=\"multi\"").count(), 1);
         // Fully covered blocks are projected, never span-wrapped.
         assert!(!html.contains("notist-annotated"));
+    }
+
+    #[test]
+    fn projects_multi_block_annotation_scopes_nested_inside_sections() {
+        // Regression: an annotation whose scope spans several blocks of one
+        // section used to project onto only the first covered block. A
+        // heading wraps everything below it into a single section, so this
+        // is the realistic shape for `#[...]@anno` over multiple paragraphs.
+        let source = "= Title\n\n#[\nfirst para\n\n- item one\n- item two\n\nlast para\n]@mark,.user\ntrailing tail";
+        let evaluation = Evaluator::default().evaluate(source);
+        assert!(
+            evaluation.diagnostics.is_empty(),
+            "{:?}",
+            evaluation.diagnostics
+        );
+        let structured = structure(evaluation);
+        // The scope covers `#[]`: both leading blocks fully, and the last
+        // paragraph only partially (following text joins its paragraph).
+        let annotations = vec![RenderedAnnotation {
+            scope: TextRange::new(9, 59),
+            id: None,
+            classes: vec!["user".into()],
+            tags: Vec::new(),
+            properties: vec![("type".into(), "user".into())],
+        }];
+
+        let html = render_with_resolvers(
+            &structured.document,
+            &RenderOptions::default(),
+            &|_: &ModulePath, _: Option<&str>| None,
+            &annotations,
+        );
+
+        // Every fully covered block carries the projection on its own tag.
+        assert!(
+            html.contains("<p class=\"user\" data-notist-type=\"user\""),
+            "{html}"
+        );
+        assert!(html.contains("<ul class=\"user\""), "{html}");
+        // The partially overlapped last paragraph falls back to inline
+        // wrapping instead of losing the annotation entirely.
+        assert!(html.contains("notist-annotated user"), "{html}");
+        assert_eq!(html.matches("class=\"user\"").count(), 2);
+
+        let stream = Evaluator::default().evaluate_stream(source);
+        assert!(stream.diagnostics.is_empty(), "{:?}", stream.diagnostics);
+        let tree_html = render_element_tree_with_renderers(
+            &stream.tree,
+            &RenderOptions::default(),
+            &|_, _| None,
+            &annotations,
+            &HtmlRendererRegistry::default(),
+        );
+        assert!(
+            tree_html.contains("<p class=\"user\" data-notist-type=\"user\""),
+            "{tree_html}"
+        );
+        assert!(tree_html.contains("<ul class=\"user\""), "{tree_html}");
+        assert!(tree_html.contains("notist-annotated user"), "{tree_html}");
+        assert_eq!(tree_html.matches("class=\"user\"").count(), 2);
     }
 
     #[test]

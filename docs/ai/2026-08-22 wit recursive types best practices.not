@@ -1,0 +1,95 @@
+= WIT 递归类型最佳实践：call 规约树的 ABI 表示
+
+本文调查 WIT（Wasm Interface Types）表示递归类型的现状与最佳实践，动机是 Notist 插件 ABI 需要跨组件边界传递递归的 `Stream<Call | Leaf>` 规约树。现行 ABI 与设计契约见 [[vault::designs::plugin-system::abi]] 与 [[vault::designs::pipeline::plugin-call-reduction]]。
+
+== 结论
+
+WIT 当前不支持递归值类型，且短期内不会支持。今天表示递归规约树的主流最佳实践就是 notist 已采用的方案：bytes-in/bytes-out + serde JSON + 宿主侧校验。若未来要类型化边界，选 arena/索引拍平模式，不要选 resource。等上游递归类型落地（可能以显式 `box<T>` 形式）再迁原生递归类型。
+
+== 核心事实：递归值类型被拒绝
+
+WIT 的 `record` / `variant` / `enum` / `flags` 等值类型定义必须无环。WIT 规范（`design/mvp/WIT.md`）明确说明：组件模型中的类型定义是有序且无环的，WIT 解析器对所有定义做隐式拓扑排序，找不到无环顺序即报错。即使通过 `list<>` / `option<>` 间接引用自身也不行。
+
+2026-08-22 用 wasm-tools 1.256.0 实测：
+
+```text
+package test:rec;
+
+interface types {
+    record branch {
+        children: list<node>,
+    }
+    variant node {
+        leaf(string),
+        branch(branch),
+    }
+}
+```
+
+`wasm-tools component wit` 报错：
+
+```text
+error: failed to parse package: type `node` depends on itself
+ --> rec.wit:5:24
+  |
+5 |         children: list<node>,
+  |                        ^---
+```
+
+唯一能在 WIT 中形成环的是 `resource`：句柄只是 ID，不内嵌数据，因此 `resource node { children: func() -> list<node> }` 可以通过校验（同日实测）。
+
+== 上游状态
+
+官方 tracking issue 是 WebAssembly/component-model#56（Recursive Types），2022-06 开启，截至调查日仍为 open（最近活动 2025-07）。要点：
+
+- lukewagner：递归类型会让 canonical ABI 的 lift/lower 与子类型实现复杂很多，MVP 不具备；长期想要，方向可能跟随 wasm-gc 的递归类型。
+- 2025 年的新讨论倾向引入显式 `box<T>` 手动打断递归（语义上等价于隐式定义一个 resource），而非完整的等递归/同递归类型系统。
+- DoS 隐患被明确提出：递归值跨边界时，若 lift 用栈递实现归会栈溢出；恶意构造的循环/超深嵌套必须有界。这与 notist safety 设计的 depth/fuel/`max_nodes` 预算正好对应。
+
+== 三种绕行方案
+
+issue #56 中 Bytecode Alliance 成员（esoterra、lukewagner）给出的实践结论：
+
+=== arena / 索引拍平（官方示例做法）
+
+把树拍平成节点池，子节点用 `u32` 索引引用（esoterra 给出的 `value-pattern` 示例同款模式）：
+
+```wit
+variant node {
+    leaf(string),
+    branch(branch),
+}
+record branch {
+    /// indices into the node pool
+    children: list<u32>,
+    label: string,
+}
+// 签名示例：func() -> tuple<list<node>, list<u32>>  // 池 + 根索引
+```
+
+同日实测可过 `wasm-tools component wit` 校验。代价：guest 要手工构造索引池，ergonomics 差；宿主仍须校验索引越界、成环、节点计数——WIT 类型安全只保证形状，不保证语义合法。
+
+=== 序列化成字节/字符串
+
+`list<u8>` + JSON/msgpack/protobuf，即 notist 现状（`crates/notist-plugin-host/src/wire.rs`）。esoterra 原话是 "neither solution is very ergonomic"，但这是公认现状。优点：任意递归深度、schema 演化宽松（serde `default` / tagged enum）、guest 任何语言只需 JSON 库、校验逻辑集中。
+
+=== resource 句柄
+
+lukewagner 的立场：DOM/AST 这类巨大且长期存活的结构本就不该整树拷贝过边界，应该用 resource + cursor/streaming。对「请求/响应式的小树」resource 反而是最差选择：每次节点访问都是一次跨边界调用，guest 还要管理资源生命周期与 ownership。
+
+== 对 notist 的判断
+
+notist 的场景是受 fuel/depth 预算约束的规约树请求/响应，几个关键考量：
+
+- 输入不可信：插件返回值本来就要过 `validate_nodes` 做节点数校验（`crates/notist-plugin-host/src/wire.rs` 的 `validate_nodes`）。arena 方案不会省掉这层，索引完整性检查与原校验属于同一类工作。
+- schema 演化：WIT 的 record 加字段、variant 加 case 都是 breaking change（须走 `@since` / `@unstable` feature gate）；serde JSON 宽松得多。插件 ABI 仍在演进期，这一点很实际。
+- guest 语言生态：bytes + JSON 意味着任何语言的插件只需一个 JSON 库。
+
+因此维持现状（Phase E 的 bytes WIT）是正确选择；`wire.rs` 头部注释「recursive shape cannot be expressed directly in WIT」与上游事实一致。后续若上游 `box<T>` 或递归类型落地，再评估迁移原生类型化 ABI。
+
+== 参考
+
+- WIT 规范：https://github.com/WebAssembly/component-model/blob/main/design/mvp/WIT.md
+- WIT 参考（Bytecode Alliance 书）：https://component-model.bytecodealliance.org/design/wit.html
+- Recursive Types issue：https://github.com/WebAssembly/component-model/issues/56
+- 实证环境：wasm-tools 1.256.0（nixpkgs），2026-08-22

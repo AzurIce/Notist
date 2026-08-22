@@ -1,0 +1,14 @@
+[package]
+name = "notist-plugin-component-echo"
+version = "0.1.0"
+edition = "2024"
+publish = false
+
+[workspace]
+
+[lib]
+crate-type = ["cdylib"]
+
+[dependencies]
+notist-plugin-sdk = { path = "../../crates/notist-plugin-sdk" }
+wit-bindgen = "0.60"

@@ -1,0 +1,135 @@
+@![implementation = "aligned"]
+= Plugin ABI: Shared Types and WIT Boundary
+
+本文定义宿主与 Wasm guest 之间的共享类型与 component ABI。Call / Leaf 流在 reduce 阶段的求值语义见 [[vault::designs::pipeline::plugin-call-reduction]]；package 如何声明 Wasm module 见 [[vault::designs::plugin-system::package]]。
+
+== 共享类型
+
+`Stream<Call | Leaf>` 是宿主与 guest 共享的语义 schema，但 WIT 不允许直接表达该递归类型（wasmtime/wit-parser 会拒绝递归 type alias / record / list 环）。因此 component 边界保持 opaque bytes，语义 schema 由宿主发布为版本化的 serde payload。
+
+字节内是规范编码的 `Call` 请求 / `Stream` 响应；字段语义由 [[vault::designs::pipeline::plugin-call-reduction]] 定义：
+
+```text
+Call { name, arguments, body }
+Stream<Call | Leaf>
+```
+
+`range` 只用于诊断；宿主为插件返回的节点继承最近调用点 range 或标记 synthetic。宿主侧的 wire schema 与转换在 `notist-plugin-host/src/wire.rs`。
+
+== 插件形态
+
+插件是 Rust crate，编译为 wasip2 组件。作者面对的只有宿主 SDK：
+
+```rust
+struct Shader;
+
+impl ElementFn for Shader {
+    fn signature() -> Signature { /* name, params, trailing body */ }
+    fn reduce(ctx: &mut EvalCtx, args: Args, body: Body) -> Result<Stream> { ... }
+}
+
+struct Plugin;
+impl notist_sdk::Plugin for Plugin {
+    fn init(reg: &mut Registrar) {
+        reg.element::<Shader>();
+    }
+}
+
+notist_sdk::export_plugin!(Plugin);
+```
+
+这与 Unreal 模块的 StartupModule 同构：装载时执行一次注册，宿主之后按名字查询与调度。对作者而言组件边界等同一个 dylib；沙箱机制（fuel、内存帽）是宿主既有设施，不进入作者视野。
+
+== WIT worlds
+
+当前 WIT 提供两个 world 与一组共享声明类型：
+
+```wit
+package notist:plugin;
+
+interface types {
+    record param-decl {
+        name: string,
+        ty: string,
+        default-json: option<string>,
+    }
+
+    record element-decl {
+        name: string,
+        version: u32,
+        block: bool,
+        parameters: list<param-decl>,
+        trailing-content: option<string>,
+        body-mode: option<string>,
+        role: option<string>,
+        kind: option<string>,
+    }
+}
+
+world plugin {
+    use types.{element-decl};
+    /// 装载后调用一次，返回本包贡献的全部元素声明。
+    export init: func() -> list<element-decl>;
+    export evaluate: func(request: list<u8>) -> result<list<u8>, string>;
+}
+
+interface host {
+    // 按当前插件 principal 检查 capability，消耗同一 depth/fuel 预算，
+    // 并返回规约后的 Leaf 流字节或错误。
+    call: func(request: list<u8>) -> result<list<u8>, string>;
+}
+
+world plugin-host {
+    use types.{element-decl};
+    import host;
+    export init: func() -> list<element-decl>;
+    export evaluate: func(request: list<u8>) -> result<list<u8>, string>;
+}
+```
+
+- `plugin`：无 host import 的纯求值组件，用于 `plugins/component-echo`。
+- `plugin-host`：import `host.call` 的组件，guest 可请求宿主继续规约；用于 `plugins/component-host-call`。
+- `init` 返回声明列表而不是逐条回调注册：注册内容是编译期已知的纯数据，一次性返回让装载保持原子——宿主先整体校验再入 registry，不存在部分注册状态。
+
+== init 注册语义
+
+`init` 在实例化后、任何 `evaluate` 之前被调用恰好一次，消耗与 `evaluate` 相同的 fuel 预算：
+
+1. 宿主收集全部 `element-decl`；
+2. 整体校验：每个元素名必须落在 package 自己的 namespace 内，参数类型必须是可解析的 Notist 类型，签名合法；
+3. 校验通过后按声明生成 `FunctionSignature` 与 `ElementSchema` 并注册；任一失败则整个 package 装载失败，产生 host boundary diagnostic。
+
+注册即自描述：schema 的唯一真相来源是插件代码里的 `init` 实现，manifest 不再携带 semantic 接口。静态分析、completion 与 runtime 读到的是同一份注册结果，不存在漂移面。
+
+== 语义 ABI
+
+`evaluate` 是单个 dispatcher；`init` 声明的每个元素都对应它的一个可调用名字。
+
+插件有两种语义实现模式：
+
+1. **宏展开式**：`evaluate` 返回 `Stream<Call | Leaf>`，把继续规约交给宿主；
+2. **主动规约式**：调用 `host.call(core::details, ...)` 等，组合结果后返回。
+
+两种模式都经过宿主，插件无法绕过 capability 或无限递归。
+
+=== 插件不能做什么
+
+- 不能直接返回 `core::*` Leaf；`core::*` Leaf 只能由宿主调用对应函数后生成；
+- 不能 import 文件系统、网络、随机数或进程；Rust std 所需的 WASI 0.2 imports 由宿主以空 `WasiCtx` 满足；
+- 不能修改 parser、不能重新解释已有 token；
+- 不能覆盖其他 package 的 namespace。
+
+== 当前实现
+
+- WIT 已由 wasmtime bindgen 编译校验；`export init` 与 `export evaluate` 均已接入 loader，`import host.call` 走共享 registry + capability policy。
+- 插件以 `notist-plugin-sdk` 编写：`Plugin::init(reg)` 注册元素，`ElementFn::reduce` 实现规约，`export_plugin!` 生成组件导出。
+- 兼容 legacy v0 raw core Wasm ABI（`evaluate(ptr, len) -> ptr`），仅用于存量 shader package。
+- Component response 的大小与节点上限见 [[vault::designs::plugin-system::safety]]。
+
+== 已裁定 / 待定
+
+- 已裁定：component 边界保持 opaque bytes；wire schema 由宿主版本化发布。
+- 已裁定：插件形态是 Rust crate → wasip2 组件；作者通过 SDK trait 与 `init` 注册贡献。
+- 已裁定：schema 真相来源是 guest 的 `init` 注册；manifest 只保留信封字段，不再携带 semantic 接口。
+- 已裁定：v1 ABI 入口为 `init`、`evaluate` 与可选 `host.call`。
+- 待定：`inspect` / `typecheck` 等 host import 是否进入后续版本。

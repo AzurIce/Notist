@@ -2,18 +2,6 @@
   "package": "component-host-call",
   "version": "0.1.0",
   "api-version": "0.1",
-  "interfaces": {
-    "semantic": {
-      "elements": [
-        {
-          "name": "passthrough",
-          "version": 1,
-          "block": false,
-          "parameters": []
-        }
-      ]
-    }
-  },
   "capabilities": {
     "request": ["core::text"]
   },

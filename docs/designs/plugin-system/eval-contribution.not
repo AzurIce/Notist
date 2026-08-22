@@ -1,0 +1,57 @@
+@![implementation = "aligned"]
+= Eval Contribution
+
+本文定义插件如何贡献语义函数：manifest 中的 `FunctionDecl` / `ElementDecl` 如何变成 `FunctionRegistry` 中的可调用对象，以及静态分析与 runtime 如何分别消费这些贡献。Call 的规约规则见 [[vault::designs::pipeline::plugin-call-reduction]]。
+
+== FunctionDecl
+
+每个语义元素对应一个函数签名。签名不再由 manifest 声明，而是在装载时由组件 `init` 注册提供（[[vault::designs::plugin-system::abi]]）：
+
+```text
+element-decl {
+  name, version, block,
+  parameters: [ { name, ty, default-json } ],
+  trailing-content, body-mode, role, kind
+}
+```
+
+宿主用它提供静态检查、completion、诊断和 runtime 校验所需的全部签名信息：
+
+- 函数注册为 `{package}::{name}`，例如 `shader::canvas`；当 package 名与 element 名相同（如 `shader::shader`）时，host 额外注册短名 alias `shader` 兼容旧写法，该 alias 不进入 `core`。
+- 注册结果进入 `SignatureSet`，check/completion 与 runtime 消费同一份数据，不存在漂移面。
+- runtime 在 host 边界做参数绑定、默认值填充与返回类型检查。
+
+== 实现形态
+
+registry 中共有三种 Function 实现：
+
+1. **Core native function**：core 是特权 native package，构造器由宿主直接实现并注册。
+2. **Component function**：WIT `plugin` / `plugin-host` 组件；装载时 `init` 返回声明，`evaluate` 按 dispatcher 名字分发规约；后者持有共享 registry，供 `host.call` 使用。
+3. **Core WasmFunction**：legacy v0 raw core Wasm，`evaluate(ptr, len) -> ptr`，仅用于存量 shader package。
+
+所有实现都实现同一 `Function` trait 并进入同一 `FunctionRegistry`；core 与插件在 registry 中地位相同，但 core 的 authority 是 host。
+
+== 装载与签名可见性
+
+- 装载统一为「实例化 + init」一条路径：`init` 在 fuel 界内执行一次，注册即得到全部签名与成型 schema。
+- LSP / completion / diagnostics 读到的就是这份装载产物；`init` 要求确定性且受资源预算约束，装载成本是毫秒级一次性开销。
+- 插件失败在装载边界产生 diagnostic：未通过校验的 package 不产生任何函数与 schema。
+
+== 注册与别名
+
+- 装载器按 `init` 声明逐个生成函数并 `register_arc`；重名在加载时拒绝。
+- `core::*` qualified alias 指向 prelude 内置实现；插件只能占用自己的 namespace，不能覆盖 `core::*`。
+- plugin package 名与 core 边界由 [[vault::designs::world::core-namespace-plugin-boundary]] 定义。
+
+== 当前实现映射
+
+- `ElementFunction`：已实现于 `notist-eval`，用于 legacy 兼容路径。
+- 组件 `init` 注册装载路径：已实现于 `notist-plugin-host`。
+- `notist-plugin-sdk`：作者侧 `Plugin::init(reg)` + `ElementFn::reduce` + `export_plugin!`。
+- `FunctionRegistry` 与 `core::*` 别名：已实现。
+
+== 已裁定 / 待定
+
+- 已裁定：内置函数与第三方插件共享同一 registry 与签名模型。
+- 已裁定：schema 真相来源是组件 `init` 注册；装载统一执行实例化，不再维护不执行 Wasm 的 schema-only 快照路径。
+- 待定：插件 Function 的复杂值类型（Array / Dict）何时进入 element field 值域。

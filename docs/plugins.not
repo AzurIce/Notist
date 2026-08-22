@@ -1,6 +1,6 @@
 = 插件示例：Shader
 
-本文演示 Notist 插件系统的一个 Wasm 插件包闭环：`shader` 插件是一个通过 `docs/Notist.toml` 声明加载的 WebAssembly 插件，LSP/analysis 会因此认识 `shader` 函数。
+本文演示 Notist 插件系统的一个 Wasm 插件包闭环：`shader` 插件是一个通过 `docs/Notist.toml` 声明加载的 WebAssembly 插件，LSP/analysis 会因此认识 `shader` 函数。 插件系统设计见 [[vault::designs::plugin-system]]。
 
 == 插件声明
 
@@ -23,7 +23,7 @@ plugins/shader/
     └── shader.css
 ```
 
-`plugin.json` 描述元素 schema、Wasm module 和 HTML contribution。宿主在打开 vault 时读取 `Notist.toml`，用 Wasmtime 加载 `semantic.wasm`，并把 `shader` 注册进当前分析的函数环境。
+`plugin.json` 是信封：身份、Wasm 装载参数、HTML contribution 与权限请求。元素 schema 由组件 `init` 在装载时注册（自描述）。宿主在打开 vault 时读取 `Notist.toml`，实例化 `semantic.wasm` 并调用 `init` 完成注册，把 `shader` 函数放进当前分析的函数环境。
 
 == 调用方式
 

@@ -2,20 +2,6 @@
   "package": "component-echo",
   "version": "0.1.0",
   "api-version": "0.1",
-  "interfaces": {
-    "semantic": {
-      "elements": [
-        {
-          "name": "echo",
-          "version": 1,
-          "block": true,
-          "parameters": [
-            { "name": "message", "ty": "String", "default": "hello" }
-          ]
-        }
-      ]
-    }
-  },
   "capabilities": {
     "request": []
   },

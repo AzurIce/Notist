@@ -3,3 +3,4 @@ dist
 .direnv
 result
 plugins/*/lib/
+plugins/*/target/

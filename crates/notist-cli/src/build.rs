@@ -117,11 +117,15 @@ pub fn run(
                 format!("invalid plugin manifest: {error}"),
             )
         })?;
+    let site_styles = notist_plugin_host::site_styles(config_text.as_deref())
+        .map_err(|error| std::io::Error::new(std::io::ErrorKind::InvalidInput, error))?;
+    let style_web_paths = copy_site_styles(&root, &output, &site_styles)?;
     let result = write_rendered_site_with_plugins(
         &rendered,
         &output,
         SiteOptions::default(),
         &plugin_assets,
+        &style_web_paths,
     )?;
     copy_plugin_assets(&root, &output)?;
     let mut diagnostics = rendered.analysis_diagnostics.clone();
@@ -236,6 +240,36 @@ pub(crate) fn copy_plugin_assets(root: &Path, output: &Path) -> Result<(), Box<d
     Ok(())
 }
 
+/// Copies `[site] styles` sheets into `_notist/styles/`, preserving the
+/// declared relative structure, and returns their web paths for head links.
+///
+/// A style file that vanished mid-build degrades to a warning and drops out
+/// of the page heads, mirroring the resource-copy policy.
+pub(crate) fn copy_site_styles(
+    root: &Path,
+    output: &Path,
+    styles: &[String],
+) -> Result<Vec<String>, Box<dyn Error>> {
+    let mut web_paths = Vec::new();
+    for style in styles {
+        let source = root.join(style);
+        let target = output.join("_notist/styles").join(style);
+        if let Some(parent) = target.parent() {
+            fs::create_dir_all(parent)?;
+        }
+        if let Err(error) = fs::copy(&source, &target) {
+            eprintln!(
+                "warning: cannot copy site style `{}` to `{}`: {error}",
+                source.display(),
+                target.display()
+            );
+            continue;
+        }
+        web_paths.push(format!("_notist/styles/{style}"));
+    }
+    Ok(web_paths)
+}
+
 /// Test-only convenience wrapper; production paths pass an explicit plugin
 /// asset set so page heads are generated from manifest contributions.
 #[allow(dead_code)]
@@ -244,7 +278,7 @@ pub(crate) fn write_rendered_site(
     output: &Path,
     options: SiteOptions,
 ) -> Result<RenderedBuildResult, Box<dyn Error>> {
-    write_rendered_site_with_plugins(rendered, output, options, &[])
+    write_rendered_site_with_plugins(rendered, output, options, &[], &[])
 }
 
 pub(crate) fn write_rendered_site_with_plugins(
@@ -252,6 +286,7 @@ pub(crate) fn write_rendered_site_with_plugins(
     output: &Path,
     options: SiteOptions,
     plugin_assets: &[PluginHtmlAssets],
+    site_styles: &[String],
 ) -> Result<RenderedBuildResult, Box<dyn Error>> {
     fs::create_dir_all(output.join("_notist"))?;
     fs::write(output.join("_notist/style.css"), STYLES)?;
@@ -272,6 +307,7 @@ pub(crate) fn write_rendered_site_with_plugins(
             bindings: &page.bindings,
             source: page.source.as_deref(),
             plugin_assets,
+            site_styles,
         })
         .collect::<Vec<_>>();
     for page in &pages {
@@ -346,6 +382,9 @@ struct PageView<'a> {
     source: Option<&'a str>,
     /// Manifest-declared plugin HTML assets injected into the page head.
     plugin_assets: &'a [PluginHtmlAssets],
+    /// Vault-declared site stylesheets (`[site] styles`), as web paths under
+    /// `_notist/styles/`, linked after the built-in stylesheet.
+    site_styles: &'a [String],
 }
 
 impl PageView<'_> {
@@ -378,7 +417,21 @@ fn page_shell(
     html.push_str(THEME_BOOTSTRAP);
     html.push_str("</script>\n<link rel=\"stylesheet\" href=\"");
     html.push_str(&asset_prefix);
-    html.push_str("_notist/style.css\">\n<script src=\"");
+    html.push_str("_notist/style.css\">\n");
+    // Vault-declared styles load after the built-in sheet so they can
+    // override defaults (e.g. recolor annotated `.class` projections).
+    for style in page.site_styles {
+        let encoded = style
+            .split('/')
+            .map(|segment| utf8_percent_encode(segment, URL_PATH_SEGMENT_ENCODE_SET).to_string())
+            .collect::<Vec<_>>()
+            .join("/");
+        html.push_str("<link rel=\"stylesheet\" href=\"");
+        html.push_str(&asset_prefix);
+        escape_attribute(&mut html, &encoded);
+        html.push_str("\">\n");
+    }
+    html.push_str("<script src=\"");
     html.push_str(&asset_prefix);
     html.push_str("_notist/site.js\" defer></script>\n");
     for package in page.plugin_assets {
@@ -2406,6 +2459,59 @@ mod tests {
         let site_script = fs::read_to_string(output.join("_notist/site.js")).unwrap();
         assert!(site_script.contains("notist-sidebar-scroll"));
         assert!(site_script.contains("sidebar.scrollTop"));
+    }
+
+    #[test]
+    fn site_styles_are_copied_and_linked_after_the_builtin_sheet() {
+        let root = tempfile::TempDir::new_in(std::env::current_dir().unwrap()).unwrap();
+        fs::create_dir_all(root.path().join("assets/theme")).unwrap();
+        fs::write(
+            root.path().join("Notist.toml"),
+            "[site]\nstyles = [\"assets/theme/user.css\", \"assets/theme/user.css\"]",
+        )
+        .unwrap();
+        fs::write(
+            root.path().join("assets/theme/user.css"),
+            ".user { color: darkblue; }",
+        )
+        .unwrap();
+        fs::write(root.path().join("README.not"), "#heading[Home]").unwrap();
+        fs::create_dir(root.path().join("guide")).unwrap();
+        fs::write(root.path().join("guide/README.not"), "#heading[Guide]").unwrap();
+        let output = root.path().join("site");
+
+        let styles = notist_plugin_host::site_styles(Some(
+            &fs::read_to_string(root.path().join("Notist.toml")).unwrap(),
+        ))
+        .unwrap();
+        assert_eq!(styles, vec!["assets/theme/user.css"]);
+        let rendered = render(root.path());
+        let web_paths = copy_site_styles(root.path(), &output, &styles).unwrap();
+        write_rendered_site_with_plugins(
+            &rendered,
+            &output,
+            SiteOptions::default(),
+            &[],
+            &web_paths,
+        )
+        .unwrap();
+
+        let copied =
+            fs::read_to_string(output.join("_notist/styles/assets/theme/user.css")).unwrap();
+        assert!(copied.contains(".user { color: darkblue; }"));
+        let home = fs::read_to_string(output.join("index.html")).unwrap();
+        let builtin = home.find("_notist/style.css").unwrap();
+        let custom = home
+            .find("href=\"_notist/styles/assets/theme/user.css\"")
+            .unwrap();
+        assert!(
+            custom > builtin,
+            "custom sheet must load after the built-in one"
+        );
+        // Deduplicated: the config listed the same sheet twice.
+        assert_eq!(home.matches("_notist/styles/").count(), 1);
+        let guide = fs::read_to_string(output.join("guide/index.html")).unwrap();
+        assert!(guide.contains("href=\"../_notist/styles/assets/theme/user.css\""));
     }
 
     #[test]

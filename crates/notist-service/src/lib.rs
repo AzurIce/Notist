@@ -248,11 +248,18 @@ impl NotistService {
 
         let engine = VaultEngine::open(root)?;
         let disk = Arc::new(Mutex::new(engine.disk_view()?));
-        let plugin_dirs = std::fs::read_to_string(root.join(notist_analysis::MANIFEST_FILE))
-            .ok()
+        let config_text = std::fs::read_to_string(root.join(notist_analysis::MANIFEST_FILE)).ok();
+        let plugin_dirs = config_text
+            .as_deref()
             .map(|text| {
-                notist_plugin_host::plugin_package_dirs(root, Some(&text)).unwrap_or_default()
+                notist_plugin_host::plugin_package_dirs(root, Some(text)).unwrap_or_default()
             })
+            .unwrap_or_default();
+        // `[site] styles` sheets are presentation assets: editing one must
+        // republish the snapshot so preview rebuilds pick up the new bytes.
+        let site_styles = config_text
+            .as_deref()
+            .map(|text| notist_plugin_host::site_styles(Some(text)).unwrap_or_default())
             .unwrap_or_default();
         let sessions: Arc<Mutex<Vec<Weak<Mutex<AnalyzerView>>>>> = Arc::new(Mutex::new(Vec::new()));
         let watcher_disk = disk.clone();
@@ -260,6 +267,13 @@ impl NotistService {
         let watcher_plugin_dirs = plugin_dirs
             .iter()
             .map(|(_, path)| dunce::canonicalize(path).unwrap_or_else(|_| path.clone()))
+            .collect::<Vec<_>>();
+        let watcher_style_paths = site_styles
+            .iter()
+            .map(|style| {
+                let path = root.join(style);
+                dunce::canonicalize(&path).unwrap_or(path)
+            })
             .collect::<Vec<_>>();
         let mut watcher = new_debouncer(
             Duration::from_millis(250),
@@ -274,6 +288,10 @@ impl NotistService {
                             .any(|plugin_dir| path.starts_with(plugin_dir))
                     })
                 };
+                let is_site_style_event = |path: &std::path::Path| {
+                    dunce::canonicalize(path)
+                        .is_ok_and(|canonical| watcher_style_paths.contains(&canonical))
+                };
                 if !events.iter().any(|event| {
                     event
                         .path
@@ -283,6 +301,7 @@ impl NotistService {
                         || event.path.file_name().and_then(|name| name.to_str())
                             == Some(notist_analysis::MANIFEST_FILE)
                         || is_plugin_event(&event.path)
+                        || is_site_style_event(&event.path)
                 }) {
                     return;
                 }
