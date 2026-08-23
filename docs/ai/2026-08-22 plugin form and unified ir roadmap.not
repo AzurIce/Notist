@@ -60,6 +60,8 @@ trait Registrar { fn element<E: ElementFn>(&mut self, e: E); }
 
 == 三步路线
 
+**进度（2026-08-23 续）**：A3 落地——WIT `element-decl` 增加 `computed` 位，SDK 拆分 `Registrar::element`（可计算）/ `Registrar::declare`（纯数据声明），宿主按声明拆分注册（签名+成型 schema 全量，派发仅 computed），数据型 call 不再派发、天然为叶子；stream lowering 对未知名字产出 pending call（诊断归 check 层）。A1 核心完成——生产入口 `evaluate_parsed_stream_with_bindings` 切换到 node 引擎，terminal forest 经 instance 适配器重建 legacy 形状，全部消费者无感。
+
 **进度（2026-08-23）**：边界表示收敛完成——`model::Node` 直接作为载荷（serde 直出，Wire 层与 SDK 镜像删除，SDK 版本即 ABI 版本）；新增 `FunctionOutput::Nodes` 使组件插件以统一 IR 进出双引擎。**能力系统整体删除**：透传场景实证 per-call 授权不可行（正文归因误伤），信任模型收敛为「wasm 沙箱 = 唯一边界」，capability.not 改写为 Trust Model，引擎不再做内容授权。同时确立规约契约：**handler 不得返回指向自身的节点**（自返回 = 作者 bug，由 depth/fuel 兜底）；样例 echo 改为透传语义。
 
 **进度（2026-08-22）**：Step 1 前两阶段已落地——① `notist-model::Node` 统一类型（`node.rs`：单一表示 + 与 `InstanceNode` 双向适配器 + 单测）；② `notist-eval` 新增 `leaf::node_engine` 统一节点规约引擎（fixpoint 语义：有 handler 则替换输出、无 handler 即叶子，子节点与 pending 参数流先于 dispatch 规约；dispatch 检查重构为共享 `ReduceFrame::dispatch_entry`），并暴露公共入口 `Evaluator::evaluate_nodes[_with_shaping]` 返回 `NodeEvaluation { forest, tree }`（tree 经 instance 适配器保持现有消费者可用）。四项引擎测试覆盖全管线、未知名字兜底、handler 派发、trailing body 绑定。行为零变化、292 测试全绿。**下一阶段**：lowering 迁移（未知调用改为产出 pending Node 而非走表达式路径，使兜底语义真正激活）→ html 消费端直读 Node 树 → 删除 `Element` 枚举与双 IR 转换层 → 之后进入 Step 2（core wasm 加载实验）与 Step 3（基准定案）。

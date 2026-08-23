@@ -211,24 +211,39 @@ impl Evaluator {
             &self.registry,
             bindings,
         );
-        let limits = ReduceLimits::default();
-        let mut frame = ReduceFrame::root_with_policy(&limits);
-        let (leaves, reduce_diagnostics) =
-            leaf::reduce_flat_recovering(&lowered.flat, &self.registry, &limits, &mut frame);
-        // A stream that still produced some leaves is a recoverable partial
-        // result; only an entirely failed reduction falls back to legacy.
-        let reduction_failed = leaves.is_empty() && !reduce_diagnostics.is_empty();
-        let reduced = FlatContent {
-            nodes: leaves.iter().cloned().map(StreamNode::Leaf).collect(),
+        // Production reduction runs on the unified-node engine; the legacy
+        // stream shapes are rebuilt from its terminal forest for consumers
+        // that still speak them.
+        let mut evaluation =
+            leaf::node_engine::evaluate_to_nodes(&lowered.flat, &self.registry, shaping);
+        let reduction_failed = evaluation.forest.is_empty() && !evaluation.diagnostics.is_empty();
+        let leaves = evaluation
+            .forest
+            .iter()
+            .map(notist_model::node_to_instance)
+            .collect::<Result<Vec<_>, String>>();
+        let (reduced, tree) = match leaves {
+            Ok(leaves) => (
+                FlatContent {
+                    nodes: leaves.iter().cloned().map(StreamNode::Leaf).collect(),
+                },
+                evaluation.tree,
+            ),
+            Err(message) => {
+                evaluation.diagnostics.push(EvalDiagnostic {
+                    message,
+                    range: notist_model::TextRange::new(0, 0),
+                });
+                (FlatContent::new(), crate::leaf::ElementTree::default())
+            }
         };
-        let tree = leaf::shape_flat_with(&leaves, shaping);
         let mut diagnostics = Vec::new();
         diagnostics.extend(parse.errors.iter().cloned().map(|error| EvalDiagnostic {
             message: error.message,
             range: error.range,
         }));
         diagnostics.extend(lowered.diagnostics);
-        diagnostics.extend(reduce_diagnostics);
+        diagnostics.append(&mut evaluation.diagnostics);
         StreamEvaluation {
             lowered: lowered.flat,
             reduced,
