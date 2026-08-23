@@ -646,12 +646,7 @@ fn unknown_call_as_leaf(
     limits: &ReduceLimits,
     frame: &mut ReduceFrame,
 ) -> Result<Vec<InstanceNode>, Vec<EvalDiagnostic>> {
-    fn value_to_field_value(
-        value: &Value,
-        registry: &FunctionRegistry,
-        limits: &ReduceLimits,
-        frame: &mut ReduceFrame,
-    ) -> Result<FieldValue, Vec<EvalDiagnostic>> {
+    fn value_to_field_value(value: &Value) -> Result<FieldValue, Vec<EvalDiagnostic>> {
         Ok(match value {
             Value::None => FieldValue::None,
             Value::Bool(v) => FieldValue::Bool(*v),
@@ -666,7 +661,7 @@ fn unknown_call_as_leaf(
     let mut fields = Vec::new();
     for argument in &call.arguments {
         let field_value = match &argument.value {
-            StreamValue::Value(value) => value_to_field_value(value, registry, limits, frame)?,
+            StreamValue::Value(value) => value_to_field_value(value)?,
             StreamValue::Stream(stream) => {
                 let nodes = reduce_flat(stream, registry, limits, frame)?;
                 FieldValue::Content(nodes)

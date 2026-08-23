@@ -422,7 +422,7 @@ impl StreamLowerState<'_> {
                 } else {
                     // Unknown/data-only name: emit a pending call node. The
                     // reducer decides — handler dispatch or terminal leaf.
-                    self.lower_unknown_call(call, embedded);
+                    self.lower_unknown_call(call);
                 }
             }
             _ => {
@@ -445,12 +445,11 @@ impl StreamLowerState<'_> {
     ///
     /// Named arguments keep their names; unnamed scalar arguments receive
     /// synthetic positional names; content arguments fold into the body.
-    fn lower_unknown_call(&mut self, call: &Call, embedded: &EmbeddedExpression) {
+    fn lower_unknown_call(&mut self, call: &Call) {
         let range = call.range.shifted(self.base_offset);
         let mut node = StreamCall::new(call.name.value.clone(), range);
         let mut body: Vec<StreamNode> = Vec::new();
-        let mut positional = 0usize;
-        for argument in &call.arguments {
+        for (positional, argument) in call.arguments.iter().enumerate() {
             match &argument.expression.kind {
                 ExpressionKind::Content(block) => {
                     body.extend(self.lower_markup_body(&block.markup).nodes);
@@ -479,7 +478,6 @@ impl StreamLowerState<'_> {
                     });
                 }
             }
-            positional += 1;
         }
         if !body.is_empty() {
             node.body = Some(FlatContent::from_nodes(body));
