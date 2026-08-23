@@ -156,6 +156,10 @@ pub struct ElementDecl {
     pub version: u32,
     #[serde(default = "default_true")]
     pub block: bool,
+    /// Whether a runtime handler exists. Data-only declarations stay
+    /// unreduced: their document calls are the final leaves.
+    #[serde(default)]
+    pub computed: bool,
     #[serde(default)]
     pub parameters: Vec<ParamDecl>,
     #[serde(rename = "trailing-content")]
@@ -199,8 +203,12 @@ pub struct LoadedPlugin {
     pub version: String,
     /// Manifest API version.
     pub api_version: String,
-    /// Eval-side contributions, either declarative or Wasm-backed.
+    /// Eval-side contributions with runtime handlers. Data-only
+    /// declarations appear in `signatures` but not here.
     pub functions: Vec<Arc<dyn Function>>,
+    /// Signatures for every declared element (computed or data-only),
+    /// qualified by package namespace.
+    pub signatures: Vec<(String, FunctionSignature)>,
     /// Shaping schemas for each declared element.
     pub elements: Vec<ElementSchema>,
     /// HTML renderer contributions declared by the manifest.
@@ -551,10 +559,18 @@ pub fn load_package(package_dir: &Path) -> Result<LoadedPlugin, String> {
         }
     };
     let mut functions = Vec::new();
+    let mut signatures = Vec::new();
     let mut elements = Vec::new();
     for element in declared {
         let signature = element_signature(element)?;
         let element_name = plugin_element_name(&manifest.package, &element.name);
+        signatures.push((element_name.clone(), signature.clone()));
+        if !element.computed {
+            // Data-only declaration: the document call IS the final leaf.
+            // Register schema + signature only; no dispatch entry.
+            elements.push(element_schema(&element_name, element, &manifest.package)?);
+            continue;
+        }
         let owner = FunctionOwner::Plugin(manifest.package.clone());
         let function: Arc<dyn Function> = match &runtime {
             Some((SemanticRuntime::Core(runtime), _)) => Arc::new(WasmFunction {
@@ -615,6 +631,7 @@ pub fn load_package(package_dir: &Path) -> Result<LoadedPlugin, String> {
         version: manifest.version,
         api_version: manifest.api_version,
         functions,
+        signatures,
         elements,
         html_contributions,
         shared_registry,
@@ -1152,6 +1169,7 @@ fn convert_guest_decl(
         name: guest.name,
         version: guest.version,
         block: guest.block,
+        computed: guest.computed,
         parameters: guest
             .parameters
             .into_iter()
@@ -1311,6 +1329,7 @@ fn convert_guest_decl_host(
         name: guest.name,
         version: guest.version,
         block: guest.block,
+        computed: guest.computed,
         parameters: guest
             .parameters
             .into_iter()
@@ -1616,10 +1635,25 @@ mod tests {
             .unwrap();
         let plugin = load_package(&package_dir).unwrap();
         assert_eq!(plugin.id, "component-echo");
+        // echo is computed (dispatch entry); note is data-only (signature +
+        // schema only). Both come from guest `init` — the envelope manifest
+        // carries no semantic block at all.
         assert_eq!(plugin.functions.len(), 1);
         assert_eq!(plugin.functions[0].name(), "component-echo::echo");
-        // The signature comes from guest `init`, not the manifest: the
-        // envelope plugin.json carries no semantic block at all.
+        assert_eq!(plugin.signatures.len(), 2);
+        assert!(
+            plugin
+                .signatures
+                .iter()
+                .any(|(name, _)| name == "component-echo::note")
+        );
+        assert!(!plugin.signatures.iter().any(|(name, _)| {
+            name == "component-echo::note"
+                && plugin
+                    .functions
+                    .iter()
+                    .any(|f| f.name() == "component-echo::note")
+        }));
         let signature = plugin.functions[0].signature();
         assert_eq!(signature.trailing_content.as_deref(), Some("body"));
         let message = signature
@@ -1631,10 +1665,55 @@ mod tests {
             message.default,
             Some(DefaultValue::String(ref value)) if value == "hello"
         ));
-        assert_eq!(plugin.elements.len(), 1);
+        assert_eq!(plugin.elements.len(), 2);
+        let note = plugin
+            .elements
+            .iter()
+            .find(|schema| schema.name == ElementName::plugin("component-echo", "note"))
+            .expect("note schema registered");
+        assert_eq!(note.body_mode, notist_model::BodyMode::Flow);
+        assert!(
+            plugin
+                .elements
+                .iter()
+                .any(|schema| schema.name == ElementName::plugin("component-echo", "echo"))
+        );
+    }
+
+    #[test]
+    fn data_only_elements_stay_as_leaves() {
+        let package_dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("../../plugins/component-echo")
+            .canonicalize()
+            .unwrap();
+        let plugin = load_package(&package_dir).unwrap();
+        let mut shaping = ShapingRegistry::new();
+        crate::register_loaded_shaping(&mut shaping, std::slice::from_ref(&plugin));
+        let mut registry = FunctionRegistry::with_builtins();
+        register_loaded(&mut registry, std::slice::from_ref(&plugin)).unwrap();
+        let evaluation = Evaluator::new(registry).evaluate_stream_with_shaping(
+            "#component-echo::note(message: \"Hello\")[body]",
+            &shaping,
+        );
+        assert!(
+            evaluation.diagnostics.is_empty(),
+            "{:?}",
+            evaluation.diagnostics
+        );
+        // The call stayed unreduced: self-named leaf with raw bound fields,
+        // body shaped by the guest-declared `body-mode: flow` schema.
+        let root = &evaluation.tree.roots[0];
         assert_eq!(
-            plugin.elements[0].name,
-            ElementName::plugin("component-echo", "echo")
+            root.instance.name,
+            ElementName::plugin("component-echo", "note")
+        );
+        assert!(root.instance.fields.iter().any(|field| field.name == "message"
+            && matches!(&field.value, notist_model::FieldValue::String(value) if value == "Hello")));
+        assert!(
+            root.instance
+                .body
+                .iter()
+                .all(|node| node.instance.is_core("paragraph"))
         );
     }
 

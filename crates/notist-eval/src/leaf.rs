@@ -534,12 +534,11 @@ fn reduce_call_inner(
     limits: &ReduceLimits,
     frame: &mut ReduceFrame,
 ) -> Result<Vec<InstanceNode>, Vec<EvalDiagnostic>> {
-    let function = registry.get(&call.name).ok_or_else(|| {
-        vec![EvalDiagnostic {
-            message: format!("unknown function `{}`", call.name),
-            range: call.range,
-        }]
-    })?;
+    let Some(function) = registry.get(&call.name) else {
+        // Fixpoint rule: nobody handles this name → the call itself is the
+        // leaf. Arguments and body still reduce so embedded calls compose.
+        return unknown_call_as_leaf(call, registry, limits, frame);
+    };
     let signature = function.signature();
     let mut diagnostics = Vec::new();
 
@@ -638,6 +637,54 @@ fn reduce_call_inner(
         }]),
         Err(errors) => Err(errors),
     }
+}
+
+/// Materializes an unhandled call as a terminal leaf.
+fn unknown_call_as_leaf(
+    call: &StreamCall,
+    registry: &FunctionRegistry,
+    limits: &ReduceLimits,
+    frame: &mut ReduceFrame,
+) -> Result<Vec<InstanceNode>, Vec<EvalDiagnostic>> {
+    fn value_to_field_value(
+        value: &Value,
+        registry: &FunctionRegistry,
+        limits: &ReduceLimits,
+        frame: &mut ReduceFrame,
+    ) -> Result<FieldValue, Vec<EvalDiagnostic>> {
+        Ok(match value {
+            Value::None => FieldValue::None,
+            Value::Bool(v) => FieldValue::Bool(*v),
+            Value::Int(v) => FieldValue::Int(*v),
+            Value::Float(v) => FieldValue::Float(*v),
+            Value::String(v) => FieldValue::String(v.clone()),
+            Value::Content(content) => FieldValue::Content(legacy_content_to_nodes(content)),
+            Value::Function(_) => FieldValue::None,
+        })
+    }
+
+    let mut fields = Vec::new();
+    for argument in &call.arguments {
+        let field_value = match &argument.value {
+            StreamValue::Value(value) => value_to_field_value(value, registry, limits, frame)?,
+            StreamValue::Stream(stream) => {
+                let nodes = reduce_flat(stream, registry, limits, frame)?;
+                FieldValue::Content(nodes)
+            }
+        };
+        fields.push(Field {
+            name: argument.name.clone(),
+            value: field_value,
+        });
+    }
+    let body = match &call.body {
+        Some(body) => reduce_flat(body, registry, limits, frame)?,
+        None => Vec::new(),
+    };
+    let mut instance = ElementInstance::new(ElementName::parse(&call.name), false);
+    instance.fields = fields;
+    instance.body = body;
+    Ok(vec![InstanceNode::ranged(instance, call.range)])
 }
 
 #[allow(clippy::too_many_arguments)]

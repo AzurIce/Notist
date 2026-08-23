@@ -411,14 +411,19 @@ impl StreamLowerState<'_> {
                 );
             }
             ExpressionKind::Call(call)
-                if self.registry.get(&call.name.value).is_some()
-                    && !self.variables.iter().rev().any(|scope| {
-                        scope
-                            .get(&call.name.value)
-                            .is_some_and(|value| matches!(value, Value::Function(_)))
-                    }) =>
+                if !self.variables.iter().rev().any(|scope| {
+                    scope
+                        .get(&call.name.value)
+                        .is_some_and(|value| matches!(value, Value::Function(_)))
+                }) =>
             {
-                self.lower_registry_call(call, embedded);
+                if self.registry.get(&call.name.value).is_some() {
+                    self.lower_registry_call(call, embedded);
+                } else {
+                    // Unknown/data-only name: emit a pending call node. The
+                    // reducer decides — handler dispatch or terminal leaf.
+                    self.lower_unknown_call(call, embedded);
+                }
             }
             _ => {
                 let (value, mut diagnostics) = lower::evaluate_expression_fragment(
@@ -434,6 +439,52 @@ impl StreamLowerState<'_> {
                 self.insert_value(value, embedded.scope_range.shifted(self.base_offset));
             }
         }
+    }
+
+    /// Lowers a call whose name has no registered handler.
+    ///
+    /// Named arguments keep their names; unnamed scalar arguments receive
+    /// synthetic positional names; content arguments fold into the body.
+    fn lower_unknown_call(&mut self, call: &Call, embedded: &EmbeddedExpression) {
+        let range = call.range.shifted(self.base_offset);
+        let mut node = StreamCall::new(call.name.value.clone(), range);
+        let mut body: Vec<StreamNode> = Vec::new();
+        let mut positional = 0usize;
+        for argument in &call.arguments {
+            match &argument.expression.kind {
+                ExpressionKind::Content(block) => {
+                    body.extend(self.lower_markup_body(&block.markup).nodes);
+                }
+                _ => {
+                    let (value, mut diagnostics) = lower::evaluate_expression_fragment(
+                        self.source,
+                        &argument.expression,
+                        self.base_offset,
+                        self.registry,
+                        0,
+                        &self.user_functions,
+                        self.variables.clone(),
+                    );
+                    self.diagnostics.append(&mut diagnostics);
+                    let name = match &argument.name {
+                        Some(name) => name.value.clone(),
+                        None => {
+                            let name = format!("arg{positional}");
+                            name
+                        }
+                    };
+                    node.arguments.push(StreamArgument {
+                        name,
+                        value: StreamValue::Value(value),
+                    });
+                }
+            }
+            positional += 1;
+        }
+        if !body.is_empty() {
+            node.body = Some(FlatContent::from_nodes(body));
+        }
+        self.push_node(StreamNode::Call(node));
     }
 
     fn lower_registry_call(&mut self, call: &Call, embedded: &EmbeddedExpression) {

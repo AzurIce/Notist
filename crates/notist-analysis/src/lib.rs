@@ -773,8 +773,12 @@ impl WorkspaceSnapshot {
             .flat_map(|plugin| plugin.html_contributions.iter().cloned())
             .collect();
         for plugin in &loaded_plugins {
+            // Data-only declarations contribute signatures (check/completion)
+            // without dispatch entries; computed ones also register functions.
+            for (name, signature) in &plugin.signatures {
+                signatures.insert(name.as_str(), signature.clone());
+            }
             for function in &plugin.functions {
-                signatures.insert(function.name(), function.signature());
                 if let Some((package, element)) = function.name().split_once("::")
                     && let Some(alias) = notist_plugin_host::plugin_legacy_alias(package, element)
                 {

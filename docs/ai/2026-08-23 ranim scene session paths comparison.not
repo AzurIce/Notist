@@ -70,3 +70,43 @@ e2e 验证：basic 场景 192 帧渲染成功（1.57s vs evaluator 1.03s，dev p
 | extract_path | static 50×50 | 88.8ms | direct 107.3ms | 1.21× |
 
 读法：direct（materialize+reconcile_logic）优于 player 走缓冲（82.4+reconcile≈109ms），但仍慢于 evaluator 缓冲路径 ~1.2×；差距全部在 LogicWorld 簿记与每 item 提取分配上，属于实现开销。结论不变：性能不是当前切换理由，world 的价值在 retained/typed（stage 2/3）。
+
+== 后续（同日）：buffered vs direct 的 samply 对比
+
+profiling 目标 `benches/src/bin/profile_extract_path.rs`（transform_squares 50×50，60 帧 × 30 轮 = 1800 帧，release+debuginfo，samply 1000Hz，addr2line 离线符号化）。每帧时长：buffered 1.295ms / direct 1.558ms（1.20×，与 criterion 的 1.18× 互证）。
+
+归因（samply total-time 占比 × 时间窗换算 ms/帧；各阶段有重叠，取主导符号）：
+
+| 阶段 | buffered | direct | 说明 |
+|---|---|---|---|
+| eval_at（共有求值） | 0.27 | 0.29 | 同一棵树 |
+| extract clone（共有） | 0.40 | 0.39 | 两边各一次；direct 融合在钩子里 |
+| LogicWorld upsert 簿记 | – | ~0.45 | bevy `Column::replace`/`BlobArray::replace`（T + ExtractedItems 两次组件写入）+ HashSet/索引 |
+| reconcile | 0.21 | 0.29 | direct move 免 clone 但每帧 iter_entities + 排序，净 +0.08 |
+| 帧缓冲传输 | ~0.1（update+drop） | – | direct 省下 |
+
+结论：direct 的 +0.26ms/帧 几乎全部来自 LogicWorld 的 upsert 簿记（其中 bevy 组件写入约 0.40ms 是最大单项）；direct 省下的帧缓冲传输与 reconcile clone 被 iter_entities+排序抵掉大半。优化方向排序：upsert 写前比较跳过未变值（同时保留变更 tick）、ExtractedItems 分配复用（当前每 item 每帧一个新 Vec）、reconcile_logic 用逻辑侧已有顺序避免排序。
+
+== 后续（同日）：四条路径的统一定义与对比
+
+统一定义后重测（同一 profiling 二进制 `profile_extract_path`，transform_squares 50×50，1800 帧/条）：
+
+- **evaluator**：纯路径采样基线。`SceneEvaluator::sample_at` → `EvaluatedFrame`，不喂渲染。
+- **player**：纯物化基线。`ScenePlayer::materialize_at`（LogicWorld  upsert + 融合 extract），不喂渲染。
+- **buffered**：现行生产路径。evaluator 采样 → `RenderFrame` 缓冲 → `reconcile` 进渲染世界。
+- **direct**：新直接提取路径。player 物化 → world exchange → `reconcile_logic` 进渲染世界。
+
+每帧时长与拆解（samply 1000Hz，total-time 归因 × 时间窗换算，ms/帧；归因按主导符号归类，父子重叠已并入主行）：
+
+| 阶段（ms/帧） | evaluator | player | buffered | direct |
+|---|---|---|---|---|
+| 动画树求值 `eval_at` | 0.22 | 0.25 | 0.27 | 0.29 |
+| extract clone（T→CoreItem） | 0.34 | 0.34 | 0.40 | 0.39 |
+| LogicWorld upsert 簿记 | – | 0.51 | – | 0.46 |
+|   其中 bevy 组件写入 `Column::replace` | – | 0.17 | – | 0.23 |
+|   其中 seen/索引/Vec 分配/insert | – | 0.34 | – | 0.23 |
+| 帧缓冲搬运与清理（update/drop/枚举） | 0.23 | 0.03 | 0.42 | 0.13 |
+| reconcile → 渲染世界 | – | – | 0.21 | 0.29 |
+| **合计** | **0.79** | **1.13** | **1.30** | **1.56** |
+
+关键差额：player − evaluator = **+0.34**（LogicWorld upsert 簿记）；direct − buffered = **+0.26**；两条喂渲染路径各自相对基线的增量接近（0.51 vs 0.43），direct 的提取侧实际略省。结论不变：world 簿记是唯一结构性差额，优化顺序见上一节（写前比较、分配复用、免排序）。

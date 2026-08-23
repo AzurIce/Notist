@@ -25,6 +25,9 @@ pub struct ElementDecl {
     pub name: String,
     pub version: u32,
     pub block: bool,
+    /// Whether a runtime handler exists in the dispatch map. Data-only
+    /// declarations (`Registrar::declare`) stay unreduced.
+    pub computed: bool,
     pub parameters: Vec<ParamDecl>,
     pub trailing_content: Option<String>,
     pub body_mode: Option<String>,
@@ -38,6 +41,7 @@ impl ElementDecl {
             name: name.to_owned(),
             version: 1,
             block: false,
+            computed: true,
             parameters: Vec::new(),
             trailing_content: None,
             body_mode: None,
@@ -53,6 +57,13 @@ impl ElementDecl {
 
     pub fn block(mut self, block: bool) -> Self {
         self.block = block;
+        self
+    }
+
+    /// Marks this declaration as data-only: no runtime handler. Its document
+    /// calls stay unreduced and render straight from name + fields.
+    pub fn data_only(mut self) -> Self {
+        self.computed = false;
         self
     }
 
@@ -203,6 +214,27 @@ pub struct Registrar {
 }
 
 impl Registrar {
+    /// Declares a data-only element: no runtime handler. Its document calls
+    /// stay unreduced and render straight from name + fields.
+    pub fn declare(&mut self, decl: ElementDecl) {
+        if !decl.name.is_empty()
+            && !decl.name.contains("::")
+            && !self
+                .elements
+                .iter()
+                .any(|existing| existing.name == decl.name)
+        {
+            let mut decl = decl;
+            decl.computed = false;
+            self.elements.push(decl);
+        } else {
+            panic!(
+                "element `{}` is empty, qualified, or already registered",
+                decl.name
+            );
+        }
+    }
+
     /// Registers one element implementation. Duplicate names are rejected at
     /// registration time so failures surface in the author's test run rather
     /// than as host load diagnostics.
@@ -281,6 +313,7 @@ pub struct GuestElementDecl {
     pub name: String,
     pub version: u32,
     pub block: bool,
+    pub computed: bool,
     pub parameters: Vec<(String, String, Option<String>)>,
     pub trailing_content: Option<String>,
     pub body_mode: Option<String>,
@@ -305,6 +338,7 @@ pub fn build_guest_state<P: Plugin>() -> GuestState {
             name: element.name.clone(),
             version: element.version,
             block: element.block,
+            computed: element.computed,
             parameters: element
                 .parameters
                 .iter()
@@ -411,6 +445,7 @@ interface types {
         name: string,
         version: u32,
         block: bool,
+        computed: bool,
         parameters: list<param-decl>,
         trailing-content: option<string>,
         body-mode: option<string>,
@@ -439,6 +474,7 @@ world plugin {
                             name: decl.name.clone(),
                             version: decl.version,
                             block: decl.block,
+                            computed: decl.computed,
                             parameters: decl
                                 .parameters
                                 .iter()
@@ -501,6 +537,7 @@ interface types {
         name: string,
         version: u32,
         block: bool,
+        computed: bool,
         parameters: list<param-decl>,
         trailing-content: option<string>,
         body-mode: option<string>,
@@ -534,6 +571,7 @@ world plugin-host {
                             name: decl.name.clone(),
                             version: decl.version,
                             block: decl.block,
+                            computed: decl.computed,
                             parameters: decl
                                 .parameters
                                 .iter()

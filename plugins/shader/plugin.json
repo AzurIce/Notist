@@ -25,7 +25,8 @@
               "default": 600
             }
           ],
-          "trailing-content": "body"
+          "trailing-content": "body",
+          "computed": true
         }
       ]
     },

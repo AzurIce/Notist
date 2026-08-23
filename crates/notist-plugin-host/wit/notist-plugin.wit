@@ -19,11 +19,16 @@ interface types {
     }
 
     /// One semantic element contributed by the plugin.
+    ///
+    /// `computed` marks elements with a runtime handler in the dispatch map;
+    /// data-only declarations (`Registrar::declare`) stay unreduced — their
+    /// document calls ARE the final leaves.
     record element-decl {
         /// Element name inside the package namespace.
         name: string,
         version: u32,
         block: bool,
+        computed: bool,
         parameters: list<param-decl>,
         trailing-content: option<string>,
         body-mode: option<string>,

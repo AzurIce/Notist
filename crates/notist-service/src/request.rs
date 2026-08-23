@@ -2821,7 +2821,7 @@ mod tests {
                 "render": {
                     "html": {
                         "contributions": [{
-                            "element": "echo",
+                            "element": "note",
                             "trusted": true,
                             "web-component": {
                                 "tag": "notist-card",
@@ -2845,7 +2845,7 @@ mod tests {
         .unwrap();
         fs::write(
             root.join("README.not"),
-            "#card::echo(message: \"Hello\")[body]",
+            "#card::note(message: \"Hello\")[body]",
         )
         .unwrap();
 
@@ -2870,9 +2870,14 @@ mod tests {
             .iter()
             .find(|page| page.module_segments.is_empty())
             .expect("home page");
-        // Pass-through echo: the body flows back as plain content. Custom
-        // element projection is covered by the html renderer unit tests.
-        assert!(home.fragment.contains(">body<"), "{}", home.fragment);
+        // Data-only declaration: the call stays a self-named leaf and the
+        // web-component renderer projects it from name + fields.
+        assert!(
+            home.fragment.contains("<notist-card"),
+            "fragment: {}",
+            home.fragment
+        );
+        assert!(home.fragment.contains("data-message=\"Hello\""));
     }
 
     #[test]

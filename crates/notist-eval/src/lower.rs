@@ -914,11 +914,10 @@ impl LowerState<'_> {
         }
 
         let Some(function) = self.registry.get(name) else {
+            // Fixpoint rule: an unhandled name IS a leaf. The unresolved call
+            // is preserved as content; check-phase owns unknown-name
+            // diagnostics.
             let mut diagnostics = Vec::new();
-            diagnostics.push(EvalDiagnostic {
-                message: format!("unknown function `{name}`"),
-                range: call.name.range.shifted(self.base_offset),
-            });
             let (trailing, mut trailing_diagnostics) = self.evaluate_trailing(&call.trailing);
             diagnostics.append(&mut trailing_diagnostics);
             let arguments = call

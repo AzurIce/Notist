@@ -695,15 +695,18 @@ mod tests {
             "video",
             "audio",
         ] {
+            // Fixpoint rule: unhandled names stay as unresolved calls — the
+            // check layer owns unknown-name diagnostics, not the evaluator.
             let evaluation = evaluator.evaluate(&format!("#{name}[]"));
             assert!(
-                evaluation
-                    .diagnostics
-                    .iter()
-                    .any(|diagnostic| diagnostic.message == format!("unknown function `{name}`")),
+                evaluation.diagnostics.is_empty(),
                 "{name}: {:?}",
                 evaluation.diagnostics
             );
+            assert!(matches!(
+                &evaluation.content.elements[0].element,
+                Element::UnresolvedCall { name: call_name, .. } if call_name == name
+            ));
         }
     }
 

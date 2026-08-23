@@ -18,7 +18,8 @@
               "name": "text",
               "ty": "String"
             }
-          ]
+          ],
+          "computed": true
         },
         {
           "name": "parbreak",
@@ -26,7 +27,8 @@
           "block": false,
           "kind": "separator",
           "body-mode": "none",
-          "role": "none"
+          "role": "none",
+          "computed": true
         },
         {
           "name": "ref",
@@ -39,7 +41,8 @@
               "name": "url",
               "ty": "String"
             }
-          ]
+          ],
+          "computed": true
         },
         {
           "name": "heading",
@@ -54,7 +57,8 @@
               "default": 1
             }
           ],
-          "trailing-content": "body"
+          "trailing-content": "body",
+          "computed": true
         },
         {
           "name": "raw",
@@ -77,14 +81,16 @@
               "ty": "Bool",
               "default": false
             }
-          ]
+          ],
+          "computed": true
         },
         {
           "name": "rule",
           "version": 1,
           "block": true,
           "body-mode": "none",
-          "role": "none"
+          "role": "none",
+          "computed": true
         },
         {
           "name": "callout",
@@ -104,7 +110,8 @@
               "default": null
             }
           ],
-          "trailing-content": "body"
+          "trailing-content": "body",
+          "computed": true
         },
         {
           "name": "details",
@@ -124,7 +131,8 @@
               "default": false
             }
           ],
-          "trailing-content": "body"
+          "trailing-content": "body",
+          "computed": true
         },
         {
           "name": "item",
@@ -139,7 +147,8 @@
               "default": false
             }
           ],
-          "trailing-content": "body"
+          "trailing-content": "body",
+          "computed": true
         },
         {
           "name": "table-cell",
@@ -159,7 +168,8 @@
               "default": 1
             }
           ],
-          "trailing-content": "body"
+          "trailing-content": "body",
+          "computed": true
         },
         {
           "name": "table",
@@ -183,7 +193,8 @@
               "default": null
             }
           ],
-          "trailing-content": "body"
+          "trailing-content": "body",
+          "computed": true
         },
         {
           "name": "figure",
@@ -208,7 +219,8 @@
               "default": null
             }
           ],
-          "trailing-content": "body"
+          "trailing-content": "body",
+          "computed": true
         },
         {
           "name": "strong",
@@ -216,7 +228,8 @@
           "block": false,
           "body-mode": "inline",
           "role": "none",
-          "trailing-content": "body"
+          "trailing-content": "body",
+          "computed": true
         },
         {
           "name": "emph",
@@ -224,7 +237,8 @@
           "block": false,
           "body-mode": "inline",
           "role": "none",
-          "trailing-content": "body"
+          "trailing-content": "body",
+          "computed": true
         },
         {
           "name": "underline",
@@ -232,7 +246,8 @@
           "block": false,
           "body-mode": "inline",
           "role": "none",
-          "trailing-content": "body"
+          "trailing-content": "body",
+          "computed": true
         },
         {
           "name": "strike",
@@ -240,7 +255,8 @@
           "block": false,
           "body-mode": "inline",
           "role": "none",
-          "trailing-content": "body"
+          "trailing-content": "body",
+          "computed": true
         }
       ]
     }
