@@ -16,7 +16,7 @@ use crate::{ElementName, FieldValue, TextRange};
 /// - **leaf phase**: no handler answers for `name`; `args` are concrete data,
 ///   `children` are already-reduced nodes, and the projection layer renders
 ///   the node from its name and args alone.
-#[derive(Clone, Debug, PartialEq)]
+#[derive(Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
 pub struct Node {
     /// Qualified constructor identity (`core::text`, `demo::box`).
     pub name: String,
@@ -27,7 +27,9 @@ pub struct Node {
     pub children: Vec<Node>,
     /// Whether this node interrupts paragraph flow.
     pub block: bool,
-    /// Source range responsible for this node.
+    /// Source range responsible for this node. Host-side metadata only;
+    /// never meaningful across the plugin boundary.
+    #[serde(default)]
     pub range: TextRange,
 }
 
@@ -82,7 +84,7 @@ impl Node {
 /// [`NodeValue::Stream`] is the pending state: a not-yet-reduced child
 /// stream. Once reduction reaches fixpoint every value is concrete, so
 /// downstream consumers (shaping, projection) never observe it.
-#[derive(Clone, Debug, PartialEq)]
+#[derive(Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
 pub enum NodeValue {
     None,
     Bool(bool),
@@ -213,6 +215,35 @@ impl From<&FieldValue> for NodeValue {
             }
             FieldValue::Array(values) => Self::Array(values.iter().map(Self::from).collect()),
         }
+    }
+}
+
+/// Wire helpers over the unified node.
+///
+/// The SDK crate version doubles as the payload ABI version: host and
+/// plugins compiled against the same `notist_model` produce and accept the
+/// same bytes. No separate protocol version exists.
+pub mod wire {
+    use super::Node;
+
+    /// Serializes one node tree onto the plugin ABI.
+    pub fn encode(value: &Node) -> Result<Vec<u8>, String> {
+        serde_json::to_vec(value).map_err(|error| format!("encode node payload: {error}"))
+    }
+
+    /// Deserializes one node tree from the plugin ABI.
+    pub fn decode(bytes: &[u8]) -> Result<Node, String> {
+        serde_json::from_slice(bytes).map_err(|error| format!("decode node payload: {error}"))
+    }
+
+    /// Serializes a forest (reduction responses carry many roots).
+    pub fn encode_forest(nodes: &[Node]) -> Result<Vec<u8>, String> {
+        serde_json::to_vec(nodes).map_err(|error| format!("encode node forest: {error}"))
+    }
+
+    /// Deserializes a forest from the plugin ABI.
+    pub fn decode_forest(bytes: &[u8]) -> Result<Vec<Node>, String> {
+        serde_json::from_slice(bytes).map_err(|error| format!("decode node forest: {error}"))
     }
 }
 

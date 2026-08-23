@@ -5,16 +5,13 @@
 
 == 共享类型
 
-`Stream<Call | Leaf>` 是宿主与 guest 共享的语义 schema，但 WIT 不允许直接表达该递归类型（wasmtime/wit-parser 会拒绝递归 type alias / record / list 环）。因此 component 边界保持 opaque bytes，语义 schema 由宿主发布为版本化的 serde payload。
+`Node` 是唯一的语义表示（[[vault::ai::2026-08-22 plugin form and unified ir roadmap]] 的 IR 统一裁决），它同时就是边界载荷：`notist_model` 为 `Node`/`NodeValue` 派生 serde，宿主与 guest 对同一结构做编解码，**不存在独立的 Wire 层或镜像定义**。
 
-字节内是规范编码的 `Call` 请求 / `Stream` 响应；字段语义由 [[vault::designs::pipeline::plugin-call-reduction]] 定义：
-
-```text
-Call { name, arguments, body }
-Stream<Call | Leaf>
-```
-
-`range` 只用于诊断；宿主为插件返回的节点继承最近调用点 range 或标记 synthetic。宿主侧的 wire schema 与转换在 `notist-plugin-host/src/wire.rs`。
+- WIT 不允许递归值类型（wasm-tools 与双端 bindgen 实测），因此 component 签名保持 opaque bytes：`evaluate(list<u8>) -> result<list<u8>, string>`；
+- 载荷即 `Node` 森林的 serde 编码（当前 JSON；`NodeValue` 天然外部标签，postcard 兼容，切换只动编解码器）；
+- **SDK 版本即 ABI 版本**：全部插件经 Rust SDK 编译，host 与插件针对同一 `notist_model` 构建即天然兼容，独立协议版本号留待多语言分发需求出现时再引入；
+- `range` 是宿主侧元数据，跨边界无意义（serde skip/default）；
+- **响应森林是终态**：插件返回的节点不再被派发——组合一律通过 `host.call` 主动规约完成。这消解了「插件输出与自身同名的叶子」的自指歧义，也使 capability 无需为自身 namespace 放行。
 
 == 插件形态
 
@@ -122,6 +119,7 @@ world plugin-host {
 == 当前实现
 
 - WIT 已由 wasmtime bindgen 编译校验；`export init` 与 `export evaluate` 均已接入 loader，`import host.call` 走共享 registry + capability policy。
+- 载荷直接使用 `notist_model::Node`（`model::wire::{encode_forest,decode_forest}`）；`FunctionOutput::Nodes` 使组件插件在 legacy 与 node 双引擎下均以统一 IR 进出。
 - 插件以 `notist-plugin-sdk` 编写：`Plugin::init(reg)` 注册元素，`ElementFn::reduce` 实现规约，`export_plugin!` 生成组件导出。
 - 兼容 legacy v0 raw core Wasm ABI（`evaluate(ptr, len) -> ptr`），仅用于存量 shader package。
 - Component response 的大小与节点上限见 [[vault::designs::plugin-system::safety]]。

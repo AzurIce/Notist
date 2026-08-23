@@ -721,6 +721,26 @@ fn reduce_call_inner(
             frame.caller = saved_caller;
             reduced
         }
+        Ok(FunctionOutput::Nodes(nodes)) => {
+            // Terminal response forests project straight back to leaves;
+            // composition belongs to host.call, not to return values.
+            let mut leaves = Vec::with_capacity(nodes.len());
+            let mut errors = Vec::new();
+            for node in &nodes {
+                match notist_model::node_to_instance(node) {
+                    Ok(instance) => leaves.push(instance),
+                    Err(message) => errors.push(EvalDiagnostic {
+                        message,
+                        range: node.range,
+                    }),
+                }
+            }
+            if errors.is_empty() {
+                Ok(leaves)
+            } else {
+                Err(errors)
+            }
+        }
         Ok(FunctionOutput::Value(value)) => Err(vec![EvalDiagnostic {
             message: format!(
                 "function `{}` returned {}, expected Content",
@@ -2287,6 +2307,13 @@ pub mod node_engine {
                 } else {
                     Err(errors)
                 }
+            }
+            Ok(FunctionOutput::Nodes(returned)) => {
+                // Response forests are TERMINAL: a plugin emitting a node
+                // named like a registered function means "this leaf", never
+                // "dispatch again". Composition goes through host.call.
+                let _ = owner;
+                Ok(returned)
             }
             Ok(FunctionOutput::Value(value)) => Err(vec![EvalDiagnostic {
                 message: format!(

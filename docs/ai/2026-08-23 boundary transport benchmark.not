@@ -1,0 +1,45 @@
+= 边界传输方案基准：JSON vs postcard vs typed-WIT arena
+
+本文是插件 ABI 边界表示的三方性能基准与方案裁决，回应 [[vault::ai::2026-08-22 plugin form and unified ir roadmap]] 遗留的「codec 演进」问题：JSON（现状）、postcard（二进制 serde）、typed-WIT arena（canonical ABI 直通）到底选谁。实证代码位于 `/tmp/opencode/codec-bench`。
+
+== 方法
+
+三种传输各自以真实 wasip2 组件跑端到端 echo dispatch：
+
+- bytes+JSON / bytes+postcard：生产同形的 tagged call/leaf 树 wire schema，`evaluate(list<u8>)`，guest 解码后原样回编；
+- typed-WIT arena：拍平索引树（`node{name,args,children:list<u32>}`）直接进 WIT 签名，canonical ABI 自动 lift/lower，guest 仅克隆返回。
+
+三个语料：small（单 text 调用）/ medium（约 60 节点的 details 文档树）/ deep12（12 层嵌套）。预热 200 次后取均值；fuel 每次 dispatch 重置（与生产一致）。另测 serde 两种编解码的纯 codec 往返作对照。
+
+== 结果（Apple Silicon 级桌面，release 构建）
+
+| case | transport | codec ns/op | e2e ns/op | payload B |
+|---|---|---|---|---|
+| small | bytes+JSON | 256 | 912 | 100 |
+| small | bytes+postcard | 135 | 496 | **35** |
+| small | typed-WIT arena | - | 683 | - |
+| medium | bytes+JSON | 10,748 | 21,727 | 3,854 |
+| medium | bytes+postcard | 3,926 | **6,677** | **1,314** |
+| medium | typed-WIT arena | - | 14,020 | - |
+| deep12 | bytes+JSON | 3,953 | 8,248 | 1,173 |
+| deep12 | bytes+postcard | 1,200 | **2,816** | **313** |
+| deep12 | typed-WIT arena | - | 5,043 | - |
+
+== 发现
+
+1. **postcard 全面胜出**：e2e 比 JSON 快 2.3–3.3×，payload 小 2.9–4×。
+2. **反直觉：arena 不是最快的**——比 postcard 慢约 2×。「零序列化」的直觉不成立：我们的数据是字符串密集的堆结构，canonical ABI 对每个节点、每段字符串都要在两侧线性内存里分配+拷贝+判别，生成代码的逐字段 lift/lower 开销超过了一次紧凑二进制 buffer 的整体解码。arena 的真实优势在类型化边界与语言开放性，不在速度。
+3. **绝对值都很小**：medium 树单次 dispatch 也就 6–22µs。第三方插件冷路径上选谁都无感。**唯一会被放大的场景是 core wasm 化**——每文档上千次 dispatch 时，JSON(22ms) vs postcard(6.7ms) 的差距开始进入 LSP 延迟预算。
+4. **迁移阻塞点实测**：postcard 不支持 internally-tagged 与 adjacently-tagged 枚举（均报 `WontImplement`）；生产 `WireNode` 恰好是前者。切换前提是把 schema 改为 serde 默认的外部标签（postcard 编码为变体索引字节，JSON 形状变为 `{"call":{...}}`）。这是纯机械修改但属于 wire 格式破坏性变更，必须与 payload version byte 同步落地。
+
+== 裁决
+
+```text
+边界形态维持 opaque bytes；
+ABI 稳定后一步切换 JSON → postcard：
+  前置 = WireNode/WireValue 改外部标签 + version byte 进位；
+typed-WIT arena 从「性能候选」降级为「语言开放性候选」，
+仅当出现非 Rust 插件生态需求时重启评估。
+```
+
+core 是否 wasm 化仍由 Step 2/3 的完整实验定案；本基准说明即便 wasm 化，postcard 边界下序列化成本（每文档 ~7ms @ 千次 medium dispatch）也可接受，不再构成否决项。

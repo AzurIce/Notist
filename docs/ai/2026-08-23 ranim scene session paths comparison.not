@@ -1,0 +1,41 @@
+= ranim 两条 Scene Session 路径对比与 samply 开销归因
+
+ranim M2（LogicWorld）引入的 ECS 路径（`ScenePlayer`）与既有纯求值路径（`SceneEvaluator`）实现同一个 `SceneSession` trait，输出逐帧一致。本文记录两条路径的完整对照、每帧 clone 的精确记账，以及用 samply 对 player 开销的实测归因。代码位于 ranim 仓库 `m2-logic-world` 分支（`packages/ranim-core/src/logic.rs` 与 `scene_evaluator.rs`），profiling 目标是 `benches/src/bin/profile_session.rs`。
+
+== 两条路径
+
+两者共享 sealed scene 的顶层 cells、整棵类型擦除动画树（同一份 `eval_at` 路由、同一个 `Iterative` RefCell 快照）与 `(animation_id, part)` 身份体系。分歧从求值结果落地开始：
+
+- 纯路径 `SceneEvaluator::sample_at`：`eval_at → Vec<DynItem> → 每个 DynItem.extract() → move 进帧缓冲`。无驻留状态，帧是一次性产物。
+- World 路径 `ScenePlayer::frame` = 三段式：`materialize_at`（`DynItem` 用自带钩子 upsert 进 World，帧末 despawn 消失的 key）→ `extract`（fn 指针读组件写回 `ExtractedItems`）→ `collect`（按 `SceneOrder` 排序后 clone 展开进帧缓冲）。
+
+== clone 的精确记账
+
+一个常见的错误说法是"player 多了 materialize 和 extract 两次 clone"。实际记账：
+
+- **materialize 不 clone**：`DynItem` 钩子是 `Box<dyn Any>::downcast` 移动取值，组件 insert 也是 move；这一段的成本是 bevy storage 写入与 HashMap 簿记，不是数据拷贝。
+- **extract 两边都有一次 clone**：`VItem::extract_into` 是 `buf.push(CoreItem::VItem(self.clone()))`，纯路径同样要付（evaluator profile 中 `extract_into` 占 40.6%，player 中 24.9%，绝对样本数相当）。
+- **player 独有的是 collect 的第二次 clone**：extract 结果先存进 entity 的 `ExtractedItems`（retained），collect 再逐个 clone 进帧缓冲。纯路径 extract 产物直接 move 进帧缓冲，没有这一跳。
+
+所以正确表述：纯路径 = 1 次 clone（extract 时）+ move；world 路径 = 1 次 upsert 簿记（无拷贝）+ 2 次 clone（extract 存储 + collect 展开）。
+
+== samply 实测
+
+方法：`profile_session` 以 release + debuginfo 构建，`transform_squares(50)`（2500 个 morph VItem + camera）扫 60 帧 × 50 轮；`samply record --save-only --unstable-presymbolicate` 分别采样两条路径，离线用 `addr2line` 符号化后按函数聚合 total/self 时间。
+
+criterion 基准（60 帧扫描总耗时）：evaluator 56.3ms / player 85.7ms（transform，~1.5×）；static 场景 73.0ms / 90.3ms（~1.2×）；小规模 10×10 约 1.5–1.6×。
+
+profile 归因（占总样本比例；player 4198 样本 / evaluator 2394 样本）：
+
+| 阶段 | evaluator | player | 说明 |
+|---|---|---|---|
+| eval_at（求值，共有） | 27.2% | 20.1% | 同一棵树；Morph::eval_alpha 分别为 25.9% / 17.2% |
+| DynItem/VItem extract_into | 44.6% | 24.9% | 共有的一次 clone，绝对样本数相当（972 vs 1046） |
+| DynItem::materialize（upsert） | – | 19.7% | player 独有：bevy `Column::replace` 6.8%、HashSet 4.4% |
+| collect（二次 clone） | – | ~7.5% | player 独有（frame 扣除前三项的余量） |
+
+== 结论
+
+- player 每帧 ~1.2–1.6× 的开销结构清晰：约 20% 在 world upsert 簿记（无数据拷贝），约 7% 在 collect 的第二次 clone；求值与 extract 与纯路径同价。
+- 这些都是实现开销而非结构差异，既定优化方向：collect 改 buffer swap 消掉第二次 clone；变更检测跳过未变 entity 的 extract；`ExtractedItems` 在 stage 2 泛化为 `Extracted<T>` 后退化成本也会变化。
+- 优化前不建议把渲染路径切到 player；stage 2 让消费侧能按类型直接查询组件时，这些开销才换来实际收益。

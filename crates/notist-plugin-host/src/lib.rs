@@ -683,12 +683,6 @@ pub fn load_package_with_grants(
 /// bounds even non-terminating Wasm loops without adding a timer thread.
 const WASM_FUEL_PER_CALL: u64 = 10_000_000;
 
-/// Maximum encoded bytes accepted from one component response.
-const MAX_COMPONENT_RESPONSE_BYTES: usize = 1024 * 1024;
-
-/// Maximum nodes accepted in one component response stream.
-const MAX_COMPONENT_RESPONSE_NODES: usize = 10_000;
-
 /// Maximum linear memory a plugin may allocate.
 const WASM_MAX_MEMORY_BYTES: usize = 16 * 1024 * 1024;
 
@@ -1285,15 +1279,15 @@ impl wit_bindings::notist::plugin::types::Host for ComponentHostState {}
 
 impl wit_bindings::notist::plugin::host::Host for ComponentHostState {
     fn call(&mut self, request: Vec<u8>) -> Result<Vec<u8>, String> {
-        let call = wire::decode_call(&request)?;
-        let call = wire::wire_call_to_legacy(&call)?;
-        let calls = notist_eval::CallContent {
-            nodes: vec![notist_eval::CallNode::Call(call)],
-        };
+        let forest = codec::decode_forest(&request)
+            .map_err(|message| format!("invalid host.call request: {message}"))?;
+        let root = forest.first().ok_or("host.call request carried no call")?;
         let registry = self
             .registry
             .lock()
             .map_err(|_| "shared plugin registry lock poisoned".to_owned())?;
+        let call = wire::node_to_legacy_call(root, &registry)?;
+        let calls = wire::call_content_of(call);
         let owner = self.owner.clone();
         let content =
             notist_eval::reduce_content_as(&calls, &registry, &owner).map_err(|diagnostics| {
@@ -1303,8 +1297,12 @@ impl wit_bindings::notist::plugin::host::Host for ComponentHostState {
                     .collect::<Vec<_>>()
                     .join("; ")
             })?;
-        let nodes = wire::content_to_wire_nodes(&content)?;
-        wire::encode_nodes(&nodes)
+        let leaves = notist_eval::legacy_content_to_nodes(&content);
+        let out: Vec<notist_model::Node> = leaves
+            .iter()
+            .map(notist_model::node_from_instance)
+            .collect();
+        codec::encode_forest(&out)
     }
 }
 
@@ -1428,46 +1426,22 @@ impl Function for ComponentHostFunction {
         _context: &FunctionContext<'_>,
         mut input: FunctionInput<'_>,
     ) -> Result<FunctionOutput, Vec<EvalDiagnostic>> {
-        let trailing = self.signature.trailing_content.clone();
-        let body = match trailing.as_deref() {
-            Some(name) => Some(input.arguments.take_content(name)),
-            None => None,
-        };
-        let body = body
-            .map(|content| wire::content_to_wire_nodes(&content))
-            .transpose()
+        let request_node =
+            wire::build_request_node(&self.element_name, &self.signature, &mut input).map_err(
+                |message| {
+                    vec![EvalDiagnostic {
+                        message,
+                        range: input.range,
+                    }]
+                },
+            )?;
+        let request = notist_model::wire::encode_forest(std::slice::from_ref(&request_node))
             .map_err(|message| {
                 vec![EvalDiagnostic {
                     message,
                     range: input.range,
                 }]
             })?;
-        let mut arguments = Vec::new();
-        for (name, value) in input.arguments.iter() {
-            if Some(name) == trailing.as_deref() {
-                continue;
-            }
-            arguments.push(wire::WireArgument {
-                name: name.to_owned(),
-                value: wire::eval_value_to_wire(value).map_err(|message| {
-                    vec![EvalDiagnostic {
-                        message,
-                        range: input.range,
-                    }]
-                })?,
-            });
-        }
-        let request = wire::encode_call(&wire::WireCall {
-            name: self.element_name.clone(),
-            arguments,
-            body,
-        })
-        .map_err(|message| {
-            vec![EvalDiagnostic {
-                message,
-                range: input.range,
-            }]
-        })?;
 
         let mut runtime = self.runtime.lock().map_err(|_| {
             vec![EvalDiagnostic {
@@ -1500,33 +1474,8 @@ impl Function for ComponentHostFunction {
                     range: input.range,
                 }]
             })?;
-        if response.len() > MAX_COMPONENT_RESPONSE_BYTES {
-            return Err(vec![EvalDiagnostic {
-                message: format!(
-                    "wasm component response exceeded the limit of {MAX_COMPONENT_RESPONSE_BYTES} bytes"
-                ),
-                range: input.range,
-            }]);
-        }
-        let nodes = wire::decode_nodes(&response).map_err(|message| {
-            vec![EvalDiagnostic {
-                message,
-                range: input.range,
-            }]
-        })?;
-        wire::validate_nodes(&nodes, MAX_COMPONENT_RESPONSE_NODES).map_err(|message| {
-            vec![EvalDiagnostic {
-                message,
-                range: input.range,
-            }]
-        })?;
-        let calls = wire::wire_nodes_to_call_content(&nodes).map_err(|message| {
-            vec![EvalDiagnostic {
-                message,
-                range: input.range,
-            }]
-        })?;
-        Ok(FunctionOutput::calls(calls))
+        let returned = wire::decode_response(&response, input.range)?;
+        Ok(FunctionOutput::Nodes(returned))
     }
 }
 
@@ -1555,46 +1504,22 @@ impl Function for ComponentFunction {
         _context: &FunctionContext<'_>,
         mut input: FunctionInput<'_>,
     ) -> Result<FunctionOutput, Vec<EvalDiagnostic>> {
-        let trailing = self.signature.trailing_content.clone();
-        let body = match trailing.as_deref() {
-            Some(name) => Some(input.arguments.take_content(name)),
-            None => None,
-        };
-        let body = body
-            .map(|content| wire::content_to_wire_nodes(&content))
-            .transpose()
+        let request_node =
+            wire::build_request_node(&self.element_name, &self.signature, &mut input).map_err(
+                |message| {
+                    vec![EvalDiagnostic {
+                        message,
+                        range: input.range,
+                    }]
+                },
+            )?;
+        let request = notist_model::wire::encode_forest(std::slice::from_ref(&request_node))
             .map_err(|message| {
                 vec![EvalDiagnostic {
                     message,
                     range: input.range,
                 }]
             })?;
-        let mut arguments = Vec::new();
-        for (name, value) in input.arguments.iter() {
-            if Some(name) == trailing.as_deref() {
-                continue;
-            }
-            arguments.push(wire::WireArgument {
-                name: name.to_owned(),
-                value: wire::eval_value_to_wire(value).map_err(|message| {
-                    vec![EvalDiagnostic {
-                        message,
-                        range: input.range,
-                    }]
-                })?,
-            });
-        }
-        let request = wire::encode_call(&wire::WireCall {
-            name: self.element_name.clone(),
-            arguments,
-            body,
-        })
-        .map_err(|message| {
-            vec![EvalDiagnostic {
-                message,
-                range: input.range,
-            }]
-        })?;
 
         let mut runtime = self.runtime.lock().map_err(|_| {
             vec![EvalDiagnostic {
@@ -1627,33 +1552,8 @@ impl Function for ComponentFunction {
                     range: input.range,
                 }]
             })?;
-        if response.len() > MAX_COMPONENT_RESPONSE_BYTES {
-            return Err(vec![EvalDiagnostic {
-                message: format!(
-                    "wasm component response exceeded the limit of {MAX_COMPONENT_RESPONSE_BYTES} bytes"
-                ),
-                range: input.range,
-            }]);
-        }
-        let nodes = wire::decode_nodes(&response).map_err(|message| {
-            vec![EvalDiagnostic {
-                message,
-                range: input.range,
-            }]
-        })?;
-        wire::validate_nodes(&nodes, MAX_COMPONENT_RESPONSE_NODES).map_err(|message| {
-            vec![EvalDiagnostic {
-                message,
-                range: input.range,
-            }]
-        })?;
-        let calls = wire::wire_nodes_to_call_content(&nodes).map_err(|message| {
-            vec![EvalDiagnostic {
-                message,
-                range: input.range,
-            }]
-        })?;
-        Ok(FunctionOutput::calls(calls))
+        let returned = wire::decode_response(&response, input.range)?;
+        Ok(FunctionOutput::Nodes(returned))
     }
 }
 
@@ -1747,6 +1647,7 @@ pub fn register_loaded_shaping(registry: &mut ShapingRegistry, plugins: &[Loaded
 }
 
 pub mod wire;
+use wire::codec;
 
 #[cfg(test)]
 mod tests {

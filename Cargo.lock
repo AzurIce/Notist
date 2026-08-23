@@ -1911,6 +1911,10 @@ dependencies = [
 [[package]]
 name = "notist-model"
 version = "0.1.0"
+dependencies = [
+ "serde",
+ "serde_json",
+]
 
 [[package]]
 name = "notist-plugin-host"
@@ -1930,6 +1934,7 @@ dependencies = [
 name = "notist-plugin-sdk"
 version = "0.1.0"
 dependencies = [
+ "notist-model",
  "serde",
  "serde_json",
  "wit-bindgen 0.60.0",

@@ -4,7 +4,8 @@
 //! the plugin's capabilities and continues reduction before answering, so a
 //! package without the grant fails with a capability diagnostic.
 
-use notist_plugin_sdk::{Args, ElementDecl, ElementFn, EvalCtx, Node, Registrar, Value};
+use notist_model::{Node, NodeValue};
+use notist_plugin_sdk::{Args, ElementDecl, ElementFn, EvalCtx, Registrar};
 
 pub struct Passthrough;
 
@@ -21,7 +22,7 @@ impl ElementFn for Passthrough {
     ) -> Result<Vec<Node>, String> {
         ctx.call(
             "core::text",
-            vec![("text".to_owned(), Value::from("hello from host.call"))],
+            vec![("text".into(), NodeValue::from("hello from host.call"))],
             Vec::new(),
         )
     }

@@ -5,41 +5,20 @@
 //! [`export_plugin!`](crate::export_plugin)（或需要互调时的
 //! [`export_host_plugin!`](crate::export_host_plugin)）生成组件导出。
 //!
-//! ```ignore
-//! use notist_plugin_sdk::{ElementDecl, ElementFn, EvalCtx, Args, Node, Plugin, Registrar};
-//!
-//! struct Echo;
-//!
-//! impl ElementFn for Echo {
-//!     fn decl(&self) -> ElementDecl {
-//!         ElementDecl::new("echo").block(true).param("message", "String")
-//!     }
-//!
-//!     fn reduce(&self, ctx: &mut EvalCtx, args: &Args, _body: &[Node]) -> Result<Vec<Node>, String> {
-//!         let message = args.get_string("message").unwrap_or("hello");
-//!         Ok(vec![Node::leaf(&ctx.qualified_name("echo"), true)
-//!             .field("message", Value::from(message))])
-//!     }
-//! }
-//!
-//! struct Plugin;
-//!
-//! impl notist_plugin_sdk::Plugin for Plugin {
-//!     fn init(reg: &mut Registrar) {
-//!         reg.element(Echo);
-//!     }
-//! }
-//!
-//! notist_plugin_sdk::export_plugin!("component-echo", Plugin);
-//! ```
+//! 数据表示与宿主共享：作者直接操作 `notist_model::Node` / `NodeValue`，
+//! SDK 版本即载荷 ABI 版本。
 
-use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
 use std::sync::{Arc, OnceLock};
 
-/// Author-facing element declaration. Mirrors the WIT `element-decl` record
-/// and the host manifest shape; the host validates names and signatures after
-/// `init` returns.
+pub use notist_model::{Node, NodeValue};
+
+// ---------------------------------------------------------------------------
+// Author-facing declarations (init surface)
+// ---------------------------------------------------------------------------
+
+/// Author-facing element declaration. Mirrors the WIT `element-decl` record;
+/// the host validates names and signatures after `init` returns.
 #[derive(Clone, Debug)]
 pub struct ElementDecl {
     /// Element name inside the package namespace (no `{package}::` prefix).
@@ -127,137 +106,20 @@ pub struct ParamDecl {
     pub default_json: Option<String>,
 }
 
-/// One value crossing the plugin ABI. Functions never cross the boundary.
-#[derive(Clone, Debug)]
-pub enum Value {
-    None,
-    Bool(bool),
-    Int(i64),
-    Float(f64),
-    String(String),
-    Stream(Vec<Node>),
-    Array(Vec<Value>),
-}
-
-impl From<bool> for Value {
-    fn from(value: bool) -> Self {
-        Value::Bool(value)
-    }
-}
-
-impl From<i64> for Value {
-    fn from(value: i64) -> Self {
-        Value::Int(value)
-    }
-}
-
-impl From<i32> for Value {
-    fn from(value: i32) -> Self {
-        Value::Int(i64::from(value))
-    }
-}
-
-impl From<f64> for Value {
-    fn from(value: f64) -> Self {
-        Value::Float(value)
-    }
-}
-
-impl From<&str> for Value {
-    fn from(value: &str) -> Self {
-        Value::String(value.to_owned())
-    }
-}
-
-impl From<String> for Value {
-    fn from(value: String) -> Self {
-        Value::String(value)
-    }
-}
-
 /// One named field on a leaf node.
-pub type Field = (String, Value);
-
-/// One terminal leaf node a plugin may return from `reduce`.
-///
-/// `name` must be the fully qualified `{package}::{element}` spelling; use
-/// [`EvalCtx::qualified_name`] to build it.
-#[derive(Clone, Debug)]
-pub struct Node {
-    pub name: String,
-    pub fields: Vec<Field>,
-    pub body: Vec<Node>,
-    pub block: bool,
-}
-
-impl Node {
-    pub fn leaf(name: &str, block: bool) -> Self {
-        Self {
-            name: name.to_owned(),
-            fields: Vec::new(),
-            body: Vec::new(),
-            block,
-        }
-    }
-
-    pub fn field(mut self, name: &str, value: impl Into<Value>) -> Self {
-        self.fields.push((name.to_owned(), value.into()));
-        self
-    }
-
-    pub fn child(mut self, node: Node) -> Self {
-        self.body.push(node);
-        self
-    }
-}
-
-/// Bound arguments of one dispatched call.
-#[derive(Default)]
-pub struct Args {
-    values: BTreeMap<String, Value>,
-}
-
-impl Args {
-    pub fn get(&self, name: &str) -> Option<&Value> {
-        self.values.get(name)
-    }
-
-    pub fn get_string(&self, name: &str) -> Option<&str> {
-        match self.values.get(name) {
-            Some(Value::String(value)) => Some(value.as_str()),
-            _ => None,
-        }
-    }
-
-    pub fn get_int(&self, name: &str) -> Option<i64> {
-        match self.values.get(name) {
-            Some(Value::Int(value)) => Some(*value),
-            _ => None,
-        }
-    }
-
-    pub fn get_bool(&self, name: &str) -> Option<bool> {
-        match self.values.get(name) {
-            Some(Value::Bool(value)) => Some(*value),
-            _ => None,
-        }
-    }
-}
+pub type Field = (String, NodeValue);
 
 /// Reduction context passed to [`ElementFn::reduce`].
 pub struct EvalCtx<'a> {
     package: &'a str,
     /// The qualified name this dispatch was addressed to
-    /// (`{manifest package}::{element}`). Leaves returned under exactly this
-    /// name are guaranteed to match the host-side registration namespace.
+    /// (`{manifest package}::{element}`).
     call_name: String,
     host_call: HostCall<'a>,
 }
 
-type HostCallFn<'a> = dyn Fn(Vec<u8>) -> Result<Vec<u8>, String> + 'a;
-
 enum HostCall<'a> {
-    Available(&'a HostCallFn<'a>),
+    Available(&'a dyn Fn(Vec<u8>) -> Result<Vec<u8>, String>),
     Unavailable,
 }
 
@@ -268,10 +130,6 @@ impl<'a> EvalCtx<'a> {
     }
 
     /// The fully qualified `{package}::{name}` name of the dispatched call.
-    ///
-    /// Returning leaves named after this value keeps them aligned with the
-    /// namespace the host registered, even when the same component binary is
-    /// repackaged under a different package id.
     pub fn call_name(&self) -> &str {
         &self.call_name
     }
@@ -292,19 +150,14 @@ impl<'a> EvalCtx<'a> {
         arguments: Vec<Field>,
         body: Vec<Node>,
     ) -> Result<Vec<Node>, String> {
-        let request = WireCall {
-            name: name.to_owned(),
-            arguments: arguments
-                .into_iter()
-                .map(|(name, value)| WireArgument {
-                    name,
-                    value: value_to_wire(&value),
-                })
-                .collect(),
-            body: (!body.is_empty()).then(|| body.iter().map(node_to_wire).collect()),
-        };
-        let bytes = serde_json::to_vec(&request)
-            .map_err(|error| format!("cannot encode host call: {error}"))?;
+        let mut request = Node::call(name, notist_model::TextRange::new(0, 0));
+        for (arg_name, value) in arguments {
+            request.args.push((arg_name, value));
+        }
+        for child in body {
+            request.children.push(child);
+        }
+        let bytes = notist_model::wire::encode_forest(std::slice::from_ref(&request))?;
         let response = match &self.host_call {
             HostCall::Available(call) => call(bytes)?,
             HostCall::Unavailable => {
@@ -315,12 +168,7 @@ impl<'a> EvalCtx<'a> {
                 );
             }
         };
-        let nodes: Vec<WireNode> = serde_json::from_slice(&response)
-            .map_err(|error| format!("invalid host.call response: {error}"))?;
-        nodes
-            .iter()
-            .map(wire_to_node)
-            .collect::<Result<Vec<_>, String>>()
+        notist_model::wire::decode_forest(&response)
     }
 }
 
@@ -332,10 +180,7 @@ pub trait ElementFn: Send + Sync + 'static {
     /// The declaration registered during [`Plugin::init`].
     fn decl(&self) -> ElementDecl;
 
-    /// Reduces one dispatched call into a `Call | Leaf` node stream.
-    ///
-    /// The host continues reduction over any returned `call` nodes under the
-    /// same depth / fuel / capability budget as this dispatch.
+    /// Reduces one dispatched call into a node stream.
     fn reduce(
         &self,
         ctx: &mut EvalCtx<'_>,
@@ -380,157 +225,43 @@ impl Registrar {
     }
 }
 
-// ---------------------------------------------------------------------------
-// Wire schema. Mirrors `notist-plugin-host/src/wire.rs`; keep both sides in
-// sync when the payload schema changes.
-// ---------------------------------------------------------------------------
-
-#[derive(Clone, Debug, Serialize, Deserialize)]
-#[serde(tag = "type", content = "value", rename_all = "snake_case")]
-enum WireValue {
-    None,
-    Bool(bool),
-    Int(i64),
-    Float(f64),
-    String(String),
-    Stream(Vec<WireNode>),
-    Array(Vec<WireValue>),
+/// Bound arguments of one dispatched call.
+#[derive(Default)]
+pub struct Args {
+    values: BTreeMap<String, NodeValue>,
 }
 
-#[derive(Clone, Debug, Serialize, Deserialize)]
-struct WireArgument {
-    name: String,
-    value: WireValue,
-}
-
-#[derive(Clone, Debug, Serialize, Deserialize)]
-struct WireField {
-    name: String,
-    value: WireValue,
-}
-
-#[derive(Clone, Debug, Serialize, Deserialize)]
-struct WireCall {
-    name: String,
-    #[serde(default)]
-    arguments: Vec<WireArgument>,
-    #[serde(default)]
-    body: Option<Vec<WireNode>>,
-}
-
-#[derive(Clone, Debug, Serialize, Deserialize)]
-struct WireLeaf {
-    name: String,
-    #[serde(default)]
-    fields: Vec<WireField>,
-    #[serde(default)]
-    body: Vec<WireNode>,
-    block: bool,
-}
-
-#[derive(Clone, Debug, Serialize, Deserialize)]
-#[serde(tag = "type", rename_all = "snake_case")]
-enum WireNode {
-    Call(WireCall),
-    Leaf(WireLeaf),
-}
-
-fn value_to_wire(value: &Value) -> WireValue {
-    match value {
-        Value::None => WireValue::None,
-        Value::Bool(value) => WireValue::Bool(*value),
-        Value::Int(value) => WireValue::Int(*value),
-        Value::Float(value) => WireValue::Float(*value),
-        Value::String(value) => WireValue::String(value.clone()),
-        Value::Stream(nodes) => WireValue::Stream(nodes.iter().map(node_to_wire).collect()),
-        Value::Array(values) => WireValue::Array(values.iter().map(value_to_wire).collect()),
+impl Args {
+    pub fn get(&self, name: &str) -> Option<&NodeValue> {
+        self.values.get(name)
     }
-}
 
-fn wire_to_value(value: &WireValue) -> Result<Value, String> {
-    Ok(match value {
-        WireValue::None => Value::None,
-        WireValue::Bool(value) => Value::Bool(*value),
-        WireValue::Int(value) => Value::Int(*value),
-        WireValue::Float(value) => Value::Float(*value),
-        WireValue::String(value) => Value::String(value.clone()),
-        WireValue::Stream(nodes) => {
-            let mut converted = Vec::with_capacity(nodes.len());
-            for node in nodes {
-                if let WireNode::Leaf(_) = node {
-                    converted.push(wire_to_node(node)?);
-                } else {
-                    return Err("unreduced call inside an argument stream".to_owned());
-                }
-            }
-            Value::Stream(converted)
-        }
-        WireValue::Array(values) => {
-            let mut converted = Vec::with_capacity(values.len());
-            for value in values {
-                converted.push(wire_to_value(value)?);
-            }
-            Value::Array(converted)
-        }
-    })
-}
-
-fn node_to_wire(node: &Node) -> WireNode {
-    WireNode::Leaf(WireLeaf {
-        name: node.name.clone(),
-        fields: node
-            .fields
-            .iter()
-            .map(|(name, value)| WireField {
-                name: name.clone(),
-                value: value_to_wire(value),
-            })
-            .collect(),
-        body: node.body.iter().map(node_to_wire).collect(),
-        block: node.block,
-    })
-}
-
-fn wire_to_node(node: &WireNode) -> Result<Node, String> {
-    match node {
-        WireNode::Leaf(leaf) => Ok(Node {
-            name: leaf.name.clone(),
-            fields: leaf
-                .fields
-                .iter()
-                .map(|field| Ok((field.name.clone(), wire_to_value(&field.value)?)))
-                .collect::<Result<Vec<_>, String>>()?,
-            body: leaf
-                .body
-                .iter()
-                .map(|node| match node {
-                    WireNode::Leaf(_) => wire_to_node(node),
-                    WireNode::Call(_) => Err("unreduced call inside a leaf body".to_owned()),
-                })
-                .collect::<Result<Vec<_>, String>>()?,
-            block: leaf.block,
-        }),
-        WireNode::Call(_) => Err("unreduced call in a reduced response".to_owned()),
-    }
-}
-
-fn args_from_wire(arguments: Vec<WireArgument>) -> Result<Args, String> {
-    let mut values = BTreeMap::new();
-    for argument in arguments {
-        values.insert(argument.name.clone(), wire_to_value(&argument.value)?);
-    }
-    Ok(Args { values })
-}
-
-fn body_from_wire(body: Option<Vec<WireNode>>) -> Result<Vec<Node>, String> {
-    let mut nodes = Vec::new();
-    for node in body.unwrap_or_default() {
-        match node {
-            WireNode::Leaf(_) => nodes.push(wire_to_node(&node)?),
-            WireNode::Call(_) => return Err("unreduced call in the trailing body".to_owned()),
+    pub fn get_string(&self, name: &str) -> Option<&str> {
+        match self.values.get(name) {
+            Some(NodeValue::String(value)) => Some(value.as_str()),
+            _ => None,
         }
     }
-    Ok(nodes)
+
+    pub fn get_int(&self, name: &str) -> Option<i64> {
+        match self.values.get(name) {
+            Some(NodeValue::Int(value)) => Some(*value),
+            _ => None,
+        }
+    }
+
+    pub fn get_bool(&self, name: &str) -> Option<bool> {
+        match self.values.get(name) {
+            Some(NodeValue::Bool(value)) => Some(*value),
+            _ => None,
+        }
+    }
+
+    fn from_pairs(pairs: &[(String, NodeValue)]) -> Self {
+        Self {
+            values: pairs.iter().cloned().collect(),
+        }
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -599,8 +330,8 @@ pub fn build_guest_state<P: Plugin>() -> GuestState {
 
 /// Shared `evaluate` dispatcher used by both generated worlds.
 ///
-/// Decodes the encoded `Call` request, dispatches by element name, and
-/// encodes the returned node stream back onto the bytes ABI.
+/// Decodes the dispatched call node, runs the matching [`ElementFn`], and
+/// encodes the returned forest back onto the bytes ABI.
 #[doc(hidden)]
 pub fn evaluate_dispatch(
     state: &GuestState,
@@ -608,31 +339,41 @@ pub fn evaluate_dispatch(
     request: Vec<u8>,
     host_call: Option<&HostCallFn<'_>>,
 ) -> Result<Vec<u8>, String> {
-    let call: WireCall =
-        serde_json::from_slice(&request).map_err(|error| format!("invalid request: {error}"))?;
-    let local_name = call
+    let forest = notist_model::wire::decode_forest(&request)?;
+    let root = forest
+        .first()
+        .ok_or_else(|| "dispatch carried no call".to_owned())?;
+    let local_name = root
         .name
         .rsplit("::")
         .next()
-        .unwrap_or(&call.name)
+        .unwrap_or(&root.name)
         .to_owned();
     let element = state
         .dispatch
         .get(&local_name)
-        .ok_or_else(|| format!("unknown element `{}`", call.name))?;
-    let args = args_from_wire(call.arguments)?;
-    let body = body_from_wire(call.body)?;
+        .ok_or_else(|| format!("unknown element `{}`", root.name))?;
+    let args = Args::from_pairs(&root.args);
+    let body = root.children.clone();
     let mut ctx = EvalCtx {
         package,
-        call_name: call.name.clone(),
+        call_name: root.name.clone(),
         host_call: match host_call {
             Some(call) => HostCall::Available(call),
             None => HostCall::Unavailable,
         },
     };
     let nodes = element.reduce(&mut ctx, &args, &body)?;
-    let wire_nodes: Vec<WireNode> = nodes.iter().map(node_to_wire).collect();
-    serde_json::to_vec(&wire_nodes).map_err(|error| format!("cannot encode response: {error}"))
+    notist_model::wire::encode_forest(&nodes)
+}
+
+type HostCallFn<'a> = dyn Fn(Vec<u8>) -> Result<Vec<u8>, String> + 'a;
+
+/// Creates an empty leaf node addressed to `name`.
+pub fn leaf(name: &str, block: bool) -> Node {
+    let mut node = Node::call(name, notist_model::TextRange::new(0, 0));
+    node.block = block;
+    node
 }
 
 // ---------------------------------------------------------------------------

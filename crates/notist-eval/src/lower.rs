@@ -1037,6 +1037,43 @@ impl LowerState<'_> {
                 });
                 (Value::None, diagnostics)
             }
+            Ok(FunctionOutput::Nodes(nodes)) => {
+                // Terminal response forests project straight back to leaves;
+                // composition belongs to host.call, not to return values.
+                let mut out_leaves = Vec::new();
+                for node in &nodes {
+                    match notist_model::node_to_instance(node) {
+                        Ok(instance) => out_leaves.push(instance),
+                        Err(error) => diagnostics.push(EvalDiagnostic {
+                            message: format!("returned node is not reducible: {error}"),
+                            range: site_range.shifted(self.base_offset),
+                        }),
+                    }
+                }
+                match notist_eval_unused(out_leaves) {
+                    Some(value) if signature.result.accepts(&value.ty()) => (value, diagnostics),
+                    Some(value) => {
+                        diagnostics.push(EvalDiagnostic {
+                            message: format!(
+                                "function `{name}` returned {}, expected {}",
+                                value.ty(),
+                                signature.result
+                            ),
+                            range: site_range.shifted(self.base_offset),
+                        });
+                        (Value::None, diagnostics)
+                    }
+                    None => {
+                        diagnostics.push(EvalDiagnostic {
+                            message: format!(
+                                "function `{name}` returned leaves that cannot be lowered"
+                            ),
+                            range: site_range.shifted(self.base_offset),
+                        });
+                        (Value::None, diagnostics)
+                    }
+                }
+            }
             Ok(FunctionOutput::Content(content)) => {
                 let value = Value::Content(content);
                 if signature.result.accepts(&value.ty()) {
@@ -1578,4 +1615,11 @@ fn find_unescaped_sequence(
         bytes[cursor..].starts_with(delimiter)
             && preceding_backslashes(bytes, 0, cursor).is_multiple_of(2)
     })
+}
+
+fn notist_eval_unused(
+    leaves: Vec<notist_model::InstanceNode>,
+) -> Option<crate::type_system::Value> {
+    use crate::leaf::instances_to_legacy_content;
+    instances_to_legacy_content(&leaves).map(crate::type_system::Value::Content)
 }

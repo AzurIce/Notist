@@ -11,4 +11,5 @@ crate-type = ["cdylib"]
 
 [dependencies]
 notist-plugin-sdk = { path = "../../crates/notist-plugin-sdk" }
+notist-model = { path = "../../crates/notist-model" }
 wit-bindgen = "0.60"

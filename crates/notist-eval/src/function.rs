@@ -28,6 +28,9 @@ pub enum FunctionOutput {
     Content(Content),
     /// A not-yet-reduced sequence of calls.
     Calls(crate::call::CallContent),
+    /// A unified-node forest awaiting reduction. This is the canonical
+    /// output shape for component plugins speaking the node ABI.
+    Nodes(Vec<notist_model::Node>),
 }
 
 impl FunctionOutput {

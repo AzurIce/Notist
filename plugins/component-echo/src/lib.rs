@@ -4,7 +4,8 @@
 //! [`notist_plugin_sdk::export_plugin!`]) echoes the bound arguments and the
 //! trailing body back as a self-named Leaf.
 
-use notist_plugin_sdk::{Args, ElementDecl, ElementFn, EvalCtx, Node, Registrar, Value};
+use notist_model::{Node, NodeValue};
+use notist_plugin_sdk::{Args, ElementDecl, ElementFn, EvalCtx, Registrar};
 
 pub struct Echo;
 
@@ -27,11 +28,10 @@ impl ElementFn for Echo {
         // Name the leaf after the dispatched call so repackaging the same
         // binary under another package id keeps the leaf names aligned with
         // the host registration namespace.
-        let mut leaf = Node::leaf(ctx.call_name(), true);
-        for node in body {
-            leaf = leaf.child(node.clone());
-        }
-        Ok(vec![leaf.field("message", Value::from(message))])
+        let mut out = notist_plugin_sdk::leaf(ctx.call_name(), true);
+        out.children = body.to_vec();
+        out.args.push(("message".into(), NodeValue::from(message)));
+        Ok(vec![out])
     }
 }
 

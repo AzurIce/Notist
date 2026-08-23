@@ -13,6 +13,7 @@ pub use leaf::{
     BodyMode, ElementInstance, ElementName, ElementNamespace, ElementSchema, Field, FieldValue,
     InstanceNode, ShapingKind, ShapingRole,
 };
+pub use node::wire;
 pub use node::{Node, NodeValue, node_from_instance, node_to_instance};
 pub use signature::{
     DefaultValue, FunctionSignature, Parameter, Type, builtin_signatures, callout_signature,
@@ -22,12 +23,18 @@ pub use signature::{
 };
 
 /// A half-open byte range in a source file.
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[derive(Clone, Copy, Debug, Eq, PartialEq, serde::Serialize, serde::Deserialize)]
 pub struct TextRange {
     /// The inclusive start byte offset.
     pub start: usize,
     /// The exclusive end byte offset.
     pub end: usize,
+}
+
+impl Default for TextRange {
+    fn default() -> Self {
+        Self::new(0, 0)
+    }
 }
 
 impl TextRange {

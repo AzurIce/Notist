@@ -7,4 +7,5 @@ license.workspace = true
 [dependencies]
 serde = { workspace = true, features = ["derive"] }
 serde_json.workspace = true
+notist-model.workspace = true
 wit-bindgen = "0.60"
