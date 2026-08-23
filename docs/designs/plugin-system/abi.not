@@ -11,7 +11,7 @@
 - 载荷即 `Node` 森林的 serde 编码（当前 JSON；`NodeValue` 天然外部标签，postcard 兼容，切换只动编解码器）；
 - **SDK 版本即 ABI 版本**：全部插件经 Rust SDK 编译，host 与插件针对同一 `notist_model` 构建即天然兼容，独立协议版本号留待多语言分发需求出现时再引入；
 - `range` 是宿主侧元数据，跨边界无意义（serde skip/default）；
-- **响应森林是终态**：插件返回的节点不再被派发——组合一律通过 `host.call` 主动规约完成。这消解了「插件输出与自身同名的叶子」的自指歧义。
+- **响应森林继续参与 fixpoint**：handler 的输出若仍指向已注册名字会被再次派发。契约：**handler 不得返回指向自身的节点**——自返回是作者 bug，由 depth/fuel 兜底并给出清晰诊断；纯数据元素不注册运行时 handler（见 [[vault::designs::plugin-system::package]] 的 data-only 声明）。
 
 == 插件形态
 

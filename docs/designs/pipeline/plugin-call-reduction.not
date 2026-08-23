@@ -135,7 +135,7 @@ pub enum FunctionOutput {
 1. dispatch 消耗 depth/fuel 预算，再做参数和 body 规约；
 2. 参数值中的嵌套流、`body` 中的流都先递归规约；
 3. 绑定后调用函数，得到 `Stream` 继续递归；
-4. 未知函数、类型错误、不接受 body 都产生诊断，不通过 accessor panic 假装成功；
+4. 类型错误与不接受 body 产生诊断；**未注册名字的 call 不再派发，其本身即叶子**（unknown-name 诊断归 check 层）；
 5. 每次 dispatch 消耗 fuel 并增加 depth。
 
 内置函数返回自己的 Leaf 流；插件函数返回 Call / 自有 Leaf 组成的流，从而获得组合能力。
@@ -202,7 +202,7 @@ Stream [
 
 - Phase A：把内部 IR 收敛为 `StreamNode = Call | Leaf`，`ElementInstance` 作为唯一 Leaf 类型；修复 reduction 的参数/body 校验、depth 与 fuel。已实现：`notist-model::ElementInstance`、`notist-eval::leaf` reduction engine、`Evaluator::evaluate_leaf`。
 - Phase B：让 `structure` 递归成型所有 body，产出 `ElementTree`；删除公开树中的 `core::parbreak`。已实现：`shape_flat` 递归成型；主 reduction 已迁移并支持 sibling recovery；主 structure/project 仍用 legacy 兼容投影。
-- Phase C：插件 ABI 改为 `call | leaf` 流；宿主递归规约并执行 capability 检查。已实现。
+- Phase C：插件 ABI 改为 `call | leaf` 流；宿主递归规约（capability 检查已于 2026-08-23 移除，见 [[vault::designs::plugin-system::capability]]）。已实现。
 - Phase D：插件调用插件与 qualified function name 落地。已实现：`FunctionRegistry::register_alias` 与 `core::*` 别名，插件 ABI 已迁移。
 - Phase E：WIT 正式化，用 wit-bindgen 替换手写 ABI。已实现 bytes WIT + component `init` 注册 / evaluate / host.call。
 

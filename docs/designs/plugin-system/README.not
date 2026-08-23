@@ -76,6 +76,8 @@ RendererRegistry            → project
 | PluginSet 指纹 | `FunctionEnvironmentId` 已结合 view salt、插件 surface、配置与签名集合；插件 package 变更会分配新语义世界 |
 | 插件文件 watcher | daemon 会递归 watch `Notist.toml` 声明的外部 package 目录；plugin.json / wasm / assets 变化触发 disk view reload |
 | 统一装载路径 | 装载 = 实例化 + `init` 一条路径；不再维护不执行 Wasm 的 schema-only 快照路径 |
+| 数据型元素声明 | `Registrar::declare`（`computed=false`）：签名 + 成型 schema 全量注册、无派发条目，文档 call 即终态叶子；web-component 投影直接可用 |
+| 统一 IR 规约引擎 | 生产求值运行于 `leaf::node_engine`（fixpoint：未注册名字即叶子）；terminal forest 经 instance 适配器重建 legacy 形状，消费者无感 |
 | Wasm 终止/资源预算 | 已实现 fuel-per-call（init 同预算）、16 MiB memory cap、table cap，以及 component response 1 MiB / 10k 节点上限 |
 
 == 实施顺序

@@ -60,6 +60,8 @@ trait Registrar { fn element<E: ElementFn>(&mut self, e: E); }
 
 == 三步路线
 
+**A1 收尾状态（2026-08-23）**：✅ 数据型声明、lowering 未知名字 pending call、生产入口切换 node 引擎——三者均已落地并全绿。**A2 剩余范围（明确交接）**：① `Element` 枚举仍在三处存活——eval 表达式值域（`Value::Content(legacy Content)`，user-function 闭包求值依赖它）、16 个 core 构造器（仍构造 legacy Element 再经 `FunctionOutput::content` 进引擎）、html 的 legacy `render(StructuredDocument)` 兼容路径；② 引擎间桥接转换（`nodes_to_stream` / `flat_content_to_nodes` / instance 适配器）在上述三处消亡前保留；③ 建议切分顺序：core 构造器 → `FunctionOutput::Nodes`（小，立即可做）→ html 树渲染全覆盖后删 legacy render → 最后重写 eval 值域（最大，独立会话）。④ postcard 切换与 spike 归档为可选并行项。
+
 **进度（2026-08-23 续）**：A3 落地——WIT `element-decl` 增加 `computed` 位，SDK 拆分 `Registrar::element`（可计算）/ `Registrar::declare`（纯数据声明），宿主按声明拆分注册（签名+成型 schema 全量，派发仅 computed），数据型 call 不再派发、天然为叶子；stream lowering 对未知名字产出 pending call（诊断归 check 层）。A1 核心完成——生产入口 `evaluate_parsed_stream_with_bindings` 切换到 node 引擎，terminal forest 经 instance 适配器重建 legacy 形状，全部消费者无感。
 
 **进度（2026-08-23）**：边界表示收敛完成——`model::Node` 直接作为载荷（serde 直出，Wire 层与 SDK 镜像删除，SDK 版本即 ABI 版本）；新增 `FunctionOutput::Nodes` 使组件插件以统一 IR 进出双引擎。**能力系统整体删除**：透传场景实证 per-call 授权不可行（正文归因误伤），信任模型收敛为「wasm 沙箱 = 唯一边界」，capability.not 改写为 Trust Model，引擎不再做内容授权。同时确立规约契约：**handler 不得返回指向自身的节点**（自返回 = 作者 bug，由 depth/fuel 兜底）；样例 echo 改为透传语义。
