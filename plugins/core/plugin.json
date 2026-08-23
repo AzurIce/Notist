@@ -13,7 +13,12 @@
           "kind": "inline",
           "body-mode": "none",
           "role": "none",
-          "parameters": [{ "name": "text", "ty": "String" }]
+          "parameters": [
+            {
+              "name": "text",
+              "ty": "String"
+            }
+          ]
         },
         {
           "name": "parbreak",
@@ -29,7 +34,12 @@
           "block": false,
           "body-mode": "none",
           "role": "none",
-          "parameters": [{ "name": "url", "ty": "String" }]
+          "parameters": [
+            {
+              "name": "url",
+              "ty": "String"
+            }
+          ]
         },
         {
           "name": "heading",
@@ -37,7 +47,13 @@
           "block": true,
           "body-mode": "inline",
           "role": "heading",
-          "parameters": [{ "name": "level", "ty": "Int", "default": 1 }],
+          "parameters": [
+            {
+              "name": "level",
+              "ty": "Int",
+              "default": 1
+            }
+          ],
           "trailing-content": "body"
         },
         {
@@ -47,9 +63,20 @@
           "body-mode": "none",
           "role": "none",
           "parameters": [
-            { "name": "source", "ty": "String" },
-            { "name": "lang", "ty": "String?", "default": null },
-            { "name": "block", "ty": "Bool", "default": false }
+            {
+              "name": "source",
+              "ty": "String"
+            },
+            {
+              "name": "lang",
+              "ty": "String?",
+              "default": null
+            },
+            {
+              "name": "block",
+              "ty": "Bool",
+              "default": false
+            }
           ]
         },
         {
@@ -66,8 +93,16 @@
           "body-mode": "flow",
           "role": "none",
           "parameters": [
-            { "name": "kind", "ty": "String", "default": "note" },
-            { "name": "title", "ty": "Content?", "default": null }
+            {
+              "name": "kind",
+              "ty": "String",
+              "default": "note"
+            },
+            {
+              "name": "title",
+              "ty": "Content?",
+              "default": null
+            }
           ],
           "trailing-content": "body"
         },
@@ -78,8 +113,16 @@
           "body-mode": "flow",
           "role": "none",
           "parameters": [
-            { "name": "summary", "ty": "Content?", "default": null },
-            { "name": "open", "ty": "Bool", "default": false }
+            {
+              "name": "summary",
+              "ty": "Content?",
+              "default": null
+            },
+            {
+              "name": "open",
+              "ty": "Bool",
+              "default": false
+            }
           ],
           "trailing-content": "body"
         },
@@ -89,7 +132,13 @@
           "block": true,
           "body-mode": "flow",
           "role": "item",
-          "parameters": [{ "name": "ordered", "ty": "Bool", "default": false }],
+          "parameters": [
+            {
+              "name": "ordered",
+              "ty": "Bool",
+              "default": false
+            }
+          ],
           "trailing-content": "body"
         },
         {
@@ -99,8 +148,16 @@
           "body-mode": "flow",
           "role": "none",
           "parameters": [
-            { "name": "colspan", "ty": "Int", "default": 1 },
-            { "name": "rowspan", "ty": "Int", "default": 1 }
+            {
+              "name": "colspan",
+              "ty": "Int",
+              "default": 1
+            },
+            {
+              "name": "rowspan",
+              "ty": "Int",
+              "default": 1
+            }
           ],
           "trailing-content": "body"
         },
@@ -111,9 +168,20 @@
           "body-mode": "cells",
           "role": "none",
           "parameters": [
-            { "name": "columns", "ty": "Int" },
-            { "name": "header", "ty": "Bool", "default": false },
-            { "name": "align", "ty": "String?", "default": null }
+            {
+              "name": "columns",
+              "ty": "Int"
+            },
+            {
+              "name": "header",
+              "ty": "Bool",
+              "default": false
+            },
+            {
+              "name": "align",
+              "ty": "String?",
+              "default": null
+            }
           ],
           "trailing-content": "body"
         },
@@ -124,9 +192,21 @@
           "body-mode": "flow",
           "role": "none",
           "parameters": [
-            { "name": "kind", "ty": "String?", "default": null },
-            { "name": "supplement", "ty": "Content?", "default": null },
-            { "name": "caption", "ty": "Content?", "default": null }
+            {
+              "name": "kind",
+              "ty": "String?",
+              "default": null
+            },
+            {
+              "name": "supplement",
+              "ty": "Content?",
+              "default": null
+            },
+            {
+              "name": "caption",
+              "ty": "Content?",
+              "default": null
+            }
           ],
           "trailing-content": "body"
         },
@@ -164,8 +244,5 @@
         }
       ]
     }
-  },
-  "capabilities": {
-    "request": []
   }
 }

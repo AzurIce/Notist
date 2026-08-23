@@ -2,7 +2,7 @@
 
 use notist_model::{Content, ElementNode, TextRange};
 
-use crate::{EvalDiagnostic, FunctionOwner, FunctionRegistry, Principal, Value};
+use crate::{EvalDiagnostic, FunctionRegistry, Value};
 
 /// A function call in the uniform reduction model.
 #[derive(Clone, Debug, PartialEq)]
@@ -70,26 +70,17 @@ pub fn reduce_content(
     content: &CallContent,
     registry: &FunctionRegistry,
 ) -> Result<Content, Vec<EvalDiagnostic>> {
-    reduce_content_as(content, registry, &FunctionOwner::Host)
+    reduce_content_as(content, registry)
 }
 
-/// Reduces legacy call content on behalf of `owner`.
-///
-/// Calls returned by a plugin are reduced under that plugin's principal and
-/// the registry's capability policy; calls returned by host functions keep
-/// host authority.
+/// Reduces legacy call content (legacy name kept for compatibility).
+#[allow(dead_code)]
 pub fn reduce_content_as(
     content: &CallContent,
     registry: &FunctionRegistry,
-    owner: &FunctionOwner,
 ) -> Result<Content, Vec<EvalDiagnostic>> {
     let limits = crate::leaf::ReduceLimits::default();
-    let mut frame = match owner {
-        FunctionOwner::Host => crate::leaf::ReduceFrame::root(&limits),
-        FunctionOwner::Plugin(_) => {
-            crate::leaf::ReduceFrame::restricted(&limits, Principal::from(owner), registry.policy())
-        }
-    };
+    let mut frame = crate::leaf::ReduceFrame::root(&limits);
     let stream = crate::leaf::legacy_calls_to_stream(content);
     let nodes = crate::leaf::reduce_flat(&stream, registry, &limits, &mut frame)?;
     crate::leaf::instances_to_legacy_content(&nodes).ok_or_else(|| {

@@ -2,9 +2,6 @@
   "package": "component-echo",
   "version": "0.1.0",
   "api-version": "0.1",
-  "capabilities": {
-    "request": []
-  },
   "wasm": {
     "module": "semantic.wasm",
     "component": true

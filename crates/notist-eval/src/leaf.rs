@@ -4,7 +4,7 @@
 //! Reduction replaces every call with [`ElementInstance`] leaves, then
 //! recursive shaping folds the flat Leaf stream into an [`ElementTree`].
 
-use std::collections::{HashMap, HashSet};
+use std::collections::HashMap;
 
 use notist_model::{
     Block, BodyMode, Content, CustomField, Element, ElementInstance, ElementName, ElementNode,
@@ -15,7 +15,7 @@ use notist_model::{
 use crate::call::{CallContent, CallNode};
 use crate::type_system::default_to_value;
 use crate::{
-    BoundArguments, EvalDiagnostic, FunctionContext, FunctionInput, FunctionOutput, FunctionOwner,
+    BoundArguments, EvalDiagnostic, FunctionContext, FunctionInput, FunctionOutput,
     FunctionRegistry, Type, Value,
 };
 
@@ -177,60 +177,6 @@ impl From<FlatContent> for StreamValue {
     }
 }
 
-/// The principal making a call.
-#[derive(Clone, Debug, Eq, Hash, PartialEq)]
-pub enum Principal {
-    /// The document author / host core.
-    Host,
-    /// A plugin package.
-    Plugin(String),
-}
-
-impl From<&FunctionOwner> for Principal {
-    fn from(owner: &FunctionOwner) -> Self {
-        match owner {
-            FunctionOwner::Host => Self::Host,
-            FunctionOwner::Plugin(package) => Self::Plugin(package.clone()),
-        }
-    }
-}
-
-/// Declarative capability rules checked at every dispatch.
-#[derive(Clone, Debug, Default)]
-pub struct CapabilityPolicy {
-    rules: HashMap<Principal, HashSet<String>>,
-}
-
-impl CapabilityPolicy {
-    /// Creates an empty policy. Host calls are always allowed; plugin calls
-    /// are denied unless explicitly granted.
-    pub fn new() -> Self {
-        Self::default()
-    }
-
-    /// Grants `caller` permission to call `callee`.
-    pub fn allow(mut self, caller: Principal, callee: impl Into<String>) -> Self {
-        self.rules.entry(caller).or_default().insert(callee.into());
-        self
-    }
-
-    /// Returns whether `caller` may dispatch `callee`.
-    pub fn allows(&self, caller: &Principal, callee: &str) -> bool {
-        if matches!(caller, Principal::Host) {
-            return true;
-        }
-        let Some(allowed) = self.rules.get(caller) else {
-            return false;
-        };
-        allowed.iter().any(|grant| {
-            grant == callee
-                || grant
-                    .strip_suffix("::*")
-                    .is_some_and(|prefix| callee.starts_with(prefix))
-        })
-    }
-}
-
 /// Resource limits for one reduction run.
 #[derive(Clone, Debug)]
 pub struct ReduceLimits {
@@ -256,41 +202,20 @@ pub struct ReduceFrame {
     pub depth: usize,
     /// Remaining dispatch budget.
     pub remaining_calls: usize,
-    /// The principal currently authoring calls.
-    pub caller: Principal,
-    /// Capability policy applied at dispatch.
-    policy: CapabilityPolicy,
 }
 
 impl ReduceFrame {
     /// Creates a root frame with the given limits.
     pub fn root(limits: &ReduceLimits) -> Self {
-        Self::root_with_policy(limits, CapabilityPolicy::new())
-    }
-
-    /// Creates a host root frame carrying a registry capability policy.
-    pub fn root_with_policy(limits: &ReduceLimits, policy: CapabilityPolicy) -> Self {
         Self {
             depth: 0,
             remaining_calls: limits.max_calls,
-            caller: Principal::Host,
-            policy,
         }
     }
 
-    /// Creates a frame for a plugin caller under a capability policy.
-    pub fn restricted(limits: &ReduceLimits, caller: Principal, policy: CapabilityPolicy) -> Self {
-        Self {
-            depth: 0,
-            remaining_calls: limits.max_calls,
-            caller,
-            policy,
-        }
-    }
-
-    /// Returns a clone of the active capability policy.
-    pub fn policy(&self) -> CapabilityPolicy {
-        self.policy.clone()
+    /// Alias kept for call-site stability during the capability removal.
+    pub fn root_with_policy(limits: &ReduceLimits) -> Self {
+        Self::root(limits)
     }
 
     fn dispatch(
@@ -307,19 +232,9 @@ impl ReduceFrame {
     fn dispatch_entry(
         &mut self,
         limits: &ReduceLimits,
-        name: &str,
+        _name: &str,
         range: TextRange,
     ) -> Result<(), Vec<EvalDiagnostic>> {
-        if !self.policy.allows(&self.caller, name) {
-            return Err(vec![EvalDiagnostic {
-                message: format!(
-                    "principal `{}` is not allowed to call `{}`",
-                    self.caller_label(),
-                    name
-                ),
-                range,
-            }]);
-        }
         if self.depth >= limits.max_depth {
             return Err(vec![EvalDiagnostic {
                 message: format!(
@@ -341,13 +256,6 @@ impl ReduceFrame {
         self.remaining_calls -= 1;
         self.depth += 1;
         Ok(())
-    }
-
-    fn caller_label(&self) -> String {
-        match &self.caller {
-            Principal::Host => "host".into(),
-            Principal::Plugin(package) => format!("plugin `{package}`"),
-        }
     }
 }
 
@@ -709,37 +617,16 @@ fn reduce_call_inner(
         arguments,
         range: call.range,
     };
-    let owner = function.owner();
     match function.call(&context, input) {
         Ok(FunctionOutput::Content(content)) => Ok(legacy_content_to_nodes(&content)),
         Ok(FunctionOutput::Value(Value::Content(content))) => Ok(legacy_content_to_nodes(&content)),
         Ok(FunctionOutput::Calls(calls)) => {
             let stream = legacy_calls_to_stream(&calls);
-            let saved_caller = frame.caller.clone();
-            frame.caller = Principal::from(&owner);
-            let reduced = reduce_flat(&stream, registry, limits, frame);
-            frame.caller = saved_caller;
-            reduced
+            reduce_flat(&stream, registry, limits, frame)
         }
         Ok(FunctionOutput::Nodes(nodes)) => {
-            // Terminal response forests project straight back to leaves;
-            // composition belongs to host.call, not to return values.
-            let mut leaves = Vec::with_capacity(nodes.len());
-            let mut errors = Vec::new();
-            for node in &nodes {
-                match notist_model::node_to_instance(node) {
-                    Ok(instance) => leaves.push(instance),
-                    Err(message) => errors.push(EvalDiagnostic {
-                        message,
-                        range: node.range,
-                    }),
-                }
-            }
-            if errors.is_empty() {
-                Ok(leaves)
-            } else {
-                Err(errors)
-            }
+            let stream = nodes_to_stream(&nodes, registry);
+            reduce_flat(&stream, registry, limits, frame)
         }
         Ok(FunctionOutput::Value(value)) => Err(vec![EvalDiagnostic {
             message: format!(
@@ -825,6 +712,66 @@ fn bind_validated_arguments(
         values.insert(parameter.name.clone(), value);
     }
     values
+}
+
+/// Converts a unified-node forest into the stream IR.
+///
+/// Nodes whose names have registered handlers become pending calls; the rest
+/// are already leaves. Used when unified-node outputs re-enter a legacy
+/// reduction frame.
+pub fn nodes_to_stream(nodes: &[notist_model::Node], registry: &FunctionRegistry) -> FlatContent {
+    fn convert(node: &notist_model::Node, registry: &FunctionRegistry) -> StreamNode {
+        if registry.get(&node.name).is_some() {
+            let arguments = node
+                .args
+                .iter()
+                .map(|(name, value)| StreamArgument {
+                    name: name.clone(),
+                    value: node_value_to_stream_value(value, registry),
+                })
+                .collect();
+            let body = (!node.children.is_empty()).then(|| {
+                FlatContent::from_nodes(node.children.iter().map(|c| convert(c, registry)))
+            });
+            StreamNode::Call(StreamCall {
+                name: node.name.clone(),
+                arguments,
+                body,
+                range: node.range,
+            })
+        } else {
+            match notist_model::node_to_instance(node) {
+                Ok(instance) => StreamNode::Leaf(instance),
+                Err(_) => StreamNode::Leaf(InstanceNode::synthetic(ElementInstance::new(
+                    ElementName::parse(&node.name),
+                    node.block,
+                ))),
+            }
+        }
+    }
+
+    fn node_value_to_stream_value(
+        value: &notist_model::NodeValue,
+        registry: &FunctionRegistry,
+    ) -> StreamValue {
+        match value {
+            notist_model::NodeValue::Stream(stream) => StreamValue::Stream(
+                FlatContent::from_nodes(stream.iter().map(|n| convert(n, registry))),
+            ),
+            other => StreamValue::Value(match other {
+                notist_model::NodeValue::None => Value::None,
+                notist_model::NodeValue::Bool(value) => Value::Bool(*value),
+                notist_model::NodeValue::Int(value) => Value::Int(*value),
+                notist_model::NodeValue::Float(value) => Value::Float(*value),
+                notist_model::NodeValue::String(value) => Value::String(value.clone()),
+                notist_model::NodeValue::Array(_) | notist_model::NodeValue::Stream(_) => {
+                    unreachable!("handled above")
+                }
+            }),
+        }
+    }
+
+    FlatContent::from_nodes(nodes.iter().map(|node| convert(node, registry)))
 }
 
 /// Converts the legacy `CallContent` used by native functions into the new stream IR.
@@ -1739,68 +1686,6 @@ Body text",
     }
 
     #[test]
-    fn capability_policy_checks_plugin_returned_calls() {
-        use crate::{Function, FunctionContext, FunctionInput, FunctionOutput, FunctionSignature};
-
-        struct PluginA;
-
-        impl Function for PluginA {
-            fn name(&self) -> &str {
-                "a::entry"
-            }
-
-            fn signature(&self) -> FunctionSignature {
-                FunctionSignature {
-                    parameters: Vec::new(),
-                    trailing_content: None,
-                    result: crate::Type::Content,
-                }
-            }
-
-            fn call(
-                &self,
-                _context: &FunctionContext<'_>,
-                input: FunctionInput<'_>,
-            ) -> Result<FunctionOutput, Vec<EvalDiagnostic>> {
-                Ok(FunctionOutput::calls(crate::call::CallContent {
-                    nodes: vec![crate::call::CallNode::Call(crate::call::Call {
-                        name: "denied".into(),
-                        arguments: Vec::new(),
-                        body: None,
-                        range: input.range,
-                    })],
-                }))
-            }
-
-            fn owner(&self) -> FunctionOwner {
-                FunctionOwner::Plugin("a".into())
-            }
-        }
-
-        let mut registry = FunctionRegistry::new();
-        registry.register(PluginA).unwrap();
-        let limits = ReduceLimits::default();
-        let policy = CapabilityPolicy::new()
-            .allow(Principal::Plugin("a".into()), "a::entry")
-            .allow(Principal::Plugin("a".into()), "allowed");
-        let mut frame = ReduceFrame::restricted(&limits, Principal::Plugin("a".into()), policy);
-
-        let error = reduce_call(
-            &StreamCall::new("a::entry", TextRange::new(0, 0)),
-            &registry,
-            &limits,
-            &mut frame,
-        )
-        .unwrap_err();
-        assert!(
-            error
-                .iter()
-                .any(|diagnostic| diagnostic.message.contains("not allowed to call `denied`")),
-            "{error:?}"
-        );
-    }
-
-    #[test]
     fn shaping_registry_drives_plugin_leaf_body_mode() {
         use notist_model::{ElementName, ElementSchema, ShapingKind, ShapingRole};
 
@@ -2274,7 +2159,6 @@ pub mod node_engine {
             arguments: BoundArguments::from_values(values),
             range: node.range,
         };
-        let owner = function.owner();
         match function.call(
             &FunctionContext {
                 registry,
@@ -2298,10 +2182,7 @@ pub mod node_engine {
                         range: node.range,
                     }]
                 })?;
-                let saved_caller = frame.caller.clone();
-                frame.caller = Principal::from(&owner);
                 let (reduced, errors) = reduce_nodes_recovering(nodes, registry, limits, frame);
-                frame.caller = saved_caller;
                 if errors.is_empty() {
                     Ok(reduced)
                 } else {
@@ -2309,11 +2190,16 @@ pub mod node_engine {
                 }
             }
             Ok(FunctionOutput::Nodes(returned)) => {
-                // Response forests are TERMINAL: a plugin emitting a node
-                // named like a registered function means "this leaf", never
-                // "dispatch again". Composition goes through host.call.
-                let _ = owner;
-                Ok(returned)
+                // Response forests re-enter the fixpoint under the plugin
+                // principal. Contract: a handler never returns a node
+                // addressed to itself — self-returns are author bugs caught
+                // by the depth/fuel budget.
+                let (reduced, errors) = reduce_nodes_recovering(returned, registry, limits, frame);
+                if errors.is_empty() {
+                    Ok(reduced)
+                } else {
+                    Err(errors)
+                }
             }
             Ok(FunctionOutput::Value(value)) => Err(vec![EvalDiagnostic {
                 message: format!(
@@ -2358,7 +2244,7 @@ pub mod node_engine {
         shaping: &ShapingRegistry,
     ) -> NodeEvaluation {
         let limits = ReduceLimits::default();
-        let mut frame = ReduceFrame::root_with_policy(&limits, registry.policy());
+        let mut frame = ReduceFrame::root(&limits);
         let mut diagnostics = Vec::new();
         let (forest, tree) = match flat_content_to_nodes(lowered) {
             Ok(nodes) => {

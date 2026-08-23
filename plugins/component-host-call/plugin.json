@@ -2,9 +2,6 @@
   "package": "component-host-call",
   "version": "0.1.0",
   "api-version": "0.1",
-  "capabilities": {
-    "request": ["core::text"]
-  },
   "wasm": {
     "module": "semantic.wasm",
     "component": true,

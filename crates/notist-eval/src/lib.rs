@@ -25,9 +25,9 @@ pub use leaf::node_engine::{
     reduce_nodes,
 };
 pub use leaf::{
-    CapabilityPolicy, ElementTree, FlatContent, LeafEvaluation, Principal, ReduceFrame,
-    ReduceLimits, ShapingRegistry, StreamArgument, StreamCall, StreamEvaluation, StreamNode,
-    StreamValue, element_tree_to_document, field_value_to_element_value, instance_node_to_legacy,
+    ElementTree, FlatContent, LeafEvaluation, ReduceFrame, ReduceLimits, ShapingRegistry,
+    StreamArgument, StreamCall, StreamEvaluation, StreamNode, StreamValue,
+    element_tree_to_document, field_value_to_element_value, instance_node_to_legacy,
     instances_to_legacy_content, legacy_content_to_nodes, reduce_call, reduce_flat,
     reduce_flat_recovering, shape_flat, shape_flat_with,
 };
@@ -212,7 +212,7 @@ impl Evaluator {
             bindings,
         );
         let limits = ReduceLimits::default();
-        let mut frame = ReduceFrame::root_with_policy(&limits, self.registry.policy());
+        let mut frame = ReduceFrame::root_with_policy(&limits);
         let (leaves, reduce_diagnostics) =
             leaf::reduce_flat_recovering(&lowered.flat, &self.registry, &limits, &mut frame);
         // A stream that still produced some leaves is a recoverable partial
@@ -1317,72 +1317,6 @@ mod tests {
         };
         assert!(body.elements.is_empty());
         assert_eq!(fields.len(), 1);
-    }
-
-    struct DelegatingPluginFunction;
-
-    impl Function for DelegatingPluginFunction {
-        fn name(&self) -> &str {
-            "demo::entry"
-        }
-
-        fn signature(&self) -> FunctionSignature {
-            FunctionSignature {
-                parameters: Vec::new(),
-                trailing_content: None,
-                result: Type::Content,
-            }
-        }
-
-        fn owner(&self) -> FunctionOwner {
-            FunctionOwner::Plugin("demo".into())
-        }
-
-        fn call(
-            &self,
-            _context: &FunctionContext<'_>,
-            input: FunctionInput<'_>,
-        ) -> Result<FunctionOutput, Vec<EvalDiagnostic>> {
-            Ok(FunctionOutput::calls(crate::CallContent {
-                nodes: vec![crate::CallNode::Call(crate::Call {
-                    name: "core::text".into(),
-                    arguments: vec![crate::Argument {
-                        name: "text".into(),
-                        value: Value::String("delegated".into()),
-                    }],
-                    body: None,
-                    range: input.range,
-                })],
-            }))
-        }
-    }
-
-    #[test]
-    fn legacy_reduction_enforces_plugin_capabilities() {
-        let mut denied = FunctionRegistry::with_builtins();
-        denied.register(DelegatingPluginFunction).unwrap();
-        let evaluation = Evaluator::new(denied).evaluate("#demo::entry()");
-        assert!(
-            evaluation.diagnostics.iter().any(|diagnostic| diagnostic
-                .message
-                .contains("not allowed to call `core::text`")),
-            "{:?}",
-            evaluation.diagnostics
-        );
-
-        let mut allowed = FunctionRegistry::with_builtins();
-        allowed.register(DelegatingPluginFunction).unwrap();
-        allowed.allow(Principal::Plugin("demo".into()), "core::text");
-        let evaluation = Evaluator::new(allowed).evaluate("#demo::entry()");
-        assert!(
-            evaluation.diagnostics.is_empty(),
-            "{:?}",
-            evaluation.diagnostics
-        );
-        assert!(matches!(
-            &evaluation.content.elements[0].element,
-            Element::Text(text) if text == "delegated"
-        ));
     }
 
     #[test]

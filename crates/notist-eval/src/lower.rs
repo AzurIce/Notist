@@ -1091,8 +1091,7 @@ impl LowerState<'_> {
                 }
             }
             Ok(FunctionOutput::Calls(calls)) => {
-                let owner = function.owner();
-                match crate::call::reduce_content_as(&calls, self.registry, &owner) {
+                match crate::call::reduce_content_as(&calls, self.registry) {
                     Ok(content) => {
                         let value = Value::Content(content);
                         if signature.result.accepts(&value.ty()) {

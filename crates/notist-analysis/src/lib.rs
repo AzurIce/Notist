@@ -211,9 +211,6 @@ fn function_environment_for(
             "plugin:{}@{} api={}",
             plugin.id, plugin.version, plugin.api_version
         ));
-        let mut capabilities = plugin.capabilities.clone();
-        capabilities.sort();
-        parts.push(format!("capabilities:{}", capabilities.join(",")));
         for function in &plugin.functions {
             parts.push(format!(
                 "function:{}:{:?}",

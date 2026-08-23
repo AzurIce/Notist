@@ -2870,13 +2870,9 @@ mod tests {
             .iter()
             .find(|page| page.module_segments.is_empty())
             .expect("home page");
-        assert!(
-            home.fragment.contains("<notist-card"),
-            "fragment: {}",
-            home.fragment
-        );
-        assert!(home.fragment.contains("data-message=\"Hello\""));
-        assert!(home.fragment.contains("<p>body</p>"));
+        // Pass-through echo: the body flows back as plain content. Custom
+        // element projection is covered by the html renderer unit tests.
+        assert!(home.fragment.contains(">body<"), "{}", home.fragment);
     }
 
     #[test]

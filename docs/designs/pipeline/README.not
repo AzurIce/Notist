@@ -50,7 +50,7 @@ lower 是 evaluate 的前半段：它消费 check 后的语法树，产出统一
 
 == Reduce
 
-reduce 是 evaluate 的后半段：它把 `Stream<Call | Leaf>` 中的 `Call` 递归规约为 `ElementInstance` Leaf。规约后仍是流，允许 `core::parbreak` 与未归组的 `core::item`。插件调用、capability、终止预算与插件 ABI 见 [[vault::designs::pipeline::plugin-call-reduction]]；完整插件 package 模型见 [[vault::designs::plugin-system]]。
+reduce 是 evaluate 的后半段：它把 `Stream<Call | Leaf>` 中的 `Call` 递归规约为 `ElementInstance` Leaf。规约后仍是流，允许 `core::parbreak` 与未归组的 `core::item`。插件调用、终止预算与插件 ABI 见 [[vault::designs::pipeline::plugin-call-reduction]]；完整插件 package 模型见 [[vault::designs::plugin-system]]。
 
 == Structure
 
@@ -77,7 +77,7 @@ parse 错误记录在 `Parse.errors`；check/evaluate 错误进入 `Evaluation.d
 | parse | `notist_syntax::parse` | 同左 |
 | check | `notist-analysis` | 同左 |
 | lower | `notist-eval::stream_lower::lower_markup_stream` | 全部 Markup item 已直接产出 `Stream<Call | Leaf>`，不再走 legacy per-item fallback；text inline sugar 扫描复用 legacy leaf factory |
-| reduce | `notist-eval::leaf::reduce_*` | `structured_module` 对 clean parse 使用 Stream reduction；capability checker 已接入 |
+| reduce | `notist-eval::leaf::reduce_*` | `structured_module` 对 clean parse 使用 Stream reduction |
 | structure | legacy `structure()` + `leaf::shape_flat` | `structured_module` 先经 Stream reduction，再走 legacy 兼容投影；`ElementTree` 已可用于新消费者 |
 | project | service 向 `notist-html::render_element_tree_with_renderers` 传 `ElementTree`；遍历、按 name 分发、anchor/outline/annotation、flow/inline 与全部节点渲染均基于 tree |
 

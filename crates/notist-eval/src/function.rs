@@ -3,7 +3,6 @@ use std::sync::Arc;
 
 use notist_model::{Content, CustomField, Element, ElementValue, TextRange};
 
-use crate::leaf::{CapabilityPolicy, Principal};
 use crate::{
     BoundArguments, EvalDiagnostic, Evaluation, FunctionSignature, Type, Value, lower_fragment,
 };
@@ -181,7 +180,6 @@ pub trait Function: Send + Sync {
 pub struct FunctionRegistry {
     functions: HashMap<String, Arc<dyn Function>>,
     aliases: HashMap<String, String>,
-    capability_policy: CapabilityPolicy,
 }
 
 impl Clone for FunctionRegistry {
@@ -189,7 +187,6 @@ impl Clone for FunctionRegistry {
         Self {
             functions: self.functions.clone(),
             aliases: self.aliases.clone(),
-            capability_policy: self.capability_policy.clone(),
         }
     }
 }
@@ -290,19 +287,6 @@ impl FunctionRegistry {
     /// Iterates over all registered functions in unspecified order.
     pub fn functions(&self) -> impl Iterator<Item = &dyn Function> {
         self.functions.values().map(Arc::as_ref)
-    }
-
-    /// Grants `caller` permission to dispatch `callee`.
-    ///
-    /// Grants are stored on the registry so both legacy reduction and the
-    /// Stream + Leaf reduction engine see the same effective plugin policy.
-    pub fn allow(&mut self, caller: Principal, callee: impl Into<String>) {
-        self.capability_policy = self.capability_policy.clone().allow(caller, callee);
-    }
-
-    /// Returns the current capability policy.
-    pub fn policy(&self) -> CapabilityPolicy {
-        self.capability_policy.clone()
     }
 }
 

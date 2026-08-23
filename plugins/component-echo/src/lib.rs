@@ -20,18 +20,20 @@ impl ElementFn for Echo {
 
     fn reduce(
         &self,
-        ctx: &mut EvalCtx<'_>,
+        _ctx: &mut EvalCtx<'_>,
         args: &Args,
         body: &[Node],
     ) -> Result<Vec<Node>, String> {
+        // Productive contract: never return a node addressed to this handler
+        // itself. Pass the trailing body through verbatim; without a body,
+        // surface the message as plain text.
+        if !body.is_empty() {
+            return Ok(body.to_vec());
+        }
         let message = args.get_string("message").unwrap_or("hello");
-        // Name the leaf after the dispatched call so repackaging the same
-        // binary under another package id keeps the leaf names aligned with
-        // the host registration namespace.
-        let mut out = notist_plugin_sdk::leaf(ctx.call_name(), true);
-        out.children = body.to_vec();
-        out.args.push(("message".into(), NodeValue::from(message)));
-        Ok(vec![out])
+        let mut leaf = Node::call("core::text", notist_model::TextRange::new(0, 0));
+        leaf.args.push(("text".into(), NodeValue::from(message)));
+        Ok(vec![leaf])
     }
 }
 

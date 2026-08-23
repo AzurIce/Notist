@@ -21,7 +21,7 @@ text("world")
 
 其中 `parbreak` 不是杂质，而是流中合法的、成型后消失的 Leaf。
 
-本文是 PluginSystem 与 pipeline 的 reduce 契约。完整 package / ABI / capability / safety 模型见 [[vault::designs::plugin-system]]。
+本文是 PluginSystem 与 pipeline 的 reduce 契约。完整 package / ABI / 信任模型 / safety 见 [[vault::designs::plugin-system]]。
 
 == Pipeline
 
@@ -132,7 +132,7 @@ pub enum FunctionOutput {
 
 单个 Leaf 就是长度为 1 的 Stream。规约规则：
 
-1. 先做 capability 检查，再做参数和 body 规约；
+1. dispatch 消耗 depth/fuel 预算，再做参数和 body 规约；
 2. 参数值中的嵌套流、`body` 中的流都先递归规约；
 3. 绑定后调用函数，得到 `Stream` 继续递归；
 4. 未知函数、类型错误、不接受 body 都产生诊断，不通过 accessor panic 假装成功；
@@ -163,9 +163,9 @@ FlatContent<Leaf> → ElementTree<Leaf>
 
 插件可见 IR 是 `call | leaf`。共享类型、WIT 定义、`export evaluate` 与 `import host.call` 的完整 ABI 见 [[vault::designs::plugin-system::abi]]。
 
-== Capability 在 reduce 中的位置
+== 归因在 reduce 中的位置
 
-reduce 在每个 dispatch 之前执行 capability 检查，插件返回的 Call 流同样受控。权限的声明、授予与归属规则见 [[vault::designs::plugin-system::capability]]。
+reduce 不做内容授权（2026-08-23 裁决，见 [[vault::designs::plugin-system::capability]]）：信任边界是 wasm 沙箱本身。插件返回的森林继续参与 fixpoint，自返回由 depth/fuel 兜底。
 
 == 终止性
 
@@ -196,7 +196,7 @@ Stream [
 ]
 ```
 
-宿主规约 `core::details` 与 `core::raw`，保留 `shader::canvas` Leaf，递归成型后得到只有 Leaf 的 `ElementTree`。插件不再返回对自己的调用。该组合要求 `shader` 被授予 `core::details` 与 `core::raw`（[[vault::designs::plugin-system::capability]]）。
+宿主规约 `core::details` 与 `core::raw`，保留 `shader::canvas` Leaf，递归成型后得到只有 Leaf 的 `ElementTree`。插件不再返回对自己的调用。
 
 == 实施路径
 

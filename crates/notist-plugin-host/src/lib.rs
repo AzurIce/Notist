@@ -8,7 +8,7 @@
 //! contributes, validates them atomically, and registers the resulting
 //! functions and schemas. `plugin.json` no longer carries the semantic
 //! interface; it only describes the package envelope (identity, Wasm loading
-//! parameters, render assets, and capability requests).
+//! parameters, and render assets).
 //!
 //! The legacy v0 raw core Wasm ABI (`evaluate(ptr, len) -> ptr`) remains only
 //! for the checked-in shader package.
@@ -20,7 +20,7 @@ use std::sync::{Arc, Mutex};
 
 use notist_eval::{
     EvalDiagnostic, Function, FunctionContext, FunctionInput, FunctionOutput, FunctionOwner,
-    FunctionRegistry, FunctionSignature, Principal, RegistryError, ShapingRegistry, Type,
+    FunctionRegistry, FunctionSignature, RegistryError, ShapingRegistry, Type,
 };
 use notist_model::{
     BodyMode, Content, CustomField, DefaultValue, Element, ElementName, ElementSchema,
@@ -38,10 +38,6 @@ pub struct VaultPluginConfig {
     pub path: Option<String>,
     /// A future registry package name.
     pub package: Option<String>,
-    /// Site-granted capabilities for this plugin. Effective capabilities are
-    /// the intersection of this set with `plugin.json` `capabilities.request`.
-    #[serde(default)]
-    pub capabilities: Vec<String>,
 }
 
 /// Site-level presentation configuration under `[site]` in `Notist.toml`.
@@ -79,8 +75,6 @@ pub struct PluginManifest {
     /// shader package keeps loading. New packages use the top-level field.
     #[serde(default)]
     pub interfaces: ManifestInterfaces,
-    #[serde(default)]
-    pub capabilities: ManifestCapabilities,
 }
 
 impl PluginManifest {
@@ -103,14 +97,6 @@ pub struct WasmDecl {
     /// the shared plugin registry wired into that import.
     #[serde(rename = "host-call", default)]
     pub host_call: bool,
-}
-
-/// The capability declaration used by the plugin host.
-#[derive(Clone, Debug, Default, Deserialize)]
-pub struct ManifestCapabilities {
-    /// Qualified function names this package may request through `host.call`.
-    #[serde(default)]
-    pub request: Vec<String>,
 }
 
 #[derive(Clone, Debug, Default, Deserialize)]
@@ -219,9 +205,6 @@ pub struct LoadedPlugin {
     pub elements: Vec<ElementSchema>,
     /// HTML renderer contributions declared by the manifest.
     pub html_contributions: Vec<HtmlContribution>,
-    /// Capabilities requested by the manifest. Site grants are not applied
-    /// here; consumers intersect this set with their configured grants.
-    pub capabilities: Vec<String>,
     /// Registry shared with component `host.call` imports. It already
     /// contains core functions, this package's functions, and its requested
     /// grants by the time `load_package` returns.
@@ -361,7 +344,7 @@ pub fn load_plugins_from_vault(
                 ));
             }
         };
-        let plugin = load_package_with_grants(&package_dir, Some(&entry.capabilities))?;
+        let plugin = load_package(&package_dir)?;
         loaded.push(plugin);
     }
     Ok(loaded)
@@ -497,50 +480,14 @@ fn validate_site_style(style: &str) -> Result<String, String> {
     Ok(normalized)
 }
 
-fn effective_capabilities(requested: &[String], site_grants: Option<&[String]>) -> Vec<String> {
-    match site_grants {
-        None => requested.to_vec(),
-        Some(grants) => {
-            if grants.iter().any(|grant| grant == "*") {
-                requested.to_vec()
-            } else {
-                requested
-                    .iter()
-                    .filter(|requested| {
-                        grants
-                            .iter()
-                            .any(|grant| grant.as_str() == requested.as_str())
-                    })
-                    .cloned()
-                    .collect()
-            }
-        }
-    }
-}
-
 /// Loads one plugin package directory.
 ///
 /// Packages may be either Wasm-backed or purely declarative. A declarative
 /// package contributes element schemas and signatures; the host projects
 /// bound arguments through [`ElementFunction`] without executing guest code.
 pub fn load_package(package_dir: &Path) -> Result<LoadedPlugin, String> {
-    load_package_with_grants(package_dir, None)
-}
-
-/// Loads one plugin package with site-granted capabilities.
-///
-/// `None` preserves standalone-test compatibility by granting every requested
-/// capability. Vault loading always passes the site grant set from
-/// `Notist.toml`; effective permissions are the intersection with
-/// `plugin.json` `capabilities.request`.
-pub fn load_package_with_grants(
-    package_dir: &Path,
-    site_grants: Option<&[String]>,
-) -> Result<LoadedPlugin, String> {
     let package_dir = resolve_package_dir(package_dir)?;
     let manifest = read_manifest(&package_dir)?;
-    let effective_capabilities =
-        effective_capabilities(&manifest.capabilities.request, site_grants);
 
     let shared_registry = if manifest
         .wasm
@@ -655,10 +602,6 @@ pub fn load_package_with_grants(
                     .map_err(|error| format!("cannot register shared alias: {error:?}"))?;
             }
         }
-        let principal = Principal::Plugin(manifest.package.clone());
-        for capability in &effective_capabilities {
-            registry.allow(principal.clone(), capability.clone());
-        }
     }
 
     let html_contributions = manifest
@@ -674,7 +617,6 @@ pub fn load_package_with_grants(
         functions,
         elements,
         html_contributions,
-        capabilities: effective_capabilities,
         shared_registry,
     })
 }
@@ -1243,7 +1185,6 @@ struct ComponentHostState {
     table: ResourceTable,
     wasi: WasiCtx,
     registry: Arc<Mutex<FunctionRegistry>>,
-    owner: FunctionOwner,
 }
 
 impl WasiView for ComponentHostState {
@@ -1288,15 +1229,13 @@ impl wit_bindings::notist::plugin::host::Host for ComponentHostState {
             .map_err(|_| "shared plugin registry lock poisoned".to_owned())?;
         let call = wire::node_to_legacy_call(root, &registry)?;
         let calls = wire::call_content_of(call);
-        let owner = self.owner.clone();
-        let content =
-            notist_eval::reduce_content_as(&calls, &registry, &owner).map_err(|diagnostics| {
-                diagnostics
-                    .into_iter()
-                    .map(|diagnostic| diagnostic.message)
-                    .collect::<Vec<_>>()
-                    .join("; ")
-            })?;
+        let content = notist_eval::reduce_content_as(&calls, &registry).map_err(|diagnostics| {
+            diagnostics
+                .into_iter()
+                .map(|diagnostic| diagnostic.message)
+                .collect::<Vec<_>>()
+                .join("; ")
+        })?;
         let leaves = notist_eval::legacy_content_to_nodes(&content);
         let out: Vec<notist_model::Node> = leaves
             .iter()
@@ -1338,7 +1277,6 @@ fn load_component_host_runtime(
             table: ResourceTable::new(),
             wasi: WasiCtxBuilder::new().build(),
             registry: shared_registry,
-            owner: FunctionOwner::Plugin(package.to_owned()),
         },
     );
     store.limiter(|state| state);
@@ -1620,10 +1558,6 @@ pub fn register_loaded(
     plugins: &[LoadedPlugin],
 ) -> Result<(), RegistryError> {
     for plugin in plugins {
-        let principal = Principal::Plugin(plugin.id.clone());
-        for capability in &plugin.capabilities {
-            registry.allow(principal.clone(), capability.clone());
-        }
         for function in &plugin.functions {
             registry.register_arc(Arc::clone(function))?;
             let Some((package, element)) = function.name().split_once("::") else {
@@ -1776,18 +1710,13 @@ mod tests {
             "{:?}",
             evaluation.diagnostics
         );
-        assert_eq!(evaluation.tree.roots.len(), 1);
-        assert_eq!(
-            evaluation.tree.roots[0].instance.name,
-            ElementName::plugin("component-echo", "echo")
-        );
-        // The trailing body is echoed through the component and shaped by the
-        // guest-declared `body-mode: flow` schema.
-        assert_eq!(evaluation.tree.roots[0].instance.body.len(), 2);
+        // Pass-through: the body flows back through the component and the
+        // guest-declared `body-mode: flow` schema shapes it into paragraphs.
+        assert_eq!(evaluation.tree.roots.len(), 2);
         assert!(
-            evaluation.tree.roots[0]
-                .instance
-                .body
+            evaluation
+                .tree
+                .roots
                 .iter()
                 .all(|node| node.instance.is_core("paragraph"))
         );
@@ -1812,19 +1741,11 @@ mod tests {
             "{:?}",
             evaluation.diagnostics
         );
-        let Element::Custom {
-            name, fields, body, ..
-        } = &evaluation.content.elements[0].element
-        else {
-            panic!(
-                "expected custom element, got {:?}",
-                evaluation.content.elements
-            )
-        };
-        assert_eq!(name, "component-echo::echo");
-        assert!(fields.iter().any(|field| field.name == "message"
-            && matches!(&field.value, ElementValue::String(value) if value == "hi")));
-        assert!(matches!(&body.elements[0].element, Element::Text(text) if text == "body"));
+        // Pass-through contract: the trailing body comes back verbatim.
+        assert!(matches!(
+            &evaluation.content.elements[0].element,
+            Element::Text(text) if text == "body"
+        ));
     }
 
     #[test]
@@ -1913,87 +1834,10 @@ mod tests {
             "{:?}",
             evaluation.diagnostics
         );
-    }
-
-    #[test]
-    fn vault_site_grants_intersect_plugin_capabilities() {
-        let package_dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
-            .join("../../plugins/component-host-call")
-            .canonicalize()
-            .unwrap();
-        let granted =
-            load_package_with_grants(&package_dir, Some(&["core::text".to_owned()])).unwrap();
-        let mut registry = FunctionRegistry::with_builtins();
-        register_loaded(&mut registry, &[granted]).unwrap();
-        let evaluation = Evaluator::new(registry).evaluate("#component-host-call::passthrough()");
-        assert!(
-            evaluation.diagnostics.is_empty(),
-            "{:?}",
-            evaluation.diagnostics
-        );
-
-        let denied = load_package_with_grants(&package_dir, Some(&[])).unwrap();
-        let mut registry = FunctionRegistry::with_builtins();
-        register_loaded(&mut registry, &[denied]).unwrap();
-        let evaluation = Evaluator::new(registry).evaluate("#component-host-call::passthrough()");
-        assert!(
-            evaluation.diagnostics.iter().any(|diagnostic| diagnostic
-                .message
-                .contains("not allowed to call `core::text`")),
-            "{:?}",
-            evaluation.diagnostics
-        );
-    }
-
-    #[test]
-    fn component_host_call_enforces_declared_capabilities() {
-        let source_package = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
-            .join("../../plugins/component-host-call")
-            .canonicalize()
-            .unwrap();
-        let dir = temp_package_dir();
-        std::fs::copy(
-            source_package.join("semantic.wasm"),
-            dir.join("semantic.wasm"),
-        )
-        .unwrap();
-        write_manifest(
-            &dir,
-            r#"{
-                "package": "component-host-call-denied",
-                "version": "0.1.0",
-                "api-version": "0.1",
-                "interfaces": {
-                    "semantic": {
-                        "elements": [{
-                            "name": "passthrough",
-                            "version": 1,
-                            "block": false,
-                            "parameters": []
-                        }]
-                    }
-                },
-                "capabilities": { "request": [] },
-                "wasm": {
-                    "module": "semantic.wasm",
-                    "component": true,
-                    "host-call": true
-                }
-            }"#,
-        );
-
-        let plugin = load_package(&dir).unwrap();
-        let mut registry = FunctionRegistry::with_builtins();
-        register_loaded(&mut registry, &[plugin]).unwrap();
-        let evaluation =
-            Evaluator::new(registry).evaluate("#component-host-call-denied::passthrough()");
-        assert!(
-            evaluation.diagnostics.iter().any(|diagnostic| diagnostic
-                .message
-                .contains("not allowed to call `core::text`")),
-            "{:?}",
-            evaluation.diagnostics
-        );
+        assert!(matches!(
+            &evaluation.content.elements[0].element,
+            Element::Text(text) if text == "m"
+        ));
     }
 
     #[test]

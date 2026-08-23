@@ -11,7 +11,7 @@
 - 载荷即 `Node` 森林的 serde 编码（当前 JSON；`NodeValue` 天然外部标签，postcard 兼容，切换只动编解码器）；
 - **SDK 版本即 ABI 版本**：全部插件经 Rust SDK 编译，host 与插件针对同一 `notist_model` 构建即天然兼容，独立协议版本号留待多语言分发需求出现时再引入；
 - `range` 是宿主侧元数据，跨边界无意义（serde skip/default）；
-- **响应森林是终态**：插件返回的节点不再被派发——组合一律通过 `host.call` 主动规约完成。这消解了「插件输出与自身同名的叶子」的自指歧义，也使 capability 无需为自身 namespace 放行。
+- **响应森林是终态**：插件返回的节点不再被派发——组合一律通过 `host.call` 主动规约完成。这消解了「插件输出与自身同名的叶子」的自指歧义。
 
 == 插件形态
 
@@ -71,7 +71,7 @@ world plugin {
 }
 
 interface host {
-    // 按当前插件 principal 检查 capability，消耗同一 depth/fuel 预算，
+    // 消耗同一 depth/fuel 预算，
     // 并返回规约后的 Leaf 流字节或错误。
     call: func(request: list<u8>) -> result<list<u8>, string>;
 }
@@ -107,7 +107,7 @@ world plugin-host {
 1. **宏展开式**：`evaluate` 返回 `Stream<Call | Leaf>`，把继续规约交给宿主；
 2. **主动规约式**：调用 `host.call(core::details, ...)` 等，组合结果后返回。
 
-两种模式都经过宿主，插件无法绕过 capability 或无限递归。
+两种模式都经过宿主；无限递归由 depth/fuel 预算兜底（自返回属于作者 bug）。
 
 === 插件不能做什么
 
@@ -118,7 +118,7 @@ world plugin-host {
 
 == 当前实现
 
-- WIT 已由 wasmtime bindgen 编译校验；`export init` 与 `export evaluate` 均已接入 loader，`import host.call` 走共享 registry + capability policy。
+- WIT 已由 wasmtime bindgen 编译校验；`export init` 与 `export evaluate` 均已接入 loader，`import host.call` 走共享 registry。
 - 载荷直接使用 `notist_model::Node`（`model::wire::{encode_forest,decode_forest}`）；`FunctionOutput::Nodes` 使组件插件在 legacy 与 node 双引擎下均以统一 IR 进出。
 - 插件以 `notist-plugin-sdk` 编写：`Plugin::init(reg)` 注册元素，`ElementFn::reduce` 实现规约，`export_plugin!` 生成组件导出。
 - 兼容 legacy v0 raw core Wasm ABI（`evaluate(ptr, len) -> ptr`），仅用于存量 shader package。

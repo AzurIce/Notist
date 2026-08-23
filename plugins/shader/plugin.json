@@ -45,12 +45,6 @@
       }
     }
   },
-  "capabilities": {
-    "request": [
-      "html:render",
-      "html:asset"
-    ]
-  },
   "wasm": {
     "module": "semantic.wasm"
   }

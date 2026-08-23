@@ -14,12 +14,11 @@ PluginPackage {
   functions: Vec<FunctionDecl>
   elements: Vec<ElementDecl>
   render: Vec<RenderContribution>
-  capabilities: CapabilitySet
   wasm: Option<WasmModule>
 }
 ```
 
-- `Core` package 是语言版本的一部分，由宿主 native 实现；它使用同一 schema，但不受 capability 限制。
+- `Core` package 是语言版本的一部分，由宿主 native 实现；它使用同一 schema。
 - `Wasm` package 是第三方组件，只通过受限 host import 与宿主交互。
 - `PackageId` 成为 `ElementName` 的 namespace：插件 Leaf 写作 `shader::canvas`。
 
@@ -47,9 +46,6 @@ PluginPackage {
       ]
     }
   },
-  "capabilities": {
-    "request": ["html:render", "html:asset"]
-  },
   "wasm": {
     "module": "semantic.wasm",
     "component": true,
@@ -60,7 +56,6 @@ PluginPackage {
 
 - `wasm.component` 区分 WIT component 与 legacy v0 core Wasm；`wasm.host-call` 表示组件 import `host.call`。
 - `interfaces.render` 描述投影面；投影贡献是静态文件引用，保留在信封里，细节见 [[vault::designs::plugin-system::projection]]。
-- manifest 的 `capabilities.request` 只声明请求；实际生效权限见 [[vault::designs::plugin-system::capability]]。
 
 == core package
 
@@ -93,11 +88,9 @@ path = "../plugins/shader"
 
 [plugins.component-host-call]
 path = "../plugins/component-host-call"
-capabilities = ["core::text"]
 ```
 
 - `path` 指向相对 Vault root 的 package 目录或 zip；registry 形式的 `package` 字段为未来入口保留。
-- `capabilities` 是站点 grants，与 manifest request 取交集后才是有效权限。
 
 == 装载与生命周期
 
@@ -108,7 +101,7 @@ Notist.toml
   → package manifest（信封）
   → compile + instantiate Wasm component
   → init()：guest 注册元素声明
-  → validate schema / capability / namespace（原子，任一失败即整包拒绝）
+  → validate schema / namespace（原子，任一失败即整包拒绝）
   → register functions + elements + renderers
   → WorkspaceSnapshot identity
 ```

@@ -55,25 +55,13 @@ ElementInstance {
 - `block` 是语义参数，不由 call-site delimiter 猜测；
 - renderer 对未知插件 Leaf 有安全兜底；真正富渲染必须经过 trusted renderer 边界。
 
-== Capability 即权限面
+== 信任模型
 
-完整插件 package 模型与宿主 ABI 见 [[vault::designs::plugin-system]]。
+完整插件 package 模型与宿主 ABI 见 [[vault::designs::plugin-system]]；能力系统的删除裁决见 [[vault::designs::plugin-system::capability]]。
 
-插件 Function 是带 signature、implementation 与 capability schema 的普通 Function Value。capability 不进入 Type identity，与签名正交：
-
-```text
-FunctionValue {
-  signature
-  implementation
-  captured_environment
-  required_capabilities
-}
-```
-
-- 宿主在 invocation 前检查 capability，不把权限编码成普通 String/Dict 参数；
-- filesystem、network、process、randomness 与 cache 等属于 capability；
-- static analysis 读取 schema 与 signature，不执行插件；
-- runtime 验证返回 Value 满足 declared result Type。
+- 插件 Function 是带 signature 与 implementation 的普通 Function Value；
+- 内容组合不做 per-call 授权：wasm 沙箱（无 IO import + 资源预算）是唯一执行边界；
+- 若未来出现文件/网络级需求，作为独立 capability 面另行设计。
 
 == 加载、作用域与生命周期
 
@@ -100,7 +88,7 @@ styles = ["assets/user.css"]
 
 - 未知字段预留，不静默忽略；分析层携带配置 identity 与字节载荷；
 - language version 决定语法、core/prelude 与诊断 surface；
-- capabilities 是权限面，plugins 是显式加载表；
+- plugins 是显式加载表；
 - `[site]` 是站点级呈现配置：`styles` 列出额外样式表，条目必须是 vault 根内的相对 `.css` 路径（拒绝绝对路径、`\` 分隔与 `..` 逃逸），解析在 notist-plugin-host 的配置读取处统一校验；
 - 配置变更进入 source-set fingerprint（[[vault::designs::host::query-contract]]）。
 

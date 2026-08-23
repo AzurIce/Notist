@@ -195,7 +195,7 @@ Markup insertion 边界上，嵌入表达式的结果按规则插入外层 Conte
 ```text
 Stream<Call | Leaf>
   → 查 FunctionRegistry
-  → capability / depth / fuel 检查
+  → depth / fuel 预算检查
   → 规约参数中的嵌套流与 trailing body
   → 按签名绑定实参
   → 调用函数
@@ -214,13 +214,13 @@ FunctionOutput =
 
 单个 Leaf 就是长度为 1 的 Stream。规约规则：
 
-- 先做 capability 检查，再做参数和 body 规约；
+- 每次 dispatch 消耗 depth/fuel 预算，再做参数和 body 规约；
 - 参数值中的嵌套流、trailing body 中的流都先递归规约；
 - 不接受 body 的函数在 reduction 阶段直接产生诊断，不静默丢弃；
 - 未知函数、重复/未知/缺失实参、类型错误都产生诊断，不通过 accessor panic 假装成功；
 - 每次 dispatch 消耗 fuel 并增加 depth。
 
-内置函数返回自己的 Leaf 流；插件函数返回 Call / 自有 Leaf 组成的流。内置与插件函数在 registry 中地位相同，因此插件可以调用 `core::details`、`core::raw` 等其它函数。插件 ABI、capability 与终止规则见 [[vault::designs::pipeline::plugin-call-reduction]]。
+内置函数返回自己的 Leaf 流；插件函数返回 Call / 自有 Leaf 组成的流。内置与插件函数在 registry 中地位相同，因此插件可以调用 `core::details`、`core::raw` 等其它函数。插件 ABI 与终止规则见 [[vault::designs::pipeline::plugin-call-reduction]]。
 
 == 求值规则
 
