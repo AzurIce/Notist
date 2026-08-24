@@ -3066,11 +3066,17 @@ fn wiki_completion_context(
     }
     let before = source.get(..offset)?;
     let start = before.rfind("[[")? + 2;
-    if before[start..].contains("]]")
-        || before[start..].contains('#')
-        || before[start..].contains('\n')
-    {
+    if before[start..].contains("]]") || before[start..].contains('\n') {
         return None;
+    }
+    if let Some(hash) = before[start..].find('#') {
+        let hash = start + hash;
+        return Some(CompletionContext {
+            prefix: source[hash + 1..offset].to_owned(),
+            replace: TextRange::new(hash + 1, offset),
+            kind: CompletionContextKind::Label,
+            label_target: Some(source[start..hash].to_owned()),
+        });
     }
     Some(CompletionContext {
         prefix: source[start..offset].to_owned(),
@@ -4890,6 +4896,43 @@ mod tests {
         let string = WorkspaceSnapshot::load_with_overlays(root.path(), overlays).unwrap();
         let string_file_id = string.file_id(&today_path).unwrap();
         assert!(string.completions_at(string_file_id, 19).is_empty());
+    }
+
+    #[test]
+    fn snapshot_completion_wiki_hash_offers_labels_not_functions() {
+        let root = TempDir::new().unwrap();
+        let main_path = root.path().join("main.not");
+        fs::write(&main_path, "[[#").unwrap();
+        fs::write(root.path().join("foo.not"), "#[Intro]@intro").unwrap();
+        let snapshot = WorkspaceSnapshot::load(root.path()).unwrap();
+        let main_path = dunce::canonicalize(&main_path).unwrap();
+        let file_id = snapshot.file_id(&main_path).unwrap();
+
+        // `[[#` has an empty label target: no candidates, and in particular no
+        // function candidates leaking from the `#` prefix.
+        assert!(snapshot.completions_at(file_id, 3).is_empty());
+
+        // `[[vault::foo#` completes labels of `vault::foo`, not function signatures.
+        fs::write(&main_path, "[[vault::foo#").unwrap();
+        let snapshot = WorkspaceSnapshot::load(root.path()).unwrap();
+        let candidates = snapshot.completions_at(file_id, "[[vault::foo#".len());
+        assert!(
+            candidates
+                .iter()
+                .any(|candidate| candidate.label == "intro")
+        );
+        assert!(
+            !candidates
+                .iter()
+                .any(|candidate| candidate.kind == CompletionKind::Function)
+        );
+
+        // Regression: a bare `#he` still completes the `heading` function.
+        fs::write(&main_path, "#he").unwrap();
+        let snapshot = WorkspaceSnapshot::load(root.path()).unwrap();
+        assert!(snapshot.completions_at(file_id, 3).iter().any(|candidate| {
+            candidate.label == "heading" && candidate.kind == CompletionKind::Function
+        }));
     }
 
     #[test]
