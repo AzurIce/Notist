@@ -69,7 +69,8 @@ pub enum MarkupItem {
 }
 
 /// A line-leading heading sugar node: the `=` run length is the level, the
-/// remainder of the line is the heading body (D0003).
+/// remainder of the line is the heading body — bracket scopes (`#[...]`
+/// etc.) in the body may span lines (D0003).
 #[derive(Clone, Debug, PartialEq)]
 pub struct HeadingSugar {
     pub level: u32,
@@ -84,8 +85,9 @@ pub struct ListSugar {
     pub range: TextRange,
 }
 
-/// One list line: indentation, marker kind, and the body Markup to the line
-/// end (D0003).
+/// One list line: indentation, marker kind, and the body Markup. The body
+/// ends at the line end unless a bracket scope (`#[...]` etc.) absorbs the
+/// newline (D0003).
 #[derive(Clone, Debug, PartialEq)]
 pub struct ListSugarRow {
     pub indent: usize,
@@ -1113,6 +1115,70 @@ mod tests {
                 operator: BinaryOperator::Multiply,
                 ..
             }
+        ));
+    }
+
+    #[test]
+    fn list_rows_allow_multiline_bracket_scopes() {
+        // A `#[...]` scope inside a list row may span lines: the line end is
+        // a row boundary only when no bracket structure absorbed the newline.
+        let parsed = parse("- #[\nhello\n]\n- next\n");
+        assert!(parsed.errors.is_empty(), "{:?}", parsed.errors);
+        assert_eq!(parsed.root.items.len(), 1);
+        let MarkupItem::List(sugar) = &parsed.root.items[0] else {
+            panic!("expected list sugar, got {:?}", parsed.root.items)
+        };
+        assert_eq!(sugar.rows.len(), 2);
+        assert!(matches!(
+            &sugar.rows[0].body.items[0],
+            MarkupItem::Embedded(embedded)
+                if matches!(embedded.expression.kind, ExpressionKind::Content(_))
+        ));
+        assert!(matches!(
+            &sugar.rows[1].body.items[0],
+            MarkupItem::Text(text) if text.value == "next"
+        ));
+    }
+
+    #[test]
+    fn heading_bodies_allow_multiline_bracket_scopes() {
+        let parsed = parse("= #[\nhello\n]\n");
+        assert!(parsed.errors.is_empty(), "{:?}", parsed.errors);
+        let MarkupItem::Heading(sugar) = &parsed.root.items[0] else {
+            panic!("expected heading sugar, got {:?}", parsed.root.items)
+        };
+        assert!(matches!(
+            &sugar.body.items[0],
+            MarkupItem::Embedded(embedded)
+                if matches!(embedded.expression.kind, ExpressionKind::Content(_))
+        ));
+    }
+
+    #[test]
+    fn call_arguments_and_list_rows_in_content_span_lines() {
+        // Call argument lists span newlines through the same machinery.
+        let parsed = parse("#f(a,\n1)");
+        assert!(parsed.errors.is_empty(), "{:?}", parsed.errors);
+        let MarkupItem::Embedded(embedded) = &parsed.root.items[0] else {
+            panic!("expected an embed, got {:?}", parsed.root.items)
+        };
+        let ExpressionKind::Call(call) = &embedded.expression.kind else {
+            panic!("expected a call, got {:?}", embedded.expression.kind)
+        };
+        assert_eq!(call.arguments.len(), 2);
+
+        // Regression: a Content block still swallows list-sugar lines.
+        let parsed = parse("#[\n- item\n]");
+        assert!(parsed.errors.is_empty(), "{:?}", parsed.errors);
+        let MarkupItem::Embedded(embedded) = &parsed.root.items[0] else {
+            panic!("expected an embed, got {:?}", parsed.root.items)
+        };
+        let ExpressionKind::Content(block) = &embedded.expression.kind else {
+            panic!("expected a content block, got {:?}", embedded.expression.kind)
+        };
+        assert!(matches!(
+            &block.markup.items[0],
+            MarkupItem::List(sugar) if sugar.rows.len() == 1
         ));
     }
 

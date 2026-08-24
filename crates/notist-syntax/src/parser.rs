@@ -22,7 +22,7 @@ pub(crate) fn parse(source: &str) -> Parse {
         end: source.len(),
         errors: Vec::new(),
     };
-    let root = parser.parse_markup(false, false, true).0;
+    let root = parser.parse_markup(false, false, false, true).0;
     Parse {
         root,
         errors: parser.errors,
@@ -51,6 +51,7 @@ impl Parser<'_> {
         &mut self,
         stop_at_bracket: bool,
         stop_at_pipe: bool,
+        stop_at_newline: bool,
         at_line_start: bool,
     ) -> (Markup, bool) {
         let start = self.cursor;
@@ -85,6 +86,23 @@ impl Parser<'_> {
                         range: TextRange::new(start, self.cursor),
                     },
                     true,
+                );
+            }
+
+            // A line end is a boundary only when no bracket structure
+            // (`#[...]`, `#{...}`, `#f(...)`) absorbed the newline; the
+            // newline itself is left for the caller to consume.
+            if stop_at_newline
+                && bracket_depth == 0
+                && matches!(self.byte(), Some(b'\n' | b'\r'))
+            {
+                self.push_text(&mut items, text_start, self.cursor);
+                return (
+                    Markup {
+                        items,
+                        range: TextRange::new(start, self.cursor),
+                    },
+                    false,
                 );
             }
 
@@ -286,22 +304,43 @@ impl Parser<'_> {
             end: end.min(self.end),
             errors: Vec::new(),
         };
-        let (markup, _) = nested.parse_markup(stop_at_bracket, stop_at_pipe, false);
+        let (markup, _) = nested.parse_markup(stop_at_bracket, stop_at_pipe, false, false);
         self.errors.append(&mut nested.errors);
         markup
     }
 
+    /// Parses Markup from `start` until an unabsorbed line end, a closing
+    /// `]`, or the parser's own end. Used for heading and list-sugar bodies
+    /// so bracket scopes (`#[...]`, `#{...}`, `#f(...)`) may span lines.
+    /// Returns the Markup, whether it stopped at `]`, and the stop offset.
+    fn parse_markup_until_line_end(
+        &mut self,
+        start: usize,
+        stop_at_bracket: bool,
+    ) -> (Markup, bool, usize) {
+        let mut nested = Parser {
+            source: self.source,
+            cursor: start,
+            end: self.end,
+            errors: Vec::new(),
+        };
+        let (markup, stopped) = nested.parse_markup(stop_at_bracket, false, true, false);
+        self.errors.append(&mut nested.errors);
+        (markup, stopped, nested.cursor)
+    }
+
     /// Parses a line-leading `= ...` heading sugar (D0003). Returns the sugar
     /// and the cursor after the heading (the body may stop early at `]`).
+    /// Bracket scopes in the body may span lines; otherwise the line end
+    /// bounds the body.
     fn parse_heading_sugar(&mut self, stop_at_bracket: bool) -> Option<(HeadingSugar, usize)> {
         let start = self.cursor;
         let rest = &self.source[start..self.end];
-        let mut line_end = rest
+        let line_end = rest
             .find('\n')
             .map_or(start + rest.len(), |index| start + index);
         let line = &self.source[start..line_end];
         let line = line.strip_suffix('\r').unwrap_or(line);
-        line_end = start + line.len();
         let level = line.bytes().take_while(|byte| *byte == b'=').count();
         if level == 0 {
             return None;
@@ -311,7 +350,7 @@ impl Parser<'_> {
             return None; // `=foo` is ordinary text.
         }
         let body_start = start + level + usize::from(!after.is_empty());
-        let body = self.parse_markup_slice(body_start, line_end, stop_at_bracket, false);
+        let (body, _, _) = self.parse_markup_until_line_end(body_start, stop_at_bracket);
         let range = TextRange::new(start, body.range.end.max(start + level));
         let mut end = range.end;
         // The heading consumes its line, including the trailing newline: a
@@ -353,7 +392,9 @@ impl Parser<'_> {
 
     /// Parses a contiguous run of `- ` / `+ ` list lines (D0003). Returns the
     /// sugar and the cursor after the run; the trailing newline of the run is
-    /// consumed, and a closing `]` ends the run early.
+    /// consumed, and a closing `]` ends the run early. A row body ends at the
+    /// line end unless a bracket scope (`#[...]`, `#{...}`, `#f(...)`)
+    /// absorbs the newline, in which case the body spans lines.
     fn parse_list_sugar(&mut self, stop_at_bracket: bool) -> Option<(ListSugar, usize)> {
         let start = self.cursor;
         let mut rows = Vec::new();
@@ -377,31 +418,37 @@ impl Parser<'_> {
             };
             let body_start = cursor + indent + marker_len;
             let row_line_end = cursor + line_trim_cr.len();
-            let mut body_end = row_line_end;
-            while body_end > body_start
-                && matches!(self.source.as_bytes().get(body_end - 1), Some(b' ' | b'\t'))
-            {
-                body_end -= 1;
+            // `- ` with no content stays text (legacy scan parity).
+            let mut probe = body_start;
+            while matches!(self.source.as_bytes().get(probe), Some(b' ' | b'\t')) {
+                probe += 1;
             }
-            if body_end == body_start {
-                break; // `- ` with no content stays text (legacy scan parity).
+            if probe >= row_line_end {
+                break;
             }
-            let body = self.parse_markup_slice(body_start, body_end, stop_at_bracket, false);
-            let stopped_at_bracket = body.range.end < body_end;
-            let body_end_reached = body.range.end;
+            // The body runs until the line end, unless a bracket scope
+            // (`#[...]`, `#{...}`, `#f(...)`) absorbs the newline or a
+            // closing `]` stops it early.
+            let (mut body, stopped_at_bracket, stop) =
+                self.parse_markup_until_line_end(body_start, stop_at_bracket);
+            if !stopped_at_bracket {
+                trim_trailing_horizontal_space(&mut body);
+            }
             rows.push(ListSugarRow {
                 indent,
                 ordered,
                 marker_len,
                 body,
-                range: TextRange::new(cursor, row_line_end),
+                range: TextRange::new(cursor, row_line_end.max(stop)),
             });
             if stopped_at_bracket {
-                cursor = body_end_reached;
+                cursor = stop;
                 break;
             }
-            cursor = row_line_end;
-            if rest.as_bytes().get(line_len) == Some(&b'\n') {
+            cursor = stop;
+            if self.source.as_bytes().get(cursor..cursor + 2) == Some(b"\r\n") {
+                cursor += 2;
+            } else if self.source.as_bytes().get(cursor) == Some(&b'\n') {
                 cursor += 1;
             } else {
                 break;
@@ -430,7 +477,7 @@ impl Parser<'_> {
             end: end.min(self.end),
             errors: Vec::new(),
         };
-        let (_, stopped) = nested.parse_markup(stop_at_bracket, true, false);
+        let (_, stopped) = nested.parse_markup(stop_at_bracket, true, false, false);
         if nested.cursor > end {
             (end, false)
         } else {
@@ -1699,7 +1746,7 @@ impl Parser<'_> {
             BodyForm::Inline
         };
         let payload_start = self.cursor;
-        let (mut markup, closed) = self.parse_markup(true, false, form == BodyForm::Block);
+        let (mut markup, closed) = self.parse_markup(true, false, false, form == BodyForm::Block);
         let close = self.cursor;
         let payload_end = if form == BodyForm::Block {
             trim_trailing_framing_newline(self.source, payload_start, close, &mut markup)
@@ -1851,8 +1898,29 @@ impl Parser<'_> {
     }
 }
 
-fn trim_trailing_framing_newline(
-    source: &str,
+/// Trims trailing spaces/tabs from the final Text item of a line-bound body,
+/// mirroring the pre-parse trimming of the former line-sliced body scan.
+fn trim_trailing_horizontal_space(markup: &mut Markup) {
+    let Some(MarkupItem::Text(text)) = markup.items.last_mut() else {
+        return;
+    };
+    if text.range.end != markup.range.end {
+        return;
+    }
+    let trimmed = text.value.trim_end_matches([' ', '\t']).len();
+    let dropped = text.value.len() - trimmed;
+    if dropped == 0 {
+        return;
+    }
+    text.value.truncate(trimmed);
+    text.range.end -= dropped;
+    markup.range.end -= dropped;
+    if matches!(markup.items.last(), Some(MarkupItem::Text(text)) if text.value.is_empty()) {
+        markup.items.pop();
+    }
+}
+
+fn trim_trailing_framing_newline(    source: &str,
     start: usize,
     end: usize,
     markup: &mut Markup,
