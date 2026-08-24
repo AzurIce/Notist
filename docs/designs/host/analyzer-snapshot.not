@@ -145,4 +145,4 @@ input change
   -> notify consumers with Delta(N-1, N)
 ```
 
-请求开始时读取当前 `Arc<WorkspaceSnapshot>`，随后不追随 current pointer——长查询不阻塞编辑器产生新 snapshot，也不在执行中途改变语义世界。每个 Vault 一个 VaultEngine（[[vault::designs::host::daemon-process-views#形态：每 Vault 一个 daemon]]），每个需要不同 overlay 或配置投影的客户端一个 Analyzer View；跨 Vault 查询位于更高层（分别捕获 snapshot 再合并，不制造伪全局 revision）。Vault 隔离意味着引用解析、capability 与权限检查默认不跨 Engine 边界。
+请求开始时读取当前 `Arc<WorkspaceSnapshot>`，随后不追随 current pointer——长查询不阻塞编辑器产生新 snapshot，也不在执行中途改变语义世界。每个 Vault 一个 VaultEngine（[[vault::designs::host::daemon-process-views#形态：每 Vault 一个 daemon]]），每个需要不同 overlay 或配置投影的客户端一个 Analyzer View；跨 Vault 查询位于更高层（分别捕获 snapshot 再合并，不制造伪全局 revision）。Vault 隔离意味着引用解析默认不跨 Engine 边界。

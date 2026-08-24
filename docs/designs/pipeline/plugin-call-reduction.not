@@ -1,32 +1,29 @@
-@![implementation = "aligned"]
-= Plugin Call Reduction: Stream, Leaf, and Shaping
+@![implementation = "partial"]
+= Plugin Call Reduction
 
-本文记录 Notist 插件求值模型。它把三个问题合并成一个模型：插件如何调用内置或其它插件、插件如何组合任意内容、以及求值结果如何进入成型。
+#[
+  Notist 的求值系统基于“规约”实现。
+]@type=user,.user
 
-== 核心模型
+本文记录 Notist 的内容求值模型：规约（reduction）。它把三个问题合并成一个模型——插件如何调用内置或其它插件、插件如何组合任意内容、求值结果如何进入成型与投影。本文是 PluginSystem 与 pipeline 的 reduce 契约；package / ABI / 信任模型 / safety 的完整定义见 [[vault::designs::plugin-system]]。
+
+== 核心模型：一切皆 call
 
 整个内容系统就是一句话：
 
 ```text
 一切内容都是 call：name + 参数（+ 子流）。
-插件为某些名字注册 handler；handler 把一个 call 重写为一串新的 call。
-没有 handler 的名字不会被触碰——留存下来的就是最终结果（叶子）。
-叶子流经成型折叠成树；树按名字投影为目标标签（html 即元素标签）。
+函数为某些名字注册 handler；handler 把一个 call 重写为一串新的 call。
+没有 handler 的名字不会被触碰——它们就是最终结果。
 ```
+
+没有第二种节点类型。规约完成不是产出另一种类型的值，而是森林里再也找不到有 handler 的 call。"Leaf" 只是"未被规约的 call"的阶段别名，不对应任何类型。
 
 三条推论：
 
-1. **统一表示**：call 与 leaf 不是两种类型，是同一节点的两个阶段——「叶子」只是没人再处理的 call。数据型元素（card/canvas 这类"call 本身就是内容"的）根本不注册 handler，它的 call 天然是叶子，投影按 name + 参数直接出标签；
-2. **生产性契约**：注册了 handler 的名字意味着「这个 call 需要计算」。handler 不得返回指向自身的节点——自返回是作者 bug，由 depth/fuel 兜底并给出诊断；需要组合时返回指向**别的**名字的 call（如 `core::details`），宿主继续规约；
-3. **诊断分层**：名字拼错归 check 层报告（对照 SignatureSet）；reduce 层对未知名字保持 total——留作叶子投影兜底，不阻塞整篇。
-
-对应到管线：
-
-```text
-call 流 ──handler 重写，直到无人处理──▶ 叶子流
-        ──structure 成型折叠──▶ 树
-        ──project 按名分发──▶ 目标标签
-```
+1. **统一表示**：一个 call 的"已规约 / 未规约"是同一节点的两个阶段。数据型元素（`declare`，无运行时 handler）不注册 handler，它的 call 天然就是最终结果，投影按 name + 参数直接出标签；
+2. **生产性契约**：注册了 handler 的名字意味着"这个 call 需要计算"。handler 不得返回指向自身的节点——自返回是作者 bug，由预算兜底并给出诊断；需要组合时返回指向**别的**名字的 call，规约继续；
+3. **诊断分层**：名字拼错归 check 层报告（对照 SignatureSet）；规约层对未知名字保持 total——未注册名字留在森林里，不阻塞整篇。
 
 写作文档时，作者写的就是一个流：
 
@@ -36,197 +33,127 @@ parbreak()
 text("world")
 ```
 
-其中 `parbreak` 不是杂质，而是流中合法的、成型后消失的叶子。
+其中 `parbreak` 不是杂质，而是流中合法的、成型后消失的 call。
 
-本文是 PluginSystem 与 pipeline 的 reduce 契约。完整 package / ABI / 信任模型 / safety 见 [[vault::designs::plugin-system]]。
+== 规约：声明式不动点
+
+规约的语义只有一条规则：
+
+```text
+重复：找到森林中存在 handler 的 call，用 handler 的输出森林替换它
+直到：一整轮不再有任何变化
+```
+
+由此推出：
+
+- **遍历策略无关**。规则是 confluent 的：先规约父还是先规约子只影响诊断出现的顺序，不影响最终森林。（实现按 descend-first：先规约参数与 body 子流，再 dispatch 当前 call。）
+- **预算只记在 handler 调用上**。每次 dispatch 计一次 depth 与一次 call；没有 handler 的 call 不参与规约，不消耗预算。限额见 [[vault::designs::plugin-system::safety]]。
+- **输入函数式、输出宏式**。handler 收到的参数与 body 总是规约完成的；返回的森林是未规约的，重新进入不动点。规约纯且 total（无副作用、未知名字不报错），输入侧先规约永远安全——模型因此不需要 quote。
+- **诊断**。类型错误、向不接受 body 的函数传 body 产生诊断；未知名字不产生规约诊断。单个 call 的失败只收集诊断并跳过它，兄弟节点继续（sibling recovery）；诊断不伪装成成功。
+
+== 值域：Content 即 call 森林
+
+函数永远返回 `Value`；内容值就是 call 森林：
+
+```rust
+enum Value {
+    None, Bool, Int, Float, String,
+    Content(Forest),        // Forest = Vec<Node>，call 森林
+    Function(..),
+}
+```
+
+- handler 返回 `Content` 森林后，不动点继续在其中寻找有 handler 的 call——"返回内容"与"返回待规约流"是同一件事，函数没有"规约完再返回"的义务；
+- 标量与 `Function` 不参与规约；出现在内容位置是类型错误，产生诊断。
+
+== 名字与 namespace
+
+call 的名字分两类：
+
+```text
+core::*            宿主注册的内置构造器与基础操作
+{package}::*       插件注册的元素
+```
+
+名字的所有权只体现在**注册**侧：`init` 注册时元素名必须落在自己 package 的 namespace 内，`core::*` 永远由宿主注册、不可覆盖。**提及完全自由**：任何 handler 都可以在输出森林里写任何名字——写 `core::paragraph` 与写 `other-package::foo` 没有任何区别。提及不是伪造：名字的语义永远由注册方决定，没有 handler 的名字只是数据。
 
 == Pipeline
 
 ```text
 source
   → parse
-  → lower to Stream<Call | Leaf>        // 语法糖、文字、空行都变成节点
-  → reduce                              // 把 Call 递归规约为 Leaf
-  → FlatContent<Leaf>                   // 纯 Leaf 流，可能包含 core::parbreak
-  → structure（递归）                    // 消费 parbreak，生成 paragraph/list/section
-  → ElementTree<Leaf>                   // 规范树：无 Call、无 parbreak
-  → project                             // 按 name 分发给 target renderer
+  → lower                    // 语法糖、文字、空行都变成 call
+  → reduce                   // 声明式不动点
+  → shape                    // 结构化重写（成型）
+  → project                  // target 侧第二阶段规约 + serialize
 ```
 
-规约必须在成型之前：`raw(block: bool)`、插件返回内容、`heading` / `item` 的运行时参数都会影响成型，不执行函数就无法判断 inline/block 与归组关系。但对外公开的规范树是成型后的 `ElementTree`；成型前的流只是 eval 内部工作区。
+规约必须在成型之前：`raw(block:)`、插件返回内容、`heading` / `item` 的运行时参数都会影响成型，不执行函数就无法判断 inline/block 与归组关系。成型前的流只是 eval 内部工作区，对外公开的规范树是成型后的结果。
 
-== 中间表示
+== 成型：森林上的结构化重写
 
-=== Stream 与 FlatContent
+规约改语义，成型改结构。成型的输入输出都是 call 森林，它做一次结构化重写：
 
-规约过程中的节点只有两种：
-
-```rust
-pub enum StreamNode {
-    Call(Call),
-    Leaf(InstanceNode),
-}
-
-pub struct FlatContent {
-    pub nodes: Vec<StreamNode>,
-}
-```
-
-规约完成后的 `FlatContent` 只含 Leaf，但允许 `core::parbreak` 与未归组的 `core::item`。
-
-=== ElementInstance / Leaf
-
-唯一的终止节点类型是 `ElementInstance`。`Leaf` 是阶段概念，不单独作为类型名：
-
-```rust
-pub struct ElementInstance {
-    pub name: ElementName,
-    pub fields: Vec<Field>,
-    pub body: Vec<InstanceNode>,
-    pub block: bool,
-}
-
-pub struct Field {
-    pub name: String,
-    pub value: FieldValue,
-}
-
-pub struct InstanceNode {
-    pub instance: ElementInstance,
-    pub range: TextRange,
-}
-```
-
-`ElementName` 使用 qualified name，词表分三类：
-
-```text
-构造器来源：core::text / core::heading / core::raw / core::item / ...
-流控制：    core::parbreak / whitespace-only core::text
-成型来源：  core::paragraph / core::list / core::section
-插件来源：  {package}::{element}
-```
-
-=== Call
-
-```rust
-pub struct Call {
-    pub name: String,
-    pub arguments: Vec<Argument>,
-    pub body: Option<FlatContent>,
-    pub range: TextRange,
-}
-```
-
-`body` 对应 trailing Content。它本身也是一段流，在调用函数前按签名求值；不接受 body 的函数在 reduction 阶段直接产生诊断，不静默丢弃。
-
-=== ElementTree
-
-成型后的规范树只包含 Leaf：
-
-```rust
-pub struct ElementTree {
-    pub roots: Vec<InstanceNode>,
-}
-```
-
-规范树不变量：
-
-- 没有 `Call`；
-- 没有 `core::parbreak`；
-- `core::item` 只作为 `core::list` 的直接子节点存在；
-- 每个 body 都已按其容器类型递归成型。
-
-== 规约
-
-所有内置函数与插件函数注册在同一个 `FunctionRegistry` 中。规约函数支持两种返回：
-
-```rust
-pub enum FunctionOutput {
-    Value(Value),
-    Stream(FlatContent),
-}
-```
-
-单个 Leaf 就是长度为 1 的 Stream。规约规则：
-
-1. dispatch 消耗 depth/fuel 预算，再做参数和 body 规约；
-2. 参数值中的嵌套流、`body` 中的流都先递归规约；
-3. 绑定后调用函数，得到 `Stream` 继续递归；
-4. 类型错误与不接受 body 产生诊断；**未注册名字的 call 不再派发，其本身即叶子**（unknown-name 诊断归 check 层）；
-5. 每次 dispatch 消耗 fuel 并增加 depth。
-
-内置函数返回自己的 Leaf 流；插件函数返回 Call / 自有 Leaf 组成的流，从而获得组合能力。
-
-== 成型
-
-`structure` 是递归的流折叠：
-
-```text
-FlatContent<Leaf> → ElementTree<Leaf>
-```
-
-规则与 [[vault::designs::pipeline::structure]] 一致，但明确为递归：每个 body 都按其容器模式（flow / inline / table-cells 等）执行同一套成型，而不是只处理文档顶层。
-
-- `core::parbreak` 被消费，不进入 `ElementTree`；
-- 连续 inline Leaf 合并为 `core::paragraph`；
+- `core::parbreak` 被消费，不进入输出；
+- 连续 inline call 合并为 `core::paragraph`；
 - 相邻同类 `core::item` 合并为 `core::list`；
-- Heading 与其后内容归组为 `core::section`。
+- `core::heading` 与其后内容归组为 `core::section`。
+
+成型按容器模式递归：每个 body 按其 schema 的 body-mode（flow / inline / table-cells 等）执行同一套成型，而不是只处理文档顶层。插件元素通过 shaping schema 参与成型，见 [[vault::designs::plugin-system::shaping]]。
+
+成型是 **total 的构造器**。由于提及自由（任何 handler 都能写任何名字），成型输出森林的性质——无 parbreak、`core::item` 只作为 `core::list` 的直接子级、每个 body 已按容器模式归组——由成型的构造本身保证，不依赖输入来源。
 
 == 投影
 
-`ElementTree` 按 `ElementName` 分发到 renderer registry。core Leaf 可以由宿主投影为原生 HTML 或 target node；插件 Leaf 可以投影为 Web Component。投影层统一，但 target 结果不强制全部是 Web Component。
+投影本身是第二阶段规约：target package（如 html）注册投影 handler，把 `core::heading` 规约为 `html::h1` 这样的目标词表节点，哑 serializer 再直出标签。语义规约与投影规约是两个独立的 registry——`html::*` 不进语义层，内容编写与投影端无关。与成型同理，投影不假设名字的来源。详见 [[vault::designs::plugin-system::projection]] 与 [[vault::designs::host::html-renderer]]。
 
-== 插件 ABI
+== 插件边界
 
-插件可见 IR 是 `call | leaf`。共享类型、WIT 定义、`export evaluate` 与 `import host.call` 的完整 ABI 见 [[vault::designs::plugin-system::abi]]。
+插件可见的 IR 就是 call 森林：`Node` 的 serde 编码即边界载荷，不存在独立的 wire 层。WIT worlds、`init` 注册与 `evaluate` 语义见 [[vault::designs::plugin-system::abi]]。
 
-== 归因在 reduce 中的位置
+handler 有两种组合姿势：
 
-reduce 不做内容授权（2026-08-23 裁决，见 [[vault::designs::plugin-system::capability]]）：信任边界是 wasm 沙箱本身。插件返回的森林继续参与 fixpoint，自返回由 depth/fuel 兜底。
+1. **宏展开式**：返回包含新 call 的森林，把继续规约交给不动点；
+2. **主动规约式**：经 `host.call` 请求宿主规约一段森林，组合结果后返回。
 
-== 终止性
+内容组合不做 per-call 授权：信任边界是 wasm 沙箱本身，见 [[vault::designs::plugin-system::capability]]；`host.call` 的预算约束见 [[vault::designs::plugin-system::safety]]。
 
-reduce 消耗同一 depth / fuel 预算，每个 dispatch 都计入预算。完整终止性、资源预算与确定性见 [[vault::designs::plugin-system::safety]]。
+== 示例：组合 details
 
-== 示例：shader 组合 details
-
-`shader` 插件收到：
+一个 `shader` 包的 handler 收到：
 
 ```text
 #shader(source: wgsl)[fallback]
 ```
 
-它返回：
+返回：
 
 ```text
-Stream [
+[
   Call(core::details,
-    arguments: {
-      summary: Stream [Leaf(core::text, "Shader")],
-      open: false,
-    },
-    body: Stream [
+    arguments: { summary: [text("Shader")], open: false },
+    body: [
       Call(core::raw, source: wgsl, lang: "wgsl", block: true),
-      Leaf(shader::canvas, fields: { source: wgsl }),
+      Call(shader::canvas, source: wgsl),
     ],
   ),
 ]
 ```
 
-宿主规约 `core::details` 与 `core::raw`，保留 `shader::canvas` Leaf，递归成型后得到只有 Leaf 的 `ElementTree`。插件不再返回对自己的调用。
+不动点继续规约 `core::details` 与 `core::raw`；`shader::canvas` 是数据型元素，没有 handler，作为数据留存，最终由投影层按名字出 Web Component 标签。插件不返回指向自己的 call。
 
-== 实施路径
+== 实现现状
 
-- Phase A：把内部 IR 收敛为 `StreamNode = Call | Leaf`，`ElementInstance` 作为唯一 Leaf 类型；修复 reduction 的参数/body 校验、depth 与 fuel。已实现：`notist-model::ElementInstance`、`notist-eval::leaf` reduction engine、`Evaluator::evaluate_leaf`。
-- Phase B：让 `structure` 递归成型所有 body，产出 `ElementTree`；删除公开树中的 `core::parbreak`。已实现：`shape_flat` 递归成型；主 reduction 已迁移并支持 sibling recovery；主 structure/project 仍用 legacy 兼容投影。
-- Phase C：插件 ABI 改为 `call | leaf` 流；宿主递归规约（capability 检查已于 2026-08-23 移除，见 [[vault::designs::plugin-system::capability]]）。已实现。
-- Phase D：插件调用插件与 qualified function name 落地。已实现：`FunctionRegistry::register_alias` 与 `core::*` 别名，插件 ABI 已迁移。
-- Phase E：WIT 正式化，用 wit-bindgen 替换手写 ABI。已实现 bytes WIT + component `init` 注册 / evaluate / host.call。
+当前实现处于向上述模型的迁移中段，主要差距：
+
+- 生产规约已运行在统一 `Node` 上（`notist-eval` 的 node_engine）；legacy Stream/Leaf 引擎仍在服役——`host.call` 与语法错误恢复路径走它，且其预算是 dispatch-first 记账（未注册名字也计），与本文语义不一致。
+- 值域重写未完成：`Value::Content` 仍持有 legacy `Content` 类型；`FunctionOutput` 保留 `Value / Content / Calls / Nodes` 四个变体作为桥接，组件插件走 `Nodes`。
+- 成型与投影仍运行在 `InstanceNode` 上，规约结果经 `node_to_instance` 转换后进入 `shape_flat`；legacy 投影另保留 `Block::Section` 包装。三层表示间的桥接函数随迁移完成拆除。
 
 == 已裁定 / 待定
 
-- 已裁定：文档是 Leaf 流；`parbreak` 是 transient Leaf；成型前为 `FlatContent`，成型后为 `ElementTree`。
-- 已裁定：`ElementInstance` 是唯一终止节点类型；`Leaf` 只作为阶段术语。
-- 已裁定：插件可见 IR 为 `call | leaf`；插件不能直接产生 `core::*` Leaf。
-- 待定：Section 是否最终保留独立 `Block::Section` 包装，还是完全作为 `core::section` Leaf；当前设计记录选择后者。
-- 待定：whitespace-only `core::text` 的 framing 判定与丢弃规则，与 [[vault::designs::pipeline::structure#已裁定 / 待定]] 联动。
+- 已裁定：一切皆 call；`Node` 是唯一表示；"leaf" 只是阶段术语，不是类型。
+- 已裁定：规约是声明式不动点；预算只记 handler 调用；遍历策略不属于语义。
+- 已裁定：名字所有权只在注册侧；提及自由，`core::*` 与其他 package 同权。
+- 已裁定：函数永远返回 `Value`；`Content` 值即 call 森林。
+- 待定：whitespace-only `core::text` 的 framing 语义（实现现状：段落起点的空白被丢弃），与 [[vault::designs::pipeline::structure#已裁定 / 待定]] 联动。

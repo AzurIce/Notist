@@ -119,12 +119,12 @@
 - D0010 已完成 A6/A7 拆分：HTML 渲染 → [[vault::designs::host::html-renderer]]；构建/预览 → [[vault::designs::host::build-preview]]。D0010 保留全部 anchor 作 redirect。
 - D0001 的 `#` 嵌入边界已迁入 D0007；D0001 降为纯阅读入口，不再承载规范。
 - V5 已起草：core namespace / prelude / Custom 契约 / capability / 插件边界 / Notist.toml 配置模型 → [[vault::designs::world::core-namespace-plugin-boundary]]；第一代 `vault::old-designs::archive::D0004-core-functions-and-syntax-sugar` 已移入 archive。
-- D0003 已拆分 L9 双主题：内置构造器 → [[vault::designs::language::builtin-constructors]]；Markup 语法糖 → [[vault::designs::language::syntax-sugar]]。D0003 已移入 [[vault::designs::archive]]。
+- D0003 已拆分 L9 双主题：内置构造器 → [[vault::designs::plugin-system::core]]；Markup 语法糖 → [[vault::designs::language::syntax-sugar]]。D0003 已移入 `vault::designs::archive`。
 
 == 完成判定（审计后补充）
 
 - L1–L9、V1–V5、A1–A7 每一层都有独立现行文档；D0001 仅保留纯概览。
-- D0002 / D0004 / D0006 / D0008 / D0009 / D0010 已无混合正文，redirect 壳已移入 [[vault::designs::archive]]。
+- D0002 / D0004 / D0006 / D0008 / D0009 / D0010 已无混合正文，redirect 壳已移入 `vault::designs::archive`。
 - `docs/old-designs/` 下第一代设计与当前世代已完成拆分的旧混合文档全部位于 `archive/`；V5 参考文档也已移入 archive。
 - 组织结构达到“一部分一篇、单一真相”的当前目标。
 
@@ -137,19 +137,19 @@
 
 == Round 4 复核
 
-- L9 双主题继续拆分：内置构造器 → [[vault::designs::language::builtin-constructors]]；Markup 语法糖 → [[vault::designs::language::syntax-sugar]]；D0003 redirect 壳已归档。
+- L9 双主题继续拆分：内置构造器 → [[vault::designs::plugin-system::core]]；Markup 语法糖 → [[vault::designs::language::syntax-sugar]]；D0003 redirect 壳已归档。
 - A2 双主题继续拆分：查询契约保留 [[vault::designs::host::query-contract]]；Search 四模式、Scope/Excerpt/分组、检索单元与索引 → [[vault::designs::host::search-retrieval-index]]。
 - active designs 现为 D0001、D0005、D0007、D0011–D0032；无待拆分标记。
 - 验证：`notist check docs` 0 diagnostics / 71 sources；`notist build docs` 71 pages；`cargo test --workspace` 233 passed + 15 ignored。
 
 == Round 5 复核
 
-- L1 双模式继续拆分：Markup/scope 表面语法 → [[vault::designs::language::markup-surface]]；Code 核心语法 → [[vault::designs::language::code-grammar]]；D0007 已移入 [[vault::designs::archive]]。
+- L1 双模式继续拆分：Markup/scope 表面语法 → [[vault::designs::language::markup-surface]]；Code 核心语法 → [[vault::designs::language::code-grammar]]；D0007 已移入 `vault::designs::archive`。
 - 验证：`notist check docs` 0 diagnostics / 73 sources；`notist build docs` 73 pages；`cargo test --workspace` 233 passed + 15 ignored。
 
 == Round 6 复核
 
-- A3 双主题继续拆分：daemon 进程与 View → [[vault::designs::host::daemon-process-views]]；client interface、协议与生命周期 → [[vault::designs::host::client-interface-protocol]]；D0005 已移入 [[vault::designs::archive]]。
+- A3 双主题继续拆分：daemon 进程与 View → [[vault::designs::host::daemon-process-views]]；client interface、协议与生命周期 → [[vault::designs::host::client-interface-protocol]]；D0005 已移入 `vault::designs::archive`。
 - 验证：`notist check docs` 0 diagnostics / 75 sources；`notist build docs` 75 pages；`cargo test --workspace` 233 passed + 15 ignored。
 
 == Round 7 复核
@@ -161,7 +161,7 @@
 == Round 8 复核
 
 - 修复分层索引遗漏：L1 补回 D0034 Code 核心语法；阅读入口的嵌入边界指向 D0033。
-- 修复 [[vault::designs::archive]] README：D0006 目标改为 D0033；补 D0007 → D0033/D0034；D0008 补 D0032；唯一真相范围更新为 D0016–D0036。
+- 修复 `vault::designs::archive` README：D0006 目标改为 D0033；补 D0007 → D0033/D0034；D0008 补 D0032；唯一真相范围更新为 D0016–D0036。
 - 验证：`notist check docs` 0 diagnostics / 75 sources；`notist build docs` 75 pages。
 
 == Round 9 复核
@@ -175,16 +175,16 @@
 
 == Round 10 复核
 
-- 归档位置修正：current-generation 拆分档案不放在 `old-designs/archive/current-generation`，统一移入 [[vault::designs::archive]]（D0002–D0010 的 redirect 壳与目录 README）。
+- 归档位置修正：current-generation 拆分档案不放在 `old-designs/archive/current-generation`，统一移入 `vault::designs::archive`（D0002–D0010 的 redirect 壳与目录 README）。
 - 同步更新 [[vault::old-designs]] 与 [[vault::designs]] 的索引指向、[[vault::ai::2026-08-15 design record separation audit]] 内全部路径引用。
 - 验证：`notist check docs` 0 diagnostics / 75 sources；`notist build docs` 75 pages。
 
 == Round 11 复核（最终收尾）
 
-- 归档稿完整性：[[vault::designs::archive]] 下 D0002–D0010 全部为 redirect 壳；D0003/D0005/D0007 三篇由残留全文改为保留原 heading anchors 的 redirect 壳，所有文档 ≤150 行。
+- 归档稿完整性：`vault::designs::archive` 下 D0002–D0010 全部为 redirect 壳；D0003/D0005/D0007 三篇由残留全文改为保留原 heading anchors 的 redirect 壳，所有文档 ≤150 行。
 - 拆分残留修正：D0014 状态注记的语法依赖 D0033 → D0034；D0032 的出处 D0023 → 已归档 `D0008`；D0033 移除“Code 模式是本文主体 / 引用索引 / 字面量载荷”等 D0007 残留表述；D0034 的裸 `#` 嵌入边界指向 D0033；D0035 动线不再包含已移入 D0036 的 client/protocol 段落；D0023/D0024/D0026 的 core request 指向统一到 D0036。
 - 自引用与旧编号清理：D0018 不再引用自身；D0033 正文内自引用改为本文内指向；`docs/grammar.not` 引用索引 D0003/D0006/D0004 → D0031/D0018/D0033/D0022；SKILL.md 示例 D0005 → D0035。
-- README 结构：[[vault::designs]] 增加状态记号、当前世代 archive、实现切片与未来主题分区；[[vault::designs::archive]] 目录改为可解析的 `self::` 链接索引；`vault::old-designs::archive` 补全第一代 16 篇索引；`docs/README.not` 增加设计 archive 入口。
+- README 结构：[[vault::designs]] 增加状态记号、当前世代 archive、实现切片与未来主题分区；`vault::designs::archive` 目录改为可解析的 `self::` 链接索引；`vault::old-designs::archive` 补全第一代 16 篇索引；`docs/README.not` 增加设计 archive 入口。
 - 验证：active designs 27 篇、archive 9 篇全部 ≤150 行；`notist check docs` 0 diagnostics / 75 sources；`notist build docs` 75 pages；`cargo test --workspace` 233 passed + 15 ignored；`git diff --check` 通过。
 - 遗留：统一模板的 Conformance / 已裁定待定覆盖率为 5/27（D0001 为概览，其余后续按篇补齐）；[[vault::designs::language::collection-types]] 仍为草案；table/figure 进入 current surface 的决策目前只记录在 D0030/D0031，尚无单独 dated 裁决记录。
 
@@ -192,7 +192,7 @@
 
 - 目录改为 `language/`、`world/`、`host/` 与 `archive/`；active 文档全部使用语义文件名，不再有 D 前缀。`world` 替代原 `vault` 目录名，避免 `vault` 作为 ModulePath 后续段触发保留字语法错误。
 - 每篇 active 概念文档开头增加 `@![implementation = "..."]` 模块属性；当前 22 aligned、3 partial（call model / core namespace / LSP adapter）、1 missing（collection types）。overview 不标记实现状态。
-- 删除 archive 中的 D0002–D0010 redirect 壳；旧编号映射保留在 [[vault::designs::archive]]，旧全文由 Git 历史保存。
+- 删除 archive 中的 D0002–D0010 redirect 壳；旧编号映射保留在 `vault::designs::archive`，旧全文由 Git 历史保存。
 - 全仓重写 `vault::designs::Dxxxx` 引用为语义路径；`docs/grammar.not`、`docs/cli.not` 与 `skills/notist/SKILL.md` 的示例同步更新。
 - design-docs skill 已重写为路径驱动：不分配 ID、不解析 `Design:` trailer；`design_status.py` 通过 `notist export snapshot` 读取模块属性，Git 只用于未提交变更与历史追溯。
 - 验证：`notist check docs` 0 diagnostics；`notist build docs` 通过；`cargo test --workspace` 全绿；`design_status.py` 正确报告上述实现对齐状态。

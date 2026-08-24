@@ -37,14 +37,14 @@ Type
 
 === Content 类型
 
-`Content` 是不透明类型：一个类型涵盖所有元素组合，元素结构（种类、嵌套、参数）是运行时数据，静态检查不追踪它；元素清单见 [[vault::designs::pipeline::evaluate#Content 值]]。树中的每个节点携带自己的构造器身份；builtin 元素以 first-class 构造器函数的形式存在——`callout(kind: ..., body: ...)` 产生一个 callout 节点，其类型就是 `Content`。（内置构造器的命名空间尚未决定，本文暂以裸名书写。）用户函数与 builtin 构造器因此同构：`warning` 与 `callout` 遵守同一套签名、调用与求值规则，渲染与查询按节点身份消费结果，不区分来源。
+`Content` 是不透明类型：一个类型涵盖所有内容组合，其值是 call 森林（[[vault::designs::pipeline::evaluate#Content 值]]）。森林的内部形状由规约不动点与提及自由决定——任何函数都可以返回含有任意名字的森林——因此静态检查不追踪它，森林表示也不泄露为语言操作：`Content` 不可模式匹配、不可比较相等。森林中的每个节点携带自己的名字（构造器身份）；builtin 内容以 first-class 构造器函数的形式存在——`callout(kind: ..., body: ...)` 产生一个 `callout` 节点，其类型就是 `Content`。用户函数与 builtin 构造器因此同构：`warning` 与 `callout` 遵守同一套签名、调用与求值规则，渲染与查询按节点身份消费结果，不区分来源。
 
 插入转换只在 Markup insertion 边界成立：
 
 ```text
 Γ ⊢ e : String
-────────────────────
-Γ ⊢ #e : Content(Text(e))
+─────────────────────────────
+Γ ⊢ #e : Content(core::text(e))
 ```
 
 普通函数要求 Content 参数时仍然拒绝 String——"可展示"不会渗透成所有 API 的隐式转换规则；插入转换只存在于 Markup insertion 边界（[[vault::designs::pipeline::evaluate]]）。

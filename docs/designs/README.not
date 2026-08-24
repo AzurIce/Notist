@@ -7,8 +7,7 @@ pipeline/      编译管线：parse → check → evaluate → structure → pro
 language/      语言层：与实现宿主无关的语义规范
 world/         Vault 层：模块、引用与运行边界
 host/          宿主层：CLI、LSP、daemon、分析与渲染架构
-plugin-system/ 插件系统：package、ABI、贡献、capability 与生命周期
-archive/       已退休的旧设计；当前为空
+plugin-system/ 插件系统：package、ABI、贡献、信任模型与生命周期
 ```
 
 == 阅读顺序
@@ -23,8 +22,8 @@ archive/       已退休的旧设计；当前为空
 按数据流阅读：
 
 1. [[vault::designs::pipeline::parse]]：解析阶段与 mode-aware 语法树。
-2. [[vault::designs::pipeline::evaluate]]：求值 + Call Reduction 与 Leaf 流。
-3. [[vault::designs::pipeline::structure]]：递归成型与 Leaf 结构树。
+2. [[vault::designs::pipeline::evaluate]]：求值 + Call Reduction 与 call 森林。
+3. [[vault::designs::pipeline::structure]]：递归成型与结构化重写。
 4. [[vault::designs::pipeline::project]]：按 name 分发到 target 投影。
 5. [[vault::designs::pipeline::plugin-call-reduction]]：插件调用在 reduce 阶段如何规约。
 
@@ -34,12 +33,13 @@ archive/       已退休的旧设计；当前为空
 
 1. [[vault::designs::plugin-system]]：PluginSystem 模块入口与 pipeline / world / host 边界。
 2. [[vault::designs::plugin-system::package]]：插件 package、manifest、core package 与生命周期。
-3. [[vault::designs::plugin-system::abi]]：共享类型、WIT 边界与语义 ABI。
-4. [[vault::designs::plugin-system::eval-contribution]]：语义函数贡献与 FunctionRegistry。
-5. [[vault::designs::plugin-system::capability]]：权限请求、站点授予与 dispatch 检查。
-6. [[vault::designs::plugin-system::safety]]：终止性、资源预算与确定性。
-7. [[vault::designs::plugin-system::shaping]]：成型 schema 贡献。
-8. [[vault::designs::plugin-system::projection]]：target 投影贡献与 fallback。
+3. [[vault::designs::plugin-system::core]]：core package 的内容词表——内置构造器签名与校验。
+4. [[vault::designs::plugin-system::abi]]：共享类型、WIT 边界与语义 ABI。
+5. [[vault::designs::plugin-system::eval-contribution]]：语义函数贡献与 FunctionRegistry。
+6. [[vault::designs::plugin-system::capability]]：插件信任模型与能力系统删除裁决。
+7. [[vault::designs::plugin-system::safety]]：终止性、资源预算与确定性。
+8. [[vault::designs::plugin-system::shaping]]：成型 schema 贡献。
+9. [[vault::designs::plugin-system::projection]]：target 投影贡献与 fallback。
 
 === 语言层
 
@@ -53,8 +53,7 @@ archive/       已退休的旧设计；当前为空
 6. [[vault::designs::language::call-model]]：函数签名与调用模型；rest 部分待实现。
 7. [[vault::designs::language::property-table]]：旁置属性表。
 8. [[vault::designs::language::annotation-syntax]]：标注语法。
-9. [[vault::designs::language::builtin-constructors]]：内置构造器签名与校验。
-10. [[vault::designs::language::syntax-sugar]]：Markup 语法糖规格。
+9. [[vault::designs::language::syntax-sugar]]：Markup 语法糖规格。
 
 === Vault 层
 
@@ -97,22 +96,29 @@ archive/       已退休的旧设计；当前为空
 
 - [[vault::designs::language::collection-types]]：`missing`
 - [[vault::designs::language::call-model]]：`partial`（rest 调用模型未实现）
+- [[vault::designs::pipeline]]：`partial`（目标数据形状为全程 call 森林；legacy 引擎与桥接层未拆）
+- [[vault::designs::pipeline::evaluate]]：`partial`（值域重写未完成：`Value::Content` 仍持有 legacy `Content`）
+- [[vault::designs::plugin-system::capability]]：`partial`（`host.call` 跨包组合未落地，当前共享 registry 仅含 core 与本包函数）
+- [[vault::designs::plugin-system::safety]]：`partial`（`host.call` 重入本包元素会死锁；不持锁的嵌套规约未实现）
+- [[vault::designs::pipeline::plugin-call-reduction]]：`partial`（统一 `Node` 模型已裁定；值域重写、legacy 引擎与桥接层拆除未完成）
+- [[vault::designs::pipeline::project]]：`partial`（投影即第二阶段规约已裁定；实现仍为 renderer 分发表）
+- [[vault::designs::plugin-system::projection]]：`partial`（投影即规约 + fallback 出标签已裁定；实现与 trusted 收口未完成）
 - [[vault::designs::host::query-contract]]：`partial`（text-only 投影、`read` citation footer 与 `--exclude-scope` 尚未完整实现）
 - [[vault::designs::host::search-retrieval-index]]：`partial`（`--exclude-scope` 未实现）
-- [[vault::designs::host::cli-command-surface-skill-distribution]]：`partial`（v3 命令面未落地：`next`/`locate`/`refs`/`definition` 与 text-only 投影待实现）
-- [[vault::cli]]：`partial`（完整 CLI 命令设计+使用规范；目标 v3，当前 binary 仍为过渡 surface）
+- [[vault::designs::host::cli-command-surface-skill-distribution]]：`partial`（2026-08-15 裁决的命令面未落地：`next`/`locate`/`refs`/`definition` 与 text-only 投影待实现）
+- [[vault::cli]]：`partial`（完整 CLI 命令设计+使用规范；目标为 2026-08-15 裁决的命令面，当前 binary 仍为过渡 surface）
 - [[vault::designs::host::lsp-adapter]]：`partial`（Document Symbol 尚未覆盖函数与变量）
 
-位置本身表达治理状态：active 目录中的文档是现行设计；移入 [[vault::designs::archive]] 的文档即退休。Git 是完整历史，不维护编号 ID 或 `Design:` trailer。
+位置本身表达治理状态：active 目录中的文档是现行设计；退休的文档直接移除。Git 是完整历史，不维护编号 ID 或 `Design:` trailer。
 
 == 写作规范
 
 - 一篇文档回答一个概念或一组强耦合概念；目录层级只到 pipeline/language/world/host/plugin-system 为止，避免更深嵌套。
 - 模块路径一旦发布，不因标题或阅读顺序调整而重命名；拆分或合并时才允许移动，并同步更新全部引用。
-- 使用语义文件名；需要区分同名退休设计时，archive 中可加日期前缀，如 `2026-08-15-type-system.not`。
+- 使用语义文件名；同名退休设计的区分交给 Git 历史。
 - 设计正文解释模型、边界与后果；实现状态只在文件头属性中声明，不写进行文。
 - 保持正文干练；判定规则用表，状态迁移用伪代码；每篇可独立 `notist check` 验证。
 
 == 历史编号
 
-本次重构前，设计文档使用 `D0001`–`D0036` 扁平编号。旧编号与语义路径的映射见 [[vault::designs::archive]]。旧提交仍可通过 Git 查看，不需要在当前树中保留编号壳。
+本次重构前，设计文档使用 `D0001`–`D0036` 扁平编号。旧编号与语义路径的映射已随 archive 目录移除；旧提交仍可通过 Git 查看，不需要在当前树中保留编号壳。

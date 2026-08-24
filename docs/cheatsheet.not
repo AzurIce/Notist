@@ -41,7 +41,7 @@ strong / emph / underline / strike
   (trailing body: Content) -> Content
 ```
 
-未列出的名称一律产生 unknown function 诊断（调用保留为 `UnresolvedCall`）。
+未注册的内置名称一律产生 unknown function 诊断（调用保留为内容节点）；加载插件后的 `{package}::{element}` 是注册名，不受此限。
 
 == 调用规则
 
@@ -138,7 +138,7 @@ String 四种形态：`"转义"`、`"""多行"""`（opening 后立即换行）�
 [[vault::guide#install]]    # 绝对路径 + scope id
 ```
 
-`README.not` 表示所在目录；目录只要有 `.not` 后代或资源文件后代就形成 virtual module；外部 URL 语法合法但 v1 渲染为未解析文本并产生 info 级诊断。
+`README.not` 表示所在目录；目录只要有 `.not` 后代或资源文件后代就形成 virtual module；外部 URL 语法合法但当前渲染为未解析文本并产生 info 级诊断。
 
 == 模式与边界速查
 

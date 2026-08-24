@@ -1,0 +1,52 @@
+= obsidian-notist
+
+#[
+  现在 Notist 需要一个 GUI 来承载人机交互体验的试验。
+
+  目前想到的方案是，基于 Obsidian 的插件，将 Notist 的能力接入其中。即让 Obsidian 的 GUI 壳承载 Notist 的能力。
+
+  初始调查由 kimi/k3 整理在了 [[vault::ai::2026-08-24 obsidian plugin feasibility research]] 中。
+
+  [[vault::ai::2026-08-24 obsidian plugin feasibility research#Obsidian 双链与图谱引擎专题]] 中提到 Obsidian 自己的双链、图谱等引擎只对 Markdown 生效且无法干预。因此我们大概需要自己实现一整套基于 Notist 且与 Obsidian 自身引擎独立的系统。
+
+  == 想法
+
+  === 双 World 隔离
+
+  既然我们无法扩展 Obsidian 自己的双链、图谱等系统，那么不如干脆与 Obsidian 自己的系统完全隔离。
+  目前的想法是，我们将一个 Obsidian Vault 分为两个 World，一个是它本身原生的那套 Markdown World，一个是我们的 Notist World。
+
+  在 UI 上面，或许有一个地方（随手能碰到的地方）有一个 World 切换的滑块（类似 Trae 编辑器最上方标题栏处的那种切换滑块），一经切换则将整个 UI 切换到对应 World。两个 World 不互相干扰。
+  [[vault::ai::2026-08-24 obsidian plugin feasibility research#World 切换 UI 专题]]
+]@type=user,.user
+
+---
+
+*以下为 AI 生成内容。*
+
+把 notist 以 Obsidian 插件形态接入：**只借 Obsidian 的 GUI 外壳，语义层完全架空**。一个 Vault 里 markdown 是一个 world、notist 是一个 world；graph、backlinks、搜索等一切语义能力由 notist 自己重造。
+
+== 定位
+
+- 壳白给的：跨平台容器（Electron/移动）、workspace 骨架（leaf/分屏/布局/文件树/命令面板/主题）、同步（.not 作为不透明文本走 Sync/git）、CM6 运行时。
+- 壳不给、要自建的：渲染、graph、backlinks/hover preview、内容搜索、链接补全——凡沾语义的，一样都剩不下。
+- 语义唯一权威是 notist-service，与「前端不重新解释 .not」原则一致，不存在与 markdown 索引打架的问题。
+
+== 纪律
+
+- 两个 world 默认完全隔离；但架构上不堵死桥接（hover/点击跳转），摩擦是永久性的，桥迟早要建。
+- 凡 notist 语义相关的组件（CM6 language、渲染器、LSP client、graph）不 import obsidian API，壳适配层单独成目录——与自建 Web 编辑器路线复用。
+- 接受宿主耦合（闭源、API 漂移、审核政策），此路线是「快速获得可用 GUI 与用户」的过渡形态，不是终态旗舰。
+
+== 落地顺序
+
+view + 渲染 + 基础编辑（MVP）→ 搜索/backlinks 面板 → graph → 跨 world 桥接。graph 是纯 UI 重活，放后面。
+
+== 参考
+
+- [[vault::obsidian-notist::dual-world]]：当前插件的双 World 交互契约（切换机制、隔离规则、取舍与脆弱点）。
+- [[vault::obsidian-notist::highlight]]：.not 编辑器语法高亮方案（复用 tree-sitter-notist + web-tree-sitter，含打包、增量同步、capture 映射与验证计划）。
+- [[vault::ai::2026-08-24 obsidian plugin feasibility research]]：本模块的可行性调研与决策记录；其中 [[vault::ai::2026-08-24 obsidian plugin feasibility research#Obsidian 双链与图谱引擎专题]] 详查官方引擎的实现与扩展性——结论是主走自建索引与渲染（语义权威本就在 notist-service），注入 `resolvedLinks` 白嫖官方 graph 至多作可降级的可选增强。
+- [[vault::ai::2026-08-17 web ui obsidian-like editor research]]：CM6 选型、.not 语法接入两路径、LSP-over-WS。
+- [[vault::ai::2026-08-18 notist plugin system design]]：含 Obsidian 插件机制调研。
+- 先例：Excalidraw（Obsidian 内独立世界）、obsidian-mermaid-view（registerExtensions + 三模式 view）、Code Workbench（外部 LSP client）。

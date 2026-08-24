@@ -10,8 +10,9 @@
 //! interface; it only describes the package envelope (identity, Wasm loading
 //! parameters, and render assets).
 //!
-//! The legacy v0 raw core Wasm ABI (`evaluate(ptr, len) -> ptr`) remains only
-//! for the checked-in shader package.
+//! The raw core Wasm ABI of the initial 2026-08-18 plugin revision
+//! (`evaluate(ptr, len) -> ptr`) remains only for the checked-in shader
+//! package.
 
 use std::collections::BTreeMap;
 
@@ -90,7 +91,7 @@ impl PluginManifest {
 pub struct WasmDecl {
     pub module: String,
     /// When true, `module` is a WIT component rather than a raw core Wasm
-    /// module using the legacy v0 ABI.
+    /// module using the initial 2026-08-18 raw ABI.
     #[serde(default)]
     pub component: bool,
     /// When true, the component imports `host.call` and is instantiated with
@@ -214,8 +215,8 @@ pub struct LoadedPlugin {
     /// HTML renderer contributions declared by the manifest.
     pub html_contributions: Vec<HtmlContribution>,
     /// Registry shared with component `host.call` imports. It already
-    /// contains core functions, this package's functions, and its requested
-    /// grants by the time `load_package` returns.
+    /// contains core functions and this package's functions by the time
+    /// `load_package` returns.
     pub shared_registry: Option<Arc<Mutex<FunctionRegistry>>>,
 }
 
@@ -541,8 +542,9 @@ pub fn load_package(package_dir: &Path) -> Result<LoadedPlugin, String> {
     };
 
     // The semantic surface comes from component `init` registration. The
-    // manifest `interfaces.semantic` block is only consulted by the legacy v0
-    // raw Wasm path; component packages are self-describing and ignore it.
+    // manifest `interfaces.semantic` block is only consulted by the initial
+    // 2026-08-18 raw Wasm path; component packages are self-describing and
+    // ignore it.
     let declared: &[ElementDecl] = match &runtime {
         Some((SemanticRuntime::Core(_), _)) => manifest
             .interfaces
@@ -712,8 +714,8 @@ fn load_wasm_runtime(
 /// Returns the qualified call-site and element name for a manifest element.
 ///
 /// All plugin elements are namespaced by their package (`shader::shader`,
-/// `demo::box`). The v1 shader spelling is preserved through a registered
-/// prelude alias, not by weakening the element name.
+/// `demo::box`). The original bare `shader` spelling is preserved through a
+/// registered prelude alias, not by weakening the element name.
 pub fn plugin_element_name(package: &str, element: &str) -> String {
     format!("{package}::{element}")
 }

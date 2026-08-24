@@ -1543,8 +1543,11 @@ impl WorkspaceSnapshot {
             .get(&module_id)
             .cloned()
             .unwrap_or_default();
-        // Snapshot builds are schema-only. Materialize runtime Wasm plugins on
-        // first actual evaluation so static analysis never starts guest code.
+        // Re-load plugin packages from disk and swap them into a cloned
+        // registry, so reduction dispatches against fresh component instances
+        // rather than the instances captured when the snapshot was built.
+        // (Snapshot builds also instantiate components and run guest `init`
+        // to collect the self-described semantic surface.)
         let mut runtime_registry = (*self.function_registry).clone();
         if let Some(plugins) = self.configuration.as_deref().and_then(|configuration| {
             notist_plugin_host::load_plugins_from_vault(&self.root, Some(configuration)).ok()
@@ -2350,7 +2353,7 @@ impl WorkspaceSnapshot {
                     diagnostics.push(Diagnostic {
                         kind: DiagnosticKind::ExternalReferenceUnsupported,
                         message: format!(
-                            "external reference `{url}` is not supported in v1; it renders as unresolved visible text"
+                            "external reference `{url}` is not currently supported; it renders as unresolved visible text"
                         ),
                         source_path: Some(source_path.clone()),
                         range: Some(range),
@@ -2961,7 +2964,7 @@ fn same_source_content(a: &WorkspaceSnapshot, b: &WorkspaceSnapshot) -> bool {
     }
     // Plugin package changes alter the semantic world even though they may not
     // touch any `.not` source file; the function-environment fingerprint
-    // includes package versions, schemas, render contributions, and grants.
+    // includes package versions, schemas, and render contributions.
     if a.function_environment != b.function_environment {
         return false;
     }

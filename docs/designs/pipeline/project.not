@@ -1,32 +1,32 @@
-@![implementation = "aligned"]
+@![implementation = "partial"]
 = Project Stage
 
-本文定义 [[vault::designs::pipeline]] 的最后阶段：把规范 `ElementTree<Leaf>` 投影为 target 可见的结果。HTML target 的完整映射见 [[vault::designs::host::html-renderer]]；插件 Leaf 的 namespace 契约见 [[vault::designs::world::core-namespace-plugin-boundary]]。
+本文定义 [[vault::designs::pipeline]] 的最后阶段：把成型后的森林投影为 target 可见的结果。HTML target 的完整映射见 [[vault::designs::host::html-renderer]]；插件节点的 namespace 契约见 [[vault::designs::world::core-namespace-plugin-boundary]]。
 
 ```text
-ElementTree<Leaf> + 属性表 + target 上下文
+成型后的森林 + 属性表 + target 上下文
   → project
   → target fragment
 ```
 
 == 输入与输出
 
-- 输入：已递归成型的 `ElementTree<Leaf>`、旁置属性表、RefTarget 等 target 上下文；
+- 输入：已递归成型的森林、旁置属性表、RefTarget 等 target 上下文；
 - 输出：HTML fragment、native render node，或其他 target 定义的结果。
 
 == 投影原则
 
-- **按 name 分发**：投影器只依据 `ElementInstance.name` 选择 renderer；`core::*` 与插件 Leaf 走同一分发机制。
-- **语义由宿主保留**：core Leaf 在 HTML target 投影为原生标签（`core::heading` → `h1`..`h6`、`core::table` → `table`、`core::details` → `details`），不为每个 core Leaf 强制创建 Web Component。
-- **插件 Leaf**：按 renderer registry 分发；HTML target 中富交互 Leaf 可以投影为 Web Component，未注册 renderer 时保留安全 fallback。
+- **投影即规约**：project 是 target package 注册的第二阶段规约——投影 handler 把语义名字规约为 target 词表节点（`core::heading` → `html::h1`），哑 serializer 直出结果；语义规约与投影规约是两个独立的 registry。完整模型见 [[vault::designs::plugin-system::projection]]。
+- **按 name 分发**：投影只依据节点名字选择 handler；`core::*` 与插件节点走同一机制。
+- **语义由宿主保留**：core 节点在 HTML target 投影为原生标签（`core::heading` → `h1`..`h6`、`core::table` → `table`、`core::details` → `details`），不为每个 core 节点强制创建 Web Component。
 - **Range 与属性投影**：source range 与属性表条目投影到 DOM metadata，不改变语义树。
 
 == 安全边界
 
-投影输出不是可信 HTML：Raw 文本与插件 Leaf 内容必须转义；插件提供的渲染代码必须经过 trusted renderer 边界（[[vault::designs::host::html-renderer#Source Range 与安全]]）。
+投影输出不是可信 HTML：Raw 文本与插件节点内容必须转义（[[vault::designs::host::html-renderer#Source Range 与安全]]）。serializer 的词表收口（trusted 边界）目前是待定项，见 [[vault::designs::plugin-system::projection#已裁定 / 待定]]。
 
 == 已裁定 / 待定
 
 - 已裁定：project 不改变语义树，只做分发与目标投影。
-- 已裁定：HTML target 中 core Leaf 使用原生语义标签，插件 Leaf 按 renderer registry 分发。
+- 已裁定：HTML target 中 core 节点使用原生语义标签；插件节点的投影贡献由 manifest 声明。
 - 待定：HTML 之外 native target 的 render node 契约。

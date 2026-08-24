@@ -8,7 +8,7 @@
 
 `notist-html` 是纯渲染层：接收一个 Module 的结构树（含 Section 节归组与段落/列表组合）、属性表与解析上下文（RefTarget），输出可嵌入页面的 semantic HTML fragment。
 
-它负责：渲染结构与 Leaf、转义文本/属性/Raw 内容、把引用解析为链接或锚点、把区间属性投影到 DOM、输出 source range metadata、为未知插件 Leaf 与 Missing 引用提供安全且可见的降级。它不负责：读取文件或扫描 Vault、执行 parser/求值、判断目标 Module 是否存在、生成完整页面/导航/主题、启动 HTTP 服务。
+它负责：渲染结构与节点、转义文本/属性/Raw 内容、把引用解析为链接或锚点、把区间属性投影到 DOM、输出 source range metadata、为未注册投影的名字与 Missing 引用提供安全且可见的降级。它不负责：读取文件或扫描 Vault、执行 parser/求值、判断目标 Module 是否存在、生成完整页面/导航/主题、启动 HTTP 服务。
 
 === 元素映射
 
@@ -27,11 +27,12 @@ core::details             -> <details><summary>...</summary>...
 core::table               -> <div class="notist-table-wrapper"><table>；header 行 -> <thead><th>，body 行 -> <tbody><td>；align 映射为 notist-table-align-{left,center,right}，span 映射为 colspan/rowspan；caption 不在 Table 上
 core::table-cell          -> <div class="notist-table-cell">（兜底；正常由 core::table 消费）
 core::figure              -> <figure class="notist-figure" data-notist-kind="...">；body 按 flow 渲染（仅裁掉 framing 的纯空白/parbreak），caption 渲染为 <figcaption>，supplement 为 caption 前缀
-插件 Leaf                 -> 带 data-notist-name 的 span/div
-Missing 引用 / 未知插件 Leaf -> 不可点击的 span（保留可见文本）
+插件节点                 -> manifest 声明的 web-component 标签
+未注册投影的名字          -> <{package}-{element}> 标签（fallback，保留字段与可见内容）
+Missing 引用             -> 不可点击的 span（保留可见文本）
 ```
 
-Quote 不进入当前语言（[[vault::designs::language::syntax-sugar#暂缓与候选]] 整体暂缓）；映射随新 core Leaf 进入语言时补充。本表是 core Leaf 集合（[[vault::designs::pipeline::evaluate#Content 值]]）在 HTML target 的封闭映射：每增加一行都以 [[vault::designs::language::builtin-constructors]] 引入新 Leaf 为前提。`core::parbreak` 不渲染（段落结构已由成型给出）。
+Quote 不进入当前语言（[[vault::designs::language::syntax-sugar#暂缓与候选]] 整体暂缓）；映射随新 core 节点进入语言时补充。本表是 core 节点集合（[[vault::designs::pipeline::evaluate#Call 与 Node]]）在 HTML target 的封闭映射：每增加一行都以 [[vault::designs::plugin-system::core]] 引入新节点为前提。`core::parbreak` 不渲染（段落结构已由成型给出）。
 
 === 锚点与引用链接
 
@@ -56,7 +57,7 @@ Quote 不进入当前语言（[[vault::designs::language::syntax-sugar#暂缓与
 
 语义元素输出原始 byte range（`data-notist-start` / `data-notist-end`），为点击跳转源码、Hover fragment 与选择同步保留稳定接口。
 
-Raw 的文本与插件 Leaf 内容都不是可信 HTML：全部转义，插件渲染 HTML 必须经过显式的 trusted renderer 边界，不能让 Raw 内容绕过转义。
+Raw 的文本与插件节点内容都不是可信 HTML：全部转义，不能让 Raw 内容绕过转义。serializer 的词表收口（trusted 边界）目前是待定项，见 [[vault::designs::plugin-system::projection#已裁定 / 待定]]。
 
 == Workspace Consistency
 

@@ -1,11 +1,29 @@
-@![implementation = "aligned"]
+@![implementation = "partial"]
 = Projection Contribution
 
-本文定义插件元素如何声明 target 投影贡献。project 阶段按 name 分发 renderer，见 [[vault::designs::pipeline::project]]；HTML target 的宿主渲染环境见 [[vault::designs::host::html-renderer]]。
+本文定义投影的模型：投影是 target package 注册的第二阶段规约。project 阶段在 pipeline 中的位置见 [[vault::designs::pipeline::project]]；HTML target 的宿主渲染环境见 [[vault::designs::host::html-renderer]]。
+
+== 投影即规约
+
+投影不是一张硬编码的渲染分发表，而是 target package 注册的第二阶段规约：
+
+```text
+成型后的森林
+  → reduce（target registry）     // core::heading → html::h1，…
+  → html:: 森林                   // 全部是没有 handler 的数据名字
+  → serialize                     // 哑序列化：名字出标签、参数出属性、children 递归
+```
+
+由此推出：
+
+- **两个独立的 registry**。语义规约不认识 `html::*`——target 词表不在语义阶段注册，作者在文档里写 `html::` 名字会被 check 层报 unknown。内容编写永远与投影端无关：想要某种呈现，作者在投影无关的 call 上写内容，由插件在投影端实现呈现逻辑。
+- **target package 注册两类东西**：投影 handler（`core::heading` → `html::h1` 等）与 `html::*` 数据名字词表（serializer 的合法标签集）。
+- **core 的原生标签映射不再特殊**：它只是 html package 的内置 handler 集合。原生标签与 Web Component 之间没有档次差别——都是 `html::` 数据名字，差异只剩 tag 名与是否携带资产。
+- **多 target 同构**：native target 是另一个 target package，把同一森林规约到自己的节点词表。"原生"是 per-target 概念。
 
 == Render Contribution
 
-插件不输出 HTML 字符串。它声明后端无关的投影贡献，由宿主 target renderer 消费：
+插件不输出 HTML 字符串。它声明后端无关的投影贡献，宿主把它合成为投影 handler：
 
 ```json
 {
@@ -27,14 +45,13 @@
 }
 ```
 
-- 宿主 renderer registry 按 `ElementName` 分发；
-- 未注册 renderer 的插件 Leaf 走安全 fallback；
-- 富渲染必须经过 trusted renderer 边界；
-- core Leaf 的 HTML 投影由宿主 native renderer 提供（`core::heading` → `<h1>` 等）。
+- target registry 按名字分发投影 handler；
+- 未注册投影的名字走安全 fallback（见下）；
+- core 节点的 HTML 投影（`core::heading` → `<h1>` 等）是 html package 的内置 handler，与插件贡献同构。
 
 == 当前 HTML contribution
 
-v1 只开放声明式 Web Component projection：
+当前只开放声明式 Web Component projection：
 
 ```text
 HtmlContribution {
@@ -50,17 +67,20 @@ WebComponentDecl {
 }
 ```
 
-- host renderer 输出 custom element，并把标量字段转义为 `data-*` 属性；字段与 body 值保持与其他 HTML 投影相同的转义规则。
+- 宿主由 manifest 合成投影 handler：输出 custom element，并把标量字段转义为 `data-*` 属性；字段与 body 值保持与其他 HTML 投影相同的转义规则。
 - JS module 与 CSS 由 CLI build / preview 复制到 `_notist/plugins/<package>/` 并注入页面 head。
 - `tag` 必须是包含 `-` 的 lowercase custom-element 名，manifest 校验时拒绝非法 tag。
-- 任意 HTML 字符串 renderer 不进入 v1；`trusted` 是 manifest 声明的信任标记，未来用于 Wasm HTML renderer 的 gate。
+- 任意 HTML 字符串 renderer 暂不开放；`trusted` 是 manifest 声明的信任标记，未来用于 Wasm HTML renderer 的 gate。
 
 == Fallback
 
-renderer 缺失或 schema 不兼容时，投影降级为通用 fallback：保留可见文本与元素名，但不执行插件资产。fallback 永远 total，build 不失败。
+投影规约后仍没有 handler 的名字由 serializer 保底：直接以 call 名出标签——`{package}::{element}` 投影为 `<{package}-{element}>`（合法的 custom element 名，可被 CSS 选中，无需 JS），标量字段转义为 `data-*` 属性，子森林照常投影。fallback 永远 total，build 不失败。
 
 == 已裁定 / 待定
 
+- 已裁定：投影是 target package 注册的第二阶段规约；语义规约与投影规约是两个独立的 registry，`html::*` 不进语义层。
 - 已裁定：插件只声明投影贡献，target 结果由宿主生成。
-- 已裁定：HTML target 中富交互 Leaf 可投影为 Web Component，未注册 renderer 时保留安全 fallback。
+- 已裁定：fallback 以 call 名出标签（`<{package}-{element}>`），永远 total。
+- 待定：trusted 边界暂缓——验证核心设计期间 serializer 不做词表白名单，`html::*` 全部放行；正式化前必须收口（危险标签与事件属性的 gate，`trusted` 标记的语义）。
+- 待定：插件的"原生 HTML 投影贡献"（tag + class、无 JS module）是否开放。
 - 待定：HTML 之外 native target 的 render node 契约。

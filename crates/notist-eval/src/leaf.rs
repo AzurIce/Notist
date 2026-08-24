@@ -213,11 +213,6 @@ impl ReduceFrame {
         }
     }
 
-    /// Alias kept for call-site stability during the capability removal.
-    pub fn root_with_policy(limits: &ReduceLimits) -> Self {
-        Self::root(limits)
-    }
-
     fn dispatch(
         &mut self,
         limits: &ReduceLimits,
@@ -2232,10 +2227,9 @@ pub mod node_engine {
                 }
             }
             Ok(FunctionOutput::Nodes(returned)) => {
-                // Response forests re-enter the fixpoint under the plugin
-                // principal. Contract: a handler never returns a node
-                // addressed to itself — self-returns are author bugs caught
-                // by the depth/fuel budget.
+                // Response forests re-enter the fixpoint. Contract: a handler
+                // never returns a node addressed to itself — self-returns are
+                // author bugs caught by the depth/fuel budget.
                 let (reduced, errors) = reduce_nodes_recovering(returned, registry, limits, frame);
                 if errors.is_empty() {
                     Ok(reduced)

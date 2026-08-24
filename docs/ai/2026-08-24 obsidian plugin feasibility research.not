@@ -1,0 +1,94 @@
+= Obsidian 插件接入方案可行性调研
+
+评估把 notist 以 Obsidian 插件形态接入的可行性：notist 侧可用资产与缺口、Obsidian 插件 API 能力边界、推荐分层架构与残余风险。结论先行：**可行，且已按「借壳架空」方向立项**，见 [[vault::obsidian-notist]]。与 [[vault::ai::2026-08-17 web ui obsidian-like editor research]] 的关系：那篇主线是自建类 Obsidian 的 Web 编辑器，本文是其 CM6/语法接入结论在 Obsidian 插件形态下的复用与补充。
+
+== notist 侧资产与缺口
+
+资产：
+
+- *stdio LSP，功能完整*（`crates/notist-cli/src/lsp.rs`）：completion/hover/definition/references/diagnostics，UTF-16 转换有测试；LSP 是薄适配层，语义全部转发 notist-service。
+- *JSON CLI*：search/outline/read/check/edit 全部 `--format json`，`--no-daemon` 可进程内运行，不必起 daemon。
+- *notist-html 输出 HTML fragment*，`ReferenceResolver` 解析模块引用为 URL，`RenderedAnnotation` 把源码 TextRange 投影为 `data-notist-*` DOM 属性（源码↔渲染双向定位）——fragment 形态正好适配 Obsidian 渲染管线。
+- *notist-service 协议无关*：`CoreRequest/CoreResponse` 覆盖全部语义操作，daemon 走 Unix socket + 长度分隔 JSON 帧（私有协议，无 HTTP/WS）。
+
+缺口：
+
+- 无 HTTP/WS 服务层，Obsidian 插件（JS 进程）无法直连 Unix socket，只能 spawn 子进程走 stdio。
+- 无 JS 侧语法解析：Lezer/tree-sitter grammar 均未做。
+- 无跨平台二进制分发流水线；daemon 传输是 Unix socket，Windows 守护进程支持存疑。
+- MCP 子命令不存在（`.codex/config.toml` 中 `[mcp_servers.notist]` 是超前配置）。
+
+语法前提：.not 是 markdown-like 但*不是 Markdown 超集*（糖底下是构造器调用 + 完整 Code 模式），Obsidian 原生 markdown 渲染/编辑管线无法复用，编辑与高亮需自建。
+
+== Obsidian 插件 API 能力
+
+- *自定义扩展名一等支持*：`registerView` + `registerExtensions(["not"], viewType)`，继承 `TextFileView` 即可让 .not 进文件树并可编辑。先例：Excalidraw、obsidian-mermaid-view、Code Workbench。
+- *编辑器*：自定义 view 内可自建 CM6，`@codemirror/*` 与 `@lezer/*` 由宿主运行时提供（esbuild external，不打进 bundle）；StreamLanguage 起步、Lezer grammar 升级均可；Live Preview 风格 `Decoration.replace` + Widget 是成熟模式。`registerEditorExtension` 只对官方 markdown 编辑器生效，与 .not 无关。
+- *渲染钩子*：`registerMarkdownPostProcessor` / `registerMarkdownCodeBlockProcessor('not', ...)` 只作用于 markdown——可覆盖 .md 笔记内嵌 notist 片段，与 .not 文件本身无关。
+- *外部进程*：桌面端 Electron 可直接 `child_process.spawn`；移动端无 Node API，用了必须 `isDesktopOnly: true`。LSP client 类插件已有先例（Code Workbench：发现已安装 server、opt-in、不捆绑）。审核对执行外部进程类插件趋严（2026 年 Shell Commands 滥用事件），打包/下载二进制需在 README 充分披露。
+- *WASM*：纯解析/渲染代码走 wasm-bindgen（`wasm32-unknown-unknown`）两端通用，有官方推荐 Rust 模板；WASI 组件（wasip1/p2）不能直接在浏览器跑（需 polyfill/jco transpile），notist 本体依赖 wasmtime 不可编 wasm，只能拆 `notist-syntax`/`notist-html` 单独编。
+- *硬限制*：非 markdown 文件不进 Obsidian 核心索引——wikilink 双链、backlinks、graph、properties 均不支持 .not，需插件自建或放弃。
+
+== Obsidian 双链与图谱引擎专题
+
+Obsidian 闭源，以下按可信度分档：*官方* = 官方文档/API 明示；*逆向* = 社区逆向共识（有 dev console dump / 插件源码佐证）；*未确认* = 无可靠证据。
+
+=== 实现方案
+
+- *链接索引（MetadataCache）*：【官方】官方 API 暴露 `resolvedLinks`/`unresolvedLinks`（`Record<源路径, Record<目标路径, 次数>>`）、`getFirstLinkpathDest`（"best match"消歧）、`fileToLinktext`（文件名唯一用文件名、否则全路径），事件 `changed`/`deleted`/`resolve`/`resolved`（注意：文件重命名不触发 `changed`，需另挂 vault `rename`）。【逆向】内部结构为两级：内存 `fileCache` + `resolvedLinks` 提供同步读，持久化缓存落 IndexedDB（vault 目录之外）；解析跑在 Web Worker（`computeMetadataAsync`），主线程经 `workQueue` 收变更、`linkResolverQueue` 做链接解析；文件名消歧靠 `uniqueFileLookup` 表。
+- *backlinks / outgoing links 面板*：【官方】均为 core plugin。【逆向】数据源是*未文档化的内部 API* `metadataCache.getBacklinksForFile(file)`，原生实现为全库扫描、大库慢（mnaoumov/obsidian-backlink-cache 专为补它而生）；官方层面等价物只有 `resolvedLinks`，插件需自建反向索引（Dataview 的 `index.links.invMap` 即此路）。
+- *graph view*：【逆向】渲染为 *PixiJS（WebGL）*，图挂在 `<iframe>` 内、独立 canvas 捕获交互；力导向模拟跑在 *Web Worker*，主线程 `setForces()` 传力参数，空闲 60 帧停转；是否 d3-force 【未确认】（倾向自研 Verlet）。【逆向】数据即 `resolvedLinks`/`unresolvedLinks`，local graph 与 global graph 共用同一 engine/renderer，仅加 depth 过滤。【官方表态】无硬性节点上限，但"超过 25K 文件在现代桌面上不实用"（WhiteNoise）。
+
+=== 架构位置与扩展性
+
+- *位置*：backlinks、outgoing links、graph view、page preview、search 等都是 core plugins，与内核同包；运行时可用内部入口 `app.internalPlugins.plugins['graph'|...]` 拿实例（社区实际这么用）。
+- *官方扩展点*：【官方】只有 metadataCache 的读接口与事件，以及 `registerHoverLinkSource`（向 page preview 注册 hover 源，1.1.0 起）。*graph view 无任何官方扩展点*——API 参考无 GraphView 条目，Extended Graph 作者明示"core graph lacks an API and documentation, many features are experimental"。
+- *链接提取硬编码 markdown*：【逆向】worker 内 `isSupportedFile` 只认 md 系；官方"为非 md 文件开放链接元数据"的 FR（forum 78883）提交后无人回应。obsidian-fountain 的 README 是直接证据：".fountain 的链接不会出现在 backlinks 面板或 graph view，插件 API 尚未暴露非 markdown 文件的链接元数据"。
+- *社区绕行路线*（按侵入度排序）：
+  + *完全自建*：Juggl（cytoscape.js 自渲染 + 自建图数据，对外提供 juggl-api）、ExcaliBrain（自建索引，渲染走 Excalidraw 画布）——不碰核心 graph，最稳但全部重造。
+  + *读数据自建算法*：Graph Analysis 从 `resolvedLinks` 建邻接表跑相似度/链接预测。
+  + *注入内存结构*：obsidian-skill-graph（2026）向 `resolvedLinks`/`unresolvedLinks` *注入 vault 外引用使其成为官方 graph 节点*，并 patch renderer 的节点文本/颜色。
+  + *深度猴补丁*：Extended Graph patch 核心 renderer/engine（节点图片/形状/SVG 导出），依赖 obsidian-typings 内部类型，可能丢 `.obsidian/graph.json` 配置；Advanced Canvas patch metadata cache 让 `.canvas` 进索引、从而获得 graph/backlinks 完整兼容——这是"非 md 文件进双链"的唯一成功先例。
+- *风险定性*：obsidian-typings 对内部成员的标准警告——"不完整、随时会变、本不打算被使用"。注入/猴补丁路线无官方承诺，任何版本都可能破坏。
+
+=== 对 .not 接入的推论
+
+官方索引的门对 .not 是关死的（链接提取硬编码 md、FR 无回应）；`resolvedLinks` 可写且有 skill-graph/Advanced Canvas 先例证明*注入可行*，但属内部 API 赌博。两条路线：**A. 自建索引与渲染（Juggl 路线）**——语义权威本来就在 notist-service，索引无需碰 metadataCache，graph 自建 Canvas/WebGL 渲染，与「借壳架空」定位一致，风险最低、工作量最大；**B. 注入官方引擎（skill-graph 路线）**——把 notist 引用关系注入 `resolvedLinks`，白嫖官方 graph/backlinks UI，工作量小但把核心功能押在无承诺的内部 API 上。建议：主走 A；B 至多作为可选增强，且必须做到注入层失效时功能可降级。
+
+== World 切换 UI 专题
+
+需求（用户提出）：界面上有一个随手可及的 World 切换滑块（类 Trae 标题栏切换器），切换后整个 UI 换到对应 World；两个 World 互不干扰，文件树互相不可见（Notist World 不显示 .md，Markdown World 不显示 .not）。结论：*可行，且 MVP 成本很低*。
+
+=== 切换机制
+
+- *body class 开关*：给 `document.body` 切 `notist-world` / `md-world` class，所有 World 间 UI 差异用 body class 后代选择器表达。这是生态标准做法，官方团队自己的插件背书：Hider（kepano，body class + CSS 隐藏 ribbon/titlebar 等）、Style Settings（官方维护，明确支持 toggling body classes）。
+- *整布局切换*：差异大到布局级时走官方 API——`workspace.getLayout()` 快照 + `changeLayout()` 恢复整套 pane/侧栏/打开的 leaf（0.9.7 起；core 的 Workspaces 插件即此原理）。切换体验 = 整个 UI 瞬间换掉，且每个 World 的布局状态天然各自保存。
+- *滑块放哪*：Trae 式顶部标题栏*可以注入*——桌面端是自绘 frameless titlebar（`.titlebar` 是普通应用 DOM），Commander 插件已有往 titlebar 加按钮的先例，但属逆向 DOM 操作、无官方 API。官方入口：ribbon（`addRibbonIcon`）、status bar（`addStatusBarItem`）、命令面板。建议 MVP 用 ribbon + 命令，titlebar 注入留作打磨项。
+
+=== 文件树互相不可见
+
+file explorer *没有官方过滤/替换钩子*（2025-12 forum 108593、2026-01 forum 109653 两个 FR 确认这是 API 缺口；Obsidian 自带 "Excluded files" 设置只管搜索/graph/backlinks，*不影响文件浏览器*，Quick Switcher 与链接建议也只是降优先级）。两条可行路线：
+
++ *方案 A：CSS 过滤同一棵树（便宜，先做）*。file explorer 条目 DOM 带 `data-path` 属性，`.notist-world div[data-path$='.md'] { display: none; }` 与反向规则即成。先例：Explorer Hider（插件生成 `data-path` + `display:none` CSS）、File Hider。局限：DOM 里都在只是不显示；Quick Switcher/链接建议仍两 World 混杂；选择器依赖内部 DOM 结构，Obsidian 改 file explorer 渲染可能失效（但用法面广，真改了社区会有替代方案）。
++ *方案 B：Notist World 用自己的树（干净，终态）*。detach 左栏 file-explorer leaf，原位放自己的 custom view（`getLeftLeaf` + `setViewState` + `revealLeaf`，全官方 API；Notebook Navigator 即此路线，其作者确认"链接点击仍打开内置 explorer、无法注册为默认 explorer"是当前缺口）。额外收益：树可按 *notist 模块结构*而非原始文件系统组织，数据直取 notist-service，符合「语义组件不 import obsidian API」纪律。Markdown World 继续用原生树 + 方案 A 的 CSS 隐藏 .not。
+
+=== 泄漏点与建议
+
+即使树分开了，跨 World 泄漏点仍在：Quick Switcher、链接建议、tab 恢复、核心搜索。管到什么程度属于 World 隔离定义的后续决策。落地建议：MVP = 方案 A + ribbon 开关（约一天出原型）；当 Notist World 需要按模块组织文件树时上方案 B；布局级差异出现时才引入 getLayout/changeLayout 快照切换。
+
+== 推荐分层架构
+
++ *基础层（两端通用）*：registerExtensions 接管 .not → 自定义 TextFileView 内嵌 CM6 + StreamLanguage；渲染用 notist-html fragment（wasm 化后两端可用）。照抄 obsidian-mermaid-view 的编辑/预览结构。
++ *桌面增强层（opt-in）*：spawn `notist lsp` 接 LSP client 拿完整语义；或退一步用 CLI JSON 按需查询。
++ *互联层（可选、最贵）*：.not 与库内 markdown 的双链由插件自研链接解析与索引，不依赖 Obsidian 核心。
+
+== 残余风险
+
+- 双链/图谱缺失需自研（数据层 notist-service 现成，缺 UI）。
+- 跨 world 摩擦永久性：md 与 .not 互相 hover/跳转默认全断，桥接迟早要建。
+- 二进制分发的审核与跨平台问题（wasm 分层可缓解大半）。
+- 宿主耦合：Obsidian 闭源、API 漂移、审核政策单向变化。
+
+== 后续决策（2026-08-24 同日）
+
+用户拍板采用*借壳架空*定位：Obsidian 只作 GUI 外壳（容器、workspace 骨架、同步、CM6 运行时），graph/backlinks/搜索等语义能力全部由 notist 重造；两个 world 默认隔离、不堵死桥接；语义组件不得 import obsidian API 以便与自建编辑器路线复用。立项文档：[[vault::obsidian-notist]]。

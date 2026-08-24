@@ -34,7 +34,7 @@ stdio transport；stdout 专用于 LSP JSON-RPC（不输出日志、进度或诊
 
 === Capabilities
 
-**Diagnostics**：syntax errors、duplicate module、unresolved module reference、引用目标不存在/歧义（Missing，[[vault::designs::world::reference-ref-target#解析产物：RefTarget]]）、import cycle 与 unresolved module binding、名称解析与类型诊断、只依赖 snapshot input/capability 的确定性求值诊断。`textDocument/publishDiagnostics` 在每次 snapshot 更新后为受影响文件发布完整集合，错误消失必须发布空数组清除。Diagnostic 带稳定的 `source = "notist"`、可机器识别的 code、准确 range 与简洁 message；跨文件冲突用 related information 指向另一处定义。
+**Diagnostics**：syntax errors、duplicate module、unresolved module reference、引用目标不存在/歧义（Missing，[[vault::designs::world::reference-ref-target#解析产物：RefTarget]]）、import cycle 与 unresolved module binding、名称解析与类型诊断、只依赖 snapshot input 的确定性求值诊断。`textDocument/publishDiagnostics` 在每次 snapshot 更新后为受影响文件发布完整集合，错误消失必须发布空数组清除。Diagnostic 带稳定的 `source = "notist"`、可机器识别的 code、准确 range 与简洁 message；跨文件冲突用 related information 指向另一处定义。
 
 **Go to Definition**：引用路径跳到目标 Module 文件开头（virtual Module 无 `README.not` 时不伪造源码位置）；scope id 与标题默认 id 跳到对应节；函数、变量等符号统一走 `definition_at(file, offset)`，handler 不针对每种符号复制逻辑。
 
@@ -42,7 +42,7 @@ stdio transport；stdout 专用于 LSP JSON-RPC（不输出日志、进度或诊
 
 **Completion**：由 source context 与语义环境共同决定。`[[...]]` 内补全可达 ModulePath 与 `#id`（显式 id + 标题默认 id）；`vault::`/`self::`/`super::` 后补全合法 segment；`#` 后按 context 补全声明关键字、lexical/imported binding 与内置构造器；call arguments 中补全参数名；属性列表中补全已知属性 key。Module 补全插入相对当前 Module 的自然路径；query 返回协议无关数据（label、insert text、kind、documentation、replace range），LSP 层再生成 CompletionItem。
 
-**Hover**：引用目标的逻辑路径与 source path、Module 是否 virtual、函数签名（参数、类型、default、trailing、capability）、符号的定义位置。Content preview 复用渲染器产物，不在 LSP 层另写渲染语义。
+**Hover**：引用目标的逻辑路径与 source path、Module 是否 virtual、函数签名（参数、类型、default、trailing）、符号的定义位置。Content preview 复用渲染器产物，不在 LSP 层另写渲染语义。
 
 **Document Symbols**：`= Heading` 与显式 `#heading[...]` 都进入 DocumentSymbol（名称来自标题文本，range 是整个 heading，按 level 组成父子层级）；带 id 的节点、函数与变量定义也进入符号树；Fenced Raw 中的示例标题不进入。Workspace Symbol 索引 Module 与带稳定 id（显式 id + 标题默认 id）的文档元素。
 
@@ -50,7 +50,7 @@ stdio transport；stdout 专用于 LSP JSON-RPC（不输出日志、进度或诊
 
 编辑器中的 Tree-sitter grammar 只负责即时高亮、折叠与注入；LSP 的语义必须调用主仓库的 parser（CLI、build、preview、diagnostics 与编辑器共享同一 AST 与错误恢复行为，不因 grammar 更新节奏不同产生两套语义）。Tree-sitter 与语义 server 是互补关系。
 
-Hover、completion 与 diagnostics 需要 lexical/import environment、函数签名与 typed HIR，但语言服务器不应为普通编辑操作执行有外部副作用的插件代码：core 与纯 User Function 允许分析并在确有消费者时受控常量求值；plugin schema 只读取声明的 signature/capability；plugin runtime 默认不在 LSP 请求路径执行。未知 Function 仍可依据 schema 提供 completion 与类型诊断，动态结果降级为 unknown，不阻塞整个 workspace analysis。
+Hover、completion 与 diagnostics 需要 lexical/import environment、函数签名与 typed HIR，但语言服务器不应为普通编辑操作执行有外部副作用的插件代码：core 与纯 User Function 允许分析并在确有消费者时受控常量求值；plugin schema 只读取声明的 signature；plugin runtime 默认不在 LSP 请求路径执行。未知 Function 仍可依据 schema 提供 completion 与类型诊断，动态结果降级为 unknown，不阻塞整个 workspace analysis。
 
 === 并发
 

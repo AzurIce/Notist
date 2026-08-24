@@ -46,8 +46,8 @@ world plugin {
     export evaluate: func(request: list<u8>) -> result<list<u8>, string>;
 }
 
-/// 宿主回调：按当前插件 principal 检查 capability、消耗同一 depth/fuel
-/// 预算，并返回规约后的 Leaf 流字节或错误。
+/// 宿主回调：规约请求节点并返回规约后的森林字节或错误。内容组合不做
+/// per-call 授权；wasm 沙箱是唯一执行边界，仅受 depth/fuel 预算约束。
 interface host {
     call: func(request: list<u8>) -> result<list<u8>, string>;
 }

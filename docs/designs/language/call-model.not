@@ -44,7 +44,7 @@ fn(kind: String =, trailing body: Content) -> Content
 
 Trailing content 是最后一个 positional 形参：定义中用显式 `trailing` 修饰符声明，至多一个，必须接受 Content；`#f(kind: "warning")[内容]` 与 `#f(kind: "warning", [内容])` 等价——trailing block 只是追加一个 positional 实参的语法糖，没有独立的绑定通道。当前 surface 中它是唯一允许跟在具名实参之后的位置实参；其余形参没有这种紧凑写法。
 
-函数值（function value）是闭包（closure）：携带签名、实现、捕获环境（captured environment，见 [[vault::designs::language::scope-environment]]）与所需 capability。capability 与函数类型身份正交，宿主在实际调用时检查。
+函数值（function value）是闭包（closure）：携带签名、实现与捕获环境（captured environment，见 [[vault::designs::language::scope-environment]]）。
 
 函数与元素的边界在 Content 类型上汇合：builtin 元素就是 first-class 构造器函数。
 

@@ -153,8 +153,9 @@ impl<'a> EvalCtx<'a> {
     /// Calls another registered semantic function on behalf of this plugin.
     ///
     /// Only available in components built with
-    /// [`export_host_plugin!`](crate::export_host_plugin); the host checks
-    /// capabilities and continues reduction before answering.
+    /// [`export_host_plugin!`](crate::export_host_plugin); the host reduces
+    /// the request and answers with the resulting nodes. Content composition
+    /// is not per-call authorized — the wasm sandbox is the only boundary.
     pub fn call(
         &mut self,
         name: &str,

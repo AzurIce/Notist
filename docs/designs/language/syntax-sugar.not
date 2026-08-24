@@ -1,7 +1,7 @@
 @![implementation = "aligned"]
 = Syntax Sugar
 
-本文是 L9 Markup 语法糖的独立成篇，从归档的历史混合文档中独立成篇。每个糖降低到的构造器签名与校验见 [[vault::designs::language::builtin-constructors]]；元素序列与求值见 [[vault::designs::pipeline::evaluate]]。
+本文是 L9 Markup 语法糖的独立成篇，从归档的历史混合文档中独立成篇。每个糖降低到的构造器签名与校验见 [[vault::designs::plugin-system::core]]；call 森林与求值见 [[vault::designs::pipeline::evaluate]]。
 
 == 设计原则
 
@@ -17,9 +17,9 @@
 2. 边界能从局部语法决定：不需要跨块知识或函数签名；
 3. 有稳定的 core 语义等价：能降低为某个内置构造器调用。
 
-=== 糖不产生假元素
+=== 糖不产生假节点
 
-糖在 syntax frontend 建立专用节点，lowering 时获得构造器身份，与显式调用汇合到同一 Element。求值器不扫描 Text 重新识别糖，parser 也不依赖函数签名判断 `[` 或 `-` 的含义。
+糖在 syntax frontend 建立专用节点，lowering 时获得构造器身份，与显式调用汇合到同一个 call。求值器不扫描 Text 重新识别糖，parser 也不依赖函数签名判断 `[` 或 `-` 的含义。
 
 === 四要素
 
@@ -125,7 +125,7 @@ __text__  ~= underline([text])
 - `link`：外部链接与裸 URL 自动链接；
 - `preview`：`![[...]]`。
 
-它们进入设计时须满足 Sugar budget、四要素与 [[vault::designs::language::builtin-constructors#构造器校验]]。
+它们进入设计时须满足 Sugar budget、四要素与 [[vault::designs::plugin-system::core#构造器校验]]。
 
 == 语法糖总表
 
@@ -147,4 +147,4 @@ __text__            ~= underline([text])
 
 == 与求值、成型的关系
 
-糖在 syntax frontend 建立节点，lowering 获得构造器的 intrinsic identity 后，与显式调用走完全相同的解析、检查与求值路径；求值器不扫描 Text 重新识别糖。structural sugar（item）在求值后由成型组合；全部糖都不创造求值器之外的"假元素"。
+糖在 syntax frontend 建立节点，lowering 获得构造器的 intrinsic identity 后，与显式调用走完全相同的解析、检查与求值路径；求值器不扫描 Text 重新识别糖。structural sugar（item）在求值后由成型组合；全部糖都不创造求值器之外的"假节点"。

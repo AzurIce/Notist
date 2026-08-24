@@ -1,7 +1,7 @@
 @![implementation = "aligned"]
 = Core Namespace and Plugin Boundary
 
-本文是 V5 core namespace 与插件边界的独立成篇，吸收第一代 core namespace 设计的裁决并更新到当前 surface。当前内置构造器见 [[vault::designs::language::builtin-constructors]]；函数签名与调用模型见 [[vault::designs::language::call-model]]；Vault 配置容器见 [[vault::designs::world::boundary-discovery]]。
+本文是 core namespace 与插件边界的独立成篇，吸收第一代 core namespace 设计的裁决并更新到当前 surface。当前内置构造器见 [[vault::designs::plugin-system::core]]；函数签名与调用模型见 [[vault::designs::language::call-model]]；Vault 配置容器见 [[vault::designs::world::boundary-discovery]]。
 
 == Core Namespace
 
@@ -36,24 +36,24 @@ Prelude 是每个 Module root 自动获得的普通 binding 层，不是第二�
 - import 显式 selector 可以引入非 prelude 的 core 短名；
 - prelude 内容随语言版本变化，并在 WorkspaceSnapshot 的 function environment identity 中记录（[[vault::designs::host::analyzer-snapshot]]）。
 
-== Leaf Contract
+== Call 契约
 
-所有内容统一为一种 Leaf 类型，不再有内置 Element 变体与 `Custom` 的区分（[[vault::designs::pipeline::evaluate#Content 值]]）：
+所有内容统一为一种节点：call。不再有内置 Element 变体与 `Custom` 的区分（[[vault::designs::pipeline::plugin-call-reduction]]）：
 
 ```text
-ElementInstance {
-  name: ElementName      // core::* 或 {package}::*
-  fields: Vec<Field>     // 名称 + 带类型的 args
-  body: Vec<InstanceNode>
-  block: Bool
+Node {
+  name      // core::* 或 {package}::*
+  args      // 名称 + 带类型的参数
+  children  // 子 call 森林
+  block     // 是否打断段落流
 }
 ```
 
-- 内置内容使用 `core::*` Leaf；插件内容使用 `{package}::*` Leaf；
-- `name` 与 field schema 由构造器或插件 manifest 声明，进入索引与渲染兜底；
-- `body` 是已求值的 Leaf 流，不是 source string，也不重新 parse；
+- 内置内容使用 `core::*` 名字；插件内容使用 `{package}::*` 名字；
+- `name` 与参数 schema 由构造器或插件 `init` 注册声明，进入索引与渲染兜底；
+- `children` 是 call 森林，不是 source string，也不重新 parse；
 - `block` 是语义参数，不由 call-site delimiter 猜测；
-- renderer 对未知插件 Leaf 有安全兜底；真正富渲染必须经过 trusted renderer 边界。
+- serializer 对未注册投影的名字有安全 fallback；富渲染的资产注入与 trusted 收口属于 target 侧（[[vault::designs::plugin-system::projection]]）。
 
 == 信任模型
 
@@ -77,9 +77,6 @@ Vault marker 从空文件扩展为受限配置容器：
 
 ```toml
 language-version = "1"
-[capabilities]
-filesystem = "read-vault"
-network = false
 [plugins]
 mermaid = { package = "mermaid", schema = "0.1" }
 [site]
@@ -96,4 +93,4 @@ styles = ["assets/user.css"]
 
 == 语法扩展边界
 
-用户可扩展语法由独立的 macro/grammar-extension design 定义。普通 Function/plugin registration 永远不授予修改 parser 的能力。
+语义层的"宏"已被规约模型吸收：handler 把 call 重写为新 call 就是宏展开，不存在独立的 macro design（见 [[vault::designs::pipeline::plugin-call-reduction]]）。仍然独立的是记号层扩展：parser 的新语法由独立的 grammar-extension design 定义；普通 Function/plugin registration 永远不授予修改 parser、重新解释已有 token 的能力。

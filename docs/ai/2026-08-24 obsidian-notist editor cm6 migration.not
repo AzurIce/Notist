@@ -1,0 +1,39 @@
+= obsidian-notist 编辑器 CM6 化迁移记录
+
+承接 [[vault::ai::2026-08-24 obsidian-notist plugin mvp implementation]] 的 textarea 占位编辑器，本次聚焦编辑体验：迁移 CodeMirror 6、行号、可选 vim 键位、对齐 Zed 精致度的样式。实现仓库 `~/Files/obsidian-notist`，全程 obsidian CLI 实机迭代验证。
+
+== 编辑器内核：textarea → CodeMirror 6
+
+- `@codemirror/*` 在 esbuild 标 external、由 Obsidian 宿主运行时提供，只需补 devDependencies 供 tsc 类型检查。
+- 扩展组合保持最小：`lineNumbers`、`highlightActiveLine(Gutter)`、`history`、`defaultKeymap + historyKeymap`、`lineWrapping`、`updateListener → requestSave`。
+- `setViewData` 用 `settingData` 标志抑制程序化替换文档触发的回写循环；`onClose` destroy EditorView；内容相同则跳过替换以保光标。
+
+== vim 键位
+
+- Obsidian 自带的 vim 开关只管 markdown 编辑器，自定义 view 必须自己接：`@replit/codemirror-vim` 打包进 `main.js`（其 `@codemirror/*` 依赖走宿主 external；vim 引擎本体在 `@replit/codemirror-vim-core`，一并打包）。
+- 开关存 `data.json`（`vimMode`，默认关），设置页 toggle 即时生效：`vim()` 包在 `Compartment` 里，对所有打开的 notist leaf 做 `reconfigure`，无需重开编辑器。`vim()` 必须放在 keymap 链最前，其绑定才优先。每次 `vim()` 重建后 `getCM()` 返回新的 CM5 适配实例，监听器要按实例重新挂接。
+- *IME 抑制*：normal/visual 下用第二个 Compartment 把 `EditorView.editable` 置 false（contenteditable 关闭，OS 输入法不启动——IME 只在可编辑上下文激活，与 Zed「Disable IME in normal mode」同思路）；监听 vim 扩展的 `vim-mode-change` 事件跟随切换，仅 insert/replace 可编辑。
+- *drawSelection 必装*：replit-vim 设计上配合 `drawSelection()`——normal 模式它自画块光标并隐藏 CM 光标层，insert 模式移除 `cm-vimMode` class 交还 CM 画竖线；不装则 insert 只能依赖原生 caret，而 Chrome 在 contenteditable 翻转后不重画，光标「消失」。
+- *多选区必开*：`EditorState.allowMultipleSelections.of(true)`——CM6 默认单选区，会把 visual block（`C-v`）逐行范围和 vim multi-cursor 静默裁剪合并；replit-vim 假定宿主已开（Obsidian 的 markdown 编辑器就开了）。
+
+== 样式（Zed 式克制，全部走 Obsidian 主题变量）
+
+- 当前行：`--background-modifier-hover` 40% 混合的「耳语级」底色（实测黑 2.7% alpha）；gutter 与正文共用同一 CSS 变量 `--notist-active-line`，连成一条无断缝的带；当前行号仅提亮、无色块。
+- gutter 行号 0.85em、`--text-faint`；drawSelection 的 `.cm-cursor` 竖线用 `--text-accent`、`.cm-selectionBackground` 用 25% `--interactive-accent`（需 `!important` 压过 CM 的 `.cm-editor.cm-focused` 规则）；`::selection` 原生规则留作兜底。
+- vim 块光标：聚焦态实心 accent 底 + 反白字；失焦态空心描边 + 正文色字符。
+- 内联标题底部补 padding，对齐 markdown view inline title 与正文的间隔。
+- vim ex/搜索面板（`:` `/`）：并入主题底栏——背景取 `var(--status-bar-background, var(--background-secondary))`（实测与状态栏、左下 Vault 块同为 `#f6f6f6`）、与 leaf 底部齐平、顶部 hairline 分隔线、等宽字体；label 的 `:` 与 input 按 baseline 对齐 + 行高一致；input 剥掉主题的盒子样式（选择器 (0,3,1) 压 `input[type="text"]` (0,1,1)，与 `input.notist-title` 同手法）。
+
+== 踩坑记录（复用价值高）
+
++ *sync 漏跑*：插件以拷贝模式装进 vault，改完必须 `bun run sync <vault>` 再 `plugin:reload`，否则 reload 的是旧产物——本次「样式改了没生效」排查一圈，发现 vault 里一直是旧 styles.css。
++ *Prec.highest 主题*：`@replit/codemirror-vim` 以 `Prec.highest` 注入 `.cm-fat-cursor` 样式（默认 `#ff9696` 红块），注入时机在插件 CSS 之后、同特异性必赢，插件侧需 `!important` 压制。
++ *当前行断裂*：`.cm-content` 的水平 padding 不在 `.cm-activeLine` 背景覆盖范围内（getBoundingClientRect 实测 gutter 右缘与行左缘差 16px），把水平 padding 挪到 `.cm-line` 上，让行背景连自己的 padding 一起盖住。
++ *bun add 不写 package.json*：项目的 install 钩子（`scripts/install.ts` 需要 vault 参数、无参即非零退出）会导致 `bun add` 装完包但不写回 package.json，devDependencies 需手动补登。
++ *update 周期内 dispatch 会抛异常*：`vim-mode-change` 可能由事务触发、在 CM 更新进行中回调，此时 `EditorView.dispatch` 直接 throw（console 可见 `Calls to EditorView.update are not allowed ...`），editable compartment 从此与 vim 真实模式脱钩——编辑器卡死（输不了字、Esc 回不去 normal）。修法：reconfigure 包 `setTimeout(0)` 延后到更新周期外。
++ *tabindex 移除会 blur*：normal 下编辑器靠 `tabindex="0"` 持焦，进 insert 时若随 compartment 撤掉 tabindex，Chrome 对持焦元素移除该属性会直接 blur（按键全丢）。修法：tabindex 常驻静态 `contentAttributes`，compartment 只翻 `contenteditable` 一个属性；模式切换后兜底 `if (!view.hasFocus) contentDOM.focus()`。
++ *core `.view-content` padding*：Obsidian core 给 `.view-content` 设了 `12px/12px/32px` padding，会让编辑器底部悬空 32px（vim 面板下露出一条缝）；插件同特异性规则压不过，需 `.workspace-leaf-content[data-type="notist-view"] .notist-view-root` 级特异性。
+
+== 验证
+
+obsidian CLI 全程实机：`plugin:reload` + `dev:errors` 确认无错，`dev:screenshot` 截图迭代样式，`eval` + `getComputedStyle` / `getBoundingClientRect` 定量核验（当前行带 gutter-正文间隙 16px → 0、gutter 字号 13.6px、当前行底色 alpha 2.7%、失焦光标透明底 + accent 描边）。vim 状态机用合成 KeyboardEvent 驱动验证：normal（ce=false）↔ insert（ce=true）往返、焦点全程保持；visual block 直查 `view.editorView.state.selection.ranges` 得逐行三范围；vim 面板与状态栏/Vault 块同色（`rgb(246,246,246)`）且 bottom 对齐 1237。排障技巧：console 历史 error 用 `dev:console level=error` 抓（脱钩案即由此定位）；eval 对复合/长输出有吞掉现象，宜拆小步同步查询；截图在部分会话不可用（CLI 侧问题），改用几何/计算样式数值验证。

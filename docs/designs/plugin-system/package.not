@@ -20,11 +20,11 @@ PluginPackage {
 
 - `Core` package 是语言版本的一部分，由宿主 native 实现；它使用同一 schema。
 - `Wasm` package 是第三方组件，只通过受限 host import 与宿主交互。
-- `PackageId` 成为 `ElementName` 的 namespace：插件 Leaf 写作 `shader::canvas`。
+- `PackageId` 成为 `ElementName` 的 namespace：插件节点写作 `shader::canvas`。
 
 == Manifest
 
-插件包是目录或 zip，根下是 `plugin.json`。manifest 只是信封：身份、Wasm 装载参数、投影资产与权限请求；semantic 接口由组件的 `init` 注册提供（[[vault::designs::plugin-system::abi]]），不写入 manifest：
+插件包是目录或 zip，根下是 `plugin.json`。manifest 只是信封：身份、Wasm 装载参数与投影资产；semantic 接口由组件的 `init` 注册提供（[[vault::designs::plugin-system::abi]]），不写入 manifest：
 
 ```json
 {
@@ -54,7 +54,7 @@ PluginPackage {
 }
 ```
 
-- `wasm.component` 区分 WIT component 与 legacy v0 core Wasm；`wasm.host-call` 表示组件 import `host.call`。
+- `wasm.component` 区分 WIT component 与 2026-08-18 初版 raw core Wasm；`wasm.host-call` 表示组件 import `host.call`。
 - `interfaces.render` 描述投影面；投影贡献是静态文件引用，保留在信封里，细节见 [[vault::designs::plugin-system::projection]]。
 
 == core package
@@ -65,10 +65,11 @@ core 不写成一个 Wasm 组件，而是宿主内的特权 native package：
 CorePackage {
   functions: 所有 core::* 构造器实现
   elements:  core 成型 schema
-  render:    core 投影（native HTML / future native render node）
   authority: host
 }
 ```
+
+core 的投影不属于 core package：`core::*` 的 HTML 映射是 html target package 的内置 handler 集合（[[vault::designs::plugin-system::projection]]）。
 
 它和插件 package 共享：
 
@@ -76,11 +77,11 @@ CorePackage {
 - `ElementSchema`；
 - `RendererRegistry`。
 
-但不共享信任等级：core 的实现与 schema 随语言版本发布，宿主静态链接；`core::*` 不可被插件覆盖，边界见 [[vault::designs::world::core-namespace-plugin-boundary]]。
+但不共享信任等级：core 的实现与 schema 随语言版本发布，宿主静态链接；`core::*` 不可被插件覆盖，边界见 [[vault::designs::world::core-namespace-plugin-boundary]]。core 的内容词表（内置构造器签名与校验）见 [[vault::designs::plugin-system::core]]。
 
 == Notist.toml 配置
 
-Vault 在 `Notist.toml` 中声明要加载的 package 与站点授予：
+Vault 在 `Notist.toml` 中声明要加载的 package：
 
 ```toml
 [plugins.shader]
@@ -102,14 +103,14 @@ Notist.toml
   → compile + instantiate Wasm component
   → init()：guest 注册元素声明
   → validate schema / namespace（原子，任一失败即整包拒绝）
-  → register functions + elements + renderers
+  → register functions + elements + 投影贡献
   → WorkspaceSnapshot identity
 ```
 
 - `init` 消耗与 `evaluate` 相同的 fuel 预算，且要求确定性；装载成本是毫秒级的一次性开销。
 - 插件失败是 host boundary diagnostic，不伪装成 `None` 成功。
 - 插件 namespace 冲突在加载时拒绝。
-- package、manifest、assets 或权限变化进入 source-set / plugin fingerprint，分配新的 `FunctionEnvironmentId` 并发布新 snapshot revision。
+- package、manifest 或 assets 变化进入 source-set / plugin fingerprint，分配新的 `FunctionEnvironmentId` 并发布新 snapshot revision。
 - daemon 递归 watch 外部 package 目录；`plugin.json` / wasm / assets 变化触发 disk view reload。
 
 == 已裁定 / 待定

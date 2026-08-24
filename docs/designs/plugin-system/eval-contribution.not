@@ -1,7 +1,7 @@
 @![implementation = "aligned"]
 = Eval Contribution
 
-本文定义插件如何贡献语义函数：manifest 中的 `FunctionDecl` / `ElementDecl` 如何变成 `FunctionRegistry` 中的可调用对象，以及静态分析与 runtime 如何分别消费这些贡献。Call 的规约规则见 [[vault::designs::pipeline::plugin-call-reduction]]。
+本文定义插件如何贡献语义函数：组件 `init` 注册的元素声明如何变成 `FunctionRegistry` 中的可调用对象，以及静态分析与 runtime 如何分别消费这些贡献。Call 的规约规则见 [[vault::designs::pipeline::plugin-call-reduction]]。
 
 == FunctionDecl
 
@@ -27,7 +27,7 @@ registry 中共有三种 Function 实现：
 
 1. **Core native function**：core 是特权 native package，构造器由宿主直接实现并注册。
 2. **Component function**：WIT `plugin` / `plugin-host` 组件；装载时 `init` 返回声明，`evaluate` 按 dispatcher 名字分发规约；后者持有共享 registry，供 `host.call` 使用。
-3. **Core WasmFunction**：legacy v0 raw core Wasm，`evaluate(ptr, len) -> ptr`，仅用于存量 shader package。
+3. **Core WasmFunction**：2026-08-18 初版 raw core Wasm ABI（`evaluate(ptr, len) -> ptr`），仅用于存量 shader package。
 
 所有实现都实现同一 `Function` trait 并进入同一 `FunctionRegistry`；core 与插件在 registry 中地位相同，但 core 的 authority 是 host。
 

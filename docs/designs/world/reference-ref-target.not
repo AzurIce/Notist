@@ -1,7 +1,7 @@
 @![implementation = "aligned"]
 = Reference and RefTarget
 
-本文是 V4 引用寻址与 RefTarget 的独立成篇，从归档的历史混合文档中独立成篇。Reference 元素的值层定义见 [[vault::designs::language::builtin-constructors#ref]]；scope 是值层节点见 [[vault::designs::language::scope-environment#scope 是值层节点]]。
+本文是引用寻址与 RefTarget 的独立成篇，从归档的历史混合文档中独立成篇。Reference 元素的值层定义见 [[vault::designs::plugin-system::core#ref]]；scope 是值层节点见 [[vault::designs::language::scope-environment#scope 是值层节点]]。
 
 == 引用与寻址
 
@@ -28,7 +28,7 @@ scope 是值层节点（[[vault::designs::language::scope-environment#scope 是�
 - `[[vault::guide#install]]` 解析到该 scope 在模块内的位置；
 - 匿名 scope 不可寻址——想被引用或查询，就创建带 id 的节点（这正是手动 scope 的意义之一）。
 
-heading 额外拥有**默认 id**：标题 body 提取的纯文本（见 [[vault::designs::language::builtin-constructors#heading]]）。引用 `#` 后缀的匹配顺序：先按显式 id 精确匹配，再按标题默认 id（标题文本）精确匹配——标题文本不需要符合标识符语法（`[[...]]` 内是字面字符串）。重复标题产生歧义诊断，作者用显式 `@id` 消歧；显式 id 总是覆盖默认 id。
+heading 额外拥有**默认 id**：标题 body 提取的纯文本（见 [[vault::designs::plugin-system::core#heading]]）。引用 `#` 后缀的匹配顺序：先按显式 id 精确匹配，再按标题默认 id（标题文本）精确匹配——标题文本不需要符合标识符语法（`[[...]]` 内是字面字符串）。重复标题产生歧义诊断，作者用显式 `@id` 消歧；显式 id 总是覆盖默认 id。
 
 === 资源文件解析
 
@@ -56,11 +56,11 @@ RefTarget
 两条关键原则：
 
 - 目标类型是解析产物，不是元素字段：`path#id` 是资源还是 scope，只有解析才知道；值层的 Reference 元素不携带目标类型；
-- "是什么目标"（分析层）与"以什么关系引用"（元素层）正交：relation 是引用元素自己的属性——v1 只有 Reference（导航），Preview（嵌入预览）预留分支，`![[...]]` 糖暂缓。
+- "是什么目标"（分析层）与"以什么关系引用"（元素层）正交：relation 是引用元素自己的属性——当前只有 Reference（导航），Preview（嵌入预览）预留分支，`![[...]]` 糖暂缓。
 
 === 外部 URL（暂缓）
 
-带 scheme（`https://`、`mailto:` 等）的外部目标暂缓进入语言：v1 的引用目标空间只包含 vault 内部目标。RefTarget 预留 External 分支，待外部目标进入时启用；配套的 `link` 构造器与裸 URL 自动链接糖同步暂缓（见 [[vault::designs::language::syntax-sugar#ref]]）。`[[https://...]]` 语法合法（target 是字面 url 字符串，见 [[vault::designs::language::syntax-sugar#ref]]）：解析产物为 `External(url)`，v1 渲染为未解析的可见文本并产生 info 级 `external-reference-unsupported` 诊断——不是语法错误。
+带 scheme（`https://`、`mailto:` 等）的外部目标暂缓进入语言：当前的引用目标空间只包含 vault 内部目标。RefTarget 预留 External 分支，待外部目标进入时启用；配套的 `link` 构造器与裸 URL 自动链接糖同步暂缓（见 [[vault::designs::language::syntax-sugar#ref]]）。`[[https://...]]` 语法合法（target 是字面 url 字符串，见 [[vault::designs::language::syntax-sugar#ref]]）：解析产物为 `External(url)`，当前渲染为未解析的可见文本并产生 info 级 `external-reference-unsupported` 诊断——不是语法错误。
 
 == 两张跨模块图
 

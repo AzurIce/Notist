@@ -1,16 +1,16 @@
-@![implementation = "aligned"]
+@![implementation = "partial"]
 = Evaluation and Reduction Stage
 
-本文承接 [[vault::designs::language::type-system#静态检查]]（静态检查：名称解析、类型、已解析调用）与 [[vault::designs::language::scope-environment#名称解析]]（scope 与词法环境）。本文定义 [[vault::designs::pipeline]] 的求值阶段：在 scope 链上执行静态检查的产物，把源码 lower 成 Leaf 流，并把流中的 Call 递归规约为 Leaf；结果交给 [[vault::designs::pipeline::structure]] 递归成型。
+本文承接 [[vault::designs::language::type-system#静态检查]]（静态检查：名称解析、类型、已解析调用）与 [[vault::designs::language::scope-environment#名称解析]]（scope 与词法环境）。本文定义 [[vault::designs::pipeline]] 的求值阶段：在 scope 链上执行静态检查的产物，把源码 lower 成 call 森林，并把森林规约到不动点；结果交给 [[vault::designs::pipeline::structure]] 递归成型。
 
 ```text
 静态检查产物（type system）
   → lower
-  → Stream<Call | Leaf>        // Call 由 lowering 引入
-  → reduce
-  → FlatContent<Leaf>          // Leaf 流，可能包含 core::parbreak
+  → call 森林                 // Call 由 lowering 引入
+  → reduce                   // 声明式不动点
+  → call 森林（无可规约的 call）// 可能包含 core::parbreak
   → shape
-  → ElementTree<Leaf>          // 只有 Leaf，无 Call、无 core::parbreak
+  → 成型后的森林              // 无 core::parbreak，已归组
 ```
 
 求值器只消费静态检查的产物：不重新解析名称、不重新绑定实参、不重新猜测函数身份。
@@ -23,7 +23,7 @@
 Value
 ├─ None
 ├─ Bool / Int / Float / String
-├─ Content          # Leaf 流/子树
+├─ Content          # call 森林/子树
 └─ Function         # 形参可以是普通值，也可以是 trailing Content
 ```
 
@@ -31,30 +31,20 @@ Value
 
 每个公开类型都必须具有相应的值构造、观察与操作——进入语言的类型就是普通值，可以绑定、传递与运算。类型与值一一对应，见 [[vault::designs::language::type-system#类型系统]]。
 
-== Leaf 与 ElementInstance
+== Call 与 Node
 
-所有内容节点统一为一种 Leaf 类型。Leaf 是带类型的构造器实例：`name` 标识构造器身份，`fields` 保存“名称 + 带类型的 args”，`body` 保存递归内容：
+所有内容节点统一为一种表示：call。`name` 标识构造器身份，`args` 保存"名称 + 带类型的参数"，`children` 保存递归的子森林：
 
 ```text
-ElementInstance {            // 唯一终止节点类型；Leaf 是阶段术语
-  name: ElementName          // qualified name
-  fields: Vec<Field>         // 名称 + 带类型的 args
-  body: Vec<InstanceNode>    // 递归 Leaf 流
-  block: Bool                // 是否中断段落流
-}
-
-Field {
-  name: String
-  value: FieldValue          // None / Bool / Int / Float / String / Content / Array
-}
-
-InstanceNode {
-  instance: ElementInstance
-  range: TextRange
+Node {
+  name      // qualified name
+  args      // 名称 + 带类型的参数（None / Bool / Int / Float / String / Content / Array）
+  children  // 递归 call 森林
+  block     // 是否中断段落流
 }
 ```
 
-不存在 Rust 侧的 `Element` 枚举或内置变体：内置与插件内容都是 `ElementInstance`。`ElementName` 词表分四类：
+不存在 Rust 侧的 `Element` 枚举或内置变体：内置与插件内容都是 `Node`。"已规约 / 未规约"是同一节点的两个阶段，不是两种类型——没有 handler 的名字不被触碰，它自己就是规约结果。名字词表分四类：
 
 ```text
 构造器来源：core::text / core::reference / core::heading / core::raw /
@@ -69,33 +59,33 @@ InstanceNode {
 插件来源：  {package}::{element}
 ```
 
-- 内置集合的封闭性由 `core::` namespace 与构造器签名保证；
-- 插件只能产生自己 namespace 下的 Leaf；
+- 内置集合的封闭性由 `core::` namespace 与构造器签名保证——封闭的是注册侧，`core::*` 的 handler 永远由宿主提供；
+- 提及自由：handler 的输出森林可以写任何名字，包括 `core::*` 与其他 package 的名字；名字的语义由注册方决定，没有 handler 的名字只是数据；
 - 每个构造器的参数类型与 body 模式由其签名校验，例如 `core::heading` 要求 `level: Int` 与 `body: Content`；
-- 容器子元素不变量在构造器校验，例如 Table 的填行/span（[[vault::designs::language::builtin-constructors#table]]）；
-- 完整 Leaf 契约见 [[vault::designs::world::core-namespace-plugin-boundary#Leaf Contract]]。
+- 容器子元素不变量在构造器校验，例如 Table 的填行/span（[[vault::designs::plugin-system::core#table]]）；
+- 完整 call 契约见 [[vault::designs::world::core-namespace-plugin-boundary#Call 契约]]。
 
 == Lowering：Call 的来源
 
-`Call` 不是 parse 的直接产物。parse 输出 mode-aware 语法树，其中显式调用是 `syntax::Call`，标题/列表等是糖节点；check 把调用点解析为确定的函数身份。lower 消费 check 后的语法树，把各节点统一翻译为 `Stream<Call | Leaf>`：
+`Call` 不是 parse 的直接产物。parse 输出 mode-aware 语法树，其中显式调用是 `syntax::Call`，标题/列表等是糖节点；check 把调用点解析为确定的函数身份。lower 消费 check 后的语法树，把各节点统一翻译为 call 森林：
 
 | parse / check 产物 | lowering 输出 |
 |---|---|
-| Markup 普通文字 | `Leaf(core::text, text: ...)` |
-| 空行 | `Leaf(core::parbreak)` |
-| 显式 `#heading(...)[...]` | `Call(core::heading, arguments, body: Stream[...])` |
-| `= Title` 糖 | 同一个 `Call(core::heading, ...)` |
-| `- item` 糖 | `Call(core::item, ordered: false, ...)` |
-| Content literal `[...]` | 嵌套 `FlatContent` |
-| 插件函数调用 | `Call({package}::{element}, ...)` |
-| 普通实参表达式 | 求值为 `StreamValue::Value` |
-| Content 实参 / trailing body | 保持为 `StreamValue::Stream` |
+| Markup 普通文字 | `core::text` 节点 |
+| 空行 | `core::parbreak` 节点 |
+| 显式 `#heading(...)[...]` | `core::heading` call（arguments + body 子森林） |
+| `= Title` 糖 | 同一个 `core::heading` call |
+| `- item` 糖 | `core::item` call（ordered: false） |
+| Content literal `[...]` | 嵌套子森林 |
+| 插件函数调用 | `{package}::{element}` call |
+| 普通实参表达式 | 求值为值 |
+| Content 实参 / trailing body | 保持为子森林 |
 
 注意区分两个 Call：
 
 ```text
 syntax::Call      parse 阶段的语法节点；参数仍是 Expression。
-StreamCall        lowering 后的规约节点；参数是 Value 或嵌套 Stream。
+Node              lowering 后的规约节点；参数是值，children 是子森林。
 ```
 
 因此完整形状是：
@@ -103,8 +93,8 @@ StreamCall        lowering 后的规约节点；参数是 Value 或嵌套 Stream
 ```text
 parse  →  syntax::Call（语法）
 check  →  resolved call（身份与绑定计划）
-lower  →  StreamCall（统一规约 IR）
-reduce →  ElementInstance Leaf
+lower  →  Node（统一规约 IR）
+reduce →  Node（无可规约的 call）
 ```
 
 == 文档流
@@ -117,17 +107,7 @@ parbreak()
 text("world")
 ```
 
-对应流：
-
-```text
-FlatContent [
-  Leaf(core::text, "hello")
-  Leaf(core::parbreak)
-  Leaf(core::text, "world")
-]
-```
-
-`core::parbreak` 是流中合法的 transient Leaf：它参与成型，但在 [[vault::designs::pipeline::structure]] 中被消费，不进入最终 `ElementTree`。
+`core::parbreak` 是流中合法的 transient 节点：它参与成型，但在 [[vault::designs::pipeline::structure]] 中被消费，不进入最终森林。
 
 下面是一个 lowering 示例：
 
@@ -140,49 +120,42 @@ Hello
 parse / check 后，lower 产出：
 
 ```text
-Stream [
+[
   Call(core::heading,
     arguments: { level: 1 },
-    body: Stream [Leaf(core::text, "Title")],
+    body: [ Call(core::text, "Title") ],
   ),
-  Leaf(core::parbreak),
-  Leaf(core::text, "Hello"),
+  Call(core::parbreak),
+  Call(core::text, "Hello"),
 ]
 ```
 
-reduce 把 `Call(core::heading, ...)` 规约为 `Leaf(core::heading, ...)`；`core::text` 与 `core::parbreak` 原本就是 Leaf，直接保留。最终 `FlatContent<Leaf>` 进入 structure。
-
-因此求值阶段的中间节点只有两种：
-
-```text
-StreamNode =
-  | Call(Call)
-  | Leaf(InstanceNode)
-
-FlatContent {
-  nodes: Vec<StreamNode>
-}
-```
-
-规约完成后的 `FlatContent` 只含 Leaf，但允许 `core::parbreak` 与未归组的 `core::item`；这些 transient 形状由成型消除。
+`core::heading` 有 handler，规约继续；`core::text` 与 `core::parbreak` 没有 handler，原样留存。最终森林进入 structure。
 
 == Content 值
 
-`Content` 是 Leaf 流的值类型。它是不透明的、已求值完成的文档流/子树，内部是 Leaf 节点的递归组合；类型系统不追踪内部 Leaf 结构。Content 值里没有占位符——求值完成时一切内容已经确定；需要延迟计算的地方使用 `fn() -> Content`。
+`Content` 是 call 森林的值类型。它是不透明的文档流/子树，类型系统不追踪内部结构：值的"形状"由规约不动点与提及自由决定，静态检查不可预测——森林表示不泄露为语言操作，Content 不可模式匹配、不可比较相等。
+
+Content 值的规约状态分两侧：
+
+- **输入侧恒为规约完成**：函数收到的 Content 实参与 trailing body 总是规约完的（输入函数式）；`let` 绑定与 content literal `[...]` 持有的也是规约完成的森林；
+- **输出侧可以是未规约森林**：函数返回的 Content 可以仍含有 handler 的 call（输出宏式），由不动点继续规约——函数没有"规约完再返回"的义务。
+
+需要延迟计算的地方使用 `fn() -> Content`。
 
 Content 值不是散落的数据：它们组合在同一棵 scope 树上（[[vault::designs::language::scope-environment#scope 是值层节点]]）。节点既装内容，也装名字；属性不挂在树上，见 [[vault::designs::language::property-table]]。
 
 == Content 组合与插入规则
 
-求值在 scope 树上进行：名字沿节点链解析，内容按源码顺序组合成 `Content`。文档正文是隐式的 Content quotation——普通文字、引用、标注与嵌入的计算按源码顺序组合成 Leaf 流。
+求值在 scope 树上进行：名字沿节点链解析，内容按源码顺序组合成 `Content`。文档正文是隐式的 Content quotation——普通文字、引用、标注与嵌入的计算按源码顺序组合成 call 森林。
 
 Markup insertion 边界上，嵌入表达式的结果按规则插入外层 Content：
 
 | 值 | 插入结果 |
 |---|---|
 | `Content` | 原样插入 |
-| `String` | 转为 `core::text` Leaf |
-| `Int` / `Float` / `Bool` | 经 toString 转为 `core::text` Leaf，与 `String` 同路 |
+| `String` | 转为 `core::text` 节点 |
+| `Int` / `Float` / `Bool` | 经 toString 转为 `core::text` 节点，与 `String` 同路 |
 | `None` | 产生空内容 |
 | 其他类型（如 `Function`） | 不能插入，产生诊断 |
 
@@ -190,42 +163,37 @@ Markup insertion 边界上，嵌入表达式的结果按规则插入外层 Conte
 
 == 调用规约
 
-所有内置函数与插件函数注册在同一个 `FunctionRegistry` 中。规约把流中的 `Call` 替换为 Leaf：
+所有内置函数与插件函数注册在同一个 `FunctionRegistry` 中。规约是声明式不动点（完整契约见 [[vault::designs::pipeline::plugin-call-reduction]]）：
 
 ```text
-Stream<Call | Leaf>
-  → 查 FunctionRegistry
-  → depth / fuel 预算检查
+重复：找到森林中存在 handler 的 call，用 handler 的输出森林替换它
+直到：一整轮不再有任何变化
+```
+
+单次 dispatch 的形状：
+
+```text
+查 FunctionRegistry（无 handler → 原样留存，不耗预算）
   → 规约参数中的嵌套流与 trailing body
   → 按签名绑定实参
   → 调用函数
-  → 得到 Value 或新 Stream
-  → 继续递归
-  → FlatContent<Leaf>
+  → 返回的森林重新进入不动点
 ```
 
-函数返回值：
+规约规则：
 
-```text
-FunctionOutput =
-  | Value(Value)          // 普通值，参与外层表达式
-  | Stream(FlatContent)   // Leaf 或尚未规约完的 Call 序列
-```
+- 预算只记在 handler 调用上：每次 dispatch 计一次 depth 与一次 call；
+- 参数值中的嵌套流、trailing body 中的流都先递归规约（输入函数式）；
+- 函数永远返回 `Value`；`Value::Content` 即 call 森林，返回后由不动点继续规约；
+- 不接受 body 的函数、重复/未知/缺失实参、类型错误都产生诊断，不静默丢弃、不通过 accessor panic 假装成功；
+- 未知函数名不产生规约诊断——名字拼错归 check 层报告，规约层保持 total。
 
-单个 Leaf 就是长度为 1 的 Stream。规约规则：
-
-- 每次 dispatch 消耗 depth/fuel 预算，再做参数和 body 规约；
-- 参数值中的嵌套流、trailing body 中的流都先递归规约；
-- 不接受 body 的函数在 reduction 阶段直接产生诊断，不静默丢弃；
-- 未知函数、重复/未知/缺失实参、类型错误都产生诊断，不通过 accessor panic 假装成功；
-- 每次 dispatch 消耗 fuel 并增加 depth。
-
-内置函数返回自己的 Leaf 流；插件函数返回 Call / 自有 Leaf 组成的流。内置与插件函数在 registry 中地位相同，因此插件可以调用 `core::details`、`core::raw` 等其它函数。插件 ABI 与终止规则见 [[vault::designs::pipeline::plugin-call-reduction]]。
+内置与插件函数在 registry 中地位相同，因此插件可以返回指向 `core::details`、`core::raw` 等名字的 call 获得组合能力。插件 ABI 与终止规则见 [[vault::designs::pipeline::plugin-call-reduction]]。
 
 == 求值规则
 
-- **E1 顺序**：声明与正文按源码顺序求值；`let` 绑定扩展后续节点的环境（[[vault::designs::language::scope-environment#名称解析]]），可展示的 Markup 与嵌入表达式通过 Content insertion 追加 Leaf。
-- **E2 函数应用顺序**：求值 callee 表达式 → 按源码顺序求值显式实参与 trailing Content → 按形参声明顺序建立绑定（应用解析结果中的 coercion，或代入缺省形参的默认值）→ 调用函数值 → 校验返回值满足声明的结果类型。
+- **E1 顺序**：声明与正文按源码顺序求值；`let` 绑定扩展后续节点的环境（[[vault::designs::language::scope-environment#名称解析]]），可展示的 Markup 与嵌入表达式通过 Content insertion 追加节点。
+- **E2 函数应用顺序**：求值 callee 表达式 → 按源码顺序求值显式实参与 trailing Content → 按形参声明顺序建立绑定（应用解析结果中的 coercion，或代入缺省形参的默认值）→ 调用函数值 → 校验返回值满足声明的结果类型。签名不表达返回森林的规约状态：`-> Content` 的函数可以返回含有 handler 的 call，规约由不动点继续。
 - **E3 单次求值**：每个表达式只求值一次；默认值表达式在定义时求值，捕获定义处环境，不随调用环境变化（[[vault::designs::language::call-model]] 函数类型）。
 - **E4 错误恢复**：错误实参不使用默认值，错误 callee 不伪装成返回 `None` 的成功函数（[[vault::designs::language::type-system#静态检查]]）。
 
@@ -236,19 +204,19 @@ FunctionOutput =
 ```text
 求值结果 {
   bindings:    Environment,      // 根 scope 自有的 binding（scope）
-  content:     Content,          // Leaf 流（值层真相），交给 shaping 递归成型
-  annotations: AnnotationTable,  // 属性表：Leaf 区间 → 属性集（property table）
+  content:     Content,          // call 森林（值层真相），交给 shaping 递归成型
+  annotations: AnnotationTable,  // 属性表：节点区间 → 属性集（property table）
 }
 ```
 
-[[vault::designs::overview#最小示例]] 的最小示例中：`accent` 与 `warning` 进入 `bindings`，标题与 callout 组合成 `content`——此时它还是 Leaf 流，求值收尾按 [[vault::designs::pipeline::structure#输入与输出]] 把它递归成型为 `ElementTree`。（此结构在引入 Vault 与 Module 后成为 ModuleResult，见 [[vault::designs::world::module-result#ModuleResult]]。）
+[[vault::designs::overview#最小示例]] 的最小示例中：`accent` 与 `warning` 进入 `bindings`，标题与 callout 组合成 `content`——此时它还是 call 森林，求值收尾按 [[vault::designs::pipeline::structure#输入与输出]] 把它递归成型。（此结构在引入 Vault 与 Module 后成为 ModuleResult，见 [[vault::designs::world::module-result#ModuleResult]]。）
 
 == Conformance
 
 | 输入 | 预期 | 测试 |
 |---|---|---|
-| `a[plain]#"text"#[content]z` | Markup、String 插入与 Content literal 按源码顺序形成 Leaf 流 | `evaluates_markup_with_string_and_content_interpolation` |
-| `value: #42` | Int 经 toString 插入为 `core::text` Leaf | `stringifies_scalar_values_in_markup_position` |
+| `a[plain]#"text"#[content]z` | Markup、String 插入与 Content literal 按源码顺序形成内容流 | `evaluates_markup_with_string_and_content_interpolation` |
+| `value: #42` | Int 经 toString 插入为 `core::text` 节点 | `stringifies_scalar_values_in_markup_position` |
 | `#let accent = "violet"` 后 `= #accent` | 根 binding 流入后续内容并进入 bindings | `let_bindings_flow_into_later_markup` |
 | `#if true [yes] else [no]` / 无 else | 分支按值选择；缺省 else 产生空内容 | `if_expression_selects_branches_and_omitting_else_yields_none` |
 | `before { let x = 1; x + 1 } after` | Code block 的 join 值插入正文 | `bare_code_blocks_insert_their_join_value` |
@@ -257,8 +225,12 @@ FunctionOutput =
 == 已裁定 / 待定
 
 - 已裁定：求值器只消费静态检查产物；插入转换只存在于 Markup insertion 边界；每个表达式只求值一次。
-- 已裁定：文档先 lower 为 `Stream<Call | Leaf>`，规约完成得到 `FlatContent<Leaf>`；`content` 是 Leaf 流（值层真相）。
-- 已裁定：`ElementInstance` 是唯一终止节点类型；`core::parbreak` 是成型前合法、成型后消失的 transient Leaf。
+- 已裁定：文档先 lower 为 call 森林，规约是不动点；`content` 是 call 森林（值层真相）。
+- 已裁定：`Node` 是唯一内容表示；"leaf" 只是阶段术语；`core::parbreak` 是成型前合法、成型后消失的 transient 节点。
 - 已裁定：所有构造器——内置与插件——共享同一 FunctionRegistry 与规约规则；完整模型见 [[vault::designs::pipeline::plugin-call-reduction]]。
 - 待定：递归绑定引入后，`let rec` 的求值规则与 scope 可见性由 [[vault::designs::language::scope-environment#名称解析]] 与本文共同补充。
-- 已实现：`stream_lower` 与 `Evaluator::evaluate_stream` 已能对显式 registry 调用和 heading/rule 糖直接产出 `StreamCall`，Text/Wiki/Raw 直接产出 Leaf，List/Table 糖直接产出 `item` / `table-cell` / `table` 调用；完全移除桥接待后续完成。
+- 待定：`#let x = #f(...)` 中 `f` 返回未规约森林时，绑定值持有的规约状态（输入侧恒已规约的推定待确认）。
+
+== 实现现状
+
+值域重写未完成：`Value::Content` 仍持有 legacy `Content` 类型，`FunctionOutput` 保留四个桥接变体；生产规约已运行在统一 `Node` 上，legacy Stream/Leaf 引擎仍服务 `host.call` 与恢复路径。详见 [[vault::designs::pipeline::plugin-call-reduction#实现现状]]。

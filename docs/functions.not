@@ -1,6 +1,6 @@
 = Built-in Functions
 
-本文记录当前工具 surface 实际提供的 14 个内置构造器。未列出的名称不是现行 built-in，调用时产生 unknown function 诊断，元素以 `UnresolvedCall` 保留（渲染器有兜底）。调用模型与类型规则见 [[vault::types]]，语法细节见 [[vault::grammar]]，速查见 [[vault::cheatsheet]]。
+本文记录当前工具 surface 实际提供的 14 个内置构造器。未列出的名称不是现行 built-in：未注册名称由 check 层报 unknown function 诊断，调用本身保留为内容节点（渲染有 fallback 标签兜底）；加载插件后 `{package}::{element}` 是注册名，不报 unknown。调用模型与类型规则见 [[vault::types]]，语法细节见 [[vault::grammar]]，速查见 [[vault::cheatsheet]]。
 
 == 签名总览
 
@@ -52,7 +52,7 @@ ref(url: String) -> Content
 ```
 
 - 目标空间：文档模块（`vault::path::to::file`）、模块内目标（`... #id`，标题默认 id 亦匹配）、资源文件（`vault::path::to::assets#logo.png`，完整文件名精确匹配）；
-- 带 scheme（`https://` 等）的外部 URL 语法合法：解析为 External 目标，v1 渲染为未解析的可见文本并产生 info 级 `external-reference-unsupported` 诊断；
+- 带 scheme（`https://` 等）的外部 URL 语法合法：解析为 External 目标，当前渲染为未解析的可见文本并产生 info 级 `external-reference-unsupported` 诊断；
 - 目标解析产物与引用图见 [[vault::designs::world::reference-ref-target]]。
 
 == heading
@@ -212,7 +212,7 @@ figure(kind: String? = none, supplement: Content? = none,
        caption: Content? = none, trailing body: Content) -> Content
 ```
 
-产生 Figure 块级 wrapper，语义对齐 Typst 0.14 的 `figure`：body 是任意块内容，caption 是题注，kind 是稳定分类，supplement 是题注前缀。`kind` 省略时从 body 自动推断：Table → `"table"`，Raw → `"raw"`，block Custom → 其 name，其他 → `"figure"`。渲染时 supplement 输出为 `supplement + ": " + caption`：
+产生 Figure 块级 wrapper，语义对齐 Typst 0.14 的 `figure`：body 是任意块内容，caption 是题注，kind 是稳定分类，supplement 是题注前缀。`kind` 省略时从 body 自动推断：Table → `"table"`，Raw → `"raw"`，块级插件节点 → 其 name，其他 → `"figure"`。渲染时 supplement 输出为 `supplement + ": " + caption`：
 
 ```not
 #figure(caption: [接口延迟], supplement: [表], kind: "table")[
@@ -254,13 +254,6 @@ __text__  ~= underline([text])
 
 == 未知函数
 
-不在上表的名称（含任何 `::` 命名空间形式）都产生 unknown function 诊断：
+不在上表的内置名称由 check 层报 unknown function 诊断；`::` 命名空间形式在对应插件经 `Notist.toml` 加载后是合法注册名（见 [[vault::plugins]]），不报 unknown。
 
-```not
-#plugin::mermaid(source: r#"""
-graph TD
-    A --> B
-"""#)
-```
-
-调用不会被静默丢弃——解析为 `UnresolvedCall` 元素保留在 Content 中，渲染器对其有兜底展示，预览与工具恢复可以继续处理其余源码。插件与扩展机制按 `Custom` 元素走渲染层兜底，不改变内置构造器集合（元素集合见 [[vault::designs::pipeline::evaluate]]）。
+调用不会被静默丢弃——调用本身原样保留为内容节点，预览与工具恢复可以继续处理其余源码；渲染器把未注册投影的名字投影为 `<{package}-{element}>` 形式的 fallback 标签。插件元素是普通内容节点，不改变内置构造器集合（节点模型见 [[vault::designs::pipeline::evaluate#Call 与 Node]]）。

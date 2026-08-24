@@ -113,7 +113,7 @@ pub enum ModuleReference {
         levels: usize,
         remainder: Vec<String>,
     },
-    /// A literal external url target (deferred in v1, but syntactically legal).
+    /// A literal external url target (not yet supported, but syntactically legal).
     External(String),
 }
 

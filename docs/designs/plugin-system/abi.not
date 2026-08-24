@@ -1,7 +1,7 @@
 @![implementation = "aligned"]
 = Plugin ABI: Shared Types and WIT Boundary
 
-本文定义宿主与 Wasm guest 之间的共享类型与 component ABI。Call / Leaf 流在 reduce 阶段的求值语义见 [[vault::designs::pipeline::plugin-call-reduction]]；package 如何声明 Wasm module 见 [[vault::designs::plugin-system::package]]。
+本文定义宿主与 Wasm guest 之间的共享类型与 component ABI。call 森林在 reduce 阶段的求值语义见 [[vault::designs::pipeline::plugin-call-reduction]]；package 如何声明 Wasm module 见 [[vault::designs::plugin-system::package]]。
 
 == 共享类型
 
@@ -55,6 +55,7 @@ interface types {
         name: string,
         version: u32,
         block: bool,
+        computed: bool,
         parameters: list<param-decl>,
         trailing-content: option<string>,
         body-mode: option<string>,
@@ -65,14 +66,14 @@ interface types {
 
 world plugin {
     use types.{element-decl};
-    /// 装载后调用一次，返回本包贡献的全部元素声明。
+    /// 装载后调用一次；消耗与 evaluate 相同的 fuel 预算，且必须确定。
     export init: func() -> list<element-decl>;
+    /// 按 dispatcher 名字规约一次调用；字节进/字节出。
     export evaluate: func(request: list<u8>) -> result<list<u8>, string>;
 }
 
 interface host {
-    // 消耗同一 depth/fuel 预算，
-    // 并返回规约后的 Leaf 流字节或错误。
+    /// 规约请求节点并返回规约后的森林字节或错误；不做 per-call 授权。
     call: func(request: list<u8>) -> result<list<u8>, string>;
 }
 
@@ -104,14 +105,13 @@ world plugin-host {
 
 插件有两种语义实现模式：
 
-1. **宏展开式**：`evaluate` 返回 `Stream<Call | Leaf>`，把继续规约交给宿主；
+1. **宏展开式**：`evaluate` 返回 call 森林，把继续规约交给不动点；
 2. **主动规约式**：调用 `host.call(core::details, ...)` 等，组合结果后返回。
 
 两种模式都经过宿主；无限递归由 depth/fuel 预算兜底（自返回属于作者 bug）。
 
 === 插件不能做什么
 
-- 不能直接返回 `core::*` Leaf；`core::*` Leaf 只能由宿主调用对应函数后生成；
 - 不能 import 文件系统、网络、随机数或进程；Rust std 所需的 WASI 0.2 imports 由宿主以空 `WasiCtx` 满足；
 - 不能修改 parser、不能重新解释已有 token；
 - 不能覆盖其他 package 的 namespace。
@@ -121,7 +121,7 @@ world plugin-host {
 - WIT 已由 wasmtime bindgen 编译校验；`export init` 与 `export evaluate` 均已接入 loader，`import host.call` 走共享 registry。
 - 载荷直接使用 `notist_model::Node`（`model::wire::{encode_forest,decode_forest}`）；`FunctionOutput::Nodes` 使组件插件在 legacy 与 node 双引擎下均以统一 IR 进出。
 - 插件以 `notist-plugin-sdk` 编写：`Plugin::init(reg)` 注册元素，`ElementFn::reduce` 实现规约，`export_plugin!` 生成组件导出。
-- 兼容 legacy v0 raw core Wasm ABI（`evaluate(ptr, len) -> ptr`），仅用于存量 shader package。
+- 兼容 2026-08-18 初版 raw core Wasm ABI（`evaluate(ptr, len) -> ptr`），仅用于存量 shader package。
 - Component response 的大小与节点上限见 [[vault::designs::plugin-system::safety]]。
 
 == 已裁定 / 待定
@@ -129,5 +129,5 @@ world plugin-host {
 - 已裁定：component 边界保持 opaque bytes；wire schema 由宿主版本化发布。
 - 已裁定：插件形态是 Rust crate → wasip2 组件；作者通过 SDK trait 与 `init` 注册贡献。
 - 已裁定：schema 真相来源是 guest 的 `init` 注册；manifest 只保留信封字段，不再携带 semantic 接口。
-- 已裁定：v1 ABI 入口为 `init`、`evaluate` 与可选 `host.call`。
+- 已裁定：ABI 入口为 `init`、`evaluate` 与可选 `host.call`。
 - 待定：`inspect` / `typecheck` 等 host import 是否进入后续版本。

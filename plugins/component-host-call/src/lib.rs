@@ -1,8 +1,9 @@
 //! component-host-call: the `plugin-host` world sample.
 //!
-//! `passthrough` requests `core::text` through `host.call`; the host checks
-//! the plugin's capabilities and continues reduction before answering, so a
-//! package without the grant fails with a capability diagnostic.
+//! `passthrough` requests `core::text` through `host.call`; the host reduces
+//! the request and answers with the resulting Leaf stream. Content
+//! composition is not per-call authorized — the wasm sandbox is the only
+//! execution boundary (see `docs/designs/plugin-system/capability.not`).
 
 use notist_model::{Node, NodeValue};
 use notist_plugin_sdk::{Args, ElementDecl, ElementFn, EvalCtx, Registrar};

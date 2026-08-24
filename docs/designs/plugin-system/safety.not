@@ -1,4 +1,4 @@
-@![implementation = "aligned"]
+@![implementation = "partial"]
 = Termination, Resource Limits, and Determinism
 
 本文定义插件执行的安全边界。信任模型的裁决见 [[vault::designs::plugin-system::capability]]；reduce 阶段如何消耗预算见 [[vault::designs::pipeline::plugin-call-reduction]]。
@@ -20,7 +20,7 @@
 
 - Wasm 插件是纯函数：相同输入必须相同输出。
 - 不提供文件系统、网络、随机数、进程或 cache 等非确定性 import；WASI 0.2 imports 由宿主以空 `WasiCtx` 满足。
-- host import 与 export 之间不持有 Wasm store 锁，避免重入死锁；Wasm 调用返回并释放锁后才继续嵌套规约。
+- 设计目标：host import 与 export 之间不持有 Wasm store 锁，避免重入死锁；Wasm 调用返回并释放锁后才继续嵌套规约。**当前实现未达成**：`host.call` 在持有本包 runtime 锁与共享 registry 锁期间执行嵌套规约，guest 经 `host.call` 重入本包元素会在同一线程二次获取同一把非重入锁而死锁，depth/fuel 无法兜底。实现对齐前，插件不得经 `host.call` 调用本包元素。
 - 满足以上条件后，语义函数可安全 memoize。
 
 == 已裁定 / 待定

@@ -176,7 +176,7 @@ Type
 - `#id` 后缀是「模块内目标」：文档模块中是带 id 的 scope，资源目录中是完整文件名；引用最多包含一个 `#`，id 不能为空；
 - `vault`、`self`、`super` 是只允许出现在路径开头的保留段；路径段不能包含 control character、`/`、`\`、`#`、`[` 或 `]`；
 - 标题拥有默认 id：`[[vault::guide#安装]]` 按标题文本精确匹配，重复标题产生歧义诊断；
-- 带 scheme（`https://` 等）的外部目标语法合法：解析为 External 目标，v1 渲染为未解析的可见文本并产生 info 级 `external-reference-unsupported` 诊断——不是语法错误。
+- 带 scheme（`https://` 等）的外部目标语法合法：解析为 External 目标，当前渲染为未解析的可见文本并产生 info 级 `external-reference-unsupported` 诊断——不是语法错误。
 
 显式构造 `ref(url: String)` 使用同一个引用解析入口：`[[vault::guide]]` 与 `#ref("vault::guide")` 产生同一种 Reference 元素。
 
@@ -249,6 +249,6 @@ __text__ / ~~text~~        → underline / strike（syntax-sugar）
 
 未闭合或非法的引用、Content block、实参、String、Raw 语法与标注产生 SyntaxError。Code 表达式缺失或无法识别时必须产生诊断，不得静默丢弃后回退到默认值。
 
-未知函数不是语法错误：调用按 `UnresolvedCall` 元素保留（渲染器有兜底），analysis 同时产生 unknown function 诊断——预览与工具恢复都能继续处理其余源码。
+未知函数不是语法错误：调用按内容节点保留（渲染有 fallback 标签兜底），check 层同时产生 unknown function 诊断——预览与工具恢复都能继续处理其余源码。
 
 Markup 中的 `\` 后接标点字符时，二者共同产生一个字面标点 Text；该标点不再参与任何 sugar 识别。Markup、Code 与 Raw 的边界由 parser 在本地确定，不依赖函数注册表或插件运行时。

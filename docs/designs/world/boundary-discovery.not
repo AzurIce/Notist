@@ -1,9 +1,9 @@
 @![implementation = "aligned"]
 = Vault Boundary and Discovery
 
-本文是 V1 Vault 边界与发现的独立成篇，从归档的历史混合文档中独立成篇。Module 树与 ModuleResult 见 [[vault::designs::world::module-result]]。
+本文是 Vault 边界与发现的独立成篇，从归档的历史混合文档中独立成篇。Module 树与 ModuleResult 见 [[vault::designs::world::module-result]]。
 
-Vault 是运行边界：它决定 Module 树的根、discovery boundary、language version 与允许的 capability。跨 Vault 不解析名称与引用——相邻目录和同一 daemon 进程都不能自动扩大解析范围。
+Vault 是运行边界：它决定 Module 树的根、discovery boundary、language version 与加载的 plugin。跨 Vault 不解析名称与引用——相邻目录和同一 daemon 进程都不能自动扩大解析范围。
 
 == Vault
 
@@ -26,7 +26,7 @@ CLI 与 LSP 的具体行为（overlay 归属、vault 切换）属于实现文档
 
 - Module 树的根与 discovery boundary；
 - language version 与 core/prelude 环境；
-- 允许的 capability 与 plugin schema；
+- 加载的 plugin 与其 schema；
 - 引用与 import 的解析边界：跨 Vault 一律不解析——跨 Vault 目标对外表现为 unresolved，Vault 不探测边界外。
 
-配置内容模型（language version、capability、plugin schema 的字段与语义）待 V5 core namespace 与插件边界设计记录定义；此前 Notist.toml 保持空标记或未知键预留，分析层按字节载荷携带配置。
+配置内容模型（language version、plugin schema 的字段与语义）见 [[vault::designs::world::core-namespace-plugin-boundary#Notist.toml 配置内容模型]]；实现前 Notist.toml 保持空标记或未知键预留，分析层按字节载荷携带配置。

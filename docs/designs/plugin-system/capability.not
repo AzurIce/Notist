@@ -1,4 +1,4 @@
-@![implementation = "aligned"]
+@![implementation = "partial"]
 = Trust Model
 
 本文记录插件信任模型（原 Capability Model 的裁决更新，2026-08-23）。wasm 沙箱是唯一的安全边界：无 IO import、fuel 与内存预算、响应大小/节点上限（[[vault::designs::plugin-system::safety]]）。
@@ -22,3 +22,4 @@
 
 - 已裁定：信任模型 = wasm 沙箱；内容组合不授权。
 - 已裁定：`FunctionOwner` 保留为函数来源的描述性元数据，不参与运行时判定。
+- 待定：`host.call` 的跨包组合尚未落地——每包共享 registry 当前只含 core 与本包函数，`host.call` 调不到其他插件的元素；实际的跨包组合路径是返回森林里的 call 由宿主 fixpoint 规约。`host.call` 是否扩展为全 vault registry 待定。

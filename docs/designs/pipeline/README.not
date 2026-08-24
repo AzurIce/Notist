@@ -1,4 +1,4 @@
-@![implementation = "aligned"]
+@![implementation = "partial"]
 = Compilation Pipeline Overview
 
 本文是 Notist 编译管线的总入口：把一篇 source 如何一步步变成可投影文档讲清楚。各阶段细节分别由自己的文档定义；本文只规定阶段边界、输入输出、所有权与不变量。
@@ -7,9 +7,9 @@
 source
   → parse        syntax::Parse
   → check        已解析调用 + 类型 + Symbol identity
-  → lower        Stream<Call | Leaf>        // Call 在这里第一次出现
-  → reduce       FlatContent<Leaf>
-  → structure    ElementTree<Leaf>
+  → lower        call 森林                    // Call 在这里第一次出现
+  → reduce       call 森林（无可规约的 call） // 声明式不动点
+  → structure    成型后的森林                 // 结构化重写
   → project      target node / HTML fragment / native render node
 ```
 
@@ -21,18 +21,18 @@ source
 |---|---|---|---|---|
 | parse | source text | `syntax::Parse` | notist-syntax | [[parse]] |
 | check | `Parse` + WorkspaceSnapshot | 已解析调用 / 类型 / Symbol identity | notist-analysis | [[vault::designs::language::type-system]] |
-| lower | 静态检查产物 | `Stream<Call | Leaf>` | notist-eval | [[evaluate#Lowering：Call 的来源]] |
-| reduce | `Stream<Call | Leaf>` | `FlatContent<Leaf>` | notist-eval | [[evaluate#调用规约]] |
-| structure | `FlatContent<Leaf>` | `ElementTree<Leaf>` | notist-eval | [[structure]] |
-| project | `ElementTree` + 属性表 + target 上下文 | target fragment | notist-html / target renderer | [[project]] |
+| lower | 静态检查产物 | call 森林 | notist-eval | [[evaluate#Lowering：Call 的来源]] |
+| reduce | call 森林 | call 森林（不动点） | notist-eval | [[evaluate#调用规约]] |
+| structure | call 森林 | 成型后的森林 | notist-eval | [[structure]] |
+| project | 成型森林 + 属性表 + target 上下文 | target fragment | notist-html / target renderer | [[project]] |
 
-当前实现中 clean parse 的求值主路径已使用 `FlatContent<Leaf>` reduction，再由兼容投影转回 legacy `Content` / `StructuredDocument` 供现有 host 消费；目标数据形状已定为 `FlatContent<Leaf>` 与 `ElementTree<Leaf>`。
+当前实现中 clean parse 的求值主路径运行在统一 `Node` 上（node_engine 不动点规约），再经适配器转回 legacy `Content` / `StructuredDocument` 供现有 host 消费；目标数据形状是全程 call 森林。
 
 == 阶段边界
 
 - **P1 只向前**：任一阶段不得反向调用前一阶段，尤其不允许 project 阶段重新 parse source。
-- **P2 单一语义真相**：值层是 `FlatContent<Leaf>` 与属性表；`ElementTree` 是它们的可重建投影（[[vault::designs::pipeline::structure#不变量]]）。
-- **P3 Range 稳定**：所有阶段保持 byte range 语义，诊断与属性表可以在 source、Leaf、target 之间互相定位。
+- **P2 单一语义真相**：值层是 call 森林与属性表；成型后的结构是它们的可重建投影（[[vault::designs::pipeline::structure#不变量]]）。
+- **P3 Range 稳定**：所有阶段保持 byte range 语义，诊断与属性表可以在 source、节点、target 之间互相定位。
 - **P4 错误可恢复**：parse/check/evaluate 产生诊断后继续，后续阶段仍能消费部分结果；错误不伪装成合法值。
 - **P5 确定性**：parse、check、evaluate、structure 是纯函数；project 允许读取 target 上下文，但不改变语义树。
 
@@ -46,26 +46,26 @@ check 在求值前完成三件事：名称解析、类型检查、调用解析�
 
 == Lower
 
-lower 是 evaluate 的前半段：它消费 check 后的语法树，产出统一的 `Stream<Call | Leaf>`。`Call` 并不由 parser 直接产生——parse 产出 `syntax::Call` 与糖节点；lower 才把显式调用、语法糖与文档文字统一成 reduction IR。详细规则见 [[vault::designs::pipeline::evaluate#Lowering：Call 的来源]]。
+lower 是 evaluate 的前半段：它消费 check 后的语法树，产出统一的 call 森林。`Call` 并不由 parser 直接产生——parse 产出 `syntax::Call` 与糖节点；lower 才把显式调用、语法糖与文档文字统一成 reduction IR。详细规则见 [[vault::designs::pipeline::evaluate#Lowering：Call 的来源]]。
 
 == Reduce
 
-reduce 是 evaluate 的后半段：它把 `Stream<Call | Leaf>` 中的 `Call` 递归规约为 `ElementInstance` Leaf。规约后仍是流，允许 `core::parbreak` 与未归组的 `core::item`。插件调用、终止预算与插件 ABI 见 [[vault::designs::pipeline::plugin-call-reduction]]；完整插件 package 模型见 [[vault::designs::plugin-system]]。
+reduce 是 evaluate 的后半段：声明式不动点——反复把存在 handler 的 call 替换为 handler 的输出森林，直到一整轮不再变化。规约后的森林允许 `core::parbreak` 与未归组的 `core::item`，由成型消除。插件调用、终止预算与插件 ABI 见 [[vault::designs::pipeline::plugin-call-reduction]]；完整插件 package 模型见 [[vault::designs::plugin-system]]。
 
 == Structure
 
-structure 是递归流折叠：消费 `core::parbreak`，把 inline Leaf 合并为 `core::paragraph`，把相邻 item 合并为 `core::list`，把 heading 归组为 `core::section`。输出是规范树 `ElementTree`，不含 Call 与 `core::parbreak`。
+structure 是森林上的结构化重写：消费 `core::parbreak`，把连续 inline 节点合并为 `core::paragraph`，把相邻 item 合并为 `core::list`，把 heading 归组为 `core::section`。输出的森林不含可规约的 Call 与 `core::parbreak`。
 
 == Project
 
-project 按 `ElementInstance.name` 分发到 target renderer。详细契约见 [[vault::designs::pipeline::project]]；HTML target 中 core Leaf 投影为原生 HTML，插件 Leaf 可以投影为 Web Component；投影层统一，但 target 结果不强制都是 Web Component。HTML 映射见 [[vault::designs::host::html-renderer]]；插件投影贡献见 [[vault::designs::plugin-system::projection]]；跨 target 投影边界见 [[vault::designs::world::core-namespace-plugin-boundary]]。
+project 是 target 侧的第二阶段规约：target package 注册投影 handler，把语义名字规约为目标词表节点，哑 serializer 直出。详细契约见 [[vault::designs::pipeline::project]] 与 [[vault::designs::plugin-system::projection]]；HTML target 中 core 节点投影为原生标签，插件节点可以投影为 Web Component；投影层统一，但 target 结果不强制都是 Web Component。HTML 映射见 [[vault::designs::host::html-renderer]]；跨 target 投影边界见 [[vault::designs::world::core-namespace-plugin-boundary]]。
 
 == 诊断流动
 
 诊断沿阶段单向累积，并在每个阶段保留 source range：
 
 ```text
-SyntaxError ──> EvalDiagnostic ──> LeafEvaluation.diagnostics ──> 渲染/编辑器诊断
+SyntaxError ──> EvalDiagnostic ──> Evaluation.diagnostics ──> 渲染/编辑器诊断
 ```
 
 parse 错误记录在 `Parse.errors`；check/evaluate 错误进入 `Evaluation.diagnostics`；structure 不新增语义诊断；project 不改变诊断集合。
@@ -76,13 +76,13 @@ parse 错误记录在 `Parse.errors`；check/evaluate 错误进入 `Evaluation.d
 |---|---|---|
 | parse | `notist_syntax::parse` | 同左 |
 | check | `notist-analysis` | 同左 |
-| lower | `notist-eval::stream_lower::lower_markup_stream` | 全部 Markup item 已直接产出 `Stream<Call | Leaf>`，不再走 legacy per-item fallback；text inline sugar 扫描复用 legacy leaf factory |
-| reduce | `notist-eval::leaf::reduce_*` | `structured_module` 对 clean parse 使用 Stream reduction |
-| structure | legacy `structure()` + `leaf::shape_flat` | `structured_module` 先经 Stream reduction，再走 legacy 兼容投影；`ElementTree` 已可用于新消费者 |
+| lower | `notist-eval::stream_lower::lower_markup_stream` | 全部 Markup item 已直接产出 call 流，不再走 legacy per-item fallback；text inline sugar 扫描复用 legacy leaf factory |
+| reduce | `notist-eval::leaf::node_engine`（统一 `Node` 不动点） | `structured_module` 对 clean parse 使用 node_engine；legacy Stream 引擎仍服务 `host.call` 与语法错误恢复路径 |
+| structure | legacy `structure()` + `leaf::shape_flat` | `structured_module` 先经 node_engine 规约，再走 `node_to_instance` + `shape_flat`；成型产物 `ElementTree` 已可用于新消费者 |
 | project | service 向 `notist-html::render_element_tree_with_renderers` 传 `ElementTree`；遍历、按 name 分发、anchor/outline/annotation、flow/inline 与全部节点渲染均基于 tree |
 
 == 已裁定 / 待定
 
 - 已裁定：管线阶段为 parse → check → lower → reduce → structure → project；各阶段只消费上一阶段产物。
-- 已裁定：语义真相是 Leaf 流与属性表；结构树是可重建投影。
+- 已裁定：语义真相是 call 森林与属性表；结构是可重建投影。
 - 兼容：`render(StructuredDocument)` 作为旧 API 保留，但它不是 canonical pipeline 的阶段输入。

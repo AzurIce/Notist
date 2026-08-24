@@ -1,0 +1,42 @@
+= obsidian-notist 插件 MVP 实现记录
+
+按 [[vault::obsidian-notist]] 的「借壳架空」立项，在 `~/Files/obsidian-notist`（独立 git 仓库）实现 Obsidian 插件 MVP：双 World UI、文件树过滤、.not 纯文本编辑。不引入 LSP/notist 后端。交互契约见 [[vault::obsidian-notist::dual-world]]，本文记录实现方案与踩坑。
+
+== 技术栈与工程化
+
+- bun 全链（install/run/esbuild/tsc），`bunfig.toml` 钉 npmmirror registry（本机默认 registry 不通）；`flake.nix` dev shell 提供 bun。
+- esbuild 打 `src/main.ts` → `main.js`，obsidian/electron/@codemirror/*/@lezer/* 标 external。
+- 安装脚本 `scripts/install.ts`：`bun run sync <vault>` = 构建 + 拷贝三产物（committable，Vault 可 git 跟踪、跨机器可用）；`--link` 为软链开发模式。幂等，`--link` 拒覆盖真实目录。
+
+== 双 World 机制
+
+- World 状态 = body class（`md-world`/`notist-world`）+ `data.json` 持久化；入口 ribbon/命令/状态栏。
+- *布局隔离*：切换时 `getLayout()` 快照存当前 World、`changeLayout()` 恢复目标 World（Workspaces 核心插件同机制）；`layout-change` 防抖 500ms 持续快照；`switching` 标志抑制切换期事件。快照前与恢复后各做一次 `purgeForeignLeaves`（md 侧摘 `notist-view`/`notist-explorer`，notist 侧摘 `markdown` leaf）——清理即自愈，早期版本的脏快照恢复出来立刻被摘、重存干净版。首次进入 notist 无快照则以当前布局为起点。
+- *文件树*：两 World 共用原生 file-explorer，CSS `data-path` 过滤（`.nav-file:has(> .nav-file-title:...)`），只影响显示不动功能。
+- *ribbon*：notist 侧隐藏全部 `.side-dock-ribbon-action`，白名单（aria-label 匹配，设置页可配）打 `notist-ribbon-keep` class 放行；MutationObserver 跟踪后加载图标。
+- *泄漏点*（已知暂不处理）：Quick Switcher、链接建议、核心搜索仍跨 World。
+
+== 文件创建：chokepoint 方案
+
+所有「新建笔记」入口（头部按钮、右键菜单、命令面板、快捷键）汇聚到 `FileManager.createNewMarkdownFile`——运行期 patch 它（内部 API，实例属性遮蔽原型方法，卸载时 delete 还原）：notist 侧改建 `Untitled.not`（自动编号、尊重 `getNewFileParent` 的新建位置父目录），之后原生 afterCreate 负责打开 + Explorer 内联改名，UX 全原生。
+
+废弃的弯路（按试错顺序）：
++ create 事件兜底改名——vault create 事件对外部 `mv` 进来的文件同样触发，误伤用户文件。*教训：宁要可见的遗漏，不要静默的魔法。*
++ Explorer 按钮捕获阶段点击拦截（aria-label `新建笔记` 匹配）——覆盖不了右键菜单/命令面板。
++ patch 核心命令 `file-explorer:new-file`——仍覆盖不了右键菜单。
+两者都被 chokepoint 取代后删除。
+
+== .not 编辑器（NotistTextView）
+
+- `registerExtensions(["not"], "notist-view")` + TextFileView：顶部内联标题 input（对齐 markdown view 的 inline title，Enter/失焦提交 `fileManager.renameFile`，Escape 还原，重名弹 Notice）+ CodeMirror 6 纯文本编辑（行号/软换行/history/可选 vim，见 [[vault::ai::2026-08-24 obsidian-notist editor cm6 migration]]）。
+- 打开用 view registry 自然分发即可；注意 `openFile` 对已持有该文件的 leaf 不换视图（跟随改名的 markdown leaf 会被判"已打开"）——需要强制时用 `leaf.setViewState({type, state:{file}})`。
+
+== 踩坑记录（复用价值高）
+
++ *`titleEl` 遮蔽*：TextFileView 子类声明 `titleEl` 字段会遮蔽 ItemView 内建字段，字段初始化在 super() 后跑、把内建元素清成 null，Obsidian 内部 `titleEl.setText` 崩溃 →「Failed to open view」、contentEl 全空。症状是"view 打开了但一片空白"。
++ *CSS 特异性*：主题用 `input[type="text"]`（0,1,1）压过 `.notist-title`（0,1,0）；用 `input.notist-title` 打平 + 插件样式加载顺序取胜。
++ *调试工具链*：obsidian CLI（`eval`/`dev:console`/`dev:errors`/`dev:screenshot`/`plugin:reload`）可直接驱动运行中的 Obsidian——本次 titleEl 崩溃就是 `dev:debug on` + `dev:console level=error` 抓出来的；CLI 的 eval 对长 async/大循环输出有吞掉的现象，宜拆成小步同步查询。
+
+== 验证
+
+全部经 obsidian CLI 实机验证：按钮点击 → 直接产 `.not`（尊重新建位置设置落到 `_Logs/`）；chokepoint 直接调用验证右键菜单路径；打开既有 `.not` 进 notist-view；截图确认标题/编辑区视觉对齐原生。

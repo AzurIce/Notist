@@ -96,25 +96,15 @@ kind: String? =   可省略且值可为 None（default 通常为 none），具�
 
 == Content 类型
 
-`Content` 是不透明类型：一个类型涵盖所有元素组合，元素结构（种类、嵌套、参数）是运行时数据，静态检查不追踪它。元素按种类区分，每个元素携带自己的构造器身份与参数：
+`Content` 是不透明类型：一个类型涵盖所有内容组合，节点结构（名字、嵌套、参数）是运行时数据，静态检查不追踪它。Content 值是 call 森林：每个节点是 `Node`（name + args + children），`name` 标识构造器身份，分两类：
 
 ```text
-Element
-├─ Text          # 文本；String 经插入规则转换产生
-├─ Parbreak      # 段间分隔；成型时不进入结构树
-├─ Reference     # 引用（ref 构造器）
-├─ Heading       # 标题（heading 构造器）
-├─ Raw           # 代码（raw 构造器；行内/块级由 block 参数决定）
-├─ Rule          # 分割线（rule 构造器）
-├─ ListItem      # 列表条目；相邻同类条目由成型组合为 List/Enum
-├─ Callout       # 提示框（callout 构造器）
-├─ Details       # 折叠内容（details 构造器）
-├─ Strong / Emph / Underline / Strike
-├─ Custom        # 扩展元素：渲染器对未知种类有兜底
-└─ UnresolvedCall # 未知函数调用：保留供预览与工具恢复
+core::*           # 内置节点：core::text / core::heading / core::callout / ...
+                  # 以及成型产生的 core::paragraph / core::list / core::section
+{package}::*      # 插件节点：插件元素就是普通内容节点
 ```
 
-内置集合是封闭的：内置元素可以穷举匹配；扩展（插件等）走 `Custom`，不改变内置集合。内置元素以 first-class 构造器函数的形式存在——`callout(kind: ..., body: ...)` 产生一个 callout 节点，其类型就是 `Content`；用户函数与内置构造器因此同构，渲染与查询按节点身份消费结果，不区分来源。
+不存在封闭的元素集合：封闭的只是注册侧——`core::*` 的 handler 永远由宿主提供；没有 handler 的名字不被规约触碰，它自己就是终态内容。内置构造器以 first-class 函数的形式存在——`callout(kind: ..., body: ...)` 产生一个 `core::callout` 节点，其类型就是 `Content`；用户函数与内置构造器因此同构，渲染与查询按节点身份消费结果，不区分来源。节点名字词表的具体分类见 [[vault::designs::pipeline::evaluate#Call 与 Node]]。
 
 == 插入规则
 
@@ -170,4 +160,4 @@ Function 不能插入，产生诊断
 
 == 诊断与恢复
 
-语法、未解析名称与类型错误允许产生 partial 结果，使编辑器与预览能继续处理其他源码；恢复节点保留自己的错误状态——错误实参不使用默认值，错误 callee 不伪装成返回 `None` 的成功函数。未知函数的调用保留为 `UnresolvedCall` 元素并产生 unknown function 诊断。
+语法、未解析名称与类型错误允许产生 partial 结果，使编辑器与预览能继续处理其他源码；恢复节点保留自己的错误状态——错误实参不使用默认值，错误 callee 不伪装成返回 `None` 的成功函数。未注册名字的调用原样保留为内容节点；unknown function 诊断由 check 层产生，渲染有 fallback 标签兜底。

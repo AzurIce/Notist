@@ -3,7 +3,7 @@
 
 本文是 `notist` CLI 的完整规范，同时承担设计文档与使用文档两个职责：每个命令既给出“为什么这样设计、边界在哪里”，也给出“怎么调用、输出什么、如何继续”。本文是 CLI 命令面的单一真相；高层分发边界（Skill、官方 docs Vault、发布边界）仍在 [[vault::designs::host::cli-command-surface-skill-distribution]]，查询契约见 [[vault::designs::host::query-contract]]，检索语义见 [[vault::designs::host::search-retrieval-index]]，daemon 与协议见 [[vault::designs::host::daemon-process-views]] 与 [[vault::designs::host::client-interface-protocol]]。
 
-当前实现状态：`partial`。本文描述目标 v3 命令面；已安装二进制的 `notist --help` 在迁移完成前是实际可执行 surface 的最终依据。本文与代码不一致之处按实施计划收敛，不应把旧 flag 重新当作长期契约。
+当前实现状态：`partial`。本文描述 2026-08-15 裁决的目标命令面；已安装二进制的 `notist --help` 在迁移完成前是实际可执行 surface 的最终依据。本文与代码不一致之处按实施计划收敛，不应把旧 flag 重新当作长期契约。
 
 == 设计总览
 
@@ -560,7 +560,7 @@ notist debug inspect [ROOT]
 
 == 迁移与兼容
 
-v3 是有意 breaking change。迁移窗口只保留下列 alias：
+2026-08-15 裁决的新命令面是有意 breaking change。迁移窗口只保留下列 alias：
 
 ```text
 references       -> refs
@@ -568,7 +568,7 @@ query definition -> definition
 --prefix MODULE  -> modules --scope MODULE
 ```
 
-以下 v2 surface 不进入 v3：
+以下旧 surface（2026-08-15 裁决前）不进入新命令面：
 
 ```text
 --format text|json

@@ -1,4 +1,20 @@
 = component-echo
 
-这是 `semantic.wasm` WIT component 的最小示例：`evaluate` 忽略请求并返回一个
-`demo::echo` Leaf 流。宿主通过 `wasmtime::component` 装载并解码 bytes ABI。
+这是 `plugin` world 的最小示例，演示两类元素贡献：
+
+- `echo` 是 computed 元素：handler 把 trailing body 原样透传；body 为空时
+  返回一个携带 `message` 参数的 `core::text` 节点（生产性契约——不返回指向
+  自身的节点）；
+- `note` 是 data-only 声明：不注册 handler，文档中的 call 保持未规约，由
+  name + fields 直接参与渲染兜底。
+
+宿主装载时调用一次 `init` 取得全部 element-decl（schema 自描述），求值阶段
+经 opaque bytes ABI 调用 `evaluate`。插件本体是用 `notist-plugin-sdk` 编写的
+Rust crate（见 `src/lib.rs`），以 `export_plugin!` 导出。
+
+重新构建组件：
+
+```sh
+cargo build --target wasm32-wasip2 --release
+cp target/wasm32-wasip2/release/*.wasm semantic.wasm
+```

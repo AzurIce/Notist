@@ -1,19 +1,19 @@
 = component-host-call
 
-这是 `plugin-host` world 的最小示例：guest 通过 `EvalCtx::call` 请求
-`core::text`，宿主按当前插件 principal 与 capability 策略规约，并把 Leaf 流
-返回给 guest。插件本体是用 `notist-plugin-sdk` 编写的 Rust crate（见
-`src/lib.rs`），以 `export_host_plugin!` 导出。
+这是 `plugin-host` world 的最小示例：guest 通过 `EvalCtx::call` 发起
+`host.call` 请求宿主规约 `core::text`，宿主规约后把 Leaf 流返回给 guest。
+内容组合不做 per-call 授权，wasm 沙箱是唯一执行边界（见
+`docs/designs/plugin-system/capability.not`）。插件本体是用
+`notist-plugin-sdk` 编写的 Rust crate（见 `src/lib.rs`），以
+`export_host_plugin!` 导出。
 
-Vault 声明需要显式授予语义 capability：
+Vault 声明只需给出 package 路径，host call 能力由 manifest 的
+`wasm.host-call: true` 声明：
 
 ```toml
 [plugins.component-host-call]
 path = "../plugins/component-host-call"
-capabilities = ["core::text"]
 ```
-
-有效权限 = 站点授予 ∩ plugin.json `capabilities.request`。
 
 重新构建组件：
 

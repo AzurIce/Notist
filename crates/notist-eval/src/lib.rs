@@ -955,7 +955,7 @@ mod tests {
 
     #[test]
     fn does_not_lower_quote_marker_sugar() {
-        // Quote is not part of the v1 language (R04): the marker stays text.
+        // Quote is not part of the current language (R04): the marker stays text.
         let evaluated = Evaluator::default().evaluate("> > Nested *quotation*");
         assert!(
             evaluated.diagnostics.is_empty(),

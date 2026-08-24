@@ -6,7 +6,7 @@
     "notist": {
       "binary": {
         "path": "cargo",
-        "arguments": ["run", "--quiet", "--", "lsp"]
+        "arguments": ["run", "--", "lsp", "--no-daemon"]
       }
     }
   }
