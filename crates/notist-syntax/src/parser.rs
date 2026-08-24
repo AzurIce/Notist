@@ -317,6 +317,7 @@ impl Parser<'_> {
         &mut self,
         start: usize,
         stop_at_bracket: bool,
+        at_line_start: bool,
     ) -> (Markup, bool, usize) {
         let mut nested = Parser {
             source: self.source,
@@ -324,7 +325,8 @@ impl Parser<'_> {
             end: self.end,
             errors: Vec::new(),
         };
-        let (markup, stopped) = nested.parse_markup(stop_at_bracket, false, true, false);
+        let (markup, stopped) =
+            nested.parse_markup(stop_at_bracket, false, true, at_line_start);
         self.errors.append(&mut nested.errors);
         (markup, stopped, nested.cursor)
     }
@@ -350,7 +352,7 @@ impl Parser<'_> {
             return None; // `=foo` is ordinary text.
         }
         let body_start = start + level + usize::from(!after.is_empty());
-        let (body, _, _) = self.parse_markup_until_line_end(body_start, stop_at_bracket);
+        let (body, _, _) = self.parse_markup_until_line_end(body_start, stop_at_bracket, false);
         let range = TextRange::new(start, body.range.end.max(start + level));
         let mut end = range.end;
         // The heading consumes its line, including the trailing newline: a
@@ -429,10 +431,30 @@ impl Parser<'_> {
             // The body runs until the line end, unless a bracket scope
             // (`#[...]`, `#{...}`, `#f(...)`) absorbs the newline or a
             // closing `]` stops it early.
-            let (mut body, stopped_at_bracket, stop) =
-                self.parse_markup_until_line_end(body_start, stop_at_bracket);
+            let (mut body, mut stopped_at_bracket, mut stop) =
+                self.parse_markup_until_line_end(body_start, stop_at_bracket, false);
             if !stopped_at_bracket {
                 trim_trailing_horizontal_space(&mut body);
+            }
+            // Lines indented deeper than the row marker (and blank lines
+            // between them) continue the row body — this is how a fenced
+            // raw block nests inside a list item. Deeper-indented list
+            // markers stay rows of the flat run, and a body stopped by `]`
+            // never continues. Each continuation line parses from its
+            // content start, so the per-line indent stays out of the body.
+            while !stopped_at_bracket {
+                let Some(continuation) = self.list_continuation(stop, indent) else {
+                    break;
+                };
+                let (segment, segment_stopped, segment_stop) =
+                    self.parse_markup_until_line_end(continuation, stop_at_bracket, true);
+                stopped_at_bracket = segment_stopped;
+                stop = segment_stop;
+                body.items.extend(segment.items);
+                body.range.end = segment.range.end;
+                if !stopped_at_bracket {
+                    trim_trailing_horizontal_space(&mut body);
+                }
             }
             rows.push(ListSugarRow {
                 indent,
@@ -465,6 +487,47 @@ impl Parser<'_> {
             },
             cursor,
         ))
+    }
+
+    /// Returns the content start of the continuation line for a list row
+    /// whose body stopped at `line_end` (a newline or the source end): the
+    /// next non-blank line must be indented deeper than `row_indent` and
+    /// must not itself start a list marker. Blank lines are skipped over —
+    /// they belong to the row only when a real continuation follows.
+    fn list_continuation(&self, line_end: usize, row_indent: usize) -> Option<usize> {
+        let bytes = self.source.as_bytes();
+        let mut cursor = if bytes.get(line_end..line_end + 2) == Some(b"\r\n") {
+            line_end + 2
+        } else if bytes.get(line_end) == Some(&b'\n') {
+            line_end + 1
+        } else {
+            return None;
+        };
+        loop {
+            let rest = &self.source[cursor..self.end];
+            let line_len = rest.find('\n').unwrap_or(rest.len());
+            let line = &rest[..line_len];
+            let line = line.strip_suffix('\r').unwrap_or(line);
+            let indent = line
+                .bytes()
+                .take_while(|byte| matches!(byte, b' ' | b'\t'))
+                .count();
+            let content = &line[indent..];
+            if content.is_empty() {
+                if cursor + line_len >= self.end {
+                    return None;
+                }
+                cursor += line_len + 1;
+                continue;
+            }
+            if indent > row_indent
+                && !content.starts_with("- ")
+                && !content.starts_with("+ ")
+            {
+                return Some(cursor + indent);
+            }
+            return None;
+        }
     }
 
     /// Scans Markup from `start` to `end` until it would stop at `]` or `|`,

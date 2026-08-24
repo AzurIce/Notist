@@ -1119,6 +1119,47 @@ mod tests {
     }
 
     #[test]
+    fn fenced_raw_blocks_nest_inside_list_rows() {
+        // An indented fenced raw block is part of the row body, not a
+        // top-level sibling.
+        let parsed = parse("- item\n  ```not\n  x\n  ```\n- next\n");
+        assert!(parsed.errors.is_empty(), "{:?}", parsed.errors);
+        assert_eq!(parsed.root.items.len(), 1);
+        let MarkupItem::List(sugar) = &parsed.root.items[0] else {
+            panic!("expected list sugar, got {:?}", parsed.root.items)
+        };
+        assert_eq!(sugar.rows.len(), 2);
+        assert!(sugar.rows[0].body.items.iter().any(|item| matches!(
+            item,
+            MarkupItem::Raw(raw) if raw.form == RawLiteralForm::Fenced
+        )));
+        assert!(matches!(
+            &sugar.rows[1].body.items[0],
+            MarkupItem::Text(text) if text.value == "next"
+        ));
+
+        // A marker-looking payload line is consumed by the fence, never
+        // treated as a row.
+        let parsed = parse("- item\n  ```\n  - not a row\n  ```\n- next\n");
+        assert!(parsed.errors.is_empty(), "{:?}", parsed.errors);
+        let MarkupItem::List(sugar) = &parsed.root.items[0] else {
+            panic!("expected list sugar, got {:?}", parsed.root.items)
+        };
+        assert_eq!(sugar.rows.len(), 2);
+
+        // A deeper-indented list marker after the continuation stays a row
+        // of the flat run.
+        let parsed = parse("- item\n  ```\n  x\n  ```\n  - sub\n- next\n");
+        assert!(parsed.errors.is_empty(), "{:?}", parsed.errors);
+        let MarkupItem::List(sugar) = &parsed.root.items[0] else {
+            panic!("expected list sugar, got {:?}", parsed.root.items)
+        };
+        assert_eq!(sugar.rows.len(), 3);
+        assert_eq!(sugar.rows[1].indent, 2);
+        assert_eq!(sugar.rows[2].indent, 0);
+    }
+
+    #[test]
     fn list_rows_allow_multiline_bracket_scopes() {
         // A `#[...]` scope inside a list row may span lines: the line end is
         // a row boundary only when no bracket structure absorbed the newline.

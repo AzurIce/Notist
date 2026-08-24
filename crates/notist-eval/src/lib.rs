@@ -639,6 +639,26 @@ mod tests {
     }
 
     #[test]
+    fn lowers_fenced_raw_block_inside_list_item_body() {
+        // An indented fenced raw block belongs to the row body: it lowers
+        // into the ListItem content instead of escaping as a sibling.
+        let evaluated = Evaluator::default().evaluate("- item\n  ```not\n  x\n  ```\n- next");
+        assert!(
+            evaluated.diagnostics.is_empty(),
+            "{:?}",
+            evaluated.diagnostics
+        );
+        assert!(matches!(
+            evaluated.content.elements.as_slice(),
+            [ElementNode { element: Element::ListItem(first), .. }, ElementNode { element: Element::ListItem(_), .. }]
+                if first
+                    .elements
+                    .iter()
+                    .any(|node| matches!(&node.element, Element::Raw { block: true, .. }))
+        ));
+    }
+
+    #[test]
     fn lowers_indented_mixed_nested_lists() {
         let evaluated =
             Evaluator::default().evaluate("- parent\n  + first child\n  + second child\n- sibling");
