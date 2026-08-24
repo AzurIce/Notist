@@ -1,0 +1,75 @@
+= 插件系统设计演进与实施路线总结
+
+本文完整梳理 2026-08-22/23 两日会话中插件系统的**设计意图演进**、**全部设计变更裁决**，以及对应的**实施路线完成状态**。它是这一阶段的收口文档：规范性现状以 [[vault::designs::plugin-system]] 为准；逐日过程记录见 [[vault::ai::2026-08-22 plugin form and unified ir roadmap]] 与 [[vault::ai::2026-08-23 boundary transport benchmark]]；本文回答「我们为什么走到这里、走到了哪里、还剩什么」。
+
+== 设计意图的演进（六次关键转向）
+
+=== 1. 形态：从 manifest 声明到 init 注册自描述
+
+最初的问题「schema 的真相来源在哪」（manifest vs guest 自描述 vs 物化描述符）被整体消解：**插件 = 一个 Rust crate，经 SDK 编译为 wasip2 组件**。作者实现 `ElementFn`（规约）并在 `Plugin::init` 里把声明注册进 `Registrar`；装载 = 实例化 + 调一次 `init`，注册即自描述。manifest 缩水为信封——身份、Wasm 装载参数、render 资产。schema 声明与实现漂移的问题不复存在。
+
+=== 2. 哲学：wasm 就是 dylib，沙箱是唯一边界
+
+明确拒绝了在内容层再造权限与隔离机制的思路。组件边界对作者而言等同动态库：写 Rust、导出函数、宿主调用。安全由 wasm 本体承担（无 IO import、fuel、内存帽）。
+
+=== 3. 能力系统删除
+
+沿此哲学清算存量：原 Principal/grant 模型（清单 request ∩ 站点 grant、dispatch 前 caller 切换检查）被实证为不可行且无价值——透传类插件把宿主已规约的正文原样带回时，归因必然误伤；而输出树本就完全由插件控制，per-call 内容授权没有安全增量。引擎删除全部 policy/principal 机制，`capability.not` 改写为 Trust Model 页。
+
+=== 4. 一切皆 call：统一 IR 与 fixpoint 规约
+
+`Node { name, args, children }` 成为唯一表示。call 与 leaf 不是两种类型而是同一节点的两个阶段：**叶子 = 没有人再处理的 call**。规约是不动点迭代——注册了 handler 的名字被重写为一串新 call 并重新进入迭代；未注册的名字留存下来即最终内容。配套契约：**handler 不得返回指向自身的节点**（自返回 = 作者 bug，depth/fuel 兜底诊断）；纯数据元素不注册 handler（data-only 声明），其 call 天然是叶子，投影按 name + 参数直接出标签。
+
+=== 5. 边界表示：bytes 维持，序列化可替换
+
+递归类型无法进入 WIT（双端 bindgen 与 wasm-tools 三方实测一致）；拍平索引 typed-WIT 可行但基准证明它比二进制 serde 还慢约 2×。裁决：component 签名维持 opaque bytes，载荷即 `model::Node` 的 serde 编码（当前 JSON）；postcard 具备切换条件（`NodeValue` 天然外部标签）留待启用；typed-WIT 降级为「语言开放性候选」。**SDK 版本即 ABI 版本**，不设独立协议号。
+
+=== 6. 双通道注册与 core 的归宿（方向已定，部分未实施）
+
+第一方代码可以 native rlib 直接实现同一契约（零序列化、受信任），第三方走 wasm 通道。`plugins/core` 不再是"住在 plugins/ 目录的非插件"，而是契约的参考实现。终态意向：core 以 wasm 通道运行时加载——是否成立由性能基准定案。
+
+== 实施路线
+
+=== 已完成 ✅
+
+| 序 | 项 | 说明 |
+|---|---|---|
+| 1 | 插件形态与 SDK | `notist-plugin-sdk`（Plugin/ElementFn/Registrar/export 宏内嵌 WIT）；样例组件以 SDK 重写并随仓部署 |
+| 2 | init 注册自描述 | 宿主实例化后调 `init` 一次，原子校验后注册；manifest 信封化 |
+| 3 | 统一装载路径 | 实例化 + init 单路径；schema-only 快照路径删除 |
+| 4 | WASI 接入 | 空上下文满足 SDK 生成组件的导入 |
+| 5 | 统一 IR | `notist_model::Node` + serde 直出载荷；Wire 镜像层与独立协议版本删除 |
+| 6 | node 规约引擎 | fixpoint 语义（未知名字即叶子）；生产求值入口已切换，消费者无感 |
+| 7 | 数据型元素声明 | `Registrar::declare`（computed 位进 WIT）：签名/schema 全量注册、无派发条目；web-component 投影 e2e 恢复 |
+| 8 | 能力系统删除 | 引擎、清单、Notist.toml、指纹全链路清除；文档改写为信任模型 |
+| 9 | lowering 对齐 | 未知名字产出 pending call；unknown-name 诊断归 check 层 |
+| 10 | 边界基准 | 三方对比数据与裁决归档（postcard 最优；arena 转向语言开放性候选） |
+
+=== 未完成 ◻️
+
+**A2 残余（IR 收尾，按建议顺序）：**
+
+1. **core 构造器 → `FunctionOutput::Nodes`**（小）：16 个构造器改为直接建 `Node`，与 SDK 写法完全一致；这是双通道叙事的最终兑现。
+2. **html 树渲染全覆盖确认 → 删除 `render(StructuredDocument)` legacy 路径**（中）。
+3. **eval 表达式值域重写**（大，建议独立会话）：`Value::Content(legacy Content)` 支撑着 user-function 闭包求值，是 Element 枚举的最后大本营。
+4. **桥接层删除**（随上）：`nodes_to_stream` / `flat_content_to_nodes` / instance 适配器 / `call.rs` legacy 规约入口在前三步清零后移除。
+
+**可选并行（C 类欠账）：**
+
+- postcard 切换（改两个函数体 + 重编样例）；
+- shader 迁离 v0 raw ABI 后删除整条 legacy 模块路径；
+- `api-version` / element `version` 字段处置（实现协商或删除）；
+- spike/bench 代码自 `/tmp/opencode` 归档入仓。
+
+**B 阶段（依赖 A 完成）：**
+
+- Step 2：core 以 wasm 通道运行时加载实验（`include_bytes!` 嵌入 + 进程级 Engine 缓存）；
+- Step 3：native vs wasm-core 性能对比定案（冷装载 / eval 延迟三档语料 / O(深度) 序列化曲线 / 内存；劣化阈值提前定死）。若不达标，退路是分层采纳：hot 构造器留 native 通道。
+
+== 关键不变量备忘
+
+- handler 生产性契约（不自返回）；
+- 响应森林继续参与 fixpoint（无终态特判）；
+- unknown-name 诊断归 check 层，reduce 层 total；
+- 信任模型 = wasm 沙箱，内容组合不授权；
+- 数据型 call 即叶子，投影按 name + 参数。
