@@ -3,12 +3,29 @@
 
 本文记录 Notist 插件求值模型。它把三个问题合并成一个模型：插件如何调用内置或其它插件、插件如何组合任意内容、以及求值结果如何进入成型。
 
-核心公理是：
+== 核心模型
+
+整个内容系统就是一句话：
 
 ```text
-文档先是一段由 Call 与 Leaf 组成的流。
-求值把 Call 流规约为 Leaf 流。
-成型把 Leaf 流折叠为 Leaf 树。
+一切内容都是 call：name + 参数（+ 子流）。
+插件为某些名字注册 handler；handler 把一个 call 重写为一串新的 call。
+没有 handler 的名字不会被触碰——留存下来的就是最终结果（叶子）。
+叶子流经成型折叠成树；树按名字投影为目标标签（html 即元素标签）。
+```
+
+三条推论：
+
+1. **统一表示**：call 与 leaf 不是两种类型，是同一节点的两个阶段——「叶子」只是没人再处理的 call。数据型元素（card/canvas 这类"call 本身就是内容"的）根本不注册 handler，它的 call 天然是叶子，投影按 name + 参数直接出标签；
+2. **生产性契约**：注册了 handler 的名字意味着「这个 call 需要计算」。handler 不得返回指向自身的节点——自返回是作者 bug，由 depth/fuel 兜底并给出诊断；需要组合时返回指向**别的**名字的 call（如 `core::details`），宿主继续规约；
+3. **诊断分层**：名字拼错归 check 层报告（对照 SignatureSet）；reduce 层对未知名字保持 total——留作叶子投影兜底，不阻塞整篇。
+
+对应到管线：
+
+```text
+call 流 ──handler 重写，直到无人处理──▶ 叶子流
+        ──structure 成型折叠──▶ 树
+        ──project 按名分发──▶ 目标标签
 ```
 
 写作文档时，作者写的就是一个流：
@@ -19,7 +36,7 @@ parbreak()
 text("world")
 ```
 
-其中 `parbreak` 不是杂质，而是流中合法的、成型后消失的 Leaf。
+其中 `parbreak` 不是杂质，而是流中合法的、成型后消失的叶子。
 
 本文是 PluginSystem 与 pipeline 的 reduce 契约。完整 package / ABI / 信任模型 / safety 见 [[vault::designs::plugin-system]]。
 
