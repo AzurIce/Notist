@@ -1437,6 +1437,11 @@ impl LowerState<'_> {
                 after = next;
             }
             if count == 1 {
+                // A soft break is a separator within the paragraph, not
+                // content: flush the segment before it and skip the newline
+                // so it never reaches rendered output.
+                self.push_inline_text(text, segment_start, cursor);
+                segment_start = after;
                 cursor = after;
                 continue;
             }

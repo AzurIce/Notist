@@ -2702,6 +2702,25 @@ mod tests {
     }
 
     #[test]
+    fn renders_soft_break_without_newline() {
+        // Regression: a soft break inside a paragraph must not reach the HTML
+        // output, or browsers collapse it into a stray space between CJK text.
+        let evaluation = Evaluator::default().evaluate("第一段。\n第二段。");
+        assert!(
+            evaluation.diagnostics.is_empty(),
+            "{:?}",
+            evaluation.diagnostics
+        );
+        let structured = structure(evaluation);
+        let html = render(&structured.document);
+        assert!(!html.contains('\n'), "{html}");
+        assert!(
+            html.contains("第一段。</span><span class=\"notist-text\" data-notist-start=\"13\" data-notist-end=\"25\">第二段。"),
+            "{html}"
+        );
+    }
+
+    #[test]
     fn renders_manifest_web_component_with_scalar_fields() {
         let document = StructuredDocument {
             blocks: vec![Block::Element(node(

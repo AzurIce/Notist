@@ -1599,7 +1599,7 @@ mod tests {
             .collect::<String>();
         assert_eq!(
             visible,
-            "Visible // line comment\ntext /* outer block */ after"
+            "Visible // line commenttext /* outer block */ after"
         );
 
         let code = Evaluator::default().evaluate("#(1 + /* nested /* block */ comment */ 2)");
@@ -1608,6 +1608,28 @@ mod tests {
             &code.content.elements[0].element,
             Element::Text(text) if text == "3"
         ));
+    }
+
+    #[test]
+    fn soft_break_joins_lines_without_space() {
+        // A single soft break inside a paragraph is a separator, not content:
+        // the lowered Text nodes must not retain the `\n`.
+        let evaluation = Evaluator::default().evaluate("第一段。\n第二段。");
+        assert!(
+            evaluation.diagnostics.is_empty(),
+            "{:?}",
+            evaluation.diagnostics
+        );
+        let visible = evaluation
+            .content
+            .elements
+            .iter()
+            .filter_map(|node| match &node.element {
+                Element::Text(text) => Some(text.as_str()),
+                _ => None,
+            })
+            .collect::<String>();
+        assert_eq!(visible, "第一段。第二段。");
     }
 
     #[test]
@@ -1626,9 +1648,9 @@ mod tests {
         assert!(evaluation.content.elements.iter().any(|node| {
             matches!(&node.element, Element::Heading { .. }) && node.range == TextRange::new(7, 14)
         }));
-        // "@[install]\n" ends at 26; the paragraph's Text node is "\nabc"
-        // and spans [26, 30).
-        assert_eq!(evaluation.annotations[1].range, TextRange::new(26, 30));
+        // "@[install]\n" ends at 26; the soft break is a separator, so the
+        // paragraph's Text node is "abc" and spans [27, 30).
+        assert_eq!(evaluation.annotations[1].range, TextRange::new(27, 30));
     }
 
     #[test]
