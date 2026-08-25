@@ -4520,8 +4520,7 @@ mod tests {
                 "version": "0.1.0",
                 "api-version": "0.1",
                 "wasm": {
-                    "module": "missing.wasm",
-                    "component": true
+                    "module": "missing.wasm"
                 }
             }"#,
         )
@@ -4565,8 +4564,7 @@ mod tests {
                     "version": "{version}",
                     "api-version": "0.1",
                     "wasm": {{
-                        "module": "semantic.wasm",
-                        "component": true
+                        "module": "semantic.wasm"
                     }}
                 }}"#
             )
@@ -4614,8 +4612,7 @@ mod tests {
                 "version": "0.1.0",
                 "api-version": "0.1",
                 "wasm": {
-                    "module": "semantic.wasm",
-                    "component": true
+                    "module": "semantic.wasm"
                 }
             }"#,
         )

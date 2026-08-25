@@ -3,7 +3,6 @@
   "version": "0.1.0",
   "api-version": "0.1",
   "wasm": {
-    "module": "semantic.wasm",
-    "component": true
+    "module": "semantic.wasm"
   }
 }

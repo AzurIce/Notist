@@ -17,7 +17,7 @@ impl ElementFn for Echo {
     fn decl(&self) -> ElementDecl {
         ElementDecl::new("echo")
             .block(true)
-            .param_default("message", "String", "\"hello\"")
+            .param_default("message", "String", "hello")
             .trailing_content("body")
             .body_mode("flow")
     }
@@ -46,7 +46,7 @@ impl notist_plugin_sdk::Plugin for Plugin {
         registrar.declare(
             ElementDecl::new("note")
                 .block(true)
-                .param_default("message", "String", "\"hello\"")
+                .param_default("message", "String", "hello")
                 .trailing_content("body")
                 .body_mode("flow")
                 .data_only(),

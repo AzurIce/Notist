@@ -19,7 +19,7 @@ PluginPackage {
 ```
 
 - package identity、namespace 和 contribution 是语义契约；`backend` 只描述实现与装载方式。
-- `Native` package 由宿主直接加载 Rust registration；`Wasm` package 通过受限 host import 与宿主交互。
+- `Native` package 由宿主直接加载 Rust registration；`Wasm` package 通过单一 WIT `plugin` world 提供 `init` 与 `evaluate`。
 - `core` 是 package id 为 `core` 的标准 package，默认 App 预装它，但不因此成为 eval engine 的特权对象。
 - `PackageId` 成为 `ElementName` 的 namespace：插件节点写作 `shader::canvas`。
 
@@ -32,11 +32,14 @@ PluginPackage {
   "package": "shader",
   "version": "0.1.0",
   "api-version": "0.1",
+  "wasm": {
+    "module": "semantic.wasm"
+  },
   "render": {
     "html": {
       "contributions": [
         {
-          "element": "shader",
+          "element": "canvas",
           "trusted": true,
           "web-component": {
             "tag": "notist-shader",
@@ -46,17 +49,13 @@ PluginPackage {
         }
       ]
     }
-  },
-  "wasm": {
-    "module": "semantic.wasm",
-    "component": true,
-    "host-call": false
   }
 }
 ```
 
-- `wasm.component` 区分 WIT component 与 2026-08-18 初版 raw Wasm；`wasm.host-call` 表示组件 import `host.call`。这是 Wasm backend 的兼容细节，不是 package 的语义分类。
-- `interfaces.render` 描述投影面；投影贡献是静态文件引用，保留在信封里，细节见 [[vault::designs::plugin-system::projection]]。
+- 出现 `wasm.module` 就表示该 artifact 是 WIT `plugin` component；宿主统一实例化它并调用 `init` / `evaluate`，信封没有格式分流 flag。
+- 顶层 `render` 描述投影面；投影贡献是静态文件引用，保留在信封里，细节见 [[vault::designs::plugin-system::projection]]。
+- JSON 只承担人工编辑的 `plugin.json` 信封；semantic declarations、defaults、节点与调用载荷不进入 manifest，统一由 version byte + postcard 承载。
 
 == core package
 
@@ -91,8 +90,8 @@ Vault 在 `Notist.toml` 中声明要加载的 package：
 [plugins.shader]
 path = "../plugins/shader"
 
-[plugins.component-host-call]
-path = "../plugins/component-host-call"
+[plugins.component-echo]
+path = "../plugins/component-echo"
 ```
 
 - `path` 指向相对 Vault root 的 package 目录或 zip；registry 形式的 `package` 字段为未来入口保留。

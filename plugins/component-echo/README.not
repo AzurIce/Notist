@@ -8,9 +8,10 @@
 - `note` 是 data-only 声明：不注册 handler，文档中的 call 保持未规约，由
   name + fields 直接参与渲染兜底。
 
-宿主装载时调用一次 `init` 取得全部 element-decl（schema 自描述），求值阶段
-经 opaque bytes ABI 调用 `evaluate`。插件本体是用 `notist-plugin-sdk` 编写的
-Rust crate（见 `src/lib.rs`），以 `export_plugin!` 导出。
+宿主装载时调用一次 `init` 取得全部共享声明（schema 自描述），求值阶段调用
+`evaluate`。WIT 只暴露 opaque bytes；两种 payload 都由 wire version byte 与
+`notist-model` 共享类型的 postcard 编码组成。插件本体是用
+`notist-plugin-sdk` 编写的 Rust crate（见 `src/lib.rs`），以 `export_plugin!` 导出。
 
 重新构建组件：
 

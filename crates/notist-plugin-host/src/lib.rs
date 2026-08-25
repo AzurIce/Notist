@@ -1,21 +1,16 @@
-//! Runtime Wasm plugin host for Notist.
+//! Runtime Wasm component plugin host for Notist.
 //!
 //! This loader reads `Notist.toml`, resolves plugin package directories,
-//! reads the envelope `plugin.json`, and loads WebAssembly with Wasmtime.
+//! reads the envelope `plugin.json`, and loads WebAssembly components with
+//! Wasmtime.
 //!
 //! Component packages are self-describing: after instantiation the host calls
-//! `init()` exactly once to collect the element declarations the package
-//! contributes, validates them atomically, and registers the resulting
-//! functions and schemas. `plugin.json` no longer carries the semantic
-//! interface; it only describes the package envelope (identity, Wasm loading
-//! parameters, and render assets).
-//!
-//! The raw core Wasm ABI of the initial 2026-08-18 plugin revision
-//! (`evaluate(ptr, len) -> ptr`) remains only for the checked-in shader
-//! package.
+//! `init()` exactly once to collect shared `notist-model` declarations,
+//! validates them atomically, and registers the resulting functions and
+//! schemas. `plugin.json` only describes the package envelope (identity, Wasm
+//! module, and render assets).
 
 use std::collections::BTreeMap;
-
 use std::path::{Component, Path, PathBuf};
 use std::sync::{Arc, Mutex};
 
@@ -24,13 +19,14 @@ use notist_eval::{
     FunctionSignature, PluginContribution, RegistryError, ShapingRegistry, Type, Value,
 };
 use notist_model::{
-    BodyMode, DefaultValue, ElementName, ElementSchema, Node, NodeValue, Parameter, ShapingKind,
+    BodyMode, DefaultValue, ElementName, ElementSchema, Parameter, PluginElementDecl, ShapingKind,
     ShapingRole,
 };
+#[cfg(test)]
 use notist_plugin_core as core_plugin;
 use serde::Deserialize;
-use wasmtime::component::{Component as WasmComponent, HasSelf, Linker};
-use wasmtime::{Config, Engine, Func, Instance, Memory, Module, ResourceLimiter, Store, Val};
+use wasmtime::component::{Component as WasmComponent, Linker};
+use wasmtime::{Config, Engine, ResourceLimiter, Store};
 use wasmtime_wasi::{ResourceTable, WasiCtx, WasiCtxBuilder, WasiCtxView, WasiView, p2};
 
 /// A plugin entry in `Notist.toml`.
@@ -66,47 +62,19 @@ pub struct PluginManifest {
     pub version: String,
     #[serde(rename = "api-version")]
     pub api_version: String,
+    /// Built-in or external implementation source, when the envelope declares one.
+    #[serde(default)]
+    pub source: Option<String>,
     #[serde(default)]
     pub wasm: Option<WasmDecl>,
-    /// Envelope-style projection contributions (`render` at the manifest
-    /// top level). This is the canonical spelling for self-describing
-    /// packages.
+    /// Envelope-style projection contributions.
     #[serde(default)]
     pub render: Option<ManifestRender>,
-    /// Legacy container that also nests `render`; kept so the checked-in
-    /// shader package keeps loading. New packages use the top-level field.
-    #[serde(default)]
-    pub interfaces: ManifestInterfaces,
-}
-
-impl PluginManifest {
-    /// Returns the effective HTML render section regardless of whether the
-    /// package declared it at the envelope top level or in the legacy
-    /// `interfaces` nesting.
-    pub fn effective_render(&self) -> Option<&ManifestRender> {
-        self.render.as_ref().or(self.interfaces.render.as_ref())
-    }
 }
 
 #[derive(Clone, Debug, Deserialize)]
 pub struct WasmDecl {
     pub module: String,
-    /// When true, `module` is a WIT component rather than a raw core Wasm
-    /// module using the initial 2026-08-18 raw ABI.
-    #[serde(default)]
-    pub component: bool,
-    /// When true, the component imports `host.call` and is instantiated with
-    /// the shared plugin registry wired into that import.
-    #[serde(rename = "host-call", default)]
-    pub host_call: bool,
-}
-
-#[derive(Clone, Debug, Default, Deserialize)]
-pub struct ManifestInterfaces {
-    #[serde(default)]
-    pub semantic: Option<SemanticInterface>,
-    #[serde(default)]
-    pub render: Option<ManifestRender>,
 }
 
 /// Target-keyed renderer contributions declared by a package.
@@ -145,49 +113,6 @@ pub struct WebComponentDecl {
     pub style: Option<String>,
 }
 
-#[derive(Clone, Debug, Default, Deserialize)]
-pub struct SemanticInterface {
-    #[serde(default)]
-    pub elements: Vec<ElementDecl>,
-}
-
-#[derive(Clone, Debug, Deserialize)]
-pub struct ElementDecl {
-    pub name: String,
-    #[serde(default)]
-    pub version: u32,
-    #[serde(default = "default_true")]
-    pub block: bool,
-    /// Whether a runtime handler exists. Data-only declarations stay
-    /// unreduced: their document calls are the final leaves.
-    #[serde(default)]
-    pub computed: bool,
-    #[serde(default)]
-    pub parameters: Vec<ParamDecl>,
-    #[serde(rename = "trailing-content")]
-    pub trailing_content: Option<String>,
-    #[serde(rename = "body-mode", default)]
-    pub body_mode: Option<String>,
-    #[serde(default)]
-    pub role: Option<String>,
-    /// Optional explicit shaping kind. Declarative elements default to
-    /// `block | inline`; `separator` is used by `core::parbreak`.
-    #[serde(default)]
-    pub kind: Option<String>,
-}
-
-fn default_true() -> bool {
-    true
-}
-
-#[derive(Clone, Debug, Deserialize)]
-pub struct ParamDecl {
-    pub name: String,
-    pub ty: String,
-    #[serde(default)]
-    pub default: Option<serde_json::Value>,
-}
-
 /// Manifest-declared HTML assets for one package entry in `Notist.toml`.
 #[derive(Clone, Debug)]
 pub struct PluginHtmlAssets {
@@ -215,10 +140,6 @@ pub struct LoadedPlugin {
     pub elements: Vec<ElementSchema>,
     /// HTML renderer contributions declared by the manifest.
     pub html_contributions: Vec<HtmlContribution>,
-    /// Registry shared with component `host.call` imports. It already
-    /// contains core functions and this package's functions by the time
-    /// `load_package` returns.
-    pub shared_registry: Option<Arc<Mutex<FunctionRegistry>>>,
 }
 
 impl LoadedPlugin {
@@ -393,7 +314,8 @@ pub fn read_manifest(package_dir: &Path) -> Result<PluginManifest, String> {
 
 fn validate_html_contributions(manifest: &PluginManifest) -> Result<(), String> {
     let Some(html) = manifest
-        .effective_render()
+        .render
+        .as_ref()
         .and_then(|render| render.html.as_ref())
     else {
         return Ok(());
@@ -430,7 +352,8 @@ pub fn plugin_html_assets(
     for (name, package_dir) in plugin_package_dirs(root, toml_text)? {
         let manifest = read_manifest(&resolve_package_dir(&package_dir)?)?;
         let contributions = manifest
-            .effective_render()
+            .render
+            .as_ref()
             .and_then(|render| render.html.as_ref())
             .map(|html| html.contributions.clone())
             .unwrap_or_default();
@@ -510,82 +433,27 @@ fn validate_site_style(style: &str) -> Result<String, String> {
     Ok(normalized)
 }
 
-/// Loads one plugin package directory.
-///
-/// Packages may be either Wasm-backed or purely declarative. A declarative
-/// package contributes element schemas and signatures; the host projects
-/// bound arguments through [`ElementFunction`] without executing guest code.
+/// Loads one self-describing Wasm component package directory.
 pub fn load_package(package_dir: &Path) -> Result<LoadedPlugin, String> {
     let package_dir = resolve_package_dir(package_dir)?;
     let manifest = read_manifest(&package_dir)?;
+    let wasm = manifest.wasm.as_ref().ok_or_else(|| {
+        format!(
+            "plugin `{}` declares no wasm module; packages must ship a self-describing component",
+            manifest.package
+        )
+    })?;
+    let wasm_path = package_dir.join(&wasm.module);
+    let wasm_bytes = std::fs::read(&wasm_path)
+        .map_err(|error| format!("cannot read {}: {error}", wasm_path.display()))?;
+    let (runtime, declarations) =
+        load_component_runtime(&manifest.package, &wasm_path, &wasm_bytes)?;
+    let runtime = Arc::new(Mutex::new(runtime));
 
-    let shared_registry = if manifest
-        .wasm
-        .as_ref()
-        .is_some_and(|wasm| wasm.component && wasm.host_call)
-    {
-        let (registry, _) = core_plugin::registry();
-        Some(Arc::new(Mutex::new(registry)))
-    } else {
-        None
-    };
-    let runtime: Option<(SemanticRuntime, Vec<ElementDecl>)> = match &manifest.wasm {
-        Some(wasm) => {
-            let wasm_path = package_dir.join(&wasm.module);
-            let wasm_bytes = std::fs::read(&wasm_path)
-                .map_err(|error| format!("cannot read {}: {error}", wasm_path.display()))?;
-            if wasm.component && wasm.host_call {
-                let (runtime, declarations) = load_component_host_runtime(
-                    &manifest.package,
-                    &wasm_path,
-                    &wasm_bytes,
-                    Arc::clone(shared_registry.as_ref().unwrap()),
-                )?;
-                Some((
-                    SemanticRuntime::ComponentHost(Arc::new(Mutex::new(runtime))),
-                    declarations,
-                ))
-            } else if wasm.component {
-                let (runtime, declarations) =
-                    load_component_runtime(&manifest.package, &wasm_path, &wasm_bytes)?;
-                Some((
-                    SemanticRuntime::Component(Arc::new(Mutex::new(runtime))),
-                    declarations,
-                ))
-            } else {
-                let runtime = load_wasm_runtime(&manifest.package, &wasm_path, &wasm_bytes)?;
-                Some((
-                    SemanticRuntime::Core(Arc::new(Mutex::new(runtime))),
-                    Vec::new(),
-                ))
-            }
-        }
-        None => None,
-    };
-
-    // The semantic surface comes from component `init` registration. The
-    // manifest `interfaces.semantic` block is only consulted by the initial
-    // 2026-08-18 raw Wasm path; component packages are self-describing and
-    // ignore it.
-    let declared: &[ElementDecl] = match &runtime {
-        Some((SemanticRuntime::Core(_), _)) => manifest
-            .interfaces
-            .semantic
-            .as_ref()
-            .map(|semantic| semantic.elements.as_slice())
-            .unwrap_or_default(),
-        Some((_, declarations)) => declarations.as_slice(),
-        None => {
-            return Err(format!(
-                "plugin `{}` declares no wasm module; packages must ship a self-describing component",
-                manifest.package
-            ));
-        }
-    };
     let mut functions = Vec::new();
     let mut signatures = Vec::new();
     let mut elements = Vec::new();
-    for element in declared {
+    for element in &declarations {
         let signature = element_signature(element)?;
         let element_name = plugin_element_name(&manifest.package, &element.name);
         signatures.push((element_name.clone(), signature.clone()));
@@ -595,57 +463,19 @@ pub fn load_package(package_dir: &Path) -> Result<LoadedPlugin, String> {
             elements.push(element_schema(&element_name, element, &manifest.package)?);
             continue;
         }
-        let owner = FunctionOwner::Package(manifest.package.clone());
-        let function: Arc<dyn Function> = match &runtime {
-            Some((SemanticRuntime::Core(runtime), _)) => Arc::new(WasmFunction {
-                element_name: element_name.clone(),
-                block: element.block,
-                signature,
-                runtime: Arc::clone(runtime),
-                owner,
-            }),
-            Some((SemanticRuntime::Component(runtime), _)) => Arc::new(ComponentFunction {
-                element_name: element_name.clone(),
-                signature,
-                runtime: Arc::clone(runtime),
-                owner,
-            }),
-            Some((SemanticRuntime::ComponentHost(runtime), _)) => Arc::new(ComponentHostFunction {
-                element_name: element_name.clone(),
-                signature,
-                runtime: Arc::clone(runtime),
-                owner,
-            }),
-            None => unreachable!("declarative packages are rejected above"),
-        };
+        let function: Arc<dyn Function> = Arc::new(ComponentFunction {
+            element_name: element_name.clone(),
+            signature,
+            runtime: Arc::clone(&runtime),
+            owner: FunctionOwner::Package(manifest.package.clone()),
+        });
         functions.push(function);
         elements.push(element_schema(&element_name, element, &manifest.package)?);
     }
 
-    if let Some(shared) = &shared_registry {
-        let mut registry = shared.lock().map_err(|_| {
-            format!(
-                "plugin `{}` shared registry lock poisoned",
-                manifest.package
-            )
-        })?;
-        for function in &functions {
-            registry
-                .register_arc(Arc::clone(function))
-                .map_err(|error| format!("cannot register shared function: {error:?}"))?;
-            let Some((package, element)) = function.name().split_once("::") else {
-                continue;
-            };
-            if let Some(alias) = plugin_legacy_alias(package, element) {
-                registry
-                    .register_alias(alias, function.name())
-                    .map_err(|error| format!("cannot register shared alias: {error:?}"))?;
-            }
-        }
-    }
-
     let html_contributions = manifest
-        .effective_render()
+        .render
+        .as_ref()
         .and_then(|render| render.html.as_ref())
         .map(|html| html.contributions.clone())
         .unwrap_or_default();
@@ -658,7 +488,6 @@ pub fn load_package(package_dir: &Path) -> Result<LoadedPlugin, String> {
         signatures,
         elements,
         html_contributions,
-        shared_registry,
     })
 }
 
@@ -698,41 +527,6 @@ impl ResourceLimiter for WasmStoreState {
     }
 }
 
-fn load_wasm_runtime(
-    package: &str,
-    wasm_path: &Path,
-    wasm_bytes: &[u8],
-) -> Result<WasmRuntime, String> {
-    let mut config = Config::new();
-    config.consume_fuel(true);
-    let engine = Engine::new(&config)
-        .map_err(|error| format!("cannot create wasm engine for `{package}`: {error}"))?;
-    let module = Module::new(&engine, wasm_bytes)
-        .map_err(|error| format!("invalid wasm module {}: {error}", wasm_path.display()))?;
-    let mut store = Store::new(
-        &engine,
-        WasmStoreState {
-            max_memory: WASM_MAX_MEMORY_BYTES,
-            max_table_elements: WASM_MAX_TABLE_ELEMENTS,
-        },
-    );
-    store.limiter(|state| state);
-    let instance = Instance::new(&mut store, &module, &[])
-        .map_err(|error| format!("cannot instantiate {}: {error}", wasm_path.display()))?;
-    let memory = instance
-        .get_memory(&mut store, "memory")
-        .ok_or_else(|| format!("plugin `{package}` does not export memory"))?;
-    let evaluate = instance
-        .get_func(&mut store, "evaluate")
-        .ok_or_else(|| format!("plugin `{package}` does not export evaluate"))?;
-    Ok(WasmRuntime {
-        store,
-        instance,
-        memory,
-        evaluate,
-    })
-}
-
 /// Returns the qualified call-site and element name for a manifest element.
 ///
 /// All plugin elements are namespaced by their package (`shader::shader`,
@@ -751,7 +545,7 @@ pub fn plugin_legacy_alias(package: &str, element: &str) -> Option<String> {
 
 fn element_schema(
     element_name: &str,
-    element: &ElementDecl,
+    element: &PluginElementDecl,
     package: &str,
 ) -> Result<ElementSchema, String> {
     let kind = match element.kind.as_deref() {
@@ -800,17 +594,26 @@ fn element_schema(
     ))
 }
 
-fn element_signature(element: &ElementDecl) -> Result<FunctionSignature, String> {
+fn element_signature(element: &PluginElementDecl) -> Result<FunctionSignature, String> {
     let mut parameters = Vec::new();
     for param in &element.parameters {
         let ty = parse_type(&param.ty)?;
         // Optional parameters without an explicit value still default to
         // `none`, matching the built-in signature convention.
-        let default = match &param.default {
-            Some(value) => Some(json_default(value)?),
-            None if matches!(ty, Type::Optional(_)) => Some(DefaultValue::None),
-            None => None,
-        };
+        let default = param
+            .default
+            .clone()
+            .or_else(|| matches!(ty, Type::Optional(_)).then_some(DefaultValue::None));
+        if let Some(default) = &default
+            && !ty.accepts(&default.ty())
+        {
+            return Err(format!(
+                "plugin element `{}` parameter `{}` has default type `{}` but declares `{ty}`",
+                element.name,
+                param.name,
+                default.ty()
+            ));
+        }
         parameters.push(Parameter {
             name: param.name.clone(),
             ty,
@@ -842,202 +645,6 @@ fn parse_type(ty: &str) -> Result<Type, String> {
         _ if ty.ends_with('?') => Ok(Type::Optional(Box::new(parse_type(&ty[..ty.len() - 1])?))),
         _ => Err(format!("unsupported plugin parameter type `{ty}`")),
     }
-}
-
-fn json_default(value: &serde_json::Value) -> Result<DefaultValue, String> {
-    match value {
-        serde_json::Value::Null => Ok(DefaultValue::None),
-        serde_json::Value::Bool(value) => Ok(DefaultValue::Bool(*value)),
-        serde_json::Value::Number(value) if value.is_i64() => {
-            Ok(DefaultValue::Int(value.as_i64().unwrap()))
-        }
-        serde_json::Value::Number(value) if value.is_f64() => {
-            Ok(DefaultValue::Float(value.as_f64().unwrap()))
-        }
-        serde_json::Value::String(value) => Ok(DefaultValue::String(value.clone())),
-        _ => Err(format!("unsupported plugin default {value}")),
-    }
-}
-
-struct WasmRuntime {
-    store: Store<WasmStoreState>,
-    #[allow(dead_code)]
-    instance: Instance,
-    memory: Memory,
-    evaluate: Func,
-}
-
-struct WasmFunction {
-    element_name: String,
-    block: bool,
-    signature: FunctionSignature,
-    runtime: Arc<Mutex<WasmRuntime>>,
-    owner: FunctionOwner,
-}
-
-impl Function for WasmFunction {
-    fn name(&self) -> &str {
-        &self.element_name
-    }
-
-    fn signature(&self) -> FunctionSignature {
-        self.signature.clone()
-    }
-
-    fn owner(&self) -> FunctionOwner {
-        self.owner.clone()
-    }
-
-    fn call(
-        &self,
-        _context: &FunctionContext<'_>,
-        mut input: FunctionInput<'_>,
-    ) -> Result<Value, Vec<EvalDiagnostic>> {
-        let mut request = Vec::new();
-        for param in &self.signature.parameters {
-            if param.ty == Type::Content {
-                continue;
-            }
-            let Some(value) = input.arguments.get(&param.name) else {
-                continue;
-            };
-            encode_value(&mut request, value);
-        }
-
-        let mut runtime = self.runtime.lock().map_err(|_| {
-            vec![EvalDiagnostic {
-                message: "plugin runtime lock poisoned".into(),
-                range: input.range,
-            }]
-        })?;
-
-        const INPUT_OFFSET: usize = 1024;
-        let WasmRuntime {
-            store,
-            memory,
-            evaluate,
-            ..
-        } = &mut *runtime;
-        store.set_fuel(WASM_FUEL_PER_CALL).map_err(|error| {
-            vec![EvalDiagnostic {
-                message: format!("cannot reset wasm plugin fuel: {error}"),
-                range: input.range,
-            }]
-        })?;
-        if memory.data_size(&mut *store) < INPUT_OFFSET + request.len() {
-            return Err(vec![EvalDiagnostic {
-                message: "plugin request does not fit in wasm memory".into(),
-                range: input.range,
-            }]);
-        }
-        memory
-            .write(&mut *store, INPUT_OFFSET, &request)
-            .map_err(|error| {
-                vec![EvalDiagnostic {
-                    message: format!("cannot write wasm memory: {error}"),
-                    range: input.range,
-                }]
-            })?;
-
-        let mut results = [Val::I32(0)];
-        evaluate
-            .call(
-                &mut *store,
-                &[
-                    Val::I32(INPUT_OFFSET as i32),
-                    Val::I32(request.len() as i32),
-                ],
-                &mut results,
-            )
-            .map_err(|error| {
-                let message = if error.to_string().contains("fuel") {
-                    "wasm plugin exceeded its fuel budget".to_owned()
-                } else {
-                    format!("wasm plugin error: {error}")
-                };
-                vec![EvalDiagnostic {
-                    message,
-                    range: input.range,
-                }]
-            })?;
-        let Val::I32(response_ptr) = results[0] else {
-            return Err(vec![EvalDiagnostic {
-                message: "wasm plugin returned non-i32".into(),
-                range: input.range,
-            }]);
-        };
-
-        let mut response = [0u8; 9];
-        memory
-            .read(&mut *store, response_ptr as usize, &mut response)
-            .map_err(|error| {
-                vec![EvalDiagnostic {
-                    message: format!("cannot read wasm response: {error}"),
-                    range: input.range,
-                }]
-            })?;
-        if response[0] != 1 {
-            return Err(vec![EvalDiagnostic {
-                message: "wasm plugin returned ok=false".into(),
-                range: input.range,
-            }]);
-        }
-        let response_width = i32::from_le_bytes(response[1..5].try_into().unwrap());
-        let response_height = i32::from_le_bytes(response[5..9].try_into().unwrap());
-
-        let body = match self.signature.trailing_content.as_deref() {
-            Some(name) => input.arguments.take_content(name),
-            None => Vec::new(),
-        };
-        let mut fields = BTreeMap::new();
-        for param in &self.signature.parameters {
-            if param.ty == Type::Content {
-                continue;
-            }
-            if let Some(value) = input.arguments.get(&param.name) {
-                fields.insert(param.name.clone(), value_to_json(value));
-            }
-        }
-        if self
-            .signature
-            .parameters
-            .iter()
-            .any(|parameter| parameter.name == "width")
-        {
-            fields.insert(
-                "width".to_string(),
-                serde_json::Value::Number(response_width.into()),
-            );
-        }
-        if self
-            .signature
-            .parameters
-            .iter()
-            .any(|parameter| parameter.name == "height")
-        {
-            fields.insert(
-                "height".to_string(),
-                serde_json::Value::Number(response_height.into()),
-            );
-        }
-        let node = Node {
-            name: self.element_name.clone(),
-            args: fields
-                .into_iter()
-                .map(|(name, value)| (name, json_to_node_value(value)))
-                .collect(),
-            children: body,
-            block: self.block,
-            range: input.range,
-        };
-        Ok(Value::Content(vec![node]))
-    }
-}
-
-enum SemanticRuntime {
-    Core(Arc<Mutex<WasmRuntime>>),
-    Component(Arc<Mutex<ComponentRuntime>>),
-    ComponentHost(Arc<Mutex<ComponentHostRuntime>>),
 }
 
 struct ComponentRuntime {
@@ -1083,23 +690,27 @@ impl ResourceLimiter for ComponentStoreState {
 }
 
 /// Calls guest `init` exactly once after instantiation, inside the same fuel
-/// budget as `evaluate`, and converts the returned declarations.
-macro_rules! run_component_init {
-    ($package:expr, $wasm_path:expr, $bindings:expr, $store:expr, $convert:expr) => {{
-        $store.set_fuel(WASM_FUEL_PER_CALL).map_err(|error| {
-            format!(
-                "cannot set component init fuel for {}: {error}",
-                $wasm_path.display()
-            )
+/// budget as `evaluate`, and decodes its shared declaration payload.
+fn run_component_init(
+    package: &str,
+    wasm_path: &Path,
+    bindings: &wit_bindings_semantic::Plugin,
+    store: &mut Store<ComponentStoreState>,
+) -> Result<Vec<PluginElementDecl>, String> {
+    store.set_fuel(WASM_FUEL_PER_CALL).map_err(|error| {
+        format!(
+            "cannot set component init fuel for {}: {error}",
+            wasm_path.display()
+        )
+    })?;
+    let payload = bindings
+        .call_init(store)
+        .map_err(|error| component_init_error(package, wasm_path, error))?
+        .map_err(|message| {
+            format!("plugin `{package}`: component init returned error: {message}")
         })?;
-        let declarations = $bindings
-            .call_init($store)
-            .map_err(|error| component_init_error($package, $wasm_path, error))?
-            .into_iter()
-            .map($convert)
-            .collect::<Result<Vec<_>, String>>()?;
-        declarations
-    }};
+    notist_model::wire::decode_declarations(&payload)
+        .map_err(|message| format!("plugin `{package}` returned invalid init payload: {message}"))
 }
 
 fn component_init_error(package: &str, wasm_path: &Path, error: wasmtime::Error) -> String {
@@ -1136,7 +747,7 @@ fn load_component_runtime(
     package: &str,
     wasm_path: &Path,
     wasm_bytes: &[u8],
-) -> Result<(ComponentRuntime, Vec<ElementDecl>), String> {
+) -> Result<(ComponentRuntime, Vec<PluginElementDecl>), String> {
     let mut config = Config::new();
     config.consume_fuel(true);
     let engine = Engine::new(&config)
@@ -1171,287 +782,11 @@ fn load_component_runtime(
                 wasm_path.display()
             )
         })?;
-    let declarations = run_component_init!(package, wasm_path, bindings, &mut store, |decl| {
-        convert_guest_decl(package, decl)
-    });
+    let declarations = run_component_init(package, wasm_path, &bindings, &mut store)?;
+    for declaration in &declarations {
+        validate_guest_element_name(package, &declaration.name)?;
+    }
     Ok((ComponentRuntime { store, bindings }, declarations))
-}
-
-/// Converts one guest-declared element into the host manifest shape so the
-/// same signature/schema builders serve both sources.
-fn convert_guest_decl(
-    package: &str,
-    guest: wit_bindings_semantic::ElementDecl,
-) -> Result<ElementDecl, String> {
-    validate_guest_element_name(package, &guest.name)?;
-    Ok(ElementDecl {
-        name: guest.name,
-        version: guest.version,
-        block: guest.block,
-        computed: guest.computed,
-        parameters: guest
-            .parameters
-            .into_iter()
-            .map(|param| {
-                let default = match param.default_json {
-                    Some(json) => Some(serde_json::from_str(&json).map_err(|error| {
-                        format!(
-                            "plugin `{package}` parameter `{}` declares invalid \
-                             default JSON `{json}`: {error}",
-                            param.name
-                        )
-                    })?),
-                    None => None,
-                };
-                Ok(ParamDecl {
-                    name: param.name,
-                    ty: param.ty,
-                    default,
-                })
-            })
-            .collect::<Result<Vec<_>, String>>()?,
-        trailing_content: guest.trailing_content,
-        body_mode: guest.body_mode,
-        role: guest.role,
-        kind: guest.kind,
-    })
-}
-
-struct ComponentHostState {
-    limits: WasmStoreState,
-    table: ResourceTable,
-    wasi: WasiCtx,
-    registry: Arc<Mutex<FunctionRegistry>>,
-}
-
-impl WasiView for ComponentHostState {
-    fn ctx(&mut self) -> WasiCtxView<'_> {
-        WasiCtxView {
-            ctx: &mut self.wasi,
-            table: &mut self.table,
-        }
-    }
-}
-
-impl ResourceLimiter for ComponentHostState {
-    fn memory_growing(
-        &mut self,
-        current: usize,
-        desired: usize,
-        maximum: Option<usize>,
-    ) -> wasmtime::Result<bool> {
-        self.limits.memory_growing(current, desired, maximum)
-    }
-
-    fn table_growing(
-        &mut self,
-        current: usize,
-        desired: usize,
-        maximum: Option<usize>,
-    ) -> wasmtime::Result<bool> {
-        self.limits.table_growing(current, desired, maximum)
-    }
-}
-
-impl wit_bindings::notist::plugin::types::Host for ComponentHostState {}
-
-impl wit_bindings::notist::plugin::host::Host for ComponentHostState {
-    fn call(&mut self, request: Vec<u8>) -> Result<Vec<u8>, String> {
-        let forest = codec::decode_forest(&request)
-            .map_err(|message| format!("invalid host.call request: {message}"))?;
-        let registry = self
-            .registry
-            .lock()
-            .map_err(|_| "shared plugin registry lock poisoned".to_owned())?;
-        // host.call reduces on the production node engine: request and
-        // response are both `Node` forests, and the budget only meters
-        // handler dispatches.
-        let limits = notist_eval::ReduceLimits::default();
-        let mut frame = notist_eval::ReduceFrame::root(&limits);
-        let (reduced, errors) =
-            notist_eval::reduce_nodes_recovering(forest, &registry, &limits, &mut frame);
-        if !errors.is_empty() {
-            return Err(errors
-                .into_iter()
-                .map(|diagnostic| diagnostic.message)
-                .collect::<Vec<_>>()
-                .join("; "));
-        }
-        codec::encode_forest(&reduced)
-    }
-}
-
-struct ComponentHostRuntime {
-    store: Store<ComponentHostState>,
-    bindings: wit_bindings::PluginHost,
-}
-
-fn load_component_host_runtime(
-    package: &str,
-    wasm_path: &Path,
-    wasm_bytes: &[u8],
-    shared_registry: Arc<Mutex<FunctionRegistry>>,
-) -> Result<(ComponentHostRuntime, Vec<ElementDecl>), String> {
-    let mut config = Config::new();
-    config.consume_fuel(true);
-    let engine = Engine::new(&config)
-        .map_err(|error| format!("cannot create component engine for `{package}`: {error}"))?;
-    let component = WasmComponent::new(&engine, wasm_bytes)
-        .map_err(|error| format!("invalid component module {}: {error}", wasm_path.display()))?;
-    let mut linker = Linker::new(&engine);
-    wit_bindings::PluginHost::add_to_linker::<_, HasSelf<_>>(&mut linker, |state| state)
-        .map_err(|error| format!("cannot link component host imports: {error}"))?;
-    p2::add_to_linker_sync(&mut linker)
-        .map_err(|error| format!("cannot link component wasi imports: {error}"))?;
-    let mut store = Store::new(
-        &engine,
-        ComponentHostState {
-            limits: WasmStoreState {
-                max_memory: WASM_MAX_MEMORY_BYTES,
-                max_table_elements: WASM_MAX_TABLE_ELEMENTS,
-            },
-            table: ResourceTable::new(),
-            wasi: WasiCtxBuilder::new().build(),
-            registry: shared_registry,
-        },
-    );
-    store.limiter(|state| state);
-    store.set_fuel(WASM_FUEL_PER_CALL).map_err(|error| {
-        format!(
-            "cannot set component host instantiation fuel for {}: {error}",
-            wasm_path.display()
-        )
-    })?;
-    let bindings = wit_bindings::PluginHost::instantiate(&mut store, &component, &linker).map_err(
-        |error| {
-            format!(
-                "cannot instantiate component {}: {error}",
-                wasm_path.display()
-            )
-        },
-    )?;
-    let declarations = run_component_init!(package, wasm_path, bindings, &mut store, |decl| {
-        convert_guest_decl_host(package, decl)
-    });
-    Ok((ComponentHostRuntime { store, bindings }, declarations))
-}
-
-/// Same conversion as [`convert_guest_decl`], for the `plugin-host` world's
-/// generated declaration type.
-fn convert_guest_decl_host(
-    package: &str,
-    guest: wit_bindings::ElementDecl,
-) -> Result<ElementDecl, String> {
-    validate_guest_element_name(package, &guest.name)?;
-    Ok(ElementDecl {
-        name: guest.name,
-        version: guest.version,
-        block: guest.block,
-        computed: guest.computed,
-        parameters: guest
-            .parameters
-            .into_iter()
-            .map(|param| {
-                let default = match param.default_json {
-                    Some(json) => Some(serde_json::from_str(&json).map_err(|error| {
-                        format!(
-                            "plugin `{package}` parameter `{}` declares invalid \
-                             default JSON `{json}`: {error}",
-                            param.name
-                        )
-                    })?),
-                    None => None,
-                };
-                Ok(ParamDecl {
-                    name: param.name,
-                    ty: param.ty,
-                    default,
-                })
-            })
-            .collect::<Result<Vec<_>, String>>()?,
-        trailing_content: guest.trailing_content,
-        body_mode: guest.body_mode,
-        role: guest.role,
-        kind: guest.kind,
-    })
-}
-
-struct ComponentHostFunction {
-    element_name: String,
-    signature: FunctionSignature,
-    runtime: Arc<Mutex<ComponentHostRuntime>>,
-    owner: FunctionOwner,
-}
-
-impl Function for ComponentHostFunction {
-    fn name(&self) -> &str {
-        &self.element_name
-    }
-
-    fn signature(&self) -> FunctionSignature {
-        self.signature.clone()
-    }
-
-    fn owner(&self) -> FunctionOwner {
-        self.owner.clone()
-    }
-
-    fn call(
-        &self,
-        _context: &FunctionContext<'_>,
-        mut input: FunctionInput<'_>,
-    ) -> Result<Value, Vec<EvalDiagnostic>> {
-        let request_node =
-            wire::build_request_node(&self.element_name, &self.signature, &mut input).map_err(
-                |message| {
-                    vec![EvalDiagnostic {
-                        message,
-                        range: input.range,
-                    }]
-                },
-            )?;
-        let request = notist_model::wire::encode_forest(std::slice::from_ref(&request_node))
-            .map_err(|message| {
-                vec![EvalDiagnostic {
-                    message,
-                    range: input.range,
-                }]
-            })?;
-
-        let mut runtime = self.runtime.lock().map_err(|_| {
-            vec![EvalDiagnostic {
-                message: "component host runtime lock poisoned".into(),
-                range: input.range,
-            }]
-        })?;
-        let ComponentHostRuntime { store, bindings } = &mut *runtime;
-        store.set_fuel(WASM_FUEL_PER_CALL).map_err(|error| {
-            vec![EvalDiagnostic {
-                message: format!("cannot reset component host fuel: {error}"),
-                range: input.range,
-            }]
-        })?;
-        let response = bindings
-            .call_evaluate(&mut *store, &request)
-            .map_err(|error| {
-                vec![EvalDiagnostic {
-                    message: if error.to_string().contains("fuel") {
-                        "wasm component exceeded its fuel budget".into()
-                    } else {
-                        format!("wasm component error: {error}")
-                    },
-                    range: input.range,
-                }]
-            })?
-            .map_err(|message| {
-                vec![EvalDiagnostic {
-                    message: format!("wasm component returned error: {message}"),
-                    range: input.range,
-                }]
-            })?;
-        let returned = wire::decode_response(&response, input.range)?;
-        Ok(Value::Content(returned))
-    }
 }
 
 struct ComponentFunction {
@@ -1532,59 +867,6 @@ impl Function for ComponentFunction {
     }
 }
 
-fn encode_value(request: &mut Vec<u8>, value: &notist_eval::Value) {
-    match value {
-        notist_eval::Value::String(value) => {
-            let bytes = value.as_bytes();
-            request.extend_from_slice(&(bytes.len() as u32).to_le_bytes());
-            request.extend_from_slice(bytes);
-        }
-        notist_eval::Value::Int(value) => {
-            request.extend_from_slice(&(*value as i32).to_le_bytes());
-        }
-        notist_eval::Value::Bool(value) => {
-            request.push(u8::from(*value));
-        }
-        notist_eval::Value::Float(value) => {
-            request.extend_from_slice(&value.to_bits().to_le_bytes());
-        }
-        _ => {}
-    }
-}
-
-fn value_to_json(value: &notist_eval::Value) -> serde_json::Value {
-    match value {
-        notist_eval::Value::None => serde_json::Value::Null,
-        notist_eval::Value::Bool(value) => serde_json::Value::Bool(*value),
-        notist_eval::Value::Int(value) => serde_json::Value::Number((*value).into()),
-        notist_eval::Value::Float(value) => serde_json::Number::from_f64(*value)
-            .map_or(serde_json::Value::Null, serde_json::Value::Number),
-        notist_eval::Value::String(value) => serde_json::Value::String(value.clone()),
-        notist_eval::Value::Content(_) | notist_eval::Value::Function(_) => serde_json::Value::Null,
-    }
-}
-
-fn json_to_node_value(value: serde_json::Value) -> NodeValue {
-    match value {
-        serde_json::Value::Null => NodeValue::None,
-        serde_json::Value::Bool(value) => NodeValue::Bool(value),
-        serde_json::Value::Number(value) => {
-            if let Some(value) = value.as_i64() {
-                NodeValue::Int(value)
-            } else if let Some(value) = value.as_f64() {
-                NodeValue::Float(value)
-            } else {
-                NodeValue::None
-            }
-        }
-        serde_json::Value::String(value) => NodeValue::String(value),
-        serde_json::Value::Array(values) => {
-            NodeValue::Array(values.into_iter().map(json_to_node_value).collect())
-        }
-        serde_json::Value::Object(_) => NodeValue::None,
-    }
-}
-
 /// Registers loaded plugin functions into a registry.
 ///
 /// The canonical name is always `package::element`. For legacy packages whose
@@ -1627,7 +909,6 @@ pub fn register_loaded_shaping(registry: &mut ShapingRegistry, plugins: &[Loaded
 }
 
 pub mod wire;
-use wire::codec;
 
 #[cfg(test)]
 mod tests {
@@ -1744,54 +1025,16 @@ mod tests {
     }
 
     #[test]
-    fn core_manifest_matches_the_builtin_function_surface() {
+    fn core_manifest_is_an_identity_only_builtin_envelope() {
         let package_dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
             .join("../../plugins/core")
             .canonicalize()
             .unwrap();
-        let manifest_text = std::fs::read_to_string(package_dir.join("plugin.json")).unwrap();
-        let manifest: PluginManifest = serde_json::from_str(&manifest_text).unwrap();
-        let semantic = manifest.interfaces.semantic.as_ref().unwrap();
-        let mut declared = semantic
-            .elements
-            .iter()
-            .map(|element| element.name.clone())
-            .collect::<Vec<_>>();
-        declared.sort();
-
-        let text_signature = FunctionSignature {
-            parameters: vec![Parameter {
-                name: "text".into(),
-                ty: Type::String,
-                default: None,
-            }],
-            trailing_content: None,
-            result: Type::Content,
-        };
-        let mut expected = vec![
-            ("text", text_signature),
-            ("parbreak", notist_model::empty_content_signature()),
-        ];
-        expected.extend(notist_model::builtin_signatures());
-        let mut expected_names = expected
-            .iter()
-            .map(|(name, _)| name.to_string())
-            .collect::<Vec<_>>();
-        expected_names.sort();
-        assert_eq!(declared, expected_names);
-
-        for (name, expected_signature) in expected {
-            let element = semantic
-                .elements
-                .iter()
-                .find(|element| element.name == name)
-                .unwrap();
-            assert_eq!(
-                element_signature(element).unwrap(),
-                expected_signature,
-                "core manifest signature mismatch for `{name}`"
-            );
-        }
+        let manifest = read_manifest(&package_dir).unwrap();
+        assert_eq!(manifest.package, "core");
+        assert_eq!(manifest.source.as_deref(), Some("builtin"));
+        assert!(manifest.wasm.is_none());
+        assert!(manifest.render.is_none());
     }
 
     #[test]
@@ -1878,7 +1121,7 @@ mod tests {
                         }]
                     }
                 },
-                "wasm": { "module": "semantic.wasm", "component": true }
+                "wasm": { "module": "semantic.wasm" }
             }"#,
         );
         let plugin = load_package(&dir).unwrap();
@@ -1900,7 +1143,7 @@ mod tests {
                 "package": "zip-demo",
                 "version": "0.1.0",
                 "api-version": "0.1",
-                "wasm": { "module": "semantic.wasm", "component": true }
+                "wasm": { "module": "semantic.wasm" }
             }"#,
         );
         let zip_path = dir.join("package.zip");
@@ -1944,33 +1187,7 @@ mod tests {
     }
 
     #[test]
-    fn component_host_call_reduces_through_the_plugin_registry() {
-        let package_dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
-            .join("../../plugins/component-host-call")
-            .canonicalize()
-            .unwrap();
-        let plugin = load_package(&package_dir).unwrap();
-        assert_eq!(plugin.id, "component-host-call");
-        assert!(plugin.shared_registry.is_some());
-
-        let mut registry = core_registry();
-        register_loaded(&mut registry, &[plugin]).unwrap();
-        let evaluation = Evaluator::new(registry).evaluate("#component-host-call::passthrough()");
-        assert!(
-            evaluation.diagnostics.is_empty(),
-            "{:?}",
-            evaluation.diagnostics
-        );
-        let node = &evaluation.forest[0];
-        assert!(node.is_core("text"));
-        assert_eq!(
-            node.get("text"),
-            Some(&NodeValue::String("hello from host.call".into()))
-        );
-    }
-
-    #[test]
-    fn shader_package_still_loads_through_v0_wasm_abi() {
+    fn shader_component_initializes_and_reduces_bare_and_qualified_calls() {
         let package_dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
             .join("../../plugins/shader")
             .canonicalize()
@@ -1979,8 +1196,15 @@ mod tests {
         assert_eq!(plugin.id, "shader");
         assert_eq!(plugin.functions.len(), 1);
         assert_eq!(plugin.functions[0].name(), "shader::shader");
+        assert_eq!(plugin.signatures.len(), 2);
+        assert!(
+            plugin
+                .signatures
+                .iter()
+                .any(|(name, _)| name == "shader::canvas")
+        );
         assert_eq!(plugin.html_contributions.len(), 1);
-        assert_eq!(plugin.html_contributions[0].element, "shader");
+        assert_eq!(plugin.html_contributions[0].element, "canvas");
         assert!(plugin.html_contributions[0].trusted);
         let component = plugin.html_contributions[0]
             .web_component
@@ -1990,23 +1214,43 @@ mod tests {
         assert_eq!(component.module, "assets/shader.js");
 
         let mut registry = core_registry();
-        register_loaded(&mut registry, &[plugin]).unwrap();
-        assert!(registry.get("shader").is_some(), "legacy bare alias");
-        assert!(registry.get("shader::shader").is_some(), "qualified name");
-        let evaluation = Evaluator::new(registry).evaluate(
-            "#shader(source: \"fn mainImage(fragCoord: vec2<f32>) -> vec4<f32> { return vec4<f32>(fragCoord, 0.0, 1.0); }\", width: 320, height: 200)[fallback]",
-        );
+        let mut shaping = ShapingRegistry::new();
+        register_loaded_contributions(&mut registry, &mut shaping, &[plugin]).unwrap();
+        assert!(registry.get("shader").is_some(), "bare handler alias");
         assert!(
-            evaluation.diagnostics.is_empty(),
-            "{:?}",
-            evaluation.diagnostics
+            registry.get("shader::shader").is_some(),
+            "qualified handler"
         );
-        let node = &evaluation.forest[0];
-        assert_eq!(node.name, "shader::shader");
-        assert_eq!(node.get("width"), Some(&NodeValue::Int(320)));
-        assert_eq!(node.get("height"), Some(&NodeValue::Int(200)));
-        assert!(node.children.iter().any(|child| child.is_core("text")
+        let evaluator = Evaluator::new(registry);
+
+        let bare = evaluator.evaluate_with_shaping(
+            "#shader(source: \"shader-source\", width: 320, height: 200)[fallback]",
+            &shaping,
+        );
+        assert!(bare.diagnostics.is_empty(), "{:?}", bare.diagnostics);
+        let canvas = &bare.forest[0];
+        assert_eq!(canvas.name, "shader::canvas");
+        assert_eq!(
+            canvas.get("source"),
+            Some(&NodeValue::String("shader-source".into()))
+        );
+        assert_eq!(canvas.get("width"), Some(&NodeValue::Int(320)));
+        assert_eq!(canvas.get("height"), Some(&NodeValue::Int(200)));
+        assert!(!canvas.range.is_empty());
+        assert!(canvas.children.iter().any(|child| child.is_core("text")
             && child.get("text") == Some(&NodeValue::String("fallback".into()))));
+
+        let qualified =
+            evaluator.evaluate_with_shaping("#shader::shader(source: \"qualified\")[]", &shaping);
+        assert!(
+            qualified.diagnostics.is_empty(),
+            "{:?}",
+            qualified.diagnostics
+        );
+        let canvas = &qualified.forest[0];
+        assert_eq!(canvas.name, "shader::canvas");
+        assert_eq!(canvas.get("width"), Some(&NodeValue::Int(800)));
+        assert_eq!(canvas.get("height"), Some(&NodeValue::Int(600)));
     }
 
     #[test]
@@ -2063,11 +1307,6 @@ styles = [""]"#,
             assert!(error.contains(expected), "{config} -> {error}");
         }
     }
-}
-
-#[allow(dead_code, clippy::all)]
-mod wit_bindings {
-    wasmtime::component::bindgen!({ path: "wit/notist-plugin.wit", world: "plugin-host" });
 }
 
 #[allow(dead_code, clippy::all)]

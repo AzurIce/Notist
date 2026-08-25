@@ -70,8 +70,8 @@ pub struct Node {
     pub children: Vec<Node>,
     /// Whether this node interrupts paragraph flow.
     pub block: bool,
-    /// Source range responsible for this node. Host-side metadata only;
-    /// never meaningful across the plugin boundary.
+    /// Source range responsible for this node. It is transported so returned
+    /// subtrees retain diagnostics, but never participates in call semantics.
     #[serde(default)]
     pub range: TextRange,
 }
@@ -266,32 +266,73 @@ pub fn table_layout_nodes(
     Ok(rows)
 }
 
-/// Wire helpers over the unified node.
+/// Wire helpers over the shared plugin protocol types.
 ///
-/// The SDK crate version doubles as the payload ABI version: host and
-/// plugins compiled against the same `notist_model` produce and accept the
-/// same bytes. No separate protocol version exists.
+/// WIT is the outer component ABI; these helpers define the payloads carried
+/// by its opaque byte arguments. Every frame starts with the same wire version
+/// byte, followed by the postcard payload.
 pub mod wire {
     use super::Node;
+    use crate::PluginElementDecl;
+
+    /// Version of the opaque plugin payload format.
+    pub const WIRE_VERSION: u8 = 1;
+
+    fn encode_payload<T: serde::Serialize + ?Sized>(
+        value: &T,
+        kind: &str,
+    ) -> Result<Vec<u8>, String> {
+        let payload = postcard::to_allocvec(value)
+            .map_err(|error| format!("encode {kind} payload: {error}"))?;
+        let mut bytes = Vec::with_capacity(1 + payload.len());
+        bytes.push(WIRE_VERSION);
+        bytes.extend(payload);
+        Ok(bytes)
+    }
+
+    fn decode_payload<T: serde::de::DeserializeOwned>(
+        bytes: &[u8],
+        kind: &str,
+    ) -> Result<T, String> {
+        let Some((&version, payload)) = bytes.split_first() else {
+            return Err(format!("decode {kind} payload: missing wire version byte"));
+        };
+        if version != WIRE_VERSION {
+            return Err(format!(
+                "decode {kind} payload: unsupported wire version {version}, expected {WIRE_VERSION}"
+            ));
+        }
+        postcard::from_bytes(payload).map_err(|error| format!("decode {kind} payload: {error}"))
+    }
 
     /// Serializes one node tree onto the plugin ABI.
     pub fn encode(value: &Node) -> Result<Vec<u8>, String> {
-        serde_json::to_vec(value).map_err(|error| format!("encode node payload: {error}"))
+        encode_payload(value, "node")
     }
 
     /// Deserializes one node tree from the plugin ABI.
     pub fn decode(bytes: &[u8]) -> Result<Node, String> {
-        serde_json::from_slice(bytes).map_err(|error| format!("decode node payload: {error}"))
+        decode_payload(bytes, "node")
     }
 
     /// Serializes a forest (reduction responses carry many roots).
     pub fn encode_forest(nodes: &[Node]) -> Result<Vec<u8>, String> {
-        serde_json::to_vec(nodes).map_err(|error| format!("encode node forest: {error}"))
+        encode_payload(nodes, "node forest")
     }
 
     /// Deserializes a forest from the plugin ABI.
     pub fn decode_forest(bytes: &[u8]) -> Result<Vec<Node>, String> {
-        serde_json::from_slice(bytes).map_err(|error| format!("decode node forest: {error}"))
+        decode_payload(bytes, "node forest")
+    }
+
+    /// Serializes the declarations returned by component initialization.
+    pub fn encode_declarations(declarations: &[PluginElementDecl]) -> Result<Vec<u8>, String> {
+        encode_payload(declarations, "plugin declarations")
+    }
+
+    /// Deserializes the declarations returned by component initialization.
+    pub fn decode_declarations(bytes: &[u8]) -> Result<Vec<PluginElementDecl>, String> {
+        decode_payload(bytes, "plugin declarations")
     }
 }
 
@@ -331,5 +372,52 @@ mod tests {
             overflow,
             Err(TableLayoutError::CellDoesNotFit { .. })
         ));
+    }
+
+    #[test]
+    fn wire_roundtrips_nodes_and_forests_with_version_byte() {
+        let node = Node::block_call("demo::box", TextRange::new(3, 8))
+            .arg("label", "hello")
+            .child(Node::call("core::text", TextRange::new(9, 14)).arg("text", "body"));
+        let encoded = wire::encode(&node).unwrap();
+        assert_eq!(encoded[0], wire::WIRE_VERSION);
+        assert_eq!(wire::decode(&encoded).unwrap(), node);
+
+        let forest = vec![node, Node::call("core::parbreak", TextRange::new(15, 15))];
+        let encoded = wire::encode_forest(&forest).unwrap();
+        assert_eq!(encoded[0], wire::WIRE_VERSION);
+        assert_eq!(wire::decode_forest(&encoded).unwrap(), forest);
+    }
+
+    #[test]
+    fn wire_roundtrips_plugin_declarations_with_defaults() {
+        let declarations = vec![
+            crate::PluginElementDecl::new("echo")
+                .block(true)
+                .param_default("message", "String", "hello")
+                .trailing_content("body")
+                .body_mode("flow"),
+        ];
+        let encoded = wire::encode_declarations(&declarations).unwrap();
+        assert_eq!(encoded[0], wire::WIRE_VERSION);
+        assert_eq!(wire::decode_declarations(&encoded).unwrap(), declarations);
+    }
+
+    #[test]
+    fn wire_rejects_unknown_version() {
+        let error = wire::decode_forest(&[wire::WIRE_VERSION + 1, 0]).unwrap_err();
+        assert!(error.contains("unsupported wire version"), "{error}");
+    }
+
+    #[test]
+    fn wire_rejects_missing_and_malformed_payloads() {
+        let missing = wire::decode_forest(&[]).unwrap_err();
+        assert!(missing.contains("missing wire version byte"), "{missing}");
+
+        let malformed = wire::decode_forest(&[wire::WIRE_VERSION, 0xff]).unwrap_err();
+        assert!(
+            malformed.contains("decode node forest payload"),
+            "{malformed}"
+        );
     }
 }

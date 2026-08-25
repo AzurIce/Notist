@@ -5,13 +5,14 @@
 
 == 共享类型
 
-`Node` 是唯一的语义表示（[[vault::ai::2026-08-22 plugin form and unified ir roadmap]] 的 IR 统一裁决），它同时就是边界载荷：`notist_model` 为 `Node`/`NodeValue` 派生 serde，宿主与 guest 对同一结构做编解码，**不存在独立的 Wire 层或镜像定义**。
+`Node` 是唯一的语义表示（[[vault::ai::2026-08-22 plugin form and unified ir roadmap]] 的 IR 统一裁决）；`PluginElementDecl` / `PluginParamDecl` / `DefaultValue` 是唯一的插件声明表示。它们都定义在 `notist-model` 并由宿主与 guest 直接共享，WIT 不引入声明或节点镜像。
 
-- WIT 不允许递归值类型（wasm-tools 与双端 bindgen 实测），因此 component 签名保持 opaque bytes：`evaluate(list<u8>) -> result<list<u8>, string>`；
-- 载荷即 `Node` 森林的 serde 编码（当前 JSON；`NodeValue` 天然外部标签，postcard 兼容，切换只动编解码器）；
-- **SDK 版本即 ABI 版本**：全部插件经 Rust SDK 编译，host 与插件针对同一 `notist_model` 构建即天然兼容，独立协议版本号留待多语言分发需求出现时再引入；
-- `range` 是宿主侧元数据，跨边界无意义（serde skip/default）；
-- **响应森林继续参与 fixpoint**：handler 的输出若仍指向已注册名字会被再次派发。handler 返回与输入完全相同的 call 表示 identity；持续产生新的自返 call 才是作者错误，由 depth/fuel 兜底并给出诊断；纯数据元素不注册运行时 handler。
+- WIT 的 `init` 与 `evaluate` 都只暴露 opaque bytes `result`；
+- 每个 payload 的第一个字节是 wire version byte，其后是 postcard：`init` 承载 `Vec<PluginElementDecl>`，`evaluate` 的请求与响应承载 `Vec<Node>`；
+- 宿主与 guest 共享 `notist_model::wire` 的 declarations / forest encode/decode API；解码严格检查 wire version byte，不提供 JSON 或旧编码 fallback；
+- 参数默认值直接使用共享 `DefaultValue`，不经过 JSON 字符串；
+- `range` 随共享 `Node` 传输，使插件透传的子树保留诊断位置；它只是可被 guest 伪造的定位元数据，不参与 call identity、规约或权限判定；
+- **响应森林继续参与 fixpoint**：handler 返回 call 森林后，宿主统一把它重新送入不动点；其中指向已注册名字的 call 会再次派发。handler 返回与输入完全相同的 call 表示 identity；持续产生新的自返 call 才是作者错误，由 depth/fuel 兜底并给出诊断；纯数据元素不注册运行时 handler。
 
 == Wasm backend
 
@@ -37,63 +38,27 @@ notist_sdk::export_plugin!(Plugin);
 
 这与 Unreal 模块的 StartupModule 同构：装载时执行一次注册，宿主之后按名字查询与调度。对作者而言组件边界等同一个 dylib；沙箱机制（fuel、内存帽）是宿主既有设施，不进入作者视野。
 
-== WIT worlds
+== WIT component ABI
 
-当前 WIT 提供两个 world 与一组共享声明类型：
+当前 WIT 只有最小 `plugin` world：
 
 ```wit
 package notist:plugin;
 
-interface types {
-    record param-decl {
-        name: string,
-        ty: string,
-        default-json: option<string>,
-    }
-
-    record element-decl {
-        name: string,
-        version: u32,
-        block: bool,
-        computed: bool,
-        parameters: list<param-decl>,
-        trailing-content: option<string>,
-        body-mode: option<string>,
-        role: option<string>,
-        kind: option<string>,
-    }
-}
-
 world plugin {
-    use types.{element-decl};
-    /// 装载后调用一次；消耗与 evaluate 相同的 fuel 预算，且必须确定。
-    export init: func() -> list<element-decl>;
-    /// 按 dispatcher 名字规约一次调用；字节进/字节出。
-    export evaluate: func(request: list<u8>) -> result<list<u8>, string>;
-}
-
-interface host {
-    /// 规约请求节点并返回规约后的森林字节或错误；不做 per-call 授权。
-    call: func(request: list<u8>) -> result<list<u8>, string>;
-}
-
-world plugin-host {
-    use types.{element-decl};
-    import host;
-    export init: func() -> list<element-decl>;
+    export init: func() -> result<list<u8>, string>;
     export evaluate: func(request: list<u8>) -> result<list<u8>, string>;
 }
 ```
 
-- `plugin`：无 host import 的纯求值组件，用于 `plugins/component-echo`。
-- `plugin-host`：import `host.call` 的组件，guest 可请求宿主继续规约；用于 `plugins/component-host-call`。
-- `init` 返回声明列表而不是逐条回调注册：注册内容是编译期已知的纯数据，一次性返回让装载保持原子——宿主先整体校验再入 registry，不存在部分注册状态。
+- WIT 只描述 component 调用 ABI；唯一运行面是 `init` 与 `evaluate` 两个导出，不包含共享声明的 interface，也不提供宿主语义回调。
+- `init` 一次性返回声明 payload 而不是逐条回调注册：注册内容是编译期已知的纯数据，宿主先完整解码、整体校验再入 registry，不存在部分注册状态。
 
 == init 注册语义
 
 `init` 在实例化后、任何 `evaluate` 之前被调用恰好一次，消耗与 `evaluate` 相同的 fuel 预算：
 
-1. 宿主收集全部 `element-decl`；
+1. 宿主按共享 wire codec 解码 `Vec<PluginElementDecl>`；
 2. 整体校验：每个元素名必须落在 package 自己的 namespace 内，参数类型必须是可解析的 Notist 类型，签名合法；
 3. 校验通过后按声明生成 `FunctionSignature` 与 `ElementSchema` 并注册；任一失败则整个 package 装载失败，产生 host boundary diagnostic。
 
@@ -103,12 +68,7 @@ world plugin-host {
 
 `evaluate` 是单个 dispatcher；`init` 声明的每个元素都对应它的一个可调用名字。
 
-插件有两种语义实现模式：
-
-1. **宏展开式**：`evaluate` 返回 call 森林，把继续规约交给不动点；
-2. **主动规约式**：调用 `host.call(core::details, ...)` 等，组合结果后返回。
-
-两种模式都经过宿主；无限递归由 depth/fuel 预算兜底（自返回属于作者 bug）。
+插件只有一种语义实现模式：`evaluate` 返回 call 森林，宿主把整个返回森林统一送回规约不动点。插件通过在森林中写 `core::details` 或其它 package 的名字表达组合，不在组件调用期间嵌套执行宿主规约。无限递归由统一 depth/call budget 与组件 fuel 预算兜底（持续自返属于作者 bug）。
 
 === 插件不能做什么
 
@@ -118,16 +78,16 @@ world plugin-host {
 
 == 当前实现
 
-- WIT 已由 wasmtime bindgen 编译校验；`export init` 与 `export evaluate` 均已接入 loader，`import host.call` 走共享 registry。
-- 载荷直接使用 `notist_model::Node`（`model::wire::{encode_forest,decode_forest}`）；handler 统一返回 `Value`，内容结果即 `Value::Content` 森林（2026-08-24 起 `FunctionOutput` 已坍缩），组件插件以统一 IR 进出，`host.call` 经 node_engine 规约。
+- WIT 已由 wasmtime bindgen 编译校验；单一 `plugin` world 的 bytes `export init` 与 `export evaluate` 均已接入 loader。
+- `model::wire::{encode_declarations,decode_declarations}` 与 `{encode_forest,decode_forest}` 复用同一严格 version byte + postcard frame；组件返回的 call 森林由 node engine 统一继续规约。
 - 插件以 `notist-plugin-sdk` 编写：`Plugin::init(reg)` 注册元素，`ElementFn::reduce` 实现规约，`export_plugin!` 生成组件导出。
-- 兼容 2026-08-18 初版 raw core Wasm ABI（`evaluate(ptr, len) -> ptr`），仅用于存量 shader package。
+- 所有可执行 Wasm package 都实例化为上述 component；宿主不保留 core Wasm dispatcher 或旧载荷转换分支。
+- JSON 只用于读取人工编辑的 `plugin.json` 信封；semantic declarations、defaults、`Node` / `Value`、request / response 全部使用共享类型的 version byte + postcard frame。
 - Component response 的大小与节点上限见 [[vault::designs::plugin-system::safety]]。
 
 == 已裁定 / 待定
 
-- 已裁定：component 边界保持 opaque bytes；wire schema 由宿主版本化发布。
+- 已裁定：WIT 是最小 component 调用 ABI；`init` / `evaluate` payload 均为共享 `notist-model` 类型的 wire version byte + postcard frame。
 - 已裁定：插件形态是 Rust crate → wasip2 组件；作者通过 SDK trait 与 `init` 注册贡献。
 - 已裁定：schema 真相来源是 guest 的 `init` 注册；manifest 只保留信封字段，不再携带 semantic 接口。
-- 已裁定：ABI 入口为 `init`、`evaluate` 与可选 `host.call`。
-- 待定：`inspect` / `typecheck` 等 host import 是否进入后续版本。
+- 已裁定：component ABI 只有 `init` 与 `evaluate` 两个入口；插件返回 call 森林后由宿主统一执行 fixpoint。

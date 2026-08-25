@@ -11,6 +11,8 @@ toml.workspace = true
 zip = "2.4.2"
 wasmtime = { version = "47", features = ["component-model", "runtime", "cranelift", "std"] }
 notist-eval.workspace = true
-notist-plugin-core.workspace = true
 notist-model.workspace = true
 wasmtime-wasi = "47"
+
+[dev-dependencies]
+notist-plugin-core.workspace = true

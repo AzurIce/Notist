@@ -63,7 +63,7 @@ impl fmt::Display for Type {
 }
 
 /// A literal default value declared by a function signature.
-#[derive(Clone, Debug, PartialEq)]
+#[derive(Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
 pub enum DefaultValue {
     /// The `none` value.
     None,
@@ -87,6 +87,36 @@ impl DefaultValue {
             Self::Float(_) => Type::Float,
             Self::String(_) => Type::String,
         }
+    }
+}
+
+impl From<bool> for DefaultValue {
+    fn from(value: bool) -> Self {
+        Self::Bool(value)
+    }
+}
+
+impl From<i64> for DefaultValue {
+    fn from(value: i64) -> Self {
+        Self::Int(value)
+    }
+}
+
+impl From<f64> for DefaultValue {
+    fn from(value: f64) -> Self {
+        Self::Float(value)
+    }
+}
+
+impl From<&str> for DefaultValue {
+    fn from(value: &str) -> Self {
+        Self::String(value.into())
+    }
+}
+
+impl From<String> for DefaultValue {
+    fn from(value: String) -> Self {
+        Self::String(value)
     }
 }
 

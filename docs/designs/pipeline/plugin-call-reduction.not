@@ -109,14 +109,11 @@ source
 
 == 插件边界
 
-插件可见的 IR 就是 call 森林：`Node` 的 serde 编码即边界载荷，不存在独立的 wire 层。WIT worlds、`init` 注册与 `evaluate` 语义见 [[vault::designs::plugin-system::abi]]。
+插件可见的 IR 就是 call 森林。WIT 定义 component ABI；`evaluate` 的 opaque payload 是一个 wire version byte 加 postcard 编码的 `Node` 森林。`init` 注册与 `evaluate` 语义见 [[vault::designs::plugin-system::abi]]。
 
-handler 有两种组合姿势：
+handler 通过返回包含新 call 的森林表达组合；组件返回后，宿主把整片森林统一送回同一个规约不动点。插件不在组件调用期间嵌套执行宿主规约，也不需要第二套组合 API。
 
-1. **宏展开式**：返回包含新 call 的森林，把继续规约交给不动点；
-2. **主动规约式**：经 `host.call` 请求宿主规约一段森林，组合结果后返回。
-
-内容组合不做 per-call 授权：信任边界是 wasm 沙箱本身，见 [[vault::designs::plugin-system::capability]]；`host.call` 的预算约束见 [[vault::designs::plugin-system::safety]]。
+内容组合不做 per-call 授权：名字的语义由宿主 registry 决定，执行信任边界是 wasm 沙箱本身，见 [[vault::designs::plugin-system::capability]]；预算约束见 [[vault::designs::plugin-system::safety]]。
 
 == 示例：组合 details
 
@@ -147,7 +144,7 @@ handler 有两种组合姿势：
 当前实现已与上述核心模型对齐：
 
 - `notist-eval::Value::Content` 持有 `Vec<Node>`；handler 统一返回 `Value`，内容结果重新进入 node engine 的不动点。handler 原样返回自身 call 视为本轮无变化；持续产生新的自返 call 由深度与调用预算兜底。
-- `host.call` 的请求与响应均为 `Node` 森林，预算只统计实际 handler dispatch；core 与插件的差异只在注册所有权，handler 输出可以提及任意名字。
+- component `evaluate` 返回的 `Node` 森林由宿主统一继续规约；预算只统计实际 handler dispatch。core 与插件的差异只在注册所有权，handler 输出可以提及任意名字。
 - lower、reduce、shape 都直接消费和产出 `Node` 森林。`ElementTree` 只是成型后的 Node 容器；旧的 `Content` / `ElementInstance` / `InstanceNode` / `FieldValue` 和 Stream/Leaf 桥接已删除。
 - HTML target 在 project 阶段使用独立的 `HtmlProjectionRegistry`：插件投影与未知调用 fallback 先生成 `html::*` 数据节点，再由 serializer 输出标签、属性和子森林；语义 registry 不注册 `html::*`。
 

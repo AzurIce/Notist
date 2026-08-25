@@ -15,15 +15,15 @@ path = "../plugins/shader"
 
 ```text
 plugins/shader/
+├── README.not
 ├── plugin.json
 ├── semantic.wasm
-├── semantic.wat
 └── assets/
     ├── shader.js
     └── shader.css
 ```
 
-`plugin.json` 是信封：身份、Wasm 装载参数与 HTML contribution；manifest 不含权限请求。注意 `shader` 包是 2026-08-18 初版 raw ABI 的存量包：它的元素 schema 来自 manifest 的 `interfaces.semantic`，`semantic.wasm` 没有 `init` 导出。宿主在打开 vault 时读取 `Notist.toml`，实例化 `semantic.wasm` 完成注册，把 `shader` 函数放进当前分析的函数环境。新式组件的装载流程（`init` 自描述 schema、manifest 不携带 semantic 接口）以 `plugins/component-echo` 为准。
+`plugin.json` 是只含身份、`wasm.module` 与顶层 HTML contribution 的 JSON 信封；manifest 不含权限请求或 semantic 接口。`semantic.wasm` 是 wasip2 component：装载时 `init` 以 version byte + postcard 返回共享 declarations，`evaluate` 用同一 frame 接收和返回 `Node` 森林。computed `shader` handler 最终产生 data-only `shader::canvas`，并保留 source、尺寸、trailing body 与根 source range；宿主再统一执行 fixpoint。
 
 == 调用方式
 
