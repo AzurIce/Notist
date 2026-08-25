@@ -1,20 +1,13 @@
 use std::fmt;
 
-mod content;
 mod leaf;
 mod node;
 mod signature;
 
-pub use content::{
-    Block, Content, CustomField, Element, ElementNode, ElementValue, StructuredDocument,
-    TableAlignment, TableCellPlacement, TableLayoutError, table_layout,
+pub use leaf::{BodyMode, ElementName, ElementNamespace, ElementSchema, ShapingKind, ShapingRole};
+pub use node::{
+    Node, NodeValue, TableAlignment, TableCellPlacement, TableLayoutError, table_layout_nodes, wire,
 };
-pub use leaf::{
-    BodyMode, ElementInstance, ElementName, ElementNamespace, ElementSchema, Field, FieldValue,
-    InstanceNode, ShapingKind, ShapingRole,
-};
-pub use node::wire;
-pub use node::{Node, NodeValue, node_from_instance, node_to_instance};
 pub use signature::{
     DefaultValue, FunctionSignature, Parameter, Type, builtin_signatures, callout_signature,
     details_signature, empty_content_signature, figure_signature, heading_signature,

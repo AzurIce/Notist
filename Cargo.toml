@@ -1,6 +1,6 @@
 [workspace]
 resolver = "2"
-members = ["crates/*"]
+members = ["crates/*", "plugins/core"]
 default-members = ["crates/notist-cli"]
 
 [workspace.package]
@@ -36,6 +36,7 @@ wasmtime = { version = "47", default-features = false, features = ["runtime", "c
 notist-model = { path = "crates/notist-model" }
 notist-syntax = { path = "crates/notist-syntax" }
 notist-eval = { path = "crates/notist-eval" }
+notist-plugin-core = { path = "plugins/core" }
 notist-analysis = { path = "crates/notist-analysis" }
 notist-html = { path = "crates/notist-html" }
 notist-plugin-host = { path = "crates/notist-plugin-host" }

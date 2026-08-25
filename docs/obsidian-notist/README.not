@@ -46,6 +46,7 @@ view + 渲染 + 基础编辑（MVP）→ 搜索/backlinks 面板 → graph → �
 
 - [[vault::obsidian-notist::dual-world]]：当前插件的双 World 交互契约（切换机制、隔离规则、取舍与脆弱点）。
 - [[vault::obsidian-notist::highlight]]：.not 编辑器语法高亮方案（复用 tree-sitter-notist + web-tree-sitter，含打包、增量同步、capture 映射与验证计划）。
+- [[vault::obsidian-notist::lsp]]：.not 编辑器接入 notist LSP 的方案（桌面 spawn `notist lsp` 走 stdio、自写薄 JSON-RPC client、文档同步与 CM 集成点、降级策略）。
 - [[vault::ai::2026-08-24 obsidian plugin feasibility research]]：本模块的可行性调研与决策记录；其中 [[vault::ai::2026-08-24 obsidian plugin feasibility research#Obsidian 双链与图谱引擎专题]] 详查官方引擎的实现与扩展性——结论是主走自建索引与渲染（语义权威本就在 notist-service），注入 `resolvedLinks` 白嫖官方 graph 至多作可降级的可选增强。
 - [[vault::ai::2026-08-17 web ui obsidian-like editor research]]：CM6 选型、.not 语法接入两路径、LSP-over-WS。
 - [[vault::ai::2026-08-18 notist plugin system design]]：含 Obsidian 插件机制调研。

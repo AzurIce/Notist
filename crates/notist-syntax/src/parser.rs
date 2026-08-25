@@ -92,10 +92,7 @@ impl Parser<'_> {
             // A line end is a boundary only when no bracket structure
             // (`#[...]`, `#{...}`, `#f(...)`) absorbed the newline; the
             // newline itself is left for the caller to consume.
-            if stop_at_newline
-                && bracket_depth == 0
-                && matches!(self.byte(), Some(b'\n' | b'\r'))
-            {
+            if stop_at_newline && bracket_depth == 0 && matches!(self.byte(), Some(b'\n' | b'\r')) {
                 self.push_text(&mut items, text_start, self.cursor);
                 return (
                     Markup {
@@ -325,8 +322,7 @@ impl Parser<'_> {
             end: self.end,
             errors: Vec::new(),
         };
-        let (markup, stopped) =
-            nested.parse_markup(stop_at_bracket, false, true, at_line_start);
+        let (markup, stopped) = nested.parse_markup(stop_at_bracket, false, true, at_line_start);
         self.errors.append(&mut nested.errors);
         (markup, stopped, nested.cursor)
     }
@@ -520,10 +516,7 @@ impl Parser<'_> {
                 cursor += line_len + 1;
                 continue;
             }
-            if indent > row_indent
-                && !content.starts_with("- ")
-                && !content.starts_with("+ ")
-            {
+            if indent > row_indent && !content.starts_with("- ") && !content.starts_with("+ ") {
                 return Some(cursor + indent);
             }
             return None;
@@ -1983,7 +1976,8 @@ fn trim_trailing_horizontal_space(markup: &mut Markup) {
     }
 }
 
-fn trim_trailing_framing_newline(    source: &str,
+fn trim_trailing_framing_newline(
+    source: &str,
     start: usize,
     end: usize,
     markup: &mut Markup,

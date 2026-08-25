@@ -1,7 +1,7 @@
 @![implementation = "aligned"]
 = Core Constructors
 
-本文定义 core package 的内容词表：内置构造器的签名与校验。core 是宿主静态链接的特权 native package（[[vault::designs::plugin-system::package]]），它的词表随语言版本发布，经 prelude 进入每个 module；语法糖的完整规格见 [[vault::designs::language::syntax-sugar]]；节点名字词表见 [[vault::designs::pipeline::evaluate#Call 与 Node]]；调用模型见 [[vault::designs::language::call-model]]。
+本文定义标准 `core` package 的内容词表：构造器的签名与校验。`core` 是默认 App 预装的 package；它可以由 native backend 提供，但不因此成为 eval engine 的特权模块。词表随语言 surface 发布，经 prelude 进入每个 module；语法糖的完整规格见 [[vault::designs::language::syntax-sugar]]；节点名字词表见 [[vault::designs::pipeline::evaluate#Call 与 Node]]；调用模型见 [[vault::designs::language::call-model]]。
 
 == 设计原则
 

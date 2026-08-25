@@ -1,4 +1,4 @@
-@![implementation = "partial"]
+@![implementation = "aligned"]
 = Compilation Pipeline Overview
 
 本文是 Notist 编译管线的总入口：把一篇 source 如何一步步变成可投影文档讲清楚。各阶段细节分别由自己的文档定义；本文只规定阶段边界、输入输出、所有权与不变量。
@@ -26,7 +26,7 @@ source
 | structure | call 森林 | 成型后的森林 | notist-eval | [[structure]] |
 | project | 成型森林 + 属性表 + target 上下文 | target fragment | notist-html / target renderer | [[project]] |
 
-当前实现中 clean parse 的求值主路径运行在统一 `Node` 上（node_engine 不动点规约），再经适配器转回 legacy `Content` / `StructuredDocument` 供现有 host 消费；目标数据形状是全程 call 森林。
+当前实现中 clean parse 的求值、成型与 HTML 投影都运行在统一 `Node` 森林上；`ElementTree` 只是成型后的 Node 容器，不存在转回 legacy `Content` / `StructuredDocument` 的生产桥接。HTML target 在渲染前使用独立的 target-side projection registry，再由 serializer 输出 HTML。
 
 == 阶段边界
 
@@ -76,13 +76,13 @@ parse 错误记录在 `Parse.errors`；check/evaluate 错误进入 `Evaluation.d
 |---|---|---|
 | parse | `notist_syntax::parse` | 同左 |
 | check | `notist-analysis` | 同左 |
-| lower | `notist-eval::stream_lower::lower_markup_stream` | 全部 Markup item 已直接产出 call 流，不再走 legacy per-item fallback；text inline sugar 扫描复用 legacy leaf factory |
-| reduce | `notist-eval::leaf::node_engine`（统一 `Node` 不动点） | `structured_module` 对 clean parse 使用 node_engine；legacy Stream 引擎仍服务 `host.call` 与语法错误恢复路径 |
-| structure | legacy `structure()` + `leaf::shape_flat` | `structured_module` 先经 node_engine 规约，再走 `node_to_instance` + `shape_flat`；成型产物 `ElementTree` 已可用于新消费者 |
-| project | service 向 `notist-html::render_element_tree_with_renderers` 传 `ElementTree`；遍历、按 name 分发、anchor/outline/annotation、flow/inline 与全部节点渲染均基于 tree |
+| lower | `notist-eval::stream_lower` | 显式调用、语法糖和文字统一产出 `Node` call 森林；不再存在 legacy per-item lowering |
+| reduce | `notist-eval::leaf::node_engine` | 统一 `Node` 不动点；未注册名字保留为终态 call，注册 handler 的输出重新进入规约 |
+| structure | `notist-eval::leaf::shape_flat` | `Node` 森林上的递归成型；`ElementTree` 只承载 `Node`，不引入第二种元素表示 |
+| project | `notist-html::HtmlProjectionRegistry` + `render_element_tree_with_renderers` | target-side 独立规约先产出 `html::*` 数据节点，再由 serializer 输出；anchor/outline/annotation 与 flow/inline 继续消费同一 Node tree |
 
 == 已裁定 / 待定
 
 - 已裁定：管线阶段为 parse → check → lower → reduce → structure → project；各阶段只消费上一阶段产物。
 - 已裁定：语义真相是 call 森林与属性表；结构是可重建投影。
-- 兼容：`render(StructuredDocument)` 作为旧 API 保留，但它不是 canonical pipeline 的阶段输入。
+- 已实现：HTML target 的 `HtmlProjectionRegistry` 与 serializer 接收同一份 `ElementTree` / `Node` 森林；不再保留 `render(StructuredDocument)` 兼容入口。

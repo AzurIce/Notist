@@ -59,14 +59,34 @@ obsidian-notist 插件为 `.not` 编辑器接入语法高亮的设计与落地�
 
 == 风险与开放点
 
-- `notist.wasm` 若非 `tree-sitter build --wasm` 的标准产物，web-tree-sitter 可能拒绝加载——届时从 `grammars/notist` 源码用 tree-sitter CLI 重出一份（外部 scanner 会一并编入）。
+- ~~`notist.wasm` 兼容性~~（已实锤并解决）：zed-notist 的 `grammars/notist.wasm` 是 Zed 工具链产物、dylink 依赖 `libc.so`，web-tree-sitter 加载即失败；已改用 `tree-sitter build --wasm`（wasi-sdk）从 `grammars/notist` 源码重出的自包含产物。
 - ABI 15 锁定 web-tree-sitter 0.25+；升级 grammar 时需同步核对 ABI 兼容窗口。
 - 移动端 wasm 加载路径未验证，桌面优先。
 - 围栏内语言注入（`injections.scm`）需要桥接宿主其他语言的高亮，后续单独设计，首版围栏载荷一律单色。
 - tree-sitter 语法与 Rust parser 的残余漂移对高亮可容错（最坏涂错颜色）；但诊断、跳转等语义功能必须等 notist-service 供能，不能拿 tree-sitter 树冒充权威。
 
+== 更新流程（grammar 更新后）
+
+语法与查询的单一事实源是 `tree-sitter-notist` 仓库（`~/Files/tree-sitter-notist`，github.com/AzurIce/tree-sitter-notist，自带 `queries/*.scm`）；zed-notist 的 `languages/*.scm` 只是它的拷贝。流程：
+
+- `git -C ~/Files/tree-sitter-notist pull`；
+- `nix develop -c tree-sitter build --wasm`（其 devShell 提供 tree-sitter CLI；wasi-sdk 已由 CLI 自动下载到 `~/.cache/tree-sitter`，无需 emscripten）；
+- `tree-sitter-notist.wasm` 与 `queries/highlights.scm` 拷入本插件 `assets/`，并把 revision 记进 `assets/UPSTREAM.txt`；
+- 核对 ABI：`src/parser.c` 的 `LANGUAGE_VERSION` 不得超过 web-tree-sitter 支持窗口（0.25.x 上限 15；上游升 ABI 时同步升 web-tree-sitter 并重拷 `tree-sitter.wasm`）；
+- 用 Vault 根部的 `notist-highlight-fixture.not`（全语法面 fixture，随 Vault 常驻）实机回归：reload 后目测 + eval 统计 `cm-notist-*` span。
+
+== 更新记录
+
+=== 2026-08-24 tree-sitter-notist f17618a
+
+「align grammar with notist language design」：命名实参从 `name = value` 改为 `name: value`；新增表格、分割线、关键字（`let`/`if`/`else`/`fn`/`trailing`/`import`/`as`/`not`/`and`/`or`）、`@module`/`@variable`/`@function`/`@type` 等 capture。ABI 仍为 15，web-tree-sitter 0.25.10 兼容。样式侧补了 keyword/module/variable/function 的 CSS。发现的两个上游问题（暂绕过，待上游修）：
+
+- *行内注释被除号吃掉*：`#let x = 1  // c` 解析成 `1 / / c` 报错——外部 scanner 在「二元延续」状态看到 `/` 直接产 operator，没给 `//` 让路（`#f(a, // note` 括号内正常；Rust parser 无此问题）。fixture 里注释改写独立行或块注释 `/* */` 规避。
+- *query 字段顺序敏感*：`(let_expression parameters: (parameters) name: (identifier) @function)` 不命中，换成 `name:` 在前即正常——tree-sitter query 的字段约束按声明顺序匹配，上游 `highlights.scm` 该模式需调序。
+
 == 参考
 
+- [[vault::ai::2026-08-24 obsidian-notist syntax highlighting implementation]]：本方案的实现记录与踩坑（wasm 兼容性、esbuild CJS 的 import.meta.url、UTF-16 offset、heading marker 尾空格等）。
 - [[vault::obsidian-notist::dual-world]]：插件整体交互契约。
 - [[vault::ai::2026-08-24 obsidian-notist editor cm6 migration]]：编辑器内核与样式约定，本文的挂载点。
 - [[vault::ai::2026-08-24 obsidian plugin feasibility research]]：壳/语义分层原则（语义组件不 import obsidian API）——解析层设计同样遵守。

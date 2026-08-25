@@ -1,15 +1,12 @@
-//! Semantic HTML rendering for structured Notist documents.
+//! Semantic HTML projection and rendering for structured Notist documents.
 
 use std::collections::{HashMap, HashSet};
 use std::fmt::Write;
 
-use notist_eval::{
-    ElementTree, field_value_to_element_value, instances_to_legacy_content, legacy_content_to_nodes,
-};
+use notist_eval::ElementTree;
 use notist_model::{
-    Block, Content, CustomField, Element, ElementNode, FieldValue, InstanceNode, ModulePath,
-    ModuleReference, StructuredDocument, TableAlignment, TableCellPlacement, TableLayoutError,
-    TextRange, WikiReference, table_layout,
+    ModulePath, ModuleReference, Node, NodeValue, TableAlignment, TableCellPlacement, TextRange,
+    WikiReference, table_layout_nodes,
 };
 use percent_encoding::{NON_ALPHANUMERIC, utf8_percent_encode};
 
@@ -62,84 +59,140 @@ impl Default for RenderOptions<'_> {
     }
 }
 
-/// Input passed to a custom HTML renderer for one plugin element.
-pub struct CustomRenderInput<'a> {
-    /// The plugin element name.
-    pub name: &'a str,
-    /// The canonical evaluated body stream.
-    pub body: &'a [InstanceNode],
-    /// Whether the element is block-level.
-    pub block: bool,
-    /// Serialized constructor fields.
-    pub fields: &'a [CustomField],
-}
-
-/// A target-specific renderer for a plugin element.
-pub trait CustomHtmlRenderer: Send + Sync {
-    /// The plugin element name this renderer handles.
+/// A target-side projection contribution.
+pub trait HtmlProjectionHandler: Send + Sync {
+    /// The semantic element name this handler handles.
     fn element_name(&self) -> &str;
 
-    /// Renders the element into `output`. Return `true` if handled.
-    fn render(&self, input: &CustomRenderInput<'_>, output: &mut String) -> bool;
+    /// Projects one semantic node into zero or more target data nodes.
+    fn project(&self, node: &Node) -> Option<Vec<Node>>;
 }
 
-/// A registry of plugin HTML renderers.
+/// A registry that reduces a formed semantic forest into HTML data nodes.
+pub struct HtmlProjectionRegistry {
+    handlers: Vec<Box<dyn HtmlProjectionHandler>>,
+}
+
+impl Default for HtmlProjectionRegistry {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl HtmlProjectionRegistry {
+    const MAX_PROJECTION_DEPTH: usize = 64;
+
+    /// Creates an empty projection registry.
+    pub fn new() -> Self {
+        Self {
+            handlers: Vec::new(),
+        }
+    }
+
+    /// Registers a target-side projection handler.
+    pub fn register(&mut self, handler: impl HtmlProjectionHandler + 'static) {
+        self.handlers.push(Box::new(handler));
+    }
+
+    /// Reduces a formed tree and returns its projected copy.
+    pub fn reduce_tree(&self, tree: &ElementTree) -> ElementTree {
+        ElementTree {
+            roots: self.reduce_nodes(tree.roots.clone(), 0),
+        }
+    }
+
+    /// Alias for [`Self::reduce_tree`].
+    pub fn project_tree(&self, tree: &ElementTree) -> ElementTree {
+        self.reduce_tree(tree)
+    }
+
+    fn reduce_nodes(&self, nodes: Vec<Node>, depth: usize) -> Vec<Node> {
+        nodes
+            .into_iter()
+            .flat_map(|node| self.reduce_node(node, depth))
+            .collect()
+    }
+
+    fn reduce_node(&self, mut node: Node, depth: usize) -> Vec<Node> {
+        node.children = self.reduce_nodes(node.children, 0);
+        for (_, value) in &mut node.args {
+            *value = self.reduce_value(std::mem::replace(value, NodeValue::None), 0);
+        }
+
+        if node.name.starts_with("core::") || node.name.starts_with("html::") {
+            return vec![node];
+        }
+        if depth >= Self::MAX_PROJECTION_DEPTH {
+            return vec![fallback_projection_node(node)];
+        }
+
+        let projected = self
+            .handlers
+            .iter()
+            .find(|handler| element_name_matches(handler.element_name(), &node.name))
+            .and_then(|handler| handler.project(&node));
+        match projected {
+            Some(nodes) => self.reduce_nodes(nodes, depth + 1),
+            None => vec![fallback_projection_node(node)],
+        }
+    }
+
+    fn reduce_value(&self, value: NodeValue, depth: usize) -> NodeValue {
+        match value {
+            NodeValue::Stream(nodes) => NodeValue::Stream(self.reduce_nodes(nodes, depth)),
+            NodeValue::Array(values) => NodeValue::Array(
+                values
+                    .into_iter()
+                    .map(|value| self.reduce_value(value, depth))
+                    .collect(),
+            ),
+            value => value,
+        }
+    }
+}
+
+/// A registry of target-side HTML projections.
 pub struct HtmlRendererRegistry {
-    renderers: Vec<Box<dyn CustomHtmlRenderer>>,
+    projections: HtmlProjectionRegistry,
 }
 
 impl Default for HtmlRendererRegistry {
     fn default() -> Self {
-        let mut registry = Self {
-            renderers: Vec::new(),
-        };
-        registry.register(ShaderHtmlRenderer);
+        let mut registry = Self::new();
+        registry.register_projection(ShaderHtmlProjectionHandler);
         registry
     }
 }
 
 impl HtmlRendererRegistry {
-    /// Creates an empty registry.
+    /// Creates an empty projection registry used by the HTML renderer.
     pub fn new() -> Self {
         Self {
-            renderers: Vec::new(),
+            projections: HtmlProjectionRegistry::new(),
         }
     }
 
-    /// Registers a renderer.
-    pub fn register(&mut self, renderer: impl CustomHtmlRenderer + 'static) {
-        self.renderers.push(Box::new(renderer));
+    /// Registers a target-side projection handler.
+    pub fn register_projection(&mut self, handler: impl HtmlProjectionHandler + 'static) {
+        self.projections.register(handler);
     }
 
-    /// Tries all renderers matching the element name.
-    ///
-    /// Renderers may declare either the qualified name (`demo::box`) or the
-    /// local name (`box`). Matching the local suffix keeps renderer manifests
-    /// stable when package namespaces are introduced later.
-    pub fn render(&self, input: &CustomRenderInput<'_>, output: &mut String) -> bool {
-        let local = input.name.rsplit("::").next().unwrap_or(input.name);
-        for renderer in &self.renderers {
-            let declared = renderer.element_name();
-            if (declared == input.name || declared == local) && renderer.render(input, output) {
-                return true;
-            }
-        }
-        false
+    fn project_tree(&self, tree: &ElementTree) -> ElementTree {
+        self.projections.project_tree(tree)
     }
 }
 
 /// Registers a manifest-declared Web Component projection.
 ///
-/// The renderer emits the custom element and scalar constructor fields as
-/// `data-*` attributes. The package's JS/CSS assets are injected into the page
-/// head by the CLI build layer. Untrusted field and body values remain escaped
-/// exactly like every other HTML projection path.
+/// The projection emits an `html::*` data node. The package's JS/CSS assets
+/// are injected into the page head by the CLI build layer; manifest validation
+/// remains the authority for the declared custom-element tag.
 pub fn register_web_component_renderer(
     registry: &mut HtmlRendererRegistry,
     element_name: &str,
     tag: &str,
 ) {
-    registry.register(WebComponentHtmlRenderer {
+    registry.register_projection(WebComponentHtmlRenderer {
         element_name: element_name.to_owned(),
         tag: tag.to_owned(),
     });
@@ -151,211 +204,214 @@ pub struct WebComponentHtmlRenderer {
     tag: String,
 }
 
-impl CustomHtmlRenderer for WebComponentHtmlRenderer {
+impl HtmlProjectionHandler for WebComponentHtmlRenderer {
     fn element_name(&self) -> &str {
         &self.element_name
     }
 
-    fn render(&self, input: &CustomRenderInput<'_>, output: &mut String) -> bool {
-        output.push('<');
-        output.push_str(&self.tag);
-        output.push_str(" class=\"notist-web-component\" data-notist-element=\"");
-        escape_attribute(output, input.name);
-        output.push('"');
-        for field in input.fields {
-            let value = match &field.value {
-                notist_model::ElementValue::None => continue,
-                notist_model::ElementValue::Bool(value) => value.to_string(),
-                notist_model::ElementValue::Int(value) => value.to_string(),
-                notist_model::ElementValue::Float(value) => value.to_string(),
-                notist_model::ElementValue::String(value) => value.clone(),
-                notist_model::ElementValue::Content(_) | notist_model::ElementValue::Array(_) => {
-                    continue;
-                }
-            };
-            output.push_str(" data-");
-            escape_attribute(output, &field.name);
-            output.push_str("=\"");
-            escape_attribute(output, &value);
-            output.push('"');
-        }
-        output.push('>');
-        if !input.body.is_empty() {
-            let fallback = instance_plain_text(input.body);
-            output.push_str("<p>");
-            escape_text(output, &fallback);
-            output.push_str("</p>");
-        }
-        output.push_str("</");
-        output.push_str(&self.tag);
-        output.push('>');
-        true
+    fn project(&self, node: &Node) -> Option<Vec<Node>> {
+        let mut projected = if node.block {
+            Node::block_call(format!("html::{}", self.tag), node.range)
+        } else {
+            Node::call(format!("html::{}", self.tag), node.range)
+        };
+        projected.args.push((
+            "class".to_owned(),
+            NodeValue::String("notist-web-component".to_owned()),
+        ));
+        projected.args.push((
+            "data-notist-element".to_owned(),
+            NodeValue::String(node.name.clone()),
+        ));
+        projected.args.extend(
+            node.args
+                .iter()
+                .filter(|(_, value)| is_scalar_value(value))
+                .map(|(name, value)| (format!("data-{name}"), value.clone())),
+        );
+        projected.children = node.children.clone();
+        Some(vec![projected])
     }
 }
 
-/// Built-in Shadertoy-like renderer for the `shader` plugin.
-struct ShaderHtmlRenderer;
+/// Built-in Shadertoy-like projection for the `shader` plugin.
+struct ShaderHtmlProjectionHandler;
 
-impl CustomHtmlRenderer for ShaderHtmlRenderer {
+impl HtmlProjectionHandler for ShaderHtmlProjectionHandler {
     fn element_name(&self) -> &str {
         "shader"
     }
 
-    fn render(&self, input: &CustomRenderInput<'_>, output: &mut String) -> bool {
-        let mut source = String::new();
+    fn project(&self, node: &Node) -> Option<Vec<Node>> {
+        let mut source = None;
         let mut width = 800i64;
         let mut height = 600i64;
-        for field in input.fields {
-            match (field.name.as_str(), &field.value) {
-                ("source", notist_model::ElementValue::String(value)) => source = value.clone(),
-                ("width", notist_model::ElementValue::Int(value)) => width = *value,
-                ("height", notist_model::ElementValue::Int(value)) => height = *value,
+        for (name, value) in &node.args {
+            match (name.as_str(), value) {
+                ("source", NodeValue::String(value)) => source = Some(value.clone()),
+                ("width", NodeValue::Int(value)) => width = *value,
+                ("height", NodeValue::Int(value)) => height = *value,
                 _ => {}
             }
         }
-        if source.is_empty() {
-            return false;
-        }
-
-        output.push_str("<notist-shader class=\"notist-shader\" data-shader-source=\"");
-        escape_attribute(output, &source);
-        output.push_str("\" data-width=\"");
-        write!(output, "{width}").unwrap();
-        output.push_str("\" data-height=\"");
-        write!(output, "{height}").unwrap();
-        output.push_str("\">");
-        if !input.body.is_empty() {
-            let fallback = instance_plain_text(input.body);
-            output.push_str("<p>");
-            escape_text(output, &fallback);
-            output.push_str("</p>");
-        }
-        output.push_str("</notist-shader>");
-        true
+        let source = source.filter(|source| !source.is_empty())?;
+        let mut projected = if node.block {
+            Node::block_call("html::notist-shader", node.range)
+        } else {
+            Node::call("html::notist-shader", node.range)
+        };
+        projected.args = vec![
+            (
+                "class".to_owned(),
+                NodeValue::String("notist-shader".to_owned()),
+            ),
+            (
+                "data-notist-element".to_owned(),
+                NodeValue::String(node.name.clone()),
+            ),
+            ("data-shader-source".to_owned(), NodeValue::String(source)),
+            ("data-width".to_owned(), NodeValue::Int(width)),
+            ("data-height".to_owned(), NodeValue::Int(height)),
+        ];
+        projected.children = node.children.clone();
+        Some(vec![projected])
     }
 }
 
-/// Renders a structured document using the default options.
-pub fn render(document: &StructuredDocument) -> String {
-    render_with_options(document, &RenderOptions::default())
+fn element_name_matches(declared: &str, actual: &str) -> bool {
+    declared == actual || declared == actual.rsplit("::").next().unwrap_or(actual)
 }
 
-/// Renders a structured document as an HTML fragment.
-pub fn render_with_options(document: &StructuredDocument, options: &RenderOptions<'_>) -> String {
-    render_internal(
-        document,
-        options,
+fn is_scalar_value(value: &NodeValue) -> bool {
+    matches!(
+        value,
+        NodeValue::None
+            | NodeValue::Bool(_)
+            | NodeValue::Int(_)
+            | NodeValue::Float(_)
+            | NodeValue::String(_)
+    )
+}
+
+fn fallback_projection_node(node: Node) -> Node {
+    let name = node.name.clone();
+    let tag = fallback_html_tag(&name);
+    let mut projected = if node.block {
+        Node::block_call(format!("html::{tag}"), node.range)
+    } else {
+        Node::call(format!("html::{tag}"), node.range)
+    };
+    projected.args = node.args;
+    projected
+        .args
+        .push(("data-notist-element".to_owned(), NodeValue::String(name)));
+    projected.children = node.children;
+    projected
+}
+
+fn fallback_html_tag(name: &str) -> String {
+    let source = name.split("::").collect::<Vec<_>>().join("-");
+    let mut tag = source
+        .chars()
+        .map(|character| {
+            if character.is_ascii_alphanumeric() || character == '-' {
+                character.to_ascii_lowercase()
+            } else {
+                '-'
+            }
+        })
+        .collect::<String>();
+    while tag.starts_with('-') {
+        tag.remove(0);
+    }
+    if tag.is_empty() {
+        return "notist-element".to_owned();
+    }
+    if !tag.starts_with(|character: char| character.is_ascii_alphabetic()) {
+        tag.insert_str(0, "notist-");
+    }
+    tag
+}
+
+fn scalar_value_string(value: &NodeValue) -> Option<String> {
+    match value {
+        NodeValue::None => None,
+        NodeValue::Bool(value) => Some(value.to_string()),
+        NodeValue::Int(value) => Some(value.to_string()),
+        NodeValue::Float(value) => Some(value.to_string()),
+        NodeValue::String(value) => Some(value.clone()),
+        NodeValue::Stream(_) | NodeValue::Array(_) => None,
+    }
+}
+
+fn html_attribute_name(name: &str) -> String {
+    if name == "class" || name == "id" {
+        return name.to_owned();
+    }
+    let safe = name
+        .chars()
+        .map(|character| {
+            if character.is_ascii_alphanumeric() || character == '-' {
+                character.to_ascii_lowercase()
+            } else {
+                '-'
+            }
+        })
+        .collect::<String>();
+    if name.starts_with("data-") || name.starts_with("aria-") {
+        if safe.is_empty() {
+            "data-value".to_owned()
+        } else {
+            safe
+        }
+    } else if safe.is_empty() {
+        "data-value".to_owned()
+    } else {
+        format!("data-{safe}")
+    }
+}
+
+/// Renders a canonical [`ElementTree`] with the default options.
+///
+/// The canonical tree is the stable input shape. Without a reference
+/// resolver, links fall back to the default module-url encoding.
+pub fn render_element_tree(tree: &ElementTree) -> String {
+    render_element_tree_with_renderers(
+        tree,
+        &RenderOptions::default(),
         None,
         &[],
         &HtmlRendererRegistry::default(),
     )
 }
 
-/// Renders a document using a caller-provided module reference URL resolver.
-///
-/// Returning `None` leaves the reference visible but unclickable.
-pub fn render_with_reference_resolver(
-    document: &StructuredDocument,
-    options: &RenderOptions<'_>,
-    resolver: &ReferenceResolver<'_>,
-) -> String {
-    render_internal(
-        document,
-        options,
-        Some(resolver),
-        &[],
-        &HtmlRendererRegistry::default(),
-    )
-}
-
-/// Renders a document with caller-resolved module-reference URLs and source annotations.
-pub fn render_with_resolvers(
-    document: &StructuredDocument,
-    options: &RenderOptions<'_>,
-    reference_resolver: &ReferenceResolver<'_>,
-    annotations: &[RenderedAnnotation],
-) -> String {
-    render_internal(
-        document,
-        options,
-        Some(reference_resolver),
-        annotations,
-        &HtmlRendererRegistry::default(),
-    )
-}
-
-/// Renders a document with a custom plugin renderer registry.
-pub fn render_with_renderers(
-    document: &StructuredDocument,
-    options: &RenderOptions<'_>,
-    reference_resolver: &ReferenceResolver<'_>,
-    annotations: &[RenderedAnnotation],
-    renderers: &HtmlRendererRegistry,
-) -> String {
-    render_internal(
-        document,
-        options,
-        Some(reference_resolver),
-        annotations,
-        renderers,
-    )
-}
-
-/// Renders a canonical [`ElementTree`] through the legacy projection bridge.
-///
-/// New hosts should call this entry point instead of constructing a
-/// `StructuredDocument` manually; projection and rendering remain one
-/// data-flow step, and the canonical tree is the stable input shape.
-pub fn render_element_tree(tree: &ElementTree) -> String {
-    render_element_tree_with_renderers(
-        tree,
-        &RenderOptions::default(),
-        &|_, _| None,
-        &[],
-        &HtmlRendererRegistry::default(),
-    )
-}
-
 /// Renders an [`ElementTree`] with caller-provided projection options,
-/// reference resolution, annotations, and plugin renderers.
+/// reference resolution, and annotations.
+///
+/// The registry projects plugin nodes into `html::*` data nodes before the
+/// serializer renders them. A `None` reference resolver falls back to the
+/// default module-url encoding; a resolver returning `None` leaves the
+/// reference visible but unclickable.
 pub fn render_element_tree_with_renderers(
     tree: &ElementTree,
     options: &RenderOptions<'_>,
-    reference_resolver: &ReferenceResolver<'_>,
+    reference_resolver: Option<&ReferenceResolver<'_>>,
     annotations: &[RenderedAnnotation],
     renderers: &HtmlRendererRegistry,
 ) -> String {
-    let plan = AnchorPlan::compute_tree(tree, annotations);
+    let projected_tree = renderers.project_tree(tree);
+    let plan = AnchorPlan::compute_tree(&projected_tree, annotations);
     let mut renderer = Renderer {
         output: String::new(),
         options,
-        reference_resolver: Some(reference_resolver),
+        reference_resolver,
         annotations,
-        renderers,
         plan,
         current_block: None,
         inherited_coverage: Vec::new(),
     };
-    renderer.element_tree(tree);
+    renderer.element_tree(&projected_tree);
     renderer.output
-}
-
-/// Computes the resolvable anchor labels of a document: explicit scope ids first,
-/// then heading default ids (heading plain text), each mapped to its HTML anchor.
-pub fn module_anchors(
-    document: &StructuredDocument,
-    annotations: &[RenderedAnnotation],
-) -> Vec<(String, String)> {
-    AnchorPlan::compute(document, annotations).labels
-}
-
-/// Collects the top-level headings of a document with their assigned HTML anchors.
-pub fn outline_entries(
-    document: &StructuredDocument,
-    annotations: &[RenderedAnnotation],
-) -> Vec<RenderedHeading> {
-    let plan = AnchorPlan::compute(document, annotations);
-    collect_outline_entries(document, &plan)
 }
 
 /// Computes resolvable anchor labels directly from a canonical tree.
@@ -375,34 +431,11 @@ pub fn outline_entries_tree(
     collect_outline_entries_tree(tree, &plan)
 }
 
-fn render_internal<'a>(
-    document: &StructuredDocument,
-    options: &'a RenderOptions<'a>,
-    resolver: Option<&'a ReferenceResolver<'a>>,
-    annotations: &'a [RenderedAnnotation],
-    renderers: &'a HtmlRendererRegistry,
-) -> String {
-    let plan = AnchorPlan::compute(document, annotations);
-    let mut renderer = Renderer {
-        output: String::new(),
-        options,
-        reference_resolver: resolver,
-        annotations,
-        renderers,
-        plan,
-        current_block: None,
-        inherited_coverage: Vec::new(),
-    };
-    renderer.document(document);
-    renderer.output
-}
-
 struct Renderer<'a, 'options> {
     output: String,
     options: &'options RenderOptions<'a>,
     reference_resolver: Option<&'options ReferenceResolver<'options>>,
     annotations: &'options [RenderedAnnotation],
-    renderers: &'options HtmlRendererRegistry,
     plan: AnchorPlan,
     /// Range key of the top-level block currently being rendered, used to look
     /// up inline wrapper candidates. `None` outside block rendering.
@@ -413,23 +446,17 @@ struct Renderer<'a, 'options> {
 }
 
 impl Renderer<'_, '_> {
-    fn document(&mut self, document: &StructuredDocument) {
-        for block in &document.blocks {
-            self.block(block);
-        }
-    }
-
-    /// Renders the canonical tree directly. Sections are emitted from their
-    /// `core::section` instance; every other node is projected per leaf just
-    /// in time for the existing target renderer.
+    /// Renders the already-projected tree directly. Sections are emitted from
+    /// their `core::section` node; plugin nodes have already become `html::*`
+    /// data nodes before reaching this serializer.
     fn element_tree(&mut self, tree: &ElementTree) {
         for root in &tree.roots {
             self.tree_node(root);
         }
     }
 
-    fn tree_node(&mut self, node: &InstanceNode) {
-        if node.instance.is_core("section") {
+    fn tree_node(&mut self, node: &Node) {
+        if node.is_core("section") {
             self.tree_section(node);
             return;
         }
@@ -437,8 +464,8 @@ impl Renderer<'_, '_> {
         self.tree_element(node, RenderPosition::Block);
     }
 
-    fn tree_section(&mut self, node: &InstanceNode) {
-        let Some(heading_node) = node.instance.body.first() else {
+    fn tree_section(&mut self, node: &Node) {
+        let Some(heading_node) = node.children.first() else {
             return;
         };
         let range = node.range;
@@ -472,56 +499,23 @@ impl Renderer<'_, '_> {
         .unwrap();
         self.output.push('>');
         self.tree_node(heading_node);
-        for child in &node.instance.body[1..] {
+        for child in &node.children[1..] {
             self.tree_node(child);
         }
         self.output.push_str("</section>");
     }
 
-    fn tree_element(&mut self, node: &InstanceNode, position: RenderPosition) {
-        let instance = &node.instance;
-        let Some(local) = instance.name.core_local() else {
-            let name = instance.name.to_string();
-            let fields = instance
-                .fields
-                .iter()
-                .filter_map(|field| {
-                    Some(CustomField {
-                        name: field.name.clone(),
-                        value: field_value_to_element_value(&field.value)?,
-                    })
-                })
-                .collect::<Vec<_>>();
-            let input = CustomRenderInput {
-                name: &name,
-                body: &instance.body,
-                block: instance.block,
-                fields: &fields,
-            };
-            if self.renderers.render(&input, &mut self.output) {
-                return;
-            }
-            let tag = container_tag(instance.block, position);
-            self.output.push('<');
-            self.output.push_str(tag);
-            self.output.push_str(" class=\"notist-custom");
-            self.projected_class_suffix_range(node.range);
-            self.output.push_str("\" data-notist-name=\"");
-            escape_attribute(&mut self.output, &name);
-            self.output.push('"');
-            self.range_attributes_range(node.range);
-            self.output.push('>');
-            if tag == "div" {
-                self.tree_flow_content(&instance.body);
-            } else {
-                self.tree_inline_content(&instance.body);
-            }
-            write!(self.output, "</{tag}>").unwrap();
+    fn tree_element(&mut self, node: &Node, position: RenderPosition) {
+        if let Some(local) = node.name.strip_prefix("html::") {
+            self.tree_html_element(local, node);
+            return;
+        }
+        let Some(local) = node.core_local() else {
             return;
         };
         match local {
             "text" => {
-                let Some(FieldValue::String(text)) = instance.field("text") else {
+                let Some(NodeValue::String(text)) = node.get("text") else {
                     return;
                 };
                 self.output.push_str("<span class=\"notist-text\"");
@@ -535,19 +529,19 @@ impl Renderer<'_, '_> {
                 self.projected_class_attribute_range(node.range);
                 self.range_attributes_range(node.range);
                 self.output.push('>');
-                self.tree_body_inline_content(&instance.body);
+                self.tree_body_inline_content(&node.children);
                 self.output.push_str("</p>");
             }
             "heading" => {
-                let level = match instance.field("level") {
-                    Some(FieldValue::Int(level)) => (*level).clamp(1, 6),
+                let level = match node.get("level") {
+                    Some(NodeValue::Int(level)) => (*level).clamp(1, 6),
                     _ => 1,
                 };
                 write!(self.output, "<h{level}").unwrap();
                 self.projected_class_attribute_range(node.range);
                 self.range_attributes_range(node.range);
                 self.output.push('>');
-                self.tree_body_inline_content(&instance.body);
+                self.tree_body_inline_content(&node.children);
                 write!(self.output, "</h{level}>").unwrap();
             }
             "strong" | "emph" | "strike" | "underline" => {
@@ -561,7 +555,7 @@ impl Renderer<'_, '_> {
                 self.output.push_str(tag);
                 self.range_attributes_range(node.range);
                 self.output.push('>');
-                self.tree_body_inline_content(&instance.body);
+                self.tree_body_inline_content(&node.children);
                 self.output.push_str("</");
                 self.output.push_str(tag);
                 self.output.push('>');
@@ -572,7 +566,7 @@ impl Renderer<'_, '_> {
                 self.output.push('>');
             }
             "reference" => {
-                let Some(FieldValue::String(url)) = instance.field("url") else {
+                let Some(NodeValue::String(url)) = node.get("url") else {
                     return;
                 };
                 if let Ok(reference) = notist_syntax::parse_wiki_reference(url) {
@@ -580,19 +574,19 @@ impl Renderer<'_, '_> {
                 }
             }
             "raw" => {
-                let Some(FieldValue::String(text)) = instance.field("source") else {
+                let Some(NodeValue::String(text)) = node.get("source") else {
                     return;
                 };
-                let block = matches!(instance.field("block"), Some(FieldValue::Bool(true)));
-                let language = match instance.field("lang") {
-                    Some(FieldValue::String(language)) => Some(language.as_str()),
+                let block = matches!(node.get("block"), Some(NodeValue::Bool(true)));
+                let language = match node.get("lang") {
+                    Some(NodeValue::String(language)) => Some(language.as_str()),
                     _ => None,
                 };
                 self.raw_range(text, block, language, node.range);
             }
             "callout" => {
-                let kind = match instance.field("kind") {
-                    Some(FieldValue::String(kind)) => kind.as_str(),
+                let kind = match node.get("kind") {
+                    Some(NodeValue::String(kind)) => kind.as_str(),
                     _ => "note",
                 };
                 self.output.push_str("<aside class=\"notist-callout");
@@ -602,16 +596,16 @@ impl Renderer<'_, '_> {
                 self.output.push('"');
                 self.range_attributes_range(node.range);
                 self.output.push('>');
-                if let Some(FieldValue::Content(title)) = instance.field("title") {
+                if let Some(NodeValue::Stream(title)) = node.get("title") {
                     self.output.push_str("<div class=\"notist-callout-title\">");
                     self.tree_inline_content(title);
                     self.output.push_str("</div>");
                 }
-                self.tree_flow_content(&instance.body);
+                self.tree_flow_content(&node.children);
                 self.output.push_str("</aside>");
             }
             "details" => {
-                let open = matches!(instance.field("open"), Some(FieldValue::Bool(true)));
+                let open = matches!(node.get("open"), Some(NodeValue::Bool(true)));
                 self.output.push_str("<details class=\"notist-details");
                 self.projected_class_suffix_range(node.range);
                 self.output.push('"');
@@ -620,18 +614,18 @@ impl Renderer<'_, '_> {
                 }
                 self.range_attributes_range(node.range);
                 self.output.push_str("><summary>");
-                if let Some(FieldValue::Content(summary)) = instance.field("summary") {
+                if let Some(NodeValue::Stream(summary)) = node.get("summary") {
                     self.tree_inline_content(summary);
                 } else {
                     escape_text(&mut self.output, "Details");
                 }
                 self.output.push_str("</summary>");
-                self.tree_flow_content(&instance.body);
+                self.tree_flow_content(&node.children);
                 self.output.push_str("</details>");
             }
             "figure" => {
-                let kind = match instance.field("kind") {
-                    Some(FieldValue::String(kind)) => kind.clone(),
+                let kind = match node.get("kind") {
+                    Some(NodeValue::String(kind)) => kind.clone(),
                     _ => "figure".to_owned(),
                 };
                 self.output.push_str("<figure class=\"notist-figure");
@@ -641,10 +635,10 @@ impl Renderer<'_, '_> {
                 self.output.push('"');
                 self.range_attributes_range(node.range);
                 self.output.push('>');
-                self.tree_figure_body(&instance.body);
-                if let Some(FieldValue::Content(caption)) = instance.field("caption") {
+                self.tree_figure_body(&node.children);
+                if let Some(NodeValue::Stream(caption)) = node.get("caption") {
                     self.output.push_str("<figcaption>");
-                    if let Some(FieldValue::Content(supplement)) = instance.field("supplement") {
+                    if let Some(NodeValue::Stream(supplement)) = node.get("supplement") {
                         self.tree_inline_content(supplement);
                         escape_text(&mut self.output, ": ");
                     }
@@ -654,21 +648,18 @@ impl Renderer<'_, '_> {
                 self.output.push_str("</figure>");
             }
             "unresolved-call" => {
-                let Some(FieldValue::String(name)) = instance.field("name") else {
+                let Some(NodeValue::String(name)) = node.get("name") else {
                     return;
                 };
-                let arguments = match instance.field("arguments") {
-                    Some(FieldValue::String(arguments)) => Some(arguments.as_str()),
+                let arguments = match node.get("arguments") {
+                    Some(NodeValue::String(arguments)) => Some(arguments.as_str()),
                     _ => None,
                 };
-                let trailing = (!instance.body.is_empty())
-                    .then(|| instances_to_legacy_content(&instance.body))
-                    .flatten();
-                let block = instance.block;
+                let block = node.block;
                 self.unresolved_call_range(
                     name,
                     arguments,
-                    trailing.as_ref(),
+                    &node.children,
                     block,
                     node.range,
                     position,
@@ -682,7 +673,7 @@ impl Renderer<'_, '_> {
                 self.output.push('"');
                 self.range_attributes_range(node.range);
                 self.output.push('>');
-                self.tree_body_flow_content(&instance.body);
+                self.tree_body_flow_content(&node.children);
                 self.output.push_str("</div>");
             }
             "table" => self.tree_table(node),
@@ -690,10 +681,58 @@ impl Renderer<'_, '_> {
         }
     }
 
-    fn tree_list_item(&mut self, node: &InstanceNode) {
-        let ordered = matches!(node.instance.field("ordered"), Some(FieldValue::Bool(true)));
-        let value = match node.instance.field("value") {
-            Some(FieldValue::Int(value)) => Some(*value),
+    fn tree_html_element(&mut self, local: &str, node: &Node) {
+        let tag = fallback_html_tag(local);
+        self.output.push('<');
+        self.output.push_str(&tag);
+        let annotation_classes = self
+            .plan
+            .projections
+            .get(&range_key(node.range))
+            .map(|projection| projection.classes.join(" "))
+            .filter(|classes| !classes.is_empty());
+        let mut class_written = false;
+        for (name, value) in &node.args {
+            let Some(value) = scalar_value_string(value) else {
+                continue;
+            };
+            let attribute = html_attribute_name(name);
+            self.output.push(' ');
+            self.output.push_str(&attribute);
+            self.output.push_str("=\"");
+            escape_attribute(&mut self.output, &value);
+            if attribute == "class" {
+                if let Some(classes) = &annotation_classes {
+                    self.output.push(' ');
+                    escape_attribute(&mut self.output, classes);
+                }
+                class_written = true;
+            }
+            self.output.push('"');
+        }
+        if !class_written {
+            if let Some(classes) = annotation_classes {
+                self.output.push_str(" class=\"");
+                escape_attribute(&mut self.output, &classes);
+                self.output.push('"');
+            }
+        }
+        self.range_attributes_range(node.range);
+        self.output.push('>');
+        if node.block {
+            self.tree_flow_content(&node.children);
+        } else {
+            self.tree_inline_content(&node.children);
+        }
+        self.output.push_str("</");
+        self.output.push_str(&tag);
+        self.output.push('>');
+    }
+
+    fn tree_list_item(&mut self, node: &Node) {
+        let ordered = matches!(node.get("ordered"), Some(NodeValue::Bool(true)));
+        let value = match node.get("value") {
+            Some(NodeValue::Int(value)) => Some(*value),
             _ => None,
         };
         self.output.push_str("<li");
@@ -703,17 +742,17 @@ impl Renderer<'_, '_> {
         self.projected_class_attribute_range(node.range);
         self.range_attributes_range(node.range);
         self.output.push('>');
-        self.tree_body_flow_content(&node.instance.body);
+        self.tree_body_flow_content(&node.children);
         self.output.push_str("</li>");
         let _ = ordered;
     }
 
-    fn tree_list(&mut self, node: &InstanceNode) {
-        let ordered = matches!(node.instance.field("ordered"), Some(FieldValue::Bool(true)));
+    fn tree_list(&mut self, node: &Node) {
+        let ordered = matches!(node.get("ordered"), Some(NodeValue::Bool(true)));
         if ordered {
             self.output.push_str("<ol");
-            if let Some(first) = node.instance.body.first()
-                && let Some(FieldValue::Int(value)) = first.instance.field("value")
+            if let Some(first) = node.children.first()
+                && let Some(NodeValue::Int(value)) = first.get("value")
             {
                 write!(self.output, " start=\"{value}\"").unwrap();
             }
@@ -723,8 +762,8 @@ impl Renderer<'_, '_> {
         self.projected_class_attribute_range(node.range);
         self.range_attributes_range(node.range);
         self.output.push('>');
-        for child in &node.instance.body {
-            if child.instance.is_core("item") {
+        for child in &node.children {
+            if child.is_core("item") {
                 self.tree_list_item(child);
             } else {
                 self.tree_node(child);
@@ -736,7 +775,7 @@ impl Renderer<'_, '_> {
 
     fn tree_table_row(
         &mut self,
-        cells: &[InstanceNode],
+        cells: &[Node],
         placements: &[TableCellPlacement],
         tag: &str,
         alignments: &[TableAlignment],
@@ -747,12 +786,12 @@ impl Renderer<'_, '_> {
                 continue;
             };
             write!(self.output, "<{tag}").unwrap();
-            let colspan = match cell.instance.field("colspan") {
-                Some(FieldValue::Int(value)) => u16::try_from(*value).unwrap_or(1),
+            let colspan = match cell.get("colspan") {
+                Some(NodeValue::Int(value)) => u16::try_from(*value).unwrap_or(1),
                 _ => 1,
             };
-            let rowspan = match cell.instance.field("rowspan") {
-                Some(FieldValue::Int(value)) => u16::try_from(*value).unwrap_or(1),
+            let rowspan = match cell.get("rowspan") {
+                Some(NodeValue::Int(value)) => u16::try_from(*value).unwrap_or(1),
                 _ => 1,
             };
             if let Some(class) = alignments
@@ -769,24 +808,24 @@ impl Renderer<'_, '_> {
             }
             self.range_attributes_range(cell.range);
             self.output.push('>');
-            self.tree_body_flow_content(&cell.instance.body);
+            self.tree_body_flow_content(&cell.children);
             write!(self.output, "</{tag}>").unwrap();
         }
         self.output.push_str("</tr>");
     }
 
-    fn tree_table(&mut self, node: &InstanceNode) {
-        let columns = match node.instance.field("columns") {
-            Some(FieldValue::Int(columns)) => u16::try_from(*columns).unwrap_or(1),
+    fn tree_table(&mut self, node: &Node) {
+        let columns = match node.get("columns") {
+            Some(NodeValue::Int(columns)) => u16::try_from(*columns).unwrap_or(1),
             _ => 1,
         };
-        let header = matches!(node.instance.field("header"), Some(FieldValue::Bool(true)));
-        let alignments = match node.instance.field("align") {
-            Some(FieldValue::String(align)) => tree_alignments(Some(align), columns as usize),
+        let header = matches!(node.get("header"), Some(NodeValue::Bool(true)));
+        let alignments = match node.get("align") {
+            Some(NodeValue::String(align)) => tree_alignments(Some(align), columns as usize),
             _ => tree_alignments(None, columns as usize),
         };
-        let cells = &node.instance.body;
-        let rows = tree_table_layout(columns, cells).unwrap_or_else(|_| {
+        let cells = &node.children;
+        let rows = table_layout_nodes(columns, cells).unwrap_or_else(|_| {
             vec![
                 cells
                     .iter()
@@ -826,9 +865,9 @@ impl Renderer<'_, '_> {
         self.output.push_str("</table></div>");
     }
 
-    /// Projects a canonical inline body to legacy `Content` and renders it with
-    /// the existing coverage-aware inline renderer.
-    fn tree_inline_content(&mut self, nodes: &[InstanceNode]) {
+    /// Renders a canonical inline body with the coverage-aware inline
+    /// renderer.
+    fn tree_inline_content(&mut self, nodes: &[Node]) {
         let mut open_coverage = Vec::new();
         for node in nodes {
             self.tree_inline_element_with_coverage(node, &mut open_coverage);
@@ -836,16 +875,12 @@ impl Renderer<'_, '_> {
         self.annotation_span_close(&mut open_coverage);
     }
 
-    fn tree_inline_element_with_coverage(
-        &mut self,
-        node: &InstanceNode,
-        open_coverage: &mut Vec<usize>,
-    ) {
+    fn tree_inline_element_with_coverage(&mut self, node: &Node, open_coverage: &mut Vec<usize>) {
         let coverage = self.tree_inline_coverage(node);
-        if node.instance.is_core("text") {
+        if node.is_core("text") {
             let partial = self.tree_partial_coverage(node);
             if !partial.is_empty()
-                && let Some(FieldValue::String(text)) = node.instance.field("text")
+                && let Some(NodeValue::String(text)) = node.get("text")
             {
                 self.render_split_text(text, node.range, &coverage, &partial, open_coverage);
                 return;
@@ -864,8 +899,8 @@ impl Renderer<'_, '_> {
         self.inherited_coverage.truncate(inherited);
     }
 
-    fn tree_inline_coverage(&self, node: &InstanceNode) -> Vec<usize> {
-        if !instance_is_inline(&node.instance) {
+    fn tree_inline_coverage(&self, node: &Node) -> Vec<usize> {
+        if !node_is_inline(node) {
             return Vec::new();
         }
         let Some(candidates) = self
@@ -884,8 +919,8 @@ impl Renderer<'_, '_> {
             .collect()
     }
 
-    fn tree_partial_coverage(&self, node: &InstanceNode) -> Vec<usize> {
-        if !instance_is_inline(&node.instance) {
+    fn tree_partial_coverage(&self, node: &Node) -> Vec<usize> {
+        if !node_is_inline(node) {
             return Vec::new();
         }
         let Some(candidates) = self
@@ -905,13 +940,13 @@ impl Renderer<'_, '_> {
             .collect()
     }
 
-    fn tree_flow_content(&mut self, nodes: &[InstanceNode]) {
+    fn tree_flow_content(&mut self, nodes: &[Node]) {
         let mut paragraph_open = false;
         let mut open_coverage = Vec::new();
         let mut index = 0;
         while index < nodes.len() {
             let node = &nodes[index];
-            if instance_is_inline(&node.instance) {
+            if node_is_inline(node) {
                 if !paragraph_open {
                     self.output.push_str("<p>");
                     paragraph_open = true;
@@ -927,16 +962,15 @@ impl Renderer<'_, '_> {
                 paragraph_open = false;
             }
 
-            if node.instance.is_core("parbreak") {
+            if node.is_core("parbreak") {
                 index += 1;
                 continue;
             }
-            if node.instance.is_core("item") {
-                let ordered =
-                    matches!(node.instance.field("ordered"), Some(FieldValue::Bool(true)));
+            if node.is_core("item") {
+                let ordered = matches!(node.get("ordered"), Some(NodeValue::Bool(true)));
                 if ordered {
                     self.output.push_str("<ol");
-                    if let Some(FieldValue::Int(value)) = node.instance.field("value") {
+                    if let Some(NodeValue::Int(value)) = node.get("value") {
                         write!(self.output, " start=\"{value}\"").unwrap();
                     }
                     self.output.push('>');
@@ -945,10 +979,10 @@ impl Renderer<'_, '_> {
                 }
                 while index < nodes.len() {
                     let item = &nodes[index];
-                    if !item.instance.is_core("item")
+                    if !item.is_core("item")
                         || !matches!(
-                            item.instance.field("ordered"),
-                            Some(FieldValue::Bool(value)) if *value == ordered
+                            item.get("ordered"),
+                            Some(NodeValue::Bool(value)) if *value == ordered
                         )
                     {
                         break;
@@ -969,12 +1003,12 @@ impl Renderer<'_, '_> {
         }
     }
 
-    fn tree_figure_body(&mut self, nodes: &[InstanceNode]) {
-        let is_framing = |node: &InstanceNode| {
-            node.instance.is_core("parbreak")
-                || (node.instance.is_core("text")
-                    && node.instance.field("text").is_some_and(
-                        |value| matches!(value, FieldValue::String(text) if text.trim().is_empty()),
+    fn tree_figure_body(&mut self, nodes: &[Node]) {
+        let is_framing = |node: &Node| {
+            node.is_core("parbreak")
+                || (node.is_core("text")
+                    && node.get("text").is_some_and(
+                        |value| matches!(value, NodeValue::String(text) if text.trim().is_empty()),
                     ))
         };
         let first = nodes
@@ -988,206 +1022,12 @@ impl Renderer<'_, '_> {
         self.tree_flow_content(&nodes[first..last]);
     }
 
-    fn tree_body_inline_content(&mut self, body: &[InstanceNode]) {
+    fn tree_body_inline_content(&mut self, body: &[Node]) {
         self.tree_inline_content(body);
     }
 
-    fn tree_body_flow_content(&mut self, body: &[InstanceNode]) {
+    fn tree_body_flow_content(&mut self, body: &[Node]) {
         self.tree_flow_content(body);
-    }
-
-    fn block(&mut self, block: &Block) {
-        match block {
-            Block::Element(node) => {
-                self.current_block = Some(range_key(node.range));
-                self.element(&node.element, node, RenderPosition::Block);
-            }
-            Block::Section { heading, body, .. } => {
-                // D0010: sections render as nested <section> nodes; section-
-                // level annotation entries project onto the section tag.
-                let range = block.range();
-                let key = range_key(range);
-                self.current_block = Some(key);
-                self.output.push_str("<section");
-                if let Some(projection) = self.plan.projections.get(&key) {
-                    if !projection.classes.is_empty() {
-                        self.output.push_str(" class=\"");
-                        escape_attribute(&mut self.output, &projection.classes.join(" "));
-                        self.output.push('"');
-                    }
-                    if !projection.tags.is_empty() {
-                        self.output.push_str(" data-notist-tag=\"");
-                        escape_attribute(&mut self.output, &projection.tags.join(" "));
-                        self.output.push('"');
-                    }
-                    for (property, value) in &projection.properties {
-                        self.output.push_str(" data-notist-");
-                        self.output.push_str(&property_attribute_key(property));
-                        self.output.push_str("=\"");
-                        escape_attribute(&mut self.output, value);
-                        self.output.push('"');
-                    }
-                }
-                write!(
-                    self.output,
-                    " data-notist-start=\"{}\" data-notist-end=\"{}\"",
-                    range.start, range.end
-                )
-                .unwrap();
-                self.output.push('>');
-                self.block(&Block::Element(heading.clone()));
-                for child in body {
-                    self.block(child);
-                }
-                self.output.push_str("</section>");
-            }
-        }
-    }
-
-    /// Renders a figure body with framing whitespace-only Text and Parbreak
-    /// nodes trimmed: the body content block usually contributes indentation
-    /// and a framing newline that should not become empty paragraphs around
-    /// the wrapped block.
-    fn figure_body(&mut self, content: &Content) {
-        let is_framing = |node: &ElementNode| {
-            matches!(&node.element, Element::Parbreak)
-                || matches!(&node.element, Element::Text(text) if text.trim().is_empty())
-        };
-        let first = content
-            .elements
-            .iter()
-            .position(|node| !is_framing(node))
-            .unwrap_or(content.elements.len());
-        let last = content
-            .elements
-            .iter()
-            .rposition(|node| !is_framing(node))
-            .map_or(first, |index| index + 1);
-        let trimmed = Content {
-            elements: content.elements[first..last].to_vec(),
-        };
-        self.flow_content(&trimmed);
-    }
-
-    fn inline_content(&mut self, content: &Content) {
-        let mut open_coverage = Vec::new();
-        for node in &content.elements {
-            self.inline_element_with_coverage(node, &mut open_coverage);
-        }
-        self.annotation_span_close(&mut open_coverage);
-    }
-
-    fn flow_content(&mut self, content: &Content) {
-        let mut paragraph_open = false;
-        let mut open_coverage = Vec::new();
-        let mut index = 0;
-
-        while index < content.elements.len() {
-            let node = &content.elements[index];
-            if node.element.is_inline() {
-                if !paragraph_open {
-                    self.output.push_str("<p>");
-                    paragraph_open = true;
-                }
-                self.inline_element_with_coverage(node, &mut open_coverage);
-                index += 1;
-                continue;
-            }
-
-            if paragraph_open {
-                // Annotation spans never cross block boundaries: any open span
-                // closes before the paragraph tag does.
-                self.annotation_span_close(&mut open_coverage);
-                self.output.push_str("</p>");
-                paragraph_open = false;
-            }
-
-            match &node.element {
-                Element::Parbreak => index += 1,
-                Element::ListItem(_) => {
-                    self.output.push_str("<ul>");
-                    while index < content.elements.len()
-                        && matches!(content.elements[index].element, Element::ListItem(_))
-                    {
-                        self.list_item(&content.elements[index]);
-                        index += 1;
-                    }
-                    self.output.push_str("</ul>");
-                }
-                Element::EnumItem { .. } => {
-                    self.ordered_list_open(Some(node));
-                    while index < content.elements.len()
-                        && matches!(content.elements[index].element, Element::EnumItem { .. })
-                    {
-                        self.list_item(&content.elements[index]);
-                        index += 1;
-                    }
-                    self.output.push_str("</ol>");
-                }
-                element => {
-                    self.element(element, node, RenderPosition::Block);
-                    index += 1;
-                }
-            }
-        }
-
-        if paragraph_open {
-            self.annotation_span_close(&mut open_coverage);
-            self.output.push_str("</p>");
-        }
-    }
-
-    /// Renders one inline element of a content sequence, transitioning the
-    /// open annotation span when the element's coverage differs from the
-    /// currently open one.
-    fn inline_element_with_coverage(&mut self, node: &ElementNode, open: &mut Vec<usize>) {
-        let coverage = self.inline_coverage(node);
-        // D0010: a text node straddling an annotation boundary is split into
-        // fragments so the covered fragment is wrapped and the rest stays
-        // plain.
-        if let Element::Text(text) = &node.element {
-            let partial = self.partial_coverage(node);
-            if !partial.is_empty() {
-                self.render_split_text(text, node.range, &coverage, &partial, open);
-                return;
-            }
-        }
-        if coverage != *open {
-            self.annotation_span_close(open);
-            if !coverage.is_empty() {
-                self.annotation_span_open(&coverage);
-            }
-            *open = coverage;
-        }
-        // The open span already covers the rendered element: its descendants
-        // inherit the coverage instead of being wrapped again.
-        self.inherited_coverage.extend(open.iter());
-        self.element(&node.element, node, RenderPosition::Inline);
-        let inherited = self.inherited_coverage.len() - open.len();
-        self.inherited_coverage.truncate(inherited);
-    }
-
-    /// Returns wrapper candidates whose scope intersects but does not fully
-    /// contain the element range (D0010 text splitting).
-    fn partial_coverage(&self, node: &ElementNode) -> Vec<usize> {
-        if !node.element.is_inline() {
-            return Vec::new();
-        }
-        let Some(candidates) = self
-            .current_block
-            .and_then(|block| self.plan.inline_wrappers.get(&block))
-        else {
-            return Vec::new();
-        };
-        candidates
-            .iter()
-            .copied()
-            .filter(|index| {
-                !self.inherited_coverage.contains(index)
-                    && !contains(self.annotations[*index].scope, node.range)
-                    && intersects(self.annotations[*index].scope, node.range)
-            })
-            .collect()
     }
 
     /// Renders a text node split at annotation boundaries: each fragment is
@@ -1237,30 +1077,6 @@ impl Renderer<'_, '_> {
         }
     }
 
-    /// Returns the indices of the inline wrapper annotations covering an
-    /// element of the current block: the annotation scope must fully contain
-    /// the element range, and the annotation must not already wrap an ancestor
-    /// element. Coverage is resolved at inline element granularity.
-    fn inline_coverage(&self, node: &ElementNode) -> Vec<usize> {
-        if !node.element.is_inline() {
-            return Vec::new();
-        }
-        let Some(candidates) = self
-            .current_block
-            .and_then(|block| self.plan.inline_wrappers.get(&block))
-        else {
-            return Vec::new();
-        };
-        candidates
-            .iter()
-            .copied()
-            .filter(|index| {
-                !self.inherited_coverage.contains(index)
-                    && contains(self.annotations[*index].scope, node.range)
-            })
-            .collect()
-    }
-
     /// Opens a `<span class="notist-annotated">` fragment carrying the
     /// aggregated attributes of the covering annotations, using the same
     /// attribute rules as block projections.
@@ -1301,365 +1117,6 @@ impl Renderer<'_, '_> {
             self.output.push_str("</span>");
             open.clear();
         }
-    }
-
-    fn ordered_list_open(&mut self, first: Option<&ElementNode>) {
-        self.output.push_str("<ol");
-        if let Some(ElementNode {
-            element: Element::EnumItem {
-                value: Some(value), ..
-            },
-            ..
-        }) = first
-        {
-            write!(self.output, " start=\"{value}\"").unwrap();
-        }
-        self.output.push('>');
-    }
-
-    fn table_row(
-        &mut self,
-        cells: &[ElementNode],
-        placements: &[TableCellPlacement],
-        tag: &str,
-        alignments: &[TableAlignment],
-    ) {
-        self.output.push_str("<tr>");
-        for placement in placements {
-            let Some(cell) = cells.get(placement.cell_index) else {
-                continue;
-            };
-            write!(self.output, "<{tag}").unwrap();
-            let (body, colspan, rowspan) = match &cell.element {
-                Element::TableCell {
-                    body,
-                    colspan,
-                    rowspan,
-                } => (body, *colspan, *rowspan),
-                _ => continue,
-            };
-            if let Some(class) = alignments
-                .get(placement.column as usize)
-                .and_then(|alignment| table_alignment_class(*alignment))
-            {
-                write!(self.output, " class=\"{class}\"").unwrap();
-            }
-            if colspan > 1 {
-                write!(self.output, " colspan=\"{colspan}\"").unwrap();
-            }
-            if rowspan > 1 {
-                write!(self.output, " rowspan=\"{rowspan}\"").unwrap();
-            }
-            self.range_attributes(cell);
-            self.output.push('>');
-            self.flow_content(body);
-            write!(self.output, "</{tag}>").unwrap();
-        }
-        self.output.push_str("</tr>");
-    }
-
-    fn list_item(&mut self, node: &ElementNode) {
-        self.output.push_str("<li");
-        if let Element::EnumItem {
-            value: Some(value), ..
-        } = &node.element
-        {
-            write!(self.output, " value=\"{value}\"").unwrap();
-        }
-        self.projected_class_attribute(node);
-        self.range_attributes(node);
-        self.output.push('>');
-        match &node.element {
-            Element::ListItem(body) | Element::EnumItem { body, .. } => self.flow_content(body),
-            element => self.element(element, node, RenderPosition::Block),
-        }
-        self.output.push_str("</li>");
-    }
-
-    fn element(&mut self, element: &Element, node: &ElementNode, position: RenderPosition) {
-        match element {
-            Element::Text(text) => {
-                self.output.push_str("<span class=\"notist-text\"");
-                self.range_attributes(node);
-                self.output.push('>');
-                escape_text(&mut self.output, text);
-                self.output.push_str("</span>");
-            }
-            Element::Reference(reference) => self.reference(reference, node),
-            // Parbreak does not render: paragraph structure is already given
-            // by shaping (D0010). Reached only by direct callers; the normal
-            // flow path skips it.
-            Element::Parbreak => {}
-            Element::Paragraph(body) => {
-                self.output.push_str("<p");
-                self.projected_class_attribute(node);
-                self.range_attributes(node);
-                self.output.push('>');
-                self.inline_content(body);
-                self.output.push_str("</p>");
-            }
-            Element::Strong(body) => {
-                self.output.push_str("<strong");
-                self.range_attributes(node);
-                self.output.push('>');
-                self.inline_content(body);
-                self.output.push_str("</strong>");
-            }
-            Element::Emph(body) => {
-                self.output.push_str("<em");
-                self.range_attributes(node);
-                self.output.push('>');
-                self.inline_content(body);
-                self.output.push_str("</em>");
-            }
-            Element::Strike(body) => {
-                self.output.push_str("<s");
-                self.range_attributes(node);
-                self.output.push('>');
-                self.inline_content(body);
-                self.output.push_str("</s>");
-            }
-            Element::Underline(body) => {
-                self.output.push_str("<u");
-                self.range_attributes(node);
-                self.output.push('>');
-                self.inline_content(body);
-                self.output.push_str("</u>");
-            }
-            Element::Heading { level, body } => {
-                let level = (*level).clamp(1, 6);
-                write!(self.output, "<h{level}").unwrap();
-                self.projected_class_attribute(node);
-                self.range_attributes(node);
-                self.output.push('>');
-                self.inline_content(body);
-                write!(self.output, "</h{level}>").unwrap();
-            }
-            Element::List { ordered, items } => {
-                if *ordered {
-                    self.output.push_str("<ol");
-                    if let Some(ElementNode {
-                        element:
-                            Element::EnumItem {
-                                value: Some(value), ..
-                            },
-                        ..
-                    }) = items.first()
-                    {
-                        write!(self.output, " start=\"{value}\"").unwrap();
-                    }
-                } else {
-                    self.output.push_str("<ul");
-                }
-                self.projected_class_attribute(node);
-                self.range_attributes(node);
-                self.output.push('>');
-                for item in items {
-                    self.list_item(item);
-                }
-                self.output
-                    .push_str(if *ordered { "</ol>" } else { "</ul>" });
-            }
-            Element::ListItem(body) => {
-                self.output.push_str("<ul><li");
-                self.projected_class_attribute(node);
-                self.range_attributes(node);
-                self.output.push('>');
-                self.flow_content(body);
-                self.output.push_str("</li></ul>");
-            }
-            Element::EnumItem { value, body } => {
-                self.output.push_str("<ol");
-                if let Some(value) = value {
-                    write!(self.output, " start=\"{value}\"").unwrap();
-                }
-                self.output.push_str("><li");
-                if let Some(value) = value {
-                    write!(self.output, " value=\"{value}\"").unwrap();
-                }
-                self.projected_class_attribute(node);
-                self.range_attributes(node);
-                self.output.push('>');
-                self.flow_content(body);
-                self.output.push_str("</li></ol>");
-            }
-            Element::Figure {
-                body,
-                kind,
-                supplement,
-                caption,
-            } => {
-                self.output.push_str("<figure class=\"notist-figure");
-                self.projected_class_suffix(node);
-                self.output.push_str("\" data-notist-kind=\"");
-                escape_attribute(&mut self.output, kind);
-                self.output.push('"');
-                self.range_attributes(node);
-                self.output.push('>');
-                self.figure_body(body);
-                if let Some(caption) = caption {
-                    self.output.push_str("<figcaption>");
-                    if let Some(supplement) = supplement {
-                        self.inline_content(supplement);
-                        escape_text(&mut self.output, ": ");
-                    }
-                    self.inline_content(caption);
-                    self.output.push_str("</figcaption>");
-                }
-                self.output.push_str("</figure>");
-            }
-            Element::TableCell { body, .. } => {
-                self.output.push_str("<div class=\"notist-table-cell");
-                self.projected_class_suffix(node);
-                self.output.push('"');
-                self.range_attributes(node);
-                self.output.push('>');
-                self.flow_content(body);
-                self.output.push_str("</div>");
-            }
-            Element::Table {
-                columns,
-                header,
-                alignments,
-                cells,
-            } => {
-                self.output.push_str("<div class=\"notist-table-wrapper");
-                self.projected_class_suffix(node);
-                write!(self.output, "\"><table data-notist-columns=\"{columns}\"").unwrap();
-                self.range_attributes(node);
-                self.output.push('>');
-                let rows = table_layout(*columns, cells).unwrap_or_else(|_| {
-                    vec![
-                        cells
-                            .iter()
-                            .enumerate()
-                            .map(|(cell_index, _)| TableCellPlacement {
-                                cell_index,
-                                column: cell_index.min(u16::MAX as usize) as u16,
-                            })
-                            .collect(),
-                    ]
-                });
-                if *header {
-                    self.output.push_str("<thead>");
-                    if let Some(row) = rows.first() {
-                        self.table_row(cells, row, "th", alignments);
-                    }
-                    self.output.push_str("</thead>");
-                }
-                let body_rows = if *header {
-                    rows.iter().skip(1).collect::<Vec<_>>()
-                } else {
-                    rows.iter().collect::<Vec<_>>()
-                };
-                if !body_rows.is_empty() {
-                    self.output.push_str("<tbody>");
-                    for row in body_rows {
-                        self.table_row(cells, row, "td", alignments);
-                    }
-                    self.output.push_str("</tbody>");
-                }
-                self.output.push_str("</table></div>");
-            }
-            Element::Rule => {
-                self.output.push_str("<hr class=\"notist-rule\"");
-                self.range_attributes(node);
-                self.output.push('>');
-            }
-            Element::Callout { kind, title, body } => {
-                self.output.push_str("<aside class=\"notist-callout");
-                self.projected_class_suffix(node);
-                self.output.push_str("\" data-notist-kind=\"");
-                escape_attribute(&mut self.output, kind);
-                self.output.push('"');
-                self.range_attributes(node);
-                self.output.push('>');
-                if let Some(title) = title {
-                    self.output.push_str("<div class=\"notist-callout-title\">");
-                    self.inline_content(title);
-                    self.output.push_str("</div>");
-                }
-                self.flow_content(body);
-                self.output.push_str("</aside>");
-            }
-            Element::Details {
-                summary,
-                open,
-                body,
-            } => {
-                self.output.push_str("<details class=\"notist-details");
-                self.projected_class_suffix(node);
-                self.output.push('"');
-                if *open {
-                    self.output.push_str(" open");
-                }
-                self.range_attributes(node);
-                self.output.push_str("><summary>");
-                if let Some(summary) = summary {
-                    self.inline_content(summary);
-                } else {
-                    escape_text(&mut self.output, "Details");
-                }
-                self.output.push_str("</summary>");
-                self.flow_content(body);
-                self.output.push_str("</details>");
-            }
-            Element::Raw {
-                text,
-                block,
-                language,
-            } => self.raw(text, *block, language.as_deref(), node),
-            Element::Custom {
-                name,
-                body,
-                block,
-                fields,
-            } => {
-                let body_nodes = legacy_content_to_nodes(body);
-                let input = CustomRenderInput {
-                    name,
-                    body: &body_nodes,
-                    block: *block,
-                    fields,
-                };
-                if self.renderers.render(&input, &mut self.output) {
-                    return;
-                }
-                let tag = container_tag(*block, position);
-                self.output.push('<');
-                self.output.push_str(tag);
-                self.output.push_str(" class=\"notist-custom");
-                self.projected_class_suffix(node);
-                self.output.push_str("\" data-notist-name=\"");
-                escape_attribute(&mut self.output, name);
-                self.output.push('"');
-                self.range_attributes(node);
-                self.output.push('>');
-                if tag == "div" {
-                    self.flow_content(body);
-                } else {
-                    self.inline_content(body);
-                }
-                write!(self.output, "</{tag}>").unwrap();
-            }
-            Element::UnresolvedCall {
-                name,
-                arguments,
-                trailing,
-                block,
-            } => self.unresolved_call(
-                name,
-                arguments.as_deref(),
-                trailing.as_ref(),
-                *block,
-                node,
-                position,
-            ),
-        }
-    }
-
-    fn reference(&mut self, reference: &WikiReference, node: &ElementNode) {
-        self.reference_range(reference, node.range);
     }
 
     fn reference_range(&mut self, reference: &WikiReference, range: TextRange) {
@@ -1718,10 +1175,6 @@ impl Renderer<'_, '_> {
         escape_text(&mut self.output, &text);
     }
 
-    fn raw(&mut self, text: &str, block: bool, language: Option<&str>, node: &ElementNode) {
-        self.raw_range(text, block, language, node.range);
-    }
-
     fn raw_range(&mut self, text: &str, block: bool, language: Option<&str>, range: TextRange) {
         if block {
             self.output.push_str("<pre");
@@ -1746,45 +1199,11 @@ impl Renderer<'_, '_> {
         }
     }
 
-    fn unresolved_call(
-        &mut self,
-        name: &str,
-        arguments: Option<&str>,
-        trailing: Option<&Content>,
-        block: bool,
-        node: &ElementNode,
-        position: RenderPosition,
-    ) {
-        let tag = container_tag(block, position);
-        self.output.push('<');
-        self.output.push_str(tag);
-        self.output.push_str(" class=\"notist-unresolved-call");
-        self.projected_class_suffix(node);
-        self.output.push_str("\" data-notist-name=\"");
-        escape_attribute(&mut self.output, name);
-        self.output.push('"');
-        if let Some(arguments) = arguments {
-            self.output.push_str(" data-notist-arguments=\"");
-            escape_attribute(&mut self.output, arguments);
-            self.output.push('"');
-        }
-        self.range_attributes(node);
-        self.output.push('>');
-        if let Some(body) = trailing {
-            if tag == "div" {
-                self.flow_content(body);
-            } else {
-                self.inline_content(body);
-            }
-        }
-        write!(self.output, "</{tag}>").unwrap();
-    }
-
     fn unresolved_call_range(
         &mut self,
         name: &str,
         arguments: Option<&str>,
-        trailing: Option<&Content>,
+        trailing: &[Node],
         block: bool,
         range: TextRange,
         position: RenderPosition,
@@ -1804,18 +1223,14 @@ impl Renderer<'_, '_> {
         }
         self.range_attributes_range(range);
         self.output.push('>');
-        if let Some(body) = trailing {
+        if !trailing.is_empty() {
             if tag == "div" {
-                self.flow_content(body);
+                self.tree_flow_content(trailing);
             } else {
-                self.inline_content(body);
+                self.tree_inline_content(trailing);
             }
         }
         write!(self.output, "</{tag}>").unwrap();
-    }
-
-    fn range_attributes(&mut self, node: &ElementNode) {
-        self.range_attributes_range(node.range);
     }
 
     fn range_attributes_range(&mut self, range: TextRange) {
@@ -1847,12 +1262,6 @@ impl Renderer<'_, '_> {
         .unwrap();
     }
 
-    /// Writes a complete `class` attribute holding the classes projected onto a
-    /// block-level element that has no fixed class of its own.
-    fn projected_class_attribute(&mut self, node: &ElementNode) {
-        self.projected_class_attribute_range(node.range);
-    }
-
     fn projected_class_attribute_range(&mut self, range: TextRange) {
         let Some(projection) = self.plan.projections.get(&range_key(range)) else {
             return;
@@ -1874,25 +1283,13 @@ impl Renderer<'_, '_> {
             escape_attribute(&mut self.output, class);
         }
     }
-
-    /// Appends the classes projected onto an element to a fixed `class`
-    /// attribute value that the render site is already writing.
-    fn projected_class_suffix(&mut self, node: &ElementNode) {
-        let Some(projection) = self.plan.projections.get(&range_key(node.range)) else {
-            return;
-        };
-        for class in &projection.classes {
-            self.output.push(' ');
-            escape_attribute(&mut self.output, class);
-        }
-    }
 }
 
 /// Precomputed anchor, projection, and inline-wrapper assignments for one
 /// rendered document.
 ///
 /// The renderer emits every anchor from this plan, so the fragment and
-/// [`module_anchors`] always agree on the label-to-anchor mapping.
+/// [`module_anchors_tree`] always agree on the label-to-anchor mapping.
 struct AnchorPlan {
     /// Resolvable labels in registration order: explicit scope ids first, then
     /// heading default ids. Each label appears once; the first occurrence wins.
@@ -1924,102 +1321,6 @@ struct WalkedElement {
 }
 
 impl AnchorPlan {
-    fn compute(document: &StructuredDocument, annotations: &[RenderedAnnotation]) -> Self {
-        let mut elements = Vec::new();
-        for block in &document.blocks {
-            walk_block(block, &mut elements);
-        }
-
-        // Id claiming keeps the historical rule: the first element in document
-        // order whose range falls inside the annotation scope receives the id,
-        // and each id is emitted at most once.
-        let mut claimed_ids = HashSet::new();
-        let mut explicit_ids: Vec<((usize, usize), &str)> = Vec::new();
-        for element in &elements {
-            let key = range_key(element.range);
-            if let Some(annotation) = annotations.iter().find(|annotation| {
-                annotation.id.is_some() && contains(annotation.scope, element.range)
-            }) {
-                let id = annotation.id.as_deref().expect("id presence checked above");
-                if claimed_ids.insert(id) {
-                    explicit_ids.push((key, id));
-                }
-            }
-        }
-
-        // Class/tag/property projection is classified per node against the
-        // annotation scope:
-        //
-        // - A block fully contained in the annotation scope receives the
-        //   projection on its own tag; a scope covering several blocks
-        //   projects onto every covered block, including blocks nested
-        //   inside partially covered sections.
-        // - A block partially overlapped by the scope cannot carry the
-        //   attributes on its tag. The annotation is registered as an inline
-        //   wrapper candidate for that block instead, and the renderer wraps
-        //   the fully covered inline elements of the block into
-        //   `<span class="notist-annotated">` fragments (see
-        //   `Renderer::inline_coverage`).
-        let mut projections: HashMap<(usize, usize), Projection> = HashMap::new();
-        let mut inline_wrappers: HashMap<(usize, usize), Vec<usize>> = HashMap::new();
-        for (annotation_index, annotation) in annotations.iter().enumerate() {
-            if !has_projection(annotation) {
-                continue;
-            }
-            for block in &document.blocks {
-                project_block_annotation(
-                    block,
-                    annotation,
-                    annotation_index,
-                    &mut projections,
-                    &mut inline_wrappers,
-                );
-            }
-        }
-
-        let mut used_anchors = HashSet::new();
-        let mut seen_labels = HashSet::new();
-        let mut labels = Vec::new();
-        let mut element_anchors = HashMap::new();
-        // Pass 1: explicit scope ids in document order.
-        for (key, id) in explicit_ids {
-            assign_anchor(
-                id,
-                key,
-                &mut used_anchors,
-                &mut seen_labels,
-                &mut labels,
-                &mut element_anchors,
-            );
-        }
-        // Pass 2: heading default ids (heading plain text) in document order.
-        // A heading that already carries an explicit id keeps it: the explicit
-        // id always overrides the default text id.
-        for element in &elements {
-            let Some(text) = element.heading_text.as_deref() else {
-                continue;
-            };
-            let key = range_key(element.range);
-            if element_anchors.contains_key(&key) {
-                continue;
-            }
-            assign_anchor(
-                text,
-                key,
-                &mut used_anchors,
-                &mut seen_labels,
-                &mut labels,
-                &mut element_anchors,
-            );
-        }
-
-        Self {
-            labels,
-            element_anchors,
-            projections,
-            inline_wrappers,
-        }
-    }
     fn compute_tree(tree: &ElementTree, annotations: &[RenderedAnnotation]) -> Self {
         let mut elements = Vec::new();
         for root in &tree.roots {
@@ -2136,77 +1437,6 @@ fn is_valid_anchor(label: &str) -> bool {
         && characters.all(|character| character.is_alphanumeric() || matches!(character, '-' | '_'))
 }
 
-fn tree_table_layout(
-    columns: u16,
-    cells: &[InstanceNode],
-) -> Result<Vec<Vec<TableCellPlacement>>, TableLayoutError> {
-    let columns = columns as usize;
-    let mut active = vec![0u16; columns];
-    let mut rows = Vec::new();
-    let mut cell_index = 0usize;
-
-    while cell_index < cells.len() {
-        let row_number = rows.len() + 1;
-        let mut occupied: Vec<_> = active.iter().map(|remaining| *remaining > 0).collect();
-        if occupied.iter().all(|occupied| *occupied) {
-            return Err(TableLayoutError::FullyCoveredRow { row: row_number });
-        }
-        let mut next_active: Vec<_> = active
-            .iter()
-            .map(|remaining| remaining.saturating_sub(1))
-            .collect();
-        let mut row = Vec::new();
-
-        while occupied.iter().any(|occupied| !occupied) {
-            let Some(cell) = cells.get(cell_index) else {
-                return Err(TableLayoutError::IncompleteRow { row: row_number });
-            };
-            if !cell.instance.is_core("table-cell") {
-                return Err(TableLayoutError::NonCell {
-                    cell: cell_index + 1,
-                });
-            }
-            let colspan = match cell.instance.field("colspan") {
-                Some(FieldValue::Int(value)) => u16::try_from(*value).unwrap_or(u16::MAX),
-                _ => 1,
-            };
-            let rowspan = match cell.instance.field("rowspan") {
-                Some(FieldValue::Int(value)) => u16::try_from(*value).unwrap_or(u16::MAX),
-                _ => 1,
-            };
-            let column = occupied.iter().position(|occupied| !occupied).unwrap();
-            let end = column + colspan as usize;
-            if end > columns || occupied[column..end].iter().any(|occupied| *occupied) {
-                return Err(TableLayoutError::CellDoesNotFit {
-                    row: row_number,
-                    cell: cell_index + 1,
-                    column: column as u16,
-                    colspan,
-                });
-            }
-            occupied[column..end].fill(true);
-            if rowspan > 1 {
-                for remaining in &mut next_active[column..end] {
-                    *remaining = (*remaining).max(rowspan - 1);
-                }
-            }
-            row.push(TableCellPlacement {
-                cell_index,
-                column: column as u16,
-            });
-            cell_index += 1;
-        }
-
-        rows.push(row);
-        active = next_active;
-    }
-
-    if active.iter().any(|remaining| *remaining > 0) {
-        return Err(TableLayoutError::RowspanBeyondTable);
-    }
-    Ok(rows)
-}
-
 fn tree_alignments(source: Option<&str>, columns: usize) -> Vec<TableAlignment> {
     let Some(source) = source else {
         return vec![TableAlignment::Default; columns];
@@ -2266,24 +1496,6 @@ fn property_attribute_key(key: &str) -> String {
         .collect()
 }
 
-/// Collects every element of the document in render (depth-first) order.
-/// Walks a structured block (recursing through sections) for anchor and
-/// projection planning (D0010).
-fn walk_block(block: &Block, output: &mut Vec<WalkedElement>) {
-    match block {
-        Block::Element(node) => walk_element(node, output),
-        Block::Section { heading, body, .. } => {
-            walk_element(heading, output);
-            for child in body {
-                walk_block(child, output);
-            }
-        }
-    }
-}
-
-/// Returns the range key of the smallest block or section fully contained in
-/// `scope`, preferring the section itself when it is covered (D0010: section
-/// entries project onto the Section node).
 /// Extends one projection target with an annotation's classes, tags, and
 /// properties.
 fn extend_projection(projection: &mut Projection, annotation: &RenderedAnnotation) {
@@ -2296,62 +1508,11 @@ fn extend_projection(projection: &mut Projection, annotation: &RenderedAnnotatio
         .extend(annotation.properties.iter().cloned());
 }
 
-/// Classifies every node of one block against an annotation scope (D0010):
-/// a fully covered node carries the projection on its own tag; a partially
-/// overlapped block falls back to inline wrapping at its leaves. Sections
-/// recurse, so a scope covering several blocks inside one section projects
-/// onto every covered block instead of only the first.
-fn project_block_annotation(
-    block: &Block,
-    annotation: &RenderedAnnotation,
-    annotation_index: usize,
-    projections: &mut HashMap<(usize, usize), Projection>,
-    inline_wrappers: &mut HashMap<(usize, usize), Vec<usize>>,
-) {
-    if contains(annotation.scope, block.range()) {
-        extend_projection(
-            projections.entry(range_key(block.range())).or_default(),
-            annotation,
-        );
-        return;
-    }
-    if !intersects(annotation.scope, block.range()) {
-        return;
-    }
-    match block {
-        Block::Element(_) => {
-            inline_wrappers
-                .entry(range_key(block.range()))
-                .or_default()
-                .push(annotation_index);
-        }
-        Block::Section { heading, body, .. } => {
-            if intersects(annotation.scope, heading.range) {
-                inline_wrappers
-                    .entry(range_key(heading.range))
-                    .or_default()
-                    .push(annotation_index);
-            }
-            for child in body {
-                if intersects(annotation.scope, child.range()) {
-                    project_block_annotation(
-                        child,
-                        annotation,
-                        annotation_index,
-                        projections,
-                        inline_wrappers,
-                    );
-                }
-            }
-        }
-    }
-}
-
-/// The tree-model counterpart of [`project_block_annotation`]. A fully
+/// Classifies one tree node against an annotation scope (D0010). A fully
 /// covered section takes the projection itself without descending; headings
 /// never carry tag projections and always fall back to inline wrapping.
 fn project_tree_annotation(
-    node: &InstanceNode,
+    node: &Node,
     annotation: &RenderedAnnotation,
     annotation_index: usize,
     projections: &mut HashMap<(usize, usize), Projection>,
@@ -2359,7 +1520,7 @@ fn project_tree_annotation(
 ) {
     let key = range_key(node.range);
     if contains(annotation.scope, node.range) {
-        if node.instance.is_core("heading") {
+        if node.is_core("heading") {
             inline_wrappers
                 .entry(key)
                 .or_default()
@@ -2372,8 +1533,8 @@ fn project_tree_annotation(
     if !intersects(annotation.scope, node.range) {
         return;
     }
-    if node.instance.is_core("section") {
-        for child in &node.instance.body {
+    if node.is_core("section") {
+        for child in &node.children {
             project_tree_annotation(
                 child,
                 annotation,
@@ -2390,54 +1551,54 @@ fn project_tree_annotation(
         .push(annotation_index);
 }
 
-fn tree_heading_text(node: &InstanceNode) -> Option<String> {
-    if !node.instance.is_core("heading") {
+fn tree_heading_text(node: &Node) -> Option<String> {
+    if !node.is_core("heading") {
         return None;
     }
-    Some(instance_plain_text(&node.instance.body))
+    Some(node_plain_text(&node.children))
 }
 
-fn walk_tree_node(node: &InstanceNode, output: &mut Vec<WalkedElement>) {
+fn walk_tree_node(node: &Node, output: &mut Vec<WalkedElement>) {
     output.push(WalkedElement {
         range: node.range,
         heading_text: tree_heading_text(node),
     });
-    let Some(local) = node.instance.name.core_local() else {
-        walk_tree_nodes(&node.instance.body, output);
+    let Some(local) = node.core_local() else {
+        walk_tree_nodes(&node.children, output);
         return;
     };
     match local {
         "paragraph" | "strong" | "emph" | "strike" | "underline" | "heading" | "item"
-        | "custom" | "unresolved-call" | "section" => walk_tree_nodes(&node.instance.body, output),
+        | "custom" | "unresolved-call" | "section" => walk_tree_nodes(&node.children, output),
         "callout" => {
-            if let Some(FieldValue::Content(nodes)) = node.instance.field("title") {
+            if let Some(NodeValue::Stream(nodes)) = node.get("title") {
                 walk_tree_nodes(nodes, output);
             }
-            walk_tree_nodes(&node.instance.body, output);
+            walk_tree_nodes(&node.children, output);
         }
         "details" => {
-            if let Some(FieldValue::Content(nodes)) = node.instance.field("summary") {
+            if let Some(NodeValue::Stream(nodes)) = node.get("summary") {
                 walk_tree_nodes(nodes, output);
             }
-            walk_tree_nodes(&node.instance.body, output);
+            walk_tree_nodes(&node.children, output);
         }
         _ => {}
     }
 }
 
-fn walk_tree_nodes(nodes: &[InstanceNode], output: &mut Vec<WalkedElement>) {
+fn walk_tree_nodes(nodes: &[Node], output: &mut Vec<WalkedElement>) {
     for node in nodes {
         walk_tree_node(node, output);
     }
 }
 
 fn collect_outline_entries_tree(tree: &ElementTree, plan: &AnchorPlan) -> Vec<RenderedHeading> {
-    fn heading_record(node: &InstanceNode, plan: &AnchorPlan) -> Option<RenderedHeading> {
-        if !node.instance.is_core("heading") {
+    fn heading_record(node: &Node, plan: &AnchorPlan) -> Option<RenderedHeading> {
+        if !node.is_core("heading") {
             return None;
         }
-        let level = match node.instance.field("level")? {
-            FieldValue::Int(level) => u8::try_from(*level).ok()?,
+        let level = match node.get("level")? {
+            NodeValue::Int(level) => u8::try_from(*level).ok()?,
             _ => return None,
         };
         Some(RenderedHeading {
@@ -2451,15 +1612,15 @@ fn collect_outline_entries_tree(tree: &ElementTree, plan: &AnchorPlan) -> Vec<Re
         })
     }
 
-    fn walk(nodes: &[InstanceNode], plan: &AnchorPlan, output: &mut Vec<RenderedHeading>) {
+    fn walk(nodes: &[Node], plan: &AnchorPlan, output: &mut Vec<RenderedHeading>) {
         for node in nodes {
-            if node.instance.is_core("section") {
-                if let Some(heading) = node.instance.body.first()
+            if node.is_core("section") {
+                if let Some(heading) = node.children.first()
                     && let Some(record) = heading_record(heading, plan)
                 {
                     output.push(record);
                 }
-                walk(&node.instance.body[1..], plan, output);
+                walk(&node.children[1..], plan, output);
             } else if let Some(record) = heading_record(node, plan) {
                 output.push(record);
             }
@@ -2471,126 +1632,16 @@ fn collect_outline_entries_tree(tree: &ElementTree, plan: &AnchorPlan) -> Vec<Re
     output
 }
 
-fn walk_element(node: &ElementNode, output: &mut Vec<WalkedElement>) {
-    let heading_text = match &node.element {
-        Element::Heading { body, .. } => Some(content_plain_text(body)),
-        _ => None,
-    };
-    output.push(WalkedElement {
-        range: node.range,
-        heading_text,
-    });
-    walk_element_children(&node.element, output);
-}
-
-fn walk_content(content: &Content, output: &mut Vec<WalkedElement>) {
-    for node in &content.elements {
-        walk_element(node, output);
-    }
-}
-
-fn walk_element_children(element: &Element, output: &mut Vec<WalkedElement>) {
-    match element {
-        Element::Paragraph(body)
-        | Element::Strong(body)
-        | Element::Emph(body)
-        | Element::Strike(body)
-        | Element::Underline(body)
-        | Element::Heading { body, .. }
-        | Element::ListItem(body)
-        | Element::EnumItem { body, .. }
-        | Element::Custom { body, .. } => walk_content(body, output),
-        Element::Callout { title, body, .. } => {
-            if let Some(title) = title {
-                walk_content(title, output);
-            }
-            walk_content(body, output);
-        }
-        Element::Details { summary, body, .. } => {
-            if let Some(summary) = summary {
-                walk_content(summary, output);
-            }
-            walk_content(body, output);
-        }
-        Element::UnresolvedCall {
-            trailing: Some(trailing),
-            ..
-        } => walk_content(trailing, output),
-        _ => {}
-    }
-}
-
-fn collect_outline_entries(
-    document: &StructuredDocument,
-    plan: &AnchorPlan,
-) -> Vec<RenderedHeading> {
-    fn walk(blocks: &[Block], plan: &AnchorPlan, output: &mut Vec<RenderedHeading>) {
-        for block in blocks {
-            match block {
-                Block::Element(node) => {
-                    if let Element::Heading { level, body } = &node.element {
-                        output.push(RenderedHeading {
-                            level: *level,
-                            id: plan
-                                .element_anchors
-                                .get(&range_key(node.range))
-                                .expect("headings always receive an anchor")
-                                .clone(),
-                            text: content_plain_text(body),
-                        });
-                    }
-                }
-                Block::Section { heading, body, .. } => {
-                    if let Element::Heading {
-                        level,
-                        body: heading_body,
-                    } = &heading.element
-                    {
-                        output.push(RenderedHeading {
-                            level: *level,
-                            id: plan
-                                .element_anchors
-                                .get(&range_key(heading.range))
-                                .expect("headings always receive an anchor")
-                                .clone(),
-                            text: content_plain_text(heading_body),
-                        });
-                    }
-                    walk(body, plan, output);
-                }
-            }
-        }
-    }
-    let mut output = Vec::new();
-    walk(&document.blocks, plan, &mut output);
-    output
-}
-
-fn content_plain_text(content: &Content) -> String {
-    content
-        .elements
-        .iter()
-        .map(|node| match &node.element {
-            Element::Text(text) => text.clone(),
-            Element::Strong(body)
-            | Element::Emph(body)
-            | Element::Strike(body)
-            | Element::Underline(body) => content_plain_text(body),
-            _ => String::new(),
-        })
-        .collect()
-}
-
-fn instance_plain_text(nodes: &[InstanceNode]) -> String {
+fn node_plain_text(nodes: &[Node]) -> String {
     nodes
         .iter()
-        .map(|node| match node.instance.name.core_local() {
-            Some("text") => match node.instance.field("text") {
-                Some(FieldValue::String(text)) => text.clone(),
+        .map(|node| match node.core_local() {
+            Some("text") => match node.get("text") {
+                Some(NodeValue::String(text)) => text.clone(),
                 _ => String::new(),
             },
             Some("paragraph" | "strong" | "emph" | "strike" | "underline") => {
-                instance_plain_text(&node.instance.body)
+                node_plain_text(&node.children)
             }
             _ => String::new(),
         })
@@ -2603,11 +1654,11 @@ enum RenderPosition {
     Block,
 }
 
-fn instance_is_inline(instance: &notist_model::ElementInstance) -> bool {
-    match instance.name.core_local() {
+fn node_is_inline(node: &Node) -> bool {
+    match node.core_local() {
         Some("text" | "reference" | "strong" | "emph" | "strike" | "underline") => true,
         Some(_) => false,
-        None => !instance.block,
+        None => !node.block,
     }
 }
 
@@ -2654,28 +1705,62 @@ fn escape_attribute(output: &mut String, text: &str) {
 
 #[cfg(test)]
 mod tests {
-    use notist_eval::{Evaluator, structure};
-    use notist_model::{
-        Block, Content, Element, ElementNode, ModulePath, StructuredDocument, TextRange,
-    };
+    use notist_eval::Evaluator;
+    use notist_model::{ModulePath, Node, TextRange};
+    use notist_plugin_core as core_plugin;
 
     use super::*;
 
-    fn node(element: Element, start: usize, end: usize) -> ElementNode {
-        ElementNode {
-            element,
-            range: TextRange::new(start, end),
-        }
+    fn text(value: &str, start: usize, end: usize) -> Node {
+        Node::call("core::text", TextRange::new(start, end)).arg("text", value)
     }
 
-    #[test]
-    fn renders_canonical_element_tree_entry_point() {
-        let evaluation = Evaluator::default().evaluate_stream("= Title\n\nBody");
+    fn paragraph(children: Vec<Node>, start: usize, end: usize) -> Node {
+        let mut node = Node::block_call("core::paragraph", TextRange::new(start, end));
+        node.children = children;
+        node
+    }
+
+    fn tree(roots: Vec<Node>) -> ElementTree {
+        ElementTree { roots }
+    }
+
+    fn evaluate(source: &str) -> notist_eval::Evaluation {
+        let (registry, shaping) = core_plugin::registry();
+        let evaluation = Evaluator::new(registry).evaluate_with_shaping(source, &shaping);
         assert!(
             evaluation.diagnostics.is_empty(),
             "{:?}",
             evaluation.diagnostics
         );
+        evaluation
+    }
+
+    struct RewriteHandler {
+        from: &'static str,
+        to: &'static str,
+    }
+
+    impl HtmlProjectionHandler for RewriteHandler {
+        fn element_name(&self) -> &str {
+            self.from
+        }
+
+        fn project(&self, node: &Node) -> Option<Vec<Node>> {
+            let mut projected = if node.block {
+                Node::block_call(self.to, node.range)
+            } else {
+                Node::call(self.to, node.range)
+            };
+            projected.args = node.args.clone();
+            projected.children = node.children.clone();
+            Some(vec![projected])
+        }
+    }
+
+    #[test]
+    fn renders_canonical_element_tree_entry_point() {
+        let evaluation = evaluate("= Title\n\nBody");
         let html = render_element_tree(&evaluation.tree);
         assert!(html.starts_with("<section "), "{html}");
         assert!(html.contains("<h1 id=\"Title\""), "{html}");
@@ -2684,19 +1769,20 @@ mod tests {
 
     #[test]
     fn renders_evaluated_document_structure() {
-        let evaluation = Evaluator::default().evaluate(
+        let evaluation = evaluate(
             "#heading(level=2)[Title]\n\nBefore after\n\n#details[First\n\nSecond]\n\n#raw(r#\"\"\"\nfn main() {}\n\"\"\"#, lang=\"rust\", block=true)",
         );
-        let structured = structure(evaluation);
 
-        let html = render(&structured.document);
+        let html = render_element_tree(&evaluation.tree);
 
         // D0010: the heading and its content form a nested <section>.
         assert!(html.starts_with("<section data-notist-start=\"0\""));
         assert!(html.contains("<h2 id=\"Title\" data-notist-start=\"0\""));
-        assert!(html.contains("<p><span class=\"notist-text\""));
+        assert!(html.contains(
+            "<p data-notist-start=\"26\" data-notist-end=\"38\"><span class=\"notist-text\""
+        ));
         assert!(html.contains("<details"));
-        assert!(html.contains(">First</span></p><p>"));
+        assert!(html.contains(">First</span></p><p data-notist-start=\"56\""));
         assert!(html.contains("<pre"));
         assert!(html.contains("<code class=\"language-rust\">fn main() {}</code></pre>"));
     }
@@ -2705,14 +1791,8 @@ mod tests {
     fn renders_soft_break_without_newline() {
         // Regression: a soft break inside a paragraph must not reach the HTML
         // output, or browsers collapse it into a stray space between CJK text.
-        let evaluation = Evaluator::default().evaluate("第一段。\n第二段。");
-        assert!(
-            evaluation.diagnostics.is_empty(),
-            "{:?}",
-            evaluation.diagnostics
-        );
-        let structured = structure(evaluation);
-        let html = render(&structured.document);
+        let evaluation = evaluate("第一段。\n第二段。");
+        let html = render_element_tree(&evaluation.tree);
         assert!(!html.contains('\n'), "{html}");
         assert!(
             html.contains("第一段。</span><span class=\"notist-text\" data-notist-start=\"13\" data-notist-end=\"25\">第二段。"),
@@ -2722,33 +1802,16 @@ mod tests {
 
     #[test]
     fn renders_manifest_web_component_with_scalar_fields() {
-        let document = StructuredDocument {
-            blocks: vec![Block::Element(node(
-                Element::Custom {
-                    name: "card::card".into(),
-                    body: Content::single(Element::Text("fallback".into()), TextRange::new(2, 10)),
-                    block: true,
-                    fields: vec![
-                        CustomField {
-                            name: "title".into(),
-                            value: notist_model::ElementValue::String("Hello & welcome".into()),
-                        },
-                        CustomField {
-                            name: "count".into(),
-                            value: notist_model::ElementValue::Int(3),
-                        },
-                    ],
-                },
-                0,
-                5,
-            ))],
-        };
+        let mut card = Node::block_call("card::card", TextRange::new(0, 5))
+            .arg("title", "Hello & welcome")
+            .arg("count", 3_i64);
+        card.children = vec![text("fallback", 2, 10)];
         let mut renderers = HtmlRendererRegistry::new();
         register_web_component_renderer(&mut renderers, "card", "notist-card");
-        let html = render_with_renderers(
-            &document,
+        let html = render_element_tree_with_renderers(
+            &tree(vec![card]),
             &RenderOptions::default(),
-            &|_, _| None,
+            Some(&|_, _| None),
             &[],
             &renderers,
         );
@@ -2756,44 +1819,58 @@ mod tests {
         assert!(html.contains("data-notist-element=\"card::card\""));
         assert!(html.contains("data-title=\"Hello &amp; welcome\""));
         assert!(html.contains("data-count=\"3\""));
-        assert!(html.contains("<p>fallback</p>"));
+        assert!(html.contains(">fallback</span></p>"));
         assert!(!html.contains("<script"));
     }
 
     #[test]
-    fn renders_shader_plugin_as_webgpu_canvas() {
-        let document = StructuredDocument {
-            blocks: vec![Block::Element(node(
-                Element::Custom {
-                    name: "shader::shader".into(),
-                    body: Content::single(
-                        Element::Text("fallback".into()),
-                        TextRange::new(2, 10),
-                    ),
-                    block: true,
-                    fields: vec![
-                        CustomField {
-                            name: "source".into(),
-                            value: notist_model::ElementValue::String(
-                                "fn mainImage(fragCoord: vec2<f32>) -> vec4<f32> { return vec4<f32>(fragCoord, 0.0, 1.0); }".into(),
-                            ),
-                        },
-                        CustomField {
-                            name: "width".into(),
-                            value: notist_model::ElementValue::Int(320),
-                        },
-                        CustomField {
-                            name: "height".into(),
-                            value: notist_model::ElementValue::Int(200),
-                        },
-                    ],
-                },
-                0,
-                5,
-            ))],
-        };
+    fn renders_unknown_qualified_calls_through_html_fallback() {
+        let mut node = Node::block_call("demo::box", TextRange::new(0, 5)).arg("title", "<&>");
+        node.children = vec![text("body", 1, 5)];
 
-        let html = render(&document);
+        let html = render_element_tree(&tree(vec![node]));
+
+        assert!(html.contains("<demo-box"), "{html}");
+        assert!(html.contains("data-title=\"&lt;&amp;&gt;\""), "{html}");
+        assert!(html.contains("data-notist-element=\"demo::box\""), "{html}");
+        assert!(html.contains(">body</span>"), "{html}");
+    }
+
+    #[test]
+    fn projection_handlers_reenter_fixpoint_and_reduce_children() {
+        let mut registry = HtmlProjectionRegistry::new();
+        registry.register(RewriteHandler {
+            from: "outer",
+            to: "middle",
+        });
+        registry.register(RewriteHandler {
+            from: "middle",
+            to: "html::article",
+        });
+        let root = Node::block_call("outer", TextRange::new(0, 10))
+            .child(Node::call("inner::child", TextRange::new(1, 6)).arg("title", "<&>"));
+
+        let projected = registry.project_tree(&tree(vec![root]));
+
+        assert_eq!(projected.roots[0].name, "html::article");
+        assert_eq!(projected.roots[0].children[0].name, "html::inner-child");
+        let html = render_element_tree(&projected);
+        assert!(html.contains("<article"), "{html}");
+        assert!(html.contains("data-title=\"&lt;&amp;&gt;\""), "{html}");
+    }
+
+    #[test]
+    fn renders_shader_plugin_as_webgpu_canvas() {
+        let mut shader = Node::block_call("shader::shader", TextRange::new(0, 5))
+            .arg(
+                "source",
+                "fn mainImage(fragCoord: vec2<f32>) -> vec4<f32> { return vec4<f32>(fragCoord, 0.0, 1.0); }",
+            )
+            .arg("width", 320_i64)
+            .arg("height", 200_i64);
+        shader.children = vec![text("fallback", 2, 10)];
+
+        let html = render_element_tree(&tree(vec![shader]));
         assert!(html.contains("<notist-shader"));
         assert!(html.contains("class=\"notist-shader\""));
         assert!(html.contains("data-shader-source="));
@@ -2807,8 +1884,7 @@ mod tests {
     fn partially_covered_text_nodes_split_into_wrapped_fragments() {
         // D0010: a text node straddling an annotation boundary is split; only
         // the covered fragment is wrapped.
-        let evaluation = Evaluator::default().evaluate("abcdef");
-        let structured = structure(evaluation);
+        let evaluation = evaluate("abcdef");
         let annotations = vec![RenderedAnnotation {
             scope: TextRange::new(2, 4),
             id: None,
@@ -2816,11 +1892,12 @@ mod tests {
             tags: Vec::new(),
             properties: Vec::new(),
         }];
-        let html = render_with_resolvers(
-            &structured.document,
+        let html = render_element_tree_with_renderers(
+            &evaluation.tree,
             &RenderOptions::default(),
-            &|_: &ModulePath, _: Option<&str>| None,
+            Some(&|_: &ModulePath, _: Option<&str>| None),
             &annotations,
+            &HtmlRendererRegistry::default(),
         );
         assert!(html.contains("ab<span class=\"notist-annotated mark\""));
         assert!(html.contains("cd</span>ef"));
@@ -2828,10 +1905,8 @@ mod tests {
 
     #[test]
     fn sections_nest_and_receive_section_level_projection() {
-        let evaluation =
-            Evaluator::default().evaluate("= 一级\n\n段落\n\n== 二级\n\n内文\n\n= 一级二\n");
-        let structured = structure(evaluation);
-        let html = render(&structured.document);
+        let evaluation = evaluate("= 一级\n\n段落\n\n== 二级\n\n内文\n\n= 一级二\n");
+        let html = render_element_tree(&evaluation.tree);
         // Two sibling top-level sections; the second-level heading nests
         // inside the first section.
         assert_eq!(html.matches("<section data-notist-start").count(), 3);
@@ -2845,11 +1920,12 @@ mod tests {
             tags: vec!["draft".into()],
             properties: vec![("status".into(), "draft".into())],
         }];
-        let html = render_with_resolvers(
-            &structured.document,
+        let html = render_element_tree_with_renderers(
+            &evaluation.tree,
             &RenderOptions::default(),
-            &|_: &ModulePath, _: Option<&str>| None,
+            Some(&|_: &ModulePath, _: Option<&str>| None),
             &annotations,
+            &HtmlRendererRegistry::default(),
         );
         assert!(html.contains("<section class=\"wip\""));
         assert!(html.contains("data-notist-tag=\"draft\""));
@@ -2858,46 +1934,40 @@ mod tests {
 
     #[test]
     fn renders_plain_paragraph_element() {
-        let evaluator = Evaluator::default();
-        let html = render(&structure(evaluator.evaluate("plain paragraph")).document);
+        let evaluation = evaluate("plain paragraph");
+        let html = render_element_tree(&evaluation.tree);
         assert!(html.starts_with("<p data-notist-start=\"0\""));
         assert!(html.ends_with("</p>"));
     }
 
     #[test]
     fn escapes_text_attributes_and_raw_bodies() {
-        let document = StructuredDocument {
-            blocks: vec![Block::Element(node(
-                Element::Custom {
-                    name: "x\" onclick=\"bad".into(),
-                    body: Content::single(Element::Text("<&>".into()), TextRange::new(2, 5)),
-                    block: true,
-                    fields: Vec::new(),
-                },
-                0,
-                5,
-            ))],
-        };
+        let mut custom = Node::block_call("x\" onclick=\"bad", TextRange::new(0, 5));
+        custom.children = vec![text("<&>", 2, 5)];
 
-        let html = render(&document);
+        let html = render_element_tree(&tree(vec![custom]));
 
-        assert!(html.contains("data-notist-name=\"x&quot; onclick=&quot;bad\""));
+        assert!(html.contains("data-notist-element=\"x&quot; onclick=&quot;bad\""));
         assert!(html.contains("&lt;&amp;&gt;"));
         assert!(!html.contains("onclick=\"bad\""));
     }
 
     #[test]
     fn resolves_and_encodes_reference_links() {
-        let evaluation =
-            Evaluator::default().evaluate("[[intro page#A B]] [[super::index]] [[vault::shared]]");
-        let structured = structure(evaluation);
+        let evaluation = evaluate("[[intro page#A B]] [[super::index]] [[vault::shared]]");
         let current = ModulePath::from_segments(["notes".into(), "today".into()]);
         let options = RenderOptions {
             current_module: Some(&current),
             module_url_prefix: "/preview?module=",
         };
 
-        let html = render_with_options(&structured.document, &options);
+        let html = render_element_tree_with_renderers(
+            &evaluation.tree,
+            &options,
+            None,
+            &[],
+            &HtmlRendererRegistry::default(),
+        );
 
         assert!(html.contains(
             "href=\"/preview?module=vault%3A%3Anotes%3A%3Atoday%3A%3Aintro%20page#A%20B\""
@@ -2908,10 +1978,9 @@ mod tests {
 
     #[test]
     fn leaves_relative_references_unclickable_without_a_current_module() {
-        let evaluation = Evaluator::default().evaluate("[[child]] [[vault::shared]]");
-        let structured = structure(evaluation);
+        let evaluation = evaluate("[[child]] [[vault::shared]]");
 
-        let html = render(&structured.document);
+        let html = render_element_tree(&evaluation.tree);
 
         assert!(html.contains("notist-reference-unresolved"));
         assert!(html.contains("href=\"?module=vault%3A%3Ashared\""));
@@ -2924,23 +1993,24 @@ mod tests {
             current_module: Some(&current),
             module_url_prefix: "?module=",
         };
-        let evaluator = Evaluator::default();
-        let explicit = render_with_options(
-            &structure(evaluator.evaluate("#ref(\"child\")")).document,
-            &options,
-        );
-        let sugar = render_with_options(
-            &structure(evaluator.evaluate("[[child]]")).document,
-            &options,
-        );
-        assert!(explicit.contains("href=\"?module=vault%3A%3Anotes%3A%3Achild\""));
-        assert!(sugar.contains("href=\"?module=vault%3A%3Anotes%3A%3Achild\""));
+        let explicit = evaluate("#ref(\"child\")");
+        let sugar = evaluate("[[child]]");
+        let render = |evaluation: &notist_eval::Evaluation| {
+            render_element_tree_with_renderers(
+                &evaluation.tree,
+                &options,
+                None,
+                &[],
+                &HtmlRendererRegistry::default(),
+            )
+        };
+        assert!(render(&explicit).contains("href=\"?module=vault%3A%3Anotes%3A%3Achild\""));
+        assert!(render(&sugar).contains("href=\"?module=vault%3A%3Anotes%3A%3Achild\""));
     }
 
     #[test]
     fn uses_a_caller_provided_reference_resolver() {
-        let evaluation = Evaluator::default().evaluate("[[child]] [[missing]]");
-        let structured = structure(evaluation);
+        let evaluation = evaluate("[[child]] [[missing]]");
         let current = ModulePath::root();
         let options = RenderOptions {
             current_module: Some(&current),
@@ -2950,7 +2020,13 @@ mod tests {
             (target.segments() == ["child"]).then(|| "child/".into())
         };
 
-        let html = render_with_reference_resolver(&structured.document, &options, &resolver);
+        let html = render_element_tree_with_renderers(
+            &evaluation.tree,
+            &options,
+            Some(&resolver),
+            &[],
+            &HtmlRendererRegistry::default(),
+        );
 
         assert!(html.contains("href=\"child/\""));
         assert!(html.contains("notist-reference-unresolved"));
@@ -2958,69 +2034,53 @@ mod tests {
 
     #[test]
     fn uses_heading_text_as_the_default_anchor() {
-        let evaluation = Evaluator::default().evaluate("= 简介\n\n正文");
-        let structured = structure(evaluation);
+        let evaluation = evaluate("= 简介\n\n正文");
 
-        let html = render(&structured.document);
+        let html = render_element_tree(&evaluation.tree);
 
         assert!(html.contains("<h1 id=\"简介\""));
         assert_eq!(
-            module_anchors(&structured.document, &[]),
+            module_anchors_tree(&evaluation.tree, &[]),
             vec![("简介".to_owned(), "简介".to_owned())]
         );
     }
 
     #[test]
     fn falls_back_to_loc_anchors_for_invalid_heading_text() {
-        let evaluation = Evaluator::default().evaluate("#heading[1st steps]");
-        let structured = structure(evaluation);
+        let evaluation = evaluate("#heading[1st steps]");
 
-        let html = render(&structured.document);
+        let html = render_element_tree(&evaluation.tree);
 
         assert!(html.contains("<h1 id=\"loc-0\""));
         assert_eq!(
-            module_anchors(&structured.document, &[]),
+            module_anchors_tree(&evaluation.tree, &[]),
             vec![("1st steps".to_owned(), "loc-0".to_owned())]
         );
     }
 
     #[test]
     fn deduplicates_repeated_heading_anchors() {
-        let evaluation = Evaluator::default().evaluate("= Intro\n\n= Intro");
-        let structured = structure(evaluation);
+        let evaluation = evaluate("= Intro\n\n= Intro");
 
-        let html = render(&structured.document);
+        let html = render_element_tree(&evaluation.tree);
 
         assert!(html.contains("<h1 id=\"Intro\""));
         assert!(html.contains("<h1 id=\"loc-9\""));
         assert_eq!(
-            module_anchors(&structured.document, &[]),
+            module_anchors_tree(&evaluation.tree, &[]),
             vec![("Intro".to_owned(), "Intro".to_owned())]
         );
     }
 
     #[test]
     fn explicit_ids_override_heading_text_anchors() {
-        let document = StructuredDocument {
-            blocks: vec![
-                Block::Element(node(
-                    Element::Heading {
-                        level: 1,
-                        body: Content::single(Element::Text("Intro".into()), TextRange::new(1, 6)),
-                    },
-                    0,
-                    7,
-                )),
-                Block::Element(node(
-                    Element::Paragraph(Content::single(
-                        Element::Text("quoted".into()),
-                        TextRange::new(18, 24),
-                    )),
-                    8,
-                    25,
-                )),
-            ],
-        };
+        let mut heading =
+            Node::block_call("core::heading", TextRange::new(0, 7)).arg("level", 1_i64);
+        heading.children = vec![text("Intro", 1, 6)];
+        let document = tree(vec![
+            heading,
+            paragraph(vec![text("quoted", 18, 24)], 8, 25),
+        ]);
         let annotations = vec![RenderedAnnotation {
             scope: TextRange::new(8, 25),
             id: Some("Intro".into()),
@@ -3029,14 +2089,15 @@ mod tests {
             properties: Vec::new(),
         }];
 
-        let anchors = module_anchors(&document, &annotations);
+        let anchors = module_anchors_tree(&document, &annotations);
         assert_eq!(anchors, vec![("Intro".to_owned(), "Intro".to_owned())]);
 
-        let html = render_with_resolvers(
+        let html = render_element_tree_with_renderers(
             &document,
             &RenderOptions::default(),
-            &|_: &ModulePath, _: Option<&str>| None,
+            Some(&|_: &ModulePath, _: Option<&str>| None),
             &annotations,
+            &HtmlRendererRegistry::default(),
         );
         assert!(html.contains("<h1 id=\"loc-0\""));
         assert!(html.contains("<p id=\"Intro\""));
@@ -3044,16 +2105,7 @@ mod tests {
 
     #[test]
     fn projects_annotation_attributes_onto_block_elements() {
-        let document = StructuredDocument {
-            blocks: vec![Block::Element(node(
-                Element::Paragraph(Content::single(
-                    Element::Text("quoted".into()),
-                    TextRange::new(8, 14),
-                )),
-                0,
-                15,
-            ))],
-        };
+        let document = tree(vec![paragraph(vec![text("quoted", 8, 14)], 0, 15)]);
         let annotations = vec![RenderedAnnotation {
             scope: TextRange::new(0, 15),
             id: Some("quote-id".into()),
@@ -3065,11 +2117,12 @@ mod tests {
             ],
         }];
 
-        let html = render_with_resolvers(
+        let html = render_element_tree_with_renderers(
             &document,
             &RenderOptions::default(),
-            &|_: &ModulePath, _: Option<&str>| None,
+            Some(&|_: &ModulePath, _: Option<&str>| None),
             &annotations,
+            &HtmlRendererRegistry::default(),
         );
 
         assert!(html.contains("<p class=\"hero\" id=\"quote-id\""));
@@ -3081,17 +2134,9 @@ mod tests {
 
     #[test]
     fn merges_projected_classes_into_fixed_class_attributes() {
-        let document = StructuredDocument {
-            blocks: vec![Block::Element(node(
-                Element::Callout {
-                    kind: "tip".into(),
-                    title: None,
-                    body: Content::single(Element::Text("hint".into()), TextRange::new(5, 9)),
-                },
-                0,
-                10,
-            ))],
-        };
+        let mut callout =
+            Node::block_call("core::callout", TextRange::new(0, 10)).arg("kind", "tip");
+        callout.children = vec![text("hint", 5, 9)];
         let annotations = vec![RenderedAnnotation {
             scope: TextRange::new(0, 10),
             id: None,
@@ -3100,11 +2145,12 @@ mod tests {
             properties: Vec::new(),
         }];
 
-        let html = render_with_resolvers(
-            &document,
+        let html = render_element_tree_with_renderers(
+            &tree(vec![callout]),
             &RenderOptions::default(),
-            &|_: &ModulePath, _: Option<&str>| None,
+            Some(&|_: &ModulePath, _: Option<&str>| None),
             &annotations,
+            &HtmlRendererRegistry::default(),
         );
 
         assert!(html.contains("<aside class=\"notist-callout hero\""));
@@ -3112,19 +2158,9 @@ mod tests {
 
     #[test]
     fn assigns_explicit_ids_to_inline_elements() {
-        let document = StructuredDocument {
-            blocks: vec![Block::Element(node(
-                Element::Paragraph(Content::single(
-                    Element::Strong(Content::single(
-                        Element::Text("bold".into()),
-                        TextRange::new(9, 13),
-                    )),
-                    TextRange::new(2, 14),
-                )),
-                0,
-                20,
-            ))],
-        };
+        let mut strong = Node::call("core::strong", TextRange::new(2, 14));
+        strong.children = vec![text("bold", 9, 13)];
+        let document = tree(vec![paragraph(vec![strong], 0, 20)]);
         let annotations = vec![RenderedAnnotation {
             scope: TextRange::new(2, 14),
             id: Some("bold".into()),
@@ -3133,11 +2169,12 @@ mod tests {
             properties: Vec::new(),
         }];
 
-        let html = render_with_resolvers(
+        let html = render_element_tree_with_renderers(
             &document,
             &RenderOptions::default(),
-            &|_: &ModulePath, _: Option<&str>| None,
+            Some(&|_: &ModulePath, _: Option<&str>| None),
             &annotations,
+            &HtmlRendererRegistry::default(),
         );
 
         assert!(html.contains("<strong id=\"bold\""));
@@ -3145,26 +2182,10 @@ mod tests {
 
     #[test]
     fn projects_multi_block_scopes_onto_every_covered_block() {
-        let document = StructuredDocument {
-            blocks: vec![
-                Block::Element(node(
-                    Element::Paragraph(Content::single(
-                        Element::Text("first".into()),
-                        TextRange::new(1, 6),
-                    )),
-                    0,
-                    10,
-                )),
-                Block::Element(node(
-                    Element::Paragraph(Content::single(
-                        Element::Text("second".into()),
-                        TextRange::new(12, 18),
-                    )),
-                    11,
-                    20,
-                )),
-            ],
-        };
+        let document = tree(vec![
+            paragraph(vec![text("first", 1, 6)], 0, 10),
+            paragraph(vec![text("second", 12, 18)], 11, 20),
+        ]);
         let annotations = vec![RenderedAnnotation {
             scope: TextRange::new(0, 20),
             id: Some("multi".into()),
@@ -3173,11 +2194,12 @@ mod tests {
             properties: vec![("status".into(), "draft".into())],
         }];
 
-        let html = render_with_resolvers(
+        let html = render_element_tree_with_renderers(
             &document,
             &RenderOptions::default(),
-            &|_: &ModulePath, _: Option<&str>| None,
+            Some(&|_: &ModulePath, _: Option<&str>| None),
             &annotations,
+            &HtmlRendererRegistry::default(),
         );
 
         assert!(html.contains(
@@ -3199,13 +2221,7 @@ mod tests {
         // heading wraps everything below it into a single section, so this
         // is the realistic shape for `#[...]@anno` over multiple paragraphs.
         let source = "= Title\n\n#[\nfirst para\n\n- item one\n- item two\n\nlast para\n]@mark,.user\ntrailing tail";
-        let evaluation = Evaluator::default().evaluate(source);
-        assert!(
-            evaluation.diagnostics.is_empty(),
-            "{:?}",
-            evaluation.diagnostics
-        );
-        let structured = structure(evaluation);
+        let evaluation = evaluate(source);
         // The scope covers `#[]`: both leading blocks fully, and the last
         // paragraph only partially (following text joins its paragraph).
         let annotations = vec![RenderedAnnotation {
@@ -3216,13 +2232,13 @@ mod tests {
             properties: vec![("type".into(), "user".into())],
         }];
 
-        let html = render_with_resolvers(
-            &structured.document,
+        let html = render_element_tree_with_renderers(
+            &evaluation.tree,
             &RenderOptions::default(),
-            &|_: &ModulePath, _: Option<&str>| None,
+            Some(&|_, _| None),
             &annotations,
+            &HtmlRendererRegistry::default(),
         );
-
         // Every fully covered block carries the projection on its own tag.
         assert!(
             html.contains("<p class=\"user\" data-notist-type=\"user\""),
@@ -3233,47 +2249,17 @@ mod tests {
         // wrapping instead of losing the annotation entirely.
         assert!(html.contains("notist-annotated user"), "{html}");
         assert_eq!(html.matches("class=\"user\"").count(), 2);
-
-        let stream = Evaluator::default().evaluate_stream(source);
-        assert!(stream.diagnostics.is_empty(), "{:?}", stream.diagnostics);
-        let tree_html = render_element_tree_with_renderers(
-            &stream.tree,
-            &RenderOptions::default(),
-            &|_, _| None,
-            &annotations,
-            &HtmlRendererRegistry::default(),
-        );
-        assert!(
-            tree_html.contains("<p class=\"user\" data-notist-type=\"user\""),
-            "{tree_html}"
-        );
-        assert!(tree_html.contains("<ul class=\"user\""), "{tree_html}");
-        assert!(tree_html.contains("notist-annotated user"), "{tree_html}");
-        assert_eq!(tree_html.matches("class=\"user\"").count(), 2);
     }
 
     #[test]
     fn wraps_partially_covered_inline_elements_in_annotation_spans() {
-        let document = StructuredDocument {
-            blocks: vec![Block::Element(node(
-                Element::Paragraph(Content {
-                    elements: vec![
-                        node(Element::Text("before ".into()), 0, 7),
-                        node(
-                            Element::Strong(Content::single(
-                                Element::Text("bold".into()),
-                                TextRange::new(9, 13),
-                            )),
-                            7,
-                            14,
-                        ),
-                        node(Element::Text(" after".into()), 14, 20),
-                    ],
-                }),
-                0,
-                20,
-            ))],
-        };
+        let mut strong = Node::call("core::strong", TextRange::new(7, 14));
+        strong.children = vec![text("bold", 9, 13)];
+        let document = tree(vec![paragraph(
+            vec![text("before ", 0, 7), strong, text(" after", 14, 20)],
+            0,
+            20,
+        )]);
         let annotations = vec![RenderedAnnotation {
             scope: TextRange::new(7, 25),
             id: Some("bold".into()),
@@ -3282,11 +2268,12 @@ mod tests {
             properties: vec![("status".into(), "draft".into())],
         }];
 
-        let html = render_with_resolvers(
+        let html = render_element_tree_with_renderers(
             &document,
             &RenderOptions::default(),
-            &|_: &ModulePath, _: Option<&str>| None,
+            Some(&|_: &ModulePath, _: Option<&str>| None),
             &annotations,
+            &HtmlRendererRegistry::default(),
         );
 
         // Adjacent inline elements covered by the same annotation merge into
@@ -3303,18 +2290,11 @@ mod tests {
 
     #[test]
     fn aggregates_annotations_covering_the_same_inline_run() {
-        let document = StructuredDocument {
-            blocks: vec![Block::Element(node(
-                Element::Paragraph(Content {
-                    elements: vec![
-                        node(Element::Text("a".into()), 0, 1),
-                        node(Element::Text("b".into()), 1, 2),
-                    ],
-                }),
-                0,
-                20,
-            ))],
-        };
+        let document = tree(vec![paragraph(
+            vec![text("a", 0, 1), text("b", 1, 2)],
+            0,
+            20,
+        )]);
         let annotations = vec![
             RenderedAnnotation {
                 scope: TextRange::new(0, 5),
@@ -3332,11 +2312,12 @@ mod tests {
             },
         ];
 
-        let html = render_with_resolvers(
+        let html = render_element_tree_with_renderers(
             &document,
             &RenderOptions::default(),
-            &|_: &ModulePath, _: Option<&str>| None,
+            Some(&|_: &ModulePath, _: Option<&str>| None),
             &annotations,
+            &HtmlRendererRegistry::default(),
         );
 
         // The coverage set changes between the two texts, so the run splits
@@ -3350,22 +2331,9 @@ mod tests {
 
     #[test]
     fn wraps_inline_runs_inside_flow_content_paragraphs() {
-        let document = StructuredDocument {
-            blocks: vec![Block::Element(node(
-                Element::Callout {
-                    kind: "tip".into(),
-                    title: None,
-                    body: Content {
-                        elements: vec![
-                            node(Element::Text("a".into()), 5, 6),
-                            node(Element::Text("b".into()), 7, 8),
-                        ],
-                    },
-                },
-                0,
-                40,
-            ))],
-        };
+        let mut callout =
+            Node::block_call("core::callout", TextRange::new(0, 40)).arg("kind", "tip");
+        callout.children = vec![text("a", 5, 6), text("b", 7, 8)];
         let annotations = vec![RenderedAnnotation {
             scope: TextRange::new(0, 20),
             id: None,
@@ -3374,11 +2342,12 @@ mod tests {
             properties: Vec::new(),
         }];
 
-        let html = render_with_resolvers(
-            &document,
+        let html = render_element_tree_with_renderers(
+            &tree(vec![callout]),
             &RenderOptions::default(),
-            &|_: &ModulePath, _: Option<&str>| None,
+            Some(&|_: &ModulePath, _: Option<&str>| None),
             &annotations,
+            &HtmlRendererRegistry::default(),
         );
 
         // A partially covered block carries no projection on its own tag...
@@ -3393,36 +2362,11 @@ mod tests {
 
     #[test]
     fn combines_block_projection_with_inline_wrapping_for_mixed_scopes() {
-        let document = StructuredDocument {
-            blocks: vec![
-                Block::Element(node(
-                    Element::Paragraph(Content::single(
-                        Element::Text("first".into()),
-                        TextRange::new(1, 6),
-                    )),
-                    0,
-                    10,
-                )),
-                Block::Element(node(
-                    Element::Paragraph(Content::single(
-                        Element::Text("second".into()),
-                        TextRange::new(12, 18),
-                    )),
-                    11,
-                    20,
-                )),
-                Block::Element(node(
-                    Element::Paragraph(Content {
-                        elements: vec![
-                            node(Element::Text("x".into()), 22, 23),
-                            node(Element::Text("y".into()), 35, 36),
-                        ],
-                    }),
-                    21,
-                    40,
-                )),
-            ],
-        };
+        let document = tree(vec![
+            paragraph(vec![text("first", 1, 6)], 0, 10),
+            paragraph(vec![text("second", 12, 18)], 11, 20),
+            paragraph(vec![text("x", 22, 23), text("y", 35, 36)], 21, 40),
+        ]);
         let annotations = vec![RenderedAnnotation {
             scope: TextRange::new(0, 30),
             id: Some("mix".into()),
@@ -3431,11 +2375,12 @@ mod tests {
             properties: Vec::new(),
         }];
 
-        let html = render_with_resolvers(
+        let html = render_element_tree_with_renderers(
             &document,
             &RenderOptions::default(),
-            &|_: &ModulePath, _: Option<&str>| None,
+            Some(&|_: &ModulePath, _: Option<&str>| None),
             &annotations,
+            &HtmlRendererRegistry::default(),
         );
 
         // The first two blocks are fully covered: projection on their tags.
@@ -3455,56 +2400,32 @@ mod tests {
 
     #[test]
     fn renders_strong_content_and_groups_nested_list_items() {
-        let item = |text: &str, start| {
-            node(
-                Element::ListItem(Content::single(
-                    Element::Text(text.into()),
-                    TextRange::new(start, start + text.len()),
-                )),
-                start,
-                start + text.len(),
-            )
+        let item = |value: &str, start| {
+            let mut node =
+                Node::block_call("core::item", TextRange::new(start, start + value.len()))
+                    .arg("ordered", false);
+            node.children = vec![text(value, start, start + value.len())];
+            node
         };
-        let document = StructuredDocument {
-            blocks: vec![
-                Block::Element(node(
-                    Element::Paragraph(Content::single(
-                        Element::Strong(Content::single(
-                            Element::Text("important".into()),
-                            TextRange::new(0, 9),
-                        )),
-                        TextRange::new(0, 9),
-                    )),
-                    0,
-                    9,
-                )),
-                Block::Element(node(
-                    Element::Details {
-                        summary: None,
-                        open: false,
-                        body: Content {
-                            elements: vec![item("one", 10), item("two", 14)],
-                        },
-                    },
-                    10,
-                    17,
-                )),
-            ],
-        };
+        let mut strong = Node::call("core::strong", TextRange::new(0, 9));
+        strong.children = vec![text("important", 0, 9)];
+        let mut list = Node::block_call("core::list", TextRange::new(10, 17)).arg("ordered", false);
+        list.children = vec![item("one", 10), item("two", 14)];
+        let mut details = Node::block_call("core::details", TextRange::new(10, 17));
+        details.children = vec![list];
+        let document = tree(vec![paragraph(vec![strong], 0, 9), details]);
 
-        let html = render(&document);
+        let html = render_element_tree(&document);
 
         assert!(html.contains("<strong data-notist-start=\"0\" data-notist-end=\"9\">"));
-        assert_eq!(html.matches("<ul>").count(), 1);
+        assert_eq!(html.matches("<ul").count(), 1);
         assert_eq!(html.matches("<li").count(), 2);
     }
 
     #[test]
     fn renders_ordered_list_items_as_an_ordered_list() {
-        let evaluation = Evaluator::default()
-            .evaluate("#item(ordered=true)[First]\n#item(ordered=true)[Second]");
-        let structured = structure(evaluation);
-        let html = render(&structured.document);
+        let evaluation = evaluate("#item(ordered=true)[First]\n#item(ordered=true)[Second]");
+        let html = render_element_tree(&evaluation.tree);
         assert_eq!(html.matches("<ol").count(), 1);
         assert_eq!(html.matches("<li").count(), 2);
         assert!(html.contains("First") && html.contains("Second"));
@@ -3512,14 +2433,9 @@ mod tests {
 
     #[test]
     fn renders_explicit_items_grouped_into_containers() {
-        let evaluation = Evaluator::default()
-            .evaluate("#item[One]#item[Two]#item(ordered=true)[Three]#item(ordered=true)[Four]");
-        assert!(
-            evaluation.diagnostics.is_empty(),
-            "{:?}",
-            evaluation.diagnostics
-        );
-        let html = render(&structure(evaluation).document);
+        let evaluation =
+            evaluate("#item[One]#item[Two]#item(ordered=true)[Three]#item(ordered=true)[Four]");
+        let html = render_element_tree(&evaluation.tree);
         assert!(html.contains("<ul data-notist-start="));
         assert!(html.contains("<ol data-notist-start="));
         assert_eq!(html.matches("<li").count(), 4);
@@ -3527,30 +2443,18 @@ mod tests {
 
     #[test]
     fn renders_indented_mixed_nested_lists() {
-        let evaluation =
-            Evaluator::default().evaluate("- parent\n  + first child\n  + second child\n- sibling");
-        assert!(
-            evaluation.diagnostics.is_empty(),
-            "{:?}",
-            evaluation.diagnostics
-        );
-        let html = render(&structure(evaluation).document);
+        let evaluation = evaluate("- parent\n  + first child\n  + second child\n- sibling");
+        let html = render_element_tree(&evaluation.tree);
         assert_eq!(html.matches("<ul").count(), 1);
-        assert_eq!(html.matches("<ol>").count(), 1);
+        assert_eq!(html.matches("<ol").count(), 1);
         assert_eq!(html.matches("<li").count(), 4);
         assert!(html.contains("first child") && html.contains("sibling"));
     }
 
     #[test]
     fn renders_pipe_tables_as_semantic_html() {
-        let evaluation =
-            Evaluator::default().evaluate("| Name | Value |\n| :--- | ---: |\n| one | 1 |\n");
-        assert!(
-            evaluation.diagnostics.is_empty(),
-            "{:?}",
-            evaluation.diagnostics
-        );
-        let html = render(&structure(evaluation).document);
+        let evaluation = evaluate("| Name | Value |\n| :--- | ---: |\n| one | 1 |\n");
+        let html = render_element_tree(&evaluation.tree);
         assert!(html.contains("<div class=\"notist-table-wrapper\">"));
         assert!(html.contains("<table data-notist-columns=\"2\""));
         assert!(html.contains("<thead><tr><th class=\"notist-table-align-left\""));
@@ -3563,15 +2467,10 @@ mod tests {
 
     #[test]
     fn renders_figure_wrapper_with_caption() {
-        let evaluation = Evaluator::default().evaluate(
+        let evaluation = evaluate(
             "#figure(caption: [Cap], supplement: [Tab], kind: \"table\")[\n  #table(columns: 2)[#table-cell[A] #table-cell[B]]\n]",
         );
-        assert!(
-            evaluation.diagnostics.is_empty(),
-            "{:?}",
-            evaluation.diagnostics
-        );
-        let html = render(&structure(evaluation).document);
+        let html = render_element_tree(&evaluation.tree);
         assert!(html.contains("<figure class=\"notist-figure\" data-notist-kind=\"table\""));
         assert!(!html.contains("<figure class=\"notist-figure\" data-notist-kind=\"table\"><p>"));
         assert!(html.contains("<div class=\"notist-table-wrapper\">"));
@@ -3583,14 +2482,8 @@ mod tests {
 
     #[test]
     fn renders_inline_elements_with_semantic_tags() {
-        let evaluation = Evaluator::default()
-            .evaluate("#strong[bold] #emph[slanted] #strike[gone] #underline[under]");
-        assert!(
-            evaluation.diagnostics.is_empty(),
-            "{:?}",
-            evaluation.diagnostics
-        );
-        let html = render(&structure(evaluation).document);
+        let evaluation = evaluate("#strong[bold] #emph[slanted] #strike[gone] #underline[under]");
+        let html = render_element_tree(&evaluation.tree);
         assert!(html.contains("<strong"));
         assert!(html.contains("<em"));
         assert!(html.contains("<s"));
@@ -3598,153 +2491,26 @@ mod tests {
     }
 
     #[test]
-    #[ignore = "legacy feature moved to plugin"]
-    fn renders_sample_output_semantically() {
-        let evaluation = Evaluator::default().evaluate("#samp[Saved 3 files]");
-        assert!(
-            evaluation.diagnostics.is_empty(),
-            "{:?}",
-            evaluation.diagnostics
-        );
-        let html = render(&structure(evaluation).document);
-        assert!(html.contains("<samp class=\"notist-sample\""));
-        assert!(html.contains("Saved 3 files"));
-        assert!(html.contains("</samp>"));
-    }
-
-    #[test]
-    #[ignore = "legacy feature moved to plugin"]
-    fn renders_machine_readable_time_semantically() {
-        let evaluation = Evaluator::default().evaluate("#time(\"2026-07-21\")[July 21]");
-        assert!(
-            evaluation.diagnostics.is_empty(),
-            "{:?}",
-            evaluation.diagnostics
-        );
-        let html = render(&structure(evaluation).document);
-        assert!(html.contains("<time datetime=\"2026-07-21\""));
-        assert!(html.contains("July 21"));
-        assert!(html.contains("</time>"));
-    }
-
-    #[test]
-    #[ignore = "legacy feature moved to plugin"]
-    fn renders_video_media() {
-        let evaluation =
-            Evaluator::default().evaluate("#video(source=\"movie.mp4\", poster=\"poster.png\")");
-        assert!(
-            evaluation.diagnostics.is_empty(),
-            "{:?}",
-            evaluation.diagnostics
-        );
-        let html = render(&structure(evaluation).document);
-        assert!(html.contains("<video class=\"notist-video\" src=\"movie.mp4\""));
-        assert!(html.contains("poster=\"poster.png\""));
-        assert!(html.contains(" controls"));
-        assert!(html.contains("</video>"));
-    }
-
-    #[test]
-    #[ignore = "legacy feature moved to plugin"]
-    fn renders_audio_media() {
-        let evaluation = Evaluator::default().evaluate("#audio(\"sound.ogg\", loop=true)");
-        assert!(
-            evaluation.diagnostics.is_empty(),
-            "{:?}",
-            evaluation.diagnostics
-        );
-        let html = render(&structure(evaluation).document);
-        assert!(html.contains("<audio class=\"notist-audio\" src=\"sound.ogg\""));
-        assert!(html.contains(" controls"));
-        assert!(html.contains(" loop"));
-        assert!(html.contains("</audio>"));
-    }
-
-    #[test]
     fn renders_strike_content() {
-        let evaluation = Evaluator::default().evaluate("~~obsolete~~");
-        assert!(
-            evaluation.diagnostics.is_empty(),
-            "{:?}",
-            evaluation.diagnostics
-        );
-        let html = render(&structure(evaluation).document);
+        let evaluation = evaluate("~~obsolete~~");
+        let html = render_element_tree(&evaluation.tree);
         assert!(html.contains("<s data-notist-start=\"0\""));
         assert!(html.contains("obsolete"));
         assert!(html.contains("</s>"));
     }
 
     #[test]
-    #[ignore = "legacy feature moved to plugin"]
-    fn renders_insert_content() {
-        let evaluation = Evaluator::default().evaluate("++replacement++");
-        assert!(
-            evaluation.diagnostics.is_empty(),
-            "{:?}",
-            evaluation.diagnostics
-        );
-        let html = render(&structure(evaluation).document);
-        assert!(html.contains("<ins data-notist-start=\"0\""));
-        assert!(html.contains("replacement"));
-        assert!(html.contains("</ins>"));
-    }
-
-    #[test]
-    #[ignore = "legacy feature moved to plugin"]
-    fn renders_focusable_spoiler_content() {
-        let evaluation = Evaluator::default().evaluate(">!hidden ending!<");
-        assert!(
-            evaluation.diagnostics.is_empty(),
-            "{:?}",
-            evaluation.diagnostics
-        );
-        let html = render(&structure(evaluation).document);
-        assert!(html.contains("<span class=\"notist-spoiler\" tabindex=\"0\""));
-        assert!(html.contains("title=\"Focus or hover to reveal\""));
-        assert!(html.contains("hidden ending"));
-        assert!(html.contains("</span>"));
-    }
-
-    #[test]
     fn renders_heading_levels() {
-        let evaluator = Evaluator::default();
-        let heading = render(&structure(evaluator.evaluate("= Title")).document);
-        let second_heading = render(&structure(evaluator.evaluate("== Subtitle")).document);
+        let heading = render_element_tree(&evaluate("= Title").tree);
+        let second_heading = render_element_tree(&evaluate("== Subtitle").tree);
         assert!(heading.contains("<h1"));
         assert!(second_heading.contains("<h2"));
     }
 
     #[test]
-    #[ignore = "legacy feature moved to plugin"]
-    fn renders_outlines_with_heading_anchors() {
-        let evaluation = Evaluator::default().evaluate(
-            "#heading[Top]\n#heading(level=2)[Nested]\n#heading(level=4)[Hidden]\n#outline(depth=2)",
-        );
-        assert!(
-            evaluation.diagnostics.is_empty(),
-            "{:?}",
-            evaluation.diagnostics
-        );
-        let html = render(&structure(evaluation).document);
-        assert!(html.contains("id=\"Top\""));
-        assert!(
-            html.contains("<nav class=\"notist-outline\" aria-label=\"Table of contents\"><ol>")
-        );
-        assert!(html.contains("href=\"#Top\""));
-        assert!(html.contains("href=\"#Nested\""));
-        assert!(!html.contains("notist-outline-level-4"));
-    }
-
-    #[test]
     fn renders_callouts_as_semantic_asides() {
-        let evaluation =
-            Evaluator::default().evaluate("#callout(kind=\"tip\", title=[Tip])[Use *small* steps]");
-        assert!(
-            evaluation.diagnostics.is_empty(),
-            "{:?}",
-            evaluation.diagnostics
-        );
-        let html = render(&structure(evaluation).document);
+        let evaluation = evaluate("#callout(kind=\"tip\", title=[Tip])[Use *small* steps]");
+        let html = render_element_tree(&evaluation.tree);
         assert!(html.contains("<aside class=\"notist-callout\" data-notist-kind=\"tip\""));
         assert!(html.contains("<div class=\"notist-callout-title\">"));
         assert!(html.contains("<strong"));
@@ -3753,28 +2519,22 @@ mod tests {
 
     #[test]
     fn renders_details_disclosure() {
-        let evaluation =
-            Evaluator::default().evaluate("#details(summary=[More], open=true)[Hidden content]");
-        assert!(
-            evaluation.diagnostics.is_empty(),
-            "{:?}",
-            evaluation.diagnostics
-        );
-        let html = render(&structure(evaluation).document);
+        let evaluation = evaluate("#details(summary=[More], open=true)[Hidden content]");
+        let html = render_element_tree(&evaluation.tree);
         assert!(html.contains("<details class=\"notist-details\" open"));
         assert!(html.contains("<summary>"));
         assert!(html.contains("Hidden content"));
         assert!(html.contains("</details>"));
 
-        let default_summary = Evaluator::default().evaluate("#details[Hidden content]");
-        let html = render(&structure(default_summary).document);
+        let default_summary = evaluate("#details[Hidden content]");
+        let html = render_element_tree(&default_summary.tree);
         assert!(html.contains("<summary>Details</summary>"));
     }
 
     #[test]
     fn renders_inline_content_inside_block_sugar() {
-        let evaluation = Evaluator::default().evaluate("- *bold*\n- _slanted_");
-        let html = render(&structure(evaluation).document);
+        let evaluation = evaluate("- *bold*\n- _slanted_");
+        let html = render_element_tree(&evaluation.tree);
         assert!(html.contains("<li"));
         assert!(html.contains("<strong"));
         assert!(html.contains("<em"));
@@ -3782,104 +2542,22 @@ mod tests {
 
     #[test]
     fn renders_rule_elements() {
-        let evaluation = Evaluator::default().evaluate("#rule()");
-        assert!(
-            evaluation.diagnostics.is_empty(),
-            "{:?}",
-            evaluation.diagnostics
-        );
-        let html = render(&structure(evaluation).document);
+        let evaluation = evaluate("#rule()");
+        let html = render_element_tree(&evaluation.tree);
         assert!(html.contains("class=\"notist-rule\""));
     }
 
     #[test]
-    #[ignore = "legacy feature moved to plugin"]
-    fn renders_definition_lists() {
-        let evaluation =
-            Evaluator::default().evaluate("/ API: Application interface\n/ URL: Address");
-        assert!(
-            evaluation.diagnostics.is_empty(),
-            "{:?}",
-            evaluation.diagnostics
-        );
-        let html = render(&structure(evaluation).document);
-        assert_eq!(html.matches("<dl").count(), 1);
-        assert_eq!(html.matches("<dt").count(), 2);
-        assert_eq!(html.matches("<dd>").count(), 2);
-        assert!(html.contains("Application interface"));
-    }
-
-    #[test]
-    #[ignore = "legacy feature moved to plugin"]
-    fn renders_explicit_terms_and_task_containers() {
-        let evaluation = Evaluator::default().evaluate(
-            "#terms[#terms::item(term=[API])[Interface]]#task[#task::item[Todo]#task::item(checked=true)[Done]]",
-        );
-        assert!(
-            evaluation.diagnostics.is_empty(),
-            "{:?}",
-            evaluation.diagnostics
-        );
-        let html = render(&structure(evaluation).document);
-        assert!(html.contains("<dl data-notist-start="));
-        assert!(html.contains("<ul class=\"notist-task-list\" data-notist-start="));
-        assert_eq!(html.matches("type=\"checkbox\" disabled").count(), 2);
-        assert_eq!(html.matches(" disabled checked").count(), 1);
-    }
-
-    #[test]
-    #[ignore = "legacy feature moved to plugin"]
-    fn renders_nested_definition_lists() {
-        let evaluation =
-            Evaluator::default().evaluate("/ API: Interface\n  / HTTP: Transport\n/ URL: Address");
-        assert!(
-            evaluation.diagnostics.is_empty(),
-            "{:?}",
-            evaluation.diagnostics
-        );
-        let html = render(&structure(evaluation).document);
-        assert_eq!(html.matches("<dl").count(), 2);
-        assert_eq!(html.matches("<dt").count(), 3);
-        assert!(html.contains("HTTP") && html.contains("Address"));
-    }
-
-    #[test]
     fn preserves_unresolved_trailing_content_and_bodyless_calls() {
-        let document = StructuredDocument {
-            blocks: vec![
-                Block::Element(node(
-                    Element::Paragraph(Content {
-                        elements: vec![node(
-                            Element::UnresolvedCall {
-                                name: "plugin::inline".into(),
-                                arguments: Some("kind=\"tip\"".into()),
-                                trailing: Some(Content::single(
-                                    Element::Text("visible".into()),
-                                    TextRange::new(10, 17),
-                                )),
-                                block: false,
-                            },
-                            0,
-                            18,
-                        )],
-                    }),
-                    0,
-                    18,
-                )),
-                Block::Element(node(
-                    Element::UnresolvedCall {
-                        name: "plugin::bodyless".into(),
-                        arguments: None,
-                        trailing: None,
-                        block: true,
-                    },
-                    19,
-                    40,
-                )),
-            ],
-        };
+        let mut inline = Node::call("core::unresolved-call", TextRange::new(0, 18))
+            .arg("name", "plugin::inline")
+            .arg("arguments", "kind=\"tip\"");
+        inline.children = vec![text("visible", 10, 17)];
+        let bodyless = Node::block_call("core::unresolved-call", TextRange::new(19, 40))
+            .arg("name", "plugin::bodyless");
+        let document = tree(vec![paragraph(vec![inline], 0, 18), bodyless]);
 
-        let html = render(&document);
+        let html = render_element_tree(&document);
 
         assert!(html.contains("<span class=\"notist-unresolved-call\""));
         assert!(html.contains("data-notist-arguments=\"kind=&quot;tip&quot;\""));
@@ -3889,96 +2567,12 @@ mod tests {
     }
 
     #[test]
-    #[ignore = "legacy feature moved to plugin"]
-    fn renders_additional_inline_elements_with_semantic_tags() {
-        let evaluation = Evaluator::default().evaluate("==marked==__under__^2^~i~");
-        assert!(
-            evaluation.diagnostics.is_empty(),
-            "{:?}",
-            evaluation.diagnostics
-        );
-        let html = render(&structure(evaluation).document);
-        assert!(html.contains("<mark data-notist-start=\"0\""));
-        assert!(html.contains("<u data-notist-start=\"10\""));
-        assert!(html.contains("<sup data-notist-start=\"19\""));
-        assert!(html.contains("<sub data-notist-start=\"22\""));
-    }
-
-    #[test]
-    #[ignore = "legacy feature moved to plugin"]
-    fn collects_and_links_footnotes() {
-        let evaluation =
-            Evaluator::default().evaluate("First^[Source *one*] and second#footnote[Source two].");
-        assert!(
-            evaluation.diagnostics.is_empty(),
-            "{:?}",
-            evaluation.diagnostics
-        );
-        let html = render(&structure(evaluation).document);
-        assert!(html.contains("id=\"notist-footnote-ref-1\""));
-        assert!(html.contains("id=\"notist-footnote-ref-2\""));
-        assert!(html.contains("<section class=\"notist-footnotes\""));
-        assert!(html.contains("id=\"notist-footnote-1\""));
-        assert!(html.contains("href=\"#notist-footnote-ref-2\""));
-        assert!(html.contains("<strong"));
-    }
-
-    #[test]
-    #[ignore = "legacy feature moved to plugin"]
-    fn omits_comments_from_rendered_html() {
-        let evaluation = Evaluator::default().evaluate("Visible %%secret%% text");
-        assert!(
-            evaluation.diagnostics.is_empty(),
-            "{:?}",
-            evaluation.diagnostics
-        );
-        let html = render(&structure(evaluation).document);
-        assert!(html.contains("Visible"));
-        assert!(html.contains("text"));
-        assert!(!html.contains("secret"));
-    }
-
-    #[test]
-    #[ignore = "legacy feature moved to plugin"]
-    fn renders_abbreviations_with_escaped_expansion() {
-        let evaluation =
-            Evaluator::default().evaluate("#abbr(term=\"A&B\", expansion=\"Alpha < Beta\")");
-        assert!(
-            evaluation.diagnostics.is_empty(),
-            "{:?}",
-            evaluation.diagnostics
-        );
-        let html = render(&structure(evaluation).document);
-        assert!(html.contains("<abbr title=\"Alpha &lt; Beta\""));
-        assert!(html.contains("A&amp;B</abbr>"));
-    }
-
-    #[test]
-    #[ignore = "legacy feature moved to plugin"]
-    fn renders_semantic_citations() {
-        let evaluation = Evaluator::default().evaluate("[@doe&roe, p. <17>]");
-        assert!(
-            evaluation.diagnostics.is_empty(),
-            "{:?}",
-            evaluation.diagnostics
-        );
-        let html = render(&structure(evaluation).document);
-        assert!(html.contains("<cite class=\"notist-citation\" data-notist-key=\"doe&amp;roe\""));
-        assert!(html.contains("[doe&amp;roe, p. &lt;17&gt;]</cite>"));
-    }
-
-    #[test]
     fn unsafe_url_references_render_without_executable_hrefs() {
         // R10: external url references are syntactically legal; the renderer
         // must never emit them as clickable hrefs.
-        let evaluation = Evaluator::default()
-            .evaluate("[[javascript:alert(1)]] [[data:text/html,<script>alert(1)</script>]]");
-        assert!(
-            evaluation.diagnostics.is_empty(),
-            "{:?}",
-            evaluation.diagnostics
-        );
-        let html = render(&structure(evaluation).document);
+        let evaluation =
+            evaluate("[[javascript:alert(1)]] [[data:text/html,<script>alert(1)</script>]]");
+        let html = render_element_tree(&evaluation.tree);
         assert!(html.contains("notist-reference-unresolved"));
         assert!(!html.contains("href=\"javascript:"));
         assert!(!html.contains("href=\"data:text/html"));

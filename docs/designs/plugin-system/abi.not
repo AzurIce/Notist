@@ -11,11 +11,11 @@
 - 载荷即 `Node` 森林的 serde 编码（当前 JSON；`NodeValue` 天然外部标签，postcard 兼容，切换只动编解码器）；
 - **SDK 版本即 ABI 版本**：全部插件经 Rust SDK 编译，host 与插件针对同一 `notist_model` 构建即天然兼容，独立协议版本号留待多语言分发需求出现时再引入；
 - `range` 是宿主侧元数据，跨边界无意义（serde skip/default）；
-- **响应森林继续参与 fixpoint**：handler 的输出若仍指向已注册名字会被再次派发。契约：**handler 不得返回指向自身的节点**——自返回是作者 bug，由 depth/fuel 兜底并给出清晰诊断；纯数据元素不注册运行时 handler（见 [[vault::designs::plugin-system::package]] 的 data-only 声明）。
+- **响应森林继续参与 fixpoint**：handler 的输出若仍指向已注册名字会被再次派发。handler 返回与输入完全相同的 call 表示 identity；持续产生新的自返 call 才是作者错误，由 depth/fuel 兜底并给出诊断；纯数据元素不注册运行时 handler。
 
-== 插件形态
+== Wasm backend
 
-插件是 Rust crate，编译为 wasip2 组件。作者面对的只有宿主 SDK：
+Wasm plugin 是 Rust crate 编译出的 wasip2 组件。作者面对宿主 SDK；native plugin 面对等价的 native registrar：
 
 ```rust
 struct Shader;
@@ -119,7 +119,7 @@ world plugin-host {
 == 当前实现
 
 - WIT 已由 wasmtime bindgen 编译校验；`export init` 与 `export evaluate` 均已接入 loader，`import host.call` 走共享 registry。
-- 载荷直接使用 `notist_model::Node`（`model::wire::{encode_forest,decode_forest}`）；`FunctionOutput::Nodes` 使组件插件在 legacy 与 node 双引擎下均以统一 IR 进出。
+- 载荷直接使用 `notist_model::Node`（`model::wire::{encode_forest,decode_forest}`）；handler 统一返回 `Value`，内容结果即 `Value::Content` 森林（2026-08-24 起 `FunctionOutput` 已坍缩），组件插件以统一 IR 进出，`host.call` 经 node_engine 规约。
 - 插件以 `notist-plugin-sdk` 编写：`Plugin::init(reg)` 注册元素，`ElementFn::reduce` 实现规约，`export_plugin!` 生成组件导出。
 - 兼容 2026-08-18 初版 raw core Wasm ABI（`evaluate(ptr, len) -> ptr`），仅用于存量 shader package。
 - Component response 的大小与节点上限见 [[vault::designs::plugin-system::safety]]。

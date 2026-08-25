@@ -27,4 +27,3 @@ Notist，一门带有静态类型系统的文档编程语言，它为取代 Mark
 - 插件系统示例：Shader [[plugins]]
 - AI 的一些调查整理 [[ai]]
 - 设计记录 [[vault::designs]]
-- 第一代设计档案 [[vault::old-designs]]

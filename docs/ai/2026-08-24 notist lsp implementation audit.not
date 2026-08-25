@@ -1,0 +1,48 @@
+= notist LSP 实现审计与改进空间
+
+承接 Obsidian 插件接入方案（[[vault::obsidian-notist::lsp]]）：客户端接入设计已定（桌面 spawn `notist lsp` 走 stdio、自写薄 JSON-RPC client、didChange 客户端防抖），审计过程中发现 server 端当前实现（`crates/notist-cli/src/lsp.rs`，约 1210 行）存在若干问题与改进空间，本文集中梳理，供 notist 侧排期参考。审计范围：`lsp.rs` 全文 + `crates/notist-cli/src/service.rs` 的 daemon 连接路径 + `notist-service` 协议类型；对照设计文档 [[vault::designs::host::lsp-adapter]]（标 `@![implementation = "partial"]`，审计确认属实）。
+
+== 契约与正确性问题
+
+- *诊断 severity 被丢弃*：`DiagnosticRecord.severity: String`（`crates/notist-service/src/request.rs:446`）在 LSP 映射层被硬编码为 `DiagnosticSeverity::ERROR`（`lsp.rs:695`）。warning 级诊断到编辑器全变错误，应透传映射。
+- *错误码一律 InvalidParams*：所有 handler 错误（含 service 故障、daemon 断连）统一映射为 `ErrorCode::InvalidParams`（`lsp.rs:216-219`），误导客户端把 server 内部故障当成自己的参数错误。应区分 `InternalError` 与真正的参数错误。
+- *取消不生效*：`$/cancelRequest` 只是请求跑完后把响应替换为 canceled（`lsp.rs:148-156`），昂贵查询照样跑完，也不向 daemon 的 `CoreRequest` 传播。lsp-adapter 设计文档承诺「客户端取消时尽快停止昂贵查询」，未实现。
+- *didChange 无 version 校验*：乱序到达时 last-wins 盲覆盖（`lsp.rs:332-348`）。主流客户端有序发送，低危，但缺一层防线。
+- *didSave 无 text 时不同步*：返回 false 不触发 rebuild（`lsp.rs:350-367`），靠 fs watcher 兜底收敛；watcher 失效场景（网络盘等）overlay 与磁盘可能长期脱钩。低危。
+
+== 性能问题（按影响排序）
+
+- *P0 · 诊断请求的 O（路径数） 重复往返*：`publish_diagnostics` 对每个已知 path 调 `diagnostics_for_path`，而后者每次都向 daemon 请求**整个 vault 的完整 Diagnostics** 再客户端 filter（`lsp.rs:649-681`）。N 个文件 = 每次变更后 N 次相同的全 vault 往返。修为：每 vault 请求一次、按 path 分组。
+- *P0 · 每个 notification 全量 rebuild*：open/change/save/close 与 watcher 事件全部走 `state.rebuild()`（`lsp.rs:230-261, 375-442`），每次 rebuild 做：文件系统 vault 发现（`discover_vault_roots` 走目录树）+ 每 vault 重发全部打开文档 overlay + `CoreRequest::Sources` 拉回**全部** source 文本 + 上面的 O(N) 诊断。无 debounce、无 coalesce。lsp-adapter 的「并发」节承诺的是 latest-wins 的 revision 调度（「仅在 N 仍是最新时」发布），实现是同步串行全量——这是设计与实现最大的差距。当前只能依赖客户端防抖兜底，契约脆弱。
+- *P1 · rebuild 全程持全局写锁*：notification 处理在 `state.write()` 内完成 rebuild + publish 全程（`lsp.rs:172-175`），请求线程取读锁被堵——键入期间 hover/completion 延迟跟着 rebuild 走。
+- *P1 · daemon 请求被 Mutex 串行化*：每 vault 一个 `Arc<Mutex<LocalNotistClient>>`，所有 CoreRequest 持锁 + `block_on`（`lsp.rs:285-289, 411-419`）。「每请求一个 OS 线程」的并发模型被这个 mutex 完全消解：一个慢 daemon 请求堵住该 vault 全部请求。需确认 transport 层是否支持并发请求；若支持应去锁或换连接池。
+- *P2 · Sources 全量载入 LSP 进程*：`CoreRequest::Sources` 把 vault 全部文本 + LineIndex 复制进 LSP 进程，只为 position 换算（`lsp.rs:416-433`）。替代：让 service 直接返回 LSP position（service 侧本就有 source 与 LineIndex），LSP 层不持有全文；或至少按 revision 缓存、按需拉取。
+- *P2 · publishDiagnostics 无 diffing*：每次对所有已知 path 重发完整集合（含未受影响文件）。协议合法但流量浪费，可按内容 fingerprint 跳过未变。
+- *P2 · watcher 无过滤*：递归 watch 整个 workspace root（`lsp.rs:63-78`）——在 Obsidian 场景这是整个 vault（.md、附件、`.obsidian/` 全在），任何文件变动触发全量 rebuild。应只关心 `.not` / `Notist.toml` 或排除已知无关目录。且设计语义上 watcher 是「客户端能力不足时的补充」，实现是无条件启用。
+
+== 健壮性与打磨
+
+- 每请求裸 `std::thread::spawn` 无上限（`lsp.rs:145`）；配合 Mutex 串行，线程只增压力不增吞吐。应有界（小线程池或队列）。
+- 日志只有零散 `eprintln!`，无级别、无文件输出；LSP 进程长驻编辑器下，可观测性不足。
+- completion trigger characters 含 `(`、`,`（`lsp.rs:92-99`），声明偏激进；客户端可自行约束，但 server 声明宜保守。
+
+== 改进路线建议
+
+按「接入 Obsidian 前值得先做」排序：
+
+1. *诊断批量化*（P0，改动小）：每 vault 一次 Diagnostics 请求按 path 分组 + fingerprint diffing。独立可落地。
+2. *rebuild 调度器*（P0，核心）：overlay 提交与 snapshot 重建解耦——notification 只更新内存 overlay map，rebuild 异步防抖触发、latest-wins coalescing，对齐 lsp-adapter 设计文档已承诺的语义。落地后客户端防抖从「必需」降级为「锦上添花」。
+3. *消除全局写锁*：overlay/状态用不可变快照（Arc 交换）或细粒度锁，rebuild 不堵读请求。
+4. *契约修复*（小改动）：severity 透传、InternalError 区分、didChange version 校验。
+5. *取消传播*：CoreRequest 层支持取消（或至少 daemon 请求可放弃等待），对齐设计文档。
+6. *position 换算下移 service*：LSP 层不再持有全 vault 文本；同时为「非 LSP 消费者」（未来的 HTTP/WS 层、MCP）省掉重复实现。
+7. *watcher 过滤*与日志可观测性：随 2 一起做掉。
+
+其中 1、4 是纯局部修复，可先行；2、3、5 是结构性工作，建议合并为一次「LSP 并发与调度」改造；6 涉及 CoreResponse 契约变更（range 表达从 byte offset 变为可协商 position），需要设计文档先行。
+
+== 参考
+
+- [[vault::obsidian-notist::lsp]]：Obsidian 插件侧接入设计方案（本文的审计动机与客户端约束来源）。
+- [[vault::designs::host::lsp-adapter]]：LSP 适配层设计文档；本文「性能问题」前两条即其实现与「并发」节承诺的差距。
+- [[vault::designs::host::daemon-process-views]]：daemon 与 View 模型；改进 5（取消传播）需在此层落地。
+- 审计对象：`crates/notist-cli/src/lsp.rs`、`crates/notist-cli/src/service.rs`、`crates/notist-service/src/request.rs`、`crates/notist-analysis/src/lib.rs`（LineIndex）。

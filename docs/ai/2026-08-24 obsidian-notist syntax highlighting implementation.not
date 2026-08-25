@@ -1,0 +1,31 @@
+= obsidian-notist 语法高亮实现记录
+
+承接 [[vault::obsidian-notist::highlight]] 的方案：tree-sitter-notist 语法经 web-tree-sitter 在插件内运行，captures 映射为 CM6 mark decoration。实现仓库 `~/Files/obsidian-notist`，obsidian CLI 实机验证。
+
+== 结构（与方案一致）
+
+- `assets/`：`notist.wasm`（语法）、`tree-sitter.wasm`（web-tree-sitter 运行时）、`highlights.scm`（capture 规则，拷自 zed-notist `languages/notist/`）。语法钉 tree-sitter-notist `bdeab509`（zed-notist 所钉 revision）。
+- `src/highlight.ts`：纯 CM + web-tree-sitter，不 import obsidian API（壳/语义分层纪律）。`initNotistHighlight(assets)` 全局一次性初始化（plugin onload 里 await 后再 registerView，失败则整体无高亮）；`StateField` 持有 `{tree, decorations}`，`docChanged` 时单 change 走 `tree.edit` 增量 reparse、多 change 直接全量；ViewPlugin destroy 时删 tree 防 wasm 堆泄漏。
+- 壳侧字节加载在 `src/main.ts`（`adapter.readBinary(manifest.dir + "/assets/...")`）；`scripts/install.ts` 拷贝模式增加 assets 目录。
+- `styles.css`：`cm-notist-*` 全部走主题变量。
+
+== 踩坑（复用价值高）
+
++ *zed-notist 的 notist.wasm 不能直接用*：它是 Zed 编译 dev extension 时的工具链产物，dylink 元数据声明依赖 `libc.so`——web-tree-sitter 的 LDSO 不特判，`Language.load` 时按文件名去读/ fetch `libc.so` 直接失败（bun 下 ENOENT、Obsidian 下 Failed to fetch）。修法：`nix shell nixpkgs#tree-sitter nixpkgs#emscripten` 后在 grammar 目录 `tree-sitter build --wasm`（CLI 实际自动下载 wasi-sdk 完成构建），产物即自包含 side module。
++ *esbuild CJS bundle 里 `import.meta.url` 为空*：emscripten 的 `findWasmBinary` 无条件执行 `new URL("tree-sitter.wasm", import.meta.url)` → `Invalid URL`。`Parser.init` 必须同时传 `locateFile`（返回值不会被用，占位即可）和 `wasmBinary`（字节直给，跳过 fetch/fs）。
++ *esbuild target 要 es2020*：web-tree-sitter 运行时有 BigInt 字面量，es2018 编译不过。
++ *offset 单位是 UTF-16 code unit*：web-tree-sitter 的 parse callback 用 `stringToUTF16` marshal，index/Point 全是 code unit，与 CM char offset 天然对齐；中文内容实测正确。bun harness 同时验证了增量编辑（含 ASCII 插入 + CJK 替换连续两笔）后 captures 不漂移。
++ *heading_marker 节点含尾部空格*：`= ` 长 2、`== ` 长 3，标题级别不能按 marker 长度算，要 `marker.text.match(/^=+/)` 数 `=`。
++ *capture 名混用 `.` 与 `_`*（`link_uri`、`punctuation.list_marker.markup`）：映射 CSS class 时 `[._]` 都要归一成 `-`。
++ *capture 互相嵌套*（如 `@string` 覆盖整个 raw 字符串、`@punctuation.bracket` 覆盖其中的 `r#"`）：`RangeSetBuilder` 要求有序不相交，需 boundary sweep 切段、每段取覆盖它的 capture 类名并集；内层概念靠 styles.css 规则顺序（等特异性后者胜）覆盖外层颜色。
++ *多 change 事务不做增量*：vim 多光标等场景一笔事务多个 change，`tree.edit` 的坐标空间随每笔变化，逐笔映射易错；.not 文档小，直接全量 reparse。
++ *老坑再现*：`bun add` 因 install 钩子（`scripts/install.ts` 需要 vault 参数）失败而不写回 package.json，web-tree-sitter 依赖手动补登。
+
+== 验证
+
+obsidian CLI：`plugin:reload` 后 `dev:errors` 干净；全语法面 fixture（标题/列表/任务/枚举/强调族/行内 raw/围栏/wiki 引用/嵌入表达式/标注/注释/字符串四形态/import/if/lambda）下 eval 统计 `[class*=cm-notist-]` span 54 个、class 分布逐项核对；`dev:screenshot` 视觉核验（标题分级加粗放大、marker 弱化、引用 accent 色、标注族分色、注释暗淡斜体）；编辑器内 dispatch 单笔/替换编辑后 span 数稳定、无串色。离屏问题用 bun 脚本（web-tree-sitter + 资产文件直跑）复现定位，比在 Obsidian 里盲猜快得多。截图文件名含 U+00A0 不间断空格，shell 里要用 glob 拷贝。
+
+== 参考
+
+- [[vault::obsidian-notist::highlight]]：本文实现的方案文档。
+- [[vault::ai::2026-08-24 obsidian-notist editor cm6 migration]]：编辑器内核与验证手法。

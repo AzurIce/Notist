@@ -6,14 +6,14 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 
 use notist_eval::{
-    EvalDiagnostic, Evaluator, Function, FunctionContext, FunctionInput, FunctionOutput,
-    FunctionRegistry, ShapingRegistry, StreamNode, instances_to_legacy_content,
-    legacy_content_to_nodes, shape_flat, structure,
+    ElementTree, EvalDiagnostic, Evaluator, Function, FunctionContext, FunctionInput,
+    FunctionRegistry, ShapingRegistry,
 };
 use notist_model::{
-    Block, Content, DefaultValue, Element, ElementNode, FunctionSignature, ModulePath,
-    ModuleReference, StructuredDocument, TextRange, Type, WikiReference,
+    DefaultValue, FunctionSignature, ModulePath, ModuleReference, Node, NodeValue, TextRange, Type,
+    WikiReference,
 };
+use notist_plugin_core as core_plugin;
 use notist_syntax::{Call, Expression, ExpressionKind, Parse, parse, parse_wiki_reference};
 
 mod check;
@@ -268,11 +268,8 @@ impl Function for SchemaFunction {
         &self,
         _context: &FunctionContext<'_>,
         _input: FunctionInput<'_>,
-    ) -> Result<FunctionOutput, Vec<EvalDiagnostic>> {
-        Ok(FunctionOutput::value(placeholder_value(
-            &self.signature.result,
-            &self.name,
-        )))
+    ) -> Result<Value, Vec<EvalDiagnostic>> {
+        Ok(placeholder_value(&self.signature.result, &self.name))
     }
 }
 
@@ -283,7 +280,7 @@ fn placeholder_value(ty: &Type, name: &str) -> Value {
         Type::Int => Value::Int(0),
         Type::Float => Value::Float(0.0),
         Type::String => Value::String(String::new()),
-        Type::Content => Value::Content(Content::default()),
+        Type::Content => Value::Content(Vec::new()),
         Type::Function => Value::Function(Box::new(notist_eval::FunctionValue {
             signature: notist_eval::FunctionSignature {
                 parameters: Vec::new(),
@@ -326,7 +323,8 @@ impl Default for AnalyzerConfiguration {
         Self {
             manifest_override: None,
             signatures: SignatureSet::with_builtins(),
-            function_registry: Arc::new(FunctionRegistry::with_builtins()),
+            // Core is installed by the snapshot composition root.
+            function_registry: Arc::new(FunctionRegistry::new()),
         }
     }
 }
@@ -618,17 +616,16 @@ pub struct SearchContext {
     pub snippet: String,
 }
 
-/// Deterministic lowering and structuring result for one snapshot module.
+/// Deterministic evaluation and shaping result for one snapshot module.
 #[derive(Clone, Debug)]
 pub struct StructuredModule {
     pub revision: Revision,
     pub module_id: ModuleId,
     pub function_environment: FunctionEnvironmentId,
-    pub document: StructuredDocument,
-    /// Canonical recursively shaped Leaf tree. Clean parses produce this
-    /// directly from the Stream pipeline; recovery parses project the legacy
-    /// evaluation result.
-    pub tree: notist_eval::ElementTree,
+    /// Canonical recursively shaped node tree. The node engine runs to its
+    /// fixpoint even for recovery parses; parse and reduction diagnostics
+    /// pass through on `diagnostics`.
+    pub tree: ElementTree,
     pub diagnostics: Vec<EvalDiagnostic>,
     /// The evaluation annotation table (D0002/D0006): postfix `@...` and
     /// block-prefix `@[...]` attribute sets over absolute source ranges.
@@ -751,10 +748,9 @@ impl WorkspaceSnapshot {
         };
         let mut function_registry = (*analyzer_configuration.function_registry).clone();
         let mut signatures = analyzer_configuration.signatures.clone();
-        // Unified plugin loading: instantiate components and run guest `init`
-        // to collect the self-described semantic surface. A failing package
-        // degrades to a diagnostic instead of bricking the whole snapshot,
-        // so transient states while editing a package stay recoverable.
+        // Instantiate components and collect one semantic contribution per
+        // package. A failing package degrades to a diagnostic instead of
+        // bricking the whole snapshot, so package edits stay recoverable.
         let mut plugin_load_diagnostics = Vec::new();
         let loaded_plugins =
             match notist_plugin_host::load_plugins_from_vault(&root, configuration.as_deref()) {
@@ -764,25 +760,44 @@ impl WorkspaceSnapshot {
                     Vec::new()
                 }
             };
-        notist_plugin_host::register_loaded(&mut function_registry, &loaded_plugins)
-            .map_err(|error| io::Error::new(io::ErrorKind::InvalidInput, format!("{error:?}")))?;
         let mut shaping_registry = ShapingRegistry::new();
-        notist_plugin_host::register_loaded_shaping(&mut shaping_registry, &loaded_plugins);
+        let core = core_plugin::contribution();
+        for (name, signature) in &core.signatures {
+            signatures.insert(name, signature.clone());
+        }
+        if function_registry.get("text").is_none() {
+            core_plugin::register_into(&mut function_registry, &mut shaping_registry).map_err(
+                |error| io::Error::new(io::ErrorKind::InvalidInput, format!("{error:?}")),
+            )?;
+        } else {
+            let (_, core_shaping) = core_plugin::registry();
+            for schema in core_shaping.schemas() {
+                shaping_registry.insert(schema.clone());
+            }
+        }
+        notist_plugin_host::register_loaded_contributions(
+            &mut function_registry,
+            &mut shaping_registry,
+            &loaded_plugins,
+        )
+        .map_err(|error| io::Error::new(io::ErrorKind::InvalidInput, format!("{error:?}")))?;
         let html_contributions = loaded_plugins
             .iter()
             .flat_map(|plugin| plugin.html_contributions.iter().cloned())
             .collect();
         for plugin in &loaded_plugins {
-            // Data-only declarations contribute signatures (check/completion)
-            // without dispatch entries; computed ones also register functions.
-            for (name, signature) in &plugin.signatures {
-                signatures.insert(name.as_str(), signature.clone());
+            let contribution = plugin.contribution();
+            for (name, signature) in &contribution.signatures {
+                signatures.insert(name, signature.clone());
             }
-            for function in &plugin.functions {
-                if let Some((package, element)) = function.name().split_once("::")
-                    && let Some(alias) = notist_plugin_host::plugin_legacy_alias(package, element)
+            for (alias, target) in &contribution.aliases {
+                if let Some(signature) = contribution
+                    .signatures
+                    .iter()
+                    .find(|(name, _)| name == target)
+                    .map(|(_, signature)| signature.clone())
                 {
-                    signatures.insert(&alias, function.signature());
+                    signatures.insert(alias, signature);
                 }
             }
         }
@@ -1527,12 +1542,7 @@ impl WorkspaceSnapshot {
         })
     }
 
-    /// Evaluates and structures one module using only text captured by this snapshot.
-    pub fn structured_document(&self, module_id: ModuleId) -> Option<StructuredDocument> {
-        self.structured_module(module_id)
-            .map(|structured| structured.document)
-    }
-
+    /// Evaluates and shapes one module using only text captured by this snapshot.
     pub fn structured_module(&self, module_id: ModuleId) -> Option<StructuredModule> {
         let module = self.module_by_id(module_id)?;
         let source = module.source.as_deref()?;
@@ -1567,53 +1577,18 @@ impl WorkspaceSnapshot {
         }
         let evaluator = Evaluator::new(runtime_registry);
         let parse = module.parse.as_ref()?;
-        // Prefer the new Stream + Leaf reduction engine for clean parses. The
-        // legacy evaluator remains the recovery path for syntax errors and
-        // reduction failures so diagnostics still surface unresolved calls.
-        let mut tree = None;
-        let mut structured = None;
-        if parse.errors.is_empty() {
-            let stream = evaluator.evaluate_parsed_stream_with_bindings(
-                source,
-                parse,
-                seeds.clone(),
-                &self.shaping_registry,
-            );
-            if !stream.reduction_failed {
-                let leaves = stream
-                    .reduced
-                    .nodes
-                    .iter()
-                    .filter_map(|node| match node {
-                        StreamNode::Leaf(leaf) => Some(leaf.clone()),
-                        StreamNode::Call(_) => None,
-                    })
-                    .collect::<Vec<_>>();
-                if let Some(content) = instances_to_legacy_content(&leaves) {
-                    tree = Some(stream.tree.clone());
-                    structured = Some(structure(notist_eval::Evaluation {
-                        content,
-                        diagnostics: stream.diagnostics,
-                        bindings: stream.bindings,
-                        annotations: stream.annotations,
-                        module_attributes: stream.module_attributes,
-                    }));
-                }
-            }
-        }
-        let structured = structured.unwrap_or_else(|| {
-            let evaluation = evaluator.evaluate_parsed_with_bindings(source, parse, seeds);
-            tree = Some(shape_flat(&legacy_content_to_nodes(&evaluation.content)));
-            structure(evaluation)
-        });
+        // The node engine is the only pipeline: it reduces as far as the
+        // forest allows and reports the rest, so parse errors and failed
+        // calls degrade to diagnostics instead of a separate recovery path.
+        let evaluation =
+            evaluator.evaluate_parsed_with_shaping(source, parse, seeds, &self.shaping_registry);
         Some(StructuredModule {
             revision: self.revision,
             module_id,
             function_environment: self.function_environment,
-            document: structured.document,
-            tree: tree.unwrap_or_default(),
-            diagnostics: structured.diagnostics,
-            annotations: structured.annotations,
+            tree: evaluation.tree,
+            diagnostics: evaluation.diagnostics,
+            annotations: evaluation.annotations,
         })
     }
 
@@ -1621,11 +1596,11 @@ impl WorkspaceSnapshot {
         let Some(module) = self.module_at(file_id) else {
             return Vec::new();
         };
-        let Some(document) = self.structured_document(module.id) else {
+        let Some(structured) = self.structured_module(module.id) else {
             return Vec::new();
         };
         let mut symbols = Vec::new();
-        collect_document_symbols(&document, self.revision, file_id, &mut symbols);
+        collect_document_symbols(&structured.tree, self.revision, file_id, &mut symbols);
         symbols
     }
 
@@ -2197,7 +2172,7 @@ impl WorkspaceSnapshot {
         // D0004: the import graph resolves before evaluation; each module
         // evaluates at most once per snapshot in dependency order, and import
         // cycles (already diagnosed) break with empty bindings.
-        let evaluator = Evaluator::default();
+        let evaluator = Evaluator::new((*self.function_registry).clone());
         let mut module_import_seeds: BTreeMap<ModuleId, HashMap<String, Value>> = BTreeMap::new();
         let mut module_attributes: BTreeMap<ModuleId, Vec<notist_syntax::Attributes>> =
             BTreeMap::new();
@@ -3307,116 +3282,61 @@ fn format_default(default: &DefaultValue) -> String {
 }
 
 fn collect_document_symbols(
-    document: &StructuredDocument,
+    tree: &ElementTree,
     revision: Revision,
     file_id: FileId,
     symbols: &mut Vec<DocumentSymbol>,
 ) {
-    fn walk(block: &Block, revision: Revision, file_id: FileId, symbols: &mut Vec<DocumentSymbol>) {
-        match block {
-            Block::Element(node) => {
-                collect_element_symbols(&node.element, node.range, revision, file_id, symbols);
+    fn walk(
+        nodes: &[Node],
+        revision: Revision,
+        file_id: FileId,
+        symbols: &mut Vec<DocumentSymbol>,
+    ) {
+        for node in nodes {
+            if node.is_core("heading") {
+                let local_id = u32::try_from(symbols.len()).unwrap_or(u32::MAX);
+                let level = match node.get("level") {
+                    Some(NodeValue::Int(level)) => u8::try_from(*level).unwrap_or(1),
+                    _ => 1,
+                };
+                symbols.push(DocumentSymbol {
+                    id: SnapshotNodeId {
+                        revision,
+                        file_id,
+                        local_id,
+                    },
+                    name: node_text(&node.children),
+                    level,
+                    range: node.range,
+                });
             }
-            Block::Section { heading, body, .. } => {
-                collect_element_symbols(
-                    &heading.element,
-                    heading.range,
-                    revision,
-                    file_id,
-                    symbols,
-                );
-                for child in body {
-                    walk(child, revision, file_id, symbols);
+            walk(&node.children, revision, file_id, symbols);
+            for (_, value) in &node.args {
+                if let NodeValue::Stream(stream) = value {
+                    walk(stream, revision, file_id, symbols);
                 }
             }
         }
     }
-    for block in &document.blocks {
-        walk(block, revision, file_id, symbols);
-    }
+    walk(&tree.roots, revision, file_id, symbols);
 }
 
-fn collect_element_symbols(
-    element: &Element,
-    range: TextRange,
-    revision: Revision,
-    file_id: FileId,
-    symbols: &mut Vec<DocumentSymbol>,
-) {
-    if let Element::Heading { level, body } = element {
-        let local_id = u32::try_from(symbols.len()).unwrap_or(u32::MAX);
-        symbols.push(DocumentSymbol {
-            id: SnapshotNodeId {
-                revision,
-                file_id,
-                local_id,
-            },
-            name: content_text(body),
-            level: *level,
-            range,
-        });
-    }
-    for content in element_contents(element) {
-        for node in &content.elements {
-            collect_element_symbols(&node.element, node.range, revision, file_id, symbols);
-        }
-    }
-}
-
-fn element_contents(element: &Element) -> Vec<&Content> {
-    match element {
-        Element::Paragraph(body)
-        | Element::Strong(body)
-        | Element::Emph(body)
-        | Element::Strike(body)
-        | Element::Underline(body)
-        | Element::ListItem(body)
-        | Element::EnumItem { body, .. } => vec![body],
-        Element::Heading { body, .. } | Element::Custom { body, .. } => vec![body],
-        Element::Callout { title, body, .. } => {
-            let mut contents = vec![body];
-            contents.extend(title.iter());
-            contents
-        }
-        Element::Details { summary, body, .. } => {
-            let mut contents = vec![body];
-            contents.extend(summary.iter());
-            contents
-        }
-        Element::List { items, .. } => items
-            .iter()
-            .flat_map(|item| element_contents(&item.element))
-            .collect(),
-        Element::TableCell { body, .. } => vec![body],
-        Element::Table { cells, .. } => cells
-            .iter()
-            .flat_map(|cell| element_contents(&cell.element))
-            .collect(),
-        Element::Figure {
-            body,
-            supplement,
-            caption,
-            ..
-        } => {
-            let mut contents = vec![body];
-            contents.extend(supplement.iter());
-            contents.extend(caption.iter());
-            contents
-        }
-        Element::UnresolvedCall { trailing, .. } => trailing.iter().collect(),
-        _ => Vec::new(),
-    }
-}
-
-fn content_text(content: &Content) -> String {
+/// The concatenated text of an inline node forest: `core::text` payloads plus
+/// the text of any nested containers, in document order.
+fn node_text(nodes: &[Node]) -> String {
     let mut text = String::new();
-    for node in &content.elements {
-        match &node.element {
-            Element::Text(value) => text.push_str(value),
-            element => {
-                for child in element_contents(element) {
-                    text.push_str(&content_text(child));
-                }
+    for node in nodes {
+        if node.is_core("text")
+            && let Some(NodeValue::String(value)) = node.get("text")
+        {
+            text.push_str(value);
+            continue;
+        }
+        text.push_str(&node_text(&node.children));
+        for (_, value) in &node.args {
+            if let NodeValue::Stream(stream) = value {
+                text.push_str(&node_text(stream));
             }
         }
     }
@@ -3645,127 +3565,89 @@ fn heading_default_ids(
     let Some(source) = module.source.as_deref() else {
         return Vec::new();
     };
-    let structured = structure(
-        Evaluator::default().evaluate_parsed_with_bindings(
+    let (core_registry, core_shaping) = core_plugin::registry();
+    let tree = Evaluator::new(core_registry)
+        .evaluate_parsed_with_shaping(
             source,
             module
                 .parse
                 .as_ref()
                 .expect("source-backed modules have parses"),
             seeds.clone(),
-        ),
-    );
+            &core_shaping,
+        )
+        .tree;
     let mut headings = Vec::new();
-    fn walk(block: &Block, headings: &mut Vec<(String, TextRange)>) {
-        match block {
-            Block::Element(node) => collect_heading_default_ids(node, headings),
-            Block::Section { heading, body, .. } => {
-                collect_heading_default_ids(heading, headings);
-                for child in body {
-                    walk(child, headings);
-                }
-            }
-        }
-    }
-    for block in &structured.document.blocks {
-        walk(block, &mut headings);
-    }
+    collect_heading_default_ids_in_nodes(&tree.roots, &mut headings);
     headings
 }
 
 /// Collects heading texts in render (depth-first) order, mirroring the anchor
 /// planning walk of the HTML renderer.
-fn collect_heading_default_ids(node: &ElementNode, output: &mut Vec<(String, TextRange)>) {
-    if let Element::Heading { body, .. } = &node.element {
-        output.push((content_plain_text(body), node.range));
-    }
-    collect_heading_default_ids_in_children(&node.element, output);
-}
-
-fn collect_heading_default_ids_in_content(
-    content: &Content,
-    output: &mut Vec<(String, TextRange)>,
-) {
-    for node in &content.elements {
+fn collect_heading_default_ids_in_nodes(nodes: &[Node], output: &mut Vec<(String, TextRange)>) {
+    for node in nodes {
         collect_heading_default_ids(node, output);
     }
 }
 
-fn collect_heading_default_ids_in_children(
-    element: &Element,
-    output: &mut Vec<(String, TextRange)>,
-) {
-    match element {
-        Element::Paragraph(body)
-        | Element::Strong(body)
-        | Element::Emph(body)
-        | Element::Strike(body)
-        | Element::Underline(body)
-        | Element::Heading { body, .. }
-        | Element::ListItem(body)
-        | Element::EnumItem { body, .. }
-        | Element::Custom { body, .. } => collect_heading_default_ids_in_content(body, output),
-        Element::List { items, .. } => {
-            for item in items {
-                collect_heading_default_ids(item, output);
+fn collect_heading_default_ids(node: &Node, output: &mut Vec<(String, TextRange)>) {
+    if node.is_core("heading") {
+        output.push((heading_plain_text(&node.children), node.range));
+    }
+    match node.core_local() {
+        None => collect_heading_default_ids_in_nodes(&node.children, output),
+        Some(
+            "paragraph" | "strong" | "emph" | "strike" | "underline" | "heading" | "item"
+            | "unresolved-call" | "section" | "list" | "table" | "table-cell" | "figure",
+        ) => {
+            collect_heading_default_ids_in_nodes(&node.children, output);
+            for name in ["supplement", "caption"] {
+                if let Some(nodes) = stream_arg(node, name) {
+                    collect_heading_default_ids_in_nodes(nodes, output);
+                }
             }
         }
-        Element::TableCell { body, .. } => {
-            collect_heading_default_ids_in_content(body, output);
-        }
-        Element::Table { cells, .. } => {
-            for cell in cells {
-                collect_heading_default_ids(cell, output);
+        Some("callout") => {
+            if let Some(title) = stream_arg(node, "title") {
+                collect_heading_default_ids_in_nodes(title, output);
             }
+            collect_heading_default_ids_in_nodes(&node.children, output);
         }
-        Element::Figure {
-            body,
-            supplement,
-            caption,
-            ..
-        } => {
-            collect_heading_default_ids_in_content(body, output);
-            if let Some(supplement) = supplement {
-                collect_heading_default_ids_in_content(supplement, output);
+        Some("details") => {
+            if let Some(summary) = stream_arg(node, "summary") {
+                collect_heading_default_ids_in_nodes(summary, output);
             }
-            if let Some(caption) = caption {
-                collect_heading_default_ids_in_content(caption, output);
-            }
+            collect_heading_default_ids_in_nodes(&node.children, output);
         }
-        Element::Callout { title, body, .. } => {
-            if let Some(title) = title {
-                collect_heading_default_ids_in_content(title, output);
-            }
-            collect_heading_default_ids_in_content(body, output);
-        }
-        Element::Details { summary, body, .. } => {
-            if let Some(summary) = summary {
-                collect_heading_default_ids_in_content(summary, output);
-            }
-            collect_heading_default_ids_in_content(body, output);
-        }
-        Element::UnresolvedCall {
-            trailing: Some(trailing),
-            ..
-        } => collect_heading_default_ids_in_content(trailing, output),
         _ => {}
     }
 }
 
-/// Extracts the plain text of an inline content sequence, mirroring the
-/// renderer's heading text extraction.
-fn content_plain_text(content: &Content) -> String {
-    content
-        .elements
+/// Borrows a `NodeValue::Stream` argument as a node slice.
+fn stream_arg<'a>(node: &'a Node, name: &str) -> Option<&'a [Node]> {
+    match node.get(name) {
+        Some(NodeValue::Stream(nodes)) => Some(nodes.as_slice()),
+        _ => None,
+    }
+}
+
+/// Extracts the plain text of an inline node forest, mirroring the renderer's
+/// heading text extraction.
+fn heading_plain_text(nodes: &[Node]) -> String {
+    nodes
         .iter()
-        .map(|node| match &node.element {
-            Element::Text(text) => text.clone(),
-            Element::Strong(body)
-            | Element::Emph(body)
-            | Element::Strike(body)
-            | Element::Underline(body)
-            | Element::TableCell { body, .. } => content_plain_text(body),
-            Element::Raw { text, .. } => text.clone(),
+        .map(|node| match node.core_local() {
+            Some("text") => match node.get("text") {
+                Some(NodeValue::String(text)) => text.clone(),
+                _ => String::new(),
+            },
+            Some("strong" | "emph" | "strike" | "underline" | "table-cell") => {
+                heading_plain_text(&node.children)
+            }
+            Some("raw") => match node.get("source") {
+                Some(NodeValue::String(text)) => text.clone(),
+                _ => String::new(),
+            },
             _ => String::new(),
         })
         .collect()
@@ -3850,8 +3732,7 @@ mod tests {
         let module = snapshot.modules().next().unwrap();
         let structured = snapshot.structured_module(module.id).unwrap();
         assert_eq!(structured.tree.roots.len(), 1);
-        assert!(structured.tree.roots[0].instance.is_core("section"));
-        assert_eq!(structured.document.blocks.len(), 1);
+        assert!(structured.tree.roots[0].is_core("section"));
     }
 
     #[test]
@@ -4547,7 +4428,7 @@ mod tests {
 
         assert_eq!(target.logical_path.to_string(), "vault::page");
         assert_eq!(definition.annotation.unwrap().name, "intro");
-        assert!(first.structured_document(target.id).is_some());
+        assert!(first.structured_module(target.id).is_some());
         let hover = first.hover_at(root_file, 3).unwrap().contents;
         assert!(hover.starts_with("vault::page#intro"));
         assert!(hover.contains("page.not"));
@@ -4762,6 +4643,50 @@ mod tests {
     }
 
     #[test]
+    fn prebuilt_core_registry_still_receives_core_shaping_contribution() {
+        let root = TempDir::new().unwrap();
+        fs::write(root.path().join("README.not"), "#heading[Title]\n\nAfter").unwrap();
+        let engine = VaultEngine::open(root.path()).unwrap();
+        let view = engine
+            .configured_view(
+                SourceOverlays::new(),
+                DocumentVersions::new(),
+                AnalyzerConfiguration {
+                    manifest_override: None,
+                    signatures: SignatureSet::with_builtins(),
+                    function_registry: Arc::new(core_plugin::registry().0),
+                },
+            )
+            .unwrap();
+        let snapshot = view.current();
+        assert!(
+            snapshot
+                .shaping_registry()
+                .get(&notist_model::ElementName::core("heading"))
+                .is_some()
+        );
+        assert!(
+            snapshot
+                .shaping_registry()
+                .get(&notist_model::ElementName::core("parbreak"))
+                .is_some()
+        );
+        let module = snapshot.modules().next().expect("README module");
+        let structured = snapshot.structured_module(module.id).unwrap();
+        assert!(
+            structured.diagnostics.is_empty(),
+            "{:?}",
+            structured.diagnostics
+        );
+        fn contains_heading(nodes: &[Node]) -> bool {
+            nodes
+                .iter()
+                .any(|node| node.is_core("heading") || contains_heading(&node.children))
+        }
+        assert!(contains_heading(&structured.tree.roots));
+    }
+
+    #[test]
     fn configured_views_capture_independent_manifest_and_function_environments() {
         let root = TempDir::new().unwrap();
         fs::write(root.path().join(MANIFEST_FILE), "disk = true").unwrap();
@@ -4784,7 +4709,7 @@ mod tests {
                 AnalyzerConfiguration {
                     manifest_override: Some(Arc::from("editor = true")),
                     signatures,
-                    function_registry: Arc::new(FunctionRegistry::with_builtins()),
+                    function_registry: Arc::new(core_plugin::registry().0),
                 },
             )
             .unwrap();

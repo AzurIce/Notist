@@ -1,4 +1,4 @@
-@![implementation = "aligned"]
+@![implementation = "partial"]
 = Shaping Contribution
 
 本文定义插件元素如何声明成型 schema。成型算法本身由 pipeline 的 structure 阶段拥有，见 [[vault::designs::pipeline::structure]]；插件节点如何从 call 规约出来见 [[vault::designs::pipeline::plugin-call-reduction]]。
@@ -28,7 +28,7 @@
 | `separator` | flush 周围 inline run 并被消费，不产出节点 |
 | `unspecified` | 回退到节点的 `block` 字段 |
 
-`core::parbreak` 是 `separator` 的特权条目。
+`core::parbreak` 是默认 core contribution 注册的 `separator`；`separator` 行为来自 schema 与宿主成型算法，不来自 core 的 reducer 特权。
 
 == body-mode
 
@@ -59,13 +59,13 @@
 
 - 插件不能重写成型算法，只能通过 `kind` / `body-mode` / `role` 声明参与。
 - 每个 body 都按其容器模式递归成型，而不是只处理文档顶层。
-- core package 的 `core::parbreak` / `core::heading` / `core::item` 只是该 registry 中的特权条目。
+- core package 的 `core::parbreak` / `core::heading` / `core::item` 只是该 registry 中由标准 package 提供的 schema；其它 package 也可按同一 schema 契约声明对应成型行为。
 
 == 当前实现映射
 
 - `ShapingRegistry` / `ElementSchema` 已实现；core schema 内置，插件 schema 由组件 `init` 注册。
 - 组件声明支持 `block`、`body-mode`、`role`、`kind`。
-- 主 structure/project 仍使用 legacy 兼容投影，`ElementTree` 已可用于新消费者。
+- 主 structure/project 已直接消费 `Node` 森林；`ElementTree` 是成型后的 Node 容器，不再经过 legacy 兼容投影。
 
 == 已裁定 / 待定
 

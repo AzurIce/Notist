@@ -1,30 +1,29 @@
-//! Direct Markup → `Stream<Call | Leaf>` lowering.
+//! Direct Markup → `Node` forest lowering.
 //!
-//! This pass walks the parse tree and emits the uniform reduction IR before
+//! This pass walks the parse tree and emits the unified reduction IR before
 //! any function is dispatched. Explicit calls and constructor sugar become
-//! `StreamNode::Call`; text, wiki links, raw literals, heading/rule sugar,
-//! list sugar, and table sugar are lowered directly into the reduction IR.
-//! Text still uses the legacy inline-sugar parser as a leaf factory until that
-//! scanner is ported onto `StreamNode::Call` wrappers.
+//! call nodes; text, wiki links, raw literals, heading/rule sugar, list
+//! sugar, and table sugar lower directly into `core::*` nodes. A call
+//! awaiting reduction and a terminal leaf share the single [`Node`] shape —
+//! the fixpoint decides which names reduce.
 
 use std::collections::{HashMap, VecDeque};
 
-use notist_model::{ElementInstance, ElementName, FieldValue, InstanceNode, TextRange};
+use notist_model::{Node, NodeValue, TextRange};
 use notist_syntax::{
     Attributes, Call, EmbeddedExpression, ExpressionKind, Markup, MarkupItem,
     UserFunctionDefinition,
 };
 
-use crate::leaf::{FlatContent, StreamArgument, StreamCall, StreamNode, StreamValue};
 use crate::lower;
 use crate::type_system::Value;
 use crate::{AnnotationEntry, EvalDiagnostic, FunctionRegistry};
 
-/// The result of the Stream lowering pass.
+/// The result of the lowering pass.
 #[derive(Clone, Debug, Default, PartialEq)]
-pub struct StreamLowered {
-    /// Lowered stream. Calls have not been reduced yet.
-    pub flat: FlatContent,
+pub struct Lowered {
+    /// Lowered call forest. Calls have not been reduced yet.
+    pub nodes: Vec<Node>,
     /// Diagnostics collected while lowering.
     pub diagnostics: Vec<EvalDiagnostic>,
     /// Document-level bindings observed during lowering.
@@ -35,26 +34,26 @@ pub struct StreamLowered {
     pub module_attributes: Vec<Attributes>,
 }
 
-/// Lowers a document Markup tree into `Stream<Call | Leaf>`.
-/// Lowers a document Markup tree with pre-seeded root bindings.
+/// Lowers a document Markup tree into a call forest with pre-seeded root
+/// bindings.
 ///
 /// The analysis layer uses this entry point to inject imported bindings before
-/// evaluation, exactly like the legacy evaluator's seeded scope.
-pub fn lower_markup_stream_with_bindings(
+/// evaluation.
+pub fn lower_document_with_bindings(
     source: &str,
     markup: &Markup,
     base_offset: usize,
     registry: &FunctionRegistry,
     root_bindings: HashMap<String, Value>,
-) -> StreamLowered {
+) -> Lowered {
     let user_functions = collect_functions(markup);
-    let mut state = StreamLowerState {
+    let mut state = LowerState {
         source,
         base_offset,
         registry,
         variables: vec![root_bindings],
         user_functions,
-        flat: FlatContent::new(),
+        nodes: Vec::new(),
         diagnostics: Vec::new(),
         annotations: Vec::new(),
         module_attributes: Vec::new(),
@@ -64,13 +63,45 @@ pub fn lower_markup_stream_with_bindings(
     };
     state.lower_markup(markup);
     state.finish_annotations();
-    StreamLowered {
-        flat: state.flat,
+    Lowered {
+        nodes: state.nodes,
         diagnostics: state.diagnostics,
         bindings: state.variables.first().cloned().unwrap_or_default(),
         annotations: state.annotations,
         module_attributes: state.module_attributes,
     }
+}
+
+/// Lowers a nested Markup body (content literal, trailing body) into a call
+/// forest under an inherited environment.
+///
+/// Used by the expression evaluator for `Content` values: the returned forest
+/// is unreduced and re-enters the reduction fixpoint at the call site.
+pub fn lower_body_with_environment(
+    source: &str,
+    markup: &Markup,
+    base_offset: usize,
+    registry: &FunctionRegistry,
+    user_functions: &HashMap<String, UserFunctionDefinition>,
+    variables: Vec<HashMap<String, Value>>,
+) -> (Vec<Node>, Vec<EvalDiagnostic>) {
+    let mut state = LowerState {
+        source,
+        base_offset,
+        registry,
+        variables,
+        user_functions: user_functions.clone(),
+        nodes: Vec::new(),
+        diagnostics: Vec::new(),
+        annotations: Vec::new(),
+        module_attributes: Vec::new(),
+        pending_annotations: Vec::new(),
+        pending_block_start: None,
+        pending_block_end: 0,
+    };
+    state.lower_markup(markup);
+    state.finish_annotations();
+    (state.nodes, state.diagnostics)
 }
 
 fn collect_functions(markup: &Markup) -> HashMap<String, UserFunctionDefinition> {
@@ -79,21 +110,21 @@ fn collect_functions(markup: &Markup) -> HashMap<String, UserFunctionDefinition>
     functions
 }
 
-/// One parsed list row carried through Stream lowering.
-struct ListSugarStreamRow {
+/// One parsed list row carried through lowering.
+struct ListSugarRow {
     indent: usize,
     ordered: bool,
-    body: FlatContent,
+    body: Vec<Node>,
     range: TextRange,
 }
 
-struct StreamLowerState<'a> {
+struct LowerState<'a> {
     source: &'a str,
     base_offset: usize,
     registry: &'a FunctionRegistry,
     variables: Vec<HashMap<String, Value>>,
     user_functions: HashMap<String, UserFunctionDefinition>,
-    flat: FlatContent,
+    nodes: Vec<Node>,
     diagnostics: Vec<EvalDiagnostic>,
     annotations: Vec<AnnotationEntry>,
     module_attributes: Vec<Attributes>,
@@ -102,7 +133,7 @@ struct StreamLowerState<'a> {
     pending_block_end: usize,
 }
 
-impl StreamLowerState<'_> {
+impl LowerState<'_> {
     fn lower_markup(&mut self, markup: &Markup) {
         for item in &markup.items {
             match item {
@@ -118,42 +149,26 @@ impl StreamLowerState<'_> {
                 MarkupItem::Embedded(embedded) => self.lower_embedded(embedded),
                 MarkupItem::Heading(sugar) => {
                     let body = self.lower_markup_body(&sugar.body);
-                    self.push_node(StreamNode::Call(
-                        StreamCall::new("heading", sugar.range.shifted(self.base_offset))
-                            .argument("level", Value::Int(sugar.level as i64))
-                            .with_body(body),
-                    ));
+                    let mut node =
+                        Node::block_call("heading", sugar.range.shifted(self.base_offset))
+                            .arg("level", sugar.level as i64);
+                    node.children = body;
+                    self.push_node(node);
                 }
                 MarkupItem::Rule(range) => {
-                    self.push_node(StreamNode::Call(StreamCall::new(
-                        "rule",
-                        range.shifted(self.base_offset),
-                    )));
+                    self.push_node(Node::block_call("rule", range.shifted(self.base_offset)));
                 }
                 MarkupItem::Text(text) => {
-                    let (content, annotations, mut diagnostics) = lower::lower_inline_text(
-                        self.source,
-                        text,
-                        self.base_offset,
-                        self.registry,
-                        &self.user_functions,
-                        self.variables.clone(),
-                    );
-                    self.diagnostics.append(&mut diagnostics);
-                    self.annotations.extend(annotations);
-                    for node in crate::leaf::legacy_content_to_nodes(&content) {
-                        self.push_node(StreamNode::Leaf(node));
+                    for node in lower_inline_text(text, self.base_offset) {
+                        self.push_node(node);
                     }
                 }
                 MarkupItem::Wiki(link) => {
                     let range = link.range.shifted(self.base_offset);
-                    self.push_node(StreamNode::Leaf(InstanceNode::ranged(
-                        ElementInstance::new(ElementName::core("reference"), false).with_field(
-                            "url",
-                            FieldValue::String(crate::leaf::format_wiki_reference(&link.target)),
-                        ),
-                        range,
-                    )));
+                    self.push_node(
+                        Node::call("core::reference", range)
+                            .arg("url", format_wiki_reference(&link.target)),
+                    );
                 }
                 MarkupItem::Raw(raw) => self.lower_raw(raw),
                 MarkupItem::List(sugar) => self.lower_list_sugar(sugar),
@@ -165,7 +180,7 @@ impl StreamLowerState<'_> {
     fn lower_list_sugar(&mut self, sugar: &notist_syntax::ListSugar) {
         let mut rows = VecDeque::new();
         for row in &sugar.rows {
-            rows.push_back(ListSugarStreamRow {
+            rows.push_back(ListSugarRow {
                 indent: row.indent,
                 ordered: row.ordered,
                 body: self.lower_markup_body(&row.body),
@@ -180,12 +195,8 @@ impl StreamLowerState<'_> {
         }
     }
 
-    fn lower_list_rows(
-        &mut self,
-        rows: &mut VecDeque<ListSugarStreamRow>,
-        indent: usize,
-    ) -> Vec<StreamNode> {
-        let mut nodes = Vec::new();
+    fn lower_list_rows(&mut self, rows: &mut VecDeque<ListSugarRow>, indent: usize) -> Vec<Node> {
+        let mut nodes: Vec<Node> = Vec::new();
         while let Some(front_indent) = rows.front().map(|row| row.indent) {
             if front_indent < indent {
                 break;
@@ -193,42 +204,34 @@ impl StreamLowerState<'_> {
             if front_indent > indent {
                 let child_indent = front_indent;
                 let children = self.lower_list_rows(rows, child_indent);
-                let Some(StreamNode::Call(parent)) = nodes.last_mut() else {
+                let Some(parent) = nodes.last_mut() else {
                     self.diagnostics.push(EvalDiagnostic {
                         message: "nested list item is missing its parent item".into(),
                         range: children
                             .first()
-                            .map(|node| match node {
-                                StreamNode::Call(call) => call.range,
-                                StreamNode::Leaf(leaf) => leaf.range,
-                            })
+                            .map(|node| node.range)
                             .unwrap_or(TextRange::new(0, 0)),
                     });
                     break;
                 };
-                parent
-                    .body
-                    .get_or_insert_with(FlatContent::new)
-                    .nodes
-                    .extend(children);
+                parent.children.extend(children);
                 continue;
             }
 
             let row = rows.pop_front().unwrap();
-            let call = StreamCall::new("item", row.range)
-                .argument("ordered", Value::Bool(row.ordered))
-                .with_body(row.body);
-            nodes.push(StreamNode::Call(call));
+            let mut node = Node::block_call("item", row.range).arg("ordered", row.ordered);
+            node.children = row.body;
+            nodes.push(node);
         }
         nodes
     }
 
     fn lower_table_sugar(&mut self, sugar: &notist_syntax::TableSugar) {
-        let mut body = FlatContent::new();
+        let mut body = Vec::new();
         for cell in sugar.header.iter().chain(sugar.rows.iter().flatten()) {
-            let call = StreamCall::new("table-cell", cell.range.shifted(self.base_offset))
-                .with_body(self.lower_markup_body(&cell.body));
-            body.nodes.push(StreamNode::Call(call));
+            let mut node = Node::block_call("table-cell", cell.range.shifted(self.base_offset));
+            node.children = self.lower_markup_body(&cell.body);
+            body.push(node);
         }
 
         let alignments = sugar
@@ -242,38 +245,23 @@ impl StreamLowerState<'_> {
             })
             .collect::<Vec<_>>()
             .join(",");
-        let call = StreamCall::new("table", sugar.range.shifted(self.base_offset))
-            .argument("columns", Value::Int(sugar.header.len() as i64))
-            .argument("header", Value::Bool(true))
-            .argument("align", Value::String(alignments))
-            .with_body(body);
-        self.push_node(StreamNode::Call(call));
+        let mut node = Node::block_call("table", sugar.range.shifted(self.base_offset))
+            .arg("columns", sugar.header.len() as i64)
+            .arg("header", true)
+            .arg("align", alignments);
+        node.children = body;
+        self.push_node(node);
     }
 
-    fn push_node(&mut self, node: StreamNode) {
-        let (range, inline, parbreak, blank) =
-            match &node {
-                StreamNode::Call(call) => {
-                    let block = matches!(
-                        call.name.as_str(),
-                        "heading" | "rule" | "item" | "table-cell" | "table"
-                    );
-                    (call.range, !block, false, false)
-                }
-                StreamNode::Leaf(leaf) => if leaf.instance.is_core("parbreak") {
-                    (leaf.range, false, true, false)
-                } else if leaf.instance.is_core("text")
-                    && leaf.instance.field("text").is_some_and(
-                        |value| matches!(value, FieldValue::String(text) if text.trim().is_empty()),
-                    )
-                {
-                    (leaf.range, true, false, true)
-                } else {
-                    (leaf.range, !leaf.instance.block, false, false)
-                },
-            };
-        self.track_pending_annotation(range, inline, parbreak, blank);
-        self.flat.nodes.push(node);
+    fn push_node(&mut self, node: Node) {
+        let parbreak = node.is_core("parbreak");
+        let blank = node.is_core("text")
+            && node.get("text").is_some_and(
+                |value| matches!(value, NodeValue::String(text) if text.trim().is_empty()),
+            );
+        let inline = !node.block && !parbreak;
+        self.track_pending_annotation(node.range, inline, parbreak, blank);
+        self.nodes.push(node);
     }
 
     fn track_pending_annotation(
@@ -350,23 +338,24 @@ impl StreamLowerState<'_> {
         let language = raw
             .tag
             .as_ref()
-            .map(|tag| FieldValue::String(tag.value.clone()))
-            .unwrap_or(FieldValue::None);
-        let instance = ElementInstance::new(ElementName::core("raw"), block)
-            .with_field("source", FieldValue::String(source))
-            .with_field("lang", language)
-            .with_field("block", FieldValue::Bool(block));
-        self.push_node(StreamNode::Leaf(InstanceNode::ranged(instance, range)));
+            .map(|tag| NodeValue::String(tag.value.clone()))
+            .unwrap_or(NodeValue::None);
+        let mut node = Node::call("core::raw", range)
+            .arg("source", source)
+            .arg("lang", language)
+            .arg("block", block);
+        node.block = block;
+        self.push_node(node);
     }
 
-    fn lower_markup_body(&mut self, markup: &Markup) -> FlatContent {
-        let mut nested = StreamLowerState {
+    fn lower_markup_body(&mut self, markup: &Markup) -> Vec<Node> {
+        let mut nested = LowerState {
             source: self.source,
             base_offset: self.base_offset,
             registry: self.registry,
             variables: self.variables.clone(),
             user_functions: self.user_functions.clone(),
-            flat: FlatContent::new(),
+            nodes: Vec::new(),
             diagnostics: Vec::new(),
             annotations: Vec::new(),
             module_attributes: Vec::new(),
@@ -378,7 +367,7 @@ impl StreamLowerState<'_> {
         nested.finish_annotations();
         self.diagnostics.append(&mut nested.diagnostics);
         self.annotations.append(&mut nested.annotations);
-        nested.flat
+        nested.nodes
     }
 
     fn lower_embedded(&mut self, embedded: &EmbeddedExpression) {
@@ -447,12 +436,12 @@ impl StreamLowerState<'_> {
     /// synthetic positional names; content arguments fold into the body.
     fn lower_unknown_call(&mut self, call: &Call) {
         let range = call.range.shifted(self.base_offset);
-        let mut node = StreamCall::new(call.name.value.clone(), range);
-        let mut body: Vec<StreamNode> = Vec::new();
+        let mut node = Node::call(call.name.value.clone(), range);
+        let mut body: Vec<Node> = Vec::new();
         for (positional, argument) in call.arguments.iter().enumerate() {
             match &argument.expression.kind {
                 ExpressionKind::Content(block) => {
-                    body.extend(self.lower_markup_body(&block.markup).nodes);
+                    body.extend(self.lower_markup_body(&block.markup));
                 }
                 _ => {
                     let (value, mut diagnostics) = lower::evaluate_expression_fragment(
@@ -467,25 +456,23 @@ impl StreamLowerState<'_> {
                     self.diagnostics.append(&mut diagnostics);
                     let name = match &argument.name {
                         Some(name) => name.value.clone(),
-                        None => {
-                            let name = format!("arg{positional}");
-                            name
-                        }
+                        None => format!("arg{positional}"),
                     };
-                    node.arguments.push(StreamArgument {
-                        name,
-                        value: StreamValue::Value(value),
-                    });
+                    self.push_argument(&mut node.args, name, value, range);
                 }
             }
         }
-        if !body.is_empty() {
-            node.body = Some(FlatContent::from_nodes(body));
+        // Unhandled names are data: the trailing body stays as the node's
+        // children so tooling and projection still see it.
+        for block in &call.trailing {
+            body.extend(self.lower_markup_body(&block.markup));
         }
-        self.push_node(StreamNode::Call(node));
+        node.children = body;
+        self.push_node(node);
     }
 
     fn lower_registry_call(&mut self, call: &Call, embedded: &EmbeddedExpression) {
+        let range = embedded.scope_range.shifted(self.base_offset);
         let signature = self
             .registry
             .get(&call.name.value)
@@ -503,11 +490,19 @@ impl StreamLowerState<'_> {
             .collect::<Vec<_>>();
         let mut positional_index = 0usize;
 
-        let mut arguments = Vec::new();
+        let mut node = Node::call(call.name.value.clone(), range);
         for argument in &call.arguments {
-            let value = match &argument.expression.kind {
+            match &argument.expression.kind {
                 ExpressionKind::Content(block) => {
-                    StreamValue::Stream(self.lower_markup_body(&block.markup))
+                    let name = match &argument.name {
+                        Some(name) => name.value.clone(),
+                        None => signature
+                            .trailing_content
+                            .clone()
+                            .unwrap_or_else(|| "body".into()),
+                    };
+                    let body = self.lower_markup_body(&block.markup);
+                    node.args.push((name, NodeValue::Stream(body)));
                 }
                 _ => {
                     let (value, mut diagnostics) = lower::evaluate_expression_fragment(
@@ -520,43 +515,59 @@ impl StreamLowerState<'_> {
                         self.variables.clone(),
                     );
                     self.diagnostics.append(&mut diagnostics);
-                    StreamValue::Value(value)
+                    let name = match &argument.name {
+                        Some(name) => name.value.clone(),
+                        None => {
+                            let name = positional
+                                .get(positional_index)
+                                .cloned()
+                                .unwrap_or_else(|| format!("arg{positional_index}"));
+                            positional_index += 1;
+                            name
+                        }
+                    };
+                    self.push_argument(&mut node.args, name, value, range);
                 }
-            };
-            let name = match &argument.name {
-                Some(name) => name.value.clone(),
-                None if matches!(argument.expression.kind, ExpressionKind::Content(_)) => signature
-                    .trailing_content
-                    .clone()
-                    .unwrap_or_else(|| "body".into()),
-                None => {
-                    let name = positional
-                        .get(positional_index)
-                        .cloned()
-                        .unwrap_or_else(|| format!("arg{positional_index}"));
-                    positional_index += 1;
-                    name
-                }
-            };
-            arguments.push(StreamArgument { name, value });
+            }
         }
 
-        let body = if call.trailing.is_empty() {
-            None
-        } else {
-            let mut nodes = Vec::new();
+        if !call.trailing.is_empty() {
             for block in &call.trailing {
-                nodes.extend(self.lower_markup_body(&block.markup).nodes);
+                node.children.extend(self.lower_markup_body(&block.markup));
             }
-            Some(FlatContent { nodes })
-        };
+        }
 
-        self.push_node(StreamNode::Call(StreamCall {
-            name: call.name.value.clone(),
-            arguments,
-            body,
-            range: embedded.scope_range.shifted(self.base_offset),
-        }));
+        self.push_node(node);
+    }
+
+    /// Appends one evaluated argument value to a pending call node.
+    ///
+    /// Function values cannot live on content nodes: they belong to evaluator
+    /// internals, surface as a diagnostic, and the argument is dropped while
+    /// the rest of the forest keeps lowering.
+    fn push_argument(
+        &mut self,
+        args: &mut Vec<(String, NodeValue)>,
+        name: String,
+        value: Value,
+        range: TextRange,
+    ) {
+        let value = match value {
+            Value::None => NodeValue::None,
+            Value::Bool(value) => NodeValue::Bool(value),
+            Value::Int(value) => NodeValue::Int(value),
+            Value::Float(value) => NodeValue::Float(value),
+            Value::String(value) => NodeValue::String(value),
+            Value::Content(forest) => NodeValue::Stream(forest),
+            Value::Function(_) => {
+                self.diagnostics.push(EvalDiagnostic {
+                    message: "function values cannot live on content nodes".into(),
+                    range,
+                });
+                return;
+            }
+        };
+        args.push((name, value));
     }
 
     fn bind(&mut self, name: String, value: Value) {
@@ -570,16 +581,13 @@ impl StreamLowerState<'_> {
 
     fn insert_value(&mut self, value: Value, range: TextRange) {
         match value {
-            Value::Content(content) => {
-                for node in crate::leaf::legacy_content_to_nodes(&content) {
-                    self.push_node(StreamNode::Leaf(node));
+            Value::Content(forest) => {
+                for node in forest {
+                    self.push_node(node);
                 }
             }
             Value::String(text) => {
-                self.push_node(StreamNode::Leaf(InstanceNode::ranged(
-                    ElementInstance::text(text),
-                    range,
-                )));
+                self.push_node(Node::call("core::text", range).arg("text", text));
             }
             Value::Int(value) => self.push_text_leaf(value.to_string(), range),
             Value::Float(value) => self.push_text_leaf(value.to_string(), range),
@@ -593,9 +601,231 @@ impl StreamLowerState<'_> {
     }
 
     fn push_text_leaf(&mut self, text: String, range: TextRange) {
-        self.push_node(StreamNode::Leaf(InstanceNode::ranged(
-            ElementInstance::text(text),
-            range,
-        )));
+        self.push_node(Node::call("core::text", range).arg("text", text));
     }
+}
+
+/// Formats a wiki reference target into its canonical `url` argument spelling.
+pub(crate) fn format_wiki_reference(reference: &notist_model::WikiReference) -> String {
+    let module = match &reference.module {
+        notist_model::ModuleReference::Absolute(segments) => {
+            format!("vault::{}", segments.join("::"))
+        }
+        notist_model::ModuleReference::Relative(segments) => {
+            if segments.is_empty() {
+                String::new()
+            } else {
+                format!("self::{}", segments.join("::"))
+            }
+        }
+        notist_model::ModuleReference::Parent { levels, remainder } => {
+            let mut path = vec!["super"; *levels]
+                .into_iter()
+                .chain(remainder.iter().map(String::as_str))
+                .collect::<Vec<_>>()
+                .join("::");
+            if path.is_empty() {
+                path = "super".into();
+            }
+            path
+        }
+        notist_model::ModuleReference::External(url) => url.clone(),
+    };
+    match &reference.label {
+        Some(label) => format!("{module}#{label}"),
+        None => module,
+    }
+}
+
+/// Lowers one Markup text run into inline `core::*` nodes, splitting blank
+/// lines into `core::parbreak` separators and scanning the inline sugar
+/// (`*strong*`, `_emph_`, `__underline__`, `~~strike~~`, escapes).
+fn lower_inline_text(text: &notist_syntax::SpannedText, base_offset: usize) -> Vec<Node> {
+    let mut lowerer = InlineTextLowerer {
+        text,
+        base_offset,
+        nodes: Vec::new(),
+    };
+    lowerer.push_text_with_parbreaks();
+    lowerer.nodes
+}
+
+struct InlineTextLowerer<'a> {
+    text: &'a notist_syntax::SpannedText,
+    base_offset: usize,
+    nodes: Vec<Node>,
+}
+
+impl InlineTextLowerer<'_> {
+    fn push_text_with_parbreaks(&mut self) {
+        let bytes = self.text.value.as_bytes();
+        let mut segment_start = 0usize;
+        let mut cursor = 0usize;
+
+        while cursor < bytes.len() {
+            let Some(mut after) = newline_end(bytes, cursor) else {
+                cursor += 1;
+                continue;
+            };
+            let mut count = 1usize;
+            while let Some(next) = newline_end(bytes, after) {
+                count += 1;
+                after = next;
+            }
+            if count == 1 {
+                // A soft break is a separator within the paragraph, not
+                // content: flush the segment before it and skip the newline
+                // so it never reaches rendered output.
+                self.push_inline_text(segment_start, cursor);
+                segment_start = after;
+                cursor = after;
+                continue;
+            }
+            self.push_inline_text(segment_start, cursor);
+            self.nodes
+                .push(Node::call("core::parbreak", self.text_range(cursor, after)));
+            segment_start = after;
+            cursor = after;
+        }
+
+        self.push_inline_text(segment_start, bytes.len());
+    }
+
+    fn push_inline_text(&mut self, start: usize, end: usize) {
+        let bytes = self.text.value.as_bytes();
+        let mut plain_start = start;
+        let mut cursor = start;
+        while cursor < end {
+            if bytes[cursor..end].starts_with(b"~~")
+                && (cursor == start || bytes[cursor - 1] != b'\\')
+                && let Some(closing) = find_unescaped_sequence(bytes, cursor + 2, end, b"~~")
+                && closing > cursor + 2
+            {
+                self.push_plain_text(plain_start, cursor);
+                let body = self.inline_content(cursor + 2, closing);
+                let mut node = Node::call("core::strike", self.text_range(cursor, closing + 2));
+                node.children = body;
+                self.nodes.push(node);
+                cursor = closing + 2;
+                plain_start = cursor;
+                continue;
+            }
+
+            if bytes[cursor..end].starts_with(b"__")
+                && (cursor == start || bytes[cursor - 1] != b'\\')
+                && let Some(closing) = find_unescaped_sequence(bytes, cursor + 2, end, b"__")
+                && closing > cursor + 2
+            {
+                self.push_plain_text(plain_start, cursor);
+                let body = self.inline_content(cursor + 2, closing);
+                let mut node = Node::call("core::underline", self.text_range(cursor, closing + 2));
+                node.children = body;
+                self.nodes.push(node);
+                cursor = closing + 2;
+                plain_start = cursor;
+                continue;
+            }
+
+            if bytes[cursor] == b'\\'
+                && let Some(&escaped) = bytes.get(cursor + 1)
+                && escaped.is_ascii_punctuation()
+            {
+                self.push_plain_text(plain_start, cursor);
+                self.nodes.push(
+                    Node::call("core::text", self.text_range(cursor, cursor + 2))
+                        .arg("text", (escaped as char).to_string()),
+                );
+                cursor += 2;
+                plain_start = cursor;
+                continue;
+            }
+
+            if matches!(bytes[cursor], b'*' | b'_')
+                && (cursor == start || bytes[cursor - 1] != b'\\')
+                && bytes
+                    .get(cursor + 1)
+                    .is_some_and(|&next| !next.is_ascii_whitespace() && next != bytes[cursor])
+            {
+                let delimiter = bytes[cursor];
+                if let Some(closing) = find_unescaped_sequence(bytes, cursor + 1, end, &[delimiter])
+                    && closing > cursor + 1
+                    && !bytes[closing - 1].is_ascii_whitespace()
+                {
+                    self.push_plain_text(plain_start, cursor);
+                    let body = self.inline_content(cursor + 1, closing);
+                    let name = if delimiter == b'*' {
+                        "core::strong"
+                    } else {
+                        "core::emph"
+                    };
+                    let mut node = Node::call(name, self.text_range(cursor, closing + 1));
+                    node.children = body;
+                    self.nodes.push(node);
+                    cursor = closing + 1;
+                    plain_start = cursor;
+                    continue;
+                }
+            }
+
+            cursor += 1;
+        }
+        self.push_plain_text(plain_start, end);
+    }
+
+    fn push_plain_text(&mut self, start: usize, end: usize) {
+        if start < end {
+            self.nodes.push(
+                Node::call("core::text", self.text_range(start, end))
+                    .arg("text", self.text.value[start..end].to_owned()),
+            );
+        }
+    }
+
+    fn inline_content(&self, start: usize, end: usize) -> Vec<Node> {
+        let mut nested = InlineTextLowerer {
+            text: self.text,
+            base_offset: self.base_offset,
+            nodes: Vec::new(),
+        };
+        nested.push_inline_text(start, end);
+        nested.nodes
+    }
+
+    fn text_range(&self, start: usize, end: usize) -> TextRange {
+        TextRange::new(
+            self.base_offset + self.text.range.start + start,
+            self.base_offset + self.text.range.start + end,
+        )
+    }
+}
+
+fn newline_end(bytes: &[u8], cursor: usize) -> Option<usize> {
+    match bytes.get(cursor) {
+        Some(b'\r') if bytes.get(cursor + 1) == Some(&b'\n') => Some(cursor + 2),
+        Some(b'\r' | b'\n') => Some(cursor + 1),
+        _ => None,
+    }
+}
+
+fn preceding_backslashes(bytes: &[u8], start: usize, cursor: usize) -> usize {
+    bytes[start..cursor]
+        .iter()
+        .rev()
+        .take_while(|byte| **byte == b'\\')
+        .count()
+}
+
+fn find_unescaped_sequence(
+    bytes: &[u8],
+    start: usize,
+    end: usize,
+    delimiter: &[u8],
+) -> Option<usize> {
+    if delimiter.is_empty() || start >= end || delimiter.len() > end - start {
+        return None;
+    }
+    (start..=end - delimiter.len()).find(|&cursor| {
+        bytes[cursor..].starts_with(delimiter)
+            && preceding_backslashes(bytes, 0, cursor).is_multiple_of(2)
+    })
 }

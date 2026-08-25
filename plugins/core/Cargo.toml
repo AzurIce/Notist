@@ -1,15 +1,13 @@
 [package]
-name = "notist-html"
+name = "notist-plugin-core"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
 
+[lib]
+path = "lib.rs"
+
 [dependencies]
 notist-eval.workspace = true
-notist-plugin-core.workspace = true
 notist-model.workspace = true
 notist-syntax.workspace = true
-percent-encoding.workspace = true
-
-[dev-dependencies]
-

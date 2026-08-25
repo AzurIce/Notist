@@ -5,7 +5,50 @@
 //! Reduction is a fixpoint iteration — a handler registered for `name`
 //! replaces the node with its output, and a node nobody handles *is* a leaf.
 
-use crate::{ElementName, FieldValue, TextRange};
+use crate::TextRange;
+
+/// Horizontal alignment applied to one table column.
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub enum TableAlignment {
+    /// Use the renderer's default table alignment.
+    #[default]
+    Default,
+    /// Align cell content to the left.
+    Left,
+    /// Center cell content.
+    Center,
+    /// Align cell content to the right.
+    Right,
+}
+
+/// A table cell placed at its logical starting column.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct TableCellPlacement {
+    /// Index into the table's row-major cell vector.
+    pub cell_index: usize,
+    /// Zero-based logical starting column after accounting for active row spans.
+    pub column: u16,
+}
+
+/// A structural table-layout error.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum TableLayoutError {
+    /// A non-cell element appeared in the table cell vector.
+    NonCell { cell: usize },
+    /// A cell cannot occupy the first available column range.
+    CellDoesNotFit {
+        row: usize,
+        cell: usize,
+        column: u16,
+        colspan: u16,
+    },
+    /// The final explicit cell does not complete its logical row.
+    IncompleteRow { row: usize },
+    /// Existing row spans cover a whole row, leaving no position for the next explicit cell.
+    FullyCoveredRow { row: usize },
+    /// One or more row spans continue beyond the final explicit row.
+    RowspanBeyondTable,
+}
 
 /// The unified content representation.
 ///
@@ -71,6 +114,16 @@ impl Node {
             .rev()
             .find(|(key, _)| key == name)
             .map(|(_, value)| value)
+    }
+
+    /// Returns the local name for `core::*` nodes, or `None`.
+    pub fn core_local(&self) -> Option<&str> {
+        self.name.strip_prefix("core::")
+    }
+
+    /// Returns whether this node has the given core local name.
+    pub fn is_core(&self, local: &str) -> bool {
+        self.core_local() == Some(local)
     }
 
     /// Whether any argument still carries a pending stream.
@@ -141,81 +194,76 @@ impl From<Vec<Node>> for NodeValue {
     }
 }
 
-/// Converts one terminal instance into the unified representation.
-pub fn node_from_instance(instance: &crate::InstanceNode) -> Node {
-    Node {
-        name: instance.instance.name.to_string(),
-        args: instance
-            .instance
-            .fields
-            .iter()
-            .map(|field| (field.name.clone(), NodeValue::from(&field.value)))
-            .collect(),
-        children: instance
-            .instance
-            .body
-            .iter()
-            .map(node_from_instance)
-            .collect(),
-        block: instance.instance.block,
-        range: instance.range,
-    }
-}
-
-/// Converts one unified node back into the terminal instance form.
+/// Validates the row/column layout of `core::table-cell` nodes.
 ///
-/// Pending streams inside arguments are rejected: they must be reduced before
-/// a node can become an instance.
-pub fn node_to_instance(node: &Node) -> Result<crate::InstanceNode, String> {
-    let mut instance = crate::ElementInstance::new(ElementName::parse(&node.name), node.block);
-    for (name, value) in &node.args {
-        instance.fields.push(crate::Field::new(
-            name.clone(),
-            field_value_from_node_value(value)?,
-        ));
-    }
-    for child in &node.children {
-        instance.body.push(node_to_instance(child)?);
-    }
-    Ok(crate::InstanceNode::ranged(instance, node.range))
-}
+/// Cell spans are read directly from the node arguments.
+pub fn table_layout_nodes(
+    columns: u16,
+    cells: &[Node],
+) -> Result<Vec<Vec<TableCellPlacement>>, TableLayoutError> {
+    let columns = columns as usize;
+    let mut active = vec![0u16; columns];
+    let mut rows = Vec::new();
+    let mut cell_index = 0usize;
 
-fn field_value_from_node_value(value: &NodeValue) -> Result<FieldValue, String> {
-    Ok(match value {
-        NodeValue::None => FieldValue::None,
-        NodeValue::Bool(value) => FieldValue::Bool(*value),
-        NodeValue::Int(value) => FieldValue::Int(*value),
-        NodeValue::Float(value) => FieldValue::Float(*value),
-        NodeValue::String(value) => FieldValue::String(value.clone()),
-        NodeValue::Stream(nodes) => FieldValue::Content(
-            nodes
-                .iter()
-                .map(node_to_instance)
-                .collect::<Result<Vec<_>, _>>()?,
-        ),
-        NodeValue::Array(values) => FieldValue::Array(
-            values
-                .iter()
-                .map(field_value_from_node_value)
-                .collect::<Result<Vec<_>, _>>()?,
-        ),
-    })
-}
-
-impl From<&FieldValue> for NodeValue {
-    fn from(value: &FieldValue) -> Self {
-        match value {
-            FieldValue::None => Self::None,
-            FieldValue::Bool(value) => Self::Bool(*value),
-            FieldValue::Int(value) => Self::Int(*value),
-            FieldValue::Float(value) => Self::Float(*value),
-            FieldValue::String(value) => Self::String(value.clone()),
-            FieldValue::Content(nodes) => {
-                Self::Stream(nodes.iter().map(node_from_instance).collect())
-            }
-            FieldValue::Array(values) => Self::Array(values.iter().map(Self::from).collect()),
+    while cell_index < cells.len() {
+        let row_number = rows.len() + 1;
+        let mut occupied: Vec<_> = active.iter().map(|remaining| *remaining > 0).collect();
+        if occupied.iter().all(|occupied| *occupied) {
+            return Err(TableLayoutError::FullyCoveredRow { row: row_number });
         }
+        let mut next_active: Vec<_> = active
+            .iter()
+            .map(|remaining| remaining.saturating_sub(1))
+            .collect();
+        let mut row = Vec::new();
+
+        while occupied.iter().any(|occupied| !occupied) {
+            let Some(cell) = cells.get(cell_index) else {
+                return Err(TableLayoutError::IncompleteRow { row: row_number });
+            };
+            if !cell.is_core("table-cell") {
+                return Err(TableLayoutError::NonCell {
+                    cell: cell_index + 1,
+                });
+            }
+            let span = |name: &str| match cell.get(name) {
+                Some(NodeValue::Int(value)) => u16::try_from(*value).unwrap_or(u16::MAX),
+                _ => 1,
+            };
+            let colspan = span("colspan");
+            let rowspan = span("rowspan");
+            let column = occupied.iter().position(|occupied| !occupied).unwrap();
+            let end = column + colspan as usize;
+            if end > columns || occupied[column..end].iter().any(|occupied| *occupied) {
+                return Err(TableLayoutError::CellDoesNotFit {
+                    row: row_number,
+                    cell: cell_index + 1,
+                    column: column as u16,
+                    colspan,
+                });
+            }
+            occupied[column..end].fill(true);
+            if rowspan > 1 {
+                for remaining in &mut next_active[column..end] {
+                    *remaining = (*remaining).max(rowspan - 1);
+                }
+            }
+            row.push(TableCellPlacement {
+                cell_index,
+                column: column as u16,
+            });
+            cell_index += 1;
+        }
+
+        rows.push(row);
+        active = next_active;
     }
+
+    if active.iter().any(|remaining| *remaining > 0) {
+        return Err(TableLayoutError::RowspanBeyondTable);
+    }
+    Ok(rows)
 }
 
 /// Wire helpers over the unified node.
@@ -250,7 +298,6 @@ pub mod wire {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::{ElementInstance, InstanceNode};
 
     #[test]
     fn builder_shapes_a_call_node() {
@@ -260,57 +307,29 @@ mod tests {
             .child(Node::call("core::text", TextRange::new(6, 9)).arg("text", "hi"));
         assert_eq!(node.name, "core::details");
         assert!(node.block);
+        assert_eq!(node.core_local(), Some("details"));
+        assert!(node.is_core("details"));
         assert_eq!(node.get("summary"), Some(&NodeValue::from("Shader")));
         assert_eq!(node.children.len(), 1);
         assert!(!node.has_pending_args());
     }
 
     #[test]
-    fn instance_round_trips_through_node() {
-        let mut instance = ElementInstance::new(ElementName::parse("core::heading"), true);
-        instance
-            .fields
-            .push(crate::Field::new("level", FieldValue::Int(2)));
-        instance.fields.push(crate::Field::new(
-            "meta",
-            FieldValue::Array(vec![FieldValue::String("a".into()), FieldValue::None]),
-        ));
-        let mut child = ElementInstance::new(ElementName::parse("core::text"), false);
-        child
-            .fields
-            .push(crate::Field::new("text", FieldValue::String("hi".into())));
-        instance.body.push(InstanceNode::synthetic(child));
-        let original = InstanceNode::synthetic(instance);
+    fn table_layout_nodes_validates_spans() {
+        let cell = |colspan: i64, rowspan: i64| {
+            Node::block_call("core::table-cell", TextRange::new(0, 0))
+                .arg("colspan", colspan)
+                .arg("rowspan", rowspan)
+        };
+        let rows = table_layout_nodes(2, &[cell(1, 1), cell(1, 2), cell(1, 1)]).unwrap();
+        assert_eq!(rows.len(), 2);
+        assert_eq!(rows[0].len(), 2);
+        assert_eq!(rows[1].len(), 1);
 
-        let node = node_from_instance(&original);
-        assert_eq!(node.name, "core::heading");
-        assert!(node.block);
-
-        let back = node_to_instance(&node).unwrap();
-        assert_eq!(back.instance, original.instance);
-    }
-
-    #[test]
-    fn stream_args_convert_to_nested_content() {
-        let node = Node::call("demo::box", TextRange::new(0, 1)).arg(
-            "body",
-            vec![Node::call("core::text", TextRange::new(0, 1)).arg("text", "hi")],
-        );
-        assert!(node.has_pending_args());
-
-        let instance = node_to_instance(&node).unwrap();
+        let overflow = table_layout_nodes(1, &[cell(2, 1)]);
         assert!(matches!(
-            instance.instance.fields[0].value,
-            FieldValue::Content(_)
+            overflow,
+            Err(TableLayoutError::CellDoesNotFit { .. })
         ));
-        // And back again: the round trip preserves the nested shape.
-        let returned = node_from_instance(&instance);
-        assert!(returned.args[0].1.is_pending());
-        assert_eq!(
-            returned.args[0].1,
-            NodeValue::Stream(vec![
-                Node::call("core::text", TextRange::new(0, 1)).arg("text", "hi")
-            ])
-        );
     }
 }

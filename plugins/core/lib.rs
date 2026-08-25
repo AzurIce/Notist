@@ -1,30 +1,62 @@
 #![allow(dead_code)]
 
-use notist_model::{Content, Element, TableAlignment, TableLayoutError, table_layout};
+use std::sync::Arc;
 
-use crate::{
-    EvalDiagnostic, Function, FunctionContext, FunctionInput, FunctionOutput, FunctionRegistry,
-    FunctionSignature, RegistryError,
+use notist_eval::{
+    EvalDiagnostic, Function, FunctionContext, FunctionInput, FunctionRegistry, FunctionSignature,
+    PluginContribution, RegistryError, ShapingRegistry, Type, Value,
+};
+use notist_model::{
+    BodyMode, ElementName, ElementSchema, Node, NodeValue, ShapingKind, ShapingRole,
+    TableAlignment, TableLayoutError, table_layout_nodes,
 };
 
-pub(crate) fn register_builtins(registry: &mut FunctionRegistry) -> Result<(), RegistryError> {
-    registry.register(RefFunction)?;
-    registry.register(HeadingFunction)?;
-    registry.register(RawFunction)?;
-    registry.register(CalloutFunction)?;
-    registry.register(DetailsFunction)?;
-    registry.register(ItemFunction)?;
-    registry.register(TableCellFunction)?;
-    registry.register(TableFunction)?;
-    registry.register(FigureFunction)?;
-    registry.register(StrongFunction)?;
-    registry.register(EmphFunction)?;
-    registry.register(StrikeFunction)?;
-    registry.register(UnderlineFunction)?;
-    registry.register(RuleFunction)?;
-    registry.register(TextFunction)?;
-    registry.register(ParbreakFunction)?;
-    for (alias, target) in [
+/// Builds an optional constructor argument from an optional Content value.
+fn optional_content_arg(name: &str, value: Option<Vec<Node>>) -> Option<(String, NodeValue)> {
+    value.map(|forest| (name.to_owned(), NodeValue::Stream(forest)))
+}
+
+/// The local constructor name of a node, ignoring the `core::` qualifier.
+fn core_local(name: &str) -> &str {
+    name.strip_prefix("core::").unwrap_or(name)
+}
+
+/// Whether the node is a whitespace-only `core::text` node.
+fn is_whitespace_text(node: &Node) -> bool {
+    core_local(&node.name) == "text"
+        && matches!(node.get("text"), Some(NodeValue::String(text)) if text.trim().is_empty())
+}
+
+/// Whether the node is a `core::parbreak` node.
+fn is_parbreak(node: &Node) -> bool {
+    core_local(&node.name) == "parbreak"
+}
+
+/// Builds the semantic contribution provided by the native core package.
+pub fn contribution() -> PluginContribution {
+    let functions: Vec<Arc<dyn Function>> = vec![
+        Arc::new(RefFunction),
+        Arc::new(HeadingFunction),
+        Arc::new(RawFunction),
+        Arc::new(CalloutFunction),
+        Arc::new(DetailsFunction),
+        Arc::new(ItemFunction),
+        Arc::new(TableCellFunction),
+        Arc::new(TableFunction),
+        Arc::new(FigureFunction),
+        Arc::new(StrongFunction),
+        Arc::new(EmphFunction),
+        Arc::new(StrikeFunction),
+        Arc::new(UnderlineFunction),
+        Arc::new(RuleFunction),
+        Arc::new(TextFunction),
+        Arc::new(ParbreakFunction),
+    ];
+    let signatures = functions
+        .iter()
+        .map(|function| (function.name().to_owned(), function.signature()))
+        .collect();
+    let aliases = [
         ("core::ref", "ref"),
         ("core::heading", "heading"),
         ("core::raw", "raw"),
@@ -41,10 +73,155 @@ pub(crate) fn register_builtins(registry: &mut FunctionRegistry) -> Result<(), R
         ("core::rule", "rule"),
         ("core::text", "text"),
         ("core::parbreak", "parbreak"),
-    ] {
-        registry.register_alias(alias, target)?;
+    ]
+    .into_iter()
+    .map(|(alias, target)| (alias.into(), target.into()))
+    .collect();
+    PluginContribution {
+        package: "core".into(),
+        functions,
+        signatures,
+        elements: core_schemas(),
+        aliases,
     }
-    Ok(())
+}
+
+/// Installs core functions, aliases, and shaping schemas atomically.
+pub fn register_into(
+    registry: &mut FunctionRegistry,
+    shaping: &mut ShapingRegistry,
+) -> Result<(), RegistryError> {
+    registry.register_contribution(shaping, &contribution())
+}
+
+/// Creates registries containing the complete native core contribution.
+pub fn registry() -> (FunctionRegistry, ShapingRegistry) {
+    let mut functions = FunctionRegistry::new();
+    let mut shaping = ShapingRegistry::new();
+    register_into(&mut functions, &mut shaping).expect("core contribution must be valid");
+    (functions, shaping)
+}
+
+fn core_schemas() -> Vec<ElementSchema> {
+    let mut registry = ShapingRegistry::new();
+    let core = |registry: &mut ShapingRegistry, local: &str, kind, body, role| {
+        registry.insert(ElementSchema::new(
+            ElementName::core(local),
+            kind,
+            body,
+            role,
+        ));
+    };
+    core(
+        &mut registry,
+        "text",
+        ShapingKind::Inline,
+        BodyMode::None,
+        ShapingRole::None,
+    );
+    core(
+        &mut registry,
+        "reference",
+        ShapingKind::Inline,
+        BodyMode::None,
+        ShapingRole::None,
+    );
+    core(
+        &mut registry,
+        "parbreak",
+        ShapingKind::Separator,
+        BodyMode::None,
+        ShapingRole::None,
+    );
+    core(
+        &mut registry,
+        "heading",
+        ShapingKind::Block,
+        BodyMode::Inline,
+        ShapingRole::Heading,
+    );
+    core(
+        &mut registry,
+        "rule",
+        ShapingKind::Block,
+        BodyMode::None,
+        ShapingRole::None,
+    );
+    core(
+        &mut registry,
+        "item",
+        ShapingKind::Block,
+        BodyMode::Flow,
+        ShapingRole::Item,
+    );
+    core(
+        &mut registry,
+        "table-cell",
+        ShapingKind::Block,
+        BodyMode::Flow,
+        ShapingRole::None,
+    );
+    core(
+        &mut registry,
+        "table",
+        ShapingKind::Block,
+        BodyMode::Cells,
+        ShapingRole::None,
+    );
+    core(
+        &mut registry,
+        "figure",
+        ShapingKind::Block,
+        BodyMode::Flow,
+        ShapingRole::None,
+    );
+    core(
+        &mut registry,
+        "callout",
+        ShapingKind::Block,
+        BodyMode::Flow,
+        ShapingRole::None,
+    );
+    core(
+        &mut registry,
+        "details",
+        ShapingKind::Block,
+        BodyMode::Flow,
+        ShapingRole::None,
+    );
+    core(
+        &mut registry,
+        "raw",
+        ShapingKind::Unspecified,
+        BodyMode::None,
+        ShapingRole::None,
+    );
+    for local in ["strong", "emph", "underline", "strike"] {
+        core(
+            &mut registry,
+            local,
+            ShapingKind::Inline,
+            BodyMode::Inline,
+            ShapingRole::None,
+        );
+    }
+    for local in ["paragraph", "list", "section"] {
+        core(
+            &mut registry,
+            local,
+            ShapingKind::Block,
+            BodyMode::Shaped,
+            ShapingRole::None,
+        );
+    }
+    core(
+        &mut registry,
+        "unresolved-call",
+        ShapingKind::Unspecified,
+        BodyMode::Flow,
+        ShapingRole::None,
+    );
+    registry.schemas().cloned().collect()
 }
 
 struct TextFunction;
@@ -58,11 +235,11 @@ impl Function for TextFunction {
         notist_model::FunctionSignature {
             parameters: vec![notist_model::Parameter {
                 name: "text".into(),
-                ty: crate::Type::String,
+                ty: Type::String,
                 default: None,
             }],
             trailing_content: None,
-            result: crate::Type::Content,
+            result: Type::Content,
         }
     }
 
@@ -70,11 +247,11 @@ impl Function for TextFunction {
         &self,
         _context: &FunctionContext<'_>,
         input: FunctionInput<'_>,
-    ) -> Result<FunctionOutput, Vec<EvalDiagnostic>> {
-        Ok(FunctionOutput::content(Content::single(
-            Element::Text(input.arguments.string("text").to_owned()),
-            input.range,
-        )))
+    ) -> Result<Value, Vec<EvalDiagnostic>> {
+        Ok(Value::Content(vec![
+            Node::call("core::text", input.range)
+                .arg("text", input.arguments.string("text").to_owned()),
+        ]))
     }
 }
 
@@ -93,11 +270,11 @@ impl Function for ParbreakFunction {
         &self,
         _context: &FunctionContext<'_>,
         input: FunctionInput<'_>,
-    ) -> Result<FunctionOutput, Vec<EvalDiagnostic>> {
-        Ok(FunctionOutput::content(Content::single(
-            Element::Parbreak,
+    ) -> Result<Value, Vec<EvalDiagnostic>> {
+        Ok(Value::Content(vec![Node::call(
+            "core::parbreak",
             input.range,
-        )))
+        )]))
     }
 }
 
@@ -116,18 +293,19 @@ impl Function for RefFunction {
         &self,
         _context: &FunctionContext<'_>,
         input: FunctionInput<'_>,
-    ) -> Result<FunctionOutput, Vec<EvalDiagnostic>> {
+    ) -> Result<Value, Vec<EvalDiagnostic>> {
         let target = input.arguments.string("url");
-        let reference = notist_syntax::parse_wiki_reference(target).map_err(|message| {
+        // The reference is validated eagerly; the node carries the source
+        // spelling and projection parses it again downstream.
+        notist_syntax::parse_wiki_reference(target).map_err(|message| {
             vec![EvalDiagnostic {
                 message,
                 range: input.range,
             }]
         })?;
-        Ok(FunctionOutput::content(Content::single(
-            Element::Reference(reference),
-            input.range,
-        )))
+        Ok(Value::Content(vec![
+            Node::call("core::reference", input.range).arg("url", target.to_owned()),
+        ]))
     }
 }
 
@@ -146,7 +324,7 @@ impl Function for HeadingFunction {
         &self,
         _context: &FunctionContext<'_>,
         mut input: FunctionInput<'_>,
-    ) -> Result<FunctionOutput, Vec<EvalDiagnostic>> {
+    ) -> Result<Value, Vec<EvalDiagnostic>> {
         let level = input.arguments.int("level");
         if level < 1 {
             return Err(vec![EvalDiagnostic {
@@ -155,13 +333,9 @@ impl Function for HeadingFunction {
             }]);
         }
         let body = input.arguments.take_content("body");
-        Ok(FunctionOutput::content(Content::single(
-            Element::Heading {
-                level: level as u8,
-                body,
-            },
-            input.range,
-        )))
+        let mut node = Node::block_call("core::heading", input.range).arg("level", level);
+        node.children = body;
+        Ok(Value::Content(vec![node]))
     }
 }
 
@@ -180,7 +354,7 @@ impl Function for RawFunction {
         &self,
         _context: &FunctionContext<'_>,
         input: FunctionInput<'_>,
-    ) -> Result<FunctionOutput, Vec<EvalDiagnostic>> {
+    ) -> Result<Value, Vec<EvalDiagnostic>> {
         let language = input.arguments.optional_string("lang").map(str::to_owned);
         let source = input.arguments.string("source").to_owned();
         let block = input.arguments.bool("block");
@@ -190,12 +364,12 @@ impl Function for RawFunction {
                 range: input.range,
             }]);
         }
-        Ok(FunctionOutput::content(raw_content(
+        Ok(Value::Content(vec![raw_node(
             source,
             block,
             language,
             input.range,
-        )))
+        )]))
     }
 }
 
@@ -214,7 +388,7 @@ impl Function for CalloutFunction {
         &self,
         _context: &FunctionContext<'_>,
         mut input: FunctionInput<'_>,
-    ) -> Result<FunctionOutput, Vec<EvalDiagnostic>> {
+    ) -> Result<Value, Vec<EvalDiagnostic>> {
         let kind = input.arguments.string("kind").trim().to_owned();
         if kind.is_empty() {
             return Err(vec![EvalDiagnostic {
@@ -222,15 +396,12 @@ impl Function for CalloutFunction {
                 range: input.range,
             }]);
         }
+        let title = input.arguments.take_optional_content("title");
         let body = input.arguments.take_content("body");
-        Ok(FunctionOutput::content(Content::single(
-            Element::Callout {
-                kind,
-                title: input.arguments.take_optional_content("title"),
-                body,
-            },
-            input.range,
-        )))
+        let mut node = Node::block_call("core::callout", input.range).arg("kind", kind);
+        node.args.extend(optional_content_arg("title", title));
+        node.children = body;
+        Ok(Value::Content(vec![node]))
     }
 }
 
@@ -249,18 +420,15 @@ impl Function for DetailsFunction {
         &self,
         _context: &FunctionContext<'_>,
         mut input: FunctionInput<'_>,
-    ) -> Result<FunctionOutput, Vec<EvalDiagnostic>> {
+    ) -> Result<Value, Vec<EvalDiagnostic>> {
         let summary = input.arguments.take_optional_content("summary");
         let open = input.arguments.bool("open");
         let body = input.arguments.take_content("body");
-        Ok(FunctionOutput::content(Content::single(
-            Element::Details {
-                summary,
-                open,
-                body,
-            },
-            input.range,
-        )))
+        let mut node = Node::block_call("core::details", input.range);
+        node.args.extend(optional_content_arg("summary", summary));
+        node.args.push(("open".into(), NodeValue::Bool(open)));
+        node.children = body;
+        Ok(Value::Content(vec![node]))
     }
 }
 
@@ -279,18 +447,12 @@ impl Function for ItemFunction {
         &self,
         _context: &FunctionContext<'_>,
         mut input: FunctionInput<'_>,
-    ) -> Result<FunctionOutput, Vec<EvalDiagnostic>> {
+    ) -> Result<Value, Vec<EvalDiagnostic>> {
         let ordered = input.arguments.bool("ordered");
         let body = input.arguments.take_content("body");
-        let element = if ordered {
-            Element::EnumItem { value: None, body }
-        } else {
-            Element::ListItem(body)
-        };
-        Ok(FunctionOutput::content(Content::single(
-            element,
-            input.range,
-        )))
+        let mut node = Node::block_call("core::item", input.range).arg("ordered", ordered);
+        node.children = body;
+        Ok(Value::Content(vec![node]))
     }
 }
 
@@ -307,11 +469,10 @@ impl Function for StrongFunction {
         &self,
         _context: &FunctionContext<'_>,
         mut input: FunctionInput<'_>,
-    ) -> Result<FunctionOutput, Vec<EvalDiagnostic>> {
-        Ok(FunctionOutput::content(Content::single(
-            Element::Strong(input.arguments.take_content("body")),
-            input.range,
-        )))
+    ) -> Result<Value, Vec<EvalDiagnostic>> {
+        let mut node = Node::call("core::strong", input.range);
+        node.children = input.arguments.take_content("body");
+        Ok(Value::Content(vec![node]))
     }
 }
 
@@ -328,11 +489,10 @@ impl Function for EmphFunction {
         &self,
         _context: &FunctionContext<'_>,
         mut input: FunctionInput<'_>,
-    ) -> Result<FunctionOutput, Vec<EvalDiagnostic>> {
-        Ok(FunctionOutput::content(Content::single(
-            Element::Emph(input.arguments.take_content("body")),
-            input.range,
-        )))
+    ) -> Result<Value, Vec<EvalDiagnostic>> {
+        let mut node = Node::call("core::emph", input.range);
+        node.children = input.arguments.take_content("body");
+        Ok(Value::Content(vec![node]))
     }
 }
 
@@ -351,16 +511,15 @@ impl Function for StrikeFunction {
         &self,
         _context: &FunctionContext<'_>,
         mut input: FunctionInput<'_>,
-    ) -> Result<FunctionOutput, Vec<EvalDiagnostic>> {
-        Ok(FunctionOutput::content(Content::single(
-            Element::Strike(input.arguments.take_content("body")),
-            input.range,
-        )))
+    ) -> Result<Value, Vec<EvalDiagnostic>> {
+        let mut node = Node::call("core::strike", input.range);
+        node.children = input.arguments.take_content("body");
+        Ok(Value::Content(vec![node]))
     }
 }
 
 macro_rules! inline_wrapper_function {
-    ($function:ident, $name:literal, $variant:ident) => {
+    ($function:ident, $name:literal, $variant:literal) => {
         struct $function;
 
         impl Function for $function {
@@ -376,17 +535,16 @@ macro_rules! inline_wrapper_function {
                 &self,
                 _context: &FunctionContext<'_>,
                 mut input: FunctionInput<'_>,
-            ) -> Result<FunctionOutput, Vec<EvalDiagnostic>> {
-                Ok(FunctionOutput::content(Content::single(
-                    Element::$variant(input.arguments.take_content("body")),
-                    input.range,
-                )))
+            ) -> Result<Value, Vec<EvalDiagnostic>> {
+                let mut node = Node::call($variant, input.range);
+                node.children = input.arguments.take_content("body");
+                Ok(Value::Content(vec![node]))
             }
         }
     };
 }
 
-inline_wrapper_function!(UnderlineFunction, "underline", Underline);
+inline_wrapper_function!(UnderlineFunction, "underline", "core::underline");
 
 fn image_dimension(
     value: Option<i64>,
@@ -420,7 +578,7 @@ impl Function for TableCellFunction {
         &self,
         _context: &FunctionContext<'_>,
         mut input: FunctionInput<'_>,
-    ) -> Result<FunctionOutput, Vec<EvalDiagnostic>> {
+    ) -> Result<Value, Vec<EvalDiagnostic>> {
         let colspan = input.arguments.int("colspan");
         let rowspan = input.arguments.int("rowspan");
         if !(1..=u16::MAX as i64).contains(&colspan) {
@@ -435,14 +593,11 @@ impl Function for TableCellFunction {
                 range: input.range,
             }]);
         }
-        Ok(FunctionOutput::content(Content::single(
-            Element::TableCell {
-                body: input.arguments.take_content("body"),
-                colspan: colspan as u16,
-                rowspan: rowspan as u16,
-            },
-            input.range,
-        )))
+        let mut node = Node::block_call("core::table-cell", input.range)
+            .arg("colspan", colspan)
+            .arg("rowspan", rowspan);
+        node.children = input.arguments.take_content("body");
+        Ok(Value::Content(vec![node]))
     }
 }
 
@@ -461,7 +616,7 @@ impl Function for TableFunction {
         &self,
         _context: &FunctionContext<'_>,
         mut input: FunctionInput<'_>,
-    ) -> Result<FunctionOutput, Vec<EvalDiagnostic>> {
+    ) -> Result<Value, Vec<EvalDiagnostic>> {
         let columns = input.arguments.int("columns");
         let header = input.arguments.bool("header");
         if !(1..=u16::MAX as i64).contains(&columns) {
@@ -482,19 +637,18 @@ impl Function for TableFunction {
             };
         let body = input.arguments.take_content("body");
         let mut cells = Vec::new();
-        for node in body.elements {
-            match &node.element {
-                // Source formatting between cells is not table content.
-                Element::Text(text) if text.trim().is_empty() => {}
-                Element::Parbreak => {}
-                Element::TableCell { .. } => cells.push(node),
-                _ => {
-                    return Err(vec![EvalDiagnostic {
-                        message: "table body may contain only table-cell elements".into(),
-                        range: input.range,
-                    }]);
-                }
+        for node in body {
+            // Source formatting between cells is not table content.
+            if is_whitespace_text(&node) || is_parbreak(&node) {
+                continue;
             }
+            if core_local(&node.name) != "table-cell" {
+                return Err(vec![EvalDiagnostic {
+                    message: "table body may contain only table-cell elements".into(),
+                    range: input.range,
+                }]);
+            }
+            cells.push(node);
         }
         if cells.is_empty() {
             return Err(vec![EvalDiagnostic {
@@ -502,21 +656,33 @@ impl Function for TableFunction {
                 range: input.range,
             }]);
         }
-        if let Err(error) = table_layout(columns as u16, &cells) {
+        // The layout checker reads cell spans directly from the unified nodes.
+        if let Err(error) = table_layout_nodes(columns as u16, &cells) {
             return Err(vec![EvalDiagnostic {
                 message: table_layout_message(error, columns as u16),
                 range: input.range,
             }]);
         }
-        Ok(FunctionOutput::content(Content::single(
-            Element::Table {
-                columns: columns as u16,
-                header,
-                alignments,
-                cells,
-            },
-            input.range,
-        )))
+        let align = alignments
+            .iter()
+            .map(alignment_name)
+            .collect::<Vec<_>>()
+            .join(",");
+        let mut node = Node::block_call("core::table", input.range)
+            .arg("columns", columns)
+            .arg("header", header)
+            .arg("align", align);
+        node.children = cells;
+        Ok(Value::Content(vec![node]))
+    }
+}
+
+fn alignment_name(alignment: &TableAlignment) -> &'static str {
+    match alignment {
+        TableAlignment::Default => "default",
+        TableAlignment::Left => "left",
+        TableAlignment::Center => "center",
+        TableAlignment::Right => "right",
     }
 }
 
@@ -535,7 +701,7 @@ impl Function for FigureFunction {
         &self,
         _context: &FunctionContext<'_>,
         mut input: FunctionInput<'_>,
-    ) -> Result<FunctionOutput, Vec<EvalDiagnostic>> {
+    ) -> Result<Value, Vec<EvalDiagnostic>> {
         let body = input.arguments.take_content("body");
         let caption = input.arguments.take_optional_content("caption");
         let supplement = input.arguments.take_optional_content("supplement");
@@ -552,28 +718,26 @@ impl Function for FigureFunction {
             }
             None => infer_figure_kind(&body),
         };
-        Ok(FunctionOutput::content(Content::single(
-            Element::Figure {
-                body,
-                kind,
-                supplement,
-                caption,
-            },
-            input.range,
-        )))
+        let mut node = Node::block_call("core::figure", input.range).arg("kind", kind);
+        node.args
+            .extend(optional_content_arg("supplement", supplement));
+        node.args.extend(optional_content_arg("caption", caption));
+        node.children = body;
+        Ok(Value::Content(vec![node]))
     }
 }
 
 /// Resolves the Typst-style `kind: auto` default from the wrapped body: the
 /// first meaningful block element wins; unrecognized bodies use `"figure"`.
-fn infer_figure_kind(body: &Content) -> String {
-    for node in &body.elements {
-        match &node.element {
-            Element::Text(text) if text.trim().is_empty() => {}
-            Element::Parbreak => {}
-            Element::Table { .. } => return "table".into(),
-            Element::Raw { .. } => return "raw".into(),
-            Element::Custom { name, .. } => return name.clone(),
+fn infer_figure_kind(body: &[Node]) -> String {
+    for node in body {
+        if is_whitespace_text(node) || is_parbreak(node) {
+            continue;
+        }
+        match core_local(&node.name) {
+            "table" => return "table".into(),
+            "raw" => return "raw".into(),
+            _ if !node.name.starts_with("core::") => return node.name.clone(),
             _ => break,
         }
     }
@@ -645,39 +809,70 @@ impl Function for RuleFunction {
         &self,
         _context: &FunctionContext<'_>,
         input: FunctionInput<'_>,
-    ) -> Result<FunctionOutput, Vec<EvalDiagnostic>> {
-        Ok(FunctionOutput::content(Content::single(
-            Element::Rule,
+    ) -> Result<Value, Vec<EvalDiagnostic>> {
+        Ok(Value::Content(vec![Node::block_call(
+            "core::rule",
             input.range,
-        )))
+        )]))
     }
 }
 
-pub(crate) fn raw_content(
-    text: String,
+/// Builds a `core::raw` node from validated parts.
+pub(crate) fn raw_node(
+    source: String,
     block: bool,
     language: Option<String>,
     range: notist_model::TextRange,
-) -> Content {
-    Content::single(
-        Element::Raw {
-            text,
-            block,
-            language,
-        },
-        range,
-    )
+) -> Node {
+    let mut node = Node::call("core::raw", range)
+        .arg("source", source)
+        .arg("lang", language.map_or(NodeValue::None, NodeValue::String))
+        .arg("block", block);
+    node.block = block;
+    node
 }
 
 #[cfg(test)]
 mod tests {
-    use notist_model::Element;
+    use notist_eval::{Evaluation, Evaluator, ShapingRegistry};
+    use notist_model::{Node, NodeValue};
 
-    use crate::Evaluator;
+    struct CoreEvaluator {
+        evaluator: Evaluator,
+        shaping: ShapingRegistry,
+    }
+
+    impl CoreEvaluator {
+        fn evaluate(&self, source: &str) -> Evaluation {
+            self.evaluator.evaluate_with_shaping(source, &self.shaping)
+        }
+    }
+
+    fn evaluator() -> CoreEvaluator {
+        let (registry, shaping) = super::registry();
+        CoreEvaluator {
+            evaluator: Evaluator::new(registry),
+            shaping,
+        }
+    }
+
+    /// The text payload of a `core::text` node.
+    fn text(node: &Node) -> Option<&str> {
+        if node.is_core("text")
+            && let Some(NodeValue::String(value)) = node.get("text")
+        {
+            return Some(value);
+        }
+        None
+    }
+
+    fn texts(nodes: &[Node]) -> Vec<&str> {
+        nodes.iter().filter_map(text).collect()
+    }
 
     #[test]
     fn excludes_plugin_candidates_from_core_registry() {
-        let evaluator = Evaluator::default();
+        let evaluator = evaluator();
         for name in [
             "outline",
             "terms",
@@ -703,16 +898,13 @@ mod tests {
                 "{name}: {:?}",
                 evaluation.diagnostics
             );
-            assert!(matches!(
-                &evaluation.content.elements[0].element,
-                Element::UnresolvedCall { name: call_name, .. } if call_name == name
-            ));
+            assert_eq!(evaluation.forest[0].name, name);
         }
     }
 
     #[test]
     fn evaluates_ref_function_with_wiki_reference_validation() {
-        let evaluator = Evaluator::default();
+        let evaluator = evaluator();
         let explicit = evaluator.evaluate("#ref(\"vault::guide::intro#overview\")");
         let sugar = evaluator.evaluate("[[vault::guide::intro#overview]]");
         assert!(
@@ -721,10 +913,13 @@ mod tests {
             explicit.diagnostics
         );
         assert!(sugar.diagnostics.is_empty(), "{:?}", sugar.diagnostics);
-        assert_eq!(
-            explicit.content.elements[0].element,
-            sugar.content.elements[0].element
-        );
+        let stripped = |node: &Node| {
+            let mut node = node.clone();
+            node.range = notist_model::TextRange::new(0, 0);
+            node
+        };
+        assert_eq!(stripped(&explicit.forest[0]), stripped(&sugar.forest[0]));
+        assert!(explicit.forest[0].is_core("reference"));
 
         let invalid = evaluator.evaluate("#ref(\"vault::::guide\")");
         assert!(
@@ -737,64 +932,66 @@ mod tests {
 
     #[test]
     fn evaluates_heading_and_raw() {
-        let evaluator = Evaluator::default();
+        let evaluator = evaluator();
 
         let heading = evaluator.evaluate("#heading(level=2)[Title]");
         assert!(heading.diagnostics.is_empty(), "{:?}", heading.diagnostics);
-        assert!(matches!(
-            &heading.content.elements[0].element,
-            Element::Heading { level: 2, .. }
-        ));
+        let node = &heading.forest[0];
+        assert!(node.is_core("heading"));
+        assert_eq!(node.get("level"), Some(&NodeValue::Int(2)));
 
         let raw = evaluator.evaluate("#raw(r#\"fn main() {}\"#, lang=\"rust\")");
         assert!(raw.diagnostics.is_empty(), "{:?}", raw.diagnostics);
-        assert!(matches!(
-            &raw.content.elements[0].element,
-            Element::Raw { text, language, block: false }
-                if text == "fn main() {}" && language.as_deref() == Some("rust")
-        ));
+        let node = &raw.forest[0];
+        assert!(node.is_core("raw"));
+        assert_eq!(
+            node.get("source"),
+            Some(&NodeValue::String("fn main() {}".into()))
+        );
+        assert_eq!(node.get("lang"), Some(&NodeValue::String("rust".into())));
+        assert_eq!(node.get("block"), Some(&NodeValue::Bool(false)));
     }
 
     #[test]
     fn evaluates_ordered_and_unordered_items() {
-        let evaluator = Evaluator::default();
+        let evaluator = evaluator();
         let unordered = evaluator.evaluate("#item[One]");
         assert!(
             unordered.diagnostics.is_empty(),
             "{:?}",
             unordered.diagnostics
         );
-        assert!(matches!(
-            unordered.content.elements[0].element,
-            Element::ListItem(_)
-        ));
+        let node = &unordered.forest[0];
+        assert!(node.is_core("item"));
+        assert_eq!(node.get("ordered"), Some(&NodeValue::Bool(false)));
 
         let ordered = evaluator.evaluate("#item(ordered=true)[First]");
         assert!(ordered.diagnostics.is_empty(), "{:?}", ordered.diagnostics);
-        assert!(matches!(
-            ordered.content.elements[0].element,
-            Element::EnumItem { value: None, .. }
-        ));
+        let node = &ordered.forest[0];
+        assert!(node.is_core("item"));
+        assert_eq!(node.get("ordered"), Some(&NodeValue::Bool(true)));
+        assert_eq!(node.get("value"), None);
     }
 
     #[test]
     fn evaluates_callouts() {
-        let evaluator = Evaluator::default();
+        let evaluator = evaluator();
         let default = evaluator.evaluate("#callout[Remember this]");
         assert!(default.diagnostics.is_empty(), "{:?}", default.diagnostics);
-        assert!(matches!(
-            &default.content.elements[0].element,
-            Element::Callout { kind, title: None, body }
-                if kind == "note" && matches!(&body.elements[0].element, Element::Text(text) if text == "Remember this")
-        ));
+        let node = &default.forest[0];
+        assert!(node.is_core("callout"));
+        assert_eq!(node.get("kind"), Some(&NodeValue::String("note".into())));
+        assert!(node.get("title").is_none());
+        assert_eq!(texts(&node.children), ["Remember this"]);
 
         let titled = evaluator.evaluate("#callout(kind=\"warning\", title=[Risk])[Body]");
         assert!(titled.diagnostics.is_empty(), "{:?}", titled.diagnostics);
-        assert!(matches!(
-            &titled.content.elements[0].element,
-            Element::Callout { title: Some(title), .. }
-                if matches!(&title.elements[0].element, Element::Text(text) if text == "Risk")
-        ));
+        let node = &titled.forest[0];
+        assert!(node.is_core("callout"));
+        let Some(NodeValue::Stream(title)) = node.get("title") else {
+            panic!("expected a title stream, got {:#?}", node.args)
+        };
+        assert_eq!(texts(title), ["Risk"]);
 
         let empty = evaluator.evaluate("#callout(kind=\"\")[Body]");
         assert!(
@@ -808,81 +1005,77 @@ mod tests {
     #[test]
     fn evaluates_details() {
         let evaluated =
-            Evaluator::default().evaluate("#details(summary=[More], open=true)[Hidden *content*]");
+            evaluator().evaluate("#details(summary=[More], open=true)[Hidden *content*]");
         assert!(
             evaluated.diagnostics.is_empty(),
             "{:?}",
             evaluated.diagnostics
         );
-        assert!(matches!(
-            &evaluated.content.elements[0].element,
-            Element::Details { summary: Some(summary), open: true, body }
-                if matches!(&summary.elements[0].element, Element::Text(text) if text == "More")
-                    && body.elements.iter().any(|node| matches!(node.element, Element::Strong(_)))
-        ));
+        let node = &evaluated.forest[0];
+        assert!(node.is_core("details"));
+        assert_eq!(node.get("open"), Some(&NodeValue::Bool(true)));
+        let Some(NodeValue::Stream(summary)) = node.get("summary") else {
+            panic!("expected a summary stream, got {:#?}", node.args)
+        };
+        assert_eq!(texts(summary), ["More"]);
+        assert!(node.children.iter().any(|child| child.is_core("strong")));
 
-        let without_summary = Evaluator::default().evaluate("#details[Hidden]");
+        let without_summary = evaluator().evaluate("#details[Hidden]");
         assert!(
             without_summary.diagnostics.is_empty(),
             "{:?}",
             without_summary.diagnostics
         );
-        assert!(matches!(
-            &without_summary.content.elements[0].element,
-            Element::Details {
-                summary: None,
-                open: false,
-                ..
-            }
-        ));
+        let node = &without_summary.forest[0];
+        assert!(node.is_core("details"));
+        assert!(node.get("summary").is_none());
+        assert_eq!(node.get("open"), Some(&NodeValue::Bool(false)));
     }
 
     #[test]
     fn evaluates_strike_function() {
-        let evaluated = Evaluator::default().evaluate("#strike[obsolete]");
+        let evaluated = evaluator().evaluate("#strike[obsolete]");
         assert!(
             evaluated.diagnostics.is_empty(),
             "{:?}",
             evaluated.diagnostics
         );
-        assert!(matches!(
-            &evaluated.content.elements[0].element,
-            Element::Strike(body)
-                if matches!(&body.elements[0].element, Element::Text(text) if text == "obsolete")
-        ));
+        let node = &evaluated.forest[0];
+        assert!(node.is_core("strike"));
+        assert_eq!(texts(&node.children), ["obsolete"]);
     }
 
     #[test]
     fn evaluates_rule_function() {
-        let evaluated = Evaluator::default().evaluate("#rule()");
+        let evaluated = evaluator().evaluate("#rule()");
         assert!(
             evaluated.diagnostics.is_empty(),
             "{:?}",
             evaluated.diagnostics
         );
-        assert!(matches!(
-            evaluated.content.elements[0].element,
-            Element::Rule
-        ));
+        assert!(evaluated.forest[0].is_core("rule"));
     }
 
     #[test]
     fn block_raw_excludes_delimiter_line_breaks() {
-        let evaluated = Evaluator::default()
+        let evaluated = evaluator()
             .evaluate("#raw(r#\"\"\"\nline one\nline two\n\"\"\"#, lang=\"text\", block=true)");
         assert!(
             evaluated.diagnostics.is_empty(),
             "{:?}",
             evaluated.diagnostics
         );
-        assert!(matches!(
-            &evaluated.content.elements[0].element,
-            Element::Raw { text, block: true, .. } if text == "line one\nline two"
-        ));
+        let node = &evaluated.forest[0];
+        assert!(node.is_core("raw"));
+        assert_eq!(node.get("block"), Some(&NodeValue::Bool(true)));
+        assert_eq!(
+            node.get("source"),
+            Some(&NodeValue::String("line one\nline two".into()))
+        );
 
         // D0003 constructor validation: an inline raw source must not contain
         // line breaks; block: true is the opt-in for multi-line sources.
-        let invalid = Evaluator::default().evaluate("#raw(\"line one\\nline two\")");
+        let invalid = evaluator().evaluate("#raw(\"line one\\nline two\")");
         assert!(
             invalid
                 .diagnostics
@@ -890,27 +1083,30 @@ mod tests {
                 .any(|diagnostic| { diagnostic.message.contains("must not contain line breaks") }),
             "{:?} {:#?}",
             invalid.diagnostics,
-            invalid.content.elements
+            invalid.forest
         );
     }
 
     #[test]
     fn raw_triple_quotes_without_an_opening_line_break_stay_inline() {
-        let evaluated = Evaluator::default().evaluate(r####"#raw(r#"""quoted"""#)"####);
+        let evaluated = evaluator().evaluate(r####"#raw(r#"""quoted"""#)"####);
         assert!(
             evaluated.diagnostics.is_empty(),
             "{:?}",
             evaluated.diagnostics
         );
-        assert!(matches!(
-            &evaluated.content.elements[0].element,
-            Element::Raw { text, block: false, .. } if text == "\"\"quoted\"\""
-        ));
+        let node = &evaluated.forest[0];
+        assert!(node.is_core("raw"));
+        assert_eq!(node.get("block"), Some(&NodeValue::Bool(false)));
+        assert_eq!(
+            node.get("source"),
+            Some(&NodeValue::String("\"\"quoted\"\"".into()))
+        );
     }
 
     #[test]
     fn reports_signature_and_trailing_content_errors_before_calling_builtins() {
-        let evaluator = Evaluator::default();
+        let evaluator = evaluator();
         let wrong_level = evaluator.evaluate("#heading(level=\"two\")[Title]");
         assert!(
             wrong_level.diagnostics[0]
@@ -921,10 +1117,12 @@ mod tests {
         let wrong_body = evaluator.evaluate("#raw[parsed]");
         assert_eq!(
             wrong_body.diagnostics[0].message,
-            "function does not accept trailing Content"
+            "function `raw` does not accept trailing content"
         );
 
+        // Unknown arguments are reported by the check layer against the
+        // SignatureSet; reduction dispatch intentionally stays silent.
         let unknown = evaluator.evaluate("#details(source=\"book\")[text]");
-        assert_eq!(unknown.diagnostics[0].message, "unknown argument `source`");
+        assert!(unknown.diagnostics.is_empty(), "{:?}", unknown.diagnostics);
     }
 }

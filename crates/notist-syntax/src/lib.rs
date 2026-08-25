@@ -1215,7 +1215,10 @@ mod tests {
             panic!("expected an embed, got {:?}", parsed.root.items)
         };
         let ExpressionKind::Content(block) = &embedded.expression.kind else {
-            panic!("expected a content block, got {:?}", embedded.expression.kind)
+            panic!(
+                "expected a content block, got {:?}",
+                embedded.expression.kind
+            )
         };
         assert!(matches!(
             &block.markup.items[0],

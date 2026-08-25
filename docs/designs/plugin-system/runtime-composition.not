@@ -1,0 +1,186 @@
+@![implementation = "partial"]
+= Plugin Runtime Composition
+
+本文定义 plugin contribution 如何进入一次 Notist 运行时，以及 native 与 Wasm plugin 的关系。它补充 [[vault::designs::plugin-system::package]] 的 package 形态和 [[vault::designs::plugin-system::eval-contribution]] 的函数注册契约；求值引擎本身见 [[vault::designs::pipeline::plugin-call-reduction]]。
+
+== 先区分 package、backend 与 App
+
+Notist 中的 plugin 首先是一个**语义 package**，而不是一种编译产物：
+
+```text
+package
+  ├── package id / namespace
+  ├── function handlers
+  ├── signatures
+  ├── shaping schemas
+  └── target projection contributions
+```
+
+同一个 package 可以有不同的实现 backend：
+
+```text
+native backend                       Wasm backend
+直接提供 Function implementation       由 host 包装 Wasm dispatcher
+             \                         /
+              → 同一个 PluginContribution
+                    → 同一个 App registry
+                         → 同一个 evaluator
+```
+
+因此 `core`、第三方 native plugin 和 Wasm plugin 在**语义层**没有不同的 plugin 类别。backend 只影响代码如何装载、如何执行以及信任边界，不影响 call 的名字、参数、handler 不动点、成型或投影规则。
+
+== 引擎不是 App
+
+`notist-eval` 提供的是可注入的引擎能力：
+
+- `Function`、`FunctionRegistry` 与 `Value` 定义 handler 和值域；
+- `Evaluator` 消费调用方提供的 registry；
+- `node_engine` 对 registry 执行 call 森林不动点；
+- `ShapingRegistry` 与 `shape_flat_with` 消费调用方提供的成型 schema。
+
+这些对象不应知道有哪些 package，也不应自行加载 `core`。空 registry 是合法的 eval 环境；未安装 package 的 call 依照统一规则留在森林中。
+
+App 是更外层的组合根。它把 package contributions 合成为一次可运行的 semantic environment：
+
+```text
+App
+  ├── FunctionRegistry
+  ├── ShapingRegistry
+  ├── SignatureSet
+  ├── package identities / namespace policy
+  ├── plugin backend instances
+  └── environment fingerprint
+```
+
+当前 `WorkspaceSnapshot` 的构建过程已经承担这个组合根的职责：它捕获函数 registry、shaping registry、签名集合、插件实例和环境 identity。未来可以把这组职责抽成独立的 `notist-runtime` / `notist-app` crate，但不应把 App 反向塞入 `notist-eval`。
+
+== 统一 contribution
+
+backend 的输出必须先归一化为同一份注册贡献：
+
+```text
+PluginContribution {
+  package: PackageId,
+  functions: [FunctionHandler],
+  signatures: [(Name, FunctionSignature)],
+  elements: [ElementSchema],
+  projections: [TargetContribution],
+  backend: Native | Wasm,
+}
+```
+
+`backend` 是描述性装载元数据，不参与 reduction 语义。`package` 才是名字所有权与 environment fingerprint 的身份。
+
+组合根执行注册时必须保持原子性：
+
+1. 校验 package id、namespace、签名、schema 与 target contribution；
+2. 检查与既有 package 的名字冲突；
+3. 校验全部通过后，一次性写入 functions、signatures、shaping 与 projection registry；
+4. 任一失败都不得留下半个 package。
+
+native plugin 和 Wasm plugin 应该经过同一套校验与注册路径。Wasm 的 `init` 返回声明列表，native plugin 的 `register` 调用产生同样的 contribution；两者差别只在 contribution 的来源。
+
+== Plugin trait 与注册器
+
+当前已提供最小的公开 native registration API：`notist_eval::PluginContribution` 携带 package identity、functions、signatures、`ElementSchema` 与兼容 aliases，`FunctionRegistry::register_contribution` 对函数 registry 和 shaping registry 做事务式安装。它还不是独立的 `notist-plugin-api` crate，但普通 native crate 已不必访问 `notist-eval` 的私有模块才能构造 contribution。
+
+未来可以在这个数据契约之上提供更高层的 trait：
+
+```rust
+pub trait Plugin {
+    fn package_id(&self) -> &PackageId;
+
+    fn register(
+        &self,
+        registrar: &mut PluginRegistrar<'_>,
+    ) -> Result<(), PluginError>;
+}
+```
+
+`PluginRegistrar` 同时接收函数、签名、成型 schema 和 target contribution。它不执行函数，也不拥有 reducer；它只把 package 的声明和 handler 放进 App 的 registry。当前 HTML/target contribution 仍由 analysis snapshot 单独携带。
+
+Wasm host 通过 `LoadedPlugin::contribution()` 适配到同一安装路径；`notist-plugin-core` 通过 `notist_plugin_core::contribution()` 提供 core package。这样 `FunctionRegistry` 中不再存在“host function”与“plugin function”两种语义类别。
+
+函数 owner 应表达 package identity，而不是进程来源：
+
+```text
+core::heading  → owner = Package("core")
+shader::canvas → owner = Package("shader")
+```
+
+native/Wasm 是 backend 元数据；不能把 native 等同于 host，也不能把 Wasm 等同于 plugin 的语义身份。
+
+== core 的位置
+
+`core` 是语言标准 package，但不是 eval engine 的特权模块：
+
+- `core` 的 handlers、signatures、`ElementSchema` 和 alias 都由 `CorePlugin` contribution 提供；
+- 默认 Notist App 预装 `CorePlugin`，所以普通文档通常能使用 `core::*`；
+- 自定义 App 可以不安装 core，此时 `core::*` 与未安装的任意 package 一样成为未注册 call；
+- reduction engine 不为 `core::*` 增加特殊 dispatch 分支；
+- core namespace 的保留是 language/package policy，不是 handler 权限；
+- core 的 target 投影由 target package 提供，不把 HTML serializer 的知识塞回 semantic core。
+
+语法糖可以依赖标准 `core::*` 名称。例如 heading sugar lower 成 `core::heading`，表示语言 surface 依赖 core package；这不等于 lower 或 reducer 内嵌了 core handler。若当前 App 没有安装 core，lower 仍产生该 call，而 check/reduce 按普通未安装 package 处理。
+
+== 信任与可替换性
+
+语义等同不意味着安全 backend 等同：
+
+- native plugin 是宿主进程内代码，属于运行时信任边界；错误或恶意 native code 可以影响宿主进程；
+- Wasm plugin 在受限 sandbox 中执行，fuel、memory、response size 和 import policy 是它的安全边界；
+- 两者都不得通过语义 registry 获得 per-call 授权；内容组合仍是普通 call 输出和 fixpoint reduction；
+- 如果需要不信任的第三方代码，应选择 Wasm backend，而不是把 native plugin 当作隔离机制。
+
+这个区别只改变 package 的部署和信任策略，不改变 package 的 Node、FunctionSignature、ElementSchema 或 reduction 语义。
+
+== 生命周期与环境 identity
+
+App 组合一次 package set，并把它捕获到 immutable snapshot：
+
+```text
+配置 / 内置 package / native package / Wasm package
+  → load or register
+  → validate all contributions
+  → build registries and signatures
+  → compute environment identity
+  → publish WorkspaceSnapshot
+```
+
+package、manifest、Wasm module、native plugin surface 或 target contribution 的变化都必须改变 environment identity。一次文档求值只消费已捕获的 registry，不在中途重新加载 package，也不根据 backend 猜测语义。
+
+Wasm runtime 的实例化和 `init` 仍然是 Wasm backend 的生命周期；native plugin 的构造和 `register` 是 native backend 的生命周期。两条路径在 contribution 进入 App registry 后汇合。
+
+== 被拒绝的结构
+
+=== eval 内嵌 core（最终形态中拒绝，当前过渡实现仍存在）
+
+```text
+notist-eval
+  └── #[path] plugins/core/lib.rs
+```
+
+最终形态中这会让 engine 偷偷拥有一个默认 package，造成 core 与普通 plugin 的装载路径不同，并阻止独立 native plugin 复用同一边界。当前实现仍保留该 `#[path]` 过渡，但 core 已先通过 `PluginContribution` 和 package owner 语义安装；后续迁移目标是把实现移到普通 native package。
+
+=== 用 backend 区分语义类别
+
+```text
+HostFunction | PluginFunction
+```
+
+这会把“代码在哪里执行”错误地变成“call 具有什么语义”。语义应只由 package registration、signature、schema 和 handler 决定。
+
+=== 让 plugin host 成为 App
+
+`notist-plugin-host` 负责 Wasm 实例化、ABI、fuel 与 package 文件；它不应决定整个 vault 安装哪些 package，也不应偷偷创建只含 core 的 registry。package set 的组合属于 App / analysis composition root。
+
+== 已裁定 / 待定
+
+- 已裁定：plugin 是语义 package；native 与 Wasm 是可替换 backend，二者进入同一 contribution、registry 和 reduction 路径。
+- 已裁定：core 是默认 App 预装的标准 package，不是 `notist-eval` 的特权实现。
+- 已裁定：`notist-eval` 是可注入 engine，不拥有 package set；App / composition root 负责安装 core 与其他 package。
+- 已裁定：Function owner 表达 package identity；backend trust 单独建模。
+- 已裁定：native 与 Wasm contribution 都必须经过同一套 namespace、signature、schema 和原子注册校验。
+- 已实现最小统一 native contribution API：`notist-eval::PluginContribution` 与 `FunctionRegistry::register_contribution`；待定：是否再抽成独立 `notist-plugin-api` 或未来的 `notist-runtime` crate。
+- 待定：`WorkspaceSnapshot` 的组合逻辑何时抽成独立 App/runtime crate。
+- 待定：native plugin 的 target projection contribution 如何与 HTML/Wasm asset package 共同声明。

@@ -104,4 +104,4 @@ G3 序列结束收束全部 open section。
 - 已裁定：成型是递归流折叠，输入为 call 森林，输出为成型后的森林；完整模型见 [[vault::designs::pipeline::plugin-call-reduction]]。
 - 待定：段落起点的纯空白 `core::text` 段是否属于可丢弃的段间副产物。当前实现跳过这类段，与 I1 的字面"不删除个体"存在张力；需要裁决空白段是"分段副产物"还是"个体"，并补 conformance。
 - 待定：容器子元素不变量的第一条命名、诊断与恢复形状待定；[[vault::designs::plugin-system::core#构造器校验]] 引入第一条此类约束时，本文同步补充成型期检查规则。
-- 待定：Section 在成型后的森林中是否保留独立 `Block::Section` 包装（`Block::Section` 是 legacy 投影术语），还是完全使用 `core::section` 节点；插件设计当前记录选择后者。
+- 已裁定：Section 在成型后的森林中使用 `core::section` 节点；`Block::Section` 只属于已删除的旧投影术语。

@@ -2158,7 +2158,7 @@ fn render_workspace(
                 current_module: Some(current),
                 module_url_prefix: "",
             },
-            &resolver,
+            Some(&resolver),
             &annotations,
             &renderers,
         );

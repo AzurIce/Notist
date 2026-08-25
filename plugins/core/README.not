@@ -1,9 +1,11 @@
 = plugins/core
 
-`core` 是 Notist 的特权 native package。它不被 `Notist.toml` 作为第三方 Wasm 插件加载，而是随语言版本静态编译进 `notist-eval`。
+`core` 是 package id 为 `core` 的标准 native plugin。默认 Notist App 预装它，所以普通文档可以使用 `core::*` 和 prelude 短名；这不使它成为 `notist-eval` 的特权 reducer。其它 package 与它共享同一 contribution、registry、schema 和 call 森林模型。
 
-- 实现：`plugins/core/lib.rs`（所有内置内容函数，从 `notist-eval` 内部以 native module 编译）
+- crate：`notist-plugin-core`（`plugins/core/Cargo.toml`）
+- 实现：`plugins/core/lib.rs`
+- contribution：`notist_plugin_core::contribution()`
+- 组合入口：`notist_plugin_core::registry()` 或 `FunctionRegistry::register_contribution`
 - 契约：`plugins/core/plugin.json`（签名与成型 schema 的声明式镜像）
-- 注册路径：`FunctionRegistry::with_builtins()`，同时注册 prelude 短名与 `core::*` 别名
 
-第三方插件与 `core` 共享同一 `Function` / `Node` / `ElementSchema` 模型，但 `core::*` 不可被插件覆盖。
+`notist-eval` 不依赖这个 crate，也不自动安装 core；它只提供 engine 和 registry API。默认 App 在 composition root 显式安装 core contribution，未安装 core 的自定义 App 中，`core::*` 与其它未注册 call 一样留在森林中。`core` namespace 仍由语言/package policy 保留，不能被其它 package 覆盖，但 handler 不享有特殊规约权限。详见 [[vault::designs::plugin-system::runtime-composition]]。

@@ -9,6 +9,7 @@ dunce.workspace = true
 notist-model.workspace = true
 notist-syntax.workspace = true
 notist-eval.workspace = true
+notist-plugin-core.workspace = true
 notist-plugin-host.workspace = true
 
 [dev-dependencies]

@@ -1,11 +1,11 @@
-@![implementation = "aligned"]
+@![implementation = "partial"]
 = Core Namespace and Plugin Boundary
 
 本文是 core namespace 与插件边界的独立成篇，吸收第一代 core namespace 设计的裁决并更新到当前 surface。当前内置构造器见 [[vault::designs::plugin-system::core]]；函数签名与调用模型见 [[vault::designs::language::call-model]]；Vault 配置容器见 [[vault::designs::world::boundary-discovery]]。
 
 == Core Namespace
 
-`core` 是语言提供且不可被 lexical shadow 的 namespace，保存语言版本定义的内置构造器与基础操作：
+`core` 是语言标准 package 的保留 namespace，保存语言 surface 定义的标准构造器与基础操作。它由默认 App 预装，但不属于 eval engine 的内建 dispatch 表：
 
 ```text
 core::ref
@@ -21,10 +21,10 @@ core::figure
 core::strong / emph / underline / strike
 ```
 
-- `core` 在 ordinary lexical lookup 之前由 language version 解析；
-- `core` 不能成为 `let` binding、import alias 或 plugin namespace；
-- 短名 prelude 可以把常用构造器以裸名带入当前 Module scope；
-- 短名遵守普通 lexical shadowing；qualified `core::...` 永远指向语言定义。
+- `core` 的保留 namespace 与标准 surface 由 language policy 定义；具体 handler 仍来自 `core` package contribution；
+- `core` 不能成为 `let` binding、import alias 或其他 plugin namespace；
+- 短名 prelude 可以把已安装 core package 的常用构造器以裸名带入当前 Module scope；
+- 短名遵守普通 lexical shadowing；qualified `core::...` 永远指向标准 package 名字，即使当前 App 尚未安装对应 handler。
 
 当前实现中 `core::` qualified call 与 prelude 裸名均已启用；宿主语法糖（`= Title`、pipe table 等）始终取得对应 core intrinsic identity，不经过名字查找，因此 local binding 不影响糖。
 
@@ -76,15 +76,15 @@ Node {
 Vault marker 从空文件扩展为受限配置容器：
 
 ```toml
-language-version = "1"
+language-revision = "2026-08-25"
 [plugins]
-mermaid = { package = "mermaid", schema = "0.1" }
+mermaid = { package = "mermaid" }
 [site]
 styles = ["assets/user.css"]
 ```
 
 - 未知字段预留，不静默忽略；分析层携带配置 identity 与字节载荷；
-- language version 决定语法、core/prelude 与诊断 surface；
+- language revision 决定语法、core/prelude 与诊断 surface；
 - plugins 是显式加载表；
 - `[site]` 是站点级呈现配置：`styles` 列出额外样式表，条目必须是 vault 根内的相对 `.css` 路径（拒绝绝对路径、`\` 分隔与 `..` 逃逸），解析在 notist-plugin-host 的配置读取处统一校验；
 - 配置变更进入 source-set fingerprint（[[vault::designs::host::query-contract]]）。

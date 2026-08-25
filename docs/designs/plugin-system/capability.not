@@ -1,13 +1,13 @@
 @![implementation = "partial"]
 = Trust Model
 
-本文记录插件信任模型（原 Capability Model 的裁决更新，2026-08-23）。wasm 沙箱是唯一的安全边界：无 IO import、fuel 与内存预算、响应大小/节点上限（[[vault::designs::plugin-system::safety]]）。
+本文记录插件信任模型（原 Capability Model 的裁决更新，2026-08-23）。内容语义对所有 backend 统一；安全边界则随 backend 而不同：Wasm 通过无 IO import、fuel 与内存预算、响应大小/节点上限获得沙箱隔离，native plugin 属于宿主进程级信任（[[vault::designs::plugin-system::safety]]）。
 
 == 裁决：内容组合不做 per-call 授权
 
 原设计为 `host.call` 引入 Principal/grant 模型（清单 request ∩ 站点 grant）。实测裁定删除：
 
-1. **没有安全增量**——插件输出树本就完全由插件控制；直接在返回森林里写 `Call(core::x,…)` 与经 `host.call` 规约后嵌入，最终内容等价。真正的隔离来自 wasm 边界本身。
+1. **没有安全增量**——插件输出树本就完全由插件控制；直接在返回森林里写 `Call(core::x,…)` 与经 `host.call` 规约后嵌入，最终内容等价。内容组合不因调用路径而获得不同权限；需要隔离时依赖 Wasm backend 的沙箱，native backend 则依赖宿主对该进程的信任。
 2. **归因不可行**——透传类插件把文档正文（宿主已规约的内容）原样带回时，朴素 fixpoint 会把这些节点记到插件 principal 头上再查权限；任何归因规则要么误伤透传，要么让插件借返回值冒用宿主权限。
 
 因此：引擎不做 per-call 能力检查；`Notist.toml` 不再有 capabilities 键；清单不再声明 `capabilities.request`。若未来出现 IO 级能力需求（文件、网络），作为独立 capability 面另行设计，与内容组合正交。
@@ -16,10 +16,13 @@
 
 - `CapabilityPolicy` / `Principal` / caller 切换：已从 notist-eval 移除；
 - 清单与 `Notist.toml` 的 capabilities 字段：已删除（未知键按预留策略忽略）；
-- `host.call` 保留为跨包组合通道，仅受 depth/fuel 预算约束。
+- `host.call` 保留为跨包组合通道，仅受统一 reduction budget 约束；具体跨包 registry 仍待组合根完成。
+- 当前 Wasm loader 提供沙箱预算；native contribution 的进程级信任边界尚未由统一 App API 表达。
 
 == 已裁定
 
-- 已裁定：信任模型 = wasm 沙箱；内容组合不授权。
+- 已裁定：内容语义和 per-call 组合规则不按 backend 区分；Wasm 沙箱与 native 进程信任只是不同的执行边界。
+- 已裁定：内容组合不授权；未来文件/网络等 IO 能力另行设计，不伪装成内容函数权限。
+
 - 已裁定：`FunctionOwner` 保留为函数来源的描述性元数据，不参与运行时判定。
 - 待定：`host.call` 的跨包组合尚未落地——每包共享 registry 当前只含 core 与本包函数，`host.call` 调不到其他插件的元素；实际的跨包组合路径是返回森林里的 call 由宿主 fixpoint 规约。`host.call` 是否扩展为全 vault registry 待定。

@@ -1,4 +1,4 @@
-@![implementation = "partial"]
+@![implementation = "aligned"]
 = Project Stage
 
 本文定义 [[vault::designs::pipeline]] 的最后阶段：把成型后的森林投影为 target 可见的结果。HTML target 的完整映射见 [[vault::designs::host::html-renderer]]；插件节点的 namespace 契约见 [[vault::designs::world::core-namespace-plugin-boundary]]。
@@ -16,8 +16,8 @@
 
 == 投影原则
 
-- **投影即规约**：project 是 target package 注册的第二阶段规约——投影 handler 把语义名字规约为 target 词表节点（`core::heading` → `html::h1`），哑 serializer 直出结果；语义规约与投影规约是两个独立的 registry。完整模型见 [[vault::designs::plugin-system::projection]]。
-- **按 name 分发**：投影只依据节点名字选择 handler；`core::*` 与插件节点走同一机制。
+- **投影即规约**：project 是 target package 注册的第二阶段规约。`HtmlProjectionRegistry` 将插件 handler 与未知 call fallback 规约为 `html::*` 数据节点，再由 serializer 直出；语义规约与投影规约是两个独立 registry。core 的原生映射由同一 target 的内置 serializer 分支提供，语义 registry 不认识 `html::*`。完整模型见 [[vault::designs::plugin-system::projection]]。
+- **按 name 分发**：投影依据节点名字选择 handler；`core::*`、插件节点和 fallback 都由 HTML target 统一处理，注册所有权不改变。
 - **语义由宿主保留**：core 节点在 HTML target 投影为原生标签（`core::heading` → `h1`..`h6`、`core::table` → `table`、`core::details` → `details`），不为每个 core 节点强制创建 Web Component。
 - **Range 与属性投影**：source range 与属性表条目投影到 DOM metadata，不改变语义树。
 

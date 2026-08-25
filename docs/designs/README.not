@@ -96,13 +96,18 @@ plugin-system/ 插件系统：package、ABI、贡献、信任模型与生命周�
 
 - [[vault::designs::language::collection-types]]：`missing`
 - [[vault::designs::language::call-model]]：`partial`（rest 调用模型未实现）
-- [[vault::designs::pipeline]]：`partial`（目标数据形状为全程 call 森林；legacy 引擎与桥接层未拆）
-- [[vault::designs::pipeline::evaluate]]：`partial`（值域重写未完成：`Value::Content` 仍持有 legacy `Content`）
-- [[vault::designs::plugin-system::capability]]：`partial`（`host.call` 跨包组合未落地，当前共享 registry 仅含 core 与本包函数）
-- [[vault::designs::plugin-system::safety]]：`partial`（`host.call` 重入本包元素会死锁；不持锁的嵌套规约未实现）
-- [[vault::designs::pipeline::plugin-call-reduction]]：`partial`（统一 `Node` 模型已裁定；值域重写、legacy 引擎与桥接层拆除未完成）
-- [[vault::designs::pipeline::project]]：`partial`（投影即第二阶段规约已裁定；实现仍为 renderer 分发表）
-- [[vault::designs::plugin-system::projection]]：`partial`（投影即规约 + fallback 出标签已裁定；实现与 trusted 收口未完成）
+- [[vault::designs::pipeline]]：`aligned`（统一 Node 管线与 HTML target 二阶段投影已实现）
+- [[vault::designs::pipeline::evaluate]]：`partial`（Node 值域已对齐；递归绑定与部分语言细节仍待实现）
+- [[vault::designs::plugin-system]]：`partial`（完整 native/Wasm App API 与独立 runtime crate 尚未抽出）
+- [[vault::designs::plugin-system::package]]：`partial`（package 模型与 core/native contribution 已实现；完整 package lifecycle/API 尚未收口）
+- [[vault::designs::plugin-system::runtime-composition]]：`partial`（WorkspaceSnapshot 与统一 `PluginContribution` 已实现；独立 App/runtime crate 尚未抽出）
+- [[vault::designs::plugin-system::eval-contribution]]：`partial`（native/Wasm 已走统一 contribution；高层 native Plugin trait 尚未提供）
+- [[vault::designs::world::core-namespace-plugin-boundary]]：`partial`（namespace policy 已明确；完整 package policy 校验仍需收口）
+- [[vault::designs::plugin-system::capability]]：`partial`（backend 信任边界已裁定；统一 composition 与 host.call 跨包边界仍需收口）
+- [[vault::designs::plugin-system::safety]]：`partial`（host.call 的重入与锁边界仍需继续收口）
+- [[vault::designs::pipeline::plugin-call-reduction]]：`aligned`（统一 Node、handler 不动点与 target-side 投影边界已实现）
+- [[vault::designs::pipeline::project]]：`aligned`（HTML target 已有独立 projection registry 与 serializer）
+- [[vault::designs::plugin-system::projection]]：`partial`（Node 投影规约与 fallback 已实现；trusted/词表收口仍待定）
 - [[vault::designs::host::query-contract]]：`partial`（text-only 投影、`read` citation footer 与 `--exclude-scope` 尚未完整实现）
 - [[vault::designs::host::search-retrieval-index]]：`partial`（`--exclude-scope` 未实现）
 - [[vault::designs::host::cli-command-surface-skill-distribution]]：`partial`（2026-08-15 裁决的命令面未落地：`next`/`locate`/`refs`/`definition` 与 text-only 投影待实现）

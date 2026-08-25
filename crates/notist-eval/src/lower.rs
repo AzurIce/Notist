@@ -1,147 +1,26 @@
-#![allow(dead_code)]
+//! Expression evaluation for the unified pipeline.
+//!
+//! The lowering pass (`stream_lower`) owns the Markup → `Node` forest
+//! translation; this module owns the expression language: literals, names,
+//! operators, blocks, `let`, `if`, lambdas, user functions, and calls in
+//! expression position. `Content` literals and trailing bodies lower through
+//! the stream lowering pass and reduce on the node engine, so expression
+//! evaluation always observes the input-side (fully reduced) forest.
 
 use std::collections::HashMap;
 
-use notist_model::{
-    Content, DefaultValue, Element, ElementNode, FunctionSignature, Parameter, TextRange, Type,
-};
+use notist_model::{DefaultValue, FunctionSignature, Node, NodeValue, Parameter, TextRange, Type};
 use notist_syntax::{
-    Attributes, BinaryOperator, BodyForm, Call, ContentBlock, EmbeddedExpression, Expression,
-    ExpressionKind, Markup, MarkupItem, RawLiteral, RawLiteralForm, UnaryOperator,
-    UserFunctionDefinition, UserParameter,
+    BinaryOperator, BodyForm, Call, ContentBlock, Expression, ExpressionKind, Markup, MarkupItem,
+    UnaryOperator, UserFunctionDefinition, UserParameter,
 };
 
-use crate::function::{Function, FunctionContext, FunctionInput, FunctionOutput, FunctionRegistry};
+use crate::function::{Function, FunctionContext, FunctionInput, FunctionRegistry};
+use crate::leaf::{ReduceFrame, ReduceLimits, node_engine};
 use crate::type_system::{
     FunctionImplementation, FunctionValue, Value, ValueOrigin, bind_arguments, evaluate_literal,
 };
-use crate::{EvalDiagnostic, Evaluation};
-
-pub(crate) fn evaluate_markup(
-    source: &str,
-    markup: &Markup,
-    base_offset: usize,
-    registry: &FunctionRegistry,
-    depth: usize,
-) -> Evaluation {
-    evaluate_markup_with_bindings(source, markup, base_offset, registry, depth, HashMap::new())
-}
-
-/// Evaluates markup with a pre-seeded document scope: the analysis layer uses
-/// this to inject imported bindings before evaluation (D0004).
-pub(crate) fn evaluate_markup_with_bindings(
-    source: &str,
-    markup: &Markup,
-    base_offset: usize,
-    registry: &FunctionRegistry,
-    depth: usize,
-    bindings: HashMap<String, Value>,
-) -> Evaluation {
-    // D0002 sequential scope: bindings (including function definitions) are
-    // visible only after their declaration point; hoisting is gone.
-    let user_functions = HashMap::new();
-    evaluate_markup_in_environment(
-        source,
-        markup,
-        base_offset,
-        registry,
-        depth,
-        &user_functions,
-        vec![bindings],
-        true,
-    )
-}
-
-#[allow(clippy::too_many_arguments)]
-pub(crate) fn evaluate_markup_in_environment(
-    source: &str,
-    markup: &Markup,
-    base_offset: usize,
-    registry: &FunctionRegistry,
-    depth: usize,
-    user_functions: &HashMap<String, UserFunctionDefinition>,
-    variables: Vec<HashMap<String, Value>>,
-    handle_annotations: bool,
-) -> Evaluation {
-    let mut state = LowerState {
-        source,
-        base_offset,
-        registry,
-        depth,
-        user_functions,
-        variables,
-        content: Content::default(),
-        diagnostics: Vec::new(),
-        annotations: Vec::new(),
-        handle_annotations,
-        pending_annotations: Vec::new(),
-        pending_block_start: None,
-        pending_block_end: 0,
-        module_attributes: Vec::new(),
-    };
-    state.lower_markup(markup);
-    state.finish_annotations();
-    let bindings = state.variables.first().cloned().unwrap_or_default();
-    Evaluation {
-        content: state.content,
-        diagnostics: state.diagnostics,
-        bindings,
-        annotations: state.annotations,
-        module_attributes: state.module_attributes,
-    }
-}
-
-struct LowerState<'a> {
-    source: &'a str,
-    base_offset: usize,
-    registry: &'a FunctionRegistry,
-    depth: usize,
-    user_functions: &'a HashMap<String, UserFunctionDefinition>,
-    variables: Vec<HashMap<String, Value>>,
-    content: Content,
-    diagnostics: Vec<EvalDiagnostic>,
-    annotations: Vec<crate::AnnotationEntry>,
-    /// Whether this state processes `@[...]` / `@![...]` annotations. Only
-    /// the document-level state does: nested fragment evaluations re-parse
-    /// the same source and must not double-bind them.
-    handle_annotations: bool,
-    /// Block-prefix annotations awaiting their block, in source order.
-    pending_annotations: Vec<(Attributes, TextRange)>,
-    /// Range of the block currently being annotated, once it has started.
-    pending_block_start: Option<TextRange>,
-    /// Exclusive end of the block currently being annotated.
-    pending_block_end: usize,
-    /// Module annotations collected from `@![...]` items.
-    module_attributes: Vec<Attributes>,
-}
-
-pub(crate) fn lower_inline_text(
-    source: &str,
-    text: &notist_syntax::SpannedText,
-    base_offset: usize,
-    registry: &FunctionRegistry,
-    user_functions: &HashMap<String, UserFunctionDefinition>,
-    variables: Vec<HashMap<String, Value>>,
-) -> (Content, Vec<crate::AnnotationEntry>, Vec<EvalDiagnostic>) {
-    let mut state = LowerState {
-        source,
-        base_offset,
-        registry,
-        depth: 0,
-        user_functions,
-        variables,
-        content: Content::new(),
-        diagnostics: Vec::new(),
-        annotations: Vec::new(),
-        handle_annotations: false,
-        pending_annotations: Vec::new(),
-        pending_block_start: None,
-        pending_block_end: 0,
-        module_attributes: Vec::new(),
-    };
-    state.push_text_with_parbreaks(text);
-    (state.content, state.annotations, state.diagnostics)
-}
+use crate::{EvalDiagnostic, stream_lower};
 
 pub(crate) fn collect_user_functions(
     markup: &Markup,
@@ -292,9 +171,9 @@ fn float_binary(operator: BinaryOperator, left: f64, right: f64) -> Option<f64> 
     }
 }
 
-/// Evaluates one expression with an isolated LowerState, used by the
-/// Stream lowering pass to evaluate ordinary argument/let values while the
-/// document-level environment stays in the stream lowerer.
+/// Evaluates one expression with an isolated expression state, used by the
+/// lowering pass to evaluate ordinary argument/let values while the
+/// document-level environment stays in the lowerer.
 pub(crate) fn evaluate_expression_fragment(
     source: &str,
     expression: &Expression,
@@ -304,154 +183,31 @@ pub(crate) fn evaluate_expression_fragment(
     user_functions: &HashMap<String, UserFunctionDefinition>,
     variables: Vec<HashMap<String, Value>>,
 ) -> (Value, Vec<EvalDiagnostic>) {
-    let mut state = LowerState {
+    let mut state = ExpressionState {
         source,
         base_offset,
         registry,
         depth,
         user_functions,
         variables,
-        content: Content::default(),
-        diagnostics: Vec::new(),
-        annotations: Vec::new(),
-        handle_annotations: false,
-        pending_annotations: Vec::new(),
-        pending_block_start: None,
-        pending_block_end: 0,
-        module_attributes: Vec::new(),
     };
     let (value, _, diagnostics) = state.evaluate_expression(expression, expression.range);
     (value, diagnostics)
 }
 
-impl LowerState<'_> {
-    fn lower_markup(&mut self, markup: &Markup) {
-        // D0006: block-prefix and module annotations are collected once from
-        // the document-level parse; nested fragment re-parses skip them.
-        if self.handle_annotations {
-            for item in &markup.items {
-                match item {
-                    MarkupItem::BlockAnnotation(annotation) => {
-                        self.pending_annotations
-                            .push((annotation.attributes.clone(), annotation.range));
-                    }
-                    MarkupItem::ModuleAnnotation(annotation) => {
-                        self.module_attributes.push(annotation.attributes.clone());
-                    }
-                    _ => {}
-                }
-            }
-        }
+/// The expression evaluator's environment: a scope stack over the source,
+/// with the function registry and the user-function table of the enclosing
+/// document.
+struct ExpressionState<'a> {
+    source: &'a str,
+    base_offset: usize,
+    registry: &'a FunctionRegistry,
+    depth: usize,
+    user_functions: &'a HashMap<String, UserFunctionDefinition>,
+    variables: Vec<HashMap<String, Value>>,
+}
 
-        for item in &markup.items {
-            match item {
-                MarkupItem::Text(text) => self.push_text_with_parbreaks(text),
-                MarkupItem::Wiki(link) => {
-                    self.push_element(
-                        Element::Reference(link.target.clone()),
-                        link.range.shifted(self.base_offset),
-                    );
-                }
-                MarkupItem::Raw(raw) => self.lower_raw(raw),
-                MarkupItem::Embedded(embedded) => self.lower_embedded(embedded),
-                MarkupItem::Heading(sugar) => self.lower_heading_sugar(sugar),
-                MarkupItem::Rule(range) => {
-                    self.push_element(Element::Rule, range.shifted(self.base_offset));
-                }
-                MarkupItem::List(sugar) => self.lower_list_sugar(sugar),
-                MarkupItem::Table(sugar) => self.lower_table_sugar(sugar),
-                // Annotations were collected ahead of the content loop.
-                MarkupItem::BlockAnnotation(_) | MarkupItem::ModuleAnnotation(_) => {}
-            }
-        }
-    }
-
-    /// Lowers a heading sugar node (D0003): the body Markup is evaluated as a
-    /// nested fragment and becomes the heading body.
-    fn lower_heading_sugar(&mut self, sugar: &notist_syntax::HeadingSugar) {
-        let evaluation = evaluate_markup_in_environment(
-            self.source,
-            &sugar.body,
-            self.base_offset,
-            self.registry,
-            self.depth + 1,
-            self.user_functions,
-            self.variables.clone(),
-            false,
-        );
-        self.annotations.extend(evaluation.annotations);
-        self.diagnostics.extend(evaluation.diagnostics);
-        self.push_element(
-            Element::Heading {
-                level: sugar.level as u8,
-                body: evaluation.content,
-            },
-            sugar.range.shifted(self.base_offset),
-        );
-    }
-
-    fn lower_embedded(&mut self, embedded: &EmbeddedExpression) {
-        let (value, _, mut diagnostics) =
-            self.evaluate_expression(&embedded.expression, embedded.scope_range);
-        self.diagnostics.append(&mut diagnostics);
-        if !embedded.attributes.items.is_empty() || embedded.attributes.id.is_some() {
-            self.annotations.push(crate::AnnotationEntry {
-                range: embedded.scope_range.shifted(self.base_offset),
-                attributes: embedded.attributes.clone(),
-            });
-        }
-        match value {
-            Value::Content(content) => {
-                self.content.elements.extend(content.elements);
-            }
-            Value::String(text) => {
-                self.push_element(
-                    Element::Text(text),
-                    embedded.scope_range.shifted(self.base_offset),
-                );
-            }
-            Value::None => {}
-            other => {
-                // D0002 insertion rules: Int / Float / Bool stringify into
-                // Text; only Function (and legacy collection values) refuse.
-                let text = match other {
-                    Value::Int(value) => Some(value.to_string()),
-                    Value::Float(value) => Some(value.to_string()),
-                    Value::Bool(value) => Some(value.to_string()),
-                    _ => None,
-                };
-                match text {
-                    Some(text) => self.push_element(
-                        Element::Text(text),
-                        embedded.scope_range.shifted(self.base_offset),
-                    ),
-                    None => self.diagnostics.push(EvalDiagnostic {
-                        message: format!("cannot insert {} into Markup", other.ty()),
-                        range: embedded.expression.range.shifted(self.base_offset),
-                    }),
-                }
-            }
-        }
-    }
-
-    fn lower_raw(&mut self, raw: &RawLiteral) {
-        let payload = &self.source[raw.payload_range.start..raw.payload_range.end];
-        let block = raw.form == RawLiteralForm::Fenced;
-        let language = raw
-            .tag
-            .as_ref()
-            .map(|tag| tag.value.clone())
-            .filter(|v| !v.is_empty());
-        self.push_element(
-            Element::Raw {
-                text: payload.to_owned(),
-                block,
-                language,
-            },
-            raw.range.shifted(self.base_offset),
-        );
-    }
-
+impl ExpressionState<'_> {
     fn evaluate_expression(
         &mut self,
         expression: &Expression,
@@ -543,7 +299,7 @@ impl LowerState<'_> {
                         Value::Content(content) => match &mut joined {
                             None => joined = Some(Value::Content(content)),
                             Some(Value::Content(existing)) => {
-                                existing.elements.extend(content.elements);
+                                existing.extend(content);
                             }
                             Some(other) => diagnostics.push(EvalDiagnostic {
                                 message: format!(
@@ -868,20 +624,28 @@ impl LowerState<'_> {
         (Value::None, diagnostics)
     }
 
+    /// Evaluates a `Content` literal: the block markup lowers through the
+    /// stream lowering pass and reduces to the fixpoint, so the resulting
+    /// `Value::Content` forest is input-side (fully reduced).
     fn evaluate_content_block(&mut self, block: &ContentBlock) -> (Value, Vec<EvalDiagnostic>) {
-        let evaluation = evaluate_markup_in_environment(
+        let (nodes, mut diagnostics) = stream_lower::lower_body_with_environment(
             self.source,
             &block.markup,
             self.base_offset,
             self.registry,
-            self.depth,
             self.user_functions,
             self.variables.clone(),
-            false,
         );
-        let diagnostics = evaluation.diagnostics;
-        self.annotations.extend(evaluation.annotations);
-        (Value::Content(evaluation.content), diagnostics)
+        let (forest, errors) = self.reduce_forest(nodes);
+        diagnostics.extend(errors);
+        (Value::Content(forest), diagnostics)
+    }
+
+    /// Reduces a lowered forest to the fixpoint with a fresh budget.
+    fn reduce_forest(&self, nodes: Vec<Node>) -> (Vec<Node>, Vec<EvalDiagnostic>) {
+        let limits = ReduceLimits::default();
+        let mut frame = ReduceFrame::root(&limits);
+        node_engine::reduce_nodes_recovering(nodes, self.registry, &limits, &mut frame)
     }
 
     fn evaluate_call(
@@ -927,16 +691,22 @@ impl LowerState<'_> {
                 .trailing
                 .iter()
                 .any(|block| block.form == BodyForm::Block);
-            let content = Content::single(
-                Element::UnresolvedCall {
-                    name: name.clone(),
-                    arguments,
-                    trailing: trailing.into_iter().map(|(content, _)| content).next(),
-                    block,
-                },
+            let mut node = Node::call(
+                "core::unresolved-call",
                 site_range.shifted(self.base_offset),
-            );
-            return (Value::Content(content), diagnostics);
+            )
+            .arg("name", name.clone());
+            if let Some(arguments) = arguments {
+                node.args
+                    .push(("arguments".into(), NodeValue::String(arguments)));
+            }
+            node.children = trailing
+                .into_iter()
+                .next()
+                .map(|(forest, _)| forest)
+                .unwrap_or_default();
+            node.block = block;
+            return (Value::Content(vec![node]), diagnostics);
         };
         self.evaluate_builtin(function, name, call, site_range)
     }
@@ -1022,10 +792,12 @@ impl LowerState<'_> {
             range: site_range.shifted(self.base_offset),
         };
         match function.call(&context, input) {
-            Ok(FunctionOutput::Value(value)) if signature.result.accepts(&value.ty()) => {
-                (value, diagnostics)
-            }
-            Ok(FunctionOutput::Value(value)) => {
+            // Functions always return a Value; content results arrive as
+            // `Value::Content` forests. Expression-position calls adopt the
+            // returned forest as-is; macro-style re-reduction happens when a
+            // forest re-enters the document stream, not inside one expression.
+            Ok(value) if signature.result.accepts(&value.ty()) => (value, diagnostics),
+            Ok(value) => {
                 diagnostics.push(EvalDiagnostic {
                     message: format!(
                         "function `{name}` returned {}, expected {}",
@@ -1035,83 +807,6 @@ impl LowerState<'_> {
                     range: site_range.shifted(self.base_offset),
                 });
                 (Value::None, diagnostics)
-            }
-            Ok(FunctionOutput::Nodes(nodes)) => {
-                // Terminal response forests project straight back to leaves;
-                // composition belongs to host.call, not to return values.
-                let mut out_leaves = Vec::new();
-                for node in &nodes {
-                    match notist_model::node_to_instance(node) {
-                        Ok(instance) => out_leaves.push(instance),
-                        Err(error) => diagnostics.push(EvalDiagnostic {
-                            message: format!("returned node is not reducible: {error}"),
-                            range: site_range.shifted(self.base_offset),
-                        }),
-                    }
-                }
-                match notist_eval_unused(out_leaves) {
-                    Some(value) if signature.result.accepts(&value.ty()) => (value, diagnostics),
-                    Some(value) => {
-                        diagnostics.push(EvalDiagnostic {
-                            message: format!(
-                                "function `{name}` returned {}, expected {}",
-                                value.ty(),
-                                signature.result
-                            ),
-                            range: site_range.shifted(self.base_offset),
-                        });
-                        (Value::None, diagnostics)
-                    }
-                    None => {
-                        diagnostics.push(EvalDiagnostic {
-                            message: format!(
-                                "function `{name}` returned leaves that cannot be lowered"
-                            ),
-                            range: site_range.shifted(self.base_offset),
-                        });
-                        (Value::None, diagnostics)
-                    }
-                }
-            }
-            Ok(FunctionOutput::Content(content)) => {
-                let value = Value::Content(content);
-                if signature.result.accepts(&value.ty()) {
-                    (value, diagnostics)
-                } else {
-                    diagnostics.push(EvalDiagnostic {
-                        message: format!(
-                            "function `{name}` returned {}, expected {}",
-                            value.ty(),
-                            signature.result
-                        ),
-                        range: site_range.shifted(self.base_offset),
-                    });
-                    (Value::None, diagnostics)
-                }
-            }
-            Ok(FunctionOutput::Calls(calls)) => {
-                match crate::call::reduce_content_as(&calls, self.registry) {
-                    Ok(content) => {
-                        let value = Value::Content(content);
-                        if signature.result.accepts(&value.ty()) {
-                            (value, diagnostics)
-                        } else {
-                            diagnostics.push(EvalDiagnostic {
-                                message: format!(
-                                    "function `{name}` returned {}, expected {}",
-                                    value.ty(),
-                                    signature.result
-                                ),
-                                range: site_range.shifted(self.base_offset),
-                            });
-                            (Value::None, diagnostics)
-                        }
-                    }
-                    Err(mut errors) => {
-                        diagnostics.append(&mut errors);
-                        (Value::None, diagnostics)
-                    }
-                }
             }
             Err(mut errors) => {
                 diagnostics.append(&mut errors);
@@ -1190,439 +885,28 @@ impl LowerState<'_> {
         (value, diagnostics)
     }
 
+    /// Evaluates trailing Content blocks into reduced forests, one per block.
     fn evaluate_trailing(
         &mut self,
         trailing: &[ContentBlock],
-    ) -> (Vec<(Content, TextRange)>, Vec<EvalDiagnostic>) {
+    ) -> (Vec<(Vec<Node>, TextRange)>, Vec<EvalDiagnostic>) {
         let mut result = Vec::new();
         let mut diagnostics = Vec::new();
         for block in trailing {
-            let evaluation = evaluate_markup_in_environment(
+            let (nodes, mut block_diagnostics) = stream_lower::lower_body_with_environment(
                 self.source,
                 &block.markup,
                 self.base_offset,
                 self.registry,
-                self.depth + 1,
                 self.user_functions,
                 self.variables.clone(),
-                false,
             );
-            diagnostics.extend(evaluation.diagnostics);
-            self.annotations.extend(evaluation.annotations);
+            diagnostics.append(&mut block_diagnostics);
+            let (forest, errors) = self.reduce_forest(nodes);
+            diagnostics.extend(errors);
             let range = block.payload_range.shifted(self.base_offset);
-            result.push((evaluation.content, range));
+            result.push((forest, range));
         }
         (result, diagnostics)
     }
-
-    fn push_element(&mut self, element: Element, range: TextRange) {
-        let inline = element.is_inline();
-        let parbreak = matches!(element, Element::Parbreak);
-        let blank = matches!(&element, Element::Text(text) if text.trim().is_empty());
-        self.content.elements.push(ElementNode { element, range });
-        self.track_pending_annotation(range, inline, parbreak, blank);
-    }
-
-    /// Advances the block-annotation tracking for one produced element: the
-    /// first non-Parbreak element starts the annotated block, inline elements
-    /// extend it, and a Parbreak or a block-level element closes it (D0006:
-    /// `@[...]` binds the immediately following block-level node).
-    fn track_pending_annotation(
-        &mut self,
-        range: TextRange,
-        inline: bool,
-        parbreak: bool,
-        blank: bool,
-    ) {
-        if self.pending_annotations.is_empty() {
-            return;
-        }
-        if self.pending_block_start.is_none() {
-            if parbreak || blank {
-                return;
-            }
-            self.pending_block_start = Some(range);
-            self.pending_block_end = range.end;
-            if !inline {
-                let end = self.pending_block_end;
-                self.flush_pending_annotations(end);
-            }
-            return;
-        }
-        if parbreak || !inline {
-            let end = self.pending_block_end;
-            self.flush_pending_annotations(end);
-        } else {
-            self.pending_block_end = range.end;
-        }
-    }
-
-    /// Emits annotation-table entries for the tracked block `[start, end)` to
-    /// every pending `@[...]` annotation that precedes the block start; later
-    /// annotations stay pending for their own following block (D0006: stacked
-    /// annotations share one block, separate annotations get separate blocks).
-    fn flush_pending_annotations(&mut self, block_end: usize) {
-        let Some(start) = self.pending_block_start.take() else {
-            return;
-        };
-        let mut remaining = Vec::new();
-        for (attributes, annotation_range) in self.pending_annotations.drain(..) {
-            if annotation_range.start < start.start {
-                self.annotations.push(crate::AnnotationEntry {
-                    range: TextRange::new(start.start, block_end),
-                    attributes,
-                });
-            } else {
-                remaining.push((attributes, annotation_range));
-            }
-        }
-        self.pending_annotations = remaining;
-    }
-
-    /// Finishes block-annotation tracking at the end of a markup sequence:
-    /// a block extending to the end flushes normally; annotations with no
-    /// following block are dangling (D0006 error recovery).
-    fn finish_annotations(&mut self) {
-        if self.pending_block_start.is_some() {
-            let end = self.pending_block_end;
-            self.flush_pending_annotations(end);
-        }
-        for (_, range) in self.pending_annotations.drain(..) {
-            self.diagnostics.push(EvalDiagnostic {
-                message: "block annotation `@[...]` is not followed by a block".into(),
-                range,
-            });
-        }
-    }
-
-    /// Lowers a pipe-table sugar node (D0003): cells are evaluated as nested
-    /// inline fragments and assembled row-major into one `Element::Table`.
-    fn lower_table_sugar(&mut self, sugar: &notist_syntax::TableSugar) {
-        let mut cells = Vec::new();
-        let mut lower_cells =
-            |cells: &mut Vec<ElementNode>, row: &[notist_syntax::TableSugarCell]| {
-                for cell in row {
-                    let evaluation = evaluate_markup_in_environment(
-                        self.source,
-                        &cell.body,
-                        self.base_offset,
-                        self.registry,
-                        self.depth + 1,
-                        self.user_functions,
-                        self.variables.clone(),
-                        false,
-                    );
-                    self.annotations.extend(evaluation.annotations);
-                    self.diagnostics.extend(evaluation.diagnostics);
-                    cells.push(ElementNode {
-                        element: Element::TableCell {
-                            body: evaluation.content,
-                            colspan: 1,
-                            rowspan: 1,
-                        },
-                        range: cell.range.shifted(self.base_offset),
-                    });
-                }
-            };
-        lower_cells(&mut cells, &sugar.header);
-        for row in &sugar.rows {
-            lower_cells(&mut cells, row);
-        }
-        let columns = u16::try_from(sugar.header.len()).unwrap_or(u16::MAX);
-        self.push_element(
-            Element::Table {
-                columns,
-                header: true,
-                alignments: sugar.alignments.clone(),
-                cells,
-            },
-            sugar.range.shifted(self.base_offset),
-        );
-    }
-
-    /// Lowers a list sugar node (D0003): each row body is evaluated as a
-    /// nested fragment, and indentation nests items into their parent bodies.
-    fn lower_list_sugar(&mut self, sugar: &notist_syntax::ListSugar) {
-        struct ListRow {
-            indent: usize,
-            ordered: bool,
-            body: Content,
-            range: TextRange,
-        }
-
-        fn nested_items(
-            rows: &mut std::collections::VecDeque<ListRow>,
-            indent: usize,
-        ) -> Option<Vec<ElementNode>> {
-            let mut items: Vec<ElementNode> = Vec::new();
-            while let Some(row) = rows.front() {
-                if row.indent < indent {
-                    break;
-                }
-                if row.indent > indent {
-                    let child_indent = row.indent;
-                    let children = nested_items(rows, child_indent)?;
-                    let parent = items.last_mut()?;
-                    let body = match &mut parent.element {
-                        Element::ListItem(body) | Element::EnumItem { body, .. } => body,
-                        _ => return None,
-                    };
-                    body.elements.extend(children);
-                    continue;
-                }
-
-                let row = rows.pop_front().unwrap();
-                items.push(ElementNode {
-                    element: if row.ordered {
-                        Element::EnumItem {
-                            value: None,
-                            body: row.body,
-                        }
-                    } else {
-                        Element::ListItem(row.body)
-                    },
-                    range: row.range,
-                });
-            }
-            Some(items)
-        }
-
-        let mut rows: std::collections::VecDeque<ListRow> = sugar
-            .rows
-            .iter()
-            .map(|row| {
-                let evaluation = evaluate_markup_in_environment(
-                    self.source,
-                    &row.body,
-                    self.base_offset,
-                    self.registry,
-                    self.depth + 1,
-                    self.user_functions,
-                    self.variables.clone(),
-                    false,
-                );
-                self.annotations.extend(evaluation.annotations);
-                self.diagnostics.extend(evaluation.diagnostics);
-                ListRow {
-                    indent: row.indent,
-                    ordered: row.ordered,
-                    body: evaluation.content,
-                    range: row.range.shifted(self.base_offset),
-                }
-            })
-            .collect();
-        let mut items = Vec::new();
-        while let Some(base_indent) = rows.front().map(|row| row.indent) {
-            let Some(root_items) = nested_items(&mut rows, base_indent) else {
-                return;
-            };
-            items.extend(root_items);
-        }
-        self.content.elements.extend(items);
-    }
-
-    fn push_text_with_parbreaks(&mut self, text: &notist_syntax::SpannedText) {
-        let bytes = text.value.as_bytes();
-        let mut segment_start = 0usize;
-        let mut cursor = 0usize;
-
-        while cursor < bytes.len() {
-            let Some(mut after) = newline_end(bytes, cursor) else {
-                cursor += 1;
-                continue;
-            };
-            let mut count = 1usize;
-            while let Some(next) = newline_end(bytes, after) {
-                count += 1;
-                after = next;
-            }
-            if count == 1 {
-                // A soft break is a separator within the paragraph, not
-                // content: flush the segment before it and skip the newline
-                // so it never reaches rendered output.
-                self.push_inline_text(text, segment_start, cursor);
-                segment_start = after;
-                cursor = after;
-                continue;
-            }
-            self.push_inline_text(text, segment_start, cursor);
-            self.push_element(Element::Parbreak, self.text_range(text, cursor, after));
-            segment_start = after;
-            cursor = after;
-        }
-
-        self.push_inline_text(text, segment_start, bytes.len());
-    }
-
-    fn push_inline_text(&mut self, text: &notist_syntax::SpannedText, start: usize, end: usize) {
-        let bytes = text.value.as_bytes();
-        let mut plain_start = start;
-        let mut cursor = start;
-        while cursor < end {
-            if bytes[cursor..end].starts_with(b"~~")
-                && (cursor == start || bytes[cursor - 1] != b'\\')
-                && let Some(closing) = find_unescaped_sequence(bytes, cursor + 2, end, b"~~")
-                && closing > cursor + 2
-            {
-                self.push_plain_text(text, plain_start, cursor);
-                let body = self.inline_content(text, cursor + 2, closing);
-                self.push_element(
-                    Element::Strike(body),
-                    self.text_range(text, cursor, closing + 2),
-                );
-                cursor = closing + 2;
-                plain_start = cursor;
-                continue;
-            }
-
-            let paired = if bytes[cursor..end].starts_with(b"__") {
-                Some((
-                    b"__".as_slice(),
-                    Element::Underline as fn(Content) -> Element,
-                ))
-            } else {
-                None
-            };
-            if let Some((delimiter, element)) = paired
-                && (cursor == start || bytes[cursor - 1] != b'\\')
-                && let Some(closing) =
-                    find_unescaped_sequence(bytes, cursor + delimiter.len(), end, delimiter)
-                && closing > cursor + delimiter.len()
-            {
-                self.push_plain_text(text, plain_start, cursor);
-                let body = self.inline_content(text, cursor + delimiter.len(), closing);
-                self.push_element(
-                    element(body),
-                    self.text_range(text, cursor, closing + delimiter.len()),
-                );
-                cursor = closing + delimiter.len();
-                plain_start = cursor;
-                continue;
-            }
-
-            if bytes[cursor] == b'\\'
-                && let Some(&escaped) = bytes.get(cursor + 1)
-                && escaped.is_ascii_punctuation()
-            {
-                self.push_plain_text(text, plain_start, cursor);
-                self.push_element(
-                    Element::Text((escaped as char).to_string()),
-                    self.text_range(text, cursor, cursor + 2),
-                );
-                cursor += 2;
-                plain_start = cursor;
-                continue;
-            }
-
-            if matches!(bytes[cursor], b'*' | b'_')
-                && (cursor == start || bytes[cursor - 1] != b'\\')
-                && bytes
-                    .get(cursor + 1)
-                    .is_some_and(|&next| !next.is_ascii_whitespace() && next != bytes[cursor])
-            {
-                let delimiter = bytes[cursor];
-                if let Some(closing) = find_unescaped_sequence(bytes, cursor + 1, end, &[delimiter])
-                    && closing > cursor + 1
-                    && !bytes[closing - 1].is_ascii_whitespace()
-                {
-                    self.push_plain_text(text, plain_start, cursor);
-                    let body = self.inline_content(text, cursor + 1, closing);
-                    self.push_element(
-                        if delimiter == b'*' {
-                            Element::Strong(body)
-                        } else {
-                            Element::Emph(body)
-                        },
-                        self.text_range(text, cursor, closing + 1),
-                    );
-                    cursor = closing + 1;
-                    plain_start = cursor;
-                    continue;
-                }
-            }
-
-            cursor += 1;
-        }
-        self.push_plain_text(text, plain_start, end);
-    }
-
-    fn push_plain_text(&mut self, text: &notist_syntax::SpannedText, start: usize, end: usize) {
-        if start < end {
-            self.push_element(
-                Element::Text(text.value[start..end].to_owned()),
-                self.text_range(text, start, end),
-            );
-        }
-    }
-
-    fn inline_content(
-        &self,
-        text: &notist_syntax::SpannedText,
-        start: usize,
-        end: usize,
-    ) -> Content {
-        let mut state = LowerState {
-            source: self.source,
-            base_offset: self.base_offset,
-            registry: self.registry,
-            depth: self.depth,
-            user_functions: self.user_functions,
-            variables: self.variables.clone(),
-            content: Content::new(),
-            diagnostics: Vec::new(),
-            annotations: Vec::new(),
-            handle_annotations: false,
-            pending_annotations: Vec::new(),
-            pending_block_start: None,
-            pending_block_end: 0,
-            module_attributes: Vec::new(),
-        };
-        state.push_inline_text(text, start, end);
-        state.content
-    }
-
-    fn text_range(&self, text: &notist_syntax::SpannedText, start: usize, end: usize) -> TextRange {
-        TextRange::new(
-            self.base_offset + text.range.start + start,
-            self.base_offset + text.range.start + end,
-        )
-    }
-}
-
-fn newline_end(bytes: &[u8], cursor: usize) -> Option<usize> {
-    match bytes.get(cursor) {
-        Some(b'\r') if bytes.get(cursor + 1) == Some(&b'\n') => Some(cursor + 2),
-        Some(b'\r' | b'\n') => Some(cursor + 1),
-        _ => None,
-    }
-}
-
-fn preceding_backslashes(bytes: &[u8], start: usize, cursor: usize) -> usize {
-    bytes[start..cursor]
-        .iter()
-        .rev()
-        .take_while(|byte| **byte == b'\\')
-        .count()
-}
-
-fn find_unescaped_sequence(
-    bytes: &[u8],
-    start: usize,
-    end: usize,
-    delimiter: &[u8],
-) -> Option<usize> {
-    if delimiter.is_empty() || start >= end || delimiter.len() > end - start {
-        return None;
-    }
-    (start..=end - delimiter.len()).find(|&cursor| {
-        bytes[cursor..].starts_with(delimiter)
-            && preceding_backslashes(bytes, 0, cursor).is_multiple_of(2)
-    })
-}
-
-fn notist_eval_unused(
-    leaves: Vec<notist_model::InstanceNode>,
-) -> Option<crate::type_system::Value> {
-    use crate::leaf::instances_to_legacy_content;
-    instances_to_legacy_content(&leaves).map(crate::type_system::Value::Content)
 }

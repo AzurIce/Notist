@@ -1,4 +1,4 @@
-@![implementation = "aligned"]
+@![implementation = "partial"]
 = Plugin System
 
 #[
@@ -13,7 +13,7 @@ notist 内置的全部内容函数（包括 text）都通过插件系统提供�
 
 #rule()
 
-本文是 Notist 插件系统设计的模块入口。它回答：一个插件 package 如何声明自己、插件能导入哪些宿主类型、插件如何实现语义与投影、宿主如何保证终止性 / 确定性 / 资源预算，以及 core 为什么只是第一个特权 package。
+本文是 Notist 插件系统设计的模块入口。它回答：一个插件 package 如何声明自己、native 与 Wasm backend 如何提供等同的语义 contribution、运行时如何组合 package、插件如何实现语义与投影，以及宿主如何保证终止性 / 确定性 / 资源预算。
 
 == 定位
 
@@ -32,30 +32,32 @@ ElementSchema / ShapingRegistry → structure
 == 目标
 
 ```text
-插件 = Rust crate → wasip2 组件 package
-        ├── init 注册的函数 schema + 语义实现
-        ├── 成型 schema（block / body-mode / role / kind）
-        └── 投影贡献（web-component 声明 + assets）
+插件 package = 语义 identity + PluginContribution
+               ├── native registration 或 wasip2 component backend
+               ├── 函数签名与语义实现
+               ├── 成型 schema（block / body-mode / role / kind）
+               └── target 投影贡献（web-component 声明 + assets）
 ```
 
 三条原则：
 
-1. **统一 ABI**：core 与第三方插件共享同一 call 森林表示（`Node`）与同一 registry。
-2. **封闭 core**：core 是宿主拥有的特权 package；插件不能在 `core::*` namespace 注册 handler。名字的所有权只在注册侧——handler 提及任何名字（包括 `core::*` 与其他 package）完全自由，见 [[vault::designs::pipeline::plugin-call-reduction]]。
+1. **统一 contribution**：core、第三方 native plugin 与 Wasm plugin 共享同一 call 森林表示（`Node`）、注册契约与 registry。
+2. **backend 与语义分离**：native/Wasm 只描述实现、装载和信任边界；package identity 才决定 namespace 与环境身份。core 是默认 App 预装的标准 package，不是 eval engine 的特权对象。
 3. **宿主执规约与成型**：插件贡献规则与实现，宿主执行 dispatch、shaping 与终止/资源检查。
 
 == 模块内容
 
 按依赖顺序阅读：
 
-1. [[vault::designs::plugin-system::package]]：插件 package、manifest、namespace、core package、装载与生命周期。
-2. [[vault::designs::plugin-system::core]]：core package 的内容词表——内置构造器签名与校验。
-3. [[vault::designs::plugin-system::abi]]：共享类型、WIT 边界与语义 ABI。
-4. [[vault::designs::plugin-system::eval-contribution]]：FunctionDecl 与语义函数的注册。
-5. [[vault::designs::plugin-system::capability]]：信任模型——wasm 沙箱为唯一边界，内容组合不授权。
-6. [[vault::designs::plugin-system::safety]]：终止性、资源预算与确定性。
-7. [[vault::designs::plugin-system::shaping]]：ElementDecl 与成型 schema。
-8. [[vault::designs::plugin-system::projection]]：target 投影贡献与 fallback。
+1. [[vault::designs::plugin-system::package]]：插件 package、manifest、namespace、backend 与生命周期。
+2. [[vault::designs::plugin-system::runtime-composition]]：native/Wasm 等同、App composition root 与统一 contribution。
+3. [[vault::designs::plugin-system::core]]：标准 `core` package 的内容词表——构造器签名与校验。
+4. [[vault::designs::plugin-system::abi]]：Wasm backend 的共享类型、WIT 边界与语义 ABI。
+5. [[vault::designs::plugin-system::eval-contribution]]：native/Wasm Function contribution 与注册。
+6. [[vault::designs::plugin-system::capability]]：信任模型——内容组合不授权，backend 各自承担执行边界。
+7. [[vault::designs::plugin-system::safety]]：终止性、资源预算与确定性。
+8. [[vault::designs::plugin-system::shaping]]：ElementDecl 与成型 schema。
+9. [[vault::designs::plugin-system::projection]]：target 投影贡献与 fallback。
 
 面向用户的插件示例见 [[vault::plugins]]；插件系统的早期调研与设计过程见 [[vault::ai::2026-08-18 notist plugin system design]]。
 
@@ -63,15 +65,18 @@ ElementSchema / ShapingRegistry → structure
 
 | 组件 | 状态 |
 |---|---|
-| 统一 `Node` 表示与规约引擎 | 生产求值运行于 `leaf::node_engine`（不动点：未注册名字即终态）；legacy Stream/Leaf 引擎仍服务 `host.call` 与语法错误恢复路径，与 `InstanceNode` 之间经适配器互通 |
-| Stream lowering | 全部 Markup item 已直接产出 call 流；text 的 inline sugar 扫描仍复用 legacy leaf factory |
+| 统一 `Node` 表示与规约引擎 | 求值运行于 `leaf::node_engine`（不动点：未注册名字即终态）；Stream/Leaf 双表示、`InstanceNode` 适配层与旧 Content 桥接已删除 |
+| Stream lowering | 全部 Markup item 直接产出 `Node` call 流；text 的 inline sugar 也直接构造 Node |
 | `FunctionRegistry` 与 `core::*` 别名 | 已实现 |
-| shaping registry / `body-mode` / `role` / `kind` | 已实现 `ShapingRegistry` / `ElementSchema`；core schema 内置，插件 schema 可注册。成型与投影仍运行在 `InstanceNode` 上，规约结果经 `node_to_instance` 转换 |
+| shaping registry / `body-mode` / `role` / `kind` | 已实现 `ShapingRegistry` / `ElementSchema`；core schema 内置，插件 schema 可注册。成型直接运行在 `Node` 森林上，`ElementTree` 只承载 Node |
+| HTML target projection | `HtmlProjectionRegistry` 独立于语义 `FunctionRegistry`；插件 handler、Web Component contribution 与未知 call fallback 先生成 `html::*` Node，再由 serializer 输出 |
 | WIT 类型包 + host `call` import | `plugin` / `plugin-host` 两个 world：`export init`（返回元素声明列表）+ `export evaluate`；组件装载后调用一次 `init`，原子校验后注册。`plugins/component-echo` / `plugins/component-host-call` 端到端可用，载荷即 `notist_model::Node` |
 | 插件 manifest 信封 | manifest 只保留身份、Wasm 装载参数与 HTML render contributions；semantic 接口由组件 `init` 注册提供 |
-| 组件 eval contribution | 已实现：`init` 声明 + `evaluate` dispatcher；作者侧由 `notist-plugin-sdk` 提供 `Plugin::init(reg)` / `ElementFn::reduce` / `export_plugin!` |
-| capability checker | 已删除：信任模型 = wasm 沙箱，内容组合不授权，见 [[vault::designs::plugin-system::capability]] |
-| core native package 迁移 | `plugins/core/lib.rs` 承载全部内置内容函数，宿主直接注册 |
+| 组件 eval contribution | 已实现：Wasm `init` 声明 + `evaluate` dispatcher；作者侧由 `notist-plugin-sdk` 提供 `Plugin::init(reg)` / `ElementFn::reduce` / `export_plugin!` |
+| native plugin contribution | `notist-eval::PluginContribution` / 原子安装 API 已实现；独立 `notist-plugin-core` crate 已通过同一接口提供 core package |
+| runtime composition | `WorkspaceSnapshot` 已承担组合根职责；native/Wasm semantic contribution 已汇合到同一 registry 安装路径，完整 App API 尚未抽出 |
+| capability checker | 已删除：内容组合不授权；native 进程信任与 Wasm sandbox 的 backend 差异见 [[vault::designs::plugin-system::capability]] |
+| core native package 迁移 | 已完成：`plugins/core` 是独立 `notist-plugin-core` crate；默认 App 显式安装其 contribution，`notist-eval` 不再嵌入 core |
 | PluginSet 指纹 | `FunctionEnvironmentId` 已结合 view salt、插件 surface、配置与签名集合；插件 package 变更会分配新语义世界 |
 | 插件文件 watcher | daemon 会递归 watch `Notist.toml` 声明的外部 package 目录；plugin.json / wasm / assets 变化触发 disk view reload |
 | 统一装载路径 | 装载 = 实例化 + `init` 一条路径；不再维护不执行 Wasm 的 schema-only 快照路径 |
@@ -80,8 +85,8 @@ ElementSchema / ShapingRegistry → structure
 
 == 已裁定 / 待定
 
-- 已裁定：插件 = 信封 manifest + wasip2 Wasm 组件 + 可选 assets；core 是特权 native package。
-- 已裁定：作者以 Rust crate + SDK 编写插件，`init` 注册即自描述；manifest 不携带 semantic 接口，装载统一为实例化 + init 一条路径。
+- 已裁定：插件是带 package identity 的语义 contribution；native 与 Wasm 是可替换 backend，Wasm package 仍可由 manifest + wasip2 组件 + assets 组成。
+- 已裁定：core 是默认 App 预装的标准 package，不是 eval engine 的特权 package；作者以 Rust crate / SDK 提供 contribution，Wasm backend 由 `init` 自描述，manifest 不携带 semantic 接口。
 - 已裁定：插件通过 schema 参与成型，成型引擎由宿主执行。
 - 已裁定：插件语义 ABI 为 `export init` + `export evaluate` + 可选 `import host.call`；名字所有权只在注册侧，handler 提及任何名字自由。
 - 待定：host import 是否包含 `inspect` / `typecheck` 等更多接口；当前只提供 `call`。

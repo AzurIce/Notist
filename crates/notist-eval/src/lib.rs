@@ -1,48 +1,51 @@
 //! Evaluation and structural normalization for Notist documents.
 
-mod call;
-#[path = "../../../plugins/core/lib.rs"]
-mod core;
 mod function;
 mod leaf;
 mod lower;
 mod stream_lower;
-mod structure;
 mod type_system;
+
+#[cfg(test)]
+extern crate self as notist_eval;
+
+#[cfg(test)]
+#[path = "../../../plugins/core/lib.rs"]
+mod test_core;
 
 use std::collections::HashMap;
 
-use notist_model::{Content, TextRange};
+use notist_model::{Node, TextRange};
 use notist_syntax::Parse;
 
-pub use call::{Argument, Call, CallContent, CallNode, reduce, reduce_content, reduce_content_as};
 pub use function::{
-    ElementFunction, Function, FunctionContext, FunctionInput, FunctionOutput, FunctionOwner,
-    FunctionRegistry, RegistryError, RegistryErrorReason,
+    ElementFunction, Function, FunctionContext, FunctionInput, FunctionOwner, FunctionRegistry,
+    PluginContribution, RegistryError, RegistryErrorReason,
 };
+pub use notist_model::ElementSchema;
+
 pub use leaf::node_engine::{
     NodeEvaluation, collect_names, evaluate_to_nodes, fully_reduced, nodes_to_element_tree,
-    reduce_nodes,
+    reduce_nodes, reduce_nodes_recovering,
 };
 pub use leaf::{
-    ElementTree, FlatContent, LeafEvaluation, ReduceFrame, ReduceLimits, ShapingRegistry,
-    StreamArgument, StreamCall, StreamEvaluation, StreamNode, StreamValue,
-    element_tree_to_document, field_value_to_element_value, instance_node_to_legacy,
-    instances_to_legacy_content, legacy_content_to_nodes, reduce_call, reduce_flat,
-    reduce_flat_recovering, shape_flat, shape_flat_with,
+    ElementTree, ReduceFrame, ReduceLimits, ShapingRegistry, shape_flat, shape_flat_with,
 };
-pub use structure::structure;
 pub use type_system::{
     BoundArguments, DefaultValue, FunctionImplementation, FunctionSignature, FunctionValue,
     Parameter, Type, Value, ValueOrigin,
 };
 
-/// The result of lowering syntax and evaluating values inserted into Markup.
+/// The result of the full evaluation pipeline: lower → reduce → shape.
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct Evaluation {
-    /// Evaluated elements in source order.
-    pub content: Content,
-    /// Recoverable syntax and evaluation diagnostics.
+    /// Lowering output before reduction: the call forest as written.
+    pub lowered: Vec<Node>,
+    /// The reduced call forest (fixpoint reached; unknown names survive).
+    pub forest: Vec<Node>,
+    /// The recursively shaped canonical tree.
+    pub tree: ElementTree,
+    /// Parse, lowering, and reduction diagnostics.
     pub diagnostics: Vec<EvalDiagnostic>,
     /// The document root scope's own `let` bindings (D0002 evaluation result).
     pub bindings: HashMap<String, Value>,
@@ -71,32 +74,19 @@ pub struct EvalDiagnostic {
     pub range: TextRange,
 }
 
-/// A structured document together with diagnostics preserved from evaluation.
-#[derive(Clone, Debug, Default, PartialEq)]
-pub struct StructuredEvaluation {
-    /// The paragraph, list, and block structure derived from evaluated content.
-    pub document: notist_model::StructuredDocument,
-    /// Diagnostics produced before and during function evaluation.
-    pub diagnostics: Vec<EvalDiagnostic>,
-    /// The side annotation table (D0002/D0006): postfix `@...` and
-    /// block-prefix `@[...]` attribute sets over absolute source ranges.
-    pub annotations: Vec<AnnotationEntry>,
-}
-
-/// Evaluates Notist source with an empty function registry.
-pub fn lower(source: &str, parse: &Parse) -> Evaluation {
-    lower::evaluate_markup(
-        source,
-        &parse.root,
-        0,
-        &FunctionRegistry::with_builtins(),
-        0,
-    )
-}
-
 /// Evaluates Notist source using a configurable function registry.
 pub struct Evaluator {
     registry: FunctionRegistry,
+}
+
+#[cfg(not(test))]
+fn default_shaping() -> ShapingRegistry {
+    ShapingRegistry::new()
+}
+
+#[cfg(test)]
+fn default_shaping() -> ShapingRegistry {
+    test_core::registry().1
 }
 
 impl Evaluator {
@@ -107,12 +97,17 @@ impl Evaluator {
 
     /// Parses and evaluates a complete source file.
     pub fn evaluate(&self, source: &str) -> Evaluation {
-        lower_fragment(source, 0, &self.registry, 0)
+        self.evaluate_with_shaping(source, &default_shaping())
     }
 
-    /// Evaluates an already parsed complete source file.
-    pub fn evaluate_parsed(&self, source: &str, parse: &Parse) -> Evaluation {
-        lower::evaluate_markup(source, &parse.root, 0, &self.registry, 0)
+    /// Like [`Self::evaluate`] with a caller-provided shaping registry.
+    ///
+    /// Plugin packages contribute their element schemas through the snapshot
+    /// shaping registry; this is the entry point that applies them while
+    /// folding the reduced forest into the canonical tree.
+    pub fn evaluate_with_shaping(&self, source: &str, shaping: &ShapingRegistry) -> Evaluation {
+        let parse = notist_syntax::parse(source);
+        self.evaluate_parsed_with_shaping(source, &parse, HashMap::new(), shaping)
     }
 
     /// Evaluates a parsed source file with a pre-seeded document scope: the
@@ -123,60 +118,19 @@ impl Evaluator {
         parse: &Parse,
         bindings: HashMap<String, Value>,
     ) -> Evaluation {
-        lower::evaluate_markup_with_bindings(source, &parse.root, 0, &self.registry, 0, bindings)
+        self.evaluate_parsed_with_shaping(source, parse, bindings, &default_shaping())
     }
 
-    /// Evaluates source and recursively shapes it into the unified Leaf tree.
-    pub fn evaluate_leaf(&self, source: &str) -> LeafEvaluation {
-        LeafEvaluation::from_evaluation(&self.evaluate(source))
-    }
-
-    /// Runs the full Stream pipeline: parse → lower → reduce → shape.
-    pub fn evaluate_stream(&self, source: &str) -> StreamEvaluation {
-        self.evaluate_stream_with_shaping(source, ShapingRegistry::core())
-    }
-
-    /// Runs the Stream pipeline with a caller-provided shaping registry.
-    ///
-    /// Plugin packages contribute their element schemas through the snapshot
-    /// shaping registry; this is the entry point that applies them while
-    /// folding the reduced Leaf stream into the canonical tree.
-    pub fn evaluate_stream_with_shaping(
-        &self,
-        source: &str,
-        shaping: &ShapingRegistry,
-    ) -> StreamEvaluation {
-        let parse = notist_syntax::parse(source);
-        self.evaluate_parsed_stream_with_bindings(source, &parse, HashMap::new(), shaping)
-    }
-
-    /// Runs the unified-node pipeline: parse → lower → node reduction.
-    ///
-    /// The result carries both the reduced `Node` forest and the shaped
-    /// canonical tree projected through the instance adapter.
-    pub fn evaluate_nodes(&self, source: &str) -> NodeEvaluation {
-        self.evaluate_nodes_with_shaping(source, ShapingRegistry::core())
-    }
-
-    /// Like [`Self::evaluate_nodes`] with a caller-provided shaping registry.
-    pub fn evaluate_nodes_with_shaping(
-        &self,
-        source: &str,
-        shaping: &ShapingRegistry,
-    ) -> NodeEvaluation {
-        let parse = notist_syntax::parse(source);
-        self.evaluate_parsed_nodes_with_bindings(source, &parse, HashMap::new(), shaping)
-    }
-
-    /// Unified-node variant of the pre-parsed bindings entry point.
-    pub fn evaluate_parsed_nodes_with_bindings(
+    /// Unified-node variant of the pre-parsed bindings entry point with a
+    /// caller-provided shaping registry.
+    pub fn evaluate_parsed_with_shaping(
         &self,
         source: &str,
         parse: &Parse,
         bindings: HashMap<String, Value>,
         shaping: &ShapingRegistry,
-    ) -> NodeEvaluation {
-        let lowered = stream_lower::lower_markup_stream_with_bindings(
+    ) -> Evaluation {
+        let lowered = stream_lower::lower_document_with_bindings(
             source,
             &parse.root,
             0,
@@ -184,59 +138,7 @@ impl Evaluator {
             bindings,
         );
         let mut evaluation =
-            leaf::node_engine::evaluate_to_nodes(&lowered.flat, &self.registry, shaping);
-        evaluation
-            .diagnostics
-            .extend(parse.errors.iter().cloned().map(|error| EvalDiagnostic {
-                message: error.message,
-                range: error.range,
-            }));
-        evaluation.diagnostics.extend(lowered.diagnostics);
-        evaluation
-    }
-
-    /// Runs the Stream pipeline for an already parsed source with pre-seeded
-    /// root bindings and a caller-provided shaping registry.
-    pub fn evaluate_parsed_stream_with_bindings(
-        &self,
-        source: &str,
-        parse: &Parse,
-        bindings: HashMap<String, Value>,
-        shaping: &ShapingRegistry,
-    ) -> StreamEvaluation {
-        let lowered = stream_lower::lower_markup_stream_with_bindings(
-            source,
-            &parse.root,
-            0,
-            &self.registry,
-            bindings,
-        );
-        // Production reduction runs on the unified-node engine; the legacy
-        // stream shapes are rebuilt from its terminal forest for consumers
-        // that still speak them.
-        let mut evaluation =
-            leaf::node_engine::evaluate_to_nodes(&lowered.flat, &self.registry, shaping);
-        let reduction_failed = evaluation.forest.is_empty() && !evaluation.diagnostics.is_empty();
-        let leaves = evaluation
-            .forest
-            .iter()
-            .map(notist_model::node_to_instance)
-            .collect::<Result<Vec<_>, String>>();
-        let (reduced, tree) = match leaves {
-            Ok(leaves) => (
-                FlatContent {
-                    nodes: leaves.iter().cloned().map(StreamNode::Leaf).collect(),
-                },
-                evaluation.tree,
-            ),
-            Err(message) => {
-                evaluation.diagnostics.push(EvalDiagnostic {
-                    message,
-                    range: notist_model::TextRange::new(0, 0),
-                });
-                (FlatContent::new(), crate::leaf::ElementTree::default())
-            }
-        };
+            leaf::node_engine::evaluate_to_nodes(lowered.nodes.clone(), &self.registry, shaping);
         let mut diagnostics = Vec::new();
         diagnostics.extend(parse.errors.iter().cloned().map(|error| EvalDiagnostic {
             message: error.message,
@@ -244,21 +146,15 @@ impl Evaluator {
         }));
         diagnostics.extend(lowered.diagnostics);
         diagnostics.append(&mut evaluation.diagnostics);
-        StreamEvaluation {
-            lowered: lowered.flat,
-            reduced,
-            tree,
+        Evaluation {
+            lowered: lowered.nodes,
+            forest: evaluation.forest,
+            tree: evaluation.tree,
             diagnostics,
             bindings: lowered.bindings,
             annotations: lowered.annotations,
             module_attributes: lowered.module_attributes,
-            reduction_failed,
         }
-    }
-
-    /// Evaluates parsed source and recursively shapes it into the unified Leaf tree.
-    pub fn evaluate_parsed_leaf(&self, source: &str, parse: &Parse) -> LeafEvaluation {
-        LeafEvaluation::from_evaluation(&self.evaluate_parsed(source, parse))
     }
 
     /// Returns the function registry used by this evaluator.
@@ -267,27 +163,96 @@ impl Evaluator {
     }
 }
 
+#[cfg(not(test))]
 impl Default for Evaluator {
     fn default() -> Self {
-        Self::new(FunctionRegistry::with_builtins())
+        Self::new(FunctionRegistry::new())
     }
 }
 
-pub(crate) fn lower_fragment(
+#[cfg(test)]
+impl Default for Evaluator {
+    fn default() -> Self {
+        Self::new(test_core::registry().0)
+    }
+}
+
+/// Parses and evaluates a source fragment as nested Notist content, honoring
+/// the host-provided base offset for source ranges.
+pub(crate) fn evaluate_fragment(
     source: &str,
     base_offset: usize,
     registry: &FunctionRegistry,
-    depth: usize,
 ) -> Evaluation {
     let parse = notist_syntax::parse(source);
-    lower::evaluate_markup(source, &parse.root, base_offset, registry, depth)
+    let lowered = stream_lower::lower_document_with_bindings(
+        source,
+        &parse.root,
+        base_offset,
+        registry,
+        HashMap::new(),
+    );
+    let mut evaluation =
+        leaf::node_engine::evaluate_to_nodes(lowered.nodes.clone(), registry, &default_shaping());
+    let mut diagnostics = Vec::new();
+    diagnostics.extend(parse.errors.iter().cloned().map(|error| EvalDiagnostic {
+        message: error.message,
+        range: error.range,
+    }));
+    diagnostics.extend(lowered.diagnostics);
+    diagnostics.append(&mut evaluation.diagnostics);
+    Evaluation {
+        lowered: lowered.nodes,
+        forest: evaluation.forest,
+        tree: evaluation.tree,
+        diagnostics,
+        bindings: lowered.bindings,
+        annotations: lowered.annotations,
+        module_attributes: lowered.module_attributes,
+    }
 }
 
 #[cfg(test)]
 mod tests {
-    use notist_model::{Block, Content, Element, ElementNode, TableAlignment, TextRange};
+    use notist_model::{Node, NodeValue, TextRange};
 
     use super::*;
+
+    /// Zeroes source ranges recursively so two forests can be compared by
+    /// shape alone.
+    fn normalized(node: &Node) -> Node {
+        let mut node = node.clone();
+        node.range = TextRange::new(0, 0);
+        for (_, value) in &mut node.args {
+            if let NodeValue::Stream(nodes) = value {
+                *nodes = nodes.iter().map(normalized).collect();
+            }
+        }
+        node.children = node.children.iter().map(normalized).collect();
+        node
+    }
+
+    fn normalized_forest(forest: &[Node]) -> Vec<Node> {
+        forest.iter().map(normalized).collect()
+    }
+
+    /// The text payload of a `core::text` node.
+    fn text(node: &Node) -> Option<&str> {
+        if node.is_core("text")
+            && let Some(NodeValue::String(value)) = node.get("text")
+        {
+            return Some(value);
+        }
+        None
+    }
+
+    fn texts(forest: &[Node]) -> Vec<&str> {
+        forest.iter().filter_map(text).collect()
+    }
+
+    fn joined_texts(forest: &[Node]) -> String {
+        texts(forest).into_iter().collect()
+    }
 
     #[test]
     fn let_bindings_flow_into_later_markup() {
@@ -300,23 +265,13 @@ mod tests {
             evaluation.diagnostics
         );
         let Some(heading) = evaluation
-            .content
-            .elements
+            .forest
             .iter()
-            .find(|node| matches!(node.element, Element::Heading { .. }))
+            .find(|node| node.is_core("heading"))
         else {
-            panic!("expected a heading, got {:?}", evaluation.content.elements)
+            panic!("expected a heading, got {:?}", evaluation.forest)
         };
-        let Element::Heading { body, .. } = &heading.element else {
-            unreachable!()
-        };
-        assert!(matches!(
-            body.elements.as_slice(),
-            [ElementNode {
-                element: Element::Text(text),
-                ..
-            }] if text == "violet"
-        ));
+        assert_eq!(texts(&heading.children), ["violet"]);
         assert_eq!(
             evaluation.bindings.get("accent"),
             Some(&Value::String("violet".into()))
@@ -327,25 +282,13 @@ mod tests {
     fn if_expression_selects_branches_and_omitting_else_yields_none() {
         let yes = Evaluator::default().evaluate("#if true [yes] else [no]");
         assert!(yes.diagnostics.is_empty(), "{:?}", yes.diagnostics);
-        assert!(matches!(
-            yes.content.elements.as_slice(),
-            [ElementNode {
-                element: Element::Text(text),
-                ..
-            }] if text == "yes"
-        ));
+        assert_eq!(texts(&yes.forest), ["yes"]);
         let no = Evaluator::default().evaluate("#if false [yes] else [no]");
         assert!(no.diagnostics.is_empty(), "{:?}", no.diagnostics);
-        assert!(matches!(
-            no.content.elements.as_slice(),
-            [ElementNode {
-                element: Element::Text(text),
-                ..
-            }] if text == "no"
-        ));
+        assert_eq!(texts(&no.forest), ["no"]);
         let missing = Evaluator::default().evaluate("#if false [yes]");
         assert!(missing.diagnostics.is_empty(), "{:?}", missing.diagnostics);
-        assert!(missing.content.elements.is_empty());
+        assert!(missing.forest.is_empty());
     }
 
     #[test]
@@ -358,28 +301,12 @@ mod tests {
             "{:?}",
             evaluation.diagnostics
         );
-        assert!(evaluation.content.elements.iter().any(|node| {
-            matches!(
-                node,
-                ElementNode {
-                    element:
-                        Element::Heading {
-                            body:
-                                Content {
-                                    elements: heading_body,
-                                },
-                            ..
-                        },
-                    ..
-                } if matches!(
-                    heading_body.as_slice(),
-                    [ElementNode {
-                        element: Element::Text(text),
-                        ..
-                    }] if text == "标题"
-                )
-            )
-        }));
+        assert!(
+            evaluation
+                .forest
+                .iter()
+                .any(|node| { node.is_core("heading") && texts(&node.children) == ["标题"] })
+        );
         // Lambda closures evaluate their body in the captured environment.
         let evaluation =
             Evaluator::default().evaluate("#let double = (x: Int) => x * 2\n#double(21)");
@@ -390,10 +317,9 @@ mod tests {
         );
         assert!(
             evaluation
-                .content
-                .elements
+                .forest
                 .iter()
-                .any(|node| { matches!(&node.element, Element::Text(text) if text == "42") })
+                .any(|node| text(node) == Some("42"))
         );
     }
 
@@ -413,7 +339,7 @@ mod tests {
         let Some(Value::Content(content)) = joined.bindings.get("y") else {
             panic!("expected a Content binding")
         };
-        assert_eq!(content.elements.len(), 2);
+        assert_eq!(content.len(), 2);
     }
 
     struct QuoteFunction;
@@ -439,17 +365,11 @@ mod tests {
             &self,
             _context: &FunctionContext<'_>,
             mut input: FunctionInput<'_>,
-        ) -> Result<FunctionOutput, Vec<EvalDiagnostic>> {
+        ) -> Result<Value, Vec<EvalDiagnostic>> {
             let body = input.arguments.take_content("body");
-            Ok(FunctionOutput::content(Content::single(
-                Element::Custom {
-                    name: "quote".into(),
-                    body,
-                    block: true,
-                    fields: Vec::new(),
-                },
-                input.range,
-            )))
+            let mut node = notist_model::Node::block_call("quote", input.range);
+            node.children = body;
+            Ok(Value::Content(vec![node]))
         }
     }
 
@@ -472,8 +392,8 @@ mod tests {
             &self,
             _context: &FunctionContext<'_>,
             _input: FunctionInput<'_>,
-        ) -> Result<FunctionOutput, Vec<EvalDiagnostic>> {
-            Ok(FunctionOutput::value(Value::Int(2)))
+        ) -> Result<Value, Vec<EvalDiagnostic>> {
+            Ok(Value::Int(2))
         }
     }
 
@@ -487,40 +407,31 @@ mod tests {
             "{:?}",
             evaluation.diagnostics
         );
-        assert_eq!(evaluation.content.elements.len(), 4);
-        assert!(matches!(
-            &evaluation.content.elements[0].element,
-            Element::Text(text) if text == "Hello "
-        ));
-        assert!(matches!(
-            evaluation.content.elements[1].element,
-            Element::Reference(_)
-        ));
-        assert!(matches!(
-            evaluation.content.elements[2].element,
-            Element::Parbreak
-        ));
+        assert_eq!(evaluation.forest.len(), 4);
+        assert_eq!(text(&evaluation.forest[0]), Some("Hello "));
+        assert!(evaluation.forest[1].is_core("reference"));
+        assert!(evaluation.forest[2].is_core("parbreak"));
     }
 
     #[test]
     fn preserves_unknown_calls_with_optional_trailing_content() {
+        // Unregistered names stay in the forest as data: reduction is total
+        // and never rewrites a call nobody handles.
         let content = Evaluator::default().evaluate("#missing(x=1)[[[self::target]]]");
         let bodyless = Evaluator::default().evaluate("#missing(x=1)");
 
         assert!(content.diagnostics.is_empty(), "{:?}", content.diagnostics);
-        assert_eq!(content.content.elements.len(), 1);
-        assert!(matches!(
-        &content.content.elements[0].element,
-            Element::UnresolvedCall {
-                name,
-                trailing: Some(body),
-                ..
-            } if name == "missing" && matches!(body.elements[0].element, Element::Reference(_))
-        ));
-        assert!(matches!(
-            &bodyless.content.elements[0].element,
-            Element::UnresolvedCall { trailing: None, .. }
-        ));
+        assert_eq!(content.forest.len(), 1);
+        let call = &content.forest[0];
+        assert_eq!(call.name, "missing");
+        assert_eq!(call.get("x"), Some(&NodeValue::Int(1)));
+        assert!(
+            call.children.iter().any(|node| node.is_core("reference")),
+            "{call:#?}"
+        );
+        let call = &bodyless.forest[0];
+        assert_eq!(call.name, "missing");
+        assert!(call.children.is_empty());
     }
 
     #[test]
@@ -532,17 +443,10 @@ mod tests {
             evaluator.evaluate("Before\n\n#test::quote[Inside [[self::target]].]\n\nAfter");
 
         assert!(evaluation.diagnostics.is_empty());
-        let structured = structure(evaluation);
-        assert_eq!(structured.document.blocks.len(), 3);
-        assert!(matches!(
-            &structured.document.blocks[0],
-            Block::Element(node) if matches!(node.element, Element::Paragraph(_))
-        ));
-        assert!(matches!(structured.document.blocks[1], Block::Element(_)));
-        assert!(matches!(
-            &structured.document.blocks[2],
-            Block::Element(node) if matches!(node.element, Element::Paragraph(_))
-        ));
+        assert_eq!(evaluation.tree.roots.len(), 3);
+        assert!(evaluation.tree.roots[0].is_core("paragraph"));
+        assert_eq!(evaluation.tree.roots[1].name, "quote");
+        assert!(evaluation.tree.roots[2].is_core("paragraph"));
     }
 
     #[test]
@@ -550,22 +454,17 @@ mod tests {
         let evaluator = Evaluator::default();
         let plain = evaluator.evaluate("plain text");
         assert!(plain.diagnostics.is_empty());
-        assert!(matches!(
-            plain.content.elements[0].element,
-            Element::Text(ref text) if text == "plain text"
-        ));
+        assert_eq!(text(&plain.forest[0]), Some("plain text"));
     }
 
     #[test]
     fn structuring_groups_plain_paragraphs() {
         let evaluator = Evaluator::default();
-        let structured = structure(evaluator.evaluate("plain *content*"));
-        assert!(matches!(
-            structured.document.blocks.as_slice(),
-            [Block::Element(node)]
-                if matches!(&node.element, Element::Paragraph(body)
-                    if body.elements.iter().any(|child| matches!(child.element, Element::Strong(_))))
-        ));
+        let tree = evaluator.evaluate("plain *content*").tree;
+        assert!(
+            matches!(tree.roots.as_slice(), [node] if node.is_core("paragraph")
+                && node.children.iter().any(|child| child.is_core("strong")))
+        );
     }
 
     #[test]
@@ -574,25 +473,25 @@ mod tests {
 
         let inline = evaluator.evaluate("Before `cargo test` after");
         assert!(inline.diagnostics.is_empty(), "{:?}", inline.diagnostics);
-        assert!(matches!(
-            &inline.content.elements[1].element,
-            Element::Raw {
-                text,
-                block: false,
-                language: None,
-            } if text == "cargo test"
-        ));
+        let raw = &inline.forest[1];
+        assert!(raw.is_core("raw"));
+        assert_eq!(
+            raw.get("source"),
+            Some(&NodeValue::String("cargo test".into()))
+        );
+        assert_eq!(raw.get("block"), Some(&NodeValue::Bool(false)));
+        assert_eq!(raw.get("lang"), Some(&NodeValue::None));
 
         let fenced = evaluator.evaluate("```rust\nfn main() {}\n```");
         assert!(fenced.diagnostics.is_empty(), "{:?}", fenced.diagnostics);
-        assert!(matches!(
-            &fenced.content.elements[0].element,
-            Element::Raw {
-                text,
-                block: true,
-                language: Some(language),
-            } if text == "fn main() {}" && language == "rust"
-        ));
+        let raw = &fenced.forest[0];
+        assert!(raw.is_core("raw"));
+        assert_eq!(
+            raw.get("source"),
+            Some(&NodeValue::String("fn main() {}".into()))
+        );
+        assert_eq!(raw.get("lang"), Some(&NodeValue::String("rust".into())));
+        assert_eq!(raw.get("block"), Some(&NodeValue::Bool(true)));
 
         let explicit = evaluator.evaluate("#raw(r#\"cargo test\"#)");
         assert!(
@@ -601,8 +500,8 @@ mod tests {
             explicit.diagnostics
         );
         assert_eq!(
-            inline.content.elements[1].element,
-            explicit.content.elements[0].element
+            normalized(&inline.forest[1]),
+            normalized(&explicit.forest[0])
         );
 
         let without_builtins = Evaluator::new(FunctionRegistry::new()).evaluate("`core raw`");
@@ -611,10 +510,12 @@ mod tests {
             "{:?}",
             without_builtins.diagnostics
         );
-        assert!(matches!(
-            &without_builtins.content.elements[0].element,
-            Element::Raw { text, .. } if text == "core raw"
-        ));
+        let raw = &without_builtins.forest[0];
+        assert!(raw.is_core("raw"));
+        assert_eq!(
+            raw.get("source"),
+            Some(&NodeValue::String("core raw".into()))
+        );
     }
 
     #[test]
@@ -625,37 +526,35 @@ mod tests {
             "{:?}",
             evaluated.diagnostics
         );
-        assert!(matches!(
-            evaluated.content.elements.first().map(|node| &node.element),
-            Some(Element::Heading { level: 1, .. })
-        ));
+        let heading = &evaluated.forest[0];
+        assert!(heading.is_core("heading"));
+        assert_eq!(heading.get("level"), Some(&NodeValue::Int(1)));
         assert!(
             evaluated
-                .content
-                .elements
+                .forest
                 .iter()
-                .any(|node| matches!(&node.element, Element::Text(text) if text.contains("Outro")))
+                .any(|node| text(node).is_some_and(|value| value.contains("Outro")))
         );
     }
 
     #[test]
     fn lowers_fenced_raw_block_inside_list_item_body() {
         // An indented fenced raw block belongs to the row body: it lowers
-        // into the ListItem content instead of escaping as a sibling.
+        // into the item content instead of escaping as a sibling.
         let evaluated = Evaluator::default().evaluate("- item\n  ```not\n  x\n  ```\n- next");
         assert!(
             evaluated.diagnostics.is_empty(),
             "{:?}",
             evaluated.diagnostics
         );
-        assert!(matches!(
-            evaluated.content.elements.as_slice(),
-            [ElementNode { element: Element::ListItem(first), .. }, ElementNode { element: Element::ListItem(_), .. }]
-                if first
-                    .elements
-                    .iter()
-                    .any(|node| matches!(&node.element, Element::Raw { block: true, .. }))
-        ));
+        assert!(
+            matches!(evaluated.forest.as_slice(), [first, second]
+                if first.is_core("item") && second.is_core("item")
+                    && first.children.iter().any(|node| node.is_core("raw")
+                        && node.get("block") == Some(&NodeValue::Bool(true)))),
+            "{:#?}",
+            evaluated.forest
+        );
     }
 
     #[test]
@@ -667,20 +566,25 @@ mod tests {
             "{:?}",
             evaluated.diagnostics
         );
-        assert!(matches!(
-            evaluated.content.elements.as_slice(),
-            [ElementNode { element: Element::ListItem(parent), .. }, ElementNode { element: Element::ListItem(_), .. }]
-                if matches!(parent.elements[1].element, Element::EnumItem { .. })
-                    && matches!(parent.elements[2].element, Element::EnumItem { .. })
-        ));
-        let structured = structure(evaluated);
-        assert!(matches!(
-            &structured.document.blocks[0],
-            Block::Element(ElementNode {
-                element: Element::List { ordered: false, items },
-                ..
-            }) if items.len() == 2
-        ));
+        assert!(
+            matches!(evaluated.forest.as_slice(), [parent, _]
+                if parent.is_core("item")
+                    && parent.children[1].is_core("item")
+                    && parent.children[1].get("ordered") == Some(&NodeValue::Bool(true))
+                    && parent.children[2].is_core("item")
+                    && parent.children[2].get("ordered") == Some(&NodeValue::Bool(true))),
+            "{:#?}",
+            evaluated.forest
+        );
+        let tree = evaluated.tree;
+        assert!(
+            matches!(tree.roots.as_slice(), [list]
+                if list.is_core("list")
+                    && list.get("ordered") == Some(&NodeValue::Bool(false))
+                    && list.children.len() == 2),
+            "{:#?}",
+            tree.roots
+        );
     }
 
     #[test]
@@ -691,20 +595,12 @@ mod tests {
             "{:?}",
             evaluated.diagnostics
         );
-        assert!(
-            evaluated
-                .content
-                .elements
-                .iter()
-                .any(|node| matches!(node.element, Element::ListItem(_)))
-        );
-        assert!(
-            evaluated
-                .content
-                .elements
-                .iter()
-                .any(|node| matches!(node.element, Element::EnumItem { .. }))
-        );
+        assert!(evaluated.forest.iter().any(
+            |node| node.is_core("item") && node.get("ordered") == Some(&NodeValue::Bool(false))
+        ));
+        assert!(evaluated.forest.iter().any(
+            |node| node.is_core("item") && node.get("ordered") == Some(&NodeValue::Bool(true))
+        ));
     }
 
     #[test]
@@ -715,22 +611,14 @@ mod tests {
             "{:?}",
             evaluated.diagnostics
         );
-        assert!(
-            !evaluated
-                .content
-                .elements
-                .iter()
-                .any(|node| matches!(node.element, Element::ListItem(_)))
-        );
+        assert!(!evaluated.forest.iter().any(|node| node.is_core("item")));
 
         let inline = Evaluator::default().evaluate("*strong*");
-        assert!(matches!(
-            inline.content.elements.as_slice(),
-            [ElementNode {
-                element: Element::Strong(_),
-                ..
-            }]
-        ));
+        assert!(
+            matches!(inline.forest.as_slice(), [node] if node.is_core("strong")),
+            "{:#?}",
+            inline.forest
+        );
     }
 
     #[test]
@@ -741,25 +629,8 @@ mod tests {
             "{:?}",
             evaluated.diagnostics
         );
-        assert!(
-            !evaluated
-                .content
-                .elements
-                .iter()
-                .any(|node| matches!(node.element, Element::Strong(_)))
-        );
-        assert_eq!(
-            evaluated
-                .content
-                .elements
-                .iter()
-                .filter_map(|node| match &node.element {
-                    Element::Text(value) => Some(value.as_str()),
-                    _ => None,
-                })
-                .collect::<String>(),
-            "*not strong* and |pipe|"
-        );
+        assert!(!evaluated.forest.iter().any(|node| node.is_core("strong")));
+        assert_eq!(joined_texts(&evaluated.forest), "*not strong* and |pipe|");
     }
 
     #[test]
@@ -770,13 +641,9 @@ mod tests {
             "{:?}",
             evaluated.diagnostics
         );
-        assert!(
-            !evaluated
-                .content
-                .elements
-                .iter()
-                .any(|node| matches!(node.element, Element::EnumItem { .. }))
-        );
+        assert!(!evaluated.forest.iter().any(
+            |node| node.is_core("item") && node.get("ordered") == Some(&NodeValue::Bool(true))
+        ));
     }
 
     #[test]
@@ -790,23 +657,11 @@ mod tests {
             "{:?}",
             evaluated.diagnostics
         );
-        assert!(matches!(
-            evaluated.content.elements[0].element,
-            Element::Strong(_)
-        ));
-        assert!(matches!(
-            evaluated.content.elements[1].element,
-            Element::Text(_)
-        ));
-        assert!(matches!(
-            evaluated.content.elements[2].element,
-            Element::Emph(_)
-        ));
-        assert!(evaluated.content.elements.iter().any(|node| {
-            matches!(
-                &node.element,
-                Element::Text(text) if text.contains("https://example.test/page.")
-            )
+        assert!(evaluated.forest[0].is_core("strong"));
+        assert!(evaluated.forest[1].is_core("text"));
+        assert!(evaluated.forest[2].is_core("emph"));
+        assert!(evaluated.forest.iter().any(|node| {
+            text(node).is_some_and(|value| value.contains("https://example.test/page."))
         }));
     }
 
@@ -819,9 +674,10 @@ mod tests {
             evaluated.diagnostics
         );
         assert!(
-            evaluated.content.elements.iter().any(
-                |node| matches!(&node.element, Element::Text(text) if text.contains("flow.png"))
-            )
+            evaluated
+                .forest
+                .iter()
+                .any(|node| text(node).is_some_and(|value| value.contains("flow.png")))
         );
     }
 
@@ -833,9 +689,12 @@ mod tests {
             "{:?}",
             evaluated.diagnostics
         );
-        assert!(evaluated.content.elements.iter().any(
-            |node| matches!(&node.element, Element::Text(text) if text.contains("docs/index.html"))
-        ));
+        assert!(
+            evaluated
+                .forest
+                .iter()
+                .any(|node| text(node).is_some_and(|value| value.contains("docs/index.html")))
+        );
     }
 
     #[test]
@@ -849,10 +708,10 @@ mod tests {
         );
         assert!(
             evaluated
-                .content
-                .elements
+                .forest
                 .iter()
-                .any(|node| matches!(&node.element, Element::Text(value) if value.contains("hello+docs@example.test")))
+                .any(|node| text(node)
+                    .is_some_and(|value| value.contains("hello+docs@example.test")))
         );
     }
 
@@ -865,11 +724,17 @@ mod tests {
             "{:?}",
             evaluated.diagnostics
         );
-        assert!(matches!(
-            &evaluated.content.elements[0].element,
-            Element::Callout { kind, body, .. }
-                if kind == "warning" && matches!(body.elements[0].element, Element::Strong(_))
-        ));
+        let callout = &evaluated.forest[0];
+        assert!(callout.is_core("callout"));
+        assert_eq!(
+            callout.get("kind"),
+            Some(&NodeValue::String("warning".into()))
+        );
+        assert!(
+            callout.children[0].is_core("strong"),
+            "{:#?}",
+            callout.children
+        );
     }
 
     #[test]
@@ -881,12 +746,14 @@ mod tests {
             "{:?}",
             evaluated.diagnostics
         );
-        assert!(matches!(
-            &evaluated.content.elements[0].element,
-            Element::Details { summary: Some(summary), open: false, body }
-                if matches!(summary.elements[0].element, Element::Strong(_))
-                    && body.elements.iter().any(|node| matches!(node.element, Element::Emph(_)))
-        ));
+        let details = &evaluated.forest[0];
+        assert!(details.is_core("details"));
+        assert_eq!(details.get("open"), Some(&NodeValue::Bool(false)));
+        let Some(NodeValue::Stream(summary)) = details.get("summary") else {
+            panic!("expected a summary stream, got {:#?}", details.args)
+        };
+        assert!(summary[0].is_core("strong"));
+        assert!(details.children.iter().any(|node| node.is_core("emph")));
     }
 
     #[test]
@@ -897,22 +764,14 @@ mod tests {
             "{:?}",
             evaluated.diagnostics
         );
-        assert!(matches!(
-            &evaluated.content.elements[1].element,
-            Element::Strike(body)
-                if body.elements.iter().any(|node| matches!(node.element, Element::Strong(_)))
-        ));
+        let strike = &evaluated.forest[1];
+        assert!(strike.is_core("strike"));
+        assert!(strike.children.iter().any(|node| node.is_core("strong")));
 
         let unclosed = Evaluator::default().evaluate("keep ~~literal");
-        assert!(matches!(
-            &unclosed.content.elements[0].element,
-            Element::Text(text) if text == "keep ~~literal"
-        ));
+        assert_eq!(text(&unclosed.forest[0]), Some("keep ~~literal"));
         let empty = Evaluator::default().evaluate("keep ~~~~ literal");
-        assert!(matches!(
-            &empty.content.elements[0].element,
-            Element::Text(text) if text == "keep ~~~~ literal"
-        ));
+        assert_eq!(text(&empty.forest[0]), Some("keep ~~~~ literal"));
     }
 
     #[test]
@@ -924,14 +783,10 @@ mod tests {
             "{:?}",
             evaluated.diagnostics
         );
-        assert!(matches!(
-            evaluated.content.elements[0].element,
-            Element::Heading { level: 1, .. }
-        ));
-        assert!(matches!(
-            evaluated.content.elements[1].element,
-            Element::Heading { level: 2, .. }
-        ));
+        assert!(evaluated.forest[0].is_core("heading"));
+        assert_eq!(evaluated.forest[0].get("level"), Some(&NodeValue::Int(1)));
+        assert!(evaluated.forest[1].is_core("heading"));
+        assert_eq!(evaluated.forest[1].get("level"), Some(&NodeValue::Int(2)));
         // D0003 boundary: a line of only `=` is an empty-body heading and a
         // line of only `-` (three or more) is a rule — Markdown setext
         // underlines do not survive as text.
@@ -939,18 +794,12 @@ mod tests {
         assert!(setext.diagnostics.is_empty(), "{:?}", setext.diagnostics);
         assert!(
             setext
-                .content
-                .elements
+                .forest
                 .iter()
-                .any(|node| matches!(node.element, Element::Heading { level: 10, .. }))
+                .any(|node| node.is_core("heading")
+                    && node.get("level") == Some(&NodeValue::Int(10)))
         );
-        assert!(
-            setext
-                .content
-                .elements
-                .iter()
-                .any(|node| matches!(node.element, Element::Rule))
-        );
+        assert!(setext.forest.iter().any(|node| node.is_core("rule")));
     }
 
     #[test]
@@ -963,9 +812,10 @@ mod tests {
             evaluated.diagnostics
         );
         assert!(
-            evaluated.content.elements.iter().any(
-                |node| matches!(&node.element, Element::Text(text) if text.contains("Nested"))
-            )
+            evaluated
+                .forest
+                .iter()
+                .any(|node| text(node).is_some_and(|value| value.contains("Nested")))
         );
     }
 
@@ -979,26 +829,18 @@ mod tests {
             "{:?}",
             evaluated.diagnostics
         );
+        assert!(evaluated.forest.iter().any(|node| node.is_core("rule")));
         assert!(
             evaluated
-                .content
-                .elements
+                .forest
                 .iter()
-                .any(|node| matches!(node.element, Element::Rule))
+                .any(|node| text(node).is_some_and(|value| value.contains("***")))
         );
         assert!(
             evaluated
-                .content
-                .elements
+                .forest
                 .iter()
-                .any(|node| matches!(&node.element, Element::Text(text) if text.contains("***")))
-        );
-        assert!(
-            evaluated
-                .content
-                .elements
-                .iter()
-                .any(|node| matches!(&node.element, Element::Text(text) if text.contains("___")))
+                .any(|node| text(node).is_some_and(|value| value.contains("___")))
         );
     }
 
@@ -1011,34 +853,24 @@ mod tests {
             "{:?}",
             evaluated.diagnostics
         );
-        let Element::Table {
-            columns,
-            header,
-            alignments,
-            cells,
-            ..
-        } = &evaluated.content.elements[0].element
-        else {
-            panic!("expected a table, got {:?}", evaluated.content.elements)
-        };
-        assert_eq!(*columns, 2);
-        assert!(*header);
-        assert_eq!(alignments, &[TableAlignment::Left, TableAlignment::Right]);
-        assert_eq!(cells.len(), 6);
-        assert!(matches!(
-            &cells[2].element,
-            Element::TableCell { body, .. }
-                if matches!(&body.elements[0].element, Element::Text(text) if text == "one")
-        ));
+        let table = &evaluated.forest[0];
+        assert!(table.is_core("table"), "{:#?}", evaluated.forest);
+        assert_eq!(table.get("columns"), Some(&NodeValue::Int(2)));
+        assert_eq!(table.get("header"), Some(&NodeValue::Bool(true)));
+        assert_eq!(
+            table.get("align"),
+            Some(&NodeValue::String("left,right".into()))
+        );
+        assert_eq!(table.children.len(), 6);
+        let cell = &table.children[2];
+        assert!(cell.is_core("table-cell"));
+        assert_eq!(texts(&cell.children), ["one"]);
 
-        let structured = structure(evaluated);
-        assert!(matches!(
-            structured.document.blocks.as_slice(),
-            [Block::Element(ElementNode {
-                element: Element::Table { .. },
-                ..
-            })]
-        ));
+        assert!(
+            matches!(evaluated.tree.roots.as_slice(), [node] if node.is_core("table")),
+            "{:#?}",
+            evaluated.tree.roots
+        );
     }
 
     #[test]
@@ -1052,15 +884,11 @@ mod tests {
             "{:?}",
             evaluated.diagnostics
         );
-        assert!(matches!(
-            &evaluated.content.elements[0].element,
-            Element::Table {
-                columns: 2,
-                header: true,
-                cells,
-                ..
-            } if cells.len() == 4
-        ));
+        let table = &evaluated.forest[0];
+        assert!(table.is_core("table"));
+        assert_eq!(table.get("columns"), Some(&NodeValue::Int(2)));
+        assert_eq!(table.get("header"), Some(&NodeValue::Bool(true)));
+        assert_eq!(table.children.len(), 4);
 
         let incomplete = evaluator.evaluate("#table(columns: 2)[#table-cell[A]]");
         assert!(
@@ -1089,29 +917,18 @@ mod tests {
             "{:?}",
             evaluated.diagnostics
         );
-        let Element::Figure {
-            body,
-            kind,
-            supplement,
-            caption,
-        } = &evaluated.content.elements[0].element
-        else {
-            panic!("expected a figure, got {:?}", evaluated.content.elements)
+        let figure = &evaluated.forest[0];
+        assert!(figure.is_core("figure"), "{:#?}", evaluated.forest);
+        assert_eq!(figure.get("kind"), Some(&NodeValue::String("table".into())));
+        assert!(figure.children.iter().any(|node| node.is_core("table")));
+        let Some(NodeValue::Stream(supplement)) = figure.get("supplement") else {
+            panic!("expected a supplement stream")
         };
-        assert_eq!(kind, "table");
-        assert!(
-            body.elements
-                .iter()
-                .any(|node| matches!(node.element, Element::Table { .. }))
-        );
-        assert!(matches!(
-            supplement,
-            Some(Content { elements }) if matches!(&elements[0].element, Element::Text(text) if text == "Tab")
-        ));
-        assert!(matches!(
-            caption,
-            Some(Content { elements }) if matches!(&elements[0].element, Element::Text(text) if text == "Cap")
-        ));
+        assert_eq!(texts(supplement), ["Tab"]);
+        let Some(NodeValue::Stream(caption)) = figure.get("caption") else {
+            panic!("expected a caption stream")
+        };
+        assert_eq!(texts(caption), ["Cap"]);
 
         // Typst `kind: auto`: the wrapped block element decides the kind.
         let inferred = evaluator.evaluate("#figure[\n#table(columns: 1)[#table-cell[X]]\n]");
@@ -1120,110 +937,86 @@ mod tests {
             "{:?}",
             inferred.diagnostics
         );
-        assert!(matches!(
-            &inferred.content.elements[0].element,
-            Element::Figure { kind, .. } if kind == "table"
-        ));
+        assert_eq!(
+            inferred.forest[0].get("kind"),
+            Some(&NodeValue::String("table".into()))
+        );
 
-        let structured = structure(evaluated);
-        assert!(matches!(
-            structured.document.blocks.as_slice(),
-            [Block::Element(ElementNode {
-                element: Element::Figure { .. },
-                ..
-            })]
-        ));
+        assert!(
+            matches!(evaluated.tree.roots.as_slice(), [node] if node.is_core("figure")),
+            "{:#?}",
+            evaluated.tree.roots
+        );
     }
 
     #[test]
-    fn structuring_groups_paragraphs_and_adjacent_list_items() {
+    fn shaping_groups_paragraphs_and_adjacent_list_items() {
         let range = TextRange::new(0, 1);
-        let item = || ElementNode {
-            element: Element::ListItem(Content::single(Element::Text("item".into()), range)),
-            range,
+        let item = || {
+            let mut node = Node::block_call("core::item", range).arg("ordered", false);
+            node.children = vec![Node::call("core::text", range).arg("text", "item")];
+            node
         };
-        let evaluation = Evaluation {
-            content: Content {
-                elements: vec![
-                    ElementNode {
-                        element: Element::Text("intro".into()),
-                        range,
-                    },
-                    ElementNode {
-                        element: Element::Parbreak,
-                        range,
-                    },
-                    item(),
-                    item(),
-                    ElementNode {
-                        element: Element::Heading {
-                            level: 1,
-                            body: Content::single(Element::Text("title".into()), range),
-                        },
-                        range,
-                    },
-                    ElementNode {
-                        element: Element::Text("tail".into()),
-                        range,
-                    },
-                ],
-            },
-            ..Evaluation::default()
-        };
+        let mut heading = Node::block_call("core::heading", range).arg("level", 1_i64);
+        heading.children = vec![Node::call("core::text", range).arg("text", "title")];
+        let forest = vec![
+            Node::call("core::text", range).arg("text", "intro"),
+            Node::call("core::parbreak", range),
+            item(),
+            item(),
+            heading,
+            Node::call("core::text", range).arg("text", "tail"),
+        ];
 
-        let structured = structure(evaluation);
+        let (_, shaping) = test_core::registry();
+        let tree = shape_flat_with(&forest, &shaping);
         // D0002 section grouping: the heading and its following content form
         // a Section node.
-        assert_eq!(structured.document.blocks.len(), 3);
-        assert!(matches!(
-            &structured.document.blocks[0],
-            Block::Element(node) if matches!(node.element, Element::Paragraph(_))
-        ));
-        assert!(matches!(
-            &structured.document.blocks[1],
-            Block::Element(ElementNode {
-                element: Element::List { ordered: false, items },
-                ..
-            }) if items.len() == 2
-        ));
-        let Block::Section { level, body, .. } = &structured.document.blocks[2] else {
-            panic!(
-                "expected a section, got {:?}",
-                structured.document.blocks[2]
-            )
-        };
-        assert_eq!(*level, 1);
-        assert!(matches!(
-            body.as_slice(),
-            [Block::Element(node)] if matches!(node.element, Element::Paragraph(_))
-        ));
+        assert_eq!(tree.roots.len(), 3);
+        assert!(tree.roots[0].is_core("paragraph"));
+        assert!(
+            tree.roots[1].is_core("list")
+                && tree.roots[1].get("ordered") == Some(&NodeValue::Bool(false))
+                && tree.roots[1].children.len() == 2
+        );
+        let section = &tree.roots[2];
+        assert!(section.is_core("section"), "{:#?}", tree.roots);
+        assert_eq!(section.get("level"), Some(&NodeValue::Int(1)));
+        assert!(section.children[0].is_core("heading"));
+        assert!(
+            section.children[1..]
+                .iter()
+                .any(|node| node.is_core("paragraph"))
+        );
     }
 
     #[test]
     fn structuring_unifies_list_sugar_and_item_calls() {
         let evaluator = Evaluator::default();
         for source in ["- One\n- Two", "#item[One]#item[Two]"] {
-            let structured = structure(evaluator.evaluate(source));
-            assert!(matches!(
-                structured.document.blocks.as_slice(),
-                [Block::Element(ElementNode {
-                    element: Element::List { ordered: false, items },
-                    ..
-                })] if items.len() == 2
-            ));
+            let tree = evaluator.evaluate(source).tree;
+            assert!(
+                matches!(tree.roots.as_slice(), [list]
+                    if list.is_core("list")
+                        && list.get("ordered") == Some(&NodeValue::Bool(false))
+                        && list.children.len() == 2),
+                "{:#?}",
+                tree.roots
+            );
         }
         for source in [
             "+ Three\n+ Four",
             "#item(ordered=true)[Three]#item(ordered=true)[Four]",
         ] {
-            let structured = structure(evaluator.evaluate(source));
-            assert!(matches!(
-                structured.document.blocks.as_slice(),
-                [Block::Element(ElementNode {
-                    element: Element::List { ordered: true, items },
-                    ..
-                })] if items.len() == 2
-            ));
+            let tree = evaluator.evaluate(source).tree;
+            assert!(
+                matches!(tree.roots.as_slice(), [list]
+                    if list.is_core("list")
+                        && list.get("ordered") == Some(&NodeValue::Bool(true))
+                        && list.children.len() == 2),
+                "{:#?}",
+                tree.roots
+            );
         }
     }
 
@@ -1236,21 +1029,23 @@ mod tests {
             "{:?}",
             evaluation.diagnostics
         );
-        let structured = structure(evaluation);
-        assert!(matches!(
-            &structured.document.blocks[0],
-            Block::Element(ElementNode {
-                element: Element::List { ordered: true, items },
-                ..
-            }) if items.len() == 2
-        ));
-        assert!(matches!(
-            &structured.document.blocks[1],
-            Block::Element(ElementNode {
-                element: Element::List { ordered: false, items },
-                ..
-            }) if items.len() == 1
-        ));
+        let tree = evaluation.tree;
+        assert!(
+            matches!(&tree.roots[0], list
+                if list.is_core("list")
+                    && list.get("ordered") == Some(&NodeValue::Bool(true))
+                    && list.children.len() == 2),
+            "{:#?}",
+            tree.roots
+        );
+        assert!(
+            matches!(&tree.roots[1], list
+                if list.is_core("list")
+                    && list.get("ordered") == Some(&NodeValue::Bool(false))
+                    && list.children.len() == 1),
+            "{:#?}",
+            tree.roots
+        );
     }
 
     #[test]
@@ -1290,7 +1085,7 @@ mod tests {
                 "demo::box",
                 signature,
                 true,
-                FunctionOwner::Plugin("demo".into()),
+                FunctionOwner::Package("demo".into()),
             ))
             .unwrap();
         let evaluation = Evaluator::new(registry).evaluate("#demo::box(source: \"wgsl\")[Hi]");
@@ -1299,25 +1094,12 @@ mod tests {
             "{:?}",
             evaluation.diagnostics
         );
-        let Element::Custom {
-            name,
-            body,
-            block,
-            fields,
-        } = &evaluation.content.elements[0].element
-        else {
-            panic!(
-                "expected custom element, got {:?}",
-                evaluation.content.elements
-            )
-        };
-        assert_eq!(name, "demo::box");
-        assert!(*block);
-        assert!(matches!(&body.elements[0].element, Element::Text(text) if text == "Hi"));
-        assert!(fields.iter().any(|field| field.name == "source"
-            && matches!(&field.value, notist_model::ElementValue::String(value) if value == "wgsl")));
-        assert!(fields.iter().any(|field| field.name == "width"
-            && matches!(&field.value, notist_model::ElementValue::Int(value) if *value == 800)));
+        let node = &evaluation.forest[0];
+        assert_eq!(node.name, "demo::box");
+        assert!(node.block);
+        assert_eq!(texts(&node.children), ["Hi"]);
+        assert_eq!(node.get("source"), Some(&NodeValue::String("wgsl".into())));
+        assert_eq!(node.get("width"), Some(&NodeValue::Int(800)));
     }
 
     #[test]
@@ -1337,7 +1119,7 @@ mod tests {
                 "demo::badge",
                 signature,
                 false,
-                FunctionOwner::Plugin("demo".into()),
+                FunctionOwner::Package("demo".into()),
             ))
             .unwrap();
         let evaluation = Evaluator::new(registry).evaluate("#demo::badge(label: \"x\")");
@@ -1346,17 +1128,16 @@ mod tests {
             "{:?}",
             evaluation.diagnostics
         );
-        let Element::Custom { body, fields, .. } = &evaluation.content.elements[0].element else {
-            panic!("expected custom element")
-        };
-        assert!(body.elements.is_empty());
-        assert_eq!(fields.len(), 1);
+        let node = &evaluation.forest[0];
+        assert_eq!(node.name, "demo::badge");
+        assert!(node.children.is_empty());
+        assert_eq!(node.args.len(), 1);
     }
 
     #[test]
-    fn stream_reduction_preserves_siblings_around_failed_calls() {
+    fn reduction_preserves_siblings_around_failed_calls() {
         let evaluation =
-            Evaluator::default().evaluate_stream("Before\n\n#heading(level: 0)[bad]\n\nAfter");
+            Evaluator::default().evaluate("Before\n\n#heading(level: 0)[bad]\n\nAfter");
         assert!(
             evaluation
                 .diagnostics
@@ -1365,44 +1146,35 @@ mod tests {
             "{:?}",
             evaluation.diagnostics
         );
-        assert!(!evaluation.reduction_failed);
         assert!(
-            evaluation.reduced.nodes.iter().any(
-                |node| matches!(node, StreamNode::Leaf(leaf) if leaf.instance.is_core("text"))
-            ),
+            evaluation.forest.iter().any(|node| node.is_core("text")),
             "{:#?}",
-            evaluation.reduced
+            evaluation.forest
         );
         assert_eq!(evaluation.tree.roots.len(), 2);
     }
 
     #[test]
-    fn parsed_stream_evaluation_accepts_import_seed_bindings() {
+    fn parsed_evaluation_accepts_import_seed_bindings() {
         let source = "#heading[#title]";
         let parse = notist_syntax::parse(source);
         let bindings = HashMap::from([("title".to_owned(), Value::String("Imported".to_owned()))]);
-        let evaluation = Evaluator::default().evaluate_parsed_stream_with_bindings(
-            source,
-            &parse,
-            bindings,
-            ShapingRegistry::core(),
-        );
+        let evaluation =
+            Evaluator::default().evaluate_parsed_with_bindings(source, &parse, bindings);
         assert!(
             evaluation.diagnostics.is_empty(),
             "{:?}",
             evaluation.diagnostics
         );
         assert_eq!(evaluation.tree.roots.len(), 1);
-        let section = &evaluation.tree.roots[0].instance;
+        let section = &evaluation.tree.roots[0];
         assert!(section.is_core("section"));
         let heading = section
-            .body
+            .children
             .iter()
-            .find(|node| node.instance.is_core("heading"))
+            .find(|node| node.is_core("heading"))
             .expect("section contains its heading");
-        assert!(heading.instance.body.iter().any(|node| {
-            matches!(&node.instance.field("text"), Some(notist_model::FieldValue::String(text)) if text == "Imported")
-        }));
+        assert_eq!(texts(&heading.children), ["Imported"]);
     }
 
     #[test]
@@ -1415,10 +1187,7 @@ mod tests {
             "{:?}",
             evaluated.diagnostics
         );
-        assert!(matches!(
-            evaluated.content.elements[0].element,
-            Element::Heading { level: 2, .. }
-        ));
+        assert_eq!(evaluated.forest[0].get("level"), Some(&NodeValue::Int(2)));
     }
 
     struct SignatureFunction {
@@ -1438,8 +1207,8 @@ mod tests {
             &self,
             _context: &FunctionContext<'_>,
             _input: FunctionInput<'_>,
-        ) -> Result<FunctionOutput, Vec<EvalDiagnostic>> {
-            Ok(FunctionOutput::content(Content::default()))
+        ) -> Result<Value, Vec<EvalDiagnostic>> {
+            Ok(Value::Content(Vec::new()))
         }
     }
 
@@ -1490,10 +1259,19 @@ mod tests {
     }
 
     #[test]
-    fn structuring_preserves_evaluation_diagnostics() {
-        let evaluation = Evaluator::default().evaluate("#missing[body]");
-        let structured = structure(evaluation);
-        assert!(structured.diagnostics.is_empty());
+    fn evaluation_preserves_reduction_diagnostics() {
+        // Diagnostics never masquerade as success: a failed call surfaces its
+        // diagnostic while the rest of the forest evaluates.
+        let evaluation = Evaluator::default().evaluate("#heading(level: 0)[bad]");
+        assert!(
+            evaluation
+                .diagnostics
+                .iter()
+                .any(|diagnostic| diagnostic.message.contains("heading level"))
+        );
+        // Unknown names stay silent at the reduction layer (check owns them).
+        let unknown = Evaluator::default().evaluate("#missing[body]");
+        assert!(unknown.diagnostics.is_empty());
     }
 
     #[test]
@@ -1505,16 +1283,10 @@ mod tests {
             "{:?}",
             evaluation.diagnostics
         );
-        let texts: Vec<_> = evaluation
-            .content
-            .elements
-            .iter()
-            .filter_map(|node| match &node.element {
-                Element::Text(text) => Some(text.as_str()),
-                _ => None,
-            })
-            .collect();
-        assert_eq!(texts, ["a[plain]", "text", "content", "z"]);
+        assert_eq!(
+            texts(&evaluation.forest),
+            ["a[plain]", "text", "content", "z"]
+        );
     }
 
     #[test]
@@ -1528,10 +1300,9 @@ mod tests {
         );
         assert!(
             evaluation
-                .content
-                .elements
+                .forest
                 .iter()
-                .any(|node| { matches!(&node.element, Element::Text(text) if text == "42") })
+                .any(|node| text(node) == Some("42"))
         );
     }
 
@@ -1551,20 +1322,15 @@ mod tests {
             "{:?}",
             trailing.diagnostics
         );
-        assert!(matches!(
-            &ordinary.content.elements[0].element,
-            Element::Details { body, .. } if body.elements.len() == 1 && matches!(
-                &body.elements[0].element,
-                Element::Text(text) if text == "same"
-            )
-        ));
-        assert!(matches!(
-            &trailing.content.elements[0].element,
-            Element::Details { body, .. } if body.elements.len() == 1 && matches!(
-                &body.elements[0].element,
-                Element::Text(text) if text == "same"
-            )
-        ));
+        for evaluation in [&ordinary, &trailing] {
+            let details = &evaluation.forest[0];
+            assert!(details.is_core("details"));
+            assert_eq!(texts(&details.children), ["same"]);
+        }
+        assert_eq!(
+            normalized_forest(&ordinary.forest),
+            normalized_forest(&trailing.forest)
+        );
     }
 
     #[test]
@@ -1578,7 +1344,7 @@ mod tests {
             "{:?}",
             annotated.diagnostics
         );
-        assert_eq!(plain.content, annotated.content);
+        assert_eq!(plain.forest, annotated.forest);
     }
 
     #[test]
@@ -1588,26 +1354,14 @@ mod tests {
         let markup =
             Evaluator::default().evaluate("Visible // line comment\ntext /* outer block */ after");
         assert!(markup.diagnostics.is_empty(), "{:?}", markup.diagnostics);
-        let visible = markup
-            .content
-            .elements
-            .iter()
-            .filter_map(|node| match &node.element {
-                Element::Text(text) => Some(text.as_str()),
-                _ => None,
-            })
-            .collect::<String>();
         assert_eq!(
-            visible,
+            joined_texts(&markup.forest),
             "Visible // line commenttext /* outer block */ after"
         );
 
         let code = Evaluator::default().evaluate("#(1 + /* nested /* block */ comment */ 2)");
         assert!(code.diagnostics.is_empty(), "{:?}", code.diagnostics);
-        assert!(matches!(
-            &code.content.elements[0].element,
-            Element::Text(text) if text == "3"
-        ));
+        assert_eq!(text(&code.forest[0]), Some("3"));
     }
 
     #[test]
@@ -1620,16 +1374,7 @@ mod tests {
             "{:?}",
             evaluation.diagnostics
         );
-        let visible = evaluation
-            .content
-            .elements
-            .iter()
-            .filter_map(|node| match &node.element {
-                Element::Text(text) => Some(text.as_str()),
-                _ => None,
-            })
-            .collect::<String>();
-        assert_eq!(visible, "第一段。第二段。");
+        assert_eq!(joined_texts(&evaluation.forest), "第一段。第二段。");
     }
 
     #[test]
@@ -1645,9 +1390,12 @@ mod tests {
         assert_eq!(evaluation.annotations.len(), 2);
         // "@[wip]\n" is 7 bytes; the heading spans [7, 14).
         assert_eq!(evaluation.annotations[0].range, TextRange::new(7, 14));
-        assert!(evaluation.content.elements.iter().any(|node| {
-            matches!(&node.element, Element::Heading { .. }) && node.range == TextRange::new(7, 14)
-        }));
+        assert!(
+            evaluation
+                .forest
+                .iter()
+                .any(|node| { node.is_core("heading") && node.range == TextRange::new(7, 14) })
+        );
         // "@[install]\n" ends at 26; the soft break is a separator, so the
         // paragraph's Text node is "abc" and spans [27, 30).
         assert_eq!(evaluation.annotations[1].range, TextRange::new(27, 30));
@@ -1700,16 +1448,7 @@ mod tests {
             "{:?}",
             evaluation.diagnostics
         );
-        let visible = evaluation
-            .content
-            .elements
-            .iter()
-            .filter_map(|node| match &node.element {
-                Element::Text(text) => Some(text.as_str()),
-                _ => None,
-            })
-            .collect::<String>();
-        assert_eq!(visible, "before 2 after");
+        assert_eq!(joined_texts(&evaluation.forest), "before 2 after");
     }
 
     #[test]
@@ -1741,16 +1480,12 @@ mod tests {
         // nested scope sees the chain).
         let visible = Evaluator::default().evaluate("#let accent = \"violet\"\n\n= #accent");
         assert!(visible.diagnostics.is_empty(), "{:?}", visible.diagnostics);
-        assert!(visible.content.elements.iter().any(|node| {
-            match &node.element {
-                Element::Heading { body, .. } => matches!(
-                    body.elements.as_slice(),
-                    [notist_model::ElementNode { element: Element::Text(text), .. }]
-                        if text == "violet"
-                ),
-                _ => false,
-            }
-        }));
+        assert!(
+            visible
+                .forest
+                .iter()
+                .any(|node| { node.is_core("heading") && texts(&node.children) == ["violet"] })
+        );
     }
 
     #[test]
@@ -1761,22 +1496,12 @@ mod tests {
             "{:?}",
             evaluated.diagnostics
         );
-        assert!(matches!(
-            &evaluated.content.elements[0].element,
-            Element::Strong(body)
-                if body.elements.iter().filter_map(|node| match &node.element {
-                    Element::Text(text) => Some(text.as_str()),
-                    _ => None,
-                }).collect::<String>() == "left * middle"
-        ));
-        assert!(evaluated.content.elements.iter().any(|node| matches!(
-            &node.element,
-            Element::Underline(body)
-                if body.elements.iter().filter_map(|node| match &node.element {
-                    Element::Text(text) => Some(text.as_str()),
-                    _ => None,
-                }).collect::<String>() == "left __ middle"
-        )));
+        let strong = &evaluated.forest[0];
+        assert!(strong.is_core("strong"));
+        assert_eq!(joined_texts(&strong.children), "left * middle");
+        assert!(evaluated.forest.iter().any(|node| {
+            node.is_core("underline") && joined_texts(&node.children) == "left __ middle"
+        }));
     }
 
     #[test]
@@ -1792,9 +1517,10 @@ mod tests {
             evaluated.diagnostics
         );
         assert!(
-            evaluated.content.elements.iter().any(
-                |node| matches!(&node.element, Element::Text(text) if text == "Hello, World!")
-            )
+            evaluated
+                .forest
+                .iter()
+                .any(|node| text(node) == Some("Hello, World!"))
         );
     }
 
@@ -1810,9 +1536,11 @@ mod tests {
             "{:?}",
             evaluated.diagnostics
         );
-        assert!(evaluated.content.elements.iter().any(|node| {
-            matches!(&node.element, Element::Callout { body, .. }
-                if body.elements.iter().any(|child| matches!(&child.element, Element::Heading { level: 3, .. })))
+        assert!(evaluated.forest.iter().any(|node| {
+            node.is_core("callout")
+                && node.children.iter().any(|child| {
+                    child.is_core("heading") && child.get("level") == Some(&NodeValue::Int(3))
+                })
         }));
     }
 

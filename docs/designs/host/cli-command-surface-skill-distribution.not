@@ -62,7 +62,7 @@ Skill 的 authored source 放在仓库 `skills/notist/`（当前只有 `SKILL.md
 
 官方 docs 保留仓库 `docs/` 下的完整 authored corpus、相对目录与 Module 关系（公开语言文档、活动设计、历史设计、`docs/ai` 调研），不打包人工挑选的摘要，也不把 HTML/CSS/JS 产物当作知识源。完整保留不等于一次读入上下文——Agent 仍然先搜索、再读取候选。
 
-完整 corpus 中来源具有不同权威性：`grammar.not`/`functions.not`/`types.not`/`cli.not` 描述当前公开行为；活动 `designs/` 描述当前治理方向；`docs/ai/` 是带日期的调研；`old-designs/` 解释历史选择。这些区别由 Skill 教给 Agent；旧调研不能覆盖当前规范，任何正文自然语言也不能仅因被检索到就成为 Agent 指令。
+完整 corpus 中来源具有不同权威性：`grammar.not`/`functions.not`/`types.not`/`cli.not` 描述当前公开行为；活动 `designs/` 描述当前治理方向；`docs/ai/` 是带日期的调研，历史选择由 Git 记录。这些区别由 Skill 教给 Agent；旧调研不能覆盖当前规范，任何正文自然语言也不能仅因被检索到就成为 Agent 指令。
 
 官方 docs 没有专用的 `notist docs search` 等命令——增加这类命令会复制 Vault root、query、snapshot、daemon 与输出格式的概念。它唯一特殊的地方是来源与同步方式。
 

@@ -176,7 +176,7 @@
 == Round 10 复核
 
 - 归档位置修正：current-generation 拆分档案不放在 `old-designs/archive/current-generation`，统一移入 `vault::designs::archive`（D0002–D0010 的 redirect 壳与目录 README）。
-- 同步更新 [[vault::old-designs]] 与 [[vault::designs]] 的索引指向、[[vault::ai::2026-08-15 design record separation audit]] 内全部路径引用。
+- 同步更新现行 [[vault::designs]] 索引；已删除的历史设计不再保留 vault 入口，完整历史由 Git 追溯。
 - 验证：`notist check docs` 0 diagnostics / 75 sources；`notist build docs` 75 pages。
 
 == Round 11 复核（最终收尾）

@@ -1853,6 +1853,7 @@ dependencies = [
  "dunce",
  "notist-eval",
  "notist-model",
+ "notist-plugin-core",
  "notist-plugin-host",
  "notist-syntax",
  "tempfile",
@@ -1904,6 +1905,7 @@ version = "0.1.0"
 dependencies = [
  "notist-eval",
  "notist-model",
+ "notist-plugin-core",
  "notist-syntax",
  "percent-encoding",
 ]
@@ -1917,11 +1919,21 @@ dependencies = [
 ]
 
 [[package]]
+name = "notist-plugin-core"
+version = "0.1.0"
+dependencies = [
+ "notist-eval",
+ "notist-model",
+ "notist-syntax",
+]
+
+[[package]]
 name = "notist-plugin-host"
 version = "0.1.0"
 dependencies = [
  "notist-eval",
  "notist-model",
+ "notist-plugin-core",
  "serde",
  "serde_json",
  "toml 0.8.23",

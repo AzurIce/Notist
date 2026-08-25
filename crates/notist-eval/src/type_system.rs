@@ -1,6 +1,6 @@
 use std::collections::HashMap;
 
-use notist_model::{Content, TextRange};
+use notist_model::{Node, TextRange};
 use notist_syntax::{
     Argument, Expression, ExpressionKind, StringLiteralForm, StringLiteralStyle, UserParameter,
 };
@@ -16,7 +16,10 @@ pub enum Value {
     Int(i64),
     Float(f64),
     String(String),
-    Content(Content),
+    /// A call forest: content values are `Node` forests, on both the input
+    /// side (always fully reduced) and the output side (may still carry
+    /// handler-addressed calls that re-enter the fixpoint).
+    Content(Vec<Node>),
     Function(Box<FunctionValue>),
 }
 
@@ -181,7 +184,7 @@ impl BoundArguments {
         }
     }
 
-    pub fn take_content(&mut self, name: &str) -> Content {
+    pub fn take_content(&mut self, name: &str) -> Vec<Node> {
         match self.values.remove(name).map(|bound| bound.value) {
             Some(Value::Content(content)) => content,
             _ => unreachable!("signature binding guarantees a Content value"),
@@ -189,7 +192,7 @@ impl BoundArguments {
     }
 
     /// Removes and returns an optional Content argument after signature validation.
-    pub fn take_optional_content(&mut self, name: &str) -> Option<Content> {
+    pub fn take_optional_content(&mut self, name: &str) -> Option<Vec<Node>> {
         match self.values.remove(name).map(|bound| bound.value) {
             Some(Value::None) => None,
             Some(Value::Content(content)) => Some(content),
@@ -208,7 +211,7 @@ impl BoundArguments {
 pub(crate) fn bind_arguments(
     signature: &FunctionSignature,
     arguments: &[Argument],
-    trailing_content: Vec<(Content, TextRange)>,
+    trailing_content: Vec<(Vec<Node>, TextRange)>,
     call_name_range: TextRange,
     base_offset: usize,
     mut evaluate: impl FnMut(&Expression) -> Result<(Value, ValueOrigin), Vec<EvalDiagnostic>>,

@@ -20,13 +20,14 @@ use std::path::{Component, Path, PathBuf};
 use std::sync::{Arc, Mutex};
 
 use notist_eval::{
-    EvalDiagnostic, Function, FunctionContext, FunctionInput, FunctionOutput, FunctionOwner,
-    FunctionRegistry, FunctionSignature, RegistryError, ShapingRegistry, Type,
+    EvalDiagnostic, Function, FunctionContext, FunctionInput, FunctionOwner, FunctionRegistry,
+    FunctionSignature, PluginContribution, RegistryError, ShapingRegistry, Type, Value,
 };
 use notist_model::{
-    BodyMode, Content, CustomField, DefaultValue, Element, ElementName, ElementSchema,
-    ElementValue, Parameter, ShapingKind, ShapingRole,
+    BodyMode, DefaultValue, ElementName, ElementSchema, Node, NodeValue, Parameter, ShapingKind,
+    ShapingRole,
 };
+use notist_plugin_core as core_plugin;
 use serde::Deserialize;
 use wasmtime::component::{Component as WasmComponent, HasSelf, Linker};
 use wasmtime::{Config, Engine, Func, Instance, Memory, Module, ResourceLimiter, Store, Val};
@@ -218,6 +219,26 @@ pub struct LoadedPlugin {
     /// contains core functions and this package's functions by the time
     /// `load_package` returns.
     pub shared_registry: Option<Arc<Mutex<FunctionRegistry>>>,
+}
+
+impl LoadedPlugin {
+    /// Projects the loaded package onto the eval contribution contract.
+    pub fn contribution(&self) -> PluginContribution {
+        let mut contribution = PluginContribution::new(self.id.clone());
+        contribution.functions = self.functions.clone();
+        contribution.signatures = self.signatures.clone();
+        contribution.elements = self.elements.clone();
+        contribution.aliases = self
+            .functions
+            .iter()
+            .filter_map(|function| {
+                let (package, element) = function.name().split_once("::")?;
+                plugin_legacy_alias(package, element)
+                    .map(|alias| (alias, function.name().to_owned()))
+            })
+            .collect();
+        contribution
+    }
 }
 
 /// Returns plugin package directories declared in `Notist.toml`, without loading Wasm.
@@ -503,7 +524,8 @@ pub fn load_package(package_dir: &Path) -> Result<LoadedPlugin, String> {
         .as_ref()
         .is_some_and(|wasm| wasm.component && wasm.host_call)
     {
-        Some(Arc::new(Mutex::new(FunctionRegistry::with_builtins())))
+        let (registry, _) = core_plugin::registry();
+        Some(Arc::new(Mutex::new(registry)))
     } else {
         None
     };
@@ -573,7 +595,7 @@ pub fn load_package(package_dir: &Path) -> Result<LoadedPlugin, String> {
             elements.push(element_schema(&element_name, element, &manifest.package)?);
             continue;
         }
-        let owner = FunctionOwner::Plugin(manifest.package.clone());
+        let owner = FunctionOwner::Package(manifest.package.clone());
         let function: Arc<dyn Function> = match &runtime {
             Some((SemanticRuntime::Core(runtime), _)) => Arc::new(WasmFunction {
                 element_name: element_name.clone(),
@@ -870,7 +892,7 @@ impl Function for WasmFunction {
         &self,
         _context: &FunctionContext<'_>,
         mut input: FunctionInput<'_>,
-    ) -> Result<FunctionOutput, Vec<EvalDiagnostic>> {
+    ) -> Result<Value, Vec<EvalDiagnostic>> {
         let mut request = Vec::new();
         for param in &self.signature.parameters {
             if param.ty == Type::Content {
@@ -965,7 +987,7 @@ impl Function for WasmFunction {
 
         let body = match self.signature.trailing_content.as_deref() {
             Some(name) => input.arguments.take_content(name),
-            None => Content::new(),
+            None => Vec::new(),
         };
         let mut fields = BTreeMap::new();
         for param in &self.signature.parameters {
@@ -998,22 +1020,17 @@ impl Function for WasmFunction {
                 serde_json::Value::Number(response_height.into()),
             );
         }
-        let fields = fields
-            .into_iter()
-            .map(|(name, value)| CustomField {
-                name,
-                value: json_to_element_value(value),
-            })
-            .collect();
-        Ok(FunctionOutput::content(Content::single(
-            Element::Custom {
-                name: self.element_name.clone(),
-                body,
-                block: self.block,
-                fields,
-            },
-            input.range,
-        )))
+        let node = Node {
+            name: self.element_name.clone(),
+            args: fields
+                .into_iter()
+                .map(|(name, value)| (name, json_to_node_value(value)))
+                .collect(),
+            children: body,
+            block: self.block,
+            range: input.range,
+        };
+        Ok(Value::Content(vec![node]))
     }
 }
 
@@ -1242,26 +1259,25 @@ impl wit_bindings::notist::plugin::host::Host for ComponentHostState {
     fn call(&mut self, request: Vec<u8>) -> Result<Vec<u8>, String> {
         let forest = codec::decode_forest(&request)
             .map_err(|message| format!("invalid host.call request: {message}"))?;
-        let root = forest.first().ok_or("host.call request carried no call")?;
         let registry = self
             .registry
             .lock()
             .map_err(|_| "shared plugin registry lock poisoned".to_owned())?;
-        let call = wire::node_to_legacy_call(root, &registry)?;
-        let calls = wire::call_content_of(call);
-        let content = notist_eval::reduce_content_as(&calls, &registry).map_err(|diagnostics| {
-            diagnostics
+        // host.call reduces on the production node engine: request and
+        // response are both `Node` forests, and the budget only meters
+        // handler dispatches.
+        let limits = notist_eval::ReduceLimits::default();
+        let mut frame = notist_eval::ReduceFrame::root(&limits);
+        let (reduced, errors) =
+            notist_eval::reduce_nodes_recovering(forest, &registry, &limits, &mut frame);
+        if !errors.is_empty() {
+            return Err(errors
                 .into_iter()
                 .map(|diagnostic| diagnostic.message)
                 .collect::<Vec<_>>()
-                .join("; ")
-        })?;
-        let leaves = notist_eval::legacy_content_to_nodes(&content);
-        let out: Vec<notist_model::Node> = leaves
-            .iter()
-            .map(notist_model::node_from_instance)
-            .collect();
-        codec::encode_forest(&out)
+                .join("; "));
+        }
+        codec::encode_forest(&reduced)
     }
 }
 
@@ -1384,7 +1400,7 @@ impl Function for ComponentHostFunction {
         &self,
         _context: &FunctionContext<'_>,
         mut input: FunctionInput<'_>,
-    ) -> Result<FunctionOutput, Vec<EvalDiagnostic>> {
+    ) -> Result<Value, Vec<EvalDiagnostic>> {
         let request_node =
             wire::build_request_node(&self.element_name, &self.signature, &mut input).map_err(
                 |message| {
@@ -1434,7 +1450,7 @@ impl Function for ComponentHostFunction {
                 }]
             })?;
         let returned = wire::decode_response(&response, input.range)?;
-        Ok(FunctionOutput::Nodes(returned))
+        Ok(Value::Content(returned))
     }
 }
 
@@ -1462,7 +1478,7 @@ impl Function for ComponentFunction {
         &self,
         _context: &FunctionContext<'_>,
         mut input: FunctionInput<'_>,
-    ) -> Result<FunctionOutput, Vec<EvalDiagnostic>> {
+    ) -> Result<Value, Vec<EvalDiagnostic>> {
         let request_node =
             wire::build_request_node(&self.element_name, &self.signature, &mut input).map_err(
                 |message| {
@@ -1512,7 +1528,7 @@ impl Function for ComponentFunction {
                 }]
             })?;
         let returned = wire::decode_response(&response, input.range)?;
-        Ok(FunctionOutput::Nodes(returned))
+        Ok(Value::Content(returned))
     }
 }
 
@@ -1548,24 +1564,24 @@ fn value_to_json(value: &notist_eval::Value) -> serde_json::Value {
     }
 }
 
-fn json_to_element_value(value: serde_json::Value) -> ElementValue {
+fn json_to_node_value(value: serde_json::Value) -> NodeValue {
     match value {
-        serde_json::Value::Null => ElementValue::None,
-        serde_json::Value::Bool(value) => ElementValue::Bool(value),
+        serde_json::Value::Null => NodeValue::None,
+        serde_json::Value::Bool(value) => NodeValue::Bool(value),
         serde_json::Value::Number(value) => {
             if let Some(value) = value.as_i64() {
-                ElementValue::Int(value)
+                NodeValue::Int(value)
             } else if let Some(value) = value.as_f64() {
-                ElementValue::Float(value)
+                NodeValue::Float(value)
             } else {
-                ElementValue::None
+                NodeValue::None
             }
         }
-        serde_json::Value::String(value) => ElementValue::String(value),
+        serde_json::Value::String(value) => NodeValue::String(value),
         serde_json::Value::Array(values) => {
-            ElementValue::Array(values.into_iter().map(json_to_element_value).collect())
+            NodeValue::Array(values.into_iter().map(json_to_node_value).collect())
         }
-        serde_json::Value::Object(_) => ElementValue::None,
+        serde_json::Value::Object(_) => NodeValue::None,
     }
 }
 
@@ -1578,21 +1594,30 @@ pub fn register_loaded(
     registry: &mut FunctionRegistry,
     plugins: &[LoadedPlugin],
 ) -> Result<(), RegistryError> {
+    let mut shaping = ShapingRegistry::new();
+    register_loaded_contributions(registry, &mut shaping, plugins)
+}
+
+/// Atomically installs all loaded package contributions into eval registries.
+pub fn register_loaded_contributions(
+    registry: &mut FunctionRegistry,
+    shaping: &mut ShapingRegistry,
+    plugins: &[LoadedPlugin],
+) -> Result<(), RegistryError> {
+    let mut candidate_registry = registry.clone();
+    let mut candidate_shaping = shaping.clone();
     for plugin in plugins {
-        for function in &plugin.functions {
-            registry.register_arc(Arc::clone(function))?;
-            let Some((package, element)) = function.name().split_once("::") else {
-                continue;
-            };
-            if let Some(alias) = plugin_legacy_alias(package, element) {
-                registry.register_alias(alias, function.name())?;
-            }
-        }
+        candidate_registry.register_contribution(&mut candidate_shaping, &plugin.contribution())?;
     }
+    *registry = candidate_registry;
+    *shaping = candidate_shaping;
     Ok(())
 }
 
 /// Registers the shaping schemas contributed by loaded plugin packages.
+///
+/// This compatibility entry point retains its historical replacement behavior;
+/// new callers should use [`register_loaded_contributions`].
 pub fn register_loaded_shaping(registry: &mut ShapingRegistry, plugins: &[LoadedPlugin]) {
     for plugin in plugins {
         for schema in &plugin.elements {
@@ -1609,9 +1634,14 @@ mod tests {
     use std::path::PathBuf;
     use std::sync::atomic::{AtomicU64, Ordering};
 
-    use notist_eval::{Evaluator, FunctionRegistry};
+    use notist_eval::{Evaluator, FunctionOwner, FunctionRegistry};
+    use notist_model::NodeValue;
 
     use super::*;
+
+    fn core_registry() -> FunctionRegistry {
+        core_plugin::registry().0
+    }
 
     static NEXT_DIR: AtomicU64 = AtomicU64::new(0);
 
@@ -1690,33 +1720,27 @@ mod tests {
             .unwrap();
         let plugin = load_package(&package_dir).unwrap();
         let mut shaping = ShapingRegistry::new();
-        crate::register_loaded_shaping(&mut shaping, std::slice::from_ref(&plugin));
-        let mut registry = FunctionRegistry::with_builtins();
-        register_loaded(&mut registry, std::slice::from_ref(&plugin)).unwrap();
-        let evaluation = Evaluator::new(registry).evaluate_stream_with_shaping(
-            "#component-echo::note(message: \"Hello\")[body]",
-            &shaping,
+        let mut registry = core_registry();
+        register_loaded_contributions(&mut registry, &mut shaping, std::slice::from_ref(&plugin))
+            .unwrap();
+        assert_eq!(
+            registry.get("component-echo::echo").unwrap().owner(),
+            FunctionOwner::Package("component-echo".into())
         );
+        let evaluation = Evaluator::new(registry)
+            .evaluate_with_shaping("#component-echo::note(message: \"Hello\")[body]", &shaping);
         assert!(
             evaluation.diagnostics.is_empty(),
             "{:?}",
             evaluation.diagnostics
         );
-        // The call stayed unreduced: self-named leaf with raw bound fields,
+        // The call stayed unreduced: self-named leaf with raw bound args,
         // body shaped by the guest-declared `body-mode: flow` schema.
         let root = &evaluation.tree.roots[0];
-        assert_eq!(
-            root.instance.name,
-            ElementName::plugin("component-echo", "note")
-        );
-        assert!(root.instance.fields.iter().any(|field| field.name == "message"
-            && matches!(&field.value, notist_model::FieldValue::String(value) if value == "Hello")));
-        assert!(
-            root.instance
-                .body
-                .iter()
-                .all(|node| node.instance.is_core("paragraph"))
-        );
+        assert_eq!(root.name, "component-echo::note");
+        assert!(root.args.iter().any(|(name, value)| name == "message"
+            && matches!(value, notist_model::NodeValue::String(value) if value == "Hello")));
+        assert!(root.children.iter().all(|node| node.is_core("paragraph")));
     }
 
     #[test]
@@ -1777,12 +1801,12 @@ mod tests {
             .canonicalize()
             .unwrap();
         let plugins = [load_package(&package_dir).unwrap()];
-        let mut registry = FunctionRegistry::with_builtins();
+        let mut registry = core_registry();
         register_loaded(&mut registry, &plugins).unwrap();
-        let mut shaping = ShapingRegistry::new();
+        let (_, mut shaping) = core_plugin::registry();
         register_loaded_shaping(&mut shaping, &plugins);
 
-        let evaluation = Evaluator::new(registry).evaluate_stream_with_shaping(
+        let evaluation = Evaluator::new(registry).evaluate_with_shaping(
             "#component-echo::echo(message: \"x\")[first\n\nsecond]",
             &shaping,
         );
@@ -1799,7 +1823,7 @@ mod tests {
                 .tree
                 .roots
                 .iter()
-                .all(|node| node.instance.is_core("paragraph"))
+                .all(|node| node.is_core("paragraph"))
         );
     }
 
@@ -1813,7 +1837,7 @@ mod tests {
         assert_eq!(plugin.id, "component-echo");
         assert_eq!(plugin.functions[0].name(), "component-echo::echo");
 
-        let mut registry = FunctionRegistry::with_builtins();
+        let mut registry = core_registry();
         register_loaded(&mut registry, &[plugin]).unwrap();
         let evaluation =
             Evaluator::new(registry).evaluate("#component-echo::echo(message: \"hi\")[body]");
@@ -1823,10 +1847,9 @@ mod tests {
             evaluation.diagnostics
         );
         // Pass-through contract: the trailing body comes back verbatim.
-        assert!(matches!(
-            &evaluation.content.elements[0].element,
-            Element::Text(text) if text == "body"
-        ));
+        let node = &evaluation.forest[0];
+        assert!(node.is_core("text"));
+        assert_eq!(node.get("text"), Some(&NodeValue::String("body".into())));
     }
 
     #[test]
@@ -1907,7 +1930,7 @@ mod tests {
         let plugin = load_package(&zip_path).unwrap();
         assert_eq!(plugin.id, "zip-demo");
         assert_eq!(plugin.functions[0].name(), "zip-demo::echo");
-        let mut registry = FunctionRegistry::with_builtins();
+        let mut registry = core_registry();
         register_loaded(&mut registry, &[plugin]).unwrap();
         let evaluation = Evaluator::new(registry).evaluate("#zip-demo::echo(message: \"m\")[]");
         assert!(
@@ -1915,10 +1938,9 @@ mod tests {
             "{:?}",
             evaluation.diagnostics
         );
-        assert!(matches!(
-            &evaluation.content.elements[0].element,
-            Element::Text(text) if text == "m"
-        ));
+        let node = &evaluation.forest[0];
+        assert!(node.is_core("text"));
+        assert_eq!(node.get("text"), Some(&NodeValue::String("m".into())));
     }
 
     #[test]
@@ -1931,7 +1953,7 @@ mod tests {
         assert_eq!(plugin.id, "component-host-call");
         assert!(plugin.shared_registry.is_some());
 
-        let mut registry = FunctionRegistry::with_builtins();
+        let mut registry = core_registry();
         register_loaded(&mut registry, &[plugin]).unwrap();
         let evaluation = Evaluator::new(registry).evaluate("#component-host-call::passthrough()");
         assert!(
@@ -1939,10 +1961,12 @@ mod tests {
             "{:?}",
             evaluation.diagnostics
         );
-        assert!(matches!(
-            &evaluation.content.elements[0].element,
-            Element::Text(text) if text == "hello from host.call"
-        ));
+        let node = &evaluation.forest[0];
+        assert!(node.is_core("text"));
+        assert_eq!(
+            node.get("text"),
+            Some(&NodeValue::String("hello from host.call".into()))
+        );
     }
 
     #[test]
@@ -1965,7 +1989,7 @@ mod tests {
         assert_eq!(component.tag, "notist-shader");
         assert_eq!(component.module, "assets/shader.js");
 
-        let mut registry = FunctionRegistry::with_builtins();
+        let mut registry = core_registry();
         register_loaded(&mut registry, &[plugin]).unwrap();
         assert!(registry.get("shader").is_some(), "legacy bare alias");
         assert!(registry.get("shader::shader").is_some(), "qualified name");
@@ -1977,16 +2001,12 @@ mod tests {
             "{:?}",
             evaluation.diagnostics
         );
-        let Element::Custom { fields, .. } = &evaluation.content.elements[0].element else {
-            panic!("expected custom element")
-        };
-        assert!(fields.iter().any(|field| field.name == "width"
-            && matches!(field.value, ElementValue::Int(320))));
-        assert!(
-            fields.iter().any(
-                |field| field.name == "height" && matches!(field.value, ElementValue::Int(200))
-            )
-        );
+        let node = &evaluation.forest[0];
+        assert_eq!(node.name, "shader::shader");
+        assert_eq!(node.get("width"), Some(&NodeValue::Int(320)));
+        assert_eq!(node.get("height"), Some(&NodeValue::Int(200)));
+        assert!(node.children.iter().any(|child| child.is_core("text")
+            && child.get("text") == Some(&NodeValue::String("fallback".into()))));
     }
 
     #[test]

@@ -1,4 +1,4 @@
-@![implementation = "aligned"]
+@![implementation = "partial"]
 = Eval Contribution
 
 本文定义插件如何贡献语义函数：组件 `init` 注册的元素声明如何变成 `FunctionRegistry` 中的可调用对象，以及静态分析与 runtime 如何分别消费这些贡献。Call 的规约规则见 [[vault::designs::pipeline::plugin-call-reduction]]。
@@ -23,13 +23,13 @@ element-decl {
 
 == 实现形态
 
-registry 中共有三种 Function 实现：
+registry 中的 Function 实现按 backend 区分，而不是按语义 package 区分：
 
-1. **Core native function**：core 是特权 native package，构造器由宿主直接实现并注册。
+1. **Native function**：任何 package 都可以由 Rust native 实现，直接提供 `Function` 并注册 contribution；core 只是其中的默认 package。
 2. **Component function**：WIT `plugin` / `plugin-host` 组件；装载时 `init` 返回声明，`evaluate` 按 dispatcher 名字分发规约；后者持有共享 registry，供 `host.call` 使用。
-3. **Core WasmFunction**：2026-08-18 初版 raw core Wasm ABI（`evaluate(ptr, len) -> ptr`），仅用于存量 shader package。
+3. **Raw Wasm function**：2026-08-18 初版 raw Wasm ABI（`evaluate(ptr, len) -> ptr`），只是 Wasm backend 的兼容路径。
 
-所有实现都实现同一 `Function` trait 并进入同一 `FunctionRegistry`；core 与插件在 registry 中地位相同，但 core 的 authority 是 host。
+所有实现都实现同一 `Function` trait 并进入同一 `FunctionRegistry`；registry 的 owner 是 package identity，native/Wasm 不改变 call 的语义。
 
 == 装载与签名可见性
 
@@ -40,15 +40,15 @@ registry 中共有三种 Function 实现：
 == 注册与别名
 
 - 装载器按 `init` 声明逐个生成函数并 `register_arc`；重名在加载时拒绝。
-- `core::*` qualified alias 指向 prelude 内置实现；插件只能占用自己的 namespace，不能覆盖 `core::*`。
-- plugin package 名与 core 边界由 [[vault::designs::world::core-namespace-plugin-boundary]] 定义。
+- `core::*` qualified alias 指向 `core` package 的注册实现；插件只能占用自己的 namespace，不能覆盖受保留的 `core::*`。
+- package namespace 与 core namespace policy 由 [[vault::designs::world::core-namespace-plugin-boundary]] 定义；这属于注册策略，不是 reducer 的特殊分支。
 
 == 当前实现映射
 
-- `ElementFunction`：已实现于 `notist-eval`，用于 legacy 兼容路径。
+- `ElementFunction`：已实现于 `notist-eval`，作为声明式 schema 元素的通用 handler。
 - 组件 `init` 注册装载路径：已实现于 `notist-plugin-host`。
 - `notist-plugin-sdk`：作者侧 `Plugin::init(reg)` + `ElementFn::reduce` + `export_plugin!`。
-- `FunctionRegistry` 与 `core::*` 别名：已实现。
+- `FunctionRegistry` 与 `core::*` 别名：已实现；core 与 Wasm package 都可映射为 `PluginContribution`，通过事务式安装路径进入 registry。
 
 == 已裁定 / 待定
 
