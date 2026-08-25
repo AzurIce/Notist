@@ -1,112 +1,61 @@
-//! Minimal no_std Wasm plugin for the `shader` Notist element.
+//! Shader semantic component.
 //!
-//! ABI (not final WIT): host writes a binary request into Wasm memory and
-//! calls `evaluate(ptr, len)`. The module writes a JSON response into a static
-//! buffer and returns its pointer.
-//!
-//! Request layout:
-//! ```text
-//! 0: u32 source_len
-//! 4: source bytes
-//! after source: i32 width
-//! after source + 4: i32 height
-//! ```
+//! The computed `shader` handler normalizes its call into the data-only
+//! `shader::canvas` leaf rendered by the package's HTML contribution.
 
-#![no_std]
+use notist_model::{Node, NodeValue};
+use notist_plugin_sdk::{Args, ElementDecl, ElementFn, EvalCtx, Registrar};
 
-use core::fmt::Write as _;
-use core::panic::PanicInfo;
+pub struct Shader;
 
-#[panic_handler]
-fn panic(_info: &PanicInfo) -> ! {
-    loop {}
-}
+impl ElementFn for Shader {
+    fn decl(&self) -> ElementDecl {
+        ElementDecl::new("shader")
+            .block(true)
+            .param("source", "String")
+            .param_default("width", "Int", 800_i64)
+            .param_default("height", "Int", 600_i64)
+            .trailing_content("body")
+            .body_mode("flow")
+    }
 
-static mut RESPONSE: [u8; 65536] = [0; 65536];
+    fn reduce(
+        &self,
+        ctx: &mut EvalCtx<'_>,
+        args: &Args,
+        body: &[Node],
+    ) -> Result<Vec<Node>, String> {
+        let source = args
+            .get_string("source")
+            .ok_or_else(|| "shader source must be a string".to_owned())?;
+        let width = args.get_int("width").unwrap_or(800);
+        let height = args.get_int("height").unwrap_or(600);
 
-struct BufWriter {
-    buf: &'static mut [u8],
-    pos: usize,
-}
-
-impl BufWriter {
-    fn new() -> Self {
-        // Safety: single-threaded wasm, only used inside evaluate.
-        let buf = unsafe { &mut *core::ptr::addr_of_mut!(RESPONSE) };
-        buf.fill(0);
-        Self { buf, pos: 0 }
+        let mut canvas = Node::block_call(ctx.qualified_name("canvas"), ctx.range());
+        canvas.args.push(("source".into(), NodeValue::from(source)));
+        canvas.args.push(("width".into(), NodeValue::Int(width)));
+        canvas.args.push(("height".into(), NodeValue::Int(height)));
+        canvas.children = body.to_vec();
+        Ok(vec![canvas])
     }
 }
 
-impl core::fmt::Write for BufWriter {
-    fn write_str(&mut self, s: &str) -> core::fmt::Result {
-        let bytes = s.as_bytes();
-        if self.pos + bytes.len() > self.buf.len() {
-            return Err(core::fmt::Error);
-        }
-        self.buf[self.pos..self.pos + bytes.len()].copy_from_slice(bytes);
-        self.pos += bytes.len();
-        Ok(())
+pub struct Plugin;
+
+impl notist_plugin_sdk::Plugin for Plugin {
+    fn init(registrar: &mut Registrar) {
+        registrar.element(Shader);
+        registrar.declare(
+            ElementDecl::new("canvas")
+                .block(true)
+                .param("source", "String")
+                .param_default("width", "Int", 800_i64)
+                .param_default("height", "Int", 600_i64)
+                .trailing_content("body")
+                .body_mode("flow")
+                .data_only(),
+        );
     }
 }
 
-#[unsafe(no_mangle)]
-pub extern "C" fn evaluate(ptr: *const u8, len: usize) -> *const u8 {
-    // Safety: host must provide a valid buffer of at least len bytes.
-    let request = unsafe { core::slice::from_raw_parts(ptr, len) };
-    let mut writer = BufWriter::new();
-
-    if request.len() < 8 {
-        let _ = writer.write_str(r#"{"ok":false,"error":"request too short"}"#);
-        return writer.buf.as_ptr();
-    }
-
-    let source_len = u32::from_le_bytes([request[0], request[1], request[2], request[3]]) as usize;
-    if 4 + source_len + 8 > request.len() {
-        let _ = writer.write_str(r#"{"ok":false,"error":"request truncated"}"#);
-        return writer.buf.as_ptr();
-    }
-
-    let source_bytes = &request[4..4 + source_len];
-    let source = core::str::from_utf8(source_bytes).unwrap_or("");
-    let width_offset = 4 + source_len;
-    let height_offset = width_offset + 4;
-    let width = i32::from_le_bytes([
-        request[width_offset],
-        request[width_offset + 1],
-        request[width_offset + 2],
-        request[width_offset + 3],
-    ]);
-    let height = i32::from_le_bytes([
-        request[height_offset],
-        request[height_offset + 1],
-        request[height_offset + 2],
-        request[height_offset + 3],
-    ]);
-
-    let _ = write!(
-        writer,
-        r#"{{"ok":true,"fields":{{"source":""#
-    );
-    // Simple JSON string escaping (only quotes and backslashes).
-    for &b in source_bytes {
-        match b {
-            b'"' => {
-                let _ = writer.write_str("\\\"");
-            }
-            b'\\' => {
-                let _ = writer.write_str("\\\\");
-            }
-            _ => {
-                let _ = writer.write_str(core::str::from_utf8(core::slice::from_ref(&b)).unwrap_or(""));
-            }
-        }
-    }
-    let _ = write!(
-        writer,
-        r#"","width":{},"height":{},"wgpu":false}},"warning":"wasm plugin (wgpu rendering happens in the HTML WebGPU target)"}}"#,
-        width, height
-    );
-
-    writer.buf.as_ptr()
-}
+notist_plugin_sdk::export_plugin!("shader", Plugin);

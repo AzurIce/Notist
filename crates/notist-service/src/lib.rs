@@ -7,8 +7,6 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Condvar, Mutex, Weak};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
-use notify_debouncer_mini::notify::{RecommendedWatcher, RecursiveMode};
-use notify_debouncer_mini::{DebounceEventResult, Debouncer, new_debouncer};
 use notist_analysis::{
     AnalyzerConfiguration, AnalyzerView, DocumentVersions, SourceOverlays, VaultEngine,
     WorkspaceSnapshot, resolve_vault_root,
@@ -19,9 +17,11 @@ pub mod protocol;
 pub mod query;
 mod request;
 pub mod transport;
+pub mod watcher;
 
 pub use query::*;
 pub use request::*;
+pub use watcher::PassiveDebouncedWatcher;
 
 /// Protocol-independent service shared by embedded clients and the daemon.
 pub struct NotistService {
@@ -78,7 +78,7 @@ struct VaultHost {
     engine: VaultEngine,
     disk: Arc<Mutex<AnalyzerView>>,
     sessions: Arc<Mutex<Vec<Weak<Mutex<AnalyzerView>>>>>,
-    _watcher: Mutex<Debouncer<RecommendedWatcher>>,
+    _watcher: Mutex<PassiveDebouncedWatcher>,
     write_lock: Mutex<()>,
 }
 
@@ -242,17 +242,20 @@ impl NotistService {
     }
 
     fn open_host(&self, root: &Path) -> io::Result<Arc<VaultHost>> {
-        if let Some(host) = self.vaults.lock().unwrap().get(root).cloned() {
+        let canonical_root = dunce::canonicalize(root)?;
+        if let Some(host) = self.vaults.lock().unwrap().get(&canonical_root).cloned() {
             return Ok(host);
         }
 
-        let engine = VaultEngine::open(root)?;
+        let engine = VaultEngine::open(&canonical_root)?;
         let disk = Arc::new(Mutex::new(engine.disk_view()?));
-        let config_text = std::fs::read_to_string(root.join(notist_analysis::MANIFEST_FILE)).ok();
+        let config_text =
+            std::fs::read_to_string(canonical_root.join(notist_analysis::MANIFEST_FILE)).ok();
         let plugin_dirs = config_text
             .as_deref()
             .map(|text| {
-                notist_plugin_host::plugin_package_dirs(root, Some(text)).unwrap_or_default()
+                notist_plugin_host::plugin_package_dirs(&canonical_root, Some(text))
+                    .unwrap_or_default()
             })
             .unwrap_or_default();
         // `[site] styles` sheets are presentation assets: editing one must
@@ -264,79 +267,49 @@ impl NotistService {
         let sessions: Arc<Mutex<Vec<Weak<Mutex<AnalyzerView>>>>> = Arc::new(Mutex::new(Vec::new()));
         let watcher_disk = disk.clone();
         let watcher_sessions = sessions.clone();
-        let watcher_plugin_dirs = plugin_dirs
+        let watched_plugin_dirs = plugin_dirs
             .iter()
-            .map(|(_, path)| dunce::canonicalize(path).unwrap_or_else(|_| path.clone()))
+            .filter_map(|(_, path)| dunce::canonicalize(path).ok())
             .collect::<Vec<_>>();
+        let callback_plugin_dirs = watched_plugin_dirs.clone();
         let watcher_style_paths = site_styles
             .iter()
-            .map(|style| {
-                let path = root.join(style);
-                dunce::canonicalize(&path).unwrap_or(path)
-            })
+            .map(|style| normalize_watched_path(&canonical_root.join(style)))
             .collect::<Vec<_>>();
-        let mut watcher = new_debouncer(
-            Duration::from_millis(250),
-            move |result: DebounceEventResult| {
-                let Ok(events) = result else {
-                    return;
-                };
-                let is_plugin_event = |path: &std::path::Path| {
-                    dunce::canonicalize(path).is_ok_and(|path| {
-                        watcher_plugin_dirs
-                            .iter()
-                            .any(|plugin_dir| path.starts_with(plugin_dir))
-                    })
-                };
-                let is_site_style_event = |path: &std::path::Path| {
-                    dunce::canonicalize(path)
-                        .is_ok_and(|canonical| watcher_style_paths.contains(&canonical))
-                };
-                if !events.iter().any(|event| {
-                    event
-                        .path
-                        .extension()
-                        .and_then(|extension| extension.to_str())
-                        == Some("not")
-                        || event.path.file_name().and_then(|name| name.to_str())
-                            == Some(notist_analysis::MANIFEST_FILE)
-                        || is_plugin_event(&event.path)
-                        || is_site_style_event(&event.path)
-                }) {
-                    return;
-                }
-                if let Ok(mut view) = watcher_disk.lock() {
-                    let _ = view.reload();
-                }
-                let mut sessions = watcher_sessions.lock().unwrap();
-                sessions.retain(|session| {
-                    let Some(session) = session.upgrade() else {
-                        return false;
-                    };
-                    if let Ok(mut view) = session.lock() {
-                        let overlays = view.overlays().clone();
-                        let versions = view.document_versions().clone();
-                        let _ = view.replace_inputs(overlays, versions);
-                    }
-                    true
-                });
-            },
-        )
-        .map_err(io::Error::other)?;
-        watcher
-            .watcher()
-            .watch(root, RecursiveMode::Recursive)
-            .map_err(io::Error::other)?;
-        for (_, plugin_dir) in &plugin_dirs {
-            if plugin_dir.is_dir() {
-                watcher
-                    .watcher()
-                    .watch(plugin_dir, RecursiveMode::Recursive)
-                    .map_err(io::Error::other)?;
+        let mut watcher = PassiveDebouncedWatcher::new(Duration::from_millis(250), move |paths| {
+            if !paths.iter().any(|path| {
+                let path = normalize_watched_path(path);
+                path.extension().and_then(|extension| extension.to_str()) == Some("not")
+                    || path.file_name().and_then(|name| name.to_str())
+                        == Some(notist_analysis::MANIFEST_FILE)
+                    || callback_plugin_dirs
+                        .iter()
+                        .any(|plugin_dir| path.starts_with(plugin_dir))
+                    || watcher_style_paths.contains(&path)
+            }) {
+                return;
             }
+            if let Ok(mut view) = watcher_disk.lock() {
+                let _ = view.reload();
+            }
+            let mut sessions = watcher_sessions.lock().unwrap();
+            sessions.retain(|session| {
+                let Some(session) = session.upgrade() else {
+                    return false;
+                };
+                if let Ok(mut view) = session.lock() {
+                    let overlays = view.overlays().clone();
+                    let versions = view.document_versions().clone();
+                    let _ = view.replace_inputs(overlays, versions);
+                }
+                true
+            });
+        })?;
+        watcher.watch_recursive(&canonical_root)?;
+        for plugin_dir in &watched_plugin_dirs {
+            watcher.watch_recursive(plugin_dir)?;
         }
 
-        let canonical_root = dunce::canonicalize(root)?;
         let identity = VaultIdentity {
             fingerprint: format!(
                 "{:016x}",
@@ -401,6 +374,27 @@ impl Default for NotistService {
     fn default() -> Self {
         Self::new()
     }
+}
+
+fn normalize_watched_path(path: &Path) -> PathBuf {
+    if let Ok(path) = dunce::canonicalize(path) {
+        return path;
+    }
+
+    let mut suffix = Vec::new();
+    let mut ancestor = path;
+    while let Some(name) = ancestor.file_name() {
+        suffix.push(name.to_owned());
+        let Some(parent) = ancestor.parent() else {
+            break;
+        };
+        ancestor = parent;
+        if let Ok(mut path) = dunce::canonicalize(ancestor) {
+            path.extend(suffix.into_iter().rev());
+            return path;
+        }
+    }
+    path.to_path_buf()
 }
 
 fn fingerprint(bytes: &[u8]) -> u64 {

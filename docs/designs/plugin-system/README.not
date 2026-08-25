@@ -70,9 +70,9 @@ ElementSchema / ShapingRegistry → structure
 | `FunctionRegistry` 与 `core::*` 别名 | 已实现 |
 | shaping registry / `body-mode` / `role` / `kind` | 已实现 `ShapingRegistry` / `ElementSchema`；core schema 内置，插件 schema 可注册。成型直接运行在 `Node` 森林上，`ElementTree` 只承载 Node |
 | HTML target projection | `HtmlProjectionRegistry` 独立于语义 `FunctionRegistry`；插件 handler、Web Component contribution 与未知 call fallback 先生成 `html::*` Node，再由 serializer 输出 |
-| WIT 类型包 + host `call` import | `plugin` / `plugin-host` 两个 world：`export init`（返回元素声明列表）+ `export evaluate`；组件装载后调用一次 `init`，原子校验后注册。`plugins/component-echo` / `plugins/component-host-call` 端到端可用，载荷即 `notist_model::Node` |
-| 插件 manifest 信封 | manifest 只保留身份、Wasm 装载参数与 HTML render contributions；semantic 接口由组件 `init` 注册提供 |
-| 组件 eval contribution | 已实现：Wasm `init` 声明 + `evaluate` dispatcher；作者侧由 `notist-plugin-sdk` 提供 `Plugin::init(reg)` / `ElementFn::reduce` / `export_plugin!` |
+| WIT component ABI | 单一 `plugin` world：只导出 bytes `result` 形态的 `init` 与 `evaluate`，无声明镜像 interface。两者 payload 均为 wire version byte + postcard；前者承载共享声明，后者承载共享 `Node` 森林。所有 `wasm.module` 都按 component 实例化，`plugins/component-echo` 与 `plugins/shader` 端到端可用 |
+| 插件 manifest 信封 | JSON manifest 只保留身份、`wasm.module` 与顶层 HTML render contributions；semantic declarations、defaults 与调用载荷由组件和共享 postcard codec 提供 |
+| 组件 eval contribution | 已实现：Wasm `init` 声明 + `evaluate` dispatcher；作者侧由 `notist-plugin-sdk` 提供 `Plugin::init(reg)` / `ElementFn::reduce` / `export_plugin!`；返回 call 森林由宿主统一继续 fixpoint |
 | native plugin contribution | `notist-eval::PluginContribution` / 原子安装 API 已实现；独立 `notist-plugin-core` crate 已通过同一接口提供 core package |
 | runtime composition | `WorkspaceSnapshot` 已承担组合根职责；native/Wasm semantic contribution 已汇合到同一 registry 安装路径，完整 App API 尚未抽出 |
 | capability checker | 已删除：内容组合不授权；native 进程信任与 Wasm sandbox 的 backend 差异见 [[vault::designs::plugin-system::capability]] |
@@ -88,6 +88,5 @@ ElementSchema / ShapingRegistry → structure
 - 已裁定：插件是带 package identity 的语义 contribution；native 与 Wasm 是可替换 backend，Wasm package 仍可由 manifest + wasip2 组件 + assets 组成。
 - 已裁定：core 是默认 App 预装的标准 package，不是 eval engine 的特权 package；作者以 Rust crate / SDK 提供 contribution，Wasm backend 由 `init` 自描述，manifest 不携带 semantic 接口。
 - 已裁定：插件通过 schema 参与成型，成型引擎由宿主执行。
-- 已裁定：插件语义 ABI 为 `export init` + `export evaluate` + 可选 `import host.call`；名字所有权只在注册侧，handler 提及任何名字自由。
-- 待定：host import 是否包含 `inspect` / `typecheck` 等更多接口；当前只提供 `call`。
+- 已裁定：WIT 是 component ABI；单一 `plugin` world 只有 `init` 与 `evaluate`，插件返回 call 森林后由宿主统一 fixpoint；名字所有权只在注册侧，handler 提及任何名字自由。
 - 待定：native target 的投影贡献 schema；HTML target 先行。

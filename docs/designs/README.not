@@ -103,8 +103,8 @@ plugin-system/ 插件系统：package、ABI、贡献、信任模型与生命周�
 - [[vault::designs::plugin-system::runtime-composition]]：`partial`（WorkspaceSnapshot 与统一 `PluginContribution` 已实现；独立 App/runtime crate 尚未抽出）
 - [[vault::designs::plugin-system::eval-contribution]]：`partial`（native/Wasm 已走统一 contribution；高层 native Plugin trait 尚未提供）
 - [[vault::designs::world::core-namespace-plugin-boundary]]：`partial`（namespace policy 已明确；完整 package policy 校验仍需收口）
-- [[vault::designs::plugin-system::capability]]：`partial`（backend 信任边界已裁定；统一 composition 与 host.call 跨包边界仍需收口）
-- [[vault::designs::plugin-system::safety]]：`partial`（host.call 的重入与锁边界仍需继续收口）
+- [[vault::designs::plugin-system::capability]]：`partial`（backend 信任边界已裁定；统一 App composition 尚未收口）
+- [[vault::designs::plugin-system::safety]]：`partial`（精确循环检测与完整 App 资源治理仍待收口）
 - [[vault::designs::pipeline::plugin-call-reduction]]：`aligned`（统一 Node、handler 不动点与 target-side 投影边界已实现）
 - [[vault::designs::pipeline::project]]：`aligned`（HTML target 已有独立 projection registry 与 serializer）
 - [[vault::designs::plugin-system::projection]]：`partial`（Node 投影规约与 fallback 已实现；trusted/词表收口仍待定）

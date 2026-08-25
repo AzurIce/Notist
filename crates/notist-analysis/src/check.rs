@@ -298,17 +298,17 @@ impl SymbolResolver {
                 // recursive calls resolve to the same identity. Top-level
                 // functions were already registered by `resolve_module_symbols`;
                 // reuse that identity instead of defining a duplicate.
-                let function_id =
-                    if let Some(existing) = self.functions.get(&definition.name.value) {
-                        *existing
-                    } else {
-                        self.define(
-                            definition.name.value.clone(),
-                            SymbolKind::Function,
-                            Type::Function,
-                            definition.name.range,
-                        )
-                    };
+                let function_id = if let Some(existing) = self.functions.get(&definition.name.value)
+                {
+                    *existing
+                } else {
+                    self.define(
+                        definition.name.value.clone(),
+                        SymbolKind::Function,
+                        Type::Function,
+                        definition.name.range,
+                    )
+                };
                 scope.insert(definition.name.value.clone(), function_id);
                 for parameter in &definition.parameters {
                     if scope.contains_key(&parameter.name.value) {

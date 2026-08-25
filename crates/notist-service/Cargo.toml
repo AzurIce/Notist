@@ -7,7 +7,7 @@ license.workspace = true
 [dependencies]
 base64.workspace = true
 dunce.workspace = true
-notify-debouncer-mini.workspace = true
+notify.workspace = true
 serde = { workspace = true, features = ["derive"] }
 serde_json.workspace = true
 sha2.workspace = true

@@ -21,7 +21,7 @@
 
 - backend 不改变语义确定性要求：相同输入、同一环境 identity 与同一 contribution 必须产生相同输出。Wasm 由 import 白名单与空 `WasiCtx` 约束；native plugin 的确定性由宿主信任、测试与注册契约保证，而不是由 Wasm 沙箱伪造。
 - Wasm 不提供文件系统、网络、随机数、进程或 cache 等非确定性 import；WASI 0.2 imports 由宿主以空 `WasiCtx` 满足。
-- 设计目标：host import 与 export 之间不持有 Wasm store 锁，避免重入死锁；Wasm 调用返回并释放锁后才继续嵌套规约。**当前实现未达成**：`host.call` 在持有本包 runtime 锁与共享 registry 锁期间执行嵌套规约，guest 经 `host.call` 重入本包元素会在同一线程二次获取同一把非重入锁而死锁，depth/fuel 无法兜底。实现对齐前，插件不得经 `host.call` 调用本包元素。
+- component 调用期间不嵌套执行宿主规约：`evaluate` 返回 call 森林并释放 Wasm store 锁后，宿主才把结果送回统一 fixpoint，因此不存在组件回调重入 runtime 锁的路径。
 - 满足以上条件后，语义函数可安全 memoize；memoize 的 key 必须包含 package/contribution 与 environment identity。
 
 == 已裁定 / 待定

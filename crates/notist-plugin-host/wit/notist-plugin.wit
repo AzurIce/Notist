@@ -1,61 +1,9 @@
 package notist:plugin;
 
-/// 共享声明类型：组件在装载后通过 `init` 一次性返回的元素声明。
-///
-/// 插件的 semantic surface 由 guest 代码自描述：`init` 返回本包贡献的
-/// 全部元素声明，宿主原子校验（namespace、参数类型、签名合法性）后注册。
-/// `plugin.json` 不再携带 semantic 接口，只保留信封字段。
-interface types {
-    /// One declared parameter of a plugin element.
-    record param-decl {
-        /// Parameter name.
-        name: string,
-        /// Notist type syntax: `None`, `Bool`, `Int`, `Float`, `String`,
-        /// `Content`, or `T?` for optional types.
-        ty: string,
-        /// JSON encoding of the declared default value, present only when
-        /// the parameter declares one.
-        default-json: option<string>,
-    }
-
-    /// One semantic element contributed by the plugin.
-    ///
-    /// `computed` marks elements with a runtime handler in the dispatch map;
-    /// data-only declarations (`Registrar::declare`) stay unreduced — their
-    /// document calls ARE the final leaves.
-    record element-decl {
-        /// Element name inside the package namespace.
-        name: string,
-        version: u32,
-        block: bool,
-        computed: bool,
-        parameters: list<param-decl>,
-        trailing-content: option<string>,
-        body-mode: option<string>,
-        role: option<string>,
-        kind: option<string>,
-    }
-}
-
-/// 纯求值组件：无宿主导入。
+/// 纯求值组件：无宿主导入。共享类型由 opaque bytes payload 承载。
 world plugin {
-    use types.{element-decl};
-    /// 装载后调用一次；消耗与 evaluate 相同的 fuel 预算，且必须确定。
-    export init: func() -> list<element-decl>;
-    /// 按 dispatcher 名字规约一次调用；字节进/字节出。
-    export evaluate: func(request: list<u8>) -> result<list<u8>, string>;
-}
-
-/// 宿主回调：规约请求节点并返回规约后的森林字节或错误。内容组合不做
-/// per-call 授权；wasm 沙箱是唯一执行边界，仅受 depth/fuel 预算约束。
-interface host {
-    call: func(request: list<u8>) -> result<list<u8>, string>;
-}
-
-/// 需要互调的组件：import host.call 后可组合宿主规约结果。
-world plugin-host {
-    use types.{element-decl};
-    import host;
-    export init: func() -> list<element-decl>;
+    /// 装载后调用一次；返回 version byte + postcard declarations。
+    export init: func() -> result<list<u8>, string>;
+    /// 按 dispatcher 名字规约一次调用；请求与响应都是 version byte + postcard Node forest。
     export evaluate: func(request: list<u8>) -> result<list<u8>, string>;
 }

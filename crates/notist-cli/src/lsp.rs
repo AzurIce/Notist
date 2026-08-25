@@ -4,7 +4,7 @@ use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 use std::str::FromStr;
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::{mpsc, Arc, Mutex};
+use std::sync::{Arc, Mutex, mpsc};
 use std::thread::JoinHandle;
 use std::time::Duration;
 
@@ -28,13 +28,12 @@ use lsp_types::{
     ServerCapabilities, SymbolKind, TextDocumentSyncCapability, TextDocumentSyncKind, TextEdit,
     Uri, WorkspaceSymbolParams, WorkspaceSymbolResponse,
 };
-use notify_debouncer_mini::notify::RecursiveMode;
-use notify_debouncer_mini::{DebounceEventResult, new_debouncer};
 use notist_analysis::{LineIndex, discover_vault_roots};
 use notist_model::TextRange;
 use notist_service::protocol::ClientKind;
 use notist_service::{
-    CoreRequest, CoreResponse, DiagnosticRecord, ProtocolViewKind, ServiceViewId,
+    CoreRequest, CoreResponse, DiagnosticRecord, PassiveDebouncedWatcher, ProtocolViewKind,
+    ServiceViewId,
 };
 
 use crate::service::{LocalNotistClient, RequestHandle};
@@ -60,19 +59,12 @@ pub fn run(no_daemon: bool) -> Result<ExitCode, Box<dyn Error>> {
     let session = LspSession::new(root, no_daemon)?;
     let runtime = Runtime::spawn(&connection);
     let workspace_events = runtime.injection_sender();
-    let mut watcher = new_debouncer(
-        Duration::from_millis(250),
-        move |result: DebounceEventResult| {
-            if let Ok(events) = result
-                && !events.is_empty()
-            {
-                let _ = workspace_events.send(SessionEvent::WorkspaceChanged);
-            }
-        },
-    )?;
-    watcher
-        .watcher()
-        .watch(session.root(), RecursiveMode::Recursive)?;
+    let mut watcher = PassiveDebouncedWatcher::new(Duration::from_millis(250), move |paths| {
+        if !paths.is_empty() {
+            let _ = workspace_events.send(SessionEvent::WorkspaceChanged);
+        }
+    })?;
+    watcher.watch_recursive(session.root())?;
 
     main_loop(&connection, session, runtime)?;
     drop(watcher);
@@ -182,11 +174,13 @@ impl Runtime {
         let mut handles = vec![pump, builder];
         for _ in 0..workers {
             let shared_rx = shared_rx.clone();
-            handles.push(std::thread::spawn(move || loop {
-                let job = shared_rx.lock().unwrap().recv();
-                match job {
-                    Ok(job) => job(),
-                    Err(_) => break,
+            handles.push(std::thread::spawn(move || {
+                loop {
+                    let job = shared_rx.lock().unwrap().recv();
+                    match job {
+                        Ok(job) => job(),
+                        Err(_) => break,
+                    }
                 }
             }));
         }
@@ -317,11 +311,7 @@ fn main_loop_inner(
     Ok(())
 }
 
-fn handle_request(
-    context: &RequestContext,
-    request: Request,
-    cancelled: &AtomicBool,
-) -> Response {
+fn handle_request(context: &RequestContext, request: Request, cancelled: &AtomicBool) -> Response {
     use lsp_server::ErrorCode;
     type Handled = Result<serde_json::Value, (ErrorCode, String)>;
 
@@ -545,8 +535,14 @@ struct BuiltVault {
 }
 
 enum BuildOutcome {
-    Applied { generation: u64, vaults: Vec<BuiltVault> },
-    Failed { generation: u64, error: String },
+    Applied {
+        generation: u64,
+        vaults: Vec<BuiltVault>,
+    },
+    Failed {
+        generation: u64,
+        error: String,
+    },
 }
 
 impl BuildOutcome {
@@ -828,10 +824,7 @@ impl LspSession {
     }
 }
 
-fn workspace_for_source<'a>(
-    context: &'a RequestContext,
-    path: &Path,
-) -> Option<&'a QueryVault> {
+fn workspace_for_source<'a>(context: &'a RequestContext, path: &Path) -> Option<&'a QueryVault> {
     let root = assigned_vault_root(path, context.vaults.keys())?;
     context.vaults.get(root)
 }
@@ -842,8 +835,7 @@ fn document_symbols(
     params: DocumentSymbolParams,
     cancelled: &AtomicBool,
 ) -> Result<Option<DocumentSymbolResponse>, String> {
-    let path = normalize_uri_path(&params.text_document.uri)
-        .map_err(|error| error.to_string())?;
+    let path = normalize_uri_path(&params.text_document.uri).map_err(|error| error.to_string())?;
     let Some(workspace) = workspace_for_source(context, &path) else {
         return Ok(None);
     };
@@ -991,9 +983,12 @@ fn normalize_uri_path(uri: &Uri) -> Result<PathBuf, Box<dyn Error>> {
             )
         })?;
         missing.push(name.to_owned());
-        ancestor = ancestor
-            .parent()
-            .ok_or_else(|| format!("document path `{}` escapes the filesystem root", path.display()))?;
+        ancestor = ancestor.parent().ok_or_else(|| {
+            format!(
+                "document path `{}` escapes the filesystem root",
+                path.display()
+            )
+        })?;
     }
     let mut normalized = dunce::canonicalize(ancestor)?;
     for name in missing.into_iter().rev() {
@@ -1101,7 +1096,8 @@ fn publish_diagnostics(
             continue;
         }
         let uri = file_path_to_uri(&path)?;
-        let params = PublishDiagnosticsParams::new(uri, diagnostics, session.document_version(&path));
+        let params =
+            PublishDiagnosticsParams::new(uri, diagnostics, session.document_version(&path));
         connection
             .sender
             .send(Message::Notification(Notification::new(
@@ -1469,7 +1465,8 @@ mod tests {
         };
 
         let never = AtomicBool::new(false);
-        let Some(CompletionResponse::Array(items)) = completion(&state, params, &never).unwrap() else {
+        let Some(CompletionResponse::Array(items)) = completion(&state, params, &never).unwrap()
+        else {
             panic!("expected completion items");
         };
         assert!(items.iter().any(|item| item.label == "child"));
@@ -1568,10 +1565,14 @@ mod tests {
         // Malformed parameters are a client mistake (`InvalidParams`).
         let bad_params = handle_request(
             &state,
-            Request::new(RequestId::from(1), HoverRequest::METHOD.into(), serde_json::json!({
-                "textDocument": {"uri": "file:///does-not-matter.not"},
-                "position": {"line": "not-a-number", "character": 0}
-            })),
+            Request::new(
+                RequestId::from(1),
+                HoverRequest::METHOD.into(),
+                serde_json::json!({
+                    "textDocument": {"uri": "file:///does-not-matter.not"},
+                    "position": {"line": "not-a-number", "character": 0}
+                }),
+            ),
             &never,
         );
         assert_eq!(
@@ -1582,7 +1583,11 @@ mod tests {
         // Unsupported methods are `MethodNotFound`, not a param failure.
         let unknown = handle_request(
             &state,
-            Request::new(RequestId::from(2), "notist/unknown".into(), serde_json::json!({})),
+            Request::new(
+                RequestId::from(2),
+                "notist/unknown".into(),
+                serde_json::json!({}),
+            ),
             &never,
         );
         assert_eq!(
@@ -1595,10 +1600,14 @@ mod tests {
         let unreachable_uri = file_path_to_uri(&root_path.join("missing.not")).unwrap();
         let graceful = handle_request(
             &state,
-            Request::new(RequestId::from(3), HoverRequest::METHOD.into(), serde_json::json!({
-                "textDocument": {"uri": unreachable_uri.as_str()},
-                "position": {"line": 0, "character": 0}
-            })),
+            Request::new(
+                RequestId::from(3),
+                HoverRequest::METHOD.into(),
+                serde_json::json!({
+                    "textDocument": {"uri": unreachable_uri.as_str()},
+                    "position": {"line": 0, "character": 0}
+                }),
+            ),
             &never,
         );
         assert_eq!(graceful.response_result.unwrap(), serde_json::Value::Null);
@@ -1630,7 +1639,10 @@ mod tests {
         // Equal versions are tolerated (some clients resend on save).
         session.change(change_at(3, "third again")).unwrap();
         assert_eq!(
-            session.documents.get(&path).map(|document| document.version),
+            session
+                .documents
+                .get(&path)
+                .map(|document| document.version),
             Some(3)
         );
     }
@@ -1639,8 +1651,7 @@ mod tests {
     fn preserves_multi_level_missing_parents_in_new_paths() {
         let root = tempfile::TempDir::new_in(std::env::current_dir().unwrap()).unwrap();
         fs::create_dir(root.path().join("nested")).unwrap();
-        let uri =
-            file_path_to_uri(&root.path().join("nested/a/b/new.not")).unwrap();
+        let uri = file_path_to_uri(&root.path().join("nested/a/b/new.not")).unwrap();
         let normalized = normalize_uri_path(&uri).unwrap();
         assert_eq!(
             normalized,
@@ -1659,8 +1670,15 @@ mod tests {
         let path = dunce::canonicalize(root.path().join("README.not")).unwrap();
         let uri = file_path_to_uri(&path).unwrap();
         let change = |range: Option<lsp_types::Range>| DidChangeTextDocumentParams {
-            text_document: lsp_types::VersionedTextDocumentIdentifier { uri: uri.clone(), version: 2 },
-            content_changes: vec![lsp_types::TextDocumentContentChangeEvent { range, range_length: None, text: "next".into() }],
+            text_document: lsp_types::VersionedTextDocumentIdentifier {
+                uri: uri.clone(),
+                version: 2,
+            },
+            content_changes: vec![lsp_types::TextDocumentContentChangeEvent {
+                range,
+                range_length: None,
+                text: "next".into(),
+            }],
         };
         let mut double = change(None);
         double
@@ -1682,7 +1700,10 @@ mod tests {
 
         session.change(change(None)).unwrap();
         assert_eq!(
-            session.documents.get(&path).map(|document| document.source.to_string()),
+            session
+                .documents
+                .get(&path)
+                .map(|document| document.source.to_string()),
             Some("next".into())
         );
     }

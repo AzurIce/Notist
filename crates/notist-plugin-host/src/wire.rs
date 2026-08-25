@@ -1,9 +1,8 @@
-//! Plugin ABI payload helpers over the unified node.
+//! Host helpers for component evaluation payloads.
 //!
-//! The wire schema IS [`notist_model::Node`]: the SDK version doubles as the
-//! payload ABI version because host and plugins compiled against the same
-//! `notist_model` produce and accept the same bytes. This module only adds
-//! host-side conversion and budget validation.
+//! The shared codec in `notist-model` frames both declarations and Node
+//! forests with a wire version byte plus postcard. This module only adds
+//! evaluator conversion and response budget validation.
 
 use notist_eval::Value;
 use notist_model::{Node, NodeValue};

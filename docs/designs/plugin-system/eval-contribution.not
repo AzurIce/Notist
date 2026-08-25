@@ -5,13 +5,13 @@
 
 == FunctionDecl
 
-每个语义元素对应一个函数签名。签名不再由 manifest 声明，而是在装载时由组件 `init` 注册提供（[[vault::designs::plugin-system::abi]]）：
+每个语义元素对应一个函数签名。签名不再由 manifest 声明，而是在装载时由组件 `init` 注册提供（[[vault::designs::plugin-system::abi]]）。WIT 不镜像声明结构；`init` 的 opaque bytes 解码为 `notist_model::PluginElementDecl`：
 
 ```text
-element-decl {
-  name, version, block,
-  parameters: [ { name, ty, default-json } ],
-  trailing-content, body-mode, role, kind
+PluginElementDecl {
+  name, version, block, computed,
+  parameters: [ PluginParamDecl { name, ty, default: Option<DefaultValue> } ],
+  trailing_content, body_mode, role, kind
 }
 ```
 
@@ -26,10 +26,9 @@ element-decl {
 registry 中的 Function 实现按 backend 区分，而不是按语义 package 区分：
 
 1. **Native function**：任何 package 都可以由 Rust native 实现，直接提供 `Function` 并注册 contribution；core 只是其中的默认 package。
-2. **Component function**：WIT `plugin` / `plugin-host` 组件；装载时 `init` 返回声明，`evaluate` 按 dispatcher 名字分发规约；后者持有共享 registry，供 `host.call` 使用。
-3. **Raw Wasm function**：2026-08-18 初版 raw Wasm ABI（`evaluate(ptr, len) -> ptr`），只是 Wasm backend 的兼容路径。
+2. **Component function**：WIT `plugin` 组件；装载时 `init` 返回 version byte + postcard declarations，`evaluate` 以相同 frame 承载共享 `Node` 森林，按 dispatcher 名字分发一次规约后由宿主统一继续 fixpoint。所有声明、默认值与调用载荷都来自共享 `notist-model` 类型，不经过 JSON 转换。
 
-所有实现都实现同一 `Function` trait 并进入同一 `FunctionRegistry`；registry 的 owner 是 package identity，native/Wasm 不改变 call 的语义。
+所有实现都实现同一 `Function` trait 并进入同一 `FunctionRegistry`；registry 的 owner 是 package identity，native/Wasm 不改变 call 的语义。Wasm backend 只有 component 实现，不再按 artifact 格式分流。
 
 == 装载与签名可见性
 

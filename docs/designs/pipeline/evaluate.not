@@ -233,4 +233,4 @@ Markup insertion 边界上，嵌入表达式的结果按规则插入外层 Conte
 
 == 实现现状
 
-值域已统一（2026-08-24）：`Value::Content` 持有 `Node` call 森林，`FunctionOutput` 已坍缩为 `Value`；生产规约与 `host.call` 均运行在 node_engine 上，输出森林重新进入不动点。旧 Stream/Leaf 表示和桥接已删除。详见 [[vault::designs::pipeline::plugin-call-reduction#实现现状]]。
+值域已统一（2026-08-24）：`Value::Content` 持有 `Node` call 森林，`FunctionOutput` 已坍缩为 `Value`；生产规约运行在 node_engine 上，插件输出森林由宿主统一重新送入不动点。旧 Stream/Leaf 表示和桥接已删除。详见 [[vault::designs::pipeline::plugin-call-reduction#实现现状]]。

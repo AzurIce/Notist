@@ -2,12 +2,14 @@ use std::fmt;
 
 mod leaf;
 mod node;
+mod plugin;
 mod signature;
 
 pub use leaf::{BodyMode, ElementName, ElementNamespace, ElementSchema, ShapingKind, ShapingRole};
 pub use node::{
     Node, NodeValue, TableAlignment, TableCellPlacement, TableLayoutError, table_layout_nodes, wire,
 };
+pub use plugin::{PluginElementDecl, PluginParamDecl};
 pub use signature::{
     DefaultValue, FunctionSignature, Parameter, Type, builtin_signatures, callout_signature,
     details_signature, empty_content_signature, figure_signature, heading_signature,

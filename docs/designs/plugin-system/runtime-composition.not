@@ -78,7 +78,7 @@ PluginContribution {
 3. 校验全部通过后，一次性写入 functions、signatures、shaping 与 projection registry；
 4. 任一失败都不得留下半个 package。
 
-native plugin 和 Wasm plugin 应该经过同一套校验与注册路径。Wasm 的 `init` 返回声明列表，native plugin 的 `register` 调用产生同样的 contribution；两者差别只在 contribution 的来源。
+native plugin 和 Wasm plugin 应该经过同一套校验与注册路径。Wasm package 一律实例化最小 WIT component；其 `init` 返回 opaque bytes，宿主以共享 version byte + postcard codec 解码出声明列表，`evaluate` 的请求与响应以同一 frame 承载共享 `Node` 森林。JSON 只读取 `plugin.json` 信封。native plugin 的 `register` 调用产生同样的 contribution；两者差别只在 contribution 的来源。
 
 == Plugin trait 与注册器
 

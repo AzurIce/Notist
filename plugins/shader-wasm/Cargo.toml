@@ -4,8 +4,15 @@ version = "0.1.0"
 edition = "2024"
 publish = false
 
+[workspace]
+
 [lib]
 crate-type = ["cdylib"]
+
+[dependencies]
+notist-plugin-sdk = { path = "../../crates/notist-plugin-sdk" }
+notist-model = { path = "../../crates/notist-model" }
+wit-bindgen = "0.60"
 
 [profile.release]
 opt-level = "s"
