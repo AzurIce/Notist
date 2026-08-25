@@ -27,13 +27,12 @@ use lsp_types::{
     ServerCapabilities, SymbolKind, TextDocumentSyncCapability, TextDocumentSyncKind, TextEdit,
     Uri, WorkspaceSymbolParams, WorkspaceSymbolResponse,
 };
-use notify_debouncer_mini::notify::RecursiveMode;
-use notify_debouncer_mini::{DebounceEventResult, new_debouncer};
 use notist_analysis::{LineIndex, discover_vault_roots};
 use notist_model::TextRange;
 use notist_service::protocol::ClientKind;
 use notist_service::{
-    CoreRequest, CoreResponse, DiagnosticRecord, ProtocolViewKind, ServiceViewId,
+    CoreRequest, CoreResponse, DiagnosticRecord, PassiveDebouncedWatcher, ProtocolViewKind,
+    ServiceViewId,
 };
 
 use crate::service::LocalNotistClient;
@@ -60,22 +59,15 @@ pub fn run(no_daemon: bool) -> Result<ExitCode, Box<dyn Error>> {
     let root = workspace_root(&initialization)?;
     let state = ServerState::new(root, no_daemon)?;
     let watcher_sender = connection.sender.clone();
-    let mut watcher = new_debouncer(
-        Duration::from_millis(250),
-        move |result: DebounceEventResult| {
-            if let Ok(events) = result
-                && !events.is_empty()
-            {
-                let _ = watcher_sender.send(Message::Notification(Notification::new(
-                    WORKSPACE_CHANGED_NOTIFICATION.into(),
-                    serde_json::Value::Null,
-                )));
-            }
-        },
-    )?;
-    watcher
-        .watcher()
-        .watch(&state.root, RecursiveMode::Recursive)?;
+    let mut watcher = PassiveDebouncedWatcher::new(Duration::from_millis(250), move |paths| {
+        if !paths.is_empty() {
+            let _ = watcher_sender.send(Message::Notification(Notification::new(
+                WORKSPACE_CHANGED_NOTIFICATION.into(),
+                serde_json::Value::Null,
+            )));
+        }
+    })?;
+    watcher.watch_recursive(&state.root)?;
 
     main_loop(&connection, state)?;
     drop(watcher);
