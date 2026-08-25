@@ -4,7 +4,8 @@ use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 use std::str::FromStr;
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::{Arc, Mutex, RwLock};
+use std::sync::{mpsc, Arc, Mutex};
+use std::thread::JoinHandle;
 use std::time::Duration;
 
 use lsp_server::{Connection, ErrorCode, Message, Notification, Request, Response};
@@ -36,7 +37,7 @@ use notist_service::{
     CoreRequest, CoreResponse, DiagnosticRecord, ProtocolViewKind, ServiceViewId,
 };
 
-use crate::service::LocalNotistClient;
+use crate::service::{LocalNotistClient, RequestHandle};
 use percent_encoding::{AsciiSet, CONTROLS, utf8_percent_encode};
 
 const URI_PATH_ENCODE_SET: &AsciiSet = &CONTROLS
@@ -50,34 +51,30 @@ const URI_PATH_ENCODE_SET: &AsciiSet = &CONTROLS
     .add(b'[')
     .add(b']');
 
-const WORKSPACE_CHANGED_NOTIFICATION: &str = "notist/workspaceChanged";
-
 pub fn run(no_daemon: bool) -> Result<ExitCode, Box<dyn Error>> {
     let (connection, io_threads) = Connection::stdio();
     let capabilities = serde_json::to_value(server_capabilities())?;
     let initialization = connection.initialize(capabilities)?;
     let initialization: InitializeParams = serde_json::from_value(initialization)?;
     let root = workspace_root(&initialization)?;
-    let state = ServerState::new(root, no_daemon)?;
-    let watcher_sender = connection.sender.clone();
+    let session = LspSession::new(root, no_daemon)?;
+    let runtime = Runtime::spawn(&connection);
+    let workspace_events = runtime.injection_sender();
     let mut watcher = new_debouncer(
         Duration::from_millis(250),
         move |result: DebounceEventResult| {
             if let Ok(events) = result
                 && !events.is_empty()
             {
-                let _ = watcher_sender.send(Message::Notification(Notification::new(
-                    WORKSPACE_CHANGED_NOTIFICATION.into(),
-                    serde_json::Value::Null,
-                )));
+                let _ = workspace_events.send(SessionEvent::WorkspaceChanged);
             }
         },
     )?;
     watcher
         .watcher()
-        .watch(&state.root, RecursiveMode::Recursive)?;
+        .watch(session.root(), RecursiveMode::Recursive)?;
 
-    main_loop(&connection, state)?;
+    main_loop(&connection, session, runtime)?;
     drop(watcher);
     io_threads.join()?;
     Ok(ExitCode::SUCCESS)
@@ -122,16 +119,130 @@ fn workspace_root(params: &InitializeParams) -> Result<PathBuf, Box<dyn Error>> 
     Ok(dunce::canonicalize(root)?)
 }
 
-fn main_loop(connection: &Connection, state: ServerState) -> Result<(), Box<dyn Error>> {
-    let state = Arc::new(RwLock::new(state));
+type PoolJob = Box<dyn FnOnce() + Send + 'static>;
+
+/// Internal event bus. Protocol messages, filesystem wakeups, and finished
+/// builds all converge here so the main loop has a single inbox; nothing
+/// internal is ever injected into the client-bound outbound stream.
+enum SessionEvent {
+    Protocol(Message),
+    Build(BuildOutcome),
+    WorkspaceChanged,
+    Eof,
+}
+
+/// Background workers owned by the session: one builder thread executing
+/// latest-wins vault rebuilds, and a bounded pool for request handlers.
+struct Runtime {
+    events: mpsc::Receiver<SessionEvent>,
+    inject: mpsc::Sender<SessionEvent>,
+    builder: mpsc::Sender<BuildJob>,
+    pool: mpsc::Sender<PoolJob>,
+    handles: Vec<JoinHandle<()>>,
+}
+
+impl Runtime {
+    fn injection_sender(&self) -> mpsc::Sender<SessionEvent> {
+        self.inject.clone()
+    }
+
+    fn spawn(connection: &Connection) -> Self {
+        let (event_tx, event_rx) = mpsc::channel::<SessionEvent>();
+        let inject_tx = event_tx.clone();
+        let (builder_tx, builder_rx) = mpsc::channel::<BuildJob>();
+        let build_tx = event_tx.clone();
+        // Forward client-bound protocol messages into the event bus and
+        // signal EOF when the stream closes, so the main loop can exit even
+        // while the builder still holds an event sender.
+        let proto_rx = connection.receiver.clone();
+        let pump = std::thread::spawn(move || {
+            for message in proto_rx {
+                if event_tx.send(SessionEvent::Protocol(message)).is_err() {
+                    return;
+                }
+            }
+            let _ = event_tx.send(SessionEvent::Eof);
+        });
+        let builder = std::thread::spawn(move || {
+            while let Ok(job) = builder_rx.recv() {
+                let outcome = compute_build(&job);
+                if build_tx.send(SessionEvent::Build(outcome)).is_err() {
+                    break;
+                }
+            }
+        });
+        let (pool_tx, pool_rx) = mpsc::channel::<PoolJob>();
+        let workers = std::thread::available_parallelism()
+            .map(|count| count.get())
+            .unwrap_or(2)
+            .clamp(2, 8);
+        // std mpsc receivers are single-consumer, so workers share one
+        // receiver behind a mutex: waiting is serialized, execution is not.
+        let shared_rx = Arc::new(Mutex::new(pool_rx));
+        let mut handles = vec![pump, builder];
+        for _ in 0..workers {
+            let shared_rx = shared_rx.clone();
+            handles.push(std::thread::spawn(move || loop {
+                let job = shared_rx.lock().unwrap().recv();
+                match job {
+                    Ok(job) => job(),
+                    Err(_) => break,
+                }
+            }));
+        }
+        Self {
+            events: event_rx,
+            inject: inject_tx,
+            builder: builder_tx,
+            pool: pool_tx,
+            handles,
+        }
+    }
+}
+
+fn main_loop(
+    connection: &Connection,
+    session: LspSession,
+    runtime: Runtime,
+) -> Result<(), Box<dyn Error>> {
+    let Runtime {
+        events,
+        builder,
+        pool,
+        handles,
+        ..
+    } = runtime;
+    let result = main_loop_inner(connection, session, &events, &builder, &pool);
+    drop(builder);
+    drop(pool);
+    for handle in handles {
+        let _ = handle.join();
+    }
+    result
+}
+
+fn main_loop_inner(
+    connection: &Connection,
+    mut session: LspSession,
+    events: &mpsc::Receiver<SessionEvent>,
+    builder: &mpsc::Sender<BuildJob>,
+    pool: &mpsc::Sender<PoolJob>,
+) -> Result<(), Box<dyn Error>> {
+    publish_diagnostics(connection, &mut session)?;
     let cancellations: Arc<Mutex<BTreeMap<lsp_server::RequestId, Arc<AtomicBool>>>> =
         Arc::new(Mutex::new(BTreeMap::new()));
-    let mut requests = Vec::new();
-    for message in &connection.receiver {
-        match message {
-            Message::Request(request) => {
+    let mut build_in_flight = false;
+    loop {
+        let event = match events.recv() {
+            Ok(event) => event,
+            Err(_) => break,
+        };
+        match event {
+            SessionEvent::Protocol(Message::Response(_)) => {}
+            SessionEvent::Eof => break,
+            SessionEvent::Protocol(Message::Request(request)) => {
                 if connection.handle_shutdown(&request)? {
-                    break;
+                    return Ok(());
                 }
                 let id = request.id.clone();
                 let cancelled = Arc::new(AtomicBool::new(false));
@@ -140,24 +251,33 @@ fn main_loop(connection: &Connection, state: ServerState) -> Result<(), Box<dyn 
                     .unwrap()
                     .insert(id.clone(), cancelled.clone());
                 let sender = connection.sender.clone();
-                let request_state = state.read().unwrap().clone();
+                let context = session.request_context();
                 let cancellations = cancellations.clone();
-                requests.push(std::thread::spawn(move || {
-                    let response = handle_request(&request_state, request);
-                    cancellations.lock().unwrap().remove(&id);
-                    let response = if cancelled.load(Ordering::Acquire) {
-                        Response::new_err(
-                            id,
-                            ErrorCode::RequestCanceled as i32,
-                            "request cancelled".into(),
-                        )
-                    } else {
-                        response
-                    };
-                    let _ = sender.send(Message::Response(response));
-                }));
+                let submit = {
+                    let sender = sender.clone();
+                    let id = id.clone();
+                    let cancelled = cancelled.clone();
+                    let cancellations = cancellations.clone();
+                    Box::new(move || {
+                        let response = handle_request(&context, request, &cancelled);
+                        cancellations.lock().unwrap().remove(&id);
+                        let response = if cancelled.load(Ordering::Acquire) {
+                            Response::new_err(
+                                id,
+                                ErrorCode::RequestCanceled as i32,
+                                "request cancelled".into(),
+                            )
+                        } else {
+                            response
+                        };
+                        let _ = sender.send(Message::Response(response));
+                    }) as PoolJob
+                };
+                if pool.send(submit).is_err() {
+                    break;
+                }
             }
-            Message::Notification(notification) => {
+            SessionEvent::Protocol(Message::Notification(notification)) => {
                 if notification.method == Cancel::METHOD {
                     let params: CancelParams = serde_json::from_value(notification.params)?;
                     let id = match params.id {
@@ -169,40 +289,108 @@ fn main_loop(connection: &Connection, state: ServerState) -> Result<(), Box<dyn 
                     }
                     continue;
                 }
-                let mut state = state.write().unwrap();
-                handle_notification(&mut state, notification)?;
-                publish_diagnostics(connection, &mut state)?;
+                let changed = handle_notification(&mut session, notification)?;
+                if changed {
+                    session.mark_dirty();
+                    session.submit_build_if_dirty(builder, &mut build_in_flight);
+                }
             }
-            Message::Response(_) => {}
+            SessionEvent::WorkspaceChanged => {
+                session.mark_dirty();
+                session.submit_build_if_dirty(builder, &mut build_in_flight);
+            }
+            SessionEvent::Build(outcome) => {
+                build_in_flight = false;
+                let generation = outcome.generation();
+                session.apply_outcome(outcome);
+                if generation < session.input_generation {
+                    eprintln!(
+                        "notist lsp: applied build for generation {generation}, inputs already at {}; rebuilding",
+                        session.input_generation
+                    );
+                }
+                publish_diagnostics(connection, &mut session)?;
+                session.submit_build_if_dirty(builder, &mut build_in_flight);
+            }
         }
-    }
-    for request in requests {
-        let _ = request.join();
     }
     Ok(())
 }
 
-fn handle_request(state: &ServerState, request: Request) -> Response {
+fn handle_request(
+    context: &RequestContext,
+    request: Request,
+    cancelled: &AtomicBool,
+) -> Response {
+    use lsp_server::ErrorCode;
+    type Handled = Result<serde_json::Value, (ErrorCode, String)>;
+
     let id = request.id.clone();
-    let result = match request.method.as_str() {
+    // Parameter decoding failures are client mistakes (`InvalidParams`);
+    // everything after a successful decode is a server-side condition
+    // (`InternalError`), so clients can retry bad input without mistaking
+    // server faults for their own.
+    let handled: Handled = match request.method.as_str() {
         GotoDefinition::METHOD => parse_params(request.params)
-            .and_then(|params: GotoDefinitionParams| definition(state, params))
-            .and_then(to_json),
+            .map_err(|message| (ErrorCode::InvalidParams, message))
+            .and_then(|params: GotoDefinitionParams| {
+                definition(context, params, cancelled)
+                    .map_err(|message| (ErrorCode::InternalError, message))
+                    .and_then(|value| {
+                        to_json(value)
+                            .map_err(|error| (ErrorCode::InternalError, error.to_string()))
+                    })
+            }),
         References::METHOD => parse_params(request.params)
-            .and_then(|params: ReferenceParams| references(state, params))
-            .and_then(to_json),
+            .map_err(|message| (ErrorCode::InvalidParams, message))
+            .and_then(|params: ReferenceParams| {
+                references(context, params, cancelled)
+                    .map_err(|message| (ErrorCode::InternalError, message))
+                    .and_then(|value| {
+                        to_json(value)
+                            .map_err(|error| (ErrorCode::InternalError, error.to_string()))
+                    })
+            }),
         Completion::METHOD => parse_params(request.params)
-            .and_then(|params: CompletionParams| completion(state, params))
-            .and_then(to_json),
+            .map_err(|message| (ErrorCode::InvalidParams, message))
+            .and_then(|params: CompletionParams| {
+                completion(context, params, cancelled)
+                    .map_err(|message| (ErrorCode::InternalError, message))
+                    .and_then(|value| {
+                        to_json(value)
+                            .map_err(|error| (ErrorCode::InternalError, error.to_string()))
+                    })
+            }),
         HoverRequest::METHOD => parse_params(request.params)
-            .and_then(|params: HoverParams| hover(state, params))
-            .and_then(to_json),
+            .map_err(|message| (ErrorCode::InvalidParams, message))
+            .and_then(|params: HoverParams| {
+                hover(context, params, cancelled)
+                    .map_err(|message| (ErrorCode::InternalError, message))
+                    .and_then(|value| {
+                        to_json(value)
+                            .map_err(|error| (ErrorCode::InternalError, error.to_string()))
+                    })
+            }),
         DocumentSymbolRequest::METHOD => parse_params(request.params)
-            .and_then(|params: DocumentSymbolParams| document_symbols(state, params))
-            .and_then(to_json),
+            .map_err(|message| (ErrorCode::InvalidParams, message))
+            .and_then(|params: DocumentSymbolParams| {
+                document_symbols(context, params, cancelled)
+                    .map_err(|message| (ErrorCode::InternalError, message))
+                    .and_then(|value| {
+                        to_json(value)
+                            .map_err(|error| (ErrorCode::InternalError, error.to_string()))
+                    })
+            }),
         WorkspaceSymbolRequest::METHOD => parse_params(request.params)
-            .and_then(|params: WorkspaceSymbolParams| workspace_symbols(state, params))
-            .and_then(to_json),
+            .map_err(|message| (ErrorCode::InvalidParams, message))
+            .and_then(|params: WorkspaceSymbolParams| {
+                workspace_symbols(context, params, cancelled)
+                    .map_err(|message| (ErrorCode::InternalError, message))
+                    .and_then(|value| {
+                        to_json(value)
+                            .map_err(|error| (ErrorCode::InternalError, error.to_string()))
+                    })
+            }),
         Shutdown::METHOD => Ok(serde_json::Value::Null),
         _ => {
             return Response::new_err(
@@ -213,9 +401,9 @@ fn handle_request(state: &ServerState, request: Request) -> Response {
         }
     };
 
-    match result {
+    match handled {
         Ok(value) => Response::new_ok(id, value),
-        Err(message) => Response::new_err(id, ErrorCode::InvalidParams as i32, message),
+        Err((code, message)) => Response::new_err(id, code as i32, message),
     }
 }
 
@@ -228,64 +416,42 @@ fn to_json<T: serde::Serialize>(value: T) -> Result<serde_json::Value, String> {
 }
 
 fn handle_notification(
-    state: &mut ServerState,
+    session: &mut LspSession,
     notification: Notification,
-) -> Result<(), Box<dyn Error>> {
-    let changed = match notification.method.as_str() {
+) -> Result<bool, Box<dyn Error>> {
+    match notification.method.as_str() {
         DidOpenTextDocument::METHOD => {
             let params: DidOpenTextDocumentParams = serde_json::from_value(notification.params)?;
-            state.open(params)?;
-            true
+            session.open(params)?;
+            Ok(true)
         }
         DidChangeTextDocument::METHOD => {
             let params: DidChangeTextDocumentParams = serde_json::from_value(notification.params)?;
-            state.change(params)?
+            match session.change(params) {
+                Ok(changed) => Ok(changed),
+                Err(error) => {
+                    eprintln!("notist lsp: rejected didChange: {error}");
+                    Ok(false)
+                }
+            }
         }
         DidSaveTextDocument::METHOD => {
             let params: DidSaveTextDocumentParams = serde_json::from_value(notification.params)?;
-            state.save(params)?
+            Ok(session.save(params)?)
         }
         DidCloseTextDocument::METHOD => {
             let params: DidCloseTextDocumentParams = serde_json::from_value(notification.params)?;
-            state.close(params)?;
-            true
+            session.close(params)?;
+            Ok(true)
         }
-        WORKSPACE_CHANGED_NOTIFICATION => true,
-        _ => false,
-    };
-
-    if changed && let Err(error) = state.rebuild() {
-        eprintln!("notist lsp: workspace rebuild failed: {error}");
+        _ => Ok(false),
     }
-    Ok(())
 }
 
 #[derive(Clone, Debug)]
 struct OpenDocument {
     version: i32,
     source: Arc<str>,
-}
-
-#[derive(Clone)]
-struct ServerState {
-    root: PathBuf,
-    documents: BTreeMap<PathBuf, OpenDocument>,
-    vaults: BTreeMap<PathBuf, RemoteVault>,
-    published_paths: BTreeSet<PathBuf>,
-    no_daemon: bool,
-}
-
-#[derive(Clone)]
-struct RemoteVault {
-    view_id: ServiceViewId,
-    sources: BTreeMap<PathBuf, ClientSource>,
-    client: Arc<Mutex<LocalNotistClient>>,
-}
-
-impl RemoteVault {
-    fn request(&self, request: CoreRequest) -> Result<notist_service::CoreReply, Box<dyn Error>> {
-        Ok(self.client.lock().unwrap().request(request)?)
-    }
 }
 
 #[derive(Clone)]
@@ -304,21 +470,290 @@ impl ClientSource {
     }
 }
 
-impl ServerState {
+/// Shared per-vault request entry point; embedded services serve concurrent
+/// queries directly while daemon connections remain serialized internally.
+type VaultClient = RequestHandle;
+
+/// Main-thread-owned session state; the event loop is the single mutator.
+struct LspSession {
+    root: PathBuf,
+    no_daemon: bool,
+    documents: BTreeMap<PathBuf, OpenDocument>,
+    vaults: BTreeMap<PathBuf, VaultSession>,
+    published_paths: BTreeSet<PathBuf>,
+    /// Content signature of the diagnostics last sent per path; unchanged
+    /// sets are not republished (delta publication).
+    published_signatures: BTreeMap<PathBuf, u64>,
+    input_generation: u64,
+    dirty: bool,
+}
+
+struct VaultSession {
+    view_id: ServiceViewId,
+    client: VaultClient,
+    sources: Arc<BTreeMap<PathBuf, ClientSource>>,
+}
+
+impl VaultSession {
+    fn request(&self, request: CoreRequest) -> Result<notist_service::CoreReply, Box<dyn Error>> {
+        Ok(self.client.request(request)?)
+    }
+}
+
+/// Cheap immutable capture handed to request workers: Arc handles only, no
+/// document bodies. A concurrent build swaps `sources` wholesale, so workers
+/// keep serving from the snapshot they captured.
+#[derive(Clone)]
+struct QueryVault {
+    view_id: ServiceViewId,
+    client: VaultClient,
+    sources: Arc<BTreeMap<PathBuf, ClientSource>>,
+}
+
+impl QueryVault {
+    /// Cancels cooperatively on the embedded path; daemon requests observe
+    /// cancellation only after completion.
+    fn cancellable(
+        &self,
+        request: CoreRequest,
+        cancelled: &AtomicBool,
+    ) -> Result<notist_service::CoreReply, Box<dyn Error>> {
+        Ok(self.client.cancellable(request, cancelled)?)
+    }
+}
+
+#[derive(Clone)]
+struct RequestContext {
+    vaults: BTreeMap<PathBuf, QueryVault>,
+}
+
+/// One unit of latest-wins build work, captured from the session on the main
+/// thread and executed on the builder thread.
+struct BuildJob {
+    workspace_root: PathBuf,
+    no_daemon: bool,
+    documents: BTreeMap<PathBuf, OpenDocument>,
+    live_vaults: Vec<(PathBuf, ServiceViewId, VaultClient)>,
+    generation: u64,
+}
+
+struct BuiltVault {
+    root: PathBuf,
+    view_id: ServiceViewId,
+    client: VaultClient,
+    sources: Arc<BTreeMap<PathBuf, ClientSource>>,
+}
+
+enum BuildOutcome {
+    Applied { generation: u64, vaults: Vec<BuiltVault> },
+    Failed { generation: u64, error: String },
+}
+
+impl BuildOutcome {
+    fn generation(&self) -> u64 {
+        match self {
+            BuildOutcome::Applied { generation, .. } => *generation,
+            BuildOutcome::Failed { generation, .. } => *generation,
+        }
+    }
+}
+
+fn compute_build(job: &BuildJob) -> BuildOutcome {
+    let generation = job.generation;
+    match compute_build_inner(job) {
+        Ok(vaults) => BuildOutcome::Applied { generation, vaults },
+        Err(error) => BuildOutcome::Failed {
+            generation,
+            error: error.to_string(),
+        },
+    }
+}
+
+fn compute_build_inner(job: &BuildJob) -> Result<Vec<BuiltVault>, Box<dyn Error>> {
+    let mut roots = discover_vault_roots(&job.workspace_root)?;
+    if roots.is_empty() {
+        roots.push(job.workspace_root.clone());
+    }
+    let mut previous: BTreeMap<PathBuf, (ServiceViewId, VaultClient)> = job
+        .live_vaults
+        .iter()
+        .map(|(root, view_id, client)| (root.clone(), (*view_id, client.clone())))
+        .collect();
+    let mut built = Vec::new();
+    for root in &roots {
+        let documents = job
+            .documents
+            .iter()
+            .filter(|(path, _)| assigned_vault_root(path, &roots) == Some(root))
+            .map(|(path, document)| notist_service::OverlayDocument {
+                path: path.clone(),
+                version: i64::from(document.version),
+                text: document.source.to_string(),
+            })
+            .collect::<Vec<_>>();
+        let (view_id, client) = if let Some(handle) = previous.remove(root) {
+            handle
+        } else {
+            let handle = LocalNotistClient::connect(job.no_daemon, ClientKind::Lsp, root.clone())?
+                .into_request_handle();
+            let reply = handle.request(CoreRequest::OpenView {
+                root: root.clone(),
+                kind: ProtocolViewKind::Session,
+            })?;
+            let CoreResponse::Opened { view_id, .. } = reply.response else {
+                return Err("service returned an unexpected open-view response".into());
+            };
+            (view_id, handle)
+        };
+        client.request(CoreRequest::UpdateView {
+            view_id,
+            documents,
+            configuration: None,
+        })?;
+        let sources_reply = client.request(CoreRequest::Sources { view_id })?;
+        let CoreResponse::Sources(sources) = sources_reply.response else {
+            return Err("service returned an unexpected sources response".into());
+        };
+        built.push(BuiltVault {
+            root: root.clone(),
+            view_id,
+            client,
+            sources: Arc::new(
+                sources
+                    .into_iter()
+                    .map(|source| (source.path, ClientSource::new(source.text)))
+                    .collect(),
+            ),
+        });
+    }
+    for (root, (view_id, client)) in previous {
+        if let Err(error) = client.request(CoreRequest::CloseView { view_id }) {
+            eprintln!(
+                "notist lsp: failed to close stale view {view_id:?} for {}: {error}",
+                root.display()
+            );
+        }
+    }
+    Ok(built)
+}
+
+impl LspSession {
     fn new(root: PathBuf, no_daemon: bool) -> Result<Self, Box<dyn Error>> {
-        let mut state = Self {
+        let mut session = Self {
             root,
+            no_daemon,
             documents: BTreeMap::new(),
             vaults: BTreeMap::new(),
             published_paths: BTreeSet::new(),
-            no_daemon,
+            published_signatures: BTreeMap::new(),
+            input_generation: 0,
+            dirty: false,
         };
-        state.rebuild()?;
-        Ok(state)
+        session.rebuild_blocking()?;
+        Ok(session)
+    }
+
+    fn root(&self) -> &Path {
+        &self.root
+    }
+
+    fn mark_dirty(&mut self) {
+        self.input_generation += 1;
+        self.dirty = true;
+    }
+
+    fn submit_build_if_dirty(&mut self, builder: &mpsc::Sender<BuildJob>, in_flight: &mut bool) {
+        if !*in_flight && self.dirty {
+            *in_flight = true;
+            self.dirty = false;
+            let job = self.build_job();
+            if builder.send(job).is_err() {
+                *in_flight = false;
+            }
+        }
+    }
+
+    fn build_job(&self) -> BuildJob {
+        BuildJob {
+            workspace_root: self.root.clone(),
+            no_daemon: self.no_daemon,
+            documents: self.documents.clone(),
+            live_vaults: self
+                .vaults
+                .iter()
+                .map(|(root, vault)| (root.clone(), vault.view_id, vault.client.clone()))
+                .collect(),
+            generation: self.input_generation,
+        }
+    }
+
+    /// Runs one build synchronously on the calling thread, propagating
+    /// failures; used for the initial session build and by tests.
+    fn rebuild_blocking(&mut self) -> Result<(), Box<dyn Error>> {
+        self.mark_dirty();
+        let job = self.build_job();
+        let vaults = compute_build_inner(&job)?;
+        self.vaults = vaults
+            .into_iter()
+            .map(|built| {
+                (
+                    built.root,
+                    VaultSession {
+                        view_id: built.view_id,
+                        client: built.client,
+                        sources: built.sources,
+                    },
+                )
+            })
+            .collect();
+        self.dirty = false;
+        Ok(())
+    }
+
+    fn apply_outcome(&mut self, outcome: BuildOutcome) {
+        match outcome {
+            BuildOutcome::Applied { vaults, .. } => {
+                self.vaults = vaults
+                    .into_iter()
+                    .map(|built| {
+                        (
+                            built.root,
+                            VaultSession {
+                                view_id: built.view_id,
+                                client: built.client,
+                                sources: built.sources,
+                            },
+                        )
+                    })
+                    .collect();
+            }
+            BuildOutcome::Failed { error, .. } => {
+                eprintln!("notist lsp: workspace rebuild failed: {error}");
+            }
+        }
+    }
+
+    fn request_context(&self) -> RequestContext {
+        RequestContext {
+            vaults: self
+                .vaults
+                .iter()
+                .map(|(root, vault)| {
+                    (
+                        root.clone(),
+                        QueryVault {
+                            view_id: vault.view_id,
+                            client: vault.client.clone(),
+                            sources: vault.sources.clone(),
+                        },
+                    )
+                })
+                .collect(),
+        }
     }
 
     fn open(&mut self, params: DidOpenTextDocumentParams) -> Result<(), Box<dyn Error>> {
-        let path = normalize_uri_path(&self.root, &params.text_document.uri)?;
+        let path = normalize_uri_path(&params.text_document.uri)?;
         self.documents.insert(
             path,
             OpenDocument {
@@ -330,12 +765,28 @@ impl ServerState {
     }
 
     fn change(&mut self, params: DidChangeTextDocumentParams) -> Result<bool, Box<dyn Error>> {
-        let path = normalize_uri_path(&self.root, &params.text_document.uri)?;
-        let Some(change) = params.content_changes.last() else {
-            return Ok(false);
-        };
+        let path = normalize_uri_path(&params.text_document.uri)?;
+        if params.content_changes.len() != 1 {
+            return Err(format!(
+                "client sent {} content changes to a full-sync server; exactly one is required",
+                params.content_changes.len()
+            )
+            .into());
+        }
+        let change = &params.content_changes[0];
         if change.range.is_some() {
             return Err("client sent an incremental edit to a full-sync server".into());
+        }
+        if let Some(existing) = self.documents.get(&path)
+            && params.text_document.version < existing.version
+        {
+            return Err(format!(
+                "client sent didChange version {} behind current {} for `{}`",
+                params.text_document.version,
+                existing.version,
+                path.display()
+            )
+            .into());
         }
         self.documents.insert(
             path,
@@ -348,7 +799,7 @@ impl ServerState {
     }
 
     fn save(&mut self, params: DidSaveTextDocumentParams) -> Result<bool, Box<dyn Error>> {
-        let path = normalize_uri_path(&self.root, &params.text_document.uri)?;
+        let path = normalize_uri_path(&params.text_document.uri)?;
         let Some(source) = params.text else {
             return Ok(false);
         };
@@ -367,108 +818,46 @@ impl ServerState {
     }
 
     fn close(&mut self, params: DidCloseTextDocumentParams) -> Result<(), Box<dyn Error>> {
-        let path = normalize_uri_path(&self.root, &params.text_document.uri)?;
+        let path = normalize_uri_path(&params.text_document.uri)?;
         self.documents.remove(&path);
-        Ok(())
-    }
-
-    fn rebuild(&mut self) -> Result<(), Box<dyn Error>> {
-        let mut roots = discover_vault_roots(&self.root)?;
-        if roots.is_empty() {
-            roots.push(self.root.clone());
-        }
-
-        let mut previous = std::mem::take(&mut self.vaults);
-        let mut vaults = BTreeMap::new();
-        for root in &roots {
-            let documents = self
-                .documents
-                .iter()
-                .filter(|(path, _)| assigned_vault_root(path, &roots) == Some(root))
-                .map(|(path, document)| notist_service::OverlayDocument {
-                    path: path.clone(),
-                    version: i64::from(document.version),
-                    text: document.source.to_string(),
-                })
-                .collect::<Vec<_>>();
-            let (view_id, client) = if let Some(view) = previous.remove(root) {
-                (view.view_id, view.client)
-            } else {
-                let client = Arc::new(Mutex::new(LocalNotistClient::connect(
-                    self.no_daemon,
-                    ClientKind::Lsp,
-                    root.clone(),
-                )?));
-                let reply = client.lock().unwrap().request(CoreRequest::OpenView {
-                    root: root.clone(),
-                    kind: ProtocolViewKind::Session,
-                })?;
-                let CoreResponse::Opened { view_id, .. } = reply.response else {
-                    return Err("service returned an unexpected open-view response".into());
-                };
-                (view_id, client)
-            };
-            client.lock().unwrap().request(CoreRequest::UpdateView {
-                view_id,
-                documents,
-                configuration: None,
-            })?;
-            let sources = client
-                .lock()
-                .unwrap()
-                .request(CoreRequest::Sources { view_id })?;
-            let CoreResponse::Sources(sources) = sources.response else {
-                return Err("service returned an unexpected sources response".into());
-            };
-            vaults.insert(
-                root.clone(),
-                RemoteVault {
-                    view_id,
-                    sources: sources
-                        .into_iter()
-                        .map(|source| (source.path, ClientSource::new(source.text)))
-                        .collect(),
-                    client,
-                },
-            );
-        }
-        for view in previous.into_values() {
-            let _ = view.request(CoreRequest::CloseView {
-                view_id: view.view_id,
-            });
-        }
-        self.vaults = vaults;
         Ok(())
     }
 
     fn document_version(&self, path: &Path) -> Option<i32> {
         self.documents.get(path).map(|document| document.version)
     }
+}
 
-    fn workspace_for_source(&self, path: &Path) -> Option<&RemoteVault> {
-        let root = assigned_vault_root(path, self.vaults.keys())?;
-        self.vaults.get(root)
-    }
+fn workspace_for_source<'a>(
+    context: &'a RequestContext,
+    path: &Path,
+) -> Option<&'a QueryVault> {
+    let root = assigned_vault_root(path, context.vaults.keys())?;
+    context.vaults.get(root)
 }
 
 #[allow(deprecated)]
 fn document_symbols(
-    state: &ServerState,
+    context: &RequestContext,
     params: DocumentSymbolParams,
+    cancelled: &AtomicBool,
 ) -> Result<Option<DocumentSymbolResponse>, String> {
-    let path = normalize_uri_path(&state.root, &params.text_document.uri)
+    let path = normalize_uri_path(&params.text_document.uri)
         .map_err(|error| error.to_string())?;
-    let Some(workspace) = state.workspace_for_source(&path) else {
+    let Some(workspace) = workspace_for_source(context, &path) else {
         return Ok(None);
     };
     let Some(source) = workspace.sources.get(&path) else {
         return Ok(Some(DocumentSymbolResponse::Nested(Vec::new())));
     };
     let reply = workspace
-        .request(CoreRequest::DocumentSymbols {
-            view_id: workspace.view_id,
-            path: path.clone(),
-        })
+        .cancellable(
+            CoreRequest::DocumentSymbols {
+                view_id: workspace.view_id,
+                path: path.clone(),
+            },
+            cancelled,
+        )
         .map_err(|error| error.to_string())?;
     let CoreResponse::DocumentSymbols(symbols) = reply.response else {
         return Err("service returned an unexpected document-symbol response".into());
@@ -532,16 +921,20 @@ fn nest_heading_symbols(symbols: Vec<(u8, DocumentSymbol)>) -> Vec<DocumentSymbo
 
 #[allow(deprecated)]
 fn workspace_symbols(
-    state: &ServerState,
+    context: &RequestContext,
     params: WorkspaceSymbolParams,
+    cancelled: &AtomicBool,
 ) -> Result<Option<WorkspaceSymbolResponse>, String> {
     let mut symbols = Vec::new();
-    for view in state.vaults.values() {
+    for view in context.vaults.values() {
         let reply = view
-            .request(CoreRequest::WorkspaceSymbols {
-                view_id: view.view_id,
-                query: params.query.clone(),
-            })
+            .cancellable(
+                CoreRequest::WorkspaceSymbols {
+                    view_id: view.view_id,
+                    query: params.query.clone(),
+                },
+                cancelled,
+            )
             .map_err(|error| error.to_string())?;
         let CoreResponse::WorkspaceSymbols(workspace_symbols) = reply.response else {
             return Err("service returned an unexpected workspace-symbol response".into());
@@ -578,23 +971,35 @@ fn assigned_vault_root<'a>(
         .max_by_key(|root| root.components().count())
 }
 
-fn normalize_uri_path(root: &Path, uri: &Uri) -> Result<PathBuf, Box<dyn Error>> {
+fn normalize_uri_path(uri: &Uri) -> Result<PathBuf, Box<dyn Error>> {
     let path = uri_to_file_path(uri)?;
     if path.exists() {
         return Ok(dunce::canonicalize(path)?);
     }
-    let parent = path
-        .parent()
-        .ok_or_else(|| format!("document path `{}` has no parent", path.display()))?;
     let file_name = path
         .file_name()
         .ok_or_else(|| format!("document path `{}` has no file name", path.display()))?;
-    let parent = if parent.exists() {
-        dunce::canonicalize(parent)?
-    } else {
-        root.to_path_buf()
-    };
-    Ok(parent.join(file_name))
+    let mut missing = vec![file_name.to_owned()];
+    let mut ancestor = path
+        .parent()
+        .ok_or_else(|| format!("document path `{}` has no parent", path.display()))?;
+    while !ancestor.exists() {
+        let name = ancestor.file_name().ok_or_else(|| {
+            format!(
+                "document path `{}` does not live inside an existing directory",
+                path.display()
+            )
+        })?;
+        missing.push(name.to_owned());
+        ancestor = ancestor
+            .parent()
+            .ok_or_else(|| format!("document path `{}` escapes the filesystem root", path.display()))?;
+    }
+    let mut normalized = dunce::canonicalize(ancestor)?;
+    for name in missing.into_iter().rev() {
+        normalized.push(name);
+    }
+    Ok(normalized)
 }
 
 fn uri_to_file_path(uri: &Uri) -> Result<PathBuf, Box<dyn Error>> {
@@ -633,51 +1038,89 @@ fn file_path_to_uri(path: &Path) -> Result<Uri, String> {
         .map_err(|error| format!("cannot convert {} to a file URI: {error}", path))
 }
 
+fn diagnostics_signature(diagnostics: &[Diagnostic]) -> u64 {
+    use std::hash::{Hash, Hasher};
+    let mut hasher = std::collections::hash_map::DefaultHasher::new();
+    for diagnostic in diagnostics {
+        diagnostic.range.start.line.hash(&mut hasher);
+        diagnostic.range.start.character.hash(&mut hasher);
+        diagnostic.range.end.line.hash(&mut hasher);
+        diagnostic.range.end.character.hash(&mut hasher);
+        diagnostic
+            .severity
+            .map(|severity| format!("{severity:?}"))
+            .hash(&mut hasher);
+        diagnostic.message.hash(&mut hasher);
+        if let Some(code) = &diagnostic.code {
+            code.hash(&mut hasher);
+        }
+    }
+    hasher.finish()
+}
+
+/// Publishes only paths whose diagnostics actually changed since the last
+/// cycle; vanished paths receive one empty set to clear client state.
 fn publish_diagnostics(
     connection: &Connection,
-    state: &mut ServerState,
+    session: &mut LspSession,
 ) -> Result<(), Box<dyn Error>> {
-    let current_paths: BTreeSet<_> = state
+    let mut diagnostics_by_path: BTreeMap<PathBuf, Vec<Diagnostic>> = BTreeMap::new();
+    for view in session.vaults.values() {
+        let reply = view.request(CoreRequest::Diagnostics {
+            view_id: view.view_id,
+        })?;
+        let CoreResponse::Diagnostics(records) = reply.response else {
+            return Err("service returned an unexpected diagnostics response".into());
+        };
+        for record in records {
+            let Some(path) = record.path.clone() else {
+                continue;
+            };
+            let source = view.sources.get(&path);
+            diagnostics_by_path
+                .entry(path)
+                .or_default()
+                .push(lsp_diagnostic(source, record));
+        }
+    }
+
+    let current_paths: BTreeSet<_> = session
         .vaults
         .values()
         .flat_map(|view| view.sources.keys().cloned())
         .collect();
     let paths: BTreeSet<_> = current_paths
-        .union(&state.published_paths)
+        .union(&session.published_paths)
         .cloned()
         .collect();
+    let mut signatures = std::mem::take(&mut session.published_signatures);
     for path in paths {
-        let diagnostics = diagnostics_for_path(state, &path)?;
+        let diagnostics = diagnostics_by_path.get(&path).cloned().unwrap_or_default();
+        let signature = diagnostics_signature(&diagnostics);
+        if signatures.get(&path) == Some(&signature) {
+            continue;
+        }
         let uri = file_path_to_uri(&path)?;
-        let params = PublishDiagnosticsParams::new(uri, diagnostics, state.document_version(&path));
+        let params = PublishDiagnosticsParams::new(uri, diagnostics, session.document_version(&path));
         connection
             .sender
             .send(Message::Notification(Notification::new(
                 PublishDiagnostics::METHOD.to_owned(),
                 params,
             )))?;
+        signatures.insert(path, signature);
     }
-    state.published_paths = current_paths;
+    session.published_signatures = signatures;
+    session.published_paths = current_paths;
     Ok(())
 }
 
-fn diagnostics_for_path(state: &ServerState, path: &Path) -> Result<Vec<Diagnostic>, String> {
-    let Some(workspace) = state.workspace_for_source(path) else {
-        return Ok(Vec::new());
-    };
-    let reply = workspace
-        .request(CoreRequest::Diagnostics {
-            view_id: workspace.view_id,
-        })
-        .map_err(|error| error.to_string())?;
-    let CoreResponse::Diagnostics(diagnostics) = reply.response else {
-        return Err("service returned an unexpected diagnostics response".into());
-    };
-    Ok(diagnostics
-        .into_iter()
-        .filter(|diagnostic| diagnostic.path.as_deref() == Some(path))
-        .map(|diagnostic| lsp_diagnostic(workspace.sources.get(path), diagnostic))
-        .collect())
+fn lsp_severity(severity: &str) -> DiagnosticSeverity {
+    match severity {
+        "warning" => DiagnosticSeverity::WARNING,
+        "info" | "hint" => DiagnosticSeverity::INFORMATION,
+        _ => DiagnosticSeverity::ERROR,
+    }
 }
 
 fn lsp_diagnostic(source: Option<&ClientSource>, diagnostic: DiagnosticRecord) -> Diagnostic {
@@ -692,7 +1135,7 @@ fn lsp_diagnostic(source: Option<&ClientSource>, diagnostic: DiagnosticRecord) -
             || Range::new(Position::new(0, 0), Position::new(0, 0)),
             |source| lsp_range(source, range),
         ),
-        severity: Some(DiagnosticSeverity::ERROR),
+        severity: Some(lsp_severity(&diagnostic.severity)),
         code: Some(NumberOrString::String(diagnostic.code)),
         source: Some("notist".into()),
         message: diagnostic.message,
@@ -701,19 +1144,23 @@ fn lsp_diagnostic(source: Option<&ClientSource>, diagnostic: DiagnosticRecord) -
 }
 
 fn definition(
-    state: &ServerState,
+    context: &RequestContext,
     params: GotoDefinitionParams,
+    cancelled: &AtomicBool,
 ) -> Result<Option<GotoDefinitionResponse>, String> {
     let position = params.text_document_position_params;
-    let Some((path, workspace, _source, offset)) = source_position(state, &position) else {
+    let Some((path, workspace, _source, offset)) = source_position(context, &position) else {
         return Ok(None);
     };
     let reply = workspace
-        .request(CoreRequest::Definition {
-            view_id: workspace.view_id,
-            path,
-            offset,
-        })
+        .cancellable(
+            CoreRequest::Definition {
+                view_id: workspace.view_id,
+                path,
+                offset,
+            },
+            cancelled,
+        )
         .map_err(|error| error.to_string())?;
     let CoreResponse::Definition(definition) = reply.response else {
         return Err("service returned an unexpected definition response".into());
@@ -730,20 +1177,24 @@ fn definition(
 }
 
 fn references(
-    state: &ServerState,
+    context: &RequestContext,
     params: ReferenceParams,
+    cancelled: &AtomicBool,
 ) -> Result<Option<Vec<Location>>, String> {
     let position = params.text_document_position;
-    let Some((path, workspace, _source, offset)) = source_position(state, &position) else {
+    let Some((path, workspace, _source, offset)) = source_position(context, &position) else {
         return Ok(None);
     };
     let reply = workspace
-        .request(CoreRequest::References {
-            view_id: workspace.view_id,
-            path,
-            offset,
-            include_definition: params.context.include_declaration,
-        })
+        .cancellable(
+            CoreRequest::References {
+                view_id: workspace.view_id,
+                path,
+                offset,
+                include_definition: params.context.include_declaration,
+            },
+            cancelled,
+        )
         .map_err(|error| error.to_string())?;
     let CoreResponse::References(results) = reply.response else {
         return Err("service returned an unexpected references response".into());
@@ -758,19 +1209,23 @@ fn references(
 }
 
 fn completion(
-    state: &ServerState,
+    context: &RequestContext,
     params: CompletionParams,
+    cancelled: &AtomicBool,
 ) -> Result<Option<CompletionResponse>, String> {
     let position = params.text_document_position;
-    let Some((path, workspace, source_input, offset)) = source_position(state, &position) else {
+    let Some((path, workspace, source_input, offset)) = source_position(context, &position) else {
         return Ok(None);
     };
     let reply = workspace
-        .request(CoreRequest::Completion {
-            view_id: workspace.view_id,
-            path,
-            offset,
-        })
+        .cancellable(
+            CoreRequest::Completion {
+                view_id: workspace.view_id,
+                path,
+                offset,
+            },
+            cancelled,
+        )
         .map_err(|error| error.to_string())?;
     let CoreResponse::Completion(candidates) = reply.response else {
         return Err("service returned an unexpected completion response".into());
@@ -797,17 +1252,24 @@ fn completion(
     Ok((!items.is_empty()).then_some(CompletionResponse::Array(items)))
 }
 
-fn hover(state: &ServerState, params: HoverParams) -> Result<Option<Hover>, String> {
+fn hover(
+    context: &RequestContext,
+    params: HoverParams,
+    cancelled: &AtomicBool,
+) -> Result<Option<Hover>, String> {
     let position = params.text_document_position_params;
-    let Some((path, workspace, source_input, offset)) = source_position(state, &position) else {
+    let Some((path, workspace, source_input, offset)) = source_position(context, &position) else {
         return Ok(None);
     };
     let reply = workspace
-        .request(CoreRequest::Hover {
-            view_id: workspace.view_id,
-            path,
-            offset,
-        })
+        .cancellable(
+            CoreRequest::Hover {
+                view_id: workspace.view_id,
+                path,
+                offset,
+            },
+            cancelled,
+        )
         .map_err(|error| error.to_string())?;
     let CoreResponse::Hover(hover) = reply.response else {
         return Err("service returned an unexpected hover response".into());
@@ -825,11 +1287,11 @@ fn hover(state: &ServerState, params: HoverParams) -> Result<Option<Hover>, Stri
 }
 
 fn source_position<'a>(
-    state: &'a ServerState,
+    context: &'a RequestContext,
     params: &lsp_types::TextDocumentPositionParams,
-) -> Option<(PathBuf, &'a RemoteVault, &'a ClientSource, usize)> {
-    let path = normalize_uri_path(&state.root, &params.text_document.uri).ok()?;
-    let workspace = state.workspace_for_source(&path)?;
+) -> Option<(PathBuf, &'a QueryVault, &'a ClientSource, usize)> {
+    let path = normalize_uri_path(&params.text_document.uri).ok()?;
+    let workspace = workspace_for_source(context, &path)?;
     let source = workspace.sources.get(&path)?;
     let offset = source.line_index.offset_utf16(
         &source.text,
@@ -864,6 +1326,7 @@ mod tests {
         WorkDoneProgressParams,
     };
     use std::fs;
+    use std::sync::atomic::AtomicBool;
     use std::time::Duration;
 
     #[test]
@@ -903,7 +1366,9 @@ mod tests {
         fs::write(root.path().join("child.not"), "child").unwrap();
         let root_path = dunce::canonicalize(root.path()).unwrap();
         let readme_path = dunce::canonicalize(root.path().join("README.not")).unwrap();
-        let state = ServerState::new(root_path, true).unwrap();
+        let session = LspSession::new(root_path, true).unwrap();
+        let state = session.request_context();
+        let never = AtomicBool::new(false);
         let uri = file_path_to_uri(&readme_path).unwrap();
 
         let document = document_symbols(
@@ -913,6 +1378,7 @@ mod tests {
                 work_done_progress_params: WorkDoneProgressParams::default(),
                 partial_result_params: PartialResultParams::default(),
             },
+            &never,
         )
         .unwrap()
         .unwrap();
@@ -938,6 +1404,7 @@ mod tests {
                 work_done_progress_params: WorkDoneProgressParams::default(),
                 partial_result_params: PartialResultParams::default(),
             },
+            &never,
         )
         .unwrap()
         .unwrap();
@@ -953,7 +1420,9 @@ mod tests {
         let root = tempfile::TempDir::new_in(std::env::current_dir().unwrap()).unwrap();
         fs::write(root.path().join("README.not"), "#heading(level=missing())").unwrap();
         let root_path = dunce::canonicalize(root.path()).unwrap();
-        let state = ServerState::new(root_path, true).unwrap();
+        let session = LspSession::new(root_path, true).unwrap();
+        let state = session.request_context();
+        let never = AtomicBool::new(false);
         let path = dunce::canonicalize(root.path().join("README.not")).unwrap();
         let uri = file_path_to_uri(&path).unwrap();
         let params = CompletionParams {
@@ -968,7 +1437,7 @@ mod tests {
 
         // `missing` is not a known function, so there are no argument candidates;
         // crucially the outer `heading`'s `level` must not be offered.
-        assert!(completion(&state, params).unwrap().is_none());
+        assert!(completion(&state, params, &never).unwrap().is_none());
     }
 
     #[test]
@@ -977,16 +1446,17 @@ mod tests {
         fs::write(root.path().join("README.not"), "[[ch]]").unwrap();
         fs::write(root.path().join("child.not"), "child").unwrap();
         let root_path = dunce::canonicalize(root.path()).unwrap();
-        let mut state = ServerState::new(root_path.clone(), true).unwrap();
+        let mut session = LspSession::new(root_path.clone(), true).unwrap();
         let path = dunce::canonicalize(root.path().join("README.not")).unwrap();
-        state.documents.insert(
+        session.documents.insert(
             path.clone(),
             OpenDocument {
                 version: 1,
                 source: Arc::from("[[ch]]"),
             },
         );
-        state.rebuild().unwrap();
+        session.rebuild_blocking().unwrap();
+        let state = session.request_context();
         let uri = file_path_to_uri(&path).unwrap();
         let params = CompletionParams {
             text_document_position: lsp_types::TextDocumentPositionParams::new(
@@ -998,7 +1468,8 @@ mod tests {
             context: None,
         };
 
-        let Some(CompletionResponse::Array(items)) = completion(&state, params).unwrap() else {
+        let never = AtomicBool::new(false);
+        let Some(CompletionResponse::Array(items)) = completion(&state, params, &never).unwrap() else {
             panic!("expected completion items");
         };
         assert!(items.iter().any(|item| item.label == "child"));
@@ -1019,12 +1490,13 @@ mod tests {
         fs::write(root.path().join("docs/guide.not"), "guide").unwrap();
         fs::write(root.path().join("notes/private.not"), "private").unwrap();
         let root_path = dunce::canonicalize(root.path()).unwrap();
-        let mut state = ServerState::new(root_path, true).unwrap();
+        let mut session = LspSession::new(root_path, true).unwrap();
         let docs_readme = dunce::canonicalize(root.path().join("docs/README.not")).unwrap();
         let notes_readme = dunce::canonicalize(root.path().join("notes/README.not")).unwrap();
 
-        assert_eq!(state.vaults.len(), 2);
-        let docs = state.workspace_for_source(&docs_readme).unwrap();
+        assert_eq!(session.vaults.len(), 2);
+        let state = session.request_context();
+        let docs = workspace_for_source(&state, &docs_readme).unwrap();
         assert!(docs.sources.keys().any(|path| path.ends_with("guide.not")));
         assert!(
             !docs
@@ -1032,7 +1504,7 @@ mod tests {
                 .keys()
                 .any(|path| path.ends_with("private.not"))
         );
-        let notes = state.workspace_for_source(&notes_readme).unwrap();
+        let notes = workspace_for_source(&state, &notes_readme).unwrap();
         assert!(
             notes
                 .sources
@@ -1041,18 +1513,178 @@ mod tests {
         );
 
         let draft = root.path().join("docs/draft.not");
-        state.documents.insert(
+        session.documents.insert(
             draft.clone(),
             OpenDocument {
                 version: 1,
                 source: Arc::from("draft"),
             },
         );
-        state.rebuild().unwrap();
-        let docs = state.workspace_for_source(&draft).unwrap();
+        session.rebuild_blocking().unwrap();
+        let state = session.request_context();
+        let docs = workspace_for_source(&state, &draft).unwrap();
         assert!(docs.sources.keys().any(|path| path.ends_with("draft.not")));
-        let notes = state.workspace_for_source(&notes_readme).unwrap();
+        let notes = workspace_for_source(&state, &notes_readme).unwrap();
         assert!(!notes.sources.keys().any(|path| path.ends_with("draft.not")));
+    }
+
+    #[test]
+    fn maps_service_severity_labels_to_lsp_severities() {
+        let record = |severity: &str| DiagnosticRecord {
+            path: None,
+            source: None,
+            range: None,
+            code: "test".into(),
+            severity: severity.into(),
+            message: "m".into(),
+        };
+        assert_eq!(
+            lsp_diagnostic(None, record("error")).severity,
+            Some(DiagnosticSeverity::ERROR)
+        );
+        assert_eq!(
+            lsp_diagnostic(None, record("warning")).severity,
+            Some(DiagnosticSeverity::WARNING)
+        );
+        assert_eq!(
+            lsp_diagnostic(None, record("info")).severity,
+            Some(DiagnosticSeverity::INFORMATION)
+        );
+        assert_eq!(
+            lsp_diagnostic(None, record("mystery")).severity,
+            Some(DiagnosticSeverity::ERROR)
+        );
+    }
+
+    #[test]
+    fn distinguishes_error_code_classes() {
+        let root = tempfile::TempDir::new_in(std::env::current_dir().unwrap()).unwrap();
+        fs::write(root.path().join("README.not"), "disk").unwrap();
+        let root_path = dunce::canonicalize(root.path()).unwrap();
+        let session = LspSession::new(root_path.clone(), true).unwrap();
+        let state = session.request_context();
+        let never = AtomicBool::new(false);
+
+        // Malformed parameters are a client mistake (`InvalidParams`).
+        let bad_params = handle_request(
+            &state,
+            Request::new(RequestId::from(1), HoverRequest::METHOD.into(), serde_json::json!({
+                "textDocument": {"uri": "file:///does-not-matter.not"},
+                "position": {"line": "not-a-number", "character": 0}
+            })),
+            &never,
+        );
+        assert_eq!(
+            bad_params.response_result.unwrap_err().code,
+            ErrorCode::InvalidParams as i32
+        );
+
+        // Unsupported methods are `MethodNotFound`, not a param failure.
+        let unknown = handle_request(
+            &state,
+            Request::new(RequestId::from(2), "notist/unknown".into(), serde_json::json!({})),
+            &never,
+        );
+        assert_eq!(
+            unknown.response_result.unwrap_err().code,
+            ErrorCode::MethodNotFound as i32
+        );
+
+        // A decodable request outside any known source degrades to a
+        // graceful `null` result instead of an error.
+        let unreachable_uri = file_path_to_uri(&root_path.join("missing.not")).unwrap();
+        let graceful = handle_request(
+            &state,
+            Request::new(RequestId::from(3), HoverRequest::METHOD.into(), serde_json::json!({
+                "textDocument": {"uri": unreachable_uri.as_str()},
+                "position": {"line": 0, "character": 0}
+            })),
+            &never,
+        );
+        assert_eq!(graceful.response_result.unwrap(), serde_json::Value::Null);
+    }
+
+    #[test]
+    fn rejects_did_change_version_regressions() {
+        let root = tempfile::TempDir::new_in(std::env::current_dir().unwrap()).unwrap();
+        fs::write(root.path().join("README.not"), "disk").unwrap();
+        let root_path = dunce::canonicalize(root.path()).unwrap();
+        let mut session = LspSession::new(root_path, true).unwrap();
+        let path = dunce::canonicalize(root.path().join("README.not")).unwrap();
+        let uri = file_path_to_uri(&path).unwrap();
+        let change_at = |version: i32, text: &str| DidChangeTextDocumentParams {
+            text_document: lsp_types::VersionedTextDocumentIdentifier {
+                uri: uri.clone(),
+                version,
+            },
+            content_changes: vec![lsp_types::TextDocumentContentChangeEvent {
+                range: None,
+                range_length: None,
+                text: text.into(),
+            }],
+        };
+
+        session.change(change_at(3, "third")).unwrap();
+        // A stale change must be rejected instead of silently regressing.
+        assert!(session.change(change_at(2, "second")).is_err());
+        // Equal versions are tolerated (some clients resend on save).
+        session.change(change_at(3, "third again")).unwrap();
+        assert_eq!(
+            session.documents.get(&path).map(|document| document.version),
+            Some(3)
+        );
+    }
+
+    #[test]
+    fn preserves_multi_level_missing_parents_in_new_paths() {
+        let root = tempfile::TempDir::new_in(std::env::current_dir().unwrap()).unwrap();
+        fs::create_dir(root.path().join("nested")).unwrap();
+        let uri =
+            file_path_to_uri(&root.path().join("nested/a/b/new.not")).unwrap();
+        let normalized = normalize_uri_path(&uri).unwrap();
+        assert_eq!(
+            normalized,
+            dunce::canonicalize(root.path().join("nested"))
+                .unwrap()
+                .join("a/b/new.not")
+        );
+    }
+
+    #[test]
+    fn rejects_contract_violating_full_sync_changes() {
+        let root = tempfile::TempDir::new_in(std::env::current_dir().unwrap()).unwrap();
+        fs::write(root.path().join("README.not"), "disk").unwrap();
+        let root_path = dunce::canonicalize(root.path()).unwrap();
+        let mut session = LspSession::new(root_path, true).unwrap();
+        let path = dunce::canonicalize(root.path().join("README.not")).unwrap();
+        let uri = file_path_to_uri(&path).unwrap();
+        let change = |range: Option<lsp_types::Range>| DidChangeTextDocumentParams {
+            text_document: lsp_types::VersionedTextDocumentIdentifier { uri: uri.clone(), version: 2 },
+            content_changes: vec![lsp_types::TextDocumentContentChangeEvent { range, range_length: None, text: "next".into() }],
+        };
+        let mut double = change(None);
+        double
+            .content_changes
+            .push(lsp_types::TextDocumentContentChangeEvent {
+                range: None,
+                range_length: None,
+                text: "last".into(),
+            });
+        assert!(session.change(double).is_err());
+        assert!(
+            session
+                .change(change(Some(lsp_types::Range {
+                    start: Position::new(0, 0),
+                    end: Position::new(0, 1),
+                })))
+                .is_err()
+        );
+
+        session.change(change(None)).unwrap();
+        assert_eq!(
+            session.documents.get(&path).map(|document| document.source.to_string()),
+            Some("next".into())
+        );
     }
 
     #[test]
@@ -1065,11 +1697,27 @@ mod tests {
         let child_path = dunce::canonicalize(root.path().join("child.not")).unwrap();
         let readme_uri = file_path_to_uri(&readme_path).unwrap();
         let source = "[[child]] #heading[] #missing[]";
-        let state = ServerState::new(root_path, true).unwrap();
+        let state = LspSession::new(root_path.clone(), true).unwrap();
         let (server, client) = Connection::memory();
         let server_thread = std::thread::spawn(move || {
-            main_loop(&server, state).unwrap();
+            let runtime = Runtime::spawn(&server);
+            main_loop(&server, state, runtime).unwrap();
         });
+
+        // The server must publish an initial diagnostics baseline before any
+        // client activity; a silent start leaves clients with stale problems.
+        loop {
+            let Message::Notification(notification) = client
+                .receiver
+                .recv_timeout(Duration::from_secs(2))
+                .unwrap()
+            else {
+                panic!("expected initial diagnostics notification");
+            };
+            if notification.method == PublishDiagnostics::METHOD {
+                break;
+            }
+        }
 
         client
             .sender
@@ -1087,7 +1735,7 @@ mod tests {
             .unwrap();
 
         let mut saw_overlay_diagnostic = false;
-        for _ in 0..2 {
+        for _ in 0..8 {
             let Message::Notification(notification) = client
                 .receiver
                 .recv_timeout(Duration::from_secs(2))
@@ -1095,13 +1743,19 @@ mod tests {
             else {
                 panic!("expected diagnostics notification");
             };
+            if notification.method != PublishDiagnostics::METHOD {
+                continue;
+            }
             let params: PublishDiagnosticsParams =
                 serde_json::from_value(notification.params).unwrap();
-            if params.uri == readme_uri {
-                saw_overlay_diagnostic = params
+            if params.uri == readme_uri
+                && params
                     .diagnostics
                     .iter()
-                    .any(|diagnostic| diagnostic.message == "unknown function `missing`");
+                    .any(|diagnostic| diagnostic.message == "unknown function `missing`")
+            {
+                saw_overlay_diagnostic = true;
+                break;
             }
         }
         assert!(saw_overlay_diagnostic);
@@ -1164,7 +1818,7 @@ mod tests {
                 GotoDefinition::METHOD.into(),
                 GotoDefinitionParams {
                     text_document_position_params: TextDocumentPositionParams::new(
-                        TextDocumentIdentifier::new(readme_uri),
+                        TextDocumentIdentifier::new(readme_uri.clone()),
                         Position::new(0, 3),
                     ),
                     work_done_progress_params: Default::default(),
@@ -1180,6 +1834,69 @@ mod tests {
             Some(GotoDefinitionResponse::Scalar(Location { uri, .. }))
                 if uri == file_path_to_uri(&child_path).unwrap()
         ));
+
+        // Closing the document must clear its overlay diagnostics: the path
+        // falls back to disk content and publishes an empty set.
+        // Hover over a `let` binding resolves through the semantic index.
+        let state = {
+            let mut session = LspSession::new(root_path.clone(), true).unwrap();
+            session.documents.insert(
+                readme_path.clone(),
+                OpenDocument {
+                    version: 1,
+                    source: Arc::from("#let greeting = \"hi\"\n#greeting"),
+                },
+            );
+            session.rebuild_blocking().unwrap();
+            session.request_context()
+        };
+        let never = AtomicBool::new(false);
+        let hover_params = HoverParams {
+            text_document_position_params: TextDocumentPositionParams::new(
+                TextDocumentIdentifier::new(file_path_to_uri(&readme_path).unwrap()),
+                Position::new(1, 2),
+            ),
+            work_done_progress_params: Default::default(),
+        };
+        let hovered = super::hover(&state, hover_params, &never).unwrap().unwrap();
+        assert!(
+            matches!(&hovered.contents,
+                HoverContents::Markup(MarkupContent { value, .. }) if value.contains("`greeting:")
+            ),
+            "{:?}",
+            hovered.contents
+        );
+
+        client
+            .sender
+            .send(Message::Notification(Notification::new(
+                DidCloseTextDocument::METHOD.into(),
+                DidCloseTextDocumentParams {
+                    text_document: TextDocumentIdentifier::new(readme_uri.clone()),
+                },
+            )))
+            .unwrap();
+        let mut cleared_diagnostics = false;
+        for _ in 0..8 {
+            let Message::Notification(notification) = client
+                .receiver
+                .recv_timeout(Duration::from_secs(2))
+                .unwrap()
+            else {
+                panic!("expected diagnostics notification after close");
+            };
+            if notification.method != PublishDiagnostics::METHOD {
+                continue;
+            }
+            let params: PublishDiagnosticsParams =
+                serde_json::from_value(notification.params).unwrap();
+            if params.uri == readme_uri {
+                assert!(params.diagnostics.is_empty());
+                cleared_diagnostics = true;
+                break;
+            }
+        }
+        assert!(cleared_diagnostics);
 
         drop(client);
         server_thread.join().unwrap();

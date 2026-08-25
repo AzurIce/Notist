@@ -1542,7 +1542,11 @@ impl WorkspaceSnapshot {
         })
     }
 
-    /// Evaluates and shapes one module using only text captured by this snapshot.
+    /// Evaluates and shapes one module using only text captured by this
+    /// snapshot. This is the static query path for LSP and `notist check`:
+    /// it never touches the filesystem and dispatches calls against the
+    /// plugin registry captured when the snapshot was built; unregistered
+    /// calls degrade to data calls instead of executing anything.
     pub fn structured_module(&self, module_id: ModuleId) -> Option<StructuredModule> {
         let module = self.module_by_id(module_id)?;
         let source = module.source.as_deref()?;
@@ -1553,11 +1557,40 @@ impl WorkspaceSnapshot {
             .get(&module_id)
             .cloned()
             .unwrap_or_default();
-        // Re-load plugin packages from disk and swap them into a cloned
-        // registry, so reduction dispatches against fresh component instances
-        // rather than the instances captured when the snapshot was built.
-        // (Snapshot builds also instantiate components and run guest `init`
-        // to collect the self-described semantic surface.)
+        let evaluator = Evaluator::new((*self.function_registry).clone());
+        let parse = module.parse.as_ref()?;
+        // The node engine is the only pipeline: it reduces as far as the
+        // forest allows and reports the rest, so parse errors and failed
+        // calls degrade to diagnostics instead of a separate recovery path.
+        let evaluation =
+            evaluator.evaluate_parsed_with_shaping(source, parse, seeds, &self.shaping_registry);
+        Some(StructuredModule {
+            revision: self.revision,
+            module_id,
+            function_environment: self.function_environment,
+            tree: evaluation.tree,
+            diagnostics: evaluation.diagnostics,
+            annotations: evaluation.annotations,
+        })
+    }
+
+    /// Runtime projection variant: re-loads plugin packages from disk and
+    /// swaps them into a cloned registry so reduction dispatches against
+    /// fresh component instances rather than the instances captured when
+    /// the snapshot was built. Only explicit projection flows (preview,
+    /// build, export) may call this; ordinary queries must use
+    /// [`WorkspaceSnapshot::structured_module`].
+    pub fn structured_module_with_runtime_plugins(
+        &self,
+        module_id: ModuleId,
+    ) -> Option<StructuredModule> {
+        let module = self.module_by_id(module_id)?;
+        let source = module.source.as_deref()?;
+        let seeds = self
+            .module_import_seeds
+            .get(&module_id)
+            .cloned()
+            .unwrap_or_default();
         let mut runtime_registry = (*self.function_registry).clone();
         if let Some(plugins) = self.configuration.as_deref().and_then(|configuration| {
             notist_plugin_host::load_plugins_from_vault(&self.root, Some(configuration)).ok()
@@ -1577,9 +1610,6 @@ impl WorkspaceSnapshot {
         }
         let evaluator = Evaluator::new(runtime_registry);
         let parse = module.parse.as_ref()?;
-        // The node engine is the only pipeline: it reduces as far as the
-        // forest allows and reports the rest, so parse errors and failed
-        // calls degrade to diagnostics instead of a separate recovery path.
         let evaluation =
             evaluator.evaluate_parsed_with_shaping(source, parse, seeds, &self.shaping_registry);
         Some(StructuredModule {
@@ -1748,7 +1778,10 @@ impl WorkspaceSnapshot {
                         || format!("`{}: Function`", definition.name),
                         |signature| format_signature(&definition.name, signature),
                     ),
-                SymbolKind::Parameter => format!("`{}: {}`", definition.name, definition.ty),
+                SymbolKind::Parameter
+                | SymbolKind::Let
+                | SymbolKind::LambdaParameter
+                | SymbolKind::ImportBinding => format!("`{}: {}`", definition.name, definition.ty),
             };
             return Some(HoverInfo {
                 revision: self.revision,

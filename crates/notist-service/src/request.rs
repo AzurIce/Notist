@@ -2033,7 +2033,7 @@ fn render_workspace(
         let mut module_prepared = None;
         if let (Some(source_path), Some(source)) = (&module.source_path, module.source.as_deref()) {
             let structured = workspace
-                .structured_module(module.id)
+                .structured_module_with_runtime_plugins(module.id)
                 .expect("source-backed modules have structured results");
             let annotations = rendered_annotations(&structured.annotations);
             let anchors = module_anchors_tree(&structured.tree, &annotations);

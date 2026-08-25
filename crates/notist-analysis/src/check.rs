@@ -85,6 +85,12 @@ pub struct LocalSymbolId(pub u32);
 pub enum SymbolKind {
     Function,
     Parameter,
+    /// A value binding introduced by `let` (D0007).
+    Let,
+    /// A parameter of an anonymous function `(params) => body`.
+    LambdaParameter,
+    /// A name bound by an import selector (D0004).
+    ImportBinding,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -124,7 +130,11 @@ pub fn resolve_module_symbols(parse: &Parse) -> ModuleSemanticIndex {
         );
         resolver.functions.insert(definition.name.value.clone(), id);
     }
+    // The document body is one lexical block: top-level `let` bindings stay
+    // visible to every following expression in the same module.
+    resolver.variables.push(HashMap::new());
     resolver.resolve_markup(&parse.root);
+    resolver.variables.pop();
     resolver.index
 }
 
@@ -193,7 +203,7 @@ impl SymbolResolver {
                 }
             }
             ExpressionKind::Call(call) => {
-                if let Some(symbol) = self.functions.get(&call.name.value).copied() {
+                if let Some(symbol) = self.resolve_name(&call.name.value) {
                     self.index.references.push(SymbolReference {
                         symbol,
                         range: call.name.range,
@@ -213,14 +223,28 @@ impl SymbolResolver {
             ExpressionKind::Unary { operand, .. } => {
                 self.resolve_expression(operand);
             }
-            ExpressionKind::Import { .. } => {}
             ExpressionKind::Block(statements) => {
+                // One lexical scope per block so sibling statements see
+                // bindings introduced by earlier `let`s.
+                self.variables.push(HashMap::new());
                 for statement in statements {
                     self.resolve_expression(statement);
                 }
+                self.variables.pop();
             }
-            ExpressionKind::Let { value, .. } => {
+            ExpressionKind::Let {
+                name,
+                annotation,
+                value,
+            } => {
+                // Resolve the value first: a `let` cannot observe itself.
                 self.resolve_expression(value);
+                self.bind(
+                    name.value.clone(),
+                    SymbolKind::Let,
+                    annotation.clone().unwrap_or(Type::Inferred),
+                    name.range,
+                );
             }
             ExpressionKind::If {
                 condition,
@@ -233,8 +257,35 @@ impl SymbolResolver {
                     self.resolve_expression(branch);
                 }
             }
-            ExpressionKind::Lambda { body, .. } => {
+            ExpressionKind::Lambda { parameters, body } => {
+                let mut scope = HashMap::new();
+                for parameter in parameters {
+                    if let Some(default) = &parameter.default {
+                        self.resolve_expression(default);
+                    }
+                    if scope.contains_key(&parameter.name.value) {
+                        continue;
+                    }
+                    let id = self.define(
+                        parameter.name.value.clone(),
+                        SymbolKind::LambdaParameter,
+                        parameter.ty.clone(),
+                        parameter.name.range,
+                    );
+                    scope.insert(parameter.name.value.clone(), id);
+                }
+                self.variables.push(scope);
                 self.resolve_expression(body);
+                self.variables.pop();
+            }
+            ExpressionKind::Import { selectors, .. } => {
+                for selector in selectors {
+                    let (name, range) = match &selector.alias {
+                        Some(alias) => (alias.value.clone(), alias.range),
+                        None => (selector.name.clone(), selector.range),
+                    };
+                    self.bind(name, SymbolKind::ImportBinding, Type::Inferred, range);
+                }
             }
             ExpressionKind::LetFunction(definition) => {
                 for parameter in &definition.parameters {
@@ -243,6 +294,22 @@ impl SymbolResolver {
                     }
                 }
                 let mut scope = HashMap::new();
+                // The function's own name is visible inside its body so
+                // recursive calls resolve to the same identity. Top-level
+                // functions were already registered by `resolve_module_symbols`;
+                // reuse that identity instead of defining a duplicate.
+                let function_id =
+                    if let Some(existing) = self.functions.get(&definition.name.value) {
+                        *existing
+                    } else {
+                        self.define(
+                            definition.name.value.clone(),
+                            SymbolKind::Function,
+                            Type::Function,
+                            definition.name.range,
+                        )
+                    };
+                scope.insert(definition.name.value.clone(), function_id);
                 for parameter in &definition.parameters {
                     if scope.contains_key(&parameter.name.value) {
                         continue;
@@ -267,6 +334,25 @@ impl SymbolResolver {
             | ExpressionKind::String(_)
             | ExpressionKind::Error => {}
         }
+    }
+
+    /// Defines one symbol and binds it into the innermost open scope when
+    /// one exists; definitions without an enclosing scope stay recorded but
+    /// unreachable by later name lookups.
+    fn bind(
+        &mut self,
+        name: String,
+        kind: SymbolKind,
+        ty: Type,
+        range: notist_model::TextRange,
+    ) -> LocalSymbolId {
+        let id = self.define(name.clone(), kind, ty, range);
+        if let Some(scope) = self.variables.last_mut()
+            && !scope.contains_key(&name)
+        {
+            scope.insert(name, id);
+        }
+        id
     }
 
     fn resolve_name(&self, name: &str) -> Option<LocalSymbolId> {
@@ -1175,5 +1261,134 @@ mod tests {
                 .count(),
             1
         );
+    }
+
+    #[test]
+    fn resolves_let_lambda_and_import_bindings() {
+        let source = concat!(
+            "#let greeting = \"hi\"\n",
+            "#greeting #greeting\n",
+            "#import vault::extras::{echo as shout, plain}\n",
+            "#let twice = (n: Int) => {\n",
+            "  let doubled = n * 2\n",
+            "  doubled\n",
+            "}\n",
+            "#twice(2) #shout(1)\n",
+            "#let rec(n: Int) -> Int = rec(n)\n"
+        );
+        let parse = notist_syntax::parse(source);
+        assert!(parse.errors.is_empty(), "{:?}", parse.errors);
+        let index = resolve_module_symbols(&parse);
+
+        let kind_of = |name: &str, index: &ModuleSemanticIndex| {
+            index
+                .definitions
+                .iter()
+                .find(|definition| definition.name == name)
+                .unwrap_or_else(|| panic!("missing definition `{name}`"))
+                .kind
+        };
+        assert_eq!(kind_of("greeting", &index), SymbolKind::Let);
+        assert_eq!(kind_of("twice", &index), SymbolKind::Let);
+        assert_eq!(kind_of("doubled", &index), SymbolKind::Let);
+        assert_eq!(kind_of("n", &index), SymbolKind::LambdaParameter);
+        assert_eq!(kind_of("shout", &index), SymbolKind::ImportBinding);
+        assert_eq!(kind_of("plain", &index), SymbolKind::ImportBinding);
+
+        // `#greeting` references resolve to the `let` binding.
+        let greeting = index
+            .definitions
+            .iter()
+            .find(|definition| definition.name == "greeting")
+            .unwrap();
+        assert_eq!(
+            index
+                .references
+                .iter()
+                .filter(|reference| reference.symbol == greeting.id)
+                .count(),
+            2
+        );
+
+        // A call to a let-bound lambda resolves to that binding.
+        let twice = index
+            .definitions
+            .iter()
+            .find(|definition| definition.name == "twice")
+            .unwrap();
+        assert_eq!(
+            index
+                .references
+                .iter()
+                .filter(|reference| reference.symbol == twice.id)
+                .count(),
+            1
+        );
+
+        // An import alias used as a call resolves to the import binding.
+        let shout = index
+            .definitions
+            .iter()
+            .find(|definition| definition.name == "shout")
+            .unwrap();
+        assert_eq!(
+            index
+                .references
+                .iter()
+                .filter(|reference| reference.symbol == shout.id)
+                .count(),
+            1
+        );
+
+        // The lambda body's inner `let` is registered with its own identity.
+        let doubled = index
+            .definitions
+            .iter()
+            .find(|definition| definition.name == "doubled")
+            .unwrap();
+        assert_eq!(
+            index
+                .references
+                .iter()
+                .filter(|reference| reference.symbol == doubled.id)
+                .count(),
+            1
+        );
+
+        // Recursive let-functions resolve their self-call.
+        let rec = index
+            .definitions
+            .iter()
+            .find(|definition| definition.name == "rec" && definition.kind == SymbolKind::Function)
+            .unwrap();
+        assert_eq!(
+            index
+                .references
+                .iter()
+                .filter(|reference| reference.symbol == rec.id)
+                .count(),
+            1
+        );
+    }
+
+    #[test]
+    fn lets_shadow_outer_bindings_inside_blocks() {
+        let source = concat!(
+            "#let x = 1\n",
+            "#heading(level={\n",
+            "  let x = 2\n",
+            "  x\n",
+            "})\n",
+            "#x\n"
+        );
+        let parse = notist_syntax::parse(source);
+        assert!(parse.errors.is_empty(), "{:?}", parse.errors);
+        let index = resolve_module_symbols(&parse);
+        let xs: Vec<_> = index
+            .definitions
+            .iter()
+            .filter(|definition| definition.name == "x")
+            .collect();
+        assert_eq!(xs.len(), 2);
     }
 }

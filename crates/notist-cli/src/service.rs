@@ -1,7 +1,8 @@
 use std::io;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
+use std::sync::atomic::AtomicBool;
 use std::time::{Duration, Instant};
 
 use notist_service::protocol::{ClientKind, Handshake, ProtocolVersion};
@@ -16,6 +17,38 @@ pub(crate) enum ClientBackend {
         runtime: tokio::runtime::Runtime,
         client: DaemonClient,
     },
+}
+
+/// A shareable request entry point derived from one connection. Embedded
+/// services execute on `&self`, so same-vault queries run concurrently;
+/// daemon connections stay behind a mutex until protocol multiplexing lands.
+#[derive(Clone)]
+pub(crate) enum RequestHandle {
+    Embedded(Arc<NotistService>),
+    Guarded(Arc<Mutex<LocalNotistClient>>),
+}
+
+impl RequestHandle {
+    pub fn request(&self, request: CoreRequest) -> io::Result<CoreReply> {
+        match self {
+            Self::Embedded(service) => service.execute(request),
+            Self::Guarded(client) => client.lock().unwrap().request(request),
+        }
+    }
+
+    /// Issues a request that observes `cancelled`. Embedded execution checks
+    /// the flag at entry and inside long operations; daemon requests cannot
+    /// be interrupted in flight yet and observe it only after completion.
+    pub fn cancellable(
+        &self,
+        request: CoreRequest,
+        cancelled: &AtomicBool,
+    ) -> io::Result<CoreReply> {
+        match self {
+            Self::Embedded(service) => service.execute_cancellable(request, cancelled),
+            Self::Guarded(client) => client.lock().unwrap().request(request),
+        }
+    }
 }
 
 pub(crate) struct LocalNotistClient {
@@ -42,6 +75,14 @@ impl LocalNotistClient {
         match &mut self.backend {
             ClientBackend::Embedded(service) => service.execute(request),
             ClientBackend::Daemon { runtime, client } => runtime.block_on(client.request(request)),
+        }
+    }
+
+    /// Consumes the client into a shareable handle for concurrent use.
+    pub fn into_request_handle(self) -> RequestHandle {
+        match self.backend {
+            ClientBackend::Embedded(service) => RequestHandle::Embedded(service),
+            ClientBackend::Daemon { .. } => RequestHandle::Guarded(Arc::new(Mutex::new(self))),
         }
     }
 }

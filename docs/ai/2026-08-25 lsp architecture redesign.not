@@ -1,0 +1,324 @@
+@![implementation = "research"]
+= LSP 架构重设计调查
+
+本文基于 2026-08-25 当前 worktree 的实现与设计文档调查，目标不是为现有 `lsp.rs` 增加补丁，而是确定可迁移的 LSP session/query 架构。证据范围包括 `crates/notist-cli/src/lsp.rs`、`service.rs`、`crates/notist-service`、`crates/notist-analysis`、`crates/notist-syntax`、`crates/notist-eval`，以及 [[vault::designs::host::lsp-adapter]]、[[vault::designs::host::analyzer-snapshot]]、[[vault::designs::host::query-contract]]。
+
+== 结论摘要
+
+当前实现已经形成“边界正确、调度错误、语义索引不完整”的屎山倾向，但还不是必须推倒语言核心的全盘重写。最值得保留的是 `WorkspaceSnapshot` 的不可变查询思想、UTF-8 byte range 的分析层契约、VaultEngine/View 的隔离方向，以及 daemon 的 view lease 边界。最需要重建的是 LSP session：当前 `ServerState` clone、每请求 OS thread、全局写锁内 rebuild、每 vault `Arc<Mutex<LocalNotistClient>>`、无 publication check 的旧结果发布，共同使“快照隔离”无法成为协议层事实。
+
+推荐路线是重建 LSP session/query 层，复用并逐步扩展分析层，而不是继续扩大 `lsp.rs`。目标是：一个 LSP 进程有一个事件驱动的 `LspSession`；每个 vault 一个拥有 overlay、输入 generation、当前 snapshot 的 `VaultSession`；构建在锁外进行并以 latest-wins 发布；每个 request 捕获明确的 `SnapshotStamp`，结果只能在同一 stamp 上转换和发布；取消向 analysis/service 传播；语义索引统一产生稳定 `SymbolId`、定义/引用 source range 与 snapshot identity。
+
+== 一、当前真实边界与数据流
+
+本节及第二节、证据索引中的行号是 2026-08-25 阶段 A/C 落地前对旧 `lsp.rs` 的快照引用；阶段 A 契约止血与阶段 C session/scheduler 核心落地后，`lsp.rs` 已按第三、七节重构，这些引用仅作历史对照。
+
+=== 进程、workspace 与 Vault
+
+`notist lsp` 通过 stdio 建立 JSON-RPC，声明 UTF-16、FULL text sync，以及 completion、hover、definition、references、document/workspace symbols 能力（`crates/notist-cli/src/lsp.rs:55-106`）。initialize 只取第一个 workspace folder 或 root URI，找不到时回退 cwd，并 canonicalize（`lsp.rs:110-123`）。这与设计要求的“发现多个 marker、嵌套 Vault 最近祖先归属”并不等价：现有实现后来在 rebuild 中发现 Vault，但初始化边界仍是单 root 入口。
+
+LSP adapter 维护打开文档与 vault 映射；service 维护 `VaultHost`/`VaultEngine` 和 `AnalyzerView`；analysis 生成 `Arc<WorkspaceSnapshot>`；daemon 维护连接、view lease 和 request task。这个分层方向是对的，但 ownership 没有贯穿到请求生命周期。
+
+=== 线程与锁
+
+主循环把 `ServerState` 放进 `Arc<RwLock<_>>`，取消表放进 `Arc<Mutex<BTreeMap<RequestId, Arc<AtomicBool>>>>`（`lsp.rs:125-129`）。每个 request spawn 一个 OS thread；线程先 clone `ServerState`，再通过共享 sender 回包（`lsp.rs:130-158`）。notification 在接收线程中取得写锁，直接执行 overlay 更新、vault rebuild 和 diagnostics 发布（`lsp.rs:160-175,230-261`）。
+
+`ServerState` 的每个 vault 包含 `Arc<Mutex<LocalNotistClient>>`（`lsp.rs:263-288`），所以表面上的“一请求一线程”没有带来同 vault 并发：核心请求在 client mutex 串行。service 内部 `AnalyzerView` 也由锁保护，`replace_view_inputs` 和 snapshot capture 均锁 view（`crates/notist-service/src/lib.rs:76-89,175-220`）。daemon 虽然每连接 spawn task，并用 `spawn_blocking` 调用可取消执行（`crates/notist-service/src/transport.rs:249-362`），LSP 的 `LocalNotistClient` 没有把请求 cancellation 传进去。
+
+=== overlay、revision 与 snapshot
+
+`didOpen`/`didChange` 把全文写入 LSP document registry；`didChange` 只取 `content_changes.last()`，且拒绝 range change（`lsp.rs:320-348`）。open/change/save/close 都触发 rebuild。rebuild 重新发现 vault，按最长匹配 root 归属 overlay，组装 `OverlayDocument { path, version, text }`，发送 `UpdateView` 后再发送 `Sources`（`lsp.rs:375-431`）。旧 view 再发送 `CloseView`，但错误被 `let _ =` 静默吞掉，失败时旧 view 会在 daemon 侧泄漏（`lsp.rs:435-439`）。
+
+service 的 `UpdateView` 是全量 overlay replacement，建立 `SourceOverlays` 和 `DocumentVersions`，调用 `AnalyzerView::replace_inputs` 并产生新的 `SnapshotIdentity`（`crates/notist-service/src/request.rs:877-897`、`lib.rs:175-197`）。语义请求通过 `with_snapshot` 捕获 immutable snapshot 后查询（`lib.rs:199-220`）。analysis 的 `WorkspaceSnapshot` 已保存 source text、Parse、LineIndex、module tree、bindings、references、diagnostics、plugin registry 与 revision（`crates/notist-analysis/src/lib.rs:650-685`）；`snapshot_queries_and_delta_use_captured_semantics` 测试（`lib.rs:4416-4469`）证明查询消费的是捕获时语义、revision delta 可推导，但旧快照断言都发生在 reload 之前，尚未覆盖“reload 后继续读旧 snapshot”。
+
+问题在于 revision 没有成为 LSP 请求的 publication boundary：LSP request clone 了旧 `RemoteVault`，返回时不比较 service 的 snapshot identity 或 session generation（`lsp.rs:142-157,285-288`）。因此请求可能在 rebuild 前捕获旧 view、在 CloseView 后才执行，或者在新文档已经成为 current 后发布旧结果。service 其实已经在每个 `CoreReply.snapshot` 里返回完整 `SnapshotIdentity { daemon_instance, vault, view_id, view_kind, analyzer_view_id, revision, source_fingerprint }`（`crates/notist-service/src/lib.rs:59-68`），只是没有任何调用方消费它。
+
+=== diagnostics
+
+rebuild 后，LSP 对当前 source 与历史 published path 的并集逐路径调用 Diagnostics，以空集合清除消失文件（`lsp.rs:640-681`）。`CoreRequest::Diagnostics` 本身不带 path 参数：service 每次都从完整 snapshot 计算并返回全 vault 结果（`crates/notist-service/src/request.rs:985-1006`），按 path 的过滤由 adapter 在本地完成（`lsp.rs:676-680`）。N 个 path 因此意味着 N 次全量往返加 N 次本地过滤，全部结果除一个 path 外都被丢弃。adapter 还把所有 severity 强制映射为 ERROR（`lsp.rs:683-700`），丢弃 `DiagnosticRecord.severity` 携带的真实标签（`error|warning|info`，来自 `notist-analysis` 的 `DiagnosticKind::severity_label`）。
+
+初始化只 rebuild、不主动 publish 初始 diagnostics（已在阶段 A 修复：main loop 入口先发布一次基线）。此外 service watcher 有约 250ms debounce；LSP 自己的 watcher 同样 250ms，但其触发方式是向 `connection.sender` 注入自定义 notification——那是客户端出站流（stdio 下即 stdout），消息永远到不了主循环，因此文件监视器驱动的 rebuild 在生产环境从未生效过，只有 service watcher 的磁盘 reload 在起作用（测试因直接调用 `rebuild()` 而未暴露此问题）。
+
+== 二、哪些设计假设已经错误
+
+- “每 request 一个线程”意味着并发：错误；同 vault client mutex 使核心请求串行，且线程数量无界。
+- “AtomicBool 支持取消”：错误；当前只在完整请求返回后将结果改成 canceled，不能停止分析、IPC 等待或锁等待（`lsp.rs:145-157`；`service.rs:41-45`）。取消表条目还在 flag 检查前就被移除（`lsp.rs:147`），请求结束后到达的 `$/cancelRequest` 找不到任何目标。
+- “clone state 就能安全处理旧请求”：错误；clone 保留旧 view handle，缺少 generation 检查和生命周期 lease。
+- “notification 触发同步全量 rebuild 可由客户端 debounce 解决”：错误；服务器仍会阻塞主循环，且客户端不应承担 server 的 latest-wins 责任。
+- “FULL sync 只取最后一个 change 足够”：错误；多个 full changes 会静默丢失前文，应严格要求一个无 range 的 change，或明确合并规则。
+- “path canonicalization 能处理新文件”：错误；多级不存在 parent 时 `normalize_uri_path` 会把 parent fallback 到 workspace root，可能将 `nested/new.not` 变成 `new.not`（`lsp.rs:581-598`）。
+- “Sources 是 position conversion 的唯一文档目录”：错误；overlay registry 已有文本但 Sources 尚未刷新时，`source_position` 会返回 None（`lsp.rs:827-839`）。
+- “每个 path 请求 diagnostics”：错误；应按 snapshot delta 批量发布。
+- “现有 symbol index 代表完整语言绑定”：错误；`SymbolKind` 当前只有 Function/Parameter，`let`、lambda 参数、import binding 没有统一 definition/reference identity（`crates/notist-analysis/src/check.rs:80-128,184-279`）。
+- “watcher 向 `connection.sender` 注入内部 notification 能触发 rebuild”：错误；`sender` 是客户端出站流，见第一节 diagnostics 小节。任何进程内部事件（watcher、build 完成）都必须走进程内事件总线，而不是 LSP 消息通道。
+- “query-time structured evaluation 可以安全重载插件”：错误；`structured_module` 会重新从 vault 加载插件并 reduction，而 LSP 设计要求普通请求不执行有外部副作用 runtime（`crates/notist-analysis/src/lib.rs:1545-1584`；[[vault::designs::host::lsp-adapter#Syntax 真相与求值安全]])。
+
+== 三、目标协议模型：LSP Session
+
+=== 所有权模型
+
+```text
+LspSession
+  ├─ documents: DocumentStore<Uri, DocumentState>
+  ├─ vaults: VaultId -> VaultSession
+  ├─ requests: RequestTable<RequestKey, CancellationToken>
+  └─ outbound publisher
+
+VaultSession
+  ├─ canonical root / daemon lease
+  ├─ overlays: FileId -> OverlayState
+  ├─ input_generation: Generation
+  ├─ build_generation: Generation
+  ├─ current: Arc<SnapshotHandle>
+  ├─ pending_build: latest input batch
+  └─ diagnostics state
+
+SnapshotHandle
+  ├─ SnapshotStamp { vault_id, view_id, revision, source_set_fingerprint, daemon_instance }
+  ├─ Arc<WorkspaceSnapshot>
+  └─ SourceCoordinateTable
+```
+
+`LspSession` 的事件循环是唯一修改 session 状态的 owner；request worker 不持有 `RwLock<ServerState>`，只拿不可变的 `SnapshotHandle`、请求上下文和 cancellation token。对外发送也经过 publisher，避免 worker 直接绕过 latest-wins 检查。
+
+`SnapshotStamp` 与 service 已有的 `SnapshotIdentity`（`crates/notist-service/src/lib.rs:59-68`）字段映射是迁移的关键路径：stamp 的 `vault_id/view_id/revision/source_fingerprint/daemon_instance` 一一对应 identity 的同名字段；identity 额外携带的 `view_kind/analyzer_view_id` 继续由 service 内部消费，不进入 LSP 契约；stamp 新增的 `source_set_fingerprint` 由 scheduler 在输入提交时计算。阶段 B 只需让 service 把已有 identity 提升为 handle 的一部分，不需要新发明身份格式。
+
+每个 `didOpen`/`didChange`/`didSave`/`didClose` 先更新 DocumentStore，再递增该 vault 的 `input_generation`。LSP document version 是客户端文档版本，不能冒充 analysis revision；generation 是 session 内“最近一次输入提交”的调度序号；snapshot revision 只在完整 candidate 成为 current 后可见。三者可关联但不能混用。
+
+=== overlay 契约
+
+- key 是 canonical `FileId`；URI 解析先保留完整相对路径，不存在的多级 parent 不能静默压平。
+- `OverlayState` 保存 `{uri, file_id?, text, lsp_version, origin, dirty}`；新文件在 source catalog 中尚未有 FileId 时先获得 session-local provisional identity，candidate 成功后再纳入稳定 identity。
+- FULL sync 必须恰好一个 `TextDocumentContentChangeEvent` 且无 range；违反契约返回 InvalidParams，不丢弃前文。
+- didClose 原子地移除 overlay，之后的 snapshot 输入回退 disk；save 不强制删除 overlay，直到磁盘确认文本与 overlay 相同。
+- overlay 只交给最近祖先 VaultSession；跨 vault request 必须被拒绝或返回 empty，而不是凭显示路径猜测。
+- analysis candidate 只从一次 captured source set 构造，禁止阶段自行读盘；失败保留上一个可用 snapshot。
+
+=== rebuild、latest-wins 与 snapshot pinning
+
+输入提交后调度器只保留每 vault 最新 pending batch。构建流程为：
+
+```text
+input event -> generation N
+  -> capture overlays + disk catalog + config
+  -> build candidate outside state lock
+  -> candidate snapshot {generation N, revision R}
+  -> publish only if N == latest_requested_generation
+  -> compute Delta(previous, current)
+  -> publish affected diagnostics
+```
+
+旧构建即使更晚结束也不能覆盖新 generation；取消旧构建是优化，不是正确性条件。request 开始时 pin 当前 `SnapshotHandle`，整个 query 使用其中的 source、LineIndex、range 和 semantic index。返回结果带同一 `SnapshotStamp`。如果 request 是 position-based，先在 pinned source 的 LineIndex 中把 UTF-16 转成 byte offset；不得拿新 snapshot 的 LineIndex 转换旧结果。发布前检查：请求未取消、session 仍存在、request 的 expected document version/generation 仍允许发布、结果 stamp 仍是当前可接受状态。对于 hover/completion 等交互结果，默认 latest-wins 丢弃旧结果；definition/references 可按协议返回旧 pinned 结果，但不允许冒充 current。
+
+=== cancellation
+
+`$/cancelRequest` 找到 `RequestKey` 的 cooperative `CancellationToken`，并传入 service/analysis/query。analysis 的长循环在 source、module、symbol、reference、search 批次边界检查 token；daemon transport 将同一 token 映射到 CoreRequest cancel handle；连接断开统一取消并释放 view lease。取消返回后不得再发布 response、completion resolve 或 diagnostics。不能把“结果已算完后改成 canceled”称为真正取消。
+
+=== diagnostics 发布
+
+每次成功发布 snapshot，先用 `WorkspaceDelta.changed_diagnostics` 得到受影响 path，再一次查询/携带该 snapshot 的 diagnostics map；不应每 path 重复请求全量 diagnostics。对变更文件发布完整集合，对被删除或不再诊断的旧 path 发布空数组。发布消息包含 stamp 关联的 document version（若可用）、正确 severity、稳定 code、source、range 和 related information。publish 队列也遵守 generation latest-wins：旧 snapshot diagnostics 不能覆盖新集合。
+
+=== 生产级基线（对照 LSP 3.17 与 rust-analyzer/gopls）
+
+以下是本设计对齐的生产级标准，来源为 LSP 3.17 规范与主流实现（rust-analyzer、gopls）的公开架构文档：
+
+- 取消语义：规范要求被取消的请求仍必须返回响应（可返回部分结果），错误时建议 `RequestCancelled (-32800)`。rust-analyzer 用 `ContentModified (-32801)` 表示“请求所基于的快照已过期，客户端应重试”，用 `ServerCancelled` + `retrigger_request` 处理 pull 诊断中断。本设计的对应取舍：取消传播后请求返回 `RequestCancelled`；发布前 stamp 检查失败的 notification 型结果静默丢弃；未来如需让客户端重试语义请求，可返回 `ContentModified`。
+- 编码协商：server 必须回显从 client `general.positionEncodings` 中选定的编码；client 未提供时只允许 utf-16，缺省 utf-16。内部坐标是 UTF-8 byte offset，因此当 client 提供 `utf-8` 时应优先选定它以消除转换层；否则退回 UTF-16 并依赖 LineIndex 双向转换。
+- 文本同步：生产服务器普遍采用增量 sync（rust-analyzer 仅支持增量）。本设计保留 FULL sync 作为近期契约，但必须严格执行“恰好一个无 range change”，并保留未来按 capability 协商增量的空间；增量化是纯 adapter 层改动。
+- 文件监视：3.17 支持 relative pattern 的客户端 watcher 注册（`workspace/didChangeWatchedFiles`）。服务端对整个 workspace 做无过滤递归 watch 是反模式：应优先把过滤推给客户端 glob，服务端 watcher 只作 fallback 并带 path filter 与去重。
+- 诊断节奏：gopls 分层——解析/类型级轻量诊断在每次编辑后数十 ms 内更新，全工作区深度分析在 idle 后（默认约 250ms debounce）批量进行；3.17 的 pull 模型存在但 push 仍是默认。本设计对应：overlay 提交即时触发轻量 rebuild，语义诊断走 generation 调度 + delta 批量发布，不追求 pull 模型。
+- 线程模型：rust-analyzer 模式——单一主循环是唯一 mutator，notification 在主循环内同步处理状态变更，请求通过不可变 snapshot（`GlobalStateSnapshot`）投递到 threadpool，latency-sensitive（completion/hover）与 worker 任务分池。本设计的 `LspSession` 事件循环与此同构。
+- 错误码卫生：未知方法用 `MethodNotFound`，参数解析失败才用 `InvalidParams`，服务器内部故障用 `InternalError`，取消用 `RequestCancelled`；当前一律 `InvalidParams` 的做法必须移除。（已落地：参数解码失败保持 `InvalidParams`，handler/service 失败映射 `InternalError`，未知方法 `MethodNotFound`。）
+
+== 四、统一语义索引与 LSP 查询
+
+
+=== SymbolId、定义、引用与坐标
+
+在 analysis snapshot 内建立一个完整的 `SemanticIndex`，所有 query 只消费它：
+
+```text
+SymbolId = ModuleId
+          | ExplicitScopeId { module_id, id }
+          | Local { module_id, local_id }
+
+SymbolDefinition { symbol_id, kind, name, file_id, byte_range, container, detail }
+SymbolReference { symbol_id, kind, file_id, byte_range, context }
+SnapshotLocation { stamp, file_id, byte_range, symbol_id? }
+```
+
+`FileId`/`ModuleId` 在 VaultEngine 生命周期内稳定；显式 scope id 与标题默认 id 是可引用的文档身份；无 id 的普通节点只能有 `SnapshotNodeId { revision, file_id, local_id }`，不能用相同 byte range 假装跨 revision 稳定（[[vault::designs::host::analyzer-snapshot#身份分为稳定身份与 Snapshot-local 身份]])。任何 protocol result 都同时带 snapshot stamp，adapter 不再拼接来自不同 query 的 path/range。
+
+扩展 `SymbolKind` 至 Function、Parameter、Let、LambdaParameter、ImportBinding、Module、ExplicitElement、Heading、PluginCall。Module/ExplicitElement 的 identity 由 module graph/id resolver 提供；local identity 由单一 lexical binder 分配。definition/reference 的范围来自 syntax source facts；heading 默认 id 若由 evaluated tree 得到，也必须在同一 candidate 中保留原始 source range。
+
+=== DocumentSymbol
+
+Document outline 是 snapshot query，不是 adapter 遍历 HTML/tree。它合并同一文件的：
+
+- `= Heading` 和显式 `#heading[...]`：name 用标题文本，range 覆盖整个 heading，selection range 指向标题/表达式；按 heading level 建真正 parent/children；
+- 显式 id 元素：使用 id 的 source range 和 stable `ExplicitScopeId`；
+- user function 与 parameter：function 为 container，参数可作为 children 或仅作为 semantic index symbol，需固定协议投影；
+- let 与 lambda/local binding：按 lexical container 挂载，避免把局部变量误投影成 workspace symbol；
+- plugin call：只有 syntax 上真实存在的 call 且 schema 可识别时提供 detail/kind；未知 call 保留为语法元素或不进入语义 symbol，不能因 eval 未注册而制造虚假 definition；
+- fenced raw 内的示例 heading 不进入 outline。
+
+当前 `document_symbols()` 只从 shaped tree 收集 `core::heading`，并按结果顺序分配 local id，level 没有形成真正层级（`crates/notist-analysis/src/lib.rs:1595-1605,3284-3323`），应重写为 index-backed tree。
+
+=== Workspace symbol
+
+Workspace symbol 是跨文件、稳定身份的发现索引，默认只包含 Module、显式 scope id、标题默认 id、顶层函数；不包含参数、局部 let、临时 plugin call。每项带 `SymbolId`、module/path、source range、container 和 snapshot stamp，按稳定 key 排序并支持 bounded query。当前位置转换把有 file_id 支撑的模块（含 README-backed 目录模块）映射成 `TextRange::new(0,0)` 假位置，纯虚拟模块（`file_id: None`）则被直接丢成无结果（`crates/notist-analysis/src/lib.rs:1216-1229,1399-1407`）。目标契约：source-backed 模块返回真实 range，纯虚拟模块只返回逻辑对象；两者都不伪造坐标（[[vault::designs::host::lsp-adapter]])。
+
+当前 workspace symbols 只包含 module、显式 label 和 heading default id（`lib.rs:1607-1669`），函数和变量缺失；应由 SemanticIndex 的 symbol table 统一供给，而不是显示名称搜索。
+
+=== completion
+
+completion 先由 syntax context 判定 replace range，再从同一 snapshot 的 semantic environment 产生 candidates：
+
+- `[[...]]`：ModulePath、显式 id、heading default id；
+- `vault::`、`self::`、`super::`：合法 module segment；
+- `#`：可达 lexical binding、import binding、内置构造器、已声明 plugin schema；
+- call arguments：参数名、类型/default/trailing 信息，且只补当前 call 的真实签名；
+- attributes：已知 attribute key；
+- let/function scope：当前 lexical environment 中可见的 binding，禁止泄漏兄弟/外层错误 scope。
+
+每个 candidate 返回 label、insert text、kind、documentation、replacement byte range 与 stamp；adapter 用 pinned source LineIndex 转换 range。现有 completion 覆盖参数、wiki module/label、function signature、attribute key，却不提供 lexical/imported binding（`crates/notist-analysis/src/lib.rs:1778-1939`）。
+
+=== hover
+
+hover 使用 `symbol_at` 统一解析 Local/Module/ExplicitScopeId/Heading/PluginCall，再从同一 snapshot 取得签名、类型、逻辑路径、source path、定义位置和可选纯预览。未知 plugin call 可显示 schema/unknown，不执行外部副作用。hover range 必须来自 pinned source 的 byte range，经同一 LineIndex 转 UTF-16；不能使用另一个 snapshot 的 source。
+
+=== definition 与 references
+
+definition：
+
+- local function/parameter/let/import binding 返回唯一 `SymbolDefinition`；
+- Module 返回 source-backed 文件位置，virtual Module 仅返回逻辑对象，不伪造文件；
+- explicit id/heading default id 返回对应元素的 source range；
+- external URL 没有本地 definition。
+
+references：按 `SymbolId` 反向索引返回全部 `SymbolReference`，可选包含 definition；module reference、explicit label reference 与 lexical name reference 不能按显示文本混合。跨 Vault 不查询。每个 location 都来自同一 stamp，批量结果遵守 query contract 的 bounded page/cursor/fingerprint。
+
+当前 `symbol_at`/`symbol_locations_at` 已经按 Local、Module、Annotation 分流（`crates/notist-analysis/src/lib.rs:1133-1275`），但 Local 只覆盖函数/参数；`ExpressionKind::Let` 只检查 value，不注册 let 名称，lambda 也没有参数 definition（`crates/notist-analysis/src/check.rs:222-225,236-268`）。这正是应合并 resolver/checker 的重建入口。注意词法绑定逻辑实际存在三份：resolver 的 scope 栈（check.rs）、checker 的类型化 scope 栈（check.rs）、eval lower 阶段又维护一份自己的 `variables` 作用域（notist-eval/stream_lower）。SemanticIndex 重建时必须同时交代 eval 侧的归属——lower 可以继续持有自己的执行栈，但其绑定结果应能对回 SemanticIndex 的 `SymbolId`。
+
+=== syntax/eval/plugin call 边界
+
+`notist-syntax` 保持 AST、恢复性语法错误、Call/Name/Let/Lambda/Import/LetFunction 及 source ranges；应增加覆盖所有 expression child 的单一 walker，避免 Parse visitor、checker、resolver 各自漏遍历。`notist-analysis` 负责 module graph、lexical binding、semantic index、reference resolution、typed HIR 和 snapshot query；不负责重新定义 parser 规则。
+
+`notist-eval` 保持 parse → lower → reduce → shape 的 call forest pipeline（`crates/notist-eval/src/lib.rs:126-157`）。未注册 call 保留 data call（`stream_lower.rs:402-471`），这应成为 LSP 的安全降级边界。LSP 普通请求只消费 snapshot-captured schema/typed HIR；真正 plugin instance/reload 仅由 preview/build/runtime projection service 触发。`structured_module()` 当前重新加载插件（`crates/notist-analysis/src/lib.rs:1545-1584`），应拆为“snapshot 内受控静态结构结果”和“明确请求的 runtime projection”。
+
+== 五、模块责任与应拆除的旧路径
+
+=== 保留并收敛
+
+- `notist-syntax`：语法树和 source range 真相；补全 walker。
+- `notist-eval`：call forest reduction/shape；隔离 runtime plugin execution。
+- `notist-analysis`：以 immutable snapshot 为中心，但拆出 `semantic`、`module_graph`、`query` 子模块。
+- `notist-service`：VaultEngine/View 生命周期、snapshot build/publish、daemon cancellation/lease、批量 query transport。
+
+=== 重写或拆除
+
+- `crates/notist-cli/src/lsp.rs` 中的 `Arc<RwLock<ServerState>>` 全局状态、request clone、notification 内同步 rebuild：由 `LspSession` 事件循环和每 Vault scheduler 替代。
+- `RemoteVault` 对 `Arc<Mutex<LocalNotistClient>>` 的串行 request 入口：改为并发安全的 pinned snapshot/query handle；只在 service 内部保护可变 publication state。
+- LSP 自己的 workspace watcher 与 service watcher 的重复触发：统一由 service 产生 input event/delta，LSP 只订阅；若必须保留 LSP watcher，必须带 path filter 和 generation 去重。
+- 逐路径 `Diagnostics` CoreRequest：改为 snapshot 批量 diagnostics map + delta publication。
+- adapter 内独立 `LineIndex`/Sources 依赖：坐标转换 API 放在 snapshot source coordinate table，禁止跨 snapshot 调用。
+- 当前 analysis 中分裂的 semantic resolver 与 checker binder：合并为共享 lexical semantic index；checker 可继续消费它而不是复制绑定逻辑。
+- query-time `structured_module` 的 implicit plugin reload：拆成受控静态查询与显式 runtime projection。
+
+LSP adapter 只负责协议形状、URI、FULL sync、UTF-16 projection、cancel routing、scheduler admission 和 diagnostics publication。它不重建 module graph、不按显示文本搜索、不运行插件、不自行推导 heading hierarchy。
+
+== 六、UTF-16/UTF-8 与 snapshot 契约
+
+内部唯一文本坐标是 UTF-8 byte offset；LSP 协商编码是 `PositionEncodingKind`，默认/兼容 UTF-16。`LineIndex` 必须提供：
+
+```text
+byte_offset -> (line, utf16_column)
+(line, utf16_column) -> byte_offset
+byte_range -> lsp_range
+lsp_range -> byte_range
+```
+
+转换必须拒绝越界、非 UTF-8 boundary、UTF-16 surrogate 中间位置和不属于该 source 的 range；CRLF、中文、emoji、组合字符、EOF 都纳入测试。range 的 source fingerprint/stamp 必须和转换使用的 source 相同。禁止先在 snapshot N 得到 byte range，再用 snapshot N+1 的文本或 LineIndex 转换；禁止以 LSP UTF-16 offset 进入 analysis；禁止 adapter 通过重新读磁盘补坐标。
+
+建议让 `SourceCoordinateTable` 与 `SourceInput` 同属 `SnapshotHandle`，API 形如 `snapshot.position(file_id, byte_range)` 和 `snapshot.offset(file_id, position)`，而不是暴露可脱离 snapshot 的 `LineIndex`。结果序列化前做 stamp assertion，作为防止混合 revision 的运行时护栏。
+
+== 七、迁移路线、不变量与验收
+
+=== 阶段 A：冻结契约与观测
+
+其中不依赖 session 重建的契约止血——severity 透传、单请求批量 diagnostics、URI 多级新文件、FULL sync 单 change 校验、初始 diagnostics 发布、CloseView 失败日志、错误码区分（InvalidParams/InternalError）、didChange 版本回退拒绝——已于 2026-08-25 在现有 `lsp.rs` 内落地；它们是 adapter 局部修复，不是终局，也不解除对阶段 C 的需求。其余部分：记录 request id、document version、input generation、snapshot stamp、等待锁时间、build/query 时间和丢弃原因。补测试锁定 FULL sync 单 change、URI 多级新文件、severity 映射、初始 diagnostics、旧结果不发布。阶段不变量：现有 CLI/LSP 行为不因观测改变；任何 response location 可追溯至一个 snapshot。
+
+=== 阶段 B：独立 SnapshotHandle 与坐标表
+
+在 service/analysis 暴露带 stamp 的 immutable handle 和 snapshot-bound position API；LSP 去除 `Sources` 仅为转换而返回的旁路依赖。先迁移 diagnostics、hover、definition、references，再迁移 completion/symbol。阶段不变量：每个返回 range 与 stamp 同源；跨 snapshot 转换在类型/API 层不可表达或显式报错。
+
+=== 阶段 C：重建 LSP session/scheduler
+
+其中 adapter 级核心已于 2026-08-25 在 `lsp.rs` 落地：主循环独占的 `LspSession` 取代 `Arc<RwLock<ServerState>>`；进程内事件总线（`SessionEvent`：protocol/build/workspace-changed）作为主循环唯一收件箱，修复了 watcher 自通知发往客户端出站流导致磁盘变更永不触发 rebuild 的生产 bug；单一后台 builder 执行 vault 发现/UpdateView/Sources/CloseView，in-flight 期间新输入只置 dirty 标记并在完成后按最新输入重提交（latest-wins 合并），diagnostics 发布由 build outcome 驱动；有界请求线程池取代每请求一线程，worker 只捕获轻量 `RequestContext`（Arc 句柄），不再 clone 全量状态。尚未完成：daemon 连接的请求多路复用与在途取消（embedded 路径的 client mutex 串行已消除、取消已真实传播进 `NotistService::execute_cancellable`）、CloseView 与在途请求的 lease 失效传播。
+
+=== 阶段 D：统一 SemanticIndex
+
+已落地子集（2026-08-25）：resolver 补齐 `Let`、`LambdaParameter`、`ImportBinding` 身份与 range，块级作用域、文档级根作用域、let-function 自引用复用同一 Function 身份，call 解析走完整词法链（let 绑定的 lambda、import 别名可直接被调用并解析）；hover 对新种类渲染签名。剩余：checker 与 resolver 的词法环境合并、completion 消费 lexical environment、heading/explicit id/plugin schema 进入 SemanticIndex、eval lower 栈对回 `SymbolId`。
+
+剩余目标与阶段不变量不变：request 捕获 snapshot handle，取消 token 贯穿 service/daemon/analysis；旧 candidate 不能覆盖新 candidate；旧 request 不能关闭或使用已失效 view；同 vault 没有无界 OS thread 和隐式 client mutex 串行。
+
+=== 阶段 D：统一 SemanticIndex
+
+实现完整 syntax walker，合并 resolver/checker 的 lexical environment，补 Let、LambdaParameter、ImportBinding、heading/explicit id、顶层 function 和 plugin schema 的 identity/range。以它重写 definition/references/hover/completion/document/workspace symbols。阶段不变量：同一 SymbolId 的定义、引用、hover、completion documentation 均来自同一 snapshot；显示名称变化不会把不同 symbol 合并。
+
+=== 阶段 E：diagnostics delta 与安全 eval
+
+把 diagnostics 改为批量 snapshot query + WorkspaceDelta；修复 severity/related information；拆除 LSP 路径的 runtime plugin reload。阶段不变量：每次 current snapshot 更新后受影响文件得到完整集合，消失诊断得到空集合；普通 LSP query 不执行外部副作用插件。
+
+=== 阶段 E：diagnostics delta 与安全 eval
+
+已落地（2026-08-25）：severity 透传（阶段 A）、单请求批量 diagnostics + 内容签名 delta 发布（未变化不重发、消失路径发一次空集）、`structured_module` 拆分为 snapshot 内静态路径（LSP/check 默认，零磁盘访问与组件重实例化）与 `structured_module_with_runtime_plugins` 显式 projection 路径（render/export 专用）。剩余：related information 与 code 稳定性打磨、daemon 取消映射。
+
+=== 阶段 F：移除旧路径
+
+删除旧 `ServerState` clone、逐 path diagnostics、重复 watcher、adapter 语义遍历和旧 request bridge；保留兼容协议只到迁移完成且有测试证明。不要以历史版本号命名阶段或接口；用日期、feature gate 或 protocol capability 标识实际迁移状态。
+
+=== 测试矩阵
+
+- 协议：initialize 多 workspace folder、无 root、能力协商 UTF-16/UTF-8、FULL sync 单 change/非法多 change、didOpen/change/save/close 顺序。
+- 路径：空格、CJK、`#`、`%`、emoji、symlink、nested Vault、未存在多级 parent、URI round-trip。
+- 坐标：ASCII、中文、emoji surrogate、组合字符、CRLF、EOF、非法 boundary、range 属于错误 source/snapshot。
+- 并发：快速连续 didChange 的 latest-wins；build 完成逆序；request 与 close/rebuild race；cancel 在 parse、index、query、IPC 等阶段；断开释放 lease。
+- snapshot：旧 snapshot query 稳定；stamp/fingerprint mismatch；旧 diagnostics 不覆盖新 diagnostics；disk watcher 与 overlay 事件收敛。
+- 语义：函数/参数/let/lambda/import definition/reference/hover；shadowing；heading hierarchy/default id/duplicate id；explicit id；virtual module；unknown/known plugin call；fenced raw 排除。
+- 结果：DocumentSymbol parent/children、workspace symbol bounded paging、completion replacement range、references 稳定排序、severity/code/related information。
+- 回归：现有 `crates/notist-cli` LSP memory Connection 测试、`notist-service` snapshot/transport 测试、analysis 旧 snapshot 测试和 `notist check`。
+
+=== 性能与并发验收标准
+
+- didChange 高频输入时主事件循环不执行同步全量 build；只保留每 vault 最新 pending generation。
+- build 不持 publication lock；读请求不因候选 build 阻塞；current snapshot 读取是短临界区的 Arc clone。
+- 同一 vault 的独立 pinned read queries 可并行；只有输入提交与 current pointer publication 串行。
+- 取消应在昂贵循环的有限边界内生效，并测量从 cancel 到 worker 停止的尾延迟；取消不产生晚到响应。
+- 连续变更只发布最终仍最新的 snapshot diagnostics；重复磁盘事件不造成重复 rebuild。
+- 以基准记录 p50/p95：输入提交到 current publish、completion/hover/definition 响应、diagnostics publish、内存中的并发 pinned snapshot 数；验收时对比旧实现并设置仓库可接受阈值，而非凭感觉宣称更快。
+- 负载测试覆盖大 source 数、长文档、多同时 request 和 32 核但约 29GB 内存限制；编译/测试使用 `cargo test -j4 -- --test-threads=4`，避免测试运行期默认开满线程。
+
+== 八、路线对比与推荐
+
+=== 渐进修补
+
+优点是 diff 小、短期风险低：可先批量 diagnostics、加入 generation、传递 cancel、修 severity、替换 state clone。缺点是 `lsp.rs` 仍同时承担 session、vault discovery、overlay、rebuild、transport、坐标投影和语义投影；`Arc<Mutex<LocalNotistClient>>`、全局写锁和旧 view 生命周期会继续互相约束。补丁很容易把 snapshot identity 继续留在 service 内部，最终仍不能证明一个 response 的所有 range 同属同一 revision。它适合阶段 A 的止血和观测，不适合作为终局。
+
+=== 重建 LSP session/query 层（推荐）
+
+保留已有 analysis snapshot、VaultEngine、syntax/eval 事实，把 LSP adapter 和 query facade 重新按 ownership 建模。代价是需要一次明确的接口迁移、重写 concurrency tests，并暂时维护旧协议桥接；收益是能把 generation、snapshot pinning、cancel、latest-wins、diagnostics delta 设为结构性不变量，而不是散落的 if 判断。同时 SemanticIndex 的补齐可以在不重写 parser/eval 核心的前提下完成。
+
+推荐理由：现有主要风险不是某个 LSP handler 的错误，而是请求生命周期与 snapshot 生命周期没有共同身份；并且当前语义索引与 checker 分裂，导致 DocumentSymbol、workspace symbol、completion、definition、references 不可能通过 adapter 小修获得统一语义。应采用“先契约与 handle、再 session scheduler、再 semantic index、最后删除旧桥接”的迁移顺序，避免一次性重写所有语言实现，也避免继续把屎山扩大。
+
+== 相关实现证据索引
+
+- LSP 主循环、状态、overlay、rebuild、坐标：`crates/notist-cli/src/lsp.rs:55-175,230-261,320-442,571-855`。
+- embedded/daemon client 与 LocalNotistClient：`crates/notist-cli/src/service.rs:13-145,268-297`。
+- service SnapshotIdentity、view、watcher、snapshot capture：`crates/notist-service/src/lib.rs:59-89,175-329`。
+- Core request overlay、diagnostics、semantic query：`crates/notist-service/src/request.rs:845-897,985-1270`。
+- daemon transport cancellation/lease：`crates/notist-service/src/transport.rs:249-373`。
+- analysis 身份原语（FileId/ModuleId/Revision/SnapshotNodeId）、snapshot query 面：`crates/notist-analysis/src/lib.rs:30-177,912-1988`；AnalyzerView publish/build_candidate 机制：`lib.rs:2734-2916`（测试从 ~3722 起，旧快照语义测试在 `4416-4469`）。
+- semantic resolver 的当前 Function/Parameter 边界：`crates/notist-analysis/src/check.rs:80-279`。
+- syntax expression/call 边界与私有 visitor 局限：`crates/notist-syntax/src/argument.rs:16-121`、`crates/notist-syntax/src/lib.rs:173-379`、`crates/notist-syntax/src/parser.rs:1432-1479`。
+- eval lower/reduce/shape 与未知 plugin call：`crates/notist-eval/src/lib.rs:126-157`、`stream_lower.rs:402-541`。
