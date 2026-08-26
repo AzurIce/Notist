@@ -88,6 +88,16 @@ pub enum CoreRequest {
         module: String,
         include_definition: bool,
     },
+    /// Document-level references without position ambiguity: resolves the
+    /// module owning `path` and returns every resolved reference to/from it
+    /// (consumed by the obsidian-notist backlinks/outgoing panels; the
+    /// `textDocument/references` position contract cannot express this).
+    DocumentReferences {
+        view_id: ServiceViewId,
+        path: PathBuf,
+        direction: crate::query::ReferenceDirection,
+        include_definition: bool,
+    },
     Completion {
         view_id: ServiceViewId,
         path: PathBuf,
@@ -189,6 +199,7 @@ impl CoreRequest {
             | Self::DefinitionLocation { view_id, .. }
             | Self::References { view_id, .. }
             | Self::ReferencesTo { view_id, .. }
+            | Self::DocumentReferences { view_id, .. }
             | Self::Completion { view_id, .. }
             | Self::Hover { view_id, .. }
             | Self::DocumentSymbols { view_id, .. }
@@ -356,6 +367,7 @@ pub enum CoreResponse {
     Definition(Option<LocationRecord>),
     DefinitionLocation(Option<crate::query::Location>),
     References(Vec<LocationRecord>),
+    DocumentReferences(DocumentReferencesResult),
     Completion(Vec<CompletionRecord>),
     Hover(Option<HoverRecord>),
     DocumentSymbols(Vec<DocumentSymbolRecord>),
@@ -501,6 +513,33 @@ pub struct LocationRecord {
     pub source: String,
     pub range: ByteRange,
     pub is_definition: bool,
+}
+
+/// One occurrence in a `DocumentReferences` result: a reference to or from
+/// the queried module, plus its resolved target identity. Ranges are
+/// byte-based here; LSP clients convert them via each document's line index.
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct DocumentReferenceItem {
+    /// Source document of the occurrence.
+    pub path: PathBuf,
+    /// Byte range of the occurrence inside `path` (definition: module head).
+    pub range: ByteRange,
+    /// "incoming" | "outgoing" relative to the queried module.
+    pub direction: String,
+    pub source_module: String,
+    pub target_module: String,
+    pub target_label: Option<String>,
+    /// Outgoing only: "module" | "scope" | "resource".
+    pub target_kind: Option<String>,
+    pub url: Option<String>,
+    pub is_definition: bool,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct DocumentReferencesResult {
+    /// Snapshot revision that produced these records (freshness gating).
+    pub revision: u64,
+    pub items: Vec<DocumentReferenceItem>,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -1202,6 +1241,109 @@ impl NotistService {
                 Ok(CoreReply {
                     snapshot,
                     response: CoreResponse::References(references),
+                })
+            }
+            CoreRequest::DocumentReferences {
+                view_id,
+                path,
+                direction,
+                include_definition,
+            } => {
+                let (snapshot, result) = self.with_snapshot(view_id, |workspace| {
+                    let mut items = Vec::new();
+                    if let Some(file_id) = workspace.file_id(&path)
+                        && let Some(module) =
+                            workspace.modules().find(|candidate| candidate.file_id == Some(file_id))
+                    {
+                        // Definition marker (module head); only meaningful
+                        // for reference-to-module consumers.
+                        if include_definition
+                            && matches!(
+                                direction,
+                                crate::query::ReferenceDirection::Incoming
+                                    | crate::query::ReferenceDirection::Both
+                            )
+                        {
+                            items.push(DocumentReferenceItem {
+                                path: path.clone(),
+                                range: TextRange::new(0, 0).into(),
+                                direction: "incoming".into(),
+                                source_module: module.logical_path.to_string(),
+                                target_module: module.logical_path.to_string(),
+                                target_label: None,
+                                target_kind: None,
+                                url: None,
+                                is_definition: true,
+                            });
+                        }
+                        if matches!(
+                            direction,
+                            crate::query::ReferenceDirection::Incoming
+                                | crate::query::ReferenceDirection::Both
+                        ) {
+                            for reference in workspace.references_to(module.id) {
+                                let Some(source) = workspace.source(reference.source_file_id)
+                                else {
+                                    continue;
+                                };
+                                items.push(DocumentReferenceItem {
+                                    path: source.canonical_path.clone(),
+                                    range: reference.range.into(),
+                                    direction: "incoming".into(),
+                                    source_module: reference.source_module.to_string(),
+                                    target_module: reference.target_module.to_string(),
+                                    target_label: reference.target_label.clone(),
+                                    target_kind: None,
+                                    url: Some(reference.url.clone()),
+                                    is_definition: false,
+                                });
+                            }
+                        }
+                        if matches!(
+                            direction,
+                            crate::query::ReferenceDirection::Outgoing
+                                | crate::query::ReferenceDirection::Both
+                        ) {
+                            for reference in workspace.references().iter().filter(|reference| {
+                                reference.source_module_id == module.id
+                            }) {
+                                let Some(source) = workspace.source(reference.source_file_id)
+                                else {
+                                    continue;
+                                };
+                                let target_kind =
+                                    reference.target_label.as_deref().map_or("module", |label| {
+                                        match workspace
+                                            .resolve_module_label(&reference.target_module, label)
+                                        {
+                                            notist_analysis::RefTarget::Resource { .. } => {
+                                                "resource"
+                                            }
+                                            _ => "scope",
+                                        }
+                                    });
+                                items.push(DocumentReferenceItem {
+                                    path: source.canonical_path.clone(),
+                                    range: reference.range.into(),
+                                    direction: "outgoing".into(),
+                                    source_module: module.logical_path.to_string(),
+                                    target_module: reference.target_module.to_string(),
+                                    target_label: reference.target_label.clone(),
+                                    target_kind: Some(target_kind.into()),
+                                    url: Some(reference.url.clone()),
+                                    is_definition: false,
+                                });
+                            }
+                        }
+                    }
+                    DocumentReferencesResult {
+                        revision: workspace.revision().raw(),
+                        items,
+                    }
+                })?;
+                Ok(CoreReply {
+                    snapshot,
+                    response: CoreResponse::DocumentReferences(result),
                 })
             }
             CoreRequest::Completion {

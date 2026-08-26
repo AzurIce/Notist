@@ -26,8 +26,8 @@ use lsp_types::{
     HoverProviderCapability, InitializeParams, Location, LogMessageParams, MarkupContent,
     MarkupKind, MessageType, NumberOrString, OneOf, Position, PositionEncodingKind,
     PublishDiagnosticsParams, Range, ReferenceParams, ServerCapabilities, SymbolKind,
-    TextDocumentSyncCapability, TextDocumentSyncKind, TextEdit, Uri, WorkspaceSymbolParams,
-    WorkspaceSymbolResponse,
+    TextDocumentIdentifier, TextDocumentSyncCapability, TextDocumentSyncKind, TextEdit, Uri,
+    WorkspaceSymbolParams, WorkspaceSymbolResponse,
 };
 use notist_analysis::{LineIndex, discover_vault_roots};
 use notist_model::TextRange;
@@ -93,6 +93,16 @@ fn server_capabilities() -> ServerCapabilities {
         references_provider: Some(OneOf::Left(true)),
         document_symbol_provider: Some(OneOf::Left(true)),
         workspace_symbol_provider: Some(OneOf::Left(true)),
+        // Obsidian-notist panels consume this experimental extension (the
+        // design ruling: module-level references need a module selector, not
+        // a position). Contract documented in the plugin's session header.
+        experimental: Some(serde_json::json!({
+            "notist": {
+                "documentReferences": {
+                    "directions": ["incoming", "outgoing", "both"]
+                }
+            }
+        })),
         ..ServerCapabilities::default()
     }
 }
@@ -395,6 +405,16 @@ fn handle_request(context: &RequestContext, request: Request, cancelled: &Atomic
             .map_err(|message| (ErrorCode::InvalidParams, message))
             .and_then(|params: WorkspaceSymbolParams| {
                 workspace_symbols(context, params, cancelled)
+                    .map_err(|message| (ErrorCode::InternalError, message))
+                    .and_then(|value| {
+                        to_json(value)
+                            .map_err(|error| (ErrorCode::InternalError, error.to_string()))
+                    })
+            }),
+        DOCUMENT_REFERENCES_METHOD => parse_params(request.params)
+            .map_err(|message| (ErrorCode::InvalidParams, message))
+            .and_then(|params: DocumentReferencesParams| {
+                document_references(context, params, cancelled)
                     .map_err(|message| (ErrorCode::InternalError, message))
                     .and_then(|value| {
                         to_json(value)
@@ -992,6 +1012,96 @@ fn workspace_symbols(
     }
     symbols.sort_by(|left, right| left.name.cmp(&right.name));
     Ok(Some(WorkspaceSymbolResponse::Flat(symbols)))
+}
+
+/// Experimental method name for module-level document references; declared
+/// under `capabilities.experimental.notist.documentReferences`.
+const DOCUMENT_REFERENCES_METHOD: &str = "notist/documentReferences";
+
+#[derive(serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct DocumentReferencesParams {
+    text_document: TextDocumentIdentifier,
+    /// "incoming" | "outgoing" | "both"; defaults to incoming.
+    direction: Option<String>,
+    #[serde(default)]
+    include_definition: bool,
+}
+
+#[derive(serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+struct LspDocumentReferenceItem {
+    uri: Uri,
+    range: Range,
+    direction: String,
+    source_module: String,
+    target_module: String,
+    target_label: Option<String>,
+    target_kind: Option<String>,
+    url: Option<String>,
+    is_definition: bool,
+}
+
+#[derive(serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+struct LspDocumentReferencesResult {
+    revision: u64,
+    items: Vec<LspDocumentReferenceItem>,
+}
+
+/// Module-level references by document identity — no position selector, so a
+/// document that opens with a heading resolves to its owning module, not to
+/// the heading symbol (the `textDocument/references` ambiguity).
+fn document_references(
+    context: &RequestContext,
+    params: DocumentReferencesParams,
+    cancelled: &AtomicBool,
+) -> Result<Option<LspDocumentReferencesResult>, String> {
+    let path = normalize_uri_path(&params.text_document.uri).map_err(|error| error.to_string())?;
+    let Some(workspace) = workspace_for_source(context, &path) else {
+        return Ok(None);
+    };
+    let direction = match params.direction.as_deref() {
+        Some("outgoing") => notist_service::query::ReferenceDirection::Outgoing,
+        Some("both") => notist_service::query::ReferenceDirection::Both,
+        _ => notist_service::query::ReferenceDirection::Incoming,
+    };
+    let reply = workspace
+        .cancellable(
+            CoreRequest::DocumentReferences {
+                view_id: workspace.view_id,
+                path: path.clone(),
+                direction,
+                include_definition: params.include_definition,
+            },
+            cancelled,
+        )
+        .map_err(|error| error.to_string())?;
+    let CoreResponse::DocumentReferences(result) = reply.response else {
+        return Err("service returned an unexpected document-references response".into());
+    };
+    let mut items = Vec::with_capacity(result.items.len());
+    for item in result.items {
+        let Some(source) = workspace.sources.get(&item.path) else {
+            continue;
+        };
+        let uri = file_path_to_uri(&item.path)?;
+        items.push(LspDocumentReferenceItem {
+            uri,
+            range: lsp_range(source, item.range.into()),
+            direction: item.direction,
+            source_module: item.source_module,
+            target_module: item.target_module,
+            target_label: item.target_label,
+            target_kind: item.target_kind,
+            url: item.url,
+            is_definition: item.is_definition,
+        });
+    }
+    Ok(Some(LspDocumentReferencesResult {
+        revision: result.revision,
+        items,
+    }))
 }
 
 fn assigned_vault_root<'a>(

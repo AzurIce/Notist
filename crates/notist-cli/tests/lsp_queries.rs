@@ -137,3 +137,64 @@ fn utf16_slice(line: &str, range: lsp_types::Range) -> String {
     assert!(end <= units.len(), "range {range:?} exceeds the line");
     String::from_utf16(&units[start..end]).expect("valid UTF-16 slice")
 }
+
+#[test]
+fn document_references_resolves_modules_without_position_ambiguity() {
+    // `infra.not` opens with a heading, so offset 0 lands on the heading
+    // symbol: this is exactly the case `textDocument/references` cannot
+    // express (it returns null for the module), and the reason the
+    // experimental document-level method takes the path as the selector.
+    let vault = Vault::new(&[("infra.not", "# Infra\n"), ("README.not", "see #<infra> here\n")]);
+    let infra = vault.uri("infra.not");
+    let readme = vault.uri("README.not");
+    let mut client = Client::spawn(&vault);
+    client.initialize(&vault);
+    client.expect_diagnostics(&readme, |_| true, "the baseline push");
+
+    let incoming_id = client.request(
+        "notist/documentReferences",
+        json!({
+            "textDocument": {"uri": infra},
+            "direction": "incoming"
+        }),
+    );
+    let incoming = common::ok_result(client.await_response(incoming_id));
+    assert!(incoming["revision"].is_u64(), "revision is a freshness gate");
+    let items = incoming["items"].as_array().expect("items array");
+    assert_eq!(items.len(), 1, "one incoming occurrence, no definition marker");
+    assert_eq!(items[0]["direction"], "incoming");
+    assert_eq!(items[0]["targetModule"], "vault::infra");
+    assert_eq!(items[0]["uri"].as_str().expect("uri"), readme);
+    assert_eq!(items[0]["isDefinition"], false);
+
+    let both_id = client.request(
+        "notist/documentReferences",
+        json!({
+            "textDocument": {"uri": readme},
+            "direction": "both",
+            "includeDefinition": true
+        }),
+    );
+    let both = common::ok_result(client.await_response(both_id));
+    let items = both["items"].as_array().expect("items array");
+    let outgoing = items
+        .iter()
+        .find(|item| item["direction"] == "outgoing")
+        .expect("outgoing occurrence from README");
+    assert_eq!(outgoing["targetModule"], "vault::infra");
+    assert_eq!(outgoing["targetKind"], "module");
+    assert!(outgoing["url"].as_str().expect("raw url").contains("infra"));
+
+    let definition = items
+        .iter()
+        .find(|item| item["isDefinition"] == true)
+        .expect("definition marker with includeDefinition");
+    assert_eq!(
+        definition["uri"].as_str().expect("uri"),
+        readme,
+        "the queried module is README itself"
+    );
+
+    let status = client.shutdown_and_exit();
+    assert_eq!(status.code(), Some(0));
+}
