@@ -7,15 +7,15 @@ obsidian-notist 插件当前的交互契约。实现见 `obsidian-notist` 仓库
 - 入口：ribbon 轨道图标 / 命令 `Toggle world` / 状态栏（点击）。状态持久化在 `data.json`。
 - 切换动作：`getLayout()` 快照当前 World → 切 body class（`md-world`/`notist-world`）→ `changeLayout()` 恢复目标 World 布局。两个 World 的 pane、tab、侧栏物理隔离。
 - 布局保鲜：`layout-change` 防抖 500ms 自动快照当前 World；切换期间抑制事件避免存中间态。
-- 首次进入 Notist World：以当前布局为起点，explorer 自动进左侧栏。
+- 首次进入 Notist World：以当前布局为起点，继续复用当时的原生 Explorer 与侧栏布局。
 
 == 隔离规则
 
-- *文件树*（CSS `data-path` 过滤）：Notist World 只显示 `.not`（文件夹保持可见）；Markdown World 不显示 `.not`。
-- *侧栏*：两个 World *共用原生 file-explorer*，靠 CSS `data-path` 过滤出各自文件——过滤只影响显示，右键菜单/拖拽/删除全部原生可用。「新建笔记」单点 chokepoint：所有入口（头部按钮、右键菜单、命令面板、快捷键）都汇聚到 `FileManager.createNewMarkdownFile`，运行期 patch 它（内部 API，卸载时还原），Notist World 下改建成 `Untitled.not`（自动编号、尊重新建位置设置的父目录），之后由原生 afterCreate 完成打开 + Explorer 内联改名——整条 UX 全原生。*历史教训*：create 事件兜底曾误伤外部 mv 进来的 `.md`（已删除，宁缺毋滥）；DOM 点击拦截与命令 patch 因覆盖不全也被 chokepoint 取代。打开 `.not` 经 view registry 自然进 notist view；view 自带*内联标题输入框*（对齐 inline title，提交走公开 API `fileManager.renameFile`）。两个 CSS/类型坑：① TextFileView 子类字段名不得叫 `titleEl`（遮蔽 ItemView 内建字段，Obsidian 内部 `titleEl.setText` 崩溃、view 打不开）；② 插件样式选择器要压过主题的 `input[type="text"]`（0,1,1 特异性），用 `input.notist-title` 打平并靠加载顺序取胜。自建 `notist-explorer` 保留代码但不再自动打开（命令 `Open Notist explorer` 可手动开），留作以后接 notist-service 模块树的位置。
+- *文件树*（CSS `data-path` 过滤）：Notist World 隐藏 `.md`，保留 `.not` 与图片、Canvas 等资源文件（文件夹保持可见）；Markdown World 不显示 `.not`。
+- *侧栏*：两个 World *只共用原生 file-explorer*，靠 CSS `data-path` 过滤出各自文件——过滤只影响显示，右键菜单/拖拽/删除全部原生可用。「新建笔记」单点 chokepoint：所有入口（头部按钮、右键菜单、命令面板、快捷键）都汇聚到 `FileManager.createNewMarkdownFile`，运行期 patch 它（内部 API，卸载时还原），Notist World 下改建成 `Untitled.not`（自动编号、尊重新建位置设置的父目录），之后由原生 afterCreate 完成打开 + Explorer 内联改名——整条 UX 全原生。*历史教训*：create 事件兜底曾误伤外部 mv 进来的 `.md`（已删除，宁缺毋滥）；DOM 点击拦截与命令 patch 因覆盖不全也被 chokepoint 取代。打开 `.not` 经 view registry 自然进 notist view；view 自带*内联标题输入框*（对齐 inline title，提交走公开 API `fileManager.renameFile`）。两个 CSS/类型坑：① TextFileView 子类字段名不得叫 `titleEl`（遮蔽 ItemView 内建字段，Obsidian 内部 `titleEl.setText` 崩溃、view 打不开）；② 插件样式选择器要压过主题的 `input[type="text"]`（0,1,1 特异性），用 `input.notist-title` 打平并靠加载顺序取胜。实验性的自建 `notist-explorer` 已删除；未来模块树若需要独立语义导航，应作为新能力设计，不能冒充或复制原生文件树。
 - *ribbon*：Notist World 只显示白名单图标（按 aria-label 匹配，设置页可编辑，默认仅切换器）；Markdown World 不动。MutationObserver 跟踪后加载的图标。
-- *标签页*：快照前与恢复后各清理一次异世界 leaf——Markdown World 不允许 `notist-view`/`notist-explorer`，Notist World 不允许 `markdown` 标签。清理即自愈：脏快照恢复出来立刻被摘、重存干净版。
-- *启动兜底*：插件加载时对当前 World 做一次清理。
+- *标签页*：快照前与恢复后各清理一次异世界 leaf——Markdown World 不允许 `notist-view`，Notist World 不允许 `markdown` 标签。清理即自愈：脏快照恢复出来立刻被摘、重存干净版。
+- *启动兜底*：插件加载时对当前 World 做一次清理，并摘除旧版本可能残留的 `notist-explorer` / `notist-diagnostics` 实验 leaf。
 
 == 设计取舍
 

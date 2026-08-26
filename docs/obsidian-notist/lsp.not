@@ -52,6 +52,8 @@ obsidian-notist 插件为 `.not` 编辑器接入 notist LSP 的设计方案。�
 === CM 集成点
 
 - *diagnostics*：`publishDiagnostics` → 按 path 存最新数组 → 对打开中的对应 editor 调 `setDiagnostics(view, ...)`（`@codemirror/lint`），range 直接由 UTF-16 position 换算成 CM offset（`doc.line(line+1).from + character`）。空数组照常应用以清除。注意诊断现在是 delta 推送：启动 baseline 之后只有变化的文件会收到更新，客户端存储必须按 path 累加而不是全量替换。
+- *vault 范围 Problems*：壳层把 per-path diagnostics 镜像聚合到单实例底栏，未打开文件也可见；按文件显示 severity/message/code/line:column，点击打开文件并 reveal range。它不是 ItemView 或 workspace split，而是挂在 `.workspace-split.mod-root` 的可收缩区域，只压缩中间编辑区，不遮挡左右原生侧栏。命令 `Toggle Notist Problems` 与 LSP 状态菜单控制展开/收起，状态栏在 ready 时附带 error/warning 计数。设计与未完成的一致性边界见 #<vault::ai::2026-08-26 obsidian-notist lsp diagnostics design>。
+- *diagnostic 导航*：CM 安装 `lintKeymap`，F8 跳到下一个诊断，Shift-F8 显式绑定上一个诊断；跨文件导航由 Problems 行点击承担。
 - *completion*：`autocompletion()` + 一个 CompletionSource：把 CM offset 换成 LSP position 发请求，server 返回的 `TextEdit`（replacement range + insert text）换算回 CM `from/to` 与 `apply`。trigger characters（`[`、`:`、`#`、`(`、`,`）由 server 声明，CM 侧 `activateOnTyping` 常开即可。过期请求发 `$/cancelRequest`。
 - *hover*：`hoverTooltip` 异步 source，返回 Markdown 内容（server 给的就是 `MarkupKind::Markdown`）——首版渲染为纯文本/简单 DOM 即可，不进 Obsidian 的 MarkdownRenderer（那是 md world 的设施）。
 - *definition*：keymap（F12 / Mod-Click 后续）拿响应 `Location`，跨文件跳转走 `workspace.openLinkText` 或 leaf 打开对应 `.not`；本文件内跳转直接 dispatch 选区。
@@ -71,7 +73,7 @@ obsidian-notist 插件为 `.not` 编辑器接入 notist LSP 的设计方案。�
 2. *completion + hover*：打字体验核心。
 3. *definition 跳转*；references/document symbol/workspace symbol 暂不接 UI——它们与 explorer 模块树、backlinks 面板、graph 同属「语义面板」阶段（#<vault::obsidian-notist> 落地顺序），届时数据源直接复用本方案的 session 层。
 
-*实施状态（2026-08-26）*：1–3 已全部落地并实机验证（diagnostics/completion/hover/definition 一次做完），实现记录与踩坑见 #<vault::ai::2026-08-26 obsidian-notist lsp client implementation>。
+*实施状态（2026-08-27）*：1–3 已全部落地并实机验证；diagnostics 另已补齐全 vault Problems 底栏、状态计数、F8/Shift-F8 与 stop/error/rename/delete 的展示清理。version 门控、session generation 和多 leaf 文本 hash 匹配仍是 partial，见 #<vault::ai::2026-08-26 obsidian-notist lsp diagnostics design>。实现记录与踩坑见 #<vault::ai::2026-08-26 obsidian-notist lsp client implementation>。
 
 == 风险与开放点
 
