@@ -25,6 +25,7 @@ use notist_model::{
 #[cfg(test)]
 use notist_plugin_core as core_plugin;
 use serde::Deserialize;
+use tracing::instrument;
 use wasmtime::component::{Component as WasmComponent, Linker};
 use wasmtime::{Config, Engine, ResourceLimiter, Store};
 use wasmtime_wasi::{ResourceTable, WasiCtx, WasiCtxBuilder, WasiCtxView, WasiView, p2};
@@ -296,6 +297,15 @@ pub fn load_plugins_from_vault(
             }
         };
         let plugin = load_package(&package_dir)?;
+        tracing::debug!(
+            target: "notist_plugin_host",
+            plugin = %plugin.id,
+            version = %plugin.version,
+            functions = plugin.functions.len(),
+            signatures = plugin.signatures.len(),
+            html_contributions = plugin.html_contributions.len(),
+            "plugin package loaded"
+        );
         loaded.push(plugin);
     }
     Ok(loaded)
@@ -434,9 +444,16 @@ fn validate_site_style(style: &str) -> Result<String, String> {
 }
 
 /// Loads one self-describing Wasm component package directory.
+#[instrument(target = "notist_plugin_host", name = "load_package", skip_all, fields(package_dir = %package_dir.display()), err)]
 pub fn load_package(package_dir: &Path) -> Result<LoadedPlugin, String> {
+    let started = std::time::Instant::now();
     let package_dir = resolve_package_dir(package_dir)?;
     let manifest = read_manifest(&package_dir)?;
+    tracing::debug!(
+        target: "notist_plugin_host",
+        package = %manifest.package,
+        "manifest read"
+    );
     let wasm = manifest.wasm.as_ref().ok_or_else(|| {
         format!(
             "plugin `{}` declares no wasm module; packages must ship a self-describing component",
@@ -446,8 +463,17 @@ pub fn load_package(package_dir: &Path) -> Result<LoadedPlugin, String> {
     let wasm_path = package_dir.join(&wasm.module);
     let wasm_bytes = std::fs::read(&wasm_path)
         .map_err(|error| format!("cannot read {}: {error}", wasm_path.display()))?;
+    let compile_started = std::time::Instant::now();
     let (runtime, declarations) =
         load_component_runtime(&manifest.package, &wasm_path, &wasm_bytes)?;
+    tracing::debug!(
+        target: "notist_plugin_host",
+        package = %manifest.package,
+        elapsed_us = compile_started.elapsed().as_micros() as u64,
+        declarations = declarations.len(),
+        bytes = wasm_bytes.len(),
+        "component compiled, instantiated, and guest init completed"
+    );
     let runtime = Arc::new(Mutex::new(runtime));
 
     let mut functions = Vec::new();
@@ -479,6 +505,13 @@ pub fn load_package(package_dir: &Path) -> Result<LoadedPlugin, String> {
         .and_then(|render| render.html.as_ref())
         .map(|html| html.contributions.clone())
         .unwrap_or_default();
+
+    tracing::debug!(
+        target: "notist_plugin_host",
+        package = %manifest.package,
+        elapsed_us = started.elapsed().as_micros() as u64,
+        "load_package complete"
+    );
 
     Ok(LoadedPlugin {
         id: manifest.package.clone(),
@@ -704,11 +737,17 @@ fn run_component_init(
         )
     })?;
     let payload = bindings
-        .call_init(store)
+        .call_init(&mut *store)
         .map_err(|error| component_init_error(package, wasm_path, error))?
         .map_err(|message| {
             format!("plugin `{package}`: component init returned error: {message}")
         })?;
+    tracing::debug!(
+        target: "notist_plugin_host",
+        package,
+        fuel_remaining = store.get_fuel().unwrap_or(u64::MAX),
+        "guest init complete"
+    );
     notist_model::wire::decode_declarations(&payload)
         .map_err(|message| format!("plugin `{package}` returned invalid init payload: {message}"))
 }
@@ -814,6 +853,13 @@ impl Function for ComponentFunction {
         _context: &FunctionContext<'_>,
         mut input: FunctionInput<'_>,
     ) -> Result<Value, Vec<EvalDiagnostic>> {
+        let _span = tracing::debug_span!(
+            target: "notist_plugin_host",
+            "plugin_dispatch",
+            element = %self.element_name
+        )
+        .entered();
+        let started = std::time::Instant::now();
         let request_node =
             wire::build_request_node(&self.element_name, &self.signature, &mut input).map_err(
                 |message| {
@@ -863,6 +909,13 @@ impl Function for ComponentFunction {
                 }]
             })?;
         let returned = wire::decode_response(&response, input.range)?;
+        tracing::debug!(
+            target: "notist_plugin_host",
+            element = %self.element_name,
+            elapsed_us = started.elapsed().as_micros() as u64,
+            fuel_remaining = store.get_fuel().unwrap_or(u64::MAX),
+            "plugin dispatch complete"
+        );
         Ok(Value::Content(returned))
     }
 }
@@ -889,7 +942,28 @@ pub fn register_loaded_contributions(
     let mut candidate_registry = registry.clone();
     let mut candidate_shaping = shaping.clone();
     for plugin in plugins {
-        candidate_registry.register_contribution(&mut candidate_shaping, &plugin.contribution())?;
+        match candidate_registry
+            .register_contribution(&mut candidate_shaping, &plugin.contribution())
+        {
+            Ok(()) => tracing::debug!(
+                target: "notist_plugin_host",
+                package = %plugin.id,
+                functions = plugin.functions.len(),
+                signatures = plugin.signatures.len(),
+                elements = plugin.elements.len(),
+                "contribution registered"
+            ),
+            Err(error) => {
+                tracing::warn!(
+                    target: "notist_plugin_host",
+                    package = %plugin.id,
+                    function = %error.name,
+                    ?error.reason,
+                    "contribution registration failed; package handlers are not installed"
+                );
+                return Err(error);
+            }
+        }
     }
     *registry = candidate_registry;
     *shaping = candidate_shaping;
