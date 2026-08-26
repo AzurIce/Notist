@@ -1,0 +1,57 @@
+= CLI 只读查询面评测框架（搭建收口与运行手册）
+
+为「以量化证据迭代只读查询 CLI」搭好的代理评测基建。本文是 resume kit：任何后续会话从这里继续，不需要重考古。
+
+== 产物位置
+
+全部在 worktree `/home/azurice/Files/worktrees/notist/feat-cli-readonly-queries`（分支 `feat/cli-readonly-queries`，基于 main @ c86a090）：
+
+- `evals/corpora/notist`：官方 docs 冻结语料（`git archive c86a090 -- docs` 取出，剔除 `ai/`、`.obsidian`、AGENTS.md；`Notist.toml` 置空避免插件路径解析）。SHA 记录在每次 manifest。
+- `evals/corpora/markdown`：由 `evals/tools/convert_notist_to_md.py` 从上一条确定性转换出的等价 Markdown 语料（围栏状态机按 CommonMark 收紧后校验 61 文件零 issue、无悬空链接；38 处无法映射的引用渲染为字面文本）。
+- `evals/tasks.json`：试点任务集 T1–T4，每任务带机械判分 checks。
+- `evals/tools/run_eval.py` / `grader.py` / `convert_notist_to_md.py`。
+- `evals/runs/<name>/`：run 输出（manifest、output/*/answer.txt+meta.json+session/*.jsonl、grades.json）——已 gitignore。
+
+== 四条件设计
+
+| 条件 | 语料 | 工具 | 系统提示 |
+| - | - | - | - |
+|null-notools|无|--no-tools|凭既有知识作答|
+|md-bash|markdown|read,bash,find,grep,ls|通用检索助手|
+|notist-bash|notist|同上|+ 一句「PATH 上有 notist CLI」|
+|notist-skill|notist|同上|同上 + 显式 `--skill skills/notist/SKILL.md`|
+
+null 组的作用：notist 未发布过、参数化知识应为零——若它得分说明泄漏/污染，同时量化幻觉率（smoke 实测：无工具时模型拿 Ant Design 的 Callout 常识编造答案且自认无文件上下文；skill 组则精确引用 functions.not 签名答对）。
+
+== 隔离与可复现措施（均已实测验证）
+
+- 每次 invocation 统一传 `--offline --no-context-files --no-extensions --no-skills --no-prompt-templates --no-themes`；探针证实系统提示词被完整替换只剩我方文本+cwd 行，worktree 祖先的 AGENTS.md 不进入上下文。
+- `--system-prompt` 整体替换默认 coding 提示词；条件间差异仅限表中声明的增量。
+- thinking 固定 `--thinking high`（settings.json 有 defaultThinkingLevel=high，必须显式钉住）。
+- 沙箱放 `/tmp/kb-eval-<run>/<cond>/kb`（中性命名，防 cwd 路径字符串本身提示 notist 字样）。
+- 会话全量 JSONL 经 `--session-dir` 直接落 output 目录，含逐条 message 与 usage 计量，供事后行为审计（参考 T2 notist-bash 实测：一次简单调用 input≈3.5k tokens，底价主要是工具系统提示）。
+- PATH 注入 worktree release 二进制并用 `shutil.which` 断言解析位置；manifest 记录二进制与 SKILL.md 的 sha256 前 16 位、commit、两份语料 digest。
+- 模型被试固定 `lmstudio/qwen3.8-27b-uncensored-mlx`（192.168.2.52 本机可达，pi 配置见 ~/.pi/agent/models.json provider 名 lmstudio）。
+
+== 运行方式
+
+```text
+cd <worktree>
+python3 evals/tools/run_eval.py --name pilot-002          # 全量 4x4，串行约 25–40 分钟
+python3 evals/tools/run_eval.py --only T1 --conditions md-bash ...  # 单测调试
+python3 evals/tools/grader.py evals/tasks.json evals/runs/pilot-002/output
+```
+
+时间瓶颈在 LM Studio 单实例串行推理（单次 invocation 约 1–2 分钟），过夜跑不构成问题；提速方向是让 LM Studio 并发或换支持并行的后端，不值得改 runner。
+
+== 下一步闭环（goal 会话的主线）
+
+1. 补跑 pilot（前两次因环境加固先后中断，pilot-002 只完成 T1 null 组一条）。判读顺序：先看 null 组应≈0 分校准信噪比，再看组间差值归因。
+2. 同一轮内做 n>=3 重复后再下任何结论；单次差异只当线索。
+3. 第二层微观基准（无需模型）：固定查询的字节成本 fixture（search/outline/read 各形态 text/json、cursor、scope 过滤），脚本化回归。候选微基准素材即已知 CLI 缺陷清单：
+   - guarded edit 指纹双实现冲突：`read` 系报 SHA-256 前 16 位（`crates/notist-service/src/query.rs` `fn fingerprint(&str)`），edit 校验却用 FNV-1a-64（`crates/notist-service/src/request.rs` `source_fingerprint()` 引 `crates/notist-service/src/lib.rs` u64 版本），CLI 永远提供不出能通过守卫的指纹；
+   - codespan 文本渲染把 info 级诊断标成 `error[...]`（JSON 里 severity 正确）；check 默认 `--severity error` 时输出 "showing 0" 无隐藏提示；
+   - modules/read 输出中含空格文件名的 ModulePath 无法引用；
+   - exact 搜索分组返回里部分命中缺 match_range 字段；
+   - 外部 URL `link(...)` 不投影 `<a href>`，官方文档库自身 9 处引用常年在 build/check 报错。
+4. 相关先行研究：#<vault::ai::2026-08-15 cli v3 clean interface redesign>、#<vault::ai::2026-08-17 cli interface design direction>、#<vault::ai::2026-07-27 cli token cost and search ergonomics evaluation>——本框架的命令级 fixture 应与之的数据口径对齐。

@@ -1,0 +1,149 @@
+= Notist Cheatsheet
+
+这份文档汇总 Notist 当前 surface 的日常速查。语法糖只解决高频书写中构造器调用过于繁琐的问题；精确规则以 [grammar](grammar.md) 为准，构造器逐一说明见 [functions](functions.md)，类型规则见 [types](types.md)，概念介绍见 [intro](intro.md)。
+
+== 语法糖总表
+
+````text
+= Title / == Title         → heading(level: n, [Title])
+```lang ... ```            → raw(..., lang: "lang", block: true)
+---                        → rule()
+- A                        → item([A])
++ A                        → item(ordered: true, [A])
+| a | b |
+| - | - |                  → table(columns: n, header: true, [table-cell[...] ...])
+#<target/id>              → ref("target#id")
+*text*                     → strong([text])
+_text_                     → emph([text])
+__text__                   → underline([text])
+~~text~~                   → strike([text])
+`code`（行内反引号）        → Raw（block: false）
+````
+
+糖的语义不经过名字查找：`= 标题` 是语法层构造，显式 `#heading[...]` 才是普通名字解析。
+
+== 内置构造器签名
+
+```text
+link(target: Target | String) -> Content
+heading(level: Int = 1, trailing body: Content) -> Content
+raw(source: String, lang: String? = none, block: Bool = false) -> Content
+rule() -> Content
+callout(kind: String = "note", title: Content? = none, trailing body: Content) -> Content
+details(summary: Content? = none, open: Bool = false, trailing body: Content) -> Content
+item(ordered: Bool = false, trailing body: Content) -> Content
+table-cell(colspan: Int = 1, rowspan: Int = 1, trailing body: Content) -> Content
+table(columns: Int, header: Bool = false, align: String? = none,
+      trailing body: Content) -> Content
+figure(kind: String? = none, supplement: Content? = none,
+       caption: Content? = none, trailing body: Content) -> Content
+strong / emph / underline / strike
+  (trailing body: Content) -> Content
+```
+
+未注册的内置名称一律产生 unknown function 诊断（调用保留为内容节点）；加载插件后的 `{package}::{element}` 是注册名，不受此限。
+
+== 调用规则
+
+```not
+#heading(level: 2)[标题]
+#callout(kind: "warning", title: [风险])[正文]
+#item(ordered: true)[有序条目]
+#table(columns: 2, header: true, align: "left, right")[
+  #table-cell[Name] #table-cell[Value]
+  #table-cell[one] #table-cell[1]
+]
+#figure(caption: [结果], supplement: [表], kind: "table")[
+  #table(columns: 1)[#table-cell[42]]
+]
+```
+
+- 命名实参 `name: value`；位置实参必须全部在具名实参之前，trailing Content block 是唯一例外；
+- `#f(kind: "warning")[内容]` 与 `#f(kind: "warning", [内容])` 等价；
+- 带默认值的形参只能具名绑定；重复/未知/缺失实参、类型不匹配都有确定诊断。
+
+== 类型速查
+
+```text
+None / Bool / Int / Float / String / Content   基础类型
+T?                                             可空（含 None）
+fn(形参表) -> R                                 函数类型（形参 name: Type，= 表示可省略）
+```
+
+```text
+kind: String      必填，位置绑定
+kind: String =    可省略（有默认值），具名绑定
+kind: String?     必填但可为 None
+kind: String? =   可省略且可为 None
+```
+
+唯一 coercion：Int 传给 Float 形参时自动数值转换。插入规则：Content 原样；String 转 Text；Int/Float/Bool 转 Text；None 为空；Function 不能插入。
+
+== 标注速查
+
+```text
+@id                        赋 scope id（模块内唯一，可被 #<.../id> 引用）
+#tag                       标签（任意多个）
+.class                     类名（任意多个）
+key = value                键值属性（String / Int / Bool 字面量）
+```
+
+```not
+文字内容@note                      # 行内 postfix：绑定前面紧接着的值
+
+@[wip]                            # 块级前缀：绑定下一个块级节点
+= 标题
+
+@![#design, status = "draft"]    # 模块属性：文件开头
+
+#[一段内容]@install               # 手动 scope + 行内标注
+```
+
+注意：标注的键值用等号（`key = value`），调用点命名实参用冒号（`name: value`）。
+
+== 运算符优先级
+
+```text
+高  一元 -、not
+    *  /
+    +  -
+    <  <=  >  >=     ==  !=
+    and（短路）
+低  or（短路）
+```
+
+`-a * b` 是 `(-a) * b`；`not a == b` 是 `not (a == b)`；`a and not b` 是 `a and (not b)`。
+
+== Code 速查
+
+```not
+#let accent = "violet"                // let 绑定（顺序作用域）
+#let double = (x: Int) => x * 2       // lambda
+#let double(x: Int) -> Int = x * 2    // 函数定义糖（与上一行等价）
+#if 2 > 1 [对] else [错]               // if 表达式（Content 分支）
+#(1 + 2)                              // 括号嵌入完整表达式
+#{ let x = 1; x + 2 }                 // Code block
+#import <self::theme>::{accent as a}    // import（显式选择器，无 wildcard）
+```
+
+String 四种形态：`"转义"`、`"""多行"""`（opening 后立即换行）、`r#"raw"#`、`r#"""raw 多行"""#`。
+
+== 引用与模块速查
+
+```not
+#<setup>                   # 裸名（当前模块解析）
+#<self::setup>             # 当前模块
+#<super::intro>            # 父级
+#<vault::grammar>          # 绝对路径
+#<vault::guide/install>    # 绝对路径 + scope id
+```
+
+`README.not` 表示所在目录；目录只要有 `.not` 后代或资源文件后代就形成 virtual module；外部 URL 语法合法但当前渲染为未解析文本并产生 info 级诊断。
+
+== 模式与边界速查
+
+- Markup：文档默认；`#` 进入 Code；Code 中 `[...]` 回到 Markup；`#[...]` 是 Markup 中 Content literal 的书写形式；裸 `[` `]` 是文本；
+- `#` 嵌入边界：顶层嵌入以空白终止（R01），二元运算符必须与操作数相邻；完整表达式写进括号 `#(...)`；紧跟文字时用 `;` 结束（`;` 被消费、不产生输出）；
+- 转义：`\` 转义 `#` `[` `]` `@` `\`；
+- 注释仅 Code 上下文：`//` 行注释、`/* ... */` 嵌套块注释；Markup 中它们是普通文本；
+- 空行产生段间分隔，单个换行仍属于同一段；同级标题归组为嵌套 Section。

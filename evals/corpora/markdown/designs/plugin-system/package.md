@@ -1,0 +1,127 @@
+= Plugin Package and Lifecycle
+
+本文定义插件 package 的形态、manifest、namespace、core package 以及装载生命周期。插件求值语义见 [plugin-call-reduction](../pipeline/plugin-call-reduction.md)；共享类型与 WIT 边界见 [abi](abi.md)。
+
+== Package 模型
+
+```text
+PluginPackage {
+  id: PackageId              // shader / core
+  namespace: String          // shader:: / core::
+  api-version: String
+  backend: Native | Wasm
+  functions: Vec<FunctionDecl>
+  elements: Vec<ElementDecl>
+  render: Vec<RenderContribution>
+  artifact: NativeRegistration | WasmModule
+}
+```
+
+- package identity、namespace 和 contribution 是语义契约；`backend` 只描述实现与装载方式。
+- `Native` package 由宿主直接加载 Rust registration；`Wasm` package 通过单一 WIT `plugin` world 提供 `init` 与 `evaluate`。
+- `core` 是 package id 为 `core` 的标准 package，默认 App 预装它，但不因此成为 eval engine 的特权对象。
+- `PackageId` 成为 `ElementName` 的 namespace：插件节点写作 `shader::canvas`。
+
+== Manifest
+
+插件包是目录或 zip，根下是 `plugin.json`。manifest 只是信封：身份、Wasm 装载参数与投影资产；semantic 接口由组件的 `init` 注册提供（[abi](abi.md)），不写入 manifest：
+
+```json
+{
+  "package": "shader",
+  "version": "0.1.0",
+  "api-version": "0.1",
+  "wasm": {
+    "module": "semantic.wasm"
+  },
+  "render": {
+    "html": {
+      "contributions": [
+        {
+          "element": "canvas",
+          "trusted": true,
+          "web-component": {
+            "tag": "notist-shader",
+            "module": "assets/shader.js",
+            "style": "assets/shader.css"
+          }
+        }
+      ]
+    }
+  }
+}
+```
+
+- 出现 `wasm.module` 就表示该 artifact 是 WIT `plugin` component；宿主统一实例化它并调用 `init` / `evaluate`，信封没有格式分流 flag。
+- 顶层 `render` 描述投影面；投影贡献是静态文件引用，保留在信封里，细节见 [projection](projection.md)。
+- JSON 只承担人工编辑的 `plugin.json` 信封；semantic declarations、defaults、节点与调用载荷不进入 manifest，统一由 version byte + postcard 承载。
+
+== core package
+
+`core` 是标准 package，不是 eval engine 内部的一组特殊 handler：
+
+```text
+CorePluginContribution {
+  package: core
+  functions: 所有 core::* 构造器实现
+  signatures: core 内容词表
+  elements: core 成型 schema
+  projections: 由 target package 提供
+}
+```
+
+默认 Notist App 预装这个 contribution，因此普通文档可以使用 `core::*`。一个不安装它的自定义 App 仍然合法；此时 `core::*` 按普通未注册 call 处理。
+
+core 与其它 package 共享：
+
+- `FunctionRegistry`；
+- `ElementSchema`；
+- target projection registry；
+- namespace、signature、schema 的原子校验。
+
+core namespace 的保留属于语言/package policy：其它 package 不能注册或覆盖 `core::*`，但这不授予 core handler 特殊的 reduction 权限。core 的内容词表见 [core](core.md)；HTML 映射属于 HTML target（[projection](projection.md)）。
+
+== Notist.toml 配置
+
+Vault 在 `Notist.toml` 中声明要加载的 package：
+
+```toml
+[plugins.shader]
+path = "../plugins/shader"
+
+[plugins.component-echo]
+path = "../plugins/component-echo"
+```
+
+- `path` 指向相对 Vault root 的 package 目录或 zip；registry 形式的 `package` 字段为未来入口保留。
+
+== 装载与生命周期
+
+package 的组合只有一条语义路径，backend 的装载步骤可以不同：
+
+```text
+native package                  Wasm package
+  → construct/register            → manifest
+                                  → instantiate component
+                                  → init() declarations
+             \                  /
+              → validate package / namespace / signature / schema
+              → atomically register contribution
+              → WorkspaceSnapshot identity
+```
+
+- native plugin 的 `register` 与 Wasm plugin 的 `init` 都必须产生同一种 contribution；任一校验失败都不得留下部分注册。
+- Wasm `init` 消耗与 `evaluate` 相同的 fuel 预算且要求确定性；native plugin 不需要 Wasm fuel，但属于进程级信任边界。
+- 插件失败是 host boundary diagnostic，不伪装成 `None` 成功。
+- 插件 namespace 冲突在加载时拒绝；backend 不改变 namespace policy。
+- package、manifest、native surface、Wasm module 或 assets 变化进入 source-set / plugin fingerprint，分配新的 `FunctionEnvironmentId` 并发布新 snapshot revision。
+- daemon 递归 watch 外部 package 目录；`plugin.json` / wasm / assets 变化触发 disk view reload。
+
+== 已裁定 / 待定
+
+- 已裁定：插件是带 package identity 的语义 contribution；Rust native crate 与 wasip2 component 都是可用 backend，Wasm package 可以附带信封 manifest 与 assets。
+- 已裁定：core 是默认 App 预装的标准 package；它与其它 native/Wasm package 共享 registry、schema 和 namespace policy，不是 eval engine 的特权模块。
+- 已裁定：插件加载失败是 host boundary diagnostic。
+- 已裁定：semantic 接口由组件 `init` 注册提供，manifest 只保留信封字段；schema 真相来源唯一，不存在声明与实现漂移面。
+- 已裁定：semantic contribution 只有一条原子注册路径；native 走 register，Wasm 走实例化 + init，不再维护不执行 Wasm 的 schema-only 快照路径。
+- 待定：registry package 的解析、校验与缓存协议。

@@ -1,0 +1,63 @@
+= HTML Renderer
+
+本文是 `<vault::designs::pipeline>` 的 HTML project 阶段独立成篇，从归档的历史混合文档中独立成篇。构建与预览见 [build-preview](build-preview.md)；成型结构树见 [structure](../pipeline/structure.md)；属性表见 [property-table](../language/property-table.md)；RefTarget 见 [reference-ref-target](../world/reference-ref-target.md)。
+
+
+== notist-html
+
+`notist-html` 是纯渲染层：接收一个 Module 的结构树（含 Section 节归组与段落/列表组合）、属性表与解析上下文（RefTarget），输出可嵌入页面的 semantic HTML fragment。
+
+它负责：渲染结构与节点、转义文本/属性/Raw 内容、把引用解析为链接或锚点、把区间属性投影到 DOM、输出 source range metadata、为未注册投影的名字与 Missing 引用提供安全且可见的降级。它不负责：读取文件或扫描 Vault、执行 parser/求值、判断目标 Module 是否存在、生成完整页面/导航/主题、启动 HTTP 服务。
+
+=== 元素映射
+
+```text
+core::section             -> <section>（嵌套，节级属性投影到该节点）
+core::heading             -> <h1>..<h6>（level > 6 折叠为 <h6>）
+core::paragraph           -> <p>
+core::list                -> <ul> / <ol> + <li>
+core::text                -> escaped text
+core::strong / emph / underline / strike -> <strong> / <em> / <u> / <s>
+core::raw(block: true)    -> <pre><code>；core::raw(block: false) -> <code>
+core::rule                -> <hr>
+core::reference           -> <a class="notist-reference">（解析后）
+core::callout             -> <aside class="notist-callout" data-notist-kind="...">
+core::details             -> <details><summary>...</summary>...
+core::table               -> <div class="notist-table-wrapper"><table>；header 行 -> <thead><th>，body 行 -> <tbody><td>；align 映射为 notist-table-align-{left,center,right}，span 映射为 colspan/rowspan；caption 不在 Table 上
+core::table-cell          -> <div class="notist-table-cell">（兜底；正常由 core::table 消费）
+core::figure              -> <figure class="notist-figure" data-notist-kind="...">；body 按 flow 渲染（仅裁掉 framing 的纯空白/parbreak），caption 渲染为 <figcaption>，supplement 为 caption 前缀
+插件节点                 -> manifest 声明的 web-component 标签
+未注册投影的名字          -> <{package}-{element}> 标签（fallback，保留字段与可见内容）
+Missing 引用             -> 不可点击的 span（保留可见文本）
+```
+
+Quote 不进入当前语言（[暂缓与候选](../language/syntax-sugar.md#暂缓与候选) 整体暂缓）；映射随新 core 节点进入语言时补充。本表是 core 节点集合（#<vault::designs::pipeline::evaluate/Call 与 Node>）在 HTML target 的封闭映射：每增加一行都以 [core](../plugin-system/core.md) 引入新节点为前提。`core::parbreak` 不渲染（段落结构已由成型给出）。
+
+=== 锚点与引用链接
+
+- 显式 scope id 与标题默认 id（#<vault::designs::world::reference-ref-target/scope id>）投影为 HTML `id` 锚点。id 满足 HTML id 语法（Unicode 字母/数字/连字符/下划线，不以数字或连字符开头）时直接使用；否则用确定性规则生成稳定锚点——回退锚点是元素起始字节偏移的纯函数（`loc-<offset>`，如 `loc-140`），同 Typst HTML 导出的处理。锚点与源码位置可互相推导，不依赖随机数或文档序历史。
+- Reference 在构建/渲染时 resolve（RefTarget，#<vault::designs::world::reference-ref-target/解析产物：RefTarget>）：
+  - `Module(path)` → 目标页面相对 URL；
+  - `Scope(module, id)` → 目标页面 URL + `#锚点`（含标题默认 id 定位到节）；
+  - `Resource(module, name, kind)` → 构建时复制的资源路径（见下）；
+  - `Missing` → 不可点击 span，保留目标文本并带 unresolved 样式；
+  - `External` 暂缓（[reference-ref-target](../world/reference-ref-target.md)）。
+- relation 只有 Reference（导航）一种（#<vault::designs::host::client-interface-protocol/Client Interface>）；Preview 预留。
+
+=== 区间属性投影
+
+属性表是旁置的（[property-table](../language/property-table.md)），渲染时投影到 DOM：
+
+- 单元素区间的属性投影到该元素节点：`.class` → HTML `class`；`id` → 锚点；`#tag` 与 `key = value` → `data-notist-*` 属性（查询与样式钩子，不改变可见语义）；
+- 节级属性（节条目）投影到 Section 节点；
+- **跨元素/跨段的区间属性**不能直接映射为合法嵌套的 DOM 节点：通过 range events 把区间内的内容切分为 `<span class="notist-annotated" ...>` 包裹的片段，保持正确嵌套（旧设计同此处理）。
+
+=== Source Range 与安全
+
+语义元素输出原始 byte range（`data-notist-start` / `data-notist-end`），为点击跳转源码、Hover fragment 与选择同步保留稳定接口。
+
+Raw 的文本与插件节点内容都不是可信 HTML：全部转义，不能让 Raw 内容绕过转义。serializer 的词表收口（trusted 边界）目前是待定项，见 #<vault::designs::plugin-system::projection/已裁定 / 待定>。
+
+== Workspace Consistency
+
+Parse 的 byte range、源码文本、分析结果与诊断必须来自同一个 WorkspaceSnapshot（#<vault::designs::host::analyzer-snapshot/分析层：Analyzer 与 WorkspaceSnapshot>）——不能在分析完成后由 renderer 重新读取可能已经变化的文件。Preview、diagnostics、Hover 与 definition 共享同一个文档版本，而不是分别读盘。渲染器是 snapshot 的只读消费者：它消费结构树、属性表与解析结果，不新增语义阶段（#<vault::designs::host::analyzer-snapshot/分析层：Analyzer 与 WorkspaceSnapshot> 消费者边界）。

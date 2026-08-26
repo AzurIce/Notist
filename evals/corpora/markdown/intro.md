@@ -1,0 +1,173 @@
+= 认识 Notist
+
+Notist 是一门带有静态类型系统的文档编程语言。它只有两个语法模式：默认处于 Markup 模式书写正文，`#` 把求值表达式嵌入正文（Code 模式）——写法与感受像标记语言，能力却来自真实的求值。
+
+一个 `.not` 文件既是可读的文本，也是一个有类型的文档程序：解析、静态检查、求值三个阶段把源码变成一棵 `Content` 树（文档）、一个环境（bindings）与一张属性表（annotations）。检查、预览与静态站点构建都消费这同一份求值结果。
+
+本文从写作者的角度介绍核心机制。精确的字符、空白与分隔规则见 [grammar](grammar.md)；类型与求值规则见 [types](types.md)；内置构造器见 [functions](functions.md)；日常速查见 [cheatsheet](cheatsheet.md)；命令行见 [cli](cli.md)。
+
+== 最小示例
+
+下面这段代码同时展示了三种能力：`let` 绑定变量、函数定义与调用、把计算结果插入正文：
+
+```not
+#let accent = "violet"
+
+= #accent
+
+#let warning(body: Content) -> Content =
+  callout(kind: "warning", body)
+
+#warning[这是一段可以通过函数构造的内容。]
+```
+
+它求值后得到三个产物：
+
+```text
+bindings = {
+  accent = "violet"
+  warning = (body: Content) -> Content
+}
+
+content = [
+  标题，内容为 "violet"
+  callout(kind: "warning")，内容为 "这是一段可以通过函数构造的内容。"
+]
+
+annotations = {}   // 示例中没有标注，属性表为空
+```
+
+`bindings` 是程序的一面——跨模块复用的入口；`content` 是文档的一面——渲染与查询消费的产物；`annotations` 是属性的一面——标注与模块元数据的唯一入口。三者来自同一次求值，却承担不同职责。这个结果如何产生：类型见 [type-system](designs/language/type-system.md)，属性表见 [property-table](designs/language/property-table.md)，求值模型见 [evaluate](designs/pipeline/evaluate.md)，scope 见 [scope-environment](designs/language/scope-environment.md)。
+
+== 一篇 Notist 文档
+
+下面的示例包含标题、模块引用、标注、折叠内容与代码围栏：
+
+````not
+= Project Notes
+
+The language reference is #<vault::grammar>.
+
+== Status
+
+#[The documentation build passes.]@status,#verified,owner = "Alice"
+
+#callout(kind: "warning", title: [发布前检查])[
+Run `cargo test` before publishing.
+]
+
+#details(summary: [构建方式], open: false)[
+```text
+notist build docs
+```
+]
+````
+
+这仍然是一篇以普通文字为主体的文档：`= ` 与 `== ` 是 `heading` 的语法糖；`#callout` 与 `#details` 是产生内容的构造器；行内反引号与围栏是内置 Raw 语法；`[grammar](grammar.md)` 是跨文档引用；`#[...]@...` 为一段内容附加可查询的元数据。
+
+== Vault 与 Module
+
+Vault 是运行边界。一个目录通过根目录下的 `Notist.toml` 声明为 vault 根（文件可以为空——存在本身就声明根）；没有 marker 时把 worktree 根作为单个隐式 vault。跨 Vault 一律不解析名称与引用。
+
+Vault 中的每个 `.not` 文件对应一个逻辑 Module：
+
+```text
+docs/README.not          -> vault
+docs/intro.not           -> vault::intro
+docs/guide/setup.not     -> vault::guide::setup
+docs/guide/README.not    -> vault::guide
+```
+
+普通文件名成为 ModulePath 的最后一段；`README.not` 表示它所在的目录，因此 `guide.not` 与 `guide/README.not` 都映射到 `vault::guide`，不能同时存在。目录只要有 `.not` 后代或资源文件后代就形成 virtual module——只提供命名空间与 child identity，不凭空产生内容。资源文件（图片等）也通过目录模块加文件名寻址：``<vault::guide::assets/logo.png>``。
+
+Module 是求值单元：每个 source-backed Module 独立求值，产生 `bindings`、`content` 与 `annotations`。跨模块的连接有两条边：程序面的 import（取目标 Module 的 root bindings）与知识面的 Reference（链接内容）。Vault 边界见 [boundary-discovery](designs/world/boundary-discovery.md)，Module/ModuleResult 见 [module-result](designs/world/module-result.md)，import 见 [import](designs/world/import.md)，引用寻址见 [reference-ref-target](designs/world/reference-ref-target.md)。
+
+== 引用其他 Module
+
+使用 `<...>` Target 字面量引用 Module。假设当前文档是 `vault::guide`：
+
+```not
+#<setup>                        # 裸名：从当前模块解析
+#<self::setup>                  # 当前模块路径前缀
+#<super::intro>                 # 父级
+#<vault::grammar>               # 绝对路径
+#<vault::guide/install>         # 绝对路径 + 模块内目标（scope id）
+```
+
+- `[intro](intro.md)` 从当前 Module 查找 child，即 `vault::guide::setup`；
+- `[intro](intro.md)` 同样从当前 Module 开始，只是把起点写得更明确；
+- `[intro](intro.md)` 先回到父 Module，再找到 `vault::intro`；
+- `[grammar](grammar.md)` 从 Vault 根开始，不受当前文档位置影响。
+
+`/id` 后缀指向目标模块内的 scope（带 id 的节点）。标题额外拥有默认 id——标题文本本身即可作为 id 使用：``<vault::guide/安装>`` 可以直达标题为「安装」的节。重复标题产生歧义诊断，作者用显式 `@id` 标注消歧。带 scheme 的外部 URL（`https://` 等）语法合法，当前渲染为未解析的可见文本并产生 info 级诊断。
+
+== 用构造器产生内容
+
+内置元素以 first-class 构造器函数的形式存在。命名实参写作 `name: value`，trailing Content 写在方括号里：
+
+```not
+#heading(level: 2)[标题]
+
+#callout(
+  kind: "warning",
+)[
+Read #<vault::grammar> before editing the syntax.
+Run `notist check docs` after editing.
+]
+```
+
+`#name(args)[Content]` 中的 `[...]` 先递归求值为结构化 `Content`，再绑定到签名声明的 trailing 形参：`#f(kind: "warning")[内容]` 与 `#f(kind: "warning", [内容])` 等价——trailing block 只是追加一个位置实参的语法糖，它是唯一允许跟在具名实参之后的位置实参。
+
+位置实参必须全部出现在具名实参之前；重复实参、未知实参、缺失必填实参与类型不匹配都产生指向调用位置的诊断。签名记号的完整规则见 [types](types.md)，内置构造器的逐一说明见 [functions](functions.md)。
+
+== Markup 语法糖
+
+标题、代码围栏、分割线、列表、引用与强调等都是内置构造器的语法糖：
+
+````not
+= 一级标题
+== 二级标题
+
+```rust
+println!("Hello");
+```
+
+---
+
+- 无序条目
++ 有序条目
+
+#<target>  *加粗*  _斜体_  __下划线__  ~~删除线~~
+````
+
+糖的语义不经过名字查找：`= 标题` 不是「调用名为 heading 的函数」，而是语法层构造。每个糖的完整规格见 [syntax-sugar](designs/language/syntax-sugar.md)，速查见 [cheatsheet](cheatsheet.md)。
+
+== 标注
+
+标注把属性绑定到求值结果（值）上，用于分类与查询：
+
+```not
+#[The documentation build passes.]@status,#verified,.highlight,owner = "Alice"
+```
+
+四种条目：`@id` 赋 scope id（模块内唯一）；`#tag` 是标签；`.class` 是类名；`key = value` 是键值属性。三种挂载位置：行内 postfix（紧贴在值之后）、块级前缀 `@[...]`（修饰下一个块级节点）、模块属性 `@![...]`（文件开头）。完整语法见 [annotation-syntax](designs/language/annotation-syntax.md)。
+
+== 检查、构建与预览
+
+Notist CLI 以一个 Vault 目录为输入：
+
+```text
+notist check docs
+notist build docs -o dist
+notist preview docs
+```
+
+`check` 检查模块、引用、调用与类型问题；`build` 把整个 Vault 构建为静态站点；`preview` 在本地展示相同的页面并在文档变化后刷新。命令与 daemon 的详细说明见 [cli](cli.md)。
+
+== 下一步
+
+- 精确语法：[grammar](grammar.md)
+- 内置构造器：[functions](functions.md)
+- 类型与求值：[types](types.md)
+- 日常速查：[cheatsheet](cheatsheet.md)
+- 语言设计记录：[overview](designs/overview.md) 起

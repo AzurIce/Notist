@@ -1,0 +1,55 @@
+= Eval Contribution
+
+本文定义插件如何贡献语义函数：组件 `init` 注册的元素声明如何变成 `FunctionRegistry` 中的可调用对象，以及静态分析与 runtime 如何分别消费这些贡献。Call 的规约规则见 [plugin-call-reduction](../pipeline/plugin-call-reduction.md)。
+
+== FunctionDecl
+
+每个语义元素对应一个函数签名。签名不再由 manifest 声明，而是在装载时由组件 `init` 注册提供（[abi](abi.md)）。WIT 不镜像声明结构；`init` 的 opaque bytes 解码为 `notist_model::PluginElementDecl`：
+
+```text
+PluginElementDecl {
+  name, version, block, computed,
+  parameters: [ PluginParamDecl { name, ty, default: Option<DefaultValue> } ],
+  trailing_content, body_mode, role, kind
+}
+```
+
+宿主用它提供静态检查、completion、诊断和 runtime 校验所需的全部签名信息：
+
+- 函数注册为 `{package}::{name}`，例如 `shader::canvas`；当 package 名与 element 名相同（如 `shader::shader`）时，host 额外注册短名 alias `shader` 兼容旧写法，该 alias 不进入 `core`。
+- 注册结果进入 `SignatureSet`，check/completion 与 runtime 消费同一份数据，不存在漂移面。
+- runtime 在 host 边界做参数绑定、默认值填充与返回类型检查。
+
+== 实现形态
+
+registry 中的 Function 实现按 backend 区分，而不是按语义 package 区分：
+
+1. **Native function**：任何 package 都可以由 Rust native 实现，直接提供 `Function` 并注册 contribution；core 只是其中的默认 package。
+2. **Component function**：WIT `plugin` 组件；装载时 `init` 返回 version byte + postcard declarations，`evaluate` 以相同 frame 承载共享 `Node` 森林，按 dispatcher 名字分发一次规约后由宿主统一继续 fixpoint。所有声明、默认值与调用载荷都来自共享 `notist-model` 类型，不经过 JSON 转换。
+
+所有实现都实现同一 `Function` trait 并进入同一 `FunctionRegistry`；registry 的 owner 是 package identity，native/Wasm 不改变 call 的语义。Wasm backend 只有 component 实现，不再按 artifact 格式分流。
+
+== 装载与签名可见性
+
+- 装载统一为「实例化 + init」一条路径：`init` 在 fuel 界内执行一次，注册即得到全部签名与成型 schema。
+- LSP / completion / diagnostics 读到的就是这份装载产物；`init` 要求确定性且受资源预算约束，装载成本是毫秒级一次性开销。
+- 插件失败在装载边界产生 diagnostic：未通过校验的 package 不产生任何函数与 schema。
+
+== 注册与别名
+
+- 装载器按 `init` 声明逐个生成函数并 `register_arc`；重名在加载时拒绝。
+- `core::*` qualified alias 指向 `core` package 的注册实现；插件只能占用自己的 namespace，不能覆盖受保留的 `core::*`。
+- package namespace 与 core namespace policy 由 [core-namespace-plugin-boundary](../world/core-namespace-plugin-boundary.md) 定义；这属于注册策略，不是 reducer 的特殊分支。
+
+== 当前实现映射
+
+- `ElementFunction`：已实现于 `notist-eval`，作为声明式 schema 元素的通用 handler。
+- 组件 `init` 注册装载路径：已实现于 `notist-plugin-host`。
+- `notist-plugin-sdk`：作者侧 `Plugin::init(reg)` + `ElementFn::reduce` + `export_plugin!`。
+- `FunctionRegistry` 与 `core::*` 别名：已实现；core 与 Wasm package 都可映射为 `PluginContribution`，通过事务式安装路径进入 registry。
+
+== 已裁定 / 待定
+
+- 已裁定：内置函数与第三方插件共享同一 registry 与签名模型。
+- 已裁定：schema 真相来源是组件 `init` 注册；装载统一执行实例化，不再维护不执行 Wasm 的 schema-only 快照路径。
+- 待定：插件 Function 的复杂值类型（Array / Dict）何时进入 element field 值域。

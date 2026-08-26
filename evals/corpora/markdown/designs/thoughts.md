@@ -1,0 +1,50 @@
+= Thoughts
+
+== 2026-08-26 LSP 无头测试
+
+现在我们似乎缺少对 LSP 的无头测试，导致我们直接在接入侧通过人工“感受”的方式去发现问题，这样并不高效，也不能直接反应 LSP 的实现问题（只能看到表面的异常）。或许需要添加 LSP 无头测试。
+
+== 类型系统要不要引入 date 类型？
+
+避免一些 @date="xxx" 中实际格式有问题，用类型系统直接检验字面量。
+
+== 显式 module 定义
+
+有这样一个问题：在 notist preview 中，各章节的顺序按照字母序排序，无法控制。
+
+或许可以通过 `#mod <mod-name>`（类似 rust）来显示声明模块来确保顺序。
+
+未决：是否需要保留隐式、自动的模块定义？（rust 早期的设计转变或许可以提供参考）如果保留隐式的话或许需要统一让隐式自动定义排序在全部显式定义的模块下方？
+
+== Web UI 信息增强
+
+dsh 的 web UI 中的轨迹功能为 Agent 开发提供了极其便捷、透明的信息。
+与之类比，或许可以为我们的 Web UI 做信息 UI/UX 增强。
+
+一些想到的：
+- “符号表”（类似 PL ide）
+- 出链入链（模块级以及细粒度级）
+- scope 与属性显示
+
+== Web Editor
+
+基于 Web 实现编辑能力。
+
+== git import
+
+类 typst 直接
+
+```notist
+#import "git:AzurIce/notist/docs"
+```
+
+或放入 Notist.toml？
+
+```toml
+[dependencies]
+notist-docs = { git = "https://github.com/AzurIce/notist/docs" }
+```
+
+== 其他修复&调整
+
+preview 的 Web UI 的 Live Reload 指示移动到右上角（在左下会挡住页面侧边栏元素）

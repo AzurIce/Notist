@@ -1,0 +1,93 @@
+= Plugin System
+
+#[
+notist 的内容是求值的结果，而求值是函数式的规约过程（`<vault::designs::pipeline>`），因此所有的不同内容都可以被表示为各自独立的的“函数名”+“参数”的函数调用。
+
+于是 notist 具有了丰富且可控的拓展性：
+- 求值层面：新的内容类型本质是对对应类型函数调用规约的实现。
+- 显示层面：对应的 web component 呈现实现。
+
+notist 内置的全部内容函数（包括 text）都通过插件系统提供。
+]
+
+```not
+#rule()
+```
+
+本文是 Notist 插件系统设计的模块入口。它回答：一个插件 package 如何声明自己、native 与 Wasm backend 如何提供等同的语义 contribution、运行时如何组合 package、插件如何实现语义与投影，以及宿主如何保证终止性 / 确定性 / 资源预算。
+
+== 定位
+
+插件系统不是 `<vault::designs::pipeline>` 的一个阶段，而是 pipeline 之外的横切扩展面。pipeline 拥有 `parse → check → lower → reduce → structure → project` 的阶段语义；插件系统负责定义 package、ABI 与贡献，并在三个固定阶段被 pipeline 消费：
+
+```text
+PluginSystem 贡献              pipeline 消费点
+─────────────────────────────────────────────────
+FunctionRegistry            → reduce
+ElementSchema / ShapingRegistry → structure
+投影 handler / 声明式贡献 → project（target 侧第二阶段规约）
+```
+
+插件调用在 reduce 阶段如何被规约，是 PluginSystem 与 pipeline 的契约，见 [plugin-call-reduction](../pipeline/plugin-call-reduction.md)。core namespace / prelude 与插件边界见 [core-namespace-plugin-boundary](../world/core-namespace-plugin-boundary.md)；HTML target 的消费方式见 [html-renderer](../host/html-renderer.md) 与 [project](../pipeline/project.md)。
+
+== 目标
+
+```text
+插件 package = 语义 identity + PluginContribution
+               ├── native registration 或 wasip2 component backend
+               ├── 函数签名与语义实现
+               ├── 成型 schema（block / body-mode / role / kind）
+               └── target 投影贡献（web-component 声明 + assets）
+```
+
+三条原则：
+
+1. **统一 contribution**：core、第三方 native plugin 与 Wasm plugin 共享同一 call 森林表示（`Node`）、注册契约与 registry。
+2. **backend 与语义分离**：native/Wasm 只描述实现、装载和信任边界；package identity 才决定 namespace 与环境身份。core 是默认 App 预装的标准 package，不是 eval engine 的特权对象。
+3. **宿主执规约与成型**：插件贡献规则与实现，宿主执行 dispatch、shaping 与终止/资源检查。
+
+== 模块内容
+
+按依赖顺序阅读：
+
+1. [package](package.md)：插件 package、manifest、namespace、backend 与生命周期。
+2. [runtime-composition](runtime-composition.md)：native/Wasm 等同、App composition root 与统一 contribution。
+3. [core](core.md)：标准 `core` package 的内容词表——构造器签名与校验。
+4. [abi](abi.md)：Wasm backend 的共享类型、WIT 边界与语义 ABI。
+5. [eval-contribution](eval-contribution.md)：native/Wasm Function contribution 与注册。
+6. [capability](capability.md)：信任模型——内容组合不授权，backend 各自承担执行边界。
+7. [safety](safety.md)：终止性、资源预算与确定性。
+8. [shaping](shaping.md)：ElementDecl 与成型 schema。
+9. [projection](projection.md)：target 投影贡献与 fallback。
+
+面向用户的插件示例见 [plugins](../../plugins.md)；插件系统的早期调研与设计过程见 #<vault::ai::2026-08-18 notist plugin system design>。
+
+== 当前实现映射
+
+| 组件 | 状态 |
+|---|---|
+| 统一 `Node` 表示与规约引擎 | 求值运行于 `leaf::node_engine`（不动点：未注册名字即终态）；Stream/Leaf 双表示、`InstanceNode` 适配层与旧 Content 桥接已删除 |
+| Stream lowering | 全部 Markup item 直接产出 `Node` call 流；text 的 inline sugar 也直接构造 Node |
+| `FunctionRegistry` 与 `core::*` 别名 | 已实现 |
+| shaping registry / `body-mode` / `role` / `kind` | 已实现 `ShapingRegistry` / `ElementSchema`；core schema 内置，插件 schema 可注册。成型直接运行在 `Node` 森林上，`ElementTree` 只承载 Node |
+| HTML target projection | `HtmlProjectionRegistry` 独立于语义 `FunctionRegistry`；插件 handler、Web Component contribution 与未知 call fallback 先生成 `html::*` Node，再由 serializer 输出 |
+| WIT component ABI | 单一 `plugin` world：只导出 bytes `result` 形态的 `init` 与 `evaluate`，无声明镜像 interface。两者 payload 均为 wire version byte + postcard；前者承载共享声明，后者承载共享 `Node` 森林。所有 `wasm.module` 都按 component 实例化，`plugins/component-echo` 与 `plugins/shader` 端到端可用 |
+| 插件 manifest 信封 | JSON manifest 只保留身份、`wasm.module` 与顶层 HTML render contributions；semantic declarations、defaults 与调用载荷由组件和共享 postcard codec 提供 |
+| 组件 eval contribution | 已实现：Wasm `init` 声明 + `evaluate` dispatcher；作者侧由 `notist-plugin-sdk` 提供 `Plugin::init(reg)` / `ElementFn::reduce` / `export_plugin!`；返回 call 森林由宿主统一继续 fixpoint |
+| native plugin contribution | `notist-eval::PluginContribution` / 原子安装 API 已实现；独立 `notist-plugin-core` crate 已通过同一接口提供 core package |
+| runtime composition | `WorkspaceSnapshot` 已承担组合根职责；native/Wasm semantic contribution 已汇合到同一 registry 安装路径，完整 App API 尚未抽出 |
+| capability checker | 已删除：内容组合不授权；native 进程信任与 Wasm sandbox 的 backend 差异见 [capability](capability.md) |
+| core native package 迁移 | 已完成：`plugins/core` 是独立 `notist-plugin-core` crate；默认 App 显式安装其 contribution，`notist-eval` 不再嵌入 core |
+| PluginSet 指纹 | `FunctionEnvironmentId` 已结合 view salt、插件 surface、配置与签名集合；插件 package 变更会分配新语义世界 |
+| 插件文件 watcher | daemon 会递归 watch `Notist.toml` 声明的外部 package 目录；plugin.json / wasm / assets 变化触发 disk view reload |
+| 统一装载路径 | 装载 = 实例化 + `init` 一条路径；不再维护不执行 Wasm 的 schema-only 快照路径 |
+| 数据型元素声明 | `Registrar::declare`（`computed=false`）：签名 + 成型 schema 全量注册、无派发条目，文档 call 即终态；web-component 投影直接可用 |
+| Wasm 终止/资源预算 | 已实现 fuel-per-call（init 同预算）、16 MiB memory cap、table cap，以及 component response 1 MiB / 10k 节点上限 |
+
+== 已裁定 / 待定
+
+- 已裁定：插件是带 package identity 的语义 contribution；native 与 Wasm 是可替换 backend，Wasm package 仍可由 manifest + wasip2 组件 + assets 组成。
+- 已裁定：core 是默认 App 预装的标准 package，不是 eval engine 的特权 package；作者以 Rust crate / SDK 提供 contribution，Wasm backend 由 `init` 自描述，manifest 不携带 semantic 接口。
+- 已裁定：插件通过 schema 参与成型，成型引擎由宿主执行。
+- 已裁定：WIT 是 component ABI；单一 `plugin` world 只有 `init` 与 `evaluate`，插件返回 call 森林后由宿主统一 fixpoint；名字所有权只在注册侧，handler 提及任何名字自由。
+- 待定：native target 的投影贡献 schema；HTML target 先行。

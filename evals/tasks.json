@@ -1,0 +1,51 @@
+{
+  "pilot": {
+    "description": "Read-only navigation/retrieval tasks. Ground truths verified against corpora frozen from notist docs @ c86a090.",
+    "tasks": [
+      {
+        "id": "T1-locate-grammar-spec",
+        "prompt": "我想确认 notist 的完整语法规则（Markup 与 Code 两种模式、空白与分隔的精确规定）应该读哪篇文档。请告诉我文件名，以及具体从哪一节开始讲这个主题。只需回答结论。",
+        "checks": [
+          {
+            "type": "pattern_any",
+            "patterns": ["grammar\\.not", "grammar\\.md"],
+            "must_be_quoted_or_plain": true,
+            "desc": "answers the grammar document filename"
+          }
+        ]
+      },
+      {
+        "id": "T2-callout-signature",
+        "prompt": "callout 这个构造器的 kind 参数是什么类型、默认值是多少？给出确切答案。",
+        "checks": [
+          { "type": "pattern_all", "patterns": ["String"], "desc": "kind is String" },
+          { "type": "pattern_all", "patterns": ["note"], "desc": "default value note" }
+        ]
+      },
+      {
+        "id": "T3-pipeline-inventory",
+        "prompt": "designs/pipeline 目录下有哪些设计文档？列出它们的文件名。只要文件名清单。",
+        "checks": [
+          {
+            "type": "stems_at_least",
+            "stems": ["evaluate", "parse", "plugin-call-reduction", "project", "README", "structure"],
+            "threshold": 5,
+            "desc": "lists >=5 of 6 designs/pipeline documents"
+          }
+        ]
+      },
+      {
+        "id": "T4-module-annotation-syntax",
+        "prompt": "在 notist 里想给整个文档模块挂一个标签（模块级属性），确切的语法怎么写？这条规则的权威定义在哪篇文档里？请同时回答这两点。",
+        "checks": [
+          { "type": "pattern_all", "patterns": ["@!"], "desc": "module annotation syntax @![...]" },
+          {
+            "type": "pattern_any",
+            "patterns": ["grammar\\.not", "grammar\\.md", "annotation-syntax"],
+            "desc": "names an authoritative doc"
+          }
+        ]
+      }
+    ]
+  }
+}
