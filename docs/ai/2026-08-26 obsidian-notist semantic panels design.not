@@ -5,7 +5,7 @@
 
 结论先行：*隐藏错误数据与接入正确数据是两条独立工作流*。Notist World 无条件隔离原生语义叶子与 Quick Switcher 入口；正确数据只复用现有 LSP session，不向 Obsidian Markdown metadata 注入 `.not`，也不另起 CLI 或客户端解析器。
 
-截至 2026-08-27，首批实现已经完成原生面板隔离、Quick Switcher 路由、独立 Notist 大纲、workspace symbol palette，以及一个明确标为临时降级的入链面板。出链没有伪实现；可靠入链 / 出链仍等待文档级 references 或 documentLink 协议。统一 panel store、snapshot build barrier、stale-while-revalidate cache 也尚未落地，因此本文状态为 `partial`，不能把当前 UI 等同于完整终局设计。
+截至 2026-08-27，首批实现已经完成原生面板隔离、Quick Switcher 路由、独立 Notist 大纲、workspace symbol palette，以及入链面板；同日晚些时候上游已落地 `notist/documentReferences`（capability `experimental.notist.documentReferences`），可靠入链与出链面板均已切换到该协议，`(0,0)` 降级仅作 capability 不在时的回退。统一 panel store、snapshot build barrier、stale-while-revalidate cache 与标准 documentLink 仍未落地，因此本文状态为 `partial`。当日整改与实机验证详见 #<vault::ai::2026-08-27 obsidian-notist ux polish and document references>。
 
 == 调查基线与现状
 
@@ -70,7 +70,7 @@ CLI / service 对照面比 LSP 更丰富：`notist references` 支持 `--directi
 | 大纲 | `textDocument/documentSymbol`、嵌套标题树、点击复用 LSP Location 定位 | 折叠 state、cache、didChange 后的可靠 build barrier |
 | 符号导航 | `workspace/symbol`、120ms debounce、跨 query latest-wins 取消、晚响应 token 丢弃 | fuzzy、MRU、服务端分页 / 上限、完整键盘选择体验 |
 | 入链 | `textDocument/references`，固定 `(0,0)`，`includeDeclaration=false`，Location 列表点击跳转 | 无歧义 current-module selector、分组、excerpt、target kind、snapshot stamp |
-| 出链 | 未实现 | `notist/documentReferences(outgoing)` 或 `textDocument/documentLink` |
+| 出链 | 已实现（`notist-outgoing-links`，documentReferences outgoing） | 标准 textDocument/documentLink（内联跳转） |
 
 `src/lsp/protocol.ts` 增加递归 `LspDocumentSymbol` 与 `LspSymbolInformation`；`src/lsp/session.ts` 增加 `documentSymbols`、`workspaceSymbols`、`references` 和共享 `queryRequest`。请求层继续不 import Obsidian：document symbol 按 path latest-wins，workspace symbol 用单一 request key 让不同 query 互相取消，references 按 target path 互相取消。
 
@@ -175,7 +175,7 @@ notist/documentReferences {
 }
 ```
 
-语义直接复用 `ReferencesQuery` / `ReferenceItem`，但 location 在 LSP 边界转换成 URI + UTF-16 range；以 document URI 解析 module，避免客户端重建 ModulePath。它还应明确使用当前 LSP session View，保证 unsaved overlay 可见。server capability 可放在 `experimental.notist.documentReferences`，客户端发现不到时才允许暂时用 `(0,0)` + `textDocument/references` 降级，并在文件 byte 0 命中语义 token 的测试失败时禁用该降级。当前客户端尚未做 capability negotiation 和该禁用测试，因此这也是 `implementation = "partial"` 的主要原因之一。
+语义直接复用 `ReferencesQuery` / `ReferenceItem`，但 location 在 LSP 边界转换成 URI + UTF-16 range；以 document URI 解析 module，避免客户端重建 ModulePath。它还应明确使用当前 LSP session View，保证 unsaved overlay 可见。server capability 可放在 `experimental.notist.documentReferences`，客户端发现不到时才允许暂时用 `(0,0)` + `textDocument/references` 降级，并在文件 byte 0 命中语义 token 的测试失败时禁用该降级。*2026-08-27 已按此落地*：service 端 `CoreRequest::DocumentReferences`（path 解析 owner module，无位置歧义，返回 revision + target identity items），cli 端在 `experimental.notist.documentReferences` 声明 capability；客户端 `supportsDocumentReferences()` 做一次性协商，不可用时才回退 `(0,0)` 并在面板标注 legacy mode。实现与测试见 #<vault::ai::2026-08-27 obsidian-notist ux polish and document references>。
 
 service 已有 `CoreRequest::ReferencesTo`（`crates/notist-service/src/request.rs:86-90,1167-1205`）与更丰富的 `ReferencesPage`，所以这不是新建语义索引，只是补一个不含位置歧义的协议适配面。
 
@@ -316,14 +316,14 @@ definition 原先私有的 `openLspLocation` 已提升为所有语义导航共�
 - 已注册 `notist-outline` 并实现 active document tree；Notist World 已接管 core `switcher:open`，workspace symbol 使用 server substring query。MRU 空态、outline 折叠与完整键盘选择仍待补齐。
 - 验证：sugar heading、显式 heading、嵌套 level、raw code 中假 heading；编辑后层级变化最终收敛；点击 CJK / emoji 前后的 UTF-16 range 定位正确；多 leaf 切焦点不会让晚响应覆盖新文档；实机截图检查折叠树与 modal。
 
-=== 阶段 3：文档级 references 协议与入链（仅临时客户端降级）
+=== 阶段 3：文档级 references 协议与入链（2026-08-27 已落地）
 
-- 插件已注册 `notist-backlinks` 并暂用 `(0,0)` standard references；上游仍需实现 `notist/documentReferences(incoming)`，明确 current document module selector、overlay 与 snapshot stamp。
+- 上游已实现 `notist/documentReferences(incoming|outgoing|both)`：path 直推 owner module，无 current-module selector 歧义；返回 revision（snapshot freshness gate）与带 target identity 的 items。插件 `notist-backlinks` / `notist-outgoing-links` 均已切换到该协议（按源文件 / 目标模块分组、摘录高亮、targetKind 徽标），capability 不在时才降级 `(0,0)` 并标注 legacy mode。仍待：overlay 可见性验证（当前 server 端直接读 session View，未单测覆盖）、cache/失效层。
 - 验证：根 / 嵌套 module、文件首字节就是 wiki link、同 source 多 occurrence、label reference 不混入 module backlink、includeDefinition=false、unsaved overlay 新增 / 删除引用、跨文件变化使当前 cache dirty；大结果测试确认 payload 不复制同文件全文 N 次。
 
-=== 阶段 4：出链与可靠 snapshot freshness（未落地）
+=== 阶段 4：出链与可靠 snapshot freshness（部分落地）
 
-- 上游补 `notist/documentReferences(outgoing)` 和 / 或标准 documentLink；保留 resolved、missing、external occurrence；增加 `notist/publishSnapshot`。插件注册 `notist-outgoing-links`，store 从启发式 debounce 切到 generation barrier。
+- 上游 `notist/documentReferences(outgoing)` 与插件 `notist-outgoing-links` 已于 2026-08-27 落地（resolved occurrence + target kind；missing occurrence 目前仍只进 diagnostics，不进引用列表）。仍待：标准 textDocument/documentLink、`notist/publishSnapshot` generation barrier（store 从启发式 debounce 切换）。
 - 验证：relative / absolute / self / super、module label、heading default id、显式 `core::reference`、escape / raw / malformed、missing / external；didChange 后 diagnostics 不变仍收到 snapshot notification并刷新；build failure 不发布旧数据为新 generation。
 
 === 阶段 5：Explorer 增强；graph 另立设计（未落地）

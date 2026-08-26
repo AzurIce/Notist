@@ -14,7 +14,7 @@
 - 每个 leaf 只渲染属于自己当前文本的诊断。不同 leaf 的文档内容未收敛时，不强行把一个 leaf 的 range 当作另一个 leaf 的 range。
 - “没有诊断”和“没有可用的服务器”是不同状态；状态栏与全局面板必须同时表达这两个维度。
 
-产品形态已经收敛为“状态栏计数 + 全局 Problems 底栏 + 当前编辑器 F8 导航”。Problems 是挂在主编辑根容器上的单实例可收缩区域，不注册 Obsidian workspace view，因而不会生成标签页；它只占中间编辑区，左右原生侧栏保持全高。文件浏览器徽标不做，诊断正确性不绑在 Obsidian 私有 DOM 上。
+产品形态已经收敛为“状态栏计数 + 全局 Problems 底栏 + 当前编辑器 F8 导航”。Problems 是挂在主编辑根容器上的单实例可收缩区域，不注册 Obsidian workspace view，因而不会生成标签页；它只占中间编辑区，左右原生侧栏保持全高。文件浏览器徽标曾在此裁决放弃，2026-08-27 已推翻并落地（文件计数 pill + 文件夹聚合，见文末补充），诊断正确性仍不绑在 Obsidian 私有 DOM 上。
 
 == 现状审计
 
@@ -46,13 +46,19 @@ server 崩溃进入 `onLspState("error")` 时，当前代码会立即置空 sess
 
 === 1. 未打开文件的可见性
 
-**决策：全局诊断面板为主，状态栏计数为入口，暂不做文件浏览器徽标。**
+**决策：全局诊断面板为主，状态栏计数为入口，暂不做文件浏览器徽标。**（2026-08-27 更新：徽标已落地，见文末补充；本节其余决策仍然有效。）
 
 全局 Problems 读取已经存在的 `lspDiags`，按 vault-relative path 分组，显示每条诊断的 severity、消息、code 和行列；点击行打开对应 `.not` 文件并 reveal range。它天然覆盖 server 的全 vault 分组推送，也能显示未打开文件，不需要重复请求或改变 server 协议。空集合、文件删除和重命名都会刷新 Map 与面板，避免幽灵条目。
 
 状态栏在 ready 时显示聚合后的 error/warning，例如 `E 2 W 3`；点击仍打开 LSP 操作菜单，其中 `Toggle Problems` 控制底栏。Problems 标题同时显示 total/error/warning，服务器 off/starting/error 与 ready/zero 使用不同文案。聚合直接遍历镜像，不扫描磁盘。
 
-文件浏览器徽标明确放弃：Notist World 继续复用并 CSS 过滤原生 Explorer；徽标需要把 absolute path 映射到 `TFile`，再依赖文件树未公开 DOM 或未来 decoration API，升级风险高于收益。实验性的自建 `notist-explorer` 已删除，不能为了诊断统计再复制一套文件树。
+文件浏览器徽标当时明确放弃：Notist World 继续复用并 CSS 过滤原生 Explorer；徽标需要把 absolute path 映射到 `TFile`，再依赖文件树未公开 DOM 或未来 decoration API，升级风险高于收益。实验性的自建 `notist-explorer` 已删除，不能为了诊断统计再复制一套文件树。
+
+=== 2026-08-27 补充：徽标落地与 Problems 重构
+
+徽标裁决已推翻并实现（`src/explorer-badges.ts`）：两个 World 复用同一个原生 explorer（CSS 过滤），装饰一次同时覆盖两边；`.nav-file-title[data-path]` / `.nav-folder-title[data-path]` 是长期稳定约定，风险收益重新核算后 DOM 耦合代价可接受。文件行显示 severity 色调计数 pill，文件夹聚合全部后代计数（读诊断 Map 而非 DOM，折叠目录也可见）；点击 pill 打开该文件第一条诊断（capture 拦截，不触发 explorer 自身行为）。一个 `MutationObserver`（childList/subtree/data-path）在树重渲染后幂等重贴，应用 pass 前 disconnect 防自触发，80ms debounce；`layout-change` 重建 leaf 后自愈重绑。根目录不放徽标（状态栏已有全库计数）。
+
+Problems 底栏同日重构：文件分组头变真按钮可折叠（目录面包屑 + severity 色调计数徽标）、severity 过滤 chips、诊断行改图标 + 消息 + `source(code)` + 行列、展开态持久化（`problemsExpanded`）、Esc 收起与 ↑/↓ 键盘导航、推送重渲染保持滚动位置；并修复 `changeLayout` 整体替换 `.workspace-split.mod-root` 导致 dock 随旧节点消失的问题（`mount()/isMounted()` + `layout-change` 重挂载）。全部细节与实机验证见 #<vault::ai::2026-08-27 obsidian-notist ux polish and document references>。
 
 === Problems 的宿主边界
 

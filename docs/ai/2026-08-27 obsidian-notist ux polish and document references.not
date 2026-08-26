@@ -1,0 +1,72 @@
+@![implementation = "partial"]
+= obsidian-notist UX polish and document references
+
+2026-08-27 会话记录：对当日早些时候合并的 diagnostics 与语义面板两批功能做系统性 UX 整改，并落地 #<vault::ai::2026-08-26 obsidian-notist semantic panels design> 裁定的上游协议 `notist/documentReferences`，替代入链面板的 `(0,0)` 位置降级。实现证据：obsidian-notist `src/explorer-badges.ts`（新）、`src/problems-dock.ts`、`src/semantic-panels.ts`、`src/main.ts`、`src/notist-view.ts`、`src/lsp/session.ts`、`styles.css`；notist `crates/notist-cli/src/lsp.rs`、`crates/notist-service/src/request.rs`、`crates/notist-cli/tests/lsp_queries.rs`。
+
+== Explorer 诊断角标（推翻早前的"明确放弃"裁决）
+
+#<vault::ai/2026-08-26 obsidian-notist lsp diagnostics design> 曾裁定"文件浏览器徽标不做"，理由是需要依赖未公开 DOM。本次推翻该裁决并落地，理由有三：
+
+- 实际检查发现 Explorer 的稳定选择器足够可靠：`.nav-file-title[data-path]` / `.nav-folder-title[data-path]` 是长期稳定约定，且两个 World 复用同一个原生 explorer（CSS 过滤），装饰一次同时覆盖两边（自建 `notist-explorer` 已删除，无需双实现）。
+- 没有任何诊断入口时，explorer 里的 `.not` 文件完全无法预示"这个库里有 373 个问题"，这比 DOM 耦合的代价更伤。
+- 观察点收敛为一个 `MutationObserver`（`childList + subtree + data-path` 属性），应用 pass 前先 disconnect 防自触发，80ms debounce 合并折叠/展开时的批量重渲染。
+
+行为：文件行显示 severity 色调（error/warning/info）的计数 pill；文件夹聚合全部后代计数（读诊断 Map 而非 DOM，折叠的文件夹也能显示）；点击 pill 跳到该文件第一条诊断（capture 阶段拦截，不触发 explorer 自身的打开行为）；`layout-change` 后 leaf 重建时自愈重绑。根目录 `/` 不放徽标（状态栏已有全库计数，vault 头部常驻徽标是噪音）。
+
+== Problems 底栏重构
+
+- 文件分组头变成真按钮（键盘可达），chevron 折叠/展开单文件分组，目录以灰色面包屑显示在文件名后。
+- severity 过滤 chips（All/Errors/Warnings/Info，带计数，再点一次回到 All）；折叠态头部显示聚合摘要文案。
+- 诊断行改为图标（lucide circle-alert/triangle-alert/info/lightbulb，多候选名防 lucide 改名）+ 消息 + `source(code)` + 行:列，完整消息进原生 title tooltip；行内 F8/Shift-F8 导航不变。
+- 展开态持久化到 data.json（`problemsExpanded`），重载后保持。
+- Esc 收起，↑/↓ 在诊断行间移动焦点，Enter 打开；诊断推送重渲染时保持滚动位置。
+- 修复一个继承自首版的 bug：`toggleWorld` 的 `changeLayout` 会整体替换 `.workspace-split.mod-root`，挂在它下面的 dock 随旧节点一起消失。现在 dock 抽出 `mount()/unmount()/isMounted()`，`layout-change` 时发现失联自动重挂载（实机验证双 World 往返 dock 均存活）。
+
+== `notist/documentReferences` 协议（上游）
+
+语义面板设计文档"推荐协议"一节的落地，命名与该文档一致。
+
+- service：`CoreRequest::DocumentReferences { view_id, path, direction, include_definition }` → `CoreResponse::DocumentReferences(DocumentReferencesResult { revision, items })`。`path` 直接解析其 owner module（`modules().find(file_id)`），无位置选择子。item 含 `{path, range(字节), direction, source_module, target_module, target_label, target_kind, url, is_definition}`，incoming 复用 `references_to(module.id)`，outgoing 复用 `references()` 过滤 `source_module_id`，`target_kind` 沿用 `resolve_module_label` 的 module/scope/resource 三分。`revision` 来自 `workspace.revision().raw()`，作 freshness gate。
+- cli：方法名 `notist/documentReferences`，参数 camelCase `{textDocument, direction, includeDefinition}`；capability 声明在 `server_capabilities.experimental.notist.documentReferences`（含 directions 数组）。响应 items 在 LSP 边界转 URI + UTF-16 range（复用 per-path `ClientSource` line index）。
+- 测试：`lsp_queries.rs` 新增端到端用例——`infra.not` 以 heading 开头（offset 0 落在 heading 符号上）时标准 `textDocument/references` 查不到模块入链，而新方法以文档身份直接返回正确的 incoming item；同时覆盖 outgoing 的 targetKind/url 与 includeDefinition 标记。既有 7 个黑箱测试全绿。
+
+== 插件侧接入
+
+- `session.ts`：保存 initialize 返回的 serverCapabilities；`supportsDocumentReferences()` 做一次性能力协商；`documentReferences(path, direction)` 走 queryRequest（同 key latest-wins 取消）。session 头注释补充该扩展契约。
+- `NotistReferencesView` 抽象基类统一入链/出链两个 ItemView（`notist-backlinks` / `notist-outgoing-links`，后者新注册）：按协议方向分组——入链按源文件分组、出链按目标模块分组（嵌套路径显示为 `::` 面包屑）；每条引用显示行号 + 单行摘录（引用目标 range 高亮标记，超长两端省略）+ 出链的 `→ target` 尾注；target_kind 徽标显示在组头。摘录文本优先取打开编辑器的 live overlay，否则 `vault.cachedRead`。不可用时回退 `(0,0)` 标准引用并在 summary 标注 legacy mode。
+- 工具栏：两个面板与大纲共享 sticky 工具栏（目标文件路径 + 动作按钮），大纲新增 collapse-all/expand-all/refresh。
+
+== 大纲与符号面板
+
+- 大纲树：chevron 折叠（session 内记忆，collapse-all/expand-all 工具栏动作）、缩进参考线、heading level 角标。
+- 跟随光标：`.not` 编辑器 updateListener 在 selectionSet/docChanged 时把光标行经 plugin `notifyViewCursor` 扇出（去重），大纲高亮光标上方最近的标题并 scrollIntoView。数据刷新后从 `lastNotistCursor` 恢复高亮。
+- 符号 palette：↑/↓/Enter/Escape 键盘导航，hover 同步选中，module/annotation 图标区分，modal 宽度对齐 Obsidian prompt。
+
+== 实机验证（obsidian CLI，~/Files/Vault）
+
+- `bun run build` 通过；重载后 dev:errors 空，LSP ready，能力协商 `supportsDocumentReferences() === true`。
+- 角标：文件夹聚合正确（`_Dashboard→372`、`Designs→142` 与诊断分布一致）；角标点击打开 `notist-highlight-fixture.not` 并定位第一条诊断。
+- Problems：373 行渲染、chips 过滤（Warnings→空态文案正确）、分组折叠（aria-expanded 与行数变化正确）。
+- 大纲：14 行嵌套树 + level 角标；光标移到 line 4 后 `0. 速览对比` 获得高亮。
+- 入链（DEMO.not）：`1 reference`，README.not 分组 + `- #<DEMO>` 摘录高亮；出链（README.not）：`→ DEMO` + module kind 徽标。
+- 双 World 往返：dock 两侧均存活、角标保留、无 notist leaf 泄漏进 md world。
+- 截图核对：explorer 聚合徽标、chips、分组头、行内诊断图标、状态栏 `E 159 W 0` 同屏正常。
+
+== 重要发现：`[[wiki]]` 不是现行语法
+
+排查"基础设施.not 入链为空"时确认：notist 已按 #<vault::designs::language::target-and-union> 废弃 `[[...]]` wiki 引用，现行引用语法是 `#<target>` Target 字面量（`link(<...>)` 同入口）。vault 中大量 `[[基础设施]]` 文本在语义层不构成引用边，`notist references` 与 documentReferences 返回 0 是正确行为，不是实现缺陷。渲染层对 `[[...]]` 显示为未解析文本。这一点对后续任何"入链数量对不上"的报告都适用：先检查用的是不是 `#<...>`。
+
+== 残留与后续
+
+- 标准文档 `textDocument/documentLink`（出链内联跳转的公共协议面）仍未实现，出链面板当前只走扩展协议。
+- `notist/publishSnapshot` 语义 barrier 未做（面板新鲜度仍是 pull + 机会性失效，见语义面板设计文档）。
+- 诊断 version 门控 / session generation / 文本 hash（diagnostics 设计文档阶段一）未做。
+- 协议扩展使上游可撤掉 CLI `references` 的位置歧义说明（`notist references <SELECTOR>` 本就以模块为 selector，不受影响）。
+
+== 参考
+
+- #<vault::ai/2026-08-26 obsidian-notist lsp diagnostics design>：Problems 首版设计与"徽标不做"的原裁决（本文推翻并记录理由）。
+- #<vault::ai/2026-08-26 obsidian-notist semantic panels design>：documentReferences 推荐协议、`(0,0)` 降级的歧义分析、面板分层路线。
+- #<vault::designs::host::lsp-adapter>：LSP adapter 协议边界。
+- #<vault::designs::language::target-and-union>：`[[wiki]]` 废弃、`#<target>` 现行语法的裁定。
+- #<vault::obsidian-notist::lsp>：插件 LSP 总体接入与 server 契约（本文补充 experimental capability 一节）。

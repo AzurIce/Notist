@@ -73,7 +73,7 @@ obsidian-notist 插件为 `.not` 编辑器接入 notist LSP 的设计方案。�
 2. *completion + hover*：打字体验核心。
 3. *definition 跳转*；references/document symbol/workspace symbol 暂不接 UI——它们与 explorer 模块树、backlinks 面板、graph 同属「语义面板」阶段（#<vault::obsidian-notist> 落地顺序），届时数据源直接复用本方案的 session 层。
 
-*实施状态（2026-08-27）*：1–3 已全部落地并实机验证；diagnostics 另已补齐全 vault Problems 底栏、状态计数、F8/Shift-F8 与 stop/error/rename/delete 的展示清理。version 门控、session generation 和多 leaf 文本 hash 匹配仍是 partial，见 #<vault::ai::2026-08-26 obsidian-notist lsp diagnostics design>。实现记录与踩坑见 #<vault::ai::2026-08-26 obsidian-notist lsp client implementation>。
+*实施状态（2026-08-27）*：1–3 已全部落地并实机验证；diagnostics 另已补齐全 vault Problems 底栏、状态计数、F8/Shift-F8 与 stop/error/rename/delete 的展示清理。同日晚些时候 Problems 底栏重构为分组折叠 + severity chips + 键盘导航，explorer 新增诊断角标，语义面板已接 `notist/documentReferences` experimental capability（可靠入链/出链），见 #<vault::ai::2026-08-27 obsidian-notist ux polish and document references>。version 门控、session generation 和多 leaf 文本 hash 匹配仍是 partial，见 #<vault::ai::2026-08-26 obsidian-notist lsp diagnostics design>。实现记录与踩坑见 #<vault::ai::2026-08-26 obsidian-notist lsp client implementation>。
 
 == 风险与开放点
 
