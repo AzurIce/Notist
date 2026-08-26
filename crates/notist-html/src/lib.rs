@@ -130,10 +130,26 @@ impl HtmlProjectionRegistry {
             .handlers
             .iter()
             .find(|handler| element_name_matches(handler.element_name(), &node.name))
-            .and_then(|handler| handler.project(&node));
+            .and_then(|handler| {
+                tracing::trace!(
+                    target: "notist_html",
+                    element = %node.name,
+                    handler = handler.element_name(),
+                    "projection handler matched"
+                );
+                handler.project(&node)
+            });
         match projected {
             Some(nodes) => self.reduce_nodes(nodes, depth + 1),
-            None => vec![fallback_projection_node(node)],
+            None => {
+                tracing::debug!(
+                    target: "notist_html",
+                    element = %node.name,
+                    fallback_tag = %fallback_html_tag(&node.name),
+                    "no projection handler; emitting fallback tag"
+                );
+                vec![fallback_projection_node(node)]
+            }
         }
     }
 
@@ -192,6 +208,12 @@ pub fn register_web_component_renderer(
     element_name: &str,
     tag: &str,
 ) {
+    tracing::debug!(
+        target: "notist_html",
+        element = element_name,
+        tag,
+        "registered declarative web-component projection"
+    );
     registry.register_projection(WebComponentHtmlRenderer {
         element_name: element_name.to_owned(),
         tag: tag.to_owned(),
@@ -710,12 +732,12 @@ impl Renderer<'_, '_> {
             }
             self.output.push('"');
         }
-        if !class_written {
-            if let Some(classes) = annotation_classes {
-                self.output.push_str(" class=\"");
-                escape_attribute(&mut self.output, &classes);
-                self.output.push('"');
-            }
+        if !class_written
+            && let Some(classes) = annotation_classes
+        {
+            self.output.push_str(" class=\"");
+            escape_attribute(&mut self.output, &classes);
+            self.output.push('"');
         }
         self.range_attributes_range(node.range);
         self.output.push('>');
