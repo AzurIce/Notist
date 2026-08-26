@@ -1,21 +1,21 @@
 // Mermaid Web Component for the Notist mermaid plugin.
 // The HTML renderer emits <notist-mermaid data-source="..." data-theme="...">;
-// this module upgrades it into a real custom element that renders the diagram
-// in the browser with Mermaid (ESM from CDN). Source validity was already
-// checked at evaluation time by semantic.wasm.
+// this module upgrades it into a real custom element that renders diagrams
+// locally through the plugin's own mmdr-backed WebAssembly module. Source
+// validity was already checked at evaluation time by semantic.wasm, and the
+// browser renderer uses the same parser, so both sides agree on what is a
+// valid diagram.
 
-let mermaidPromise = null;
+import init, { render } from './mmdr-renderer.js';
 
-function loadMermaid() {
-  if (!mermaidPromise) {
-    mermaidPromise = import(
-      'https://cdn.jsdelivr.net/npm/mermaid@11/dist/mermaid.esm.min.mjs'
-    );
+let rendererReady = null;
+
+function loadRenderer() {
+  if (!rendererReady) {
+    rendererReady = init();
   }
-  return mermaidPromise;
+  return rendererReady;
 }
-
-let nextDiagramId = 0;
 
 class NotistMermaid extends HTMLElement {
   connectedCallback() {
@@ -55,11 +55,9 @@ class NotistMermaid extends HTMLElement {
       return;
     }
 
-    loadMermaid()
-      .then(async ({ default: mermaid }) => {
-        mermaid.initialize({ startOnLoad: false, theme });
-        const id = `notist-mermaid-${nextDiagramId++}`;
-        const { svg } = await mermaid.render(id, source);
+    loadRenderer()
+      .then(() => {
+        const svg = render(source, theme);
         const figure = document.createElement('div');
         figure.className = 'notist-mermaid-figure';
         figure.innerHTML = svg;

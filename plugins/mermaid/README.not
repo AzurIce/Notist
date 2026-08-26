@@ -1,21 +1,29 @@
 = mermaid plugin package
 
-该目录是可分发的 Notist Wasm component 插件包，采用「Rust 校验 + 浏览器
-渲染」的混合架构：
+该目录是可分发的 Notist Wasm component 插件包，渲染全链路基于
+https://github.com/1jehuang/mermaid-rs-renderer（mmdr）：
 
-- `plugin.json` 只声明 package envelope：identity、`wasm.module` 与顶层
-  `render` contribution；
-- `semantic.wasm` 是由 `plugins/mermaid-wasm` 构建的 wasip2 component；
-  computed `mermaid` handler 在求值期用
-  https://github.com/1jehuang/mermaid-rs-renderer（mmdr）的 parser 校验
-  `source` 的合法性（坏图在 build / LSP 阶段即报诊断，不等到浏览器），
-  然后把调用规约为 data-only `mermaid::diagram` 节点，携带 `source` 与
-  `theme` 字段。不做 SVG 渲染——图表布局的燃料开销与宿主 per-call
-  预算不匹配（实测 10 节点链式 flowchart 渲染需 ~855M fuel），故渲染
-  放在浏览器端；
-- `assets/mermaid.js` 为 HTML target 提供 Web Component hydration：从
-  CDN 动态 import Mermaid v11 并在 Shadow DOM 内渲染；CDN 不可达或渲
-  染失败时回退展示源码。
+- 求值期：`plugins/mermaid-wasm` 构建的 wasip2 component 用 mmdr 的
+  parser 校验 `source` 合法性，坏图在 build / LSP 阶段即报宿主诊断；
+  通过后调用规约为 data-only `mermaid::diagram` 节点，携带 `source` 与
+  `theme` 字段；
+- 浏览器期：`assets/mmdr-renderer_bg.wasm` 由 `plugins/mermaid-web`
+  构建（wasm-bindgen，同一 mmdr），custom element 在浏览器本地完成
+  SVG 渲染——无 CDN、无 mermaid.js 依赖；校验与渲染使用同一套解析器，
+  「过检即可渲染」。
+
+目录结构：
+
+```text
+plugins/mermaid/
+├── plugin.json          # envelope + 声明式 web-component 投影
+├── semantic.wasm        # 求值期校验（来自 plugins/mermaid-wasm）
+├── README.not
+└── assets/
+    ├── mermaid.js       # custom element hydration
+    ├── mmdr-renderer.js # wasm-bindgen 胶水（勿手改）
+    └── mmdr-renderer_bg.wasm
+```
 
 从 `Notist.toml` 装载：
 
@@ -36,17 +44,26 @@ flowchart LR
 ```
 
 签名等价于 `mermaid(source: String, theme: String = "default", trailing
-body: Content) -> Content`；`theme` 支持 Mermaid 的 `default`、`dark`、
-`neutral`、`forest`，非法取值与解析失败都产生宿主诊断。
+body: Content) -> Content`；`theme` 支持 `default`、`dark`、`neutral`、
+`forest`，两侧词表一致。
 
-沙箱约束：每次 dispatch 受宿主 per-call fuel 预算（50M）限制；flowchart
-路径首次解析含 guest 惰性 regex 初始化（约 21M），后续常规解析在个位数
-M 内。
+上游补丁说明：mmdr 0.3.1 的布局计时使用 `std::time::Instant`，在
+`wasm32-unknown-unknown` 上会 panic。本仓库使用 fork
+https://github.com/AzurIce/mermaid-rs-renderer 分支 `web-time-instant`
+（改用 `web-time`）并按 rev 钉死；待上游合并修复后应切回 crates.io。
+文本度量在浏览器沙箱内自动走 mmdr 的 fallback 宽度（无系统字体访问）。
 
-重建 component fixture：
+重建产物：
 
 ```sh
+# 求值期校验组件
 cd plugins/mermaid-wasm
 cargo build --target wasm32-wasip2 --release
 cp target/wasm32-wasip2/release/notist_plugin_mermaid_wasm.wasm ../mermaid/semantic.wasm
+
+# 浏览器端渲染组件（wasm-bindgen CLI 经 flake devShell 提供）
+cd plugins/mermaid-web
+nix develop -c cargo build --target wasm32-unknown-unknown --release
+nix develop -c wasm-bindgen --target web --out-dir ../mermaid/assets \
+  --out-name mmdr-renderer target/wasm32-unknown-unknown/release/notist_plugin_mermaid_web.wasm
 ```
