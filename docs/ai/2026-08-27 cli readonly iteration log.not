@@ -1,0 +1,19 @@
+= CLI 只读能力迭代日志
+
+按 #<vault::ai::2026-08-27 cli readonly query eval harness> 的框架自主迭代只读查询面。终止规则：连续 5 次改进尝试在固定任务集（T1–T6，4 条件）上均无显著成绩改善则收口。每轮迭代在本文件追加一节：思路、改动、跑分、结论。
+
+== 假设库（来自 docs/ai 先行研究的落地差距清单）
+
+依赖综合审计结论（三篇 CLI 研究 + designs/host 规范 vs 当前二进制逐条核对），按预期收益排序：
+
+1. A2 节选择器：`read module#标题默认id` 只返回标题行而非整节子树——取证第二跳系统性失败。修复点 analysis `label_scope_range` 回退分支 / service `resolve_source`。
+2. A4 计数暴露：tantivy `Count` 已算出 total 但不对外；加 matched_modules/matched_units 让"有没有 X"不必翻页到 complete。
+3. A1 检索单位：operator=all 是 per-unit AND（10k 文档单元粒度），跨节概念查询零命中（实测 "游标 续读" 0 hit 而 query-contract 同时覆盖两词）。改为模块级候选交集 + Should 证据分重排。
+4. A7 SearchHit 附最近 heading 上下文；A8 outline/read 页级 source 去重；A9 公开投影去 canonical_root；A3 --exclude-scope；A5 归档先验；A6 exact 字段语义对齐。
+
+== 迭代 0：基线（baseline）
+
+运行中。任务集 T1–T6 × 4 条件 × n=1。完成判读后此处记录通过矩阵与关键 token 数据。
+
+== 待续
+

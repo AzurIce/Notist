@@ -109,9 +109,14 @@ def rebuild_sandbox(run_name: str, cond: str, corpus_kind: str | None) -> Path |
     return dest
 
 
-def run_one(cond: str, task: dict, runs_root: Path, timeout_s: int) -> dict:
+def run_one(cond: str, task: dict, runs_root: Path, timeout_s: int,
+            args_resume: bool = False) -> dict:
     cfg = CONDITIONS[cond]
     out_dir = runs_root / "output" / f"{task['id']}__{cond}"
+    if args_resume and (out_dir / "meta.json").exists():
+        print(f"[{cond}] {task['id']}: skip (exists)", flush=True)
+        return {"condition": cond, "task": task["id"], "returncode": "cached",
+                "duration_s": None}
     out_dir.mkdir(parents=True, exist_ok=True)
 
     sandbox = rebuild_sandbox(runs_root.name, cond, cfg["corpus"])
@@ -142,16 +147,23 @@ def run_one(cond: str, task: dict, runs_root: Path, timeout_s: int) -> dict:
             "cwd": str(sandbox), "notist_provenance": provenance,
             "started_utc": datetime.now(timezone.utc).isoformat()}
     start = time.time()
+    def _text(v):
+        if v is None:
+            return ""
+        if isinstance(v, bytes):
+            return v.decode("utf-8", errors="replace")
+        return v
+
     try:
         proc = subprocess.run(cmd, cwd=str(sandbox), env=env,
                               capture_output=True, text=True, timeout=timeout_s)
         meta["returncode"] = proc.returncode
-        answer = proc.stdout
-        meta["stderr_tail"] = proc.stderr[-1500:]
+        answer = _text(proc.stdout)
+        meta["stderr_tail"] = _text(proc.stderr)[-1500:]
     except subprocess.TimeoutExpired as e:
         meta.update(returncode=None, timed_out=True)
-        answer = e.stdout if isinstance(e.stdout, str) else ""
-        meta["stderr_tail"] = (e.stderr or "")[-1500:]
+        answer = _text(e.stdout)
+        meta["stderr_tail"] = _text(e.stderr)[-1500:]
     meta["duration_s"] = round(time.time() - start, 1)
 
     (out_dir / "answer.txt").write_text(answer)
@@ -170,6 +182,7 @@ def main() -> None:
     ap.add_argument("--only", nargs="*", help="task id prefixes")
     ap.add_argument("--timeout", type=int, default=600)
     ap.add_argument("--name", required=True)
+    ap.add_argument("--skip-existing", action="store_true")
     args = ap.parse_args()
 
     spec = json.loads(Path(args.tasks).read_text())
@@ -194,7 +207,8 @@ def main() -> None:
     for cond in args.conditions:
         for task in tasks:
             manifest["invocations"].append(
-                run_one(cond, task, runs_root, args.timeout))
+                run_one(cond, task, runs_root, args.timeout,
+                    args.skip_existing))
             (runs_root / "manifest.json").write_text(
                 json.dumps(manifest, ensure_ascii=False, indent=2))
 
