@@ -732,9 +732,7 @@ impl Renderer<'_, '_> {
             }
             self.output.push('"');
         }
-        if !class_written
-            && let Some(classes) = annotation_classes
-        {
+        if !class_written && let Some(classes) = annotation_classes {
             self.output.push_str(" class=\"");
             escape_attribute(&mut self.output, &classes);
             self.output.push('"');
