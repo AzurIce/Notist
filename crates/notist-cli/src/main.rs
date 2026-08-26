@@ -11,6 +11,7 @@ use notist_service::{CoreRequest, CoreResponse, ProtocolViewKind};
 use sha2::{Digest, Sha256};
 
 mod build;
+mod logging;
 mod lsp;
 mod official_docs;
 mod output;
@@ -690,6 +691,7 @@ fn parse_snippet_bytes(value: &str) -> Result<usize, String> {
 }
 
 fn main() -> ExitCode {
+    logging::init_from_env();
     if let Some(code) = maybe_run_with_pager() {
         return code;
     }

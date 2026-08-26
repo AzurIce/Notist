@@ -5,6 +5,7 @@ edition.workspace = true
 license.workspace = true
 
 [dependencies]
+tracing.workspace = true
 notist-eval.workspace = true
 notist-plugin-core.workspace = true
 notist-model.workspace = true

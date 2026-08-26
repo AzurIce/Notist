@@ -296,11 +296,12 @@ fn placeholder_value(ty: &Type, name: &str) -> Value {
 
 fn safe_evaluation_diagnostics(
     source: &str,
-    parse: &notist_syntax::Parse,
+    parse: &Parse,
     signatures: &SignatureSet,
     seeds: &HashMap<String, Value>,
     function_registry: &FunctionRegistry,
 ) -> Vec<EvalDiagnostic> {
+    let _span = tracing::debug_span!(target: "notist_analysis", "check_evaluation_pass").entered();
     let mut registry = function_registry.clone();
     for (name, signature) in signatures.iter() {
         if registry.get(name).is_none() {
@@ -742,6 +743,13 @@ impl WorkspaceSnapshot {
         view_id: ViewId,
         revision: Revision,
     ) -> io::Result<Self> {
+        let _span = tracing::debug_span!(
+            target: "notist_analysis",
+            "snapshot_build",
+            revision = revision.0
+        )
+        .entered();
+        let started = std::time::Instant::now();
         let root = engine.root().to_path_buf();
         let overlays = normalize_overlays(&root, overlays)?;
         if let Some(path) = overlays.keys().find(|path| !path.starts_with(&root)) {
@@ -764,12 +772,17 @@ impl WorkspaceSnapshot {
         let mut signatures = analyzer_configuration.signatures.clone();
         // Instantiate components and collect one semantic contribution per
         // package. A failing package degrades to a diagnostic instead of
-        // bricking the whole snapshot, so package edits stay recoverable.
+        // bricking the snapshot, so package edits stay recoverable.
         let mut plugin_load_diagnostics = Vec::new();
         let loaded_plugins =
             match notist_plugin_host::load_plugins_from_vault(&root, configuration.as_deref()) {
                 Ok(plugins) => plugins,
                 Err(error) => {
+                    tracing::warn!(
+                        target: "notist_analysis",
+                        error = %error,
+                        "plugin package failed to load during snapshot build"
+                    );
                     plugin_load_diagnostics.push(format!("plugin package failed to load: {error}"));
                     Vec::new()
                 }
@@ -794,7 +807,14 @@ impl WorkspaceSnapshot {
             &mut shaping_registry,
             &loaded_plugins,
         )
-        .map_err(|error| io::Error::new(io::ErrorKind::InvalidInput, format!("{error:?}")))?;
+        .map_err(|error| {
+            tracing::warn!(
+                target: "notist_analysis",
+                ?error,
+                "snapshot-build plugin registration failed"
+            );
+            io::Error::new(io::ErrorKind::InvalidInput, format!("{error:?}"))
+        })?;
         let html_contributions = loaded_plugins
             .iter()
             .flat_map(|plugin| plugin.html_contributions.iter().cloned())
@@ -871,6 +891,13 @@ impl WorkspaceSnapshot {
         workspace.insert_overlay_only_modules(engine, &overlays, &document_versions)?;
         workspace.build_module_signatures();
         workspace.analyze_references();
+        tracing::debug!(
+            target: "notist_analysis",
+            modules = workspace.modules.len(),
+            diagnostics = workspace.diagnostics.len(),
+            elapsed_us = started.elapsed().as_micros() as u64,
+            "snapshot build complete"
+        );
         Ok(workspace)
     }
 
@@ -1562,6 +1589,12 @@ impl WorkspaceSnapshot {
     /// plugin registry captured when the snapshot was built; unregistered
     /// calls degrade to data calls instead of executing anything.
     pub fn structured_module(&self, module_id: ModuleId) -> Option<StructuredModule> {
+        let _span = tracing::debug_span!(
+            target: "notist_analysis",
+            "structured_module",
+            revision = self.revision.0
+        )
+        .entered();
         let module = self.module_by_id(module_id)?;
         let source = module.source.as_deref()?;
         // D0004: evaluation runs with the imported bindings seeded by the
@@ -1601,6 +1634,8 @@ impl WorkspaceSnapshot {
     /// hard error instead, because silently evaluating with half-removed
     /// handlers hides bugs behind unreduced calls.
     pub fn runtime_plugins(&self) -> io::Result<RuntimePlugins> {
+        let _span = tracing::debug_span!(target: "notist_analysis", "runtime_plugins_composition")
+            .entered();
         let mut registry = (*self.function_registry).clone();
         if let Some(configuration) = self.configuration.as_deref()
             && let Ok(plugins) =
@@ -1613,6 +1648,12 @@ impl WorkspaceSnapshot {
                 // aborted with Duplicate and the pass silently ran against a
                 // registry whose computed handlers had been removed.
                 for (name, _) in &plugin.signatures {
+                    tracing::trace!(
+                        target: "notist_analysis",
+                        package = %plugin.id,
+                        signature = %name,
+                        "unregistering stale name before fresh registration"
+                    );
                     registry.unregister(name);
                     if let Some((package, element)) = name.split_once("::")
                         && let Some(alias) =
@@ -1628,6 +1669,11 @@ impl WorkspaceSnapshot {
                     format!("cannot re-register runtime plugins: {error:?}"),
                 )
             })?;
+        } else {
+            tracing::debug!(
+                target: "notist_analysis",
+                "runtime plugin composition skipped (no configuration or package load failed)"
+            );
         }
         Ok(RuntimePlugins {
             evaluator: Evaluator::new(registry),
@@ -1646,6 +1692,13 @@ impl WorkspaceSnapshot {
         module_id: ModuleId,
         runtime: &RuntimePlugins,
     ) -> Option<StructuredModule> {
+        let _span = tracing::debug_span!(
+            target: "notist_analysis",
+            "render_evaluation_pass",
+            revision = self.revision.0,
+            runtime_plugins = true
+        )
+        .entered();
         let module = self.module_by_id(module_id)?;
         let source = module.source.as_deref()?;
         let seeds = self
@@ -2306,6 +2359,11 @@ impl WorkspaceSnapshot {
                 }
                 let bindings = match (module.source.as_deref(), module.parse.as_ref()) {
                     (Some(source), Some(parse)) => {
+                        tracing::debug!(
+                            target: "notist_analysis",
+                            module = %module.logical_path,
+                            "seeds pass evaluating module"
+                        );
                         let evaluation =
                             evaluator.evaluate_parsed_with_bindings(source, parse, seeds);
                         attributes.insert(module_id, evaluation.module_attributes);

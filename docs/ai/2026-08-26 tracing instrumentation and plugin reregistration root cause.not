@@ -1,0 +1,71 @@
+@![implementation = "research"]
+= 结构化追踪落地与插件重注册根因分析
+
+回应 2026-08-26 调试 mermaid 插件时暴露的「几乎无 tracing」问题：scratch vault（`[plugins.mermaid]` + `[plugins.shader]`）执行 `notist build --no-daemon` 后，最终 HTML 里 mermaid 调用以 fallback 标签 `<mermaid>` / `<mermaid-mermaid>` 原样出现（调用节点未被规约），而 shader 却「正常」输出 `<notist-shader>`。手工插桩观察到的时序是 load#1 → dispatch×3 → dispatch×3 → load#2 → 渲染阶段零 dispatch。本篇记录：根因链（哪个阶段用哪份 registry、为什么最终渲染没 dispatch）、两次求值 pass 的归属、以及为项目补齐的结构化追踪设计。基线 feat/tracing-instrumentation @ 7d0d92f。
+
+== 根因链：runtime_plugins 的「先卸载、后重装」在 data-only 签名上翻车
+
+一次 build 的 registry 流转：
+
+1. **snapshot build**（`WorkspaceSnapshot::build`，`crates/notist-analysis/src/lib.rs:736`）：空 registry 上经 `register_loaded_contributions` 全新注册插件贡献——函数、签名（含 data-only 元素如 `mermaid::diagram`）、裸名 alias、schema 全部落位。此份 registry 被 Arc 捕获进快照。
+2. **渲染 pass 组合**（`WorkspaceSnapshot::runtime_plugins()`，`crates/notist-analysis/src/lib.rs:1634`）：克隆快照 registry，对每个插件包**只卸载 computed 函数名与其 legacy 裸名 alias**，然后 `register_loaded` 重装全新组件实例。
+3. **翻车点**：卸载范围漏掉了 data-only 元素的签名条目。mermaid 声明 `mermaid::diagram`、shader 声明 `shader::canvas`、component-echo 声明 `component-echo::note`——它们只有签名没有函数，`unregister(function.name())` 与 alias 卸载都够不到。重装时 `install_contribution` 的签名查重（`crates/notist-eval/src/function.rs:346`：`!has_function && self.signatures.contains_key(name)`）撞上残留签名，返回 `Err(Duplicate("mermaid::diagram"))`。
+4. **吞错**：`let _ = register_loaded(...)` 把错误静默丢弃。且 `register_loaded_contributions` 按包循环、每包原子提交，BTreeMap 序里 mermaid 先失败即中止——shader 连尝试的机会都没有。
+5. **净效果比不修还差**：卸载已经发生。render evaluator 拿到的是一份「computed 函数与裸名 alias 全被摘除、data-only 签名还在」的残缺 registry，比快照原版更糟。于是 `structured_module_with_runtime_plugins` 逐模块求值时三个调用全部查不到 handler，按 fixpoint 规则留成未规约 leaf——这就是「渲染阶段再无任何 dispatch」。
+
+tracing 实测（见下文复现）确认：`contribution registration failed; package handlers are not installed package=component-echo function=component-echo::note reason=Duplicate`。
+
+== 为什么 shader 看起来正常：内置 handler 掩盖了同一条管线
+
+- HTML 投影层的匹配规则是 `element_name_matches`（`crates/notist-html/src/lib.rs:303`）：声明名等于全名**或等于实际名的最后一段**。内置 `ShaderHtmlProjectionHandler`（声明名 `shader`）因此能命中未规约 leaf `shader` / `shader::shader`，直接把它投影成 `<notist-shader>`——eval 管线坏没坏它根本不知道。
+- mermaid 无内置 handler，未规约 leaf 落进 `fallback_projection_node`，`fallback_html_tag` 把名字里的 `::` 换成 `-`，得到 `<mermaid>` 与 `<mermaid-mermaid>`——这正是观察到的两种标签。
+- 声明式 `WebComponentHtmlRenderer`（element=`canvas`/`diagram` → tag）只匹配**已规约的 data-only leaf**（`shader::canvas` / `mermaid::diagram`），handler 缺失时这些 leaf 根本不会被产出，所以注册了也从未命中。诊断时别被 `<notist-shader>` 的出现误导成「shader 链路健康」。
+
+== 两次求值 pass 的归属
+
+load#1 与 load#2 之间的两组 dispatch 并非同一 pass 重复：
+
+- **pass A：D0004 seeds pass**——`build()` 内 `module_bindings` 递归，按依赖序逐模块求值一次，产出 import seeds 与模块属性（tracing 目标 `notist_analysis`，事件 `seeds pass evaluating module`）。
+- **pass B：check 评估 pass**——`safe_evaluation_diagnostics`（`crates/notist-analysis/src/lib.rs:297`）在 build 的引用/检查阶段对每个源码模块再做一次完整求值收集运行期诊断。它把快照 registry 里缺失签名的名字补成 SchemaFunction stub，但插件 computed 名**已在 registry 里且是活的 ComponentFunction**，所以这组 dispatch 打的是真实 wasm 组件。
+
+两组合计正好是观察到的 dispatch mermaid×2 + shader×1 × 2。这也顺带回答了「快照注册表里 stub 与活跃 ComponentFunction 的替换时机」：stub 只在 check pass 内部临时补缺，不会替换活跃实例；真正的替换发生在 runtime_plugins 的卸载+重装，而那一步正是坏掉的。
+
+== 结构化追踪设计（本次落地）
+
+依赖：workspace 引入 `tracing` + `tracing-subscriber`（env-filter）。订阅器由 CLI 进程入口安装（`crates/notist-cli/src/logging.rs`），daemon 子进程继承环境变量故同样生效；**默认关闭**。
+
+环境变量语义：
+
+| 变量 | 行为 |
+|---|---|
+| 未设置 | 完全静默 |
+| `NOTIST_LOG=debug` | 裸级别自动限定到 `notist_*` targets，wasmtime/cranelift 内部日志不放出来 |
+| `NOTIST_LOG=<含 = 或 , 的串>` | 原样作为 EnvFilter 指令（如 `notist_plugin_host=trace,notist_analysis=off`） |
+| `RUST_LOG` | NOTIST_LOG 未设置时的兜底，语义不加工 |
+
+覆盖的关键路径（target 即 crate 名）：
+
+| target | 事件/span |
+|---|---|
+| `notist_plugin_host` | `load_package` span（manifest→编译+实例化+guest init 计时）；guest init 后剩余 fuel；每次 `plugin_dispatch` span（元素名、耗时、剩余 fuel）；contribution 注册成功计数与**失败 warn** |
+| `notist_eval` | `evaluate_pass` span（每次文档求值）；trace 级 node engine dispatch（元素名、深度、剩余 call 预算） |
+| `notist_analysis` | `snapshot_build` span；seeds pass 逐模块事件；check pass span；`runtime_plugins_composition` span（含重装失败的 warn——本次 bug 从此一眼可见）；`structured_module` / `render_evaluation_pass` span |
+| `notist_service` | `render_workspace` span |
+| `notist_html` | 声明式 web-component 投影注册；handler 命中（trace）/fallback 兜底（debug，含生成的 tag） |
+| `notist_cli` | 页面写出、插件资产与 site styles 拷贝 |
+
+== 复现方法与实测时间线
+
+```sh
+# scratch vault 指向 worktree 内已提交的 component-echo（同为 computed+data-only 结构）+ shader
+cargo run --quiet -- build /tmp/opencode/tracing-vault --no-daemon -o /tmp/opencode/vault-dist-tracing
+NOTIST_LOG=debug cargo run --quiet -- build /tmp/opencode/tracing-vault --no-daemon -o /tmp/opencode/vault-dist-tracing 2>&1 | sed 's/\x1b\[[0-9;]*m//g'
+```
+
+一次运行的 debug 时间线（节选）完整呈现管线故事：`snapshot_build` 内 load#1 + contribution registered ×2 → seeds pass dispatch echo/shader → `check_evaluation_pass` 再 dispatch 一轮 → `render_workspace` 内 `runtime_plugins_composition` load#2 → **WARN registration failed (Duplicate)** → `render_evaluation_pass` 零 dispatch → html `no projection handler; emitting fallback tag element=component-echo::echo` → 资产拷贝。输出 HTML 同时含 `<component-echo-echo>`（fallback）与 `<notist-shader>`（内置 handler masking），与 mermaid 案例同构。
+
+== 修复方向（未实施，避免与本仓库外进行中的改动冲突）
+
+1. **卸载范围补全**：`runtime_plugins()` 应对每个包卸载其全部贡献名——`plugin.signatures` 的所有键加全部 alias，而非仅 computed 函数名与 legacy alias；或给 FunctionRegistry 提供「按包替换」原子 API。
+2. **失败回退语义**：先重装成功再丢弃旧实例（candidate registry 已天然支持），失败时保留旧 handler，而不是像现在这样先把旧的卸掉再发现装不回去。
+3. 观察项：check pass（pass B）对插件组件的重复 dispatch 是真实 wasm 调用，若后续追求构建性能可考虑让检查路径复用 seeds 结果或降级为静态签名校验，但正确性优先级高于此。

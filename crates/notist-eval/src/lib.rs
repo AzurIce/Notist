@@ -123,6 +123,12 @@ impl Evaluator {
 
     /// Unified-node variant of the pre-parsed bindings entry point with a
     /// caller-provided shaping registry.
+    #[tracing::instrument(
+        target = "notist_eval",
+        name = "evaluate_pass",
+        skip_all,
+        fields(roots = parse.root.items.len())
+    )]
     pub fn evaluate_parsed_with_shaping(
         &self,
         source: &str,
@@ -146,6 +152,12 @@ impl Evaluator {
         }));
         diagnostics.extend(lowered.diagnostics);
         diagnostics.append(&mut evaluation.diagnostics);
+        tracing::debug!(
+            target: "notist_eval",
+            diagnostics = diagnostics.len(),
+            forest = evaluation.forest.len(),
+            "evaluate pass complete"
+        );
         Evaluation {
             lowered: lowered.nodes,
             forest: evaluation.forest,

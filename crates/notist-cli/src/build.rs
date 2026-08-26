@@ -220,6 +220,7 @@ pub(crate) fn copy_plugin_assets(root: &Path, output: &Path) -> Result<(), Box<d
     }
     let config_text = std::fs::read_to_string(&config_path)?;
     let packages = notist_plugin_host::plugin_package_dirs(root, Some(&config_text))?;
+    let mut copied = 0usize;
     for (name, package_dir) in packages {
         let package_dir = notist_plugin_host::resolve_package_dir(&package_dir)
             .map_err(|error| std::io::Error::new(std::io::ErrorKind::InvalidInput, error))?;
@@ -234,9 +235,21 @@ pub(crate) fn copy_plugin_assets(root: &Path, output: &Path) -> Result<(), Box<d
             let path = entry.path();
             if path.is_file() {
                 fs::copy(&path, target_dir.join(entry.file_name()))?;
+                tracing::debug!(
+                    target: "notist_cli",
+                    from = %path.display(),
+                    to = %target_dir.join(entry.file_name()).display(),
+                    "copied plugin asset"
+                );
+                copied += 1;
             }
         }
     }
+    tracing::debug!(
+        target: "notist_cli",
+        files = copied,
+        "plugin asset copy complete"
+    );
     Ok(())
 }
 
@@ -265,6 +278,12 @@ pub(crate) fn copy_site_styles(
             );
             continue;
         }
+        tracing::debug!(
+            target: "notist_cli",
+            from = %source.display(),
+            to = %target.display(),
+            "copied site style"
+        );
         web_paths.push(format!("_notist/styles/{style}"));
     }
     Ok(web_paths)
@@ -316,7 +335,12 @@ pub(crate) fn write_rendered_site_with_plugins(
         if let Some(parent) = page_path.parent() {
             fs::create_dir_all(parent)?;
         }
-        fs::write(page_path, html)?;
+        fs::write(&page_path, html)?;
+        tracing::debug!(
+            target: "notist_cli",
+            page = %page_path.display(),
+            "wrote page"
+        );
     }
     // Resource files are copied wholesale next to their module pages under
     // their real file names (D0010 leaves the copy policy to the CLI). A
