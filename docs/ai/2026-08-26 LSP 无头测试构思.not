@@ -1,0 +1,96 @@
+= LSP 无头测试构思
+
+回应 [[vault::designs::thoughts]] 中「2026-08-26 LSP 无头测试」一条：现在缺少对 LSP 的无头测试，接入侧（obsidian-notist）靠人工"感受"发现问题，低效且只能看到表面异常。本文盘点现状、定位真实缺口，并给出可落地的 harness 设计。行为依据 main @ fcc725e 的 `crates/notist-cli/src/lsp.rs`（约 2040 行）。
+
+== 核心结论
+
+**notist 并非"没有 LSP 测试"，缺的是黑箱/外部接口这一层。** 语义核心与协议适配层都有测试，但从"外部客户端看到的协议面"视角看，13 个测试里只有 1 个真正从协议外打进来，而且它还绕过了 initialize 握手。契约目前只存在于 obsidian-notist `src/lsp/session.ts` 的头注释里，不在可执行断言里——这就是问题要靠人工发现、且无法沉淀回归的根源。
+
+== 现状盘点
+
+三层结构与既有资产：
+
+- 纯库层 `notist-analysis`：`AnalyzerView` 直接暴露 Rust API（diagnostics/hover/definition/completions/references/symbols），42 个单元测试。
+- 服务层 `notist-service`：`NotistService::execute(CoreRequest)` 协议无关，可当库直调。
+- LSP 适配层 `crates/notist-cli/src/lsp.rs`：`lsp-server` + `lsp-types`，stdio，单文件含全部实现与 13 个内联测试。capabilities 广播 UTF-16 编码、FULL sync、completion/hover/definition/references/documentSymbol/workspaceSymbol。
+
+仓库无集成测试目录（`crates/*/tests` 不存在）、无 golden/snapshot、无 insta/assert_cmd；唯一 dev-dependency 是 tempfile。
+
+=== lsp.rs 13 个测试按观察点分层
+
+| 层 | 测试 | 外部视角有效性 |
+| :-- | --- | --- |
+| 纯单元 | `converts_utf8_offsets_and_utf16_positions`、`converts_file_paths_and_new_uri_type`、`preserves_multi_level_missing_parents_in_new_paths`、`maps_service_severity_labels_to_lsp_severities` | 只验转换/映射函数 |
+| handler 直调 | `exposes_document_and_workspace_symbols`、`argument_completion_inside_unknown_nested_call_offers_no_outer_parameters`、`completion_uses_unsaved_workspace_sources`、`keeps_marked_vaults_independent_within_one_worktree`、`distinguishes_error_code_classes`（直接调 `handle_request`） | 手工构造 params 绕过 JSON-RPC 分派/编解码/循环 |
+| session 方法直调 | `rejects_did_change_version_regressions`、`rejects_contract_violating_full_sync_changes`（都直调 `session.change()`） | onChange 场景测的是内部方法，不是 didChange 通知 |
+| 半协议 | `reports_rejected_did_change_via_log_message`（出向管道真、`handle_notification` 手动调） | 无 main_loop |
+| 完整循环 | `protocol_loop_serves_overlay_diagnostics_completion_hover_and_definition`（唯一） | 真实 `main_loop` + `Connection::memory()` 内存管道：didOpen → baseline/delta 诊断 → completion/hover/definition → didClose 清空 |
+
+唯一完整循环测试的残留缺口：它直接 spawn `main_loop`，而真实的 `initialize → … → shutdown → exit` 生命周期能力在 `run()`（lsp.rs:54 起），从未被任何测试走过；`server_capabilities()`（lsp.rs:76）广播的内容没有任何断言。
+
+=== 对外接口覆盖矩阵（对照 capabilities 自广播）
+
+| 协议面 | 协议级覆盖 |
+|---|---|
+| didOpen / didClose / completion / hover / definition | 有（完整循环测试） |
+| didChange | 仅 session 方法级，未过循环 |
+| textDocument/references | 零覆盖（capabilities 已声明！） |
+| didSave | 零覆盖 |
+| documentSymbol / workspaceSymbol | 仅 handler 直调 |
+| initialize/shutdown/exit、capabilities 内容 | 零覆盖 |
+| publishDiagnostics 增量去重、跨文件联动 | 仅 baseline 与 close 清空 |
+| $/cancelRequest、UTF-16 编码端到端（emoji/CJK 文本上发 position） | 零覆盖 |
+
+== 方案对比
+
+- *方案 A：扩写 `Connection::memory()` 进程内协议测试*。零成本起步，但永远够不到进程边界/stdio 帧编解码/daemon 路径，且 lsp.rs 单文件持续膨胀。适合继续存在，不是答案本体。
+- *方案 B：黑箱无头 harness（推荐主线）*。`crates/notist-cli/tests/` 集成测试拉起真实二进制 `notist lsp --no-daemon` 子进程，stdio 上做完整 JSON-RPC 会话。
+- *方案 C：JSON/fixture 驱动的剧本 runner*。表达力与前期成本不划算，不做；等 B 的场景 API 攒多再考虑外置数据。
+
+== 方案 B 设计
+
+=== 结构
+
+```text
+crates/notist-cli/tests/
+  lsp_headless.rs   # 或 lsp/mod.rs 分场景文件
+```
+
+- 用 `env!("CARGO_BIN_EXE_notist")` 拉起子进程，argv 为 `lsp --no-daemon`，cwd 指向临时 vault 根（或经 initialize 的 rootUri 传入）。
+- 帧编解码不用手写：`lsp_server::Message::read/write` 直接吃任意 `Read/Write`，测试端复用。
+- 封装 `LspTestClient`：spawn、initialize 握手（返回并断言 capabilities）、`expect_notification(method, 谓词, timeout)`、`request(id, method, params) -> Response`、stderr 捕获缓冲、shutdown/exit 收尾。
+- 每个测试独立子进程（启动快、无串扰）；超时给足（2s+）；CI 即现有 `.github/workflows/docs.yml` 的 `cargo test --workspace --locked`，无需额外接线。
+
+=== 关键设计点
+
+- *诊断推送的确定性等待是成败核心*。不要 sleep；提供 `expect_diagnostics(uri, 谓词, timeout)` 显式等待原语。后台 rebuild 是 latest-wins 异步的，debounce 在测试路径下应为 0 或可配置（server 内已有 `rebuild_blocking` 思路可参考）。
+- *stderr 是契约的一部分*。"违规 didChange 只记 stderr（现另有 window/logMessage 推送）"本身就是 obsidian 侧依赖的行为，harness 应捕获子进程 stderr 并可断言其内容。
+- *daemon 模式二阶段再做*：同一 harness 去掉 `--no-daemon` 的变体，顺带覆盖 daemon spawn/socket 回收路径（`service.rs`）。第一阶段不碰 IPC，避免 harness 调试叠加传输不稳定。
+- *白盒测试保留*：12 个白盒继续管"内部对不对"，新增层专管"外面看到的对不对"。两层判据不同。
+
+=== 场景清单（系统性外部接口测试）
+
+判断标准两层：(a) LSP 规范本身（错误码、生命周期、消息 shape）；(b) 自己声明的能力与实际行为一致（capabilities 即契约）。
+
+| 类别 | 场景 | 断言要点 |
+| :--- | ---- | ---- |
+| 生命周期 | initialize → initialized → shutdown → exit | capabilities 逐字段断言；正常退出码 0 |
+| 生命周期 | 未 shutdown 直接 exit | 进程按规范非零退出 |
+| 同步契约 | 合法 FULL didChange | 接受并触发诊断更新 |
+| 同步契约 | 带 range 增量 / 多 change 数组 / 版本回退 | 拒绝后连接存活、后续请求正常、logMessage 警告到达 |
+| 推送语义 | didChange 后仅变化文件重发 | 无关文件不收到重复推送 |
+| 推送语义 | 改文件 A 清除文件 B 的引用诊断 | B 也收到更新推送 |
+| 推送语义 | didClose 清空 | 空集推送 |
+| 编码端到端 | emoji/CJK 行上 hover/completion 的 UTF-16 position | 结果 range 以 UTF-16 回读校验 |
+| 错误规范 | 畸形 JSON 帧 | 解析容错不断流 |
+| 错误规范 | 未知方法 / 坏参数 | -32601 / -32602 |
+| 取消 | $/cancelRequest | 会话不崩、后续请求 id 不串 |
+| 未声明面 | references / documentSymbol / workspaceSymbol / didSave 经真实循环走通 | 补齐矩阵零覆盖项 |
+
+== 价值与后续
+
+- 把 `session.ts` 头注释里的口头契约（FULL sync 严格拒绝、baseline→delta 推送模型、cancelRequest best-effort）升级为可执行规格：契约破坏在本仓库先红灯，而不是等 Obsidian 用户感知"表面异常"。
+- 接入侧发现的每个 bug 从此有标准归宿：变成一个 headless 场景用例。
+- 配合 AGENTS.md 的跨仓库审查流程：LSP 契约变更时先跑本层测试再评估三姊妹项目影响。
+
+实施记录（herdr worktree 子代理开搭 harness 骨架 + 首批场景）：见后续补记。
