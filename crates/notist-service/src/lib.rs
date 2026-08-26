@@ -50,9 +50,20 @@ pub struct DaemonInstanceId(pub String);
 #[derive(Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd, Serialize, Deserialize)]
 pub struct ServiceViewId(pub u64);
 
+/// Serialize the canonical root as a stable sentinel: host absolute paths
+/// must not leak into public projections and outputs must stay identical
+/// across checkouts (see designs/host/query-contract on deterministic output).
+fn scrub_canonical_root<S>(_: &std::path::Path, serializer: S) -> Result<S::Ok, S::Error>
+where
+    S: serde::Serializer,
+{
+    serializer.serialize_str(".")
+}
+
 #[derive(Clone, Debug, Eq, Hash, PartialEq, Serialize, Deserialize)]
 pub struct VaultIdentity {
-    pub canonical_root: PathBuf,
+    #[serde(serialize_with = "scrub_canonical_root")]
+    pub canonical_root: std::path::PathBuf,
     pub fingerprint: String,
 }
 

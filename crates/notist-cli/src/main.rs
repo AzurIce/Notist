@@ -950,7 +950,12 @@ fn run(cli: Cli) -> Result<ExitCode, Box<dyn std::error::Error>> {
                         .title
                         .as_ref()
                         .map_or(String::new(), |title| format!(" — {title}"));
-                    println!("{}  {}{}", item.module, path, title);
+                    println!(
+                        "{}  {}{}",
+                        quote_module(&item.module),
+                        path,
+                        title
+                    );
                 }
                 emit_continuation("modules", &page.page, &page.coverage);
             }
@@ -1240,7 +1245,12 @@ fn run(cli: Cli) -> Result<ExitCode, Box<dyn std::error::Error>> {
                     },
                     |range| format!("{}:{}", item.location.relative_path.display(), range.start),
                 );
-                println!("{} -> {}  {}", item.source, item.target, position);
+                println!(
+                    "{} -> {}  {}",
+                    quote_module(&item.source),
+                    quote_module(&item.target),
+                    position
+                );
             }
             emit_continuation("references", &locations.page, &locations.coverage);
             let _ = root;
@@ -1673,6 +1683,16 @@ fn query_response_error(
         Ok(ExitCode::from(3))
     } else {
         Err(format!("service returned an unexpected {command} response").into())
+    }
+}
+
+/// Wrap module ids containing spaces in quotes so agents can copy them as a
+/// single citable token (`vault::ai::2026-07-11 typst element function...`).
+fn quote_module(module: &str) -> String {
+    if module.contains(' ') {
+        format!("\"{module}\"")
+    } else {
+        module.to_string()
     }
 }
 
