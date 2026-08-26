@@ -1,0 +1,22 @@
+{
+  "package": "mermaid",
+  "version": "0.1.0",
+  "api-version": "0.1",
+  "wasm": {
+    "module": "semantic.wasm"
+  },
+  "render": {
+    "html": {
+      "contributions": [
+        {
+          "element": "diagram",
+          "trusted": true,
+          "web-component": {
+            "tag": "notist-mermaid",
+            "module": "assets/mermaid.js"
+          }
+        }
+      ]
+    }
+  }
+}

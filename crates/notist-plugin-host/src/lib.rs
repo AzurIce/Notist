@@ -493,7 +493,12 @@ pub fn load_package(package_dir: &Path) -> Result<LoadedPlugin, String> {
 
 /// Fuel granted to one plugin dispatch. With `consume_fuel` enabled this
 /// bounds even non-terminating Wasm loops without adding a timer thread.
-const WASM_FUEL_PER_CALL: u64 = 10_000_000;
+///
+/// Sized so a cold first dispatch can pay one-time guest lazy
+/// initialization (regex tables, parser tables): measured cold-start parse
+/// of a flowchart through the mermaid plugin costs ~21M fuel, warm parses
+/// stay under ~4M.
+const WASM_FUEL_PER_CALL: u64 = 50_000_000;
 
 /// Maximum linear memory a plugin may allocate.
 const WASM_MAX_MEMORY_BYTES: usize = 16 * 1024 * 1024;
@@ -1251,6 +1256,93 @@ mod tests {
         assert_eq!(canvas.name, "shader::canvas");
         assert_eq!(canvas.get("width"), Some(&NodeValue::Int(800)));
         assert_eq!(canvas.get("height"), Some(&NodeValue::Int(600)));
+    }
+
+    #[test]
+    fn mermaid_component_validates_source_and_reduces_to_data_leaf() {
+        let package_dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("../../plugins/mermaid")
+            .canonicalize()
+            .unwrap();
+        let plugin = load_package(&package_dir).unwrap();
+        assert_eq!(plugin.id, "mermaid");
+        assert_eq!(plugin.functions.len(), 1);
+        assert_eq!(plugin.functions[0].name(), "mermaid::mermaid");
+        assert_eq!(plugin.signatures.len(), 2);
+        assert!(
+            plugin
+                .signatures
+                .iter()
+                .any(|(name, _)| name == "mermaid::diagram")
+        );
+        assert_eq!(plugin.html_contributions.len(), 1);
+        assert_eq!(plugin.html_contributions[0].element, "diagram");
+        assert!(plugin.html_contributions[0].trusted);
+        let component = plugin.html_contributions[0]
+            .web_component
+            .as_ref()
+            .expect("mermaid declares a web component");
+        assert_eq!(component.tag, "notist-mermaid");
+        assert_eq!(component.module, "assets/mermaid.js");
+
+        let mut registry = core_registry();
+        let mut shaping = ShapingRegistry::new();
+        register_loaded_contributions(&mut registry, &mut shaping, &[plugin]).unwrap();
+        assert!(registry.get("mermaid").is_some(), "bare handler alias");
+        let evaluator = Evaluator::new(registry);
+
+        let evaluation = evaluator.evaluate_with_shaping(
+            "#mermaid(source: r#\"\"\"
+flowchart LR
+  A --> B --> C
+\"\"\"#)[caption]",
+            &shaping,
+        );
+        assert!(
+            evaluation.diagnostics.is_empty(),
+            "{:?}",
+            evaluation.diagnostics
+        );
+        let diagram = &evaluation.forest[0];
+        assert_eq!(diagram.name, "mermaid::diagram");
+        assert!(diagram.block);
+        assert_eq!(
+            diagram.get("theme"),
+            Some(&NodeValue::String("default".into()))
+        );
+        let Some(NodeValue::String(source)) = diagram.get("source") else {
+            panic!("diagram must carry the source");
+        };
+        assert!(source.contains("flowchart LR"));
+        assert!(!diagram.range.is_empty());
+        assert!(diagram.children.iter().any(|child| child.is_core("text")
+            && child.get("text") == Some(&NodeValue::String("caption".into()))));
+
+        let themed = evaluator.evaluate_with_shaping(
+            "#mermaid(source: \"pie; A: 40, B: 60\", theme: \"dark\")[]",
+            &shaping,
+        );
+        assert!(themed.diagnostics.is_empty(), "{:?}", themed.diagnostics);
+        assert_eq!(
+            themed.forest[0].get("theme"),
+            Some(&NodeValue::String("dark".into()))
+        );
+
+        let broken = evaluator.evaluate_with_shaping(
+            "#mermaid(source: \"not a mermaid diagram @@@\")[]",
+            &shaping,
+        );
+        assert!(
+            !broken.diagnostics.is_empty(),
+            "parse failures must surface as diagnostics"
+        );
+
+        let unknown_theme = evaluator
+            .evaluate_with_shaping("#mermaid(source: \"pie\", theme: \"nope\")[]", &shaping);
+        assert!(
+            !unknown_theme.diagnostics.is_empty(),
+            "unknown themes must surface as diagnostics"
+        );
     }
 
     #[test]

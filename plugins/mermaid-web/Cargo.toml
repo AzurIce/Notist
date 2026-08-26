@@ -1,0 +1,23 @@
+[package]
+name = "notist-plugin-mermaid-web"
+version = "0.1.0"
+edition = "2024"
+publish = false
+
+[workspace]
+
+[lib]
+crate-type = ["cdylib"]
+
+[dependencies]
+# Notist fork of 1jehuang/mermaid-rs-renderer pinned to the web-time patch
+# (branch web-time-instant): layout timing must not panic on wasm browsers.
+# Revert to crates.io once upstream lands the fix.
+mermaid-rs-renderer = { git = "https://github.com/AzurIce/mermaid-rs-renderer", rev = "14991c365dbd953c0e33e5046aa62080e21cb66f", default-features = false }
+wasm-bindgen = "=0.2.121"
+
+[profile.release]
+opt-level = "z"
+lto = true
+codegen-units = 1
+strip = true

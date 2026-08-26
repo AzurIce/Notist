@@ -1860,6 +1860,36 @@ mod tests {
     }
 
     #[test]
+    fn renders_mermaid_plugin_as_web_component_with_escaped_source() {
+        let mut diagram = Node::block_call("mermaid::diagram", TextRange::new(0, 5))
+            .arg("source", "flowchart LR\n  A --> B\n  B --> C & D <E>")
+            .arg("theme", "dark");
+        diagram.children = vec![text("caption", 2, 10)];
+        let mut renderers = HtmlRendererRegistry::new();
+        register_web_component_renderer(&mut renderers, "diagram", "notist-mermaid");
+
+        let html = render_element_tree_with_renderers(
+            &tree(vec![diagram]),
+            &RenderOptions::default(),
+            Some(&|_, _| None),
+            &[],
+            &renderers,
+        );
+        assert!(html.contains("<notist-mermaid"), "{html}");
+        assert!(html.contains("class=\"notist-web-component\""));
+        assert!(html.contains("data-notist-element=\"mermaid::diagram\""));
+        assert!(
+            html.contains(
+                "data-source=\"flowchart LR\n  A --&gt; B\n  B --&gt; C &amp; D &lt;E&gt;\""
+            ),
+            "{html}"
+        );
+        assert!(html.contains("data-theme=\"dark\""));
+        assert!(html.contains("</notist-mermaid>"));
+        assert!(!html.contains("<script"));
+    }
+
+    #[test]
     fn renders_shader_plugin_as_webgpu_canvas() {
         let mut shader = Node::block_call("shader::shader", TextRange::new(0, 5))
             .arg(

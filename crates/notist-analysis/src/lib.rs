@@ -1597,17 +1597,24 @@ impl WorkspaceSnapshot {
     /// single composed environment, honoring the rule that a document
     /// evaluation consumes one captured registry instead of reloading
     /// packages mid-pass. A failing package load degrades to the captured
-    /// registry, mirroring snapshot-build behavior.
-    pub fn runtime_plugins(&self) -> RuntimePlugins {
+    /// registry, mirroring snapshot-build behavior; a failing re-install is a
+    /// hard error instead, because silently evaluating with half-removed
+    /// handlers hides bugs behind unreduced calls.
+    pub fn runtime_plugins(&self) -> io::Result<RuntimePlugins> {
         let mut registry = (*self.function_registry).clone();
         if let Some(configuration) = self.configuration.as_deref()
             && let Ok(plugins) =
                 notist_plugin_host::load_plugins_from_vault(&self.root, Some(configuration))
         {
             for plugin in &plugins {
-                for function in &plugin.functions {
-                    registry.unregister(function.name());
-                    if let Some((package, element)) = function.name().split_once("::")
+                // Release every name the package owns — computed handlers and
+                // data-only signatures alike. Unregistering only `functions`
+                // left data-only signatures behind, so the atomic re-register
+                // aborted with Duplicate and the pass silently ran against a
+                // registry whose computed handlers had been removed.
+                for (name, _) in &plugin.signatures {
+                    registry.unregister(name);
+                    if let Some((package, element)) = name.split_once("::")
                         && let Some(alias) =
                             notist_plugin_host::plugin_legacy_alias(package, element)
                     {
@@ -1615,11 +1622,16 @@ impl WorkspaceSnapshot {
                     }
                 }
             }
-            let _ = notist_plugin_host::register_loaded(&mut registry, &plugins);
+            notist_plugin_host::register_loaded(&mut registry, &plugins).map_err(|error| {
+                io::Error::new(
+                    io::ErrorKind::InvalidInput,
+                    format!("cannot re-register runtime plugins: {error:?}"),
+                )
+            })?;
         }
-        RuntimePlugins {
+        Ok(RuntimePlugins {
             evaluator: Evaluator::new(registry),
-        }
+        })
     }
 
     /// Runtime projection variant of [`WorkspaceSnapshot::structured_module`]:
@@ -3792,6 +3804,71 @@ fn file_stem(path: &Path) -> io::Result<String> {
 mod tests {
     use super::*;
     use tempfile::TempDir;
+
+    #[test]
+    fn runtime_plugins_replaces_packages_with_data_only_elements() {
+        let echo_dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("../../plugins/component-echo")
+            .canonicalize()
+            .unwrap();
+        let root = TempDir::new().unwrap();
+        fs::write(
+            root.path().join("Notist.toml"),
+            format!(
+                "[plugins.component-echo]\npath = {}\n",
+                toml_path(&echo_dir)
+            ),
+        )
+        .unwrap();
+        fs::write(
+            root.path().join("README.not"),
+            "#component-echo::echo(message: \"hi\")[]\n\n#component-echo::note(message: \"kept\")[].",
+        )
+        .unwrap();
+
+        let snapshot = WorkspaceSnapshot::load(root.path()).unwrap();
+        assert!(
+            snapshot.diagnostics().is_empty(),
+            "{:?}",
+            snapshot.diagnostics()
+        );
+        let runtime = snapshot.runtime_plugins().unwrap();
+        let module = snapshot.modules().next().unwrap();
+        let structured = snapshot
+            .structured_module_with_runtime_plugins(module.id, &runtime)
+            .unwrap();
+        assert!(
+            structured.diagnostics.is_empty(),
+            "re-registration must not drop computed handlers: {:?}",
+            structured.diagnostics
+        );
+
+        // The computed handler dispatched and reduced to its text output.
+        fn contains_text(nodes: &[Node], expected: &str) -> bool {
+            nodes.iter().any(|node| {
+                (node.is_core("text")
+                    && node.get("text") == Some(&NodeValue::String(expected.into())))
+                    || contains_text(&node.children, expected)
+            })
+        }
+        assert!(contains_text(&structured.tree.roots, "hi"));
+        // The data-only element stayed as a leaf carrying its argument.
+        fn contains_named_leaf(nodes: &[Node], name: &str) -> bool {
+            nodes.iter().any(|node| {
+                (node.name == name && node.get("message").is_some())
+                    || contains_named_leaf(&node.children, name)
+            })
+        }
+        assert!(contains_named_leaf(
+            &structured.tree.roots,
+            "component-echo::note"
+        ));
+    }
+
+    /// Renders a path as a TOML string literal with forward slashes.
+    fn toml_path(path: &std::path::Path) -> String {
+        format!("\"{}\"", path.to_string_lossy().replace('\\', "/"))
+    }
 
     #[test]
     fn structured_modules_expose_the_canonical_element_tree() {

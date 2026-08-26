@@ -111,9 +111,10 @@
               samply
               cargo-udeps
               miniserve
-              # wasm-bindgen-cli_0_2_106
+              # 与 plugins/mermaid-web 的 wasm-bindgen crate 版本严格一致，
+              # 否则生成的胶水与运行时 ABI 不匹配。
+              wasm-bindgen-cli
               # mdbook-katex
-              # wasm-bindgen-cli
               # mdbook-i18n-helpers
             ]);
         };

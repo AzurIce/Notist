@@ -1,0 +1,69 @@
+= mermaid plugin package
+
+该目录是可分发的 Notist Wasm component 插件包，渲染全链路基于
+https://github.com/1jehuang/mermaid-rs-renderer（mmdr）：
+
+- 求值期：`plugins/mermaid-wasm` 构建的 wasip2 component 用 mmdr 的
+  parser 校验 `source` 合法性，坏图在 build / LSP 阶段即报宿主诊断；
+  通过后调用规约为 data-only `mermaid::diagram` 节点，携带 `source` 与
+  `theme` 字段；
+- 浏览器期：`assets/mmdr-renderer_bg.wasm` 由 `plugins/mermaid-web`
+  构建（wasm-bindgen，同一 mmdr），custom element 在浏览器本地完成
+  SVG 渲染——无 CDN、无 mermaid.js 依赖；校验与渲染使用同一套解析器，
+  「过检即可渲染」。
+
+目录结构：
+
+```text
+plugins/mermaid/
+├── plugin.json          # envelope + 声明式 web-component 投影
+├── semantic.wasm        # 求值期校验（来自 plugins/mermaid-wasm）
+├── README.not
+└── assets/
+    ├── mermaid.js       # custom element hydration
+    ├── mmdr-renderer.js # wasm-bindgen 胶水（勿手改）
+    └── mmdr-renderer_bg.wasm
+```
+
+从 `Notist.toml` 装载：
+
+```toml
+[plugins.mermaid]
+path = "../plugins/mermaid"
+```
+
+调用形态：
+
+```not
+#mermaid(
+  source: r#"""
+flowchart LR
+  A --> B --> C
+"""#,
+)[题注]
+```
+
+签名等价于 `mermaid(source: String, theme: String = "default", trailing
+body: Content) -> Content`；`theme` 支持 `default`、`dark`、`neutral`、
+`forest`，两侧词表一致。
+
+上游补丁说明：mmdr 0.3.1 的布局计时使用 `std::time::Instant`，在
+`wasm32-unknown-unknown` 上会 panic。本仓库使用 fork
+https://github.com/AzurIce/mermaid-rs-renderer 分支 `web-time-instant`
+（改用 `web-time`）并按 rev 钉死；待上游合并修复后应切回 crates.io。
+文本度量在浏览器沙箱内自动走 mmdr 的 fallback 宽度（无系统字体访问）。
+
+重建产物：
+
+```sh
+# 求值期校验组件
+cd plugins/mermaid-wasm
+cargo build --target wasm32-wasip2 --release
+cp target/wasm32-wasip2/release/notist_plugin_mermaid_wasm.wasm ../mermaid/semantic.wasm
+
+# 浏览器端渲染组件（wasm-bindgen CLI 经 flake devShell 提供）
+cd plugins/mermaid-web
+nix develop -c cargo build --target wasm32-unknown-unknown --release
+nix develop -c wasm-bindgen --target web --out-dir ../mermaid/assets \
+  --out-name mmdr-renderer target/wasm32-unknown-unknown/release/notist_plugin_mermaid_web.wasm
+```
