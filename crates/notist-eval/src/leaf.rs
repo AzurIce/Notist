@@ -819,6 +819,13 @@ pub mod node_engine {
         };
 
         frame.dispatch_entry(limits, &node.name, node.range)?;
+        tracing::trace!(
+            target: "notist_eval",
+            element = %node.name,
+            depth = frame.depth,
+            budget_left = frame.remaining_calls,
+            "dispatch"
+        );
         let result = dispatch_handler(node, function, registry, limits, frame);
         frame.depth -= 1;
         result
