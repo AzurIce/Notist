@@ -2022,7 +2022,7 @@ fn render_workspace(
     // reference resolution and fragment rendering share one anchor assignment.
     // Plugin packages are composed once per pass and shared by every module;
     // per-module reloading would re-run the Wasm backend lifecycle N times.
-    let runtime_plugins = workspace.runtime_plugins();
+    let runtime_plugins = workspace.runtime_plugins()?;
     let mut prepared = Vec::with_capacity(modules.len());
     let mut anchor_maps = BTreeMap::new();
     let mut titles = BTreeMap::new();
