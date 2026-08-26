@@ -1,48 +1,58 @@
 #!/usr/bin/env bash
-# Post-build sanity probes for iteration 1 (module-candidate recall,
-# section expansion, matched totals). Run against frozen corpus before eval.
+# Post-build sanity probes for read-only CLI iterations.
+# iteration-1 expectations: module-candidate recall (bm25-v4), coverage
+# totals in JSON (snake_case fields), matched line in text mode,
+# heading-default-id selectors expand to whole sections.
 set -u
 W=/home/azurice/Files/worktrees/notist/feat-cli-readonly-queries
 B=$W/target/release/notist
 C=$W/evals/corpora/notist
 fail=0
 
-echo "== P1 multi-term candidate recall (expect hits>=1, bm25-v4, matched counts)"
-$B search "游标 续读" "$C" --no-daemon --format json | python3 -c '
+echo "P1 multi-term candidate recall"
+$B search "cursor 续读" "$C" --no-daemon --format json | python3 -c '
 import json,sys
-d=json.load(sys.stdin)
-r=d["result"]
-sp=r.get("search") or {}
-cov=r["diagnostics"]["coverage"] if "coverage" in r.get("diagnostics",{}) else r["diagnostics"]
-items=r["items"]
-ok = len(items)>=1 and sp.get("rankingVersion")=="bm25-v4" and cov.get("matchedModules") is not None
-print("hits",len(items),"rank",sp.get("rankingVersion"),"matched_modules",cov.get("matchedModules"),"matched_units",cov.get("matchedUnits"))
+r=json.load(sys.stdin)["result"]
+sp=r["search"]; cov=r["coverage"]
+ok = len(r["items"])>=1 and sp.get("ranking_version")=="bm25-v4" \
+     and cov.get("matched_modules")==3 and cov.get("complete")
+print(" hits",len(r["items"]),"mm",cov.get("matched_modules"),"mu",cov.get("matched_units"))
 raise SystemExit(0 if ok else 1)' || fail=1
 
-echo "== P2 single-term keeps bm25-v3 semantics and exposes totals"
-$B search "索引" "$C" --no-daemon --format json | python3 -c '
+echo "P2 single-term stays bm25-v3 and exposes totals"
+$B search "续读" "$C" --no-daemon --format json | python3 -c '
 import json,sys
-d=json.load(sys.stdin); r=d["result"]; sp=r.get("search") or {}
-print("rank",sp.get("rankingVersion"))
-raise SystemExit(0 if len(r["items"])>=1 else 1)' || fail=1
+r=json.load(sys.stdin)["result"]
+ok = r["search"].get("ranking_version")=="bm25-v3" and r["coverage"].get("matched_units") is not None
+print(" rank",r["search"].get("ranking_version"),"mu",r["coverage"].get("matched_units"))
+raise SystemExit(0 if ok else 1)' || fail=1
 
-echo "== P3 text mode prints matched modules line"
-$B search "游标 续读" "$C" --no-daemon | grep -q "^matched .* modules" && echo ok || fail=1
+echo "P3 text mode prints matched line"
+$B search "cursor 续读" "$C" --no-daemon | grep -q "^matched .* modules" && echo ok || fail=1
 
-echo "== P4 heading default id expands to section subtree"
-$B read "#<vault::grammar/标注与 scope 形态>" "$C" --format json | python3 -c '
+echo "P4 heading id expands to section subtree (expect span >200 bytes)"
+$B read "grammar.not#标注与 scope 形态" "$C" --format json | python3 -c '
 import json,sys
 d=json.load(sys.stdin)
-if not d.get("ok"):
-    print("selector rejected:", d.get("error",{}).get("code")); raise SystemExit(1)
-loc=d["result"]["items"][0]["location"] if d["result"].get("items") else d["result"]["selection"]
-span=loc["byte_range"]; size=span["end"]-span["start"]
-print("range span bytes:",size)
+br=d["result"]["items"][0]["location"]["byte_range"]
+size=br["end"]-br["start"]
+print(" span",size,"bytes, end at line-anchor of next heading")
 raise SystemExit(0 if size>200 else 1)' || fail=1
 
-echo "== P5 operator=any untouched"
-$B search "游标 续读" "$C" --no-daemon --operator any --format json | python3 -c '
-import json,sys; d=json.load(sys.stdin); print("hits",len(d["result"]["items"]))
-raise SystemExit(0 if len(d["result"]["items"])>=1 else 1)' || fail=1
+echo "P5 zero-hit negative still complete+hinted"
+$B search "不存在的词组zzz" "$C" --no-daemon --format json | python3 -c '
+import json,sys
+r=json.load(sys.stdin)["result"]
+cov=r["coverage"]
+ok = len(r["items"])==0 and cov["complete"] and cov.get("matched_modules")==0
+raise SystemExit(0 if ok else 1)' && echo ok || fail=1
 
+
+echo "P6 search hits carry section attribution"
+$B search "续读" "$C" --no-daemon --format json | python3 -c '
+import json,sys
+items=json.load(sys.stdin)["result"]["items"]
+hits=[i for i in items if i.get("section_title") or i.get("section_id")]
+print(" with-section:",len(hits),"/",len(items))
+raise SystemExit(0 if hits else 1)' || fail=1
 exit $fail

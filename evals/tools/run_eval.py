@@ -191,7 +191,7 @@ def main() -> None:
         tasks = [t for t in tasks if any(t["id"].startswith(o) for o in args.only)]
 
     runs_root = EVALS / "runs" / args.name
-    runs_root.mkdir(parents=True)
+    runs_root.mkdir(parents=True, exist_ok=True)
 
     manifest = {
         "run": args.name,

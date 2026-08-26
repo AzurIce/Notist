@@ -1078,6 +1078,14 @@ fn run(cli: Cli) -> Result<ExitCode, Box<dyn std::error::Error>> {
             } else {
                 println!("showing {} {group}; more available", results.items.len());
             }
+            if let (Some(modules), Some(units)) = (
+                results.coverage.matched_modules,
+                results.coverage.matched_units,
+            ) {
+                println!(
+                    "matched {modules} modules / {units} units in full index"
+                );
+            }
             for (index, result) in results.items.iter().enumerate() {
                 let score = result.score.map_or(String::new(), |score| {
                     format!(" score={:.3}", score as f64 / 1_000_000.0)
@@ -1683,13 +1691,18 @@ fn emit_diagnostic_page(result: &notist_service::DiagnosticsResult, color: clap:
     let color = matches!(color, clap::ColorChoice::Always)
         || matches!(color, clap::ColorChoice::Auto) && std::io::stderr().is_terminal();
     for diagnostic in &result.diagnostics.items {
+        let severity = match diagnostic.severity.as_str() {
+            "warning" => ("warning", "\x1b[1;33m"),
+            "info" | "hint" => ("info", "\x1b[1;36m"),
+            _ => ("error", "\x1b[1;31m"),
+        };
         if color {
             eprintln!(
-                "\x1b[1;31merror[{}]\x1b[0m: {}",
-                diagnostic.code, diagnostic.message
+                "{}{}[{}]\x1b[0m: {}",
+                severity.1, severity.0, diagnostic.code, diagnostic.message
             );
         } else {
-            eprintln!("error[{}]: {}", diagnostic.code, diagnostic.message);
+            eprintln!("{}[{}]: {}", severity.0, diagnostic.code, diagnostic.message);
         }
         if let Some(location) = &diagnostic.location {
             let line = location.line_range.map_or(0, |range| range.start);
@@ -1732,12 +1745,22 @@ fn emit_diagnostic_page(result: &notist_service::DiagnosticsResult, color: clap:
         }
         eprintln!();
     }
-    eprintln!(
-        "{} diagnostics in {} sources; showing {}",
-        result.summary.total_diagnostics,
-        result.summary.checked_sources,
-        result.diagnostics.page.returned
-    );
+    let shown = result.diagnostics.page.returned;
+    if shown < result.summary.total_diagnostics {
+        eprintln!(
+            "{} diagnostics in {} sources; showing {} of {} (severity/error filters may hide the rest)",
+            result.summary.total_diagnostics,
+            result.summary.checked_sources,
+            shown,
+            result.summary.total_diagnostics
+        );
+    } else {
+        eprintln!(
+            "{} diagnostics in {} sources",
+            result.summary.total_diagnostics,
+            result.summary.checked_sources
+        );
+    }
     emit_continuation(
         "check",
         &result.diagnostics.page,

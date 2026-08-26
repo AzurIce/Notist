@@ -73,6 +73,13 @@ pub struct BudgetInfo {
 pub struct CoverageInfo {
     pub complete: bool,
     pub stop_reason: String,
+    /// Number of distinct modules with at least one matching unit. Present
+    /// only where the executor computes it cheaply (lexical search), so a
+    /// caller can answer "does this exist at all" without paging to completion.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub matched_modules: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub matched_units: Option<u64>,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -442,6 +449,14 @@ pub struct SearchHit {
     pub excerpt_truncated: bool,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub score: Option<u64>,
+    /// Explicit scope label covering this hit, when one exists, so agents can
+    /// cite `module#id` directly without an extra outline round-trip.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub section_id: Option<String>,
+    /// Title of the nearest preceding heading, so excerpt excerpts can be
+    /// attributed to their section on sight.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub section_title: Option<String>,
 }
 
 fn is_false(value: &bool) -> bool {
@@ -836,6 +851,8 @@ pub fn read_source(
                 "byte_budget"
             }
             .into(),
+            matched_modules: None,
+            matched_units: None,
         },
         search: None,
         hints: continuation_hints(!reached_end),
@@ -1381,6 +1398,7 @@ pub fn exact_or_regex_search(
                 }
                 let (text, excerpt_range, truncated) =
                     excerpt(&source.text, range, query.snippet_bytes);
+                let sec = search_section_context(workspace, module, range);
                 hits.push(SearchHit {
                     location: location(workspace, module, source, range, None),
                     matched_field: field.clone(),
@@ -1390,6 +1408,8 @@ pub fn exact_or_regex_search(
                     excerpt_range: excerpt_range.into(),
                     excerpt_truncated: truncated,
                     score: None,
+                    section_id: sec.0,
+                    section_title: sec.1,
                 });
                 if hits.len() >= candidate_target {
                     scan_complete = false;
@@ -1543,6 +1563,34 @@ enum SearchGroupKey {
     Source(String),
     Section(String, Option<usize>),
     Match(String, usize, usize),
+}
+
+/// Nearest enclosing heading title plus the covering explicit label for a
+/// source range, used to attribute search hits to their section.
+fn search_section_context(
+    workspace: &WorkspaceSnapshot,
+    module: &notist_analysis::Module,
+    range: TextRange,
+) -> (Option<String>, Option<String>) {
+    let Some(file_id) = module.file_id else {
+        return (None, None);
+    };
+    let section_title = workspace
+        .document_symbols(file_id)
+        .into_iter()
+        .filter(|symbol| symbol.range.start <= range.start)
+        .max_by_key(|symbol| symbol.range.start)
+        .map(|symbol| symbol.name);
+    let section_id = workspace
+        .labels()
+        .iter()
+        .find(|label| {
+            label.file_id == file_id
+                && label.scope_range.start <= range.start
+                && range.end <= label.scope_range.end
+        })
+        .map(|label| label.name.clone());
+    (section_id, section_title)
 }
 
 fn search_group_key(
@@ -1856,57 +1904,79 @@ impl SearchIndex {
         } else {
             request.fields.clone()
         };
-        let mut groups: Vec<(Occur, Box<dyn Query>)> = Vec::new();
-        let mut expansion_count = 0usize;
+        let multi_term_all =
+            request.operator == SearchOperator::All && term_groups.len() > 1;
         let mut expansion_limited = false;
-        for term_group in term_groups {
-            let mut variants: Vec<(Occur, Box<dyn Query>)> = Vec::new();
-            for term_text in term_group {
-                for field_kind in &fields {
-                    let Some((field, boost)) = self.field(*field_kind) else {
+
+        // Builds one clause per term group. The lexicon scans behind fuzzy
+        // expansion are cheap in-memory passes, so rebuilding variants for
+        // each compositional variant beats threading non-Clone query boxes.
+        let mut build_term_groups = |force_should: bool,
+                                 only_index: Option<usize>|
+         -> Result<Vec<(Occur, Box<dyn Query>)>, ToolError> {
+            let mut expansion_count = 0usize;
+            let mut expansion_limited_local = false;
+            let mut built: Vec<(Occur, Box<dyn Query>)> = Vec::new();
+            for (index, term_group) in term_groups.iter().enumerate() {
+                if let Some(wanted) = only_index {
+                    if wanted != index {
                         continue;
-                    };
-                    let expansions =
-                        if request.mode == SearchMode::Fuzzy && fuzzy_eligible(&term_text) {
-                            let remaining = 128usize.saturating_sub(expansion_count).min(32);
-                            let (terms, limited) = self.fuzzy_terms(
-                                *field_kind,
-                                &term_text,
-                                request.fuzzy_distance,
-                                remaining,
-                            );
-                            expansion_limited |= limited || remaining == 0;
-                            expansion_count += terms.len();
-                            terms
-                        } else {
-                            vec![(term_text.clone(), 0)]
-                        };
-                    for (expanded, distance) in expansions {
-                        let term = Term::from_field_text(field, &expanded);
-                        let query: Box<dyn Query> = Box::new(TermQuery::new(
-                            term,
-                            IndexRecordOption::WithFreqsAndPositions,
-                        ));
-                        let penalty = 1.0 / (f32::from(distance) + 1.0);
-                        variants.push((
-                            Occur::Should,
-                            Box::new(BoostQuery::new(query, boost * penalty)),
-                        ));
                     }
                 }
+                let mut variants: Vec<(Occur, Box<dyn Query>)> = Vec::new();
+                for term_text in term_group {
+                    for field_kind in &fields {
+                        let Some((field, boost)) = self.field(*field_kind) else {
+                            continue;
+                        };
+                        let expansions =
+                            if request.mode == SearchMode::Fuzzy && fuzzy_eligible(&term_text) {
+                                let remaining = 128usize.saturating_sub(expansion_count).min(32);
+                                let (terms, limited) = self.fuzzy_terms(
+                                    *field_kind,
+                                    &term_text,
+                                    request.fuzzy_distance,
+                                    remaining,
+                                );
+                                expansion_limited_local |= limited || remaining == 0;
+                                expansion_count += terms.len();
+                                terms
+                            } else {
+                                vec![(term_text.clone(), 0)]
+                            };
+                        for (expanded, distance) in expansions {
+                            let term = Term::from_field_text(field, &expanded);
+                            let query: Box<dyn Query> = Box::new(TermQuery::new(
+                                term,
+                                IndexRecordOption::WithFreqsAndPositions,
+                            ));
+                            let penalty = 1.0 / (f32::from(distance) + 1.0);
+                            variants.push((
+                                Occur::Should,
+                                Box::new(BoostQuery::new(query, boost * penalty)),
+                            ));
+                        }
+                    }
+                }
+                if !variants.is_empty() {
+                    built.push((
+                        if request.operator == SearchOperator::All && !force_should {
+                            Occur::Must
+                        } else {
+                            Occur::Should
+                        },
+                        Box::new(BooleanQuery::new(variants)),
+                    ));
+                }
             }
-            if !variants.is_empty() {
-                groups.push((
-                    if request.operator == SearchOperator::All {
-                        Occur::Must
-                    } else {
-                        Occur::Should
-                    },
-                    Box::new(BooleanQuery::new(variants)),
-                ));
+            expansion_limited |= expansion_limited_local;
+            Ok(built)
+        };
+
+        let push_scope_group = |groups: &mut Vec<(Occur, Box<dyn Query>)>| -> Result<(), ToolError> {
+            if request.scopes.is_empty() {
+                return Ok(());
             }
-        }
-        if !request.scopes.is_empty() {
             let mut scopes: Vec<(Occur, Box<dyn Query>)> = Vec::new();
             for scope in &request.scopes {
                 let pattern = format!("{}(::.*)?", regex::escape(scope));
@@ -1921,15 +1991,59 @@ impl SearchIndex {
                     0.0,
                 )),
             ));
-        }
-        let query = BooleanQuery::new(groups);
+            Ok(())
+        };
+
         let searcher = self.reader.searcher();
-        let (top, total) = searcher
-            .search(
-                &query,
-                &(TopDocs::with_limit(10_000).order_by_score(), Count),
-            )
-            .map_err(|error| ToolError::new("search_failed", error.to_string()))?;
+        // Multi-term AND queries run in module-candidate mode (ranking
+        // bm25-v4): term presence is required anywhere inside one MODULE,
+        // while evidence ranking stays unit-level BM25 over the Should union.
+        // This makes cross-section concept queries findable that unit-level
+        // AND would miss entirely.
+        let mut candidate_modules: Option<BTreeSet<String>> = None;
+        let (top, total) = if multi_term_all {
+            let mut any_groups = build_term_groups(true, None)?;
+            push_scope_group(&mut any_groups)?;
+            let query_any = BooleanQuery::new(any_groups);
+            let (union_top, union_total) = searcher
+                .search(
+                    &query_any,
+                    &(TopDocs::with_limit(10_000).order_by_score(), Count),
+                )
+                .map_err(|error| ToolError::new("search_failed", error.to_string()))?;
+            let mut module_sets: Vec<BTreeSet<String>> = Vec::new();
+            for index in 0..term_groups.len() {
+                let single = build_term_groups(true, Some(index))?;
+                let query_single = BooleanQuery::new(single);
+                let (unit_top, _) = searcher
+                    .search(
+                        &query_single,
+                        &(TopDocs::with_limit(10_000).order_by_score(), Count),
+                    )
+                    .map_err(|error| ToolError::new("search_failed", error.to_string()))?;
+                module_sets.insert(index, unit_top
+                    .into_iter()
+                    .filter_map(|(_, address)| {
+                        let doc: TantivyDocument = searcher.doc(address).ok()?;
+                        text_value(&doc, self.schema.stored_module)
+                    })
+                    .collect());
+            }
+            candidate_modules = Some(module_sets.into_iter().reduce(|left, right| {
+                left.intersection(&right).cloned().collect()
+            }).unwrap_or_default());
+            (union_top, union_total)
+        } else {
+            let mut groups = build_term_groups(false, None)?;
+            push_scope_group(&mut groups)?;
+            let query = BooleanQuery::new(groups);
+            searcher
+                .search(
+                    &query,
+                    &(TopDocs::with_limit(10_000).order_by_score(), Count),
+                )
+                .map_err(|error| ToolError::new("search_failed", error.to_string()))?
+        };
         let mut hits = Vec::new();
         let mut seen = BTreeSet::new();
         for (score, address) in top {
@@ -1937,6 +2051,11 @@ impl SearchIndex {
                 .doc(address)
                 .map_err(|error| ToolError::new("search_failed", error.to_string()))?;
             let module_name = text_value(&document, self.schema.stored_module).unwrap_or_default();
+            if let Some(candidates) = &candidate_modules {
+                if !candidates.contains(&module_name) {
+                    continue;
+                }
+            }
             if !in_scope(&module_name, &request.scopes) {
                 continue;
             }
@@ -1960,6 +2079,7 @@ impl SearchIndex {
                 continue;
             }
             let unit = TextRange::new(start, end);
+            let sec = search_section_context(workspace, module, unit);
             let matched = lexical_match_range(&source.text, unit, &request.query);
             let (excerpt_text, excerpt_range, truncated) =
                 excerpt(&source.text, matched.unwrap_or(unit), request.snippet_bytes);
@@ -1974,6 +2094,8 @@ impl SearchIndex {
                 excerpt_range: excerpt_range.into(),
                 excerpt_truncated: truncated,
                 score: Some((score.max(0.0) * 1_000_000.0).round() as u64),
+                section_id: sec.0,
+                section_title: sec.1,
             });
             let _ = path;
         }
@@ -1989,6 +2111,14 @@ impl SearchIndex {
                         .cmp(&right.location.byte_range.start),
                 )
         });
+        // Cheap totals from the executor let callers answer "does this exist
+        // at all" without paging to completion (see designs/host/query-contract).
+        let matched_units_total = hits.len() as u64;
+        let hit_module_count = hits
+            .iter()
+            .map(|hit| hit.location.module.as_str())
+            .collect::<BTreeSet<_>>()
+            .len() as u64;
         let group_by = request.applied_group_by();
         let hits = group_ranked_hits(workspace, hits, group_by);
         let mut page = page(
@@ -2002,10 +2132,20 @@ impl SearchIndex {
         page.search = Some(SearchPageMetadata {
             group_by,
             ordering: "relevance".into(),
-            ranking_version: Some(RANKING_VERSION.into()),
+            ranking_version: Some(if candidate_modules.is_some() {
+                "bm25-v4".into()
+            } else {
+                RANKING_VERSION.into()
+            }),
             index_stamp: Some(self.stamp.clone()),
             expansion_limited,
         });
+        page.coverage.matched_units = Some(matched_units_total);
+        page.coverage.matched_modules = if candidate_modules.is_some() {
+            candidate_modules.as_ref().map(|set| set.len() as u64)
+        } else {
+            Some(hit_module_count)
+        };
         if !page.page.has_more && total > 10_000 {
             page.coverage.complete = false;
             page.coverage.stop_reason = "query_limit".into();
@@ -2647,6 +2787,8 @@ fn page<T: Clone + Serialize + DeserializeOwned>(
         coverage: CoverageInfo {
             complete: !has_more,
             stop_reason: stop_reason.into(),
+            matched_modules: None,
+            matched_units: None,
         },
         search: None,
         hints: continuation_hints(has_more),

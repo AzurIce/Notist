@@ -1095,7 +1095,8 @@ impl WorkspaceSnapshot {
     }
 
     /// Returns the source range covering a resolved scope label: the explicit
-    /// label's scope range, or the first heading default-id match range.
+    /// label's scope range, or the heading default-id match expanded to its
+    /// section subtree (next heading of level <= ours, else end of source).
     pub fn label_scope_range(&self, module: &ModulePath, label: &str) -> Option<TextRange> {
         if let Some(definition) = self.label(module, label) {
             return Some(definition.scope_range);
@@ -1107,10 +1108,24 @@ impl WorkspaceSnapshot {
             .cloned()
             .unwrap_or_default();
         let headings = heading_default_ids(module, &seeds);
-        headings
+        let Some((_, range)) = headings.iter().find(|(text, _)| text == label) else {
+            return None;
+        };
+        let file_id = module.file_id?;
+        let source = self.source(file_id)?;
+        let symbols = self.document_symbols(file_id);
+        let Some((index, heading)) = symbols
             .iter()
-            .find(|(text, _)| text == label)
-            .map(|(_, range)| *range)
+            .enumerate()
+            .find(|(_, symbol)| symbol.range.start == range.start)
+        else {
+            return Some(*range);
+        };
+        let subtree_end = symbols[index + 1..]
+            .iter()
+            .find(|candidate| candidate.level <= heading.level)
+            .map_or(source.text.len(), |candidate| candidate.range.start);
+        Some(TextRange::new(range.start, subtree_end))
     }
 
     /// Returns a module by its logical path.

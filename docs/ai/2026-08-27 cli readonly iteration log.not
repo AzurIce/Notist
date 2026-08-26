@@ -13,7 +13,36 @@
 
 == 迭代 0：基线（baseline）
 
-运行中。任务集 T1–T6 × 4 条件 × n=1。完成判读后此处记录通过矩阵与关键 token 数据。
+6 任务 × 4 条件 × n=1，结果 **19/24**。判定矩阵：工具三条件（md-bash / notist-bash / notist-skill）**18/18 全部通过**；null-notools 仅 T2 靠参数化常识侥幸命中、T3–T6 如预期失败（notist 无参数化知识得到校准确认）。
 
-== 待续
+**关键结论：pass 指标在当前任务集上饱和**——检索类问题对这个规模的语料和这批查询并不构成成功率瓶颈，宏评测的区分度转移到效率面（时长/token）与更难任务。
+
+另记：语料冻结时已知缺陷——README.not 仍引用被剔除的 `#<ai>` 目录产生 1 条 error 级诊断，为保持可比性不中途修语料。
+
+== 噪声与协议修正（iteration 1 教训）
+
+baseline 与 it1 同协议对比暴露：**md-bash / null 组完全不受 CLI 改动影响，其逐格波动就是纯运行噪声**——T6 在 md 组 242s→574s、token ±100% 级摆动；null/T2 出现 pass→fail"退化"。据此修正协议：
+
+1. 成效判定只看受 CLI 影响的条件格；md/null 组作为噪声对照。
+2. n=1 下 token/时长差异只有 >3× 且方向跨组一致时才计入证据，否则视为噪声。
+3. task 措辞收敛（"只回答要点，不要展开解释"）一次性收紧后不再变更，防止任务漂移污染后续对比。
+4. 宏评测转为确认手段（每迭代至多一轮）；日常改进步进由确定性微基准（sanity_probes / byte fixture）承担。
+
+== 迭代 1：模块级候选召回 + 节选择器展开 + 计数透出（bm25-v4）
+
+**改动**（均落 service/cli 层，schema 向后兼容新增可选字段）：
+- A1 `operator=all` 多词条查询从 per-unit AND 改为：任一词条取并集 → 各词条独立查询求模块级交集 → 交集过滤后按 Should 的 BM25 重排。`ranking_version: bm25-v4` 标注该路径。单词条与 any 路径行为不变。
+- A4 coverage 新增 `matched_modules` / `matched_units`，lexical 执行器统一填充；text 模式输出 "matched N modules / M units"。
+- A2 heading 默认 id 选择器（`path#标题文本`）展开到整节子树（下一个同级/更高级 heading 起点），原本只返回标题一行（21 字节 → 实测整节 793 字节）。
+
+**微基准（确定性）**："cursor 续读"AND 查询 0 hit → 3 modules/27 units；四类边界探针全过；service 31 + analysis 59 + cli 3 单测全绿。
+
+**宏评测 verdict：无显著改进（attempt 1/5）。** 工具组 18/18 持平（本就饱和）；total tokens 409k→537k 属噪声带内波动（md 对照组同样涨 30%+）。唯一 fail→pass 未出现；唯一 pass→fail 在 null 组（CLI 不在其回路，判采样噪声不计）。**确认饱和假设：成功率的提升必须靠加难任务或换效率指标才能显影。**
+
+== 迭代 2：SearchHit 节归属 + check 渲染卫生
+
+进行中（it2 跑分后台）。改动：
+- A7 SearchHit 新增 `section_id`（覆盖命中的显式 scope label）/`section_title`（最近前序 heading 标题），两个执行器（lexical/exact/regex）都填充；agent 引用 `module#id` 可直接来自首跳结果，省一次 outline 往返。
+- check 文本渲染两处修复：诊断 severity 真实映射（此前 info 一律标成 error[...]，现在 warning 黄 / info 青）；默认 severity=error 过滤导致 showing 0 时明确输出 "showing X of Y (severity/error filters may hide the rest)"。
+
 
