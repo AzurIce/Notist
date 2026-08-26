@@ -1,0 +1,373 @@
+@![implementation = "partial"]
+= obsidian-notist 语义面板设计
+
+本文调查 Notist World 中大纲、入链、出链与符号导航应如何替换 Obsidian 的 Markdown 数据源，并给出隐藏策略、客户端分层、数据新鲜度与落地顺序。总原则承接 #<vault::obsidian-notist>：Obsidian 只提供 workspace 壳层，Notist 语义的唯一权威仍是 notist-service；既不能把 `.not` 伪装成 Markdown 元数据，也不能在插件端另写一套 Wiki Reference 解释器。
+
+结论先行：*隐藏错误数据与接入正确数据是两条独立工作流*。Notist World 无条件隔离原生语义叶子与 Quick Switcher 入口；正确数据只复用现有 LSP session，不向 Obsidian Markdown metadata 注入 `.not`，也不另起 CLI 或客户端解析器。
+
+截至 2026-08-27，首批实现已经完成原生面板隔离、Quick Switcher 路由、独立 Notist 大纲、workspace symbol palette，以及一个明确标为临时降级的入链面板。出链没有伪实现；可靠入链 / 出链仍等待文档级 references 或 documentLink 协议。统一 panel store、snapshot build barrier、stale-while-revalidate cache 也尚未落地，因此本文状态为 `partial`，不能把当前 UI 等同于完整终局设计。
+
+== 调查基线与现状
+
+=== 插件的隔离壳已经存在，但只隔离文件与编辑叶子
+
+设计调查时插件工作树为 `obsidian-notist` commit `8b809f3`。当时实现已经有三种隔离机制：
+
+- `body.notist-world` / `body.md-world` 由 `src/main.ts:695-700` 切换；`styles.css:1-24` 用它过滤文件树、ribbon 和未使用的 `notist-explorer`。
+- 两个 World 各有布局快照；切换前后各执行一次 `purgeForeignLeaves`（`src/main.ts:596-618`）。当前 foreign 类型只有 Notist view / explorer 与 `markdown`（`src/main.ts:624-640`），尚未包含任何语义侧栏。
+- `NotistExplorerView` 是独立 view type `notist-explorer`，目前只按路径列 `.not`，代码注释已经声明未来数据应来自 notist-service 而非原始文件（`src/explorer-view.ts:3-10,35-73`）。默认 World 仍复用原生 file explorer，自建 explorer 仅由命令手动打开（`src/main.ts:703-715`）。
+
+这解释了 `todo.md:1-3` 的现象：核心 backlinks、outgoing links、tag、properties、outline、Excalidraw 侧栏仍可留在 Notist 布局中，并把 `.not` 文件路径当成 Markdown 上下文。它们即使显示为空，也会向用户暗示“已经查询了 Notist 语义”，所以空白不是安全降级。
+
+2026-08-26 通过运行中的 Obsidian CLI 核对到以下核心 view type / command id：
+
+| 功能 | view type | 打开命令 |
+|---|---|---|
+| 入链 | `backlink` | `backlink:open` |
+| 出链 | `outgoing-link` | `outgoing-links:open` |
+| 大纲 | `outline` | `outline:open` |
+| 全局 / 局部图谱 | `graph` / `localgraph` | `graph:open` / `graph:open-local` |
+| 标签 | `tag` | `tag-pane:open` |
+| 全局 / 文件属性 | `all-properties` / `file-properties` | `properties:open` / `properties:open-local` |
+| Excalidraw 侧栏 | `excalidraw-sidepanel` | 第三方命令 |
+
+同一实机还确认 `switcher:open` 的默认快捷键是 `Mod+O`；它是 modal 而不是 leaf，不能由 `purgeForeignLeaves` 处理。现有 #<vault::obsidian-notist::dual-world> 也把 Quick Switcher 列为跨 World 泄漏点。
+
+=== LSP 客户端有传输与同步骨架，缺语义面板请求面
+
+`src/lsp/*` 不 import Obsidian，壳层位于 `main.ts` / `notist-view.ts`，符合既有 #<vault::obsidian-notist::lsp>：
+
+- `src/lsp/transport.ts:40-125` 已有通用 request、带 id request、notification 与取消，不需要为面板另起 CLI 进程。
+- `src/lsp/session.ts:128-145` initialize 时声明 diagnostics、completion、hover、definition 与 references 客户端能力；session 实际只封装 completion、hover、definition（`src/lsp/session.ts:294-362`）。
+- 文档同步是 FULL sync，didChange 有 200ms trailing throttle（`src/lsp/session.ts:52-54,197-209,271-280`）；position request 会先 flush pending text，再做同类请求 latest-wins（`src/lsp/session.ts:332-361`）。
+- diagnostics 是按绝对路径保存的 delta push（`src/lsp/session.ts:364-388`），壳层再分发给打开的编辑器（`src/main.ts:495-507`）。
+- 跨文件打开与 range reveal 已经完整存在：`src/main.ts:509-528` 打开 LSP Location，`src/notist-view.ts:262-273` 把 UTF-16 range 映射到 CM6 selection。
+
+因此语义面板应扩展 session 的 typed request surface，而不是 spawn `notist outline/references`。CLI 是数据模型与人工调试对照面；另起 CLI 使用 disk View，既重复进程管理，也看不到当前 LSP overlay 中尚未落盘的文本。
+
+=== server capability 核对
+
+核对对象为 notist 当前工作树 `e38297a` 加本地未提交的 `crates/notist-cli/src/lsp.rs` 改动；以下 file:line 以该工作树为准。
+
+`server_capabilities()` 明确声明 UTF-16、FULL sync、completion、hover、definition、references、document symbol 与 workspace symbol（`crates/notist-cli/src/lsp.rs:76-97`）。未声明 documentLink、declaration、typeDefinition、semanticTokens、codeAction 或任何面板 / build-complete push capability。
+
+现有三项面板相关 handler 的真实语义是：
+
+- `textDocument/documentSymbol` 返回 `DocumentSymbolResponse::Nested`（`lsp.rs:874-925`）。标题来自 evaluated ElementTree 中的 `core::heading`，而不是按行扫描源码（`crates/notist-analysis/src/lib.rs:1726-1735,3423-3461`）；`nest_heading_symbols` 按 heading level 构造父子树（`lsp.rs:928-953`）。测试证明 heading sugar 与显式 `#heading` 会进入结果，raw code 示例不会进入（`lsp.rs:1396-1435`）。
+- `workspace/symbol` 遍历所有 discovered vault，返回 flat `SymbolInformation[]`（`lsp.rs:956-995`）。analysis 当前索引 module path、显式 annotation id 与 heading default id，匹配是 lowercase `contains`，不是 fuzzy rank（`crates/notist-analysis/src/lib.rs:1738-1800`）。LSP 映射把 module 记为 FILE，其余都记为 KEY（`lsp.rs:975-990`）。
+- `textDocument/references` 是标准的“光标处 symbol 的引用”，includeDeclaration 直接映射到 include_definition（`lsp.rs:1216-1245`）。analysis 确实把 offset 0 作为当前 module 的 fallback（`crates/notist-analysis/src/lib.rs:1144-1171`），但它先检查该位置是否落在 local symbol、wiki reference 或 label 上（`lib.rs:1174-1201`）。因此“永远请求 `(0,0)` 就等于当前 module”并不是无条件协议：若文件第一个字节就是引用，查询目标会变成被引用模块。
+
+CLI / service 对照面比 LSP 更丰富：`notist references` 支持 `--direction incoming|outgoing|both` 与 `--include-definition`；`ReferencesQuery` / `ReferenceItem` 带 source、target、direction、relation、url、target_kind、Location、excerpt 与 definition 标记（`crates/notist-service/src/query.rs:285-322`）。outgoing 实现直接过滤 snapshot 的 resolved references（`query.rs:930-969`），不是重扫文本。`notist query` 当前只有 definition，不能把它误写成通用 outgoing 查询入口。
+
+== 首批实现边界
+
+2026-08-27 的首批实现落在 obsidian-notist commit `f9d944a`，以 `main` commit `337eb3a` 为基线。实现选择先闭合可验证的最小链路，而没有假装已经具备设计中的全部缓存与协议：
+
+| 能力 | 当前实现 | 仍缺少 |
+|---|---|---|
+| World 隔离 | denylist detach、CSS guardrail、layout / active leaf 自愈；Markdown World 反向清理 Notist panel | 无 |
+| Quick Switcher | 包装 core `switcher:open` 的 callback / checkCallback；Notist World 打开 symbol modal，Markdown World 原样调用，unload 精确还原 | 依赖 Obsidian 内部 command registry，找不到时只能保留独立命令并告警 |
+| 大纲 | `textDocument/documentSymbol`、嵌套标题树、点击复用 LSP Location 定位 | 折叠 state、cache、didChange 后的可靠 build barrier |
+| 符号导航 | `workspace/symbol`、120ms debounce、跨 query latest-wins 取消、晚响应 token 丢弃 | fuzzy、MRU、服务端分页 / 上限、完整键盘选择体验 |
+| 入链 | `textDocument/references`，固定 `(0,0)`，`includeDeclaration=false`，Location 列表点击跳转 | 无歧义 current-module selector、分组、excerpt、target kind、snapshot stamp |
+| 出链 | 未实现 | `notist/documentReferences(outgoing)` 或 `textDocument/documentLink` |
+
+`src/lsp/protocol.ts` 增加递归 `LspDocumentSymbol` 与 `LspSymbolInformation`；`src/lsp/session.ts` 增加 `documentSymbols`、`workspaceSymbols`、`references` 和共享 `queryRequest`。请求层继续不 import Obsidian：document symbol 按 path latest-wins，workspace symbol 用单一 request key 让不同 query 互相取消，references 按 target path 互相取消。
+
+UI 目前集中在 `src/semantic-panels.ts`：`NotistOutlineView`、`NotistBacklinksView` 与 `NotistSymbolModal` 共享很少，暂未达到需要拆目录和引入 store 的复杂度。`src/main.ts` 负责 view / command 注册、World policy、活动 Notist path、共享 `openLspLocation`、Quick Switcher patch 与 refresh 触发；`styles.css` 负责双向 guardrail 和首批 panel 样式。
+
+这次实现没有改变核心裁决：`src/semantic-panels.ts` 只是 Obsidian 壳，语义仍由 LSP server 返回。临时入链会暴露标准 LSP 的位置选择歧义，但没有在客户端补 parser；出链则宁可缺席，也不返回看似可用但语义错误的数据。
+
+== 原生 Markdown 面板的处置
+
+=== 决策：detach 是真隔离，CSS 是故障保险，替换 view 使用新类型
+
+Notist World 对错误语义叶子采用两层组合：
+
+1. 扩展 `purgeForeignLeaves("notist")`，detach `backlink`、`outgoing-link`、`outline`、`graph`、`localgraph`、`tag`、`all-properties`、`file-properties`、`excalidraw-sidepanel`。切换前清理保证快照不继续保存错误叶子，切换后清理用于治愈旧快照；布局恢复和启动兜底沿用当前 `src/main.ts:120-125,601-617`。
+2. CSS 对同一组 `.workspace-leaf-content[data-type="..."]` 在 `body.notist-world` 下 `display:none`。它只负责恢复布局到 detach 之间的一帧、后加载插件以及 Obsidian 内部 API 漂移时的视觉 guardrail；不能把空白 leaf 当作最终行为。
+
+另外在 Notist World 的 `layout-change` / active leaf 变化后做一次幂等清理，阻止用户从命令面板重新打开核心叶子并把它保存回 Notist 布局。清理函数只按 `leaf.view.getViewType()` 判断，不靠标题或界面语言。
+
+替换面板不得冒用 `outline` / `backlink` 等核心 type；使用 `notist-outline`、`notist-backlinks`、`notist-outgoing-links`。这让 World 所有权可由 type 明确判断，也避免与核心插件恢复 state 的私有 schema 耦合。
+
+=== Quick Switcher 需要入口路由，不属于 CSS / purge
+
+`Mod+O` 对应 `switcher:open`，modal 没有可持久化 leaf。当前实现像 `FileManager.createNewMarkdownFile` chokepoint 一样，加载时保存并包装该命令的 callback / checkCallback：
+
+- Markdown World 原样调用 core Quick Switcher；
+- Notist World 打开 `NotistSymbolModal`；
+- unload 仅在 wrapper 仍是当前 callback 时精确还原，避免覆盖其他插件后续修改；若内部命令结构不存在则保留独立的 `Open Notist symbol search` 命令并在 console 告警。
+
+只注册另一个同为 `Mod+O` 的 hotkey 会产生两个 handler；只拦截 keydown 又覆盖不了命令面板 / 移动入口，所以都不作为主方案。这里和 file creation patch 一样属于集中、可还原但需要实机兼容测试的 Obsidian 内部 API。
+
+=== 哪些值得第一方替换
+
+| 面板 | 决策 | 原因 |
+|---|---|---|
+| 大纲 | 首批替换 | server 已有嵌套、evaluated heading tree；UI 与请求成本都小 |
+| 入链 | 首批替换 | Notist reference index 已是权威数据；是知识库核心工作流 |
+| 出链 | 协议补齐后替换 | service 有 resolved outgoing，LSP 尚无文档级 outgoing 契约 |
+| `Mod+O` 符号导航 | 首批替换 | workspace/symbol 已有，modal 比常驻树更适合 query-driven 全库导航 |
+| graph / local graph | 长期隐藏 | 核心 graph 无扩展 API；自建索引虽已有，自建交互与渲染仍是独立重活 |
+| tags / properties | 长期隐藏 | service 有部分 attribute 数据，但尚无稳定 LSP query 与对应交互设计 |
+| Excalidraw 侧栏 | 长期隐藏 | 它属于第三方 Markdown / canvas 工作流，和 Notist 语义没有可复用契约 |
+
+不采用向 Obsidian `metadataCache.resolvedLinks` 注入 `.not` 的路线。#<vault::ai::2026-08-24 obsidian plugin feasibility research/Obsidian 双链与图谱引擎专题> 已确认这是内部 API 赌博，也会破坏“语义唯一权威在 notist-service”的边界。graph 未来应读取同一语义 snapshot 自绘，不能成为本阶段面板的前置依赖。
+
+== 大纲：活动文档的 evaluated heading tree
+
+=== 独立 NotistOutlineView，不并入 Explorer
+
+大纲与 explorer 的问题不同：Explorer 是 workspace / module 级、长期稳定的导航；Outline 是 active document 级、随焦点和编辑频繁变化的上下文。把大纲塞进 `NotistExplorerView` 会让 explorer 同时承担两个刷新频率、两个 selection 模型和两种空状态。
+
+目标分层仍是独立 `NotistOutlineView`，不并入 Explorer。首批实现位于 `src/semantic-panels.ts`，导出 `VIEW_TYPE_NOTIST_OUTLINE = "notist-outline"`；它是 Obsidian `ItemView` 壳，只负责当前 `.not` leaf 绑定、树渲染与点击。尚未实现折叠 state 和独立 panel store。`NotistExplorerView` 保持单独 type，未来换成 service module tree 时只复用 location navigation，不共享 view state。
+
+session 增加：
+
+```text
+documentSymbols(path) -> DocumentSymbol[]
+```
+
+请求前 flush 当前路径 pending didChange；每路径 latest-wins，响应迟到时以 request token 丢弃。`protocol.ts` 增加递归 `LspDocumentSymbol {name, detail?, kind, range, selectionRange, children?}`，不把 LSP range 转换塞进 shell。
+
+树节点显示 `name`，层级直接信任 server 的 `children`，点击走统一 `openLspLocation({uri, range: selectionRange})`。当前文件会复用 `NotistTextView.revealLspRange`；不要另写 CM offset 换算。空标题由 server 统一变成 `Untitled heading`（`lsp.rs:898-919`）。
+
+=== 刷新边界
+
+当前实现采用 request token 防止旧 render 覆盖新 render，并在 panel `onOpen`、active leaf / layout 变化、LSP ready、diagnostics 到达以及 `.not` view 重新 didOpen 后重拉。`activeNotistPath()` 额外记住最近活动的 `.not` 路径，避免用户点击侧栏后丢失 panel target。LSP 文档重新登记后补 refresh 是实机回归逼出的必要条件：否则双 World 恢复时 panel 可能先请求、后 didOpen，并把暂时 unavailable 错写成空大纲。
+
+下面是终局刷新边界；其中 dirty cache、document version 和 stale 展示尚未落地：
+
+- 活动 leaf 切到另一 `.not`：立即切换 key；若可见则拉取新文档。
+- 面板首次打开 / 从折叠侧栏 reveal：只要 cache dirty 就拉取。
+- didOpen / didChange 真正发给 server 后：标记该文档 outline dirty，并进入编辑 debounce；不要在每个 CM transaction 上请求。
+- session restart / ready：清空 server epoch，活动面板重拉。
+- 结果返回时若 active path、client document version 或 request token 已变化，丢弃结果。
+
+当前 UI 已区分 unavailable 与确实没有 heading，但每次 render 仍先清空旧结果并显示 loading。目标仍是编辑期间保留旧树并标 stale；无论当前还是终局，请求失败都绝不回退到 Obsidian core outline。
+
+== 入链：以当前 module 为目标的引用列表
+
+=== 面板语义与 includeDeclaration
+
+`NotistBacklinksView` 的目标是“当前活动 `.not` 文件所定义的 module”，不是光标下的 symbol。终局结果应按 source module / path 分组，每个 occurrence 显示行号与单行 excerpt；同文件多次引用保留为多个子项。点击 occurrence 打开 source URI 并 reveal reference range。排序默认 module path + position，不做 Markdown 的 unlinked mentions。
+
+首批实现只能消费标准 LSP Location，因此目前逐项显示 `relative/path.not:line`，没有 source grouping、excerpt 或 target kind。它固定请求 `(0,0)` 且 `includeDeclaration=false`，属于协议补齐前的显式降级，不是本文认可的永久 module selector。实机已确认普通 module 能返回跨文件入链并正确跳转；文件首字节命中其他语义 token 的歧义仍然存在。
+
+面板查询必须 `includeDefinition=false`：定义不是 backlink，把它混进列表会虚增计数。当前目标模块已由面板标题 / active file 表达；若未来增加“Find References”命令，才允许单独开关 includeDeclaration。
+
+标准 `textDocument/references` 响应只有 Location。壳层可用 Obsidian vault read / 已打开 view 的 overlay 从 location 所在行截取 excerpt，但 module identity 与目标种类仍缺失。更重要的是，前述 `(0,0)` 只是 current-module fallback，不是无歧义 module selector。因此定稿不把这个技巧作为永久面板协议。
+
+=== 推荐协议
+
+在 notist LSP 的 experimental capability 下新增文档级扩展：
+
+```text
+notist/documentReferences {
+  textDocument: { uri },
+  direction: "incoming" | "outgoing" | "both",
+  includeDefinition: false,
+  snippetBytes?: 256
+} -> {
+  snapshot: { generation, revision },
+  items: NotistReferenceItem[]
+}
+```
+
+语义直接复用 `ReferencesQuery` / `ReferenceItem`，但 location 在 LSP 边界转换成 URI + UTF-16 range；以 document URI 解析 module，避免客户端重建 ModulePath。它还应明确使用当前 LSP session View，保证 unsaved overlay 可见。server capability 可放在 `experimental.notist.documentReferences`，客户端发现不到时才允许暂时用 `(0,0)` + `textDocument/references` 降级，并在文件 byte 0 命中语义 token 的测试失败时禁用该降级。当前客户端尚未做 capability negotiation 和该禁用测试，因此这也是 `implementation = "partial"` 的主要原因之一。
+
+service 已有 `CoreRequest::ReferencesTo`（`crates/notist-service/src/request.rs:86-90,1167-1205`）与更丰富的 `ReferencesPage`，所以这不是新建语义索引，只是补一个不含位置歧义的协议适配面。
+
+=== 性能与缓存
+
+入链可能跨全 vault，不能每次 build 后为所有历史目标全量重查。规则是：
+
+- cache 以 `{serverEpoch, targetUri}` 为 key，只缓存已访问模块；任一新 snapshot 把它们标 dirty，但只重拉当前可见面板。
+- active target 切换、面板 reveal、用户显式 refresh 才立即请求；后台 build 只 invalidates，不主动 fan-out。
+- 同一 target 保持一个 in-flight request；新请求取消 / supersede 旧请求。
+- cache 可保留最后成功结果，切回模块先显示 stale 数据再更新；session restart 必须丢弃全部。
+
+当前 `CoreRequest::References` 会为每个 LocationRecord 内嵌完整 source text（`request.rs:1139-1160`），大量引用时 payload 会按 occurrence 放大。面板协议实现时应优先使用 `QueryVault.sources` 做一次 path→source 转换，或返回共享 source table，避免把同一文件全文复制 N 次。这是性能优化，不改变查询语义。
+
+== 出链：不在客户端重写 Wiki Reference parser
+
+=== 已有能力与缺口
+
+notist-syntax 已有 mode-aware parse tree：`Parse::links()` 只收集真正的 WikiLink（`crates/notist-syntax/src/lib.rs:15-20,166-183`）；parser 会处理 escape、raw、embedded expression 与未闭合引用（`crates/notist-syntax/src/parser.rs:90-121,756-779`）。analysis 还会把显式 `core::reference` 调用与 wiki link 合并解析（`crates/notist-analysis/src/lib.rs:2446-2465`），随后处理相对 ModulePath、label、heading default id、missing / external target。
+
+因此以下客户端方案都放弃：
+
+- 对 `[[...]]` 做正则：会把 escape / raw / malformed 文本误报为链接，也漏掉显式 reference 构造器。
+- 直接消费现有 tree-sitter highlight captures：高亮 grammar 是独立上游快照，只提供语法范围，不拥有 ModulePath resolution、evaluation 后 heading id 或 target kind。
+- 调 `notist references --direction outgoing`：它证明 service 数据模型可用，但 disk View 不含 LSP overlay，且额外进程与 session 生命周期重复。
+
+=== 两层协议建议
+
+优先增加标准 `textDocument/documentLink`：
+
+- `server_capabilities()` 声明 `document_link_provider = { resolveProvider: false }`；
+- handler 对当前 document 的 session snapshot 复用 resolved outgoing references；
+- 每项返回 source range、resolved target file URI（可带 label fragment）、tooltip；`data` 保留 targetModule、targetLabel、targetKind、relation、原始 url，供 Notist 客户端增强显示；
+- unresolved / external occurrence 应保留为 `target=null` + `data.reason`，不能只靠 diagnostics 让出链列表悄悄漏项。当前 analysis 对 missing 主要生成 diagnostic，若 snapshot 没保留 occurrence，需要先把“解析到但未 resolve 的 reference”提升为可查询记录。
+
+`documentLink` 让其他 LSP client 也能获得 inline link / outgoing 基础能力，是首选公共协议。Notist backlinks 式面板需要 direction、excerpt 与 snapshot stamp 时，消费上节的 `notist/documentReferences(direction="outgoing")`；两者必须共用同一 analysis/service 查询，不得分别实现解析。
+
+首版若只等待一个上游改动，可以先实现 `notist/documentReferences` 同时解锁 incoming / outgoing 两个面板，再补标准 documentLink；若以 LSP 生态完整性优先，则顺序反过来。这是本方案最大的协议排期取舍。
+
+== 符号导航：palette 为主，Explorer 不承担全库搜索
+
+=== workspace/symbol 的主消费面是 Mod+O
+
+已新增 `NotistSymbolModal`，输入变化后 120ms debounce 调 `workspace/symbol`。session 对所有 workspace symbol 查询使用同一 cancellation key，不同 query 会互相取消；modal 另用 request token 丢弃清空输入、关闭或新 query 后的晚响应。结果显示 symbol name 与 `path:line`，选择后复用统一 Location 打开与 reveal。按 module / annotation 区分图标、方向键选择与 MRU 空态尚未实现。
+
+它是“类 Mod+O 的全库符号查找器”，但当前 server 只做 case-insensitive substring。不能在文档中宣称已经 fuzzy：
+
+- 不建议打开 palette 就请求 `workspace/symbol("")` 并把全 vault 符号全集拉到 JS 再 fuzzy；当前响应无分页 / partial result，大库会产生不可控 payload。
+- 当前实现至少输入 1 个字符才请求，空 query 只显示提示；未来可显示客户端 MRU module。对返回候选可做二次排序，但不能找回 server 已过滤掉的 typo / subsequence。
+- 上游后续应为 workspace symbol 增加有上限的 fuzzy rank（或让 service 暴露符号专用 fuzzy query），并限制返回数量；这属于质量改进，不阻塞 substring palette。
+
+`NotistExplorerView` 不直接拿 workspace/symbol 当模块树数据源：workspace symbol 是 query-driven flat search，Explorer 需要完整、稳定、可增量的 module hierarchy。未来 explorer 应消费 service modules/tree 契约；可以在展开某 module 时显示其 annotation/heading children，但那是 palette 结果模型的复用，不是把所有 workspace symbols 常驻加载。
+
+=== 与 documentSymbol 的分工
+
+- documentSymbol：一个活动文档、嵌套 heading tree、常驻 outline、保留文档顺序。
+- workspace/symbol：整个 workspace、flat module / addressable annotation、按 query 过滤、瞬时 palette。
+
+二者可能都包含 heading identity，这是两个交互入口对同一语义对象的不同投影，不需要人为去重成一个 API。Explorer 则回答“模块放在哪里”，不是“当前文档有哪些标题”或“全库匹配哪个符号”。
+
+== Pull-only 数据的新鲜度模型
+
+=== diagnostics 只能作为机会性失效信号
+
+server 收到 didChange 后异步 build；request 到达时会捕获当时的 `RequestContext`（`crates/notist-cli/src/lsp.rs:241-283`）。build 完成才 apply outcome 并 publish diagnostics（`lsp.rs:309-327,750-770`）。紧跟 didChange 发 documentSymbol / references 可能在 build 完成前读到旧 snapshot。
+
+不能把 `publishDiagnostics` 当 build barrier：server 对每路径 diagnostics 计算 signature，未变化就 `continue`（`lsp.rs:1077-1099,1123-1152`）。所以“build 成功且语义变了、diagnostics 恰好不变”不会产生 notification；某一路径收到诊断也不是所有 vault 查询都已完成的通用证明。
+
+当前实现还不是 stale-while-revalidate：view 直接发请求，render token 只保证 UI latest-wins；LSP ready、diagnostics、active leaf、layout 与 didOpen 会触发重拉，但 didChange 没有 panel dirty 事件，diagnostics 不变时仍可能暂时显示旧 snapshot。这个缺口不能靠再加一个任意 timeout 变成正确性保证。
+
+目标是在现协议下采用保守的 stale-while-revalidate：
+
+1. session 发出 didOpen / didChange 时上报本地 `{path, documentVersion}` 事件，panel store 只做 invalidation。
+2. 可见 panel 在 trailing debounce 后 pull；若 diagnostics 随后到达，再把它当“snapshot 可能前进”的信号补拉一次。
+3. active leaf / target 改变与 panel reveal 总是检查 dirty；这保证用户重新聚焦时最终收敛。
+4. 所有结果带 client request generation；晚到结果不能覆盖新 path / 新版本。
+5. 隐藏 panel 不请求，workspace symbol 只随用户 query 请求。
+
+这仍然含时间启发式：没有诊断变化时，第一次 pull 可能读旧 snapshot，直到下一次 focus / reveal 才修正。因此长期正确方案是 server 在 experimental capability 下发布：
+
+```text
+notist/publishSnapshot {
+  generation: u64,
+  applied: boolean,
+  documentVersions: [{ uri, version }]
+}
+```
+
+每次 build outcome 都发送，包括 diagnostics delta 为空的成功 build；failed outcome 也发送 `applied=false` 和错误摘要。panel store 记录最新 applied generation，响应若带的 snapshot generation 更旧则不发布。这个通知是 semantic panel freshness 的权威 barrier；diagnostics 恢复为纯诊断通道。
+
+=== 统一 cache / 请求状态
+
+后续应建立一个不 import Obsidian 的 `SemanticPanelStore`；当前尚未实现：
+
+```text
+NotistLspSession
+  -> documentSymbols / workspaceSymbols / documentReferences / documentLinks
+  -> snapshot + document events
+SemanticPanelStore
+  -> per-key cache, dirty bit, latest request token, server epoch
+Obsidian shell
+  -> OutlineView / BacklinksView / OutgoingLinksView / SymbolModal
+```
+
+每个 view 有 `unavailable | loading | ready | stale | error` 状态；旧数据只在同一 cache key 下保留。LSP off / mobile / restart 时绝不能显示上一个 server epoch 的结果。cross-file reference 变化会使 backlinks dirty，所以 snapshot 事件失效所有已访问的 reference key，但仍只重拉当前可见 key。
+
+== 当前分层与目标分层
+
+已落地的边界是：
+
+- `src/lsp/protocol.ts`：DocumentSymbol、SymbolInformation 与既有 Location 等 wire types；不 import Obsidian。
+- `src/lsp/session.ts`：typed wrappers、flush、request cancellation 与 latest-wins；不知道 leaf、modal 或 DOM。
+- `src/lsp/cm.ts`：仍只负责编辑器内 diagnostics / completion / hover / definition；panel refresh 没有塞进 CM extension。
+- `src/semantic-panels.ts`：首批 Outline / Backlinks ItemView 与 Symbol Modal；这是 Obsidian 壳，不解析 Notist。
+- `src/main.ts`：registerView / command、World allow/deny policy、core command patch、workspace events、活动文档绑定、URI→TFile 与安全打开。
+- `src/notist-view.ts`：保留现有 `revealLspRange`，不拥有语义请求。
+- `src/explorer-view.ts`：未来 module tree；不兼任 outline / backlinks。
+
+definition 原先私有的 `openLspLocation` 已提升为所有语义导航共用 helper，并继续拒绝 vault 外 URI。panel 没有复制 URI decode、TFile lookup 或 UTF-16 range 转换。
+
+当 documentReferences、snapshot notification、cache 状态和 view 交互继续增长时，再把 `src/semantic-panels.ts` 拆成 `src/panels/*`，并引入无 Obsidian 依赖的 `src/semantic/panel-store.ts`。现在提前拆分只会制造空抽象；但一旦需要 stale cache、server epoch 或 incoming / outgoing 共享 renderer，store 就成为真实边界而非风格偏好。
+
+== 分阶段落地与验证
+
+=== 阶段 0：先隔离错误 UI，无 LSP 依赖（已落地）
+
+- 已增加 core semantic view denylist、CSS guardrail、layout-change 自愈；Notist World 路由 `switcher:open`。
+- 先做这一阶段，因为即使 LSP 未启用、启动失败或移动端不可用，错误的 Markdown 数据也不应出现。
+- 验证：分别构造两个 World 的含语义侧栏布局，来回切换与重启；Obsidian CLI 枚举 leaves，Notist World denylist 必须为 0，Markdown World 原布局不丢；从命令面板打开每个 core panel后应立即被清理；Mod+O 不出现 core Quick Switcher。
+
+=== 阶段 1：扩 session 查询面与统一 store（部分落地）
+
+- 已增加 documentSymbol / workspaceSymbol types 与 wrappers、typed request cancellation，并抽出共享 Location opener；capability 保存、server epoch 与 panel store 尚未实现。
+- 验证：transport/session 单测覆盖嵌套 DocumentSymbol、flat/null workspace symbol、取消与 late response 丢弃、restart cache 清空；notist 上游 headless LSP 测试把 documentSymbol / workspaceSymbol 从 handler 白盒提升到真实 stdio loop。
+
+=== 阶段 2：大纲与 symbol palette（首批落地）
+
+- 已注册 `notist-outline` 并实现 active document tree；Notist World 已接管 core `switcher:open`，workspace symbol 使用 server substring query。MRU 空态、outline 折叠与完整键盘选择仍待补齐。
+- 验证：sugar heading、显式 heading、嵌套 level、raw code 中假 heading；编辑后层级变化最终收敛；点击 CJK / emoji 前后的 UTF-16 range 定位正确；多 leaf 切焦点不会让晚响应覆盖新文档；实机截图检查折叠树与 modal。
+
+=== 阶段 3：文档级 references 协议与入链（仅临时客户端降级）
+
+- 插件已注册 `notist-backlinks` 并暂用 `(0,0)` standard references；上游仍需实现 `notist/documentReferences(incoming)`，明确 current document module selector、overlay 与 snapshot stamp。
+- 验证：根 / 嵌套 module、文件首字节就是 wiki link、同 source 多 occurrence、label reference 不混入 module backlink、includeDefinition=false、unsaved overlay 新增 / 删除引用、跨文件变化使当前 cache dirty；大结果测试确认 payload 不复制同文件全文 N 次。
+
+=== 阶段 4：出链与可靠 snapshot freshness（未落地）
+
+- 上游补 `notist/documentReferences(outgoing)` 和 / 或标准 documentLink；保留 resolved、missing、external occurrence；增加 `notist/publishSnapshot`。插件注册 `notist-outgoing-links`，store 从启发式 debounce 切到 generation barrier。
+- 验证：relative / absolute / self / super、module label、heading default id、显式 `core::reference`、escape / raw / malformed、missing / external；didChange 后 diagnostics 不变仍收到 snapshot notification并刷新；build failure 不发布旧数据为新 generation。
+
+=== 阶段 5：Explorer 增强；graph 另立设计（未落地）
+
+- Explorer 改接 modules/tree 契约，按需显示可寻址 symbol children；不把 workspace/symbol 空查询当全量树 API。
+- graph、tags、properties、Excalidraw 保持 denylist。要做 graph 时另立数据规模、布局 worker、渲染、过滤与 local graph 设计，并直接消费 notist reference graph；不在本阶段顺手注入 core graph。
+- 验证：10k+ module / symbol 规模下首屏、query latency、取消与内存；World 快照仍无交叉 leaf。
+
+== 实机验证
+
+2026-08-27 在 `/home/azurice/Files/Vault` 安装当前构建并通过 Obsidian CLI 重载插件，得到以下结果：
+
+- `bun run build` 通过；插件 reload 后 `dev:errors` 和 error-level console 均为空，LSP state 为 `ready`。
+- Notist World 的 backlink、outgoing、outline、graph、localgraph、tag、properties 与 Excalidraw denylist leaf 总数为 0；从 core `outline:open` 强行打开后会被 layout 自愈清理，CSS 覆盖清理前的可见窗口。
+- 执行 core `switcher:open` 时，Notist World DOM 中 `NotistSymbolModal=1`、core prompt=0；Markdown World 则相反，证明包装没有吞掉原入口。
+- 双 World 往返后，Markdown World 原生 backlink / outgoing / outline / tag / properties 各恢复 1 个，Notist view 为 0；切回 Notist 后原生叶子再次归零，自建 panel 与 `.not` 编辑器布局恢复。
+- 大纲从活动 DEMO.not 拉到真实嵌套标题；workspace symbol 查询“卡片”返回 5 个候选；入链面板返回 `_Dashboard/做游戏/2026-08-26 卡片工厂/README.not:5`，点击定位复用共享 Location opener。
+- 双 World 恢复时曾发现 panel 早于 didOpen 请求并误显示空大纲；实现已在 `lspViewSync` 完成文档登记后补 refresh，并把 null request 与真正空结果分开。插件重载后重新 reveal outline 可稳定得到标题。
+
+这些验证证明首批 shell 与标准 LSP 查询链路可用，不证明 `(0,0)` 入链在所有源码首字节形态下正确，也不证明 diagnostics 可以充当 snapshot barrier。
+
+== 放弃项与后果
+
+- *只用 CSS*：会留下空 leaf、tab、布局 state 与可执行 command，无法处理 modal；只能做 guardrail。
+- *只扩 purgeForeignLeaves*：切换瞬间正确，但用户在 Notist World 内仍可重新打开错误 panel；需要 CSS 与入口 / layout 自愈配合。
+- *复用 core backlinks / graph UI*：没有受支持的数据注入 API，内部 metadataCache 注入会把第一方语义押在宿主私有实现上。
+- *大纲并入 Explorer*：混合 document context 与 workspace hierarchy，刷新和 selection 边界不清。
+- *客户端解析 outgoing wiki link*：与 notist-syntax、evaluation 和 resolution 双轨，迟早产生不同答案。
+- *每次 build 全量重查全部 panel cache*：大库成本随已访问模块累积；正确模型是 invalidate-all、refresh-visible。
+- *diagnostics 等于 build complete*：delta suppression 已从源码证明不成立。
+
+== 开放问题与需要裁决
+
+1. *协议优先级*：先做一个 `notist/documentReferences` 同时解锁可靠入链 / 出链与 richer item，还是先做标准 documentLink 让所有 LSP client 受益？本文建议产品价值优先时先做前者，生态完整性优先时先做后者，但最终应两者共用一个 service 查询。
+2. *Mod+O 所有权*：本文默认 Notist World 完全接管 core Quick Switcher，Markdown World 保持原样。若用户仍需要在 Notist World 快速打开 `.md`，应另设明确的跨 World bridge 命令，而不是让 Mod+O 混合两个 World。
+3. *snapshot notification 契约*：`generation` 只表达 LSP input generation，还是同时携带每个 nested vault 的 service revision？多 vault 下建议至少返回 `{vaultRoot, revision}` 数组，否则一个标量无法证明所有面板查询的 freshness。
+4. *links UI 拆分*：本文按 core 心智模型使用两个 view type、共享 store / renderer。若侧栏空间优先，也可用一个 `notist-links` view 加 Incoming / Outgoing tabs；数据与协议设计不受影响。
+5. *移动端降级*：现有 LSP 依赖 Node spawn。本文默认移动端同样隐藏 core 语义面板，但替换 view 显示 unavailable；若移动端必须有面板，需要另立 daemon/HTTP 或 wasm semantic service 方案，不能回退到客户端解析。
+
+== 参考
+
+- #<vault::obsidian-notist>：借壳架空与语义唯一权威。
+- #<vault::obsidian-notist::dual-world>：World 布局、CSS、purge 与已知泄漏点。
+- #<vault::obsidian-notist::lsp>：LSP 四层架构、同步契约与“语义面板阶段”落地顺序。
+- #<vault::ai::2026-08-26 obsidian-notist lsp client implementation>：现有 transport / session / CM / shell 实现与实机验证。
+- #<vault::ai::2026-08-24 obsidian plugin feasibility research>：核心 backlinks / graph 的宿主边界与自建路线。
+- notist CLI 实机对照：`notist --help`、`notist outline --help`、`notist references --help`、`notist search --help`、`notist query --help`；JSON schema v2 的 outline / references 输出用于本文数据模型核对。
