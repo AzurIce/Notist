@@ -1,0 +1,10 @@
+{
+  "package": "@mermanjs/web-render",
+  "version": "0.8.0-alpha.5",
+  "source": "https://registry.npmjs.org/@mermanjs/web-render/-/web-render-0.8.0-alpha.5.tgz",
+  "integrity": "sha512-4qAalCv/EnHZG1OXMiXoKYBtAtDHEYSqdY7aMbIPCoAmeKB96wxW0twEf6y0z41LgKr8NtPzh3Z5btH9lnICFQ==",
+  "runtime": "browser-main-thread-or-worker",
+  "wasm": "artifacts/wasm/merman_wasm_bg.wasm",
+  "entry": "dist/package-entries/render.js",
+  "note": "Only runtime JavaScript, the matching wasm-bindgen artifact, provenance, and license notices are vendored. Type declarations and source maps are omitted."
+}

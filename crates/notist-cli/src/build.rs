@@ -211,8 +211,9 @@ pub(crate) fn render_workspace(
 /// Copies plugin package assets into the generated site.
 ///
 /// This is a first concrete step toward per-plugin asset injection. It reads
-/// the vault `Notist.toml`, and for each known plugin copies `assets/*` into
-/// `_notist/plugins/<name>/`.
+/// the vault `Notist.toml`, and for each known plugin copies `assets/` into
+/// `_notist/plugins/<name>/`. Nested assets are preserved because vendored
+/// browser packages commonly contain their own module and artifact tree.
 pub(crate) fn copy_plugin_assets(root: &Path, output: &Path) -> Result<(), Box<dyn Error>> {
     let config_path = root.join("Notist.toml");
     if !config_path.is_file() {
@@ -229,27 +230,39 @@ pub(crate) fn copy_plugin_assets(root: &Path, output: &Path) -> Result<(), Box<d
             continue;
         }
         let target_dir = output.join("_notist/plugins").join(&name);
-        fs::create_dir_all(&target_dir)?;
-        for entry in std::fs::read_dir(&assets_dir)? {
-            let entry = entry?;
-            let path = entry.path();
-            if path.is_file() {
-                fs::copy(&path, target_dir.join(entry.file_name()))?;
-                tracing::debug!(
-                    target: "notist_cli",
-                    from = %path.display(),
-                    to = %target_dir.join(entry.file_name()).display(),
-                    "copied plugin asset"
-                );
-                copied += 1;
-            }
-        }
+        copy_plugin_asset_tree(&assets_dir, &target_dir, &mut copied)?;
     }
     tracing::debug!(
         target: "notist_cli",
         files = copied,
         "plugin asset copy complete"
     );
+    Ok(())
+}
+
+fn copy_plugin_asset_tree(
+    source: &Path,
+    target: &Path,
+    copied: &mut usize,
+) -> Result<(), Box<dyn Error>> {
+    fs::create_dir_all(target)?;
+    for entry in std::fs::read_dir(source)? {
+        let entry = entry?;
+        let path = entry.path();
+        let destination = target.join(entry.file_name());
+        if path.is_dir() {
+            copy_plugin_asset_tree(&path, &destination, copied)?;
+        } else if path.is_file() {
+            fs::copy(&path, &destination)?;
+            tracing::debug!(
+                target: "notist_cli",
+                from = %path.display(),
+                to = %destination.display(),
+                "copied plugin asset"
+            );
+            *copied += 1;
+        }
+    }
     Ok(())
 }
 
@@ -2536,6 +2549,28 @@ mod tests {
         assert_eq!(home.matches("_notist/styles/").count(), 1);
         let guide = fs::read_to_string(output.join("guide/index.html")).unwrap();
         assert!(guide.contains("href=\"../_notist/styles/assets/theme/user.css\""));
+    }
+
+    #[test]
+    fn nested_plugin_assets_keep_their_relative_module_tree() {
+        let root = tempfile::TempDir::new_in(std::env::current_dir().unwrap()).unwrap();
+        let source = root.path().join("assets");
+        let nested = source.join("merman/dist/package-entries");
+        fs::create_dir_all(&nested).unwrap();
+        fs::write(nested.join("render.js"), "export const ready = true;").unwrap();
+        fs::write(source.join("merman.wasm"), b"wasm").unwrap();
+
+        let output = root.path().join("site");
+        let target = output.join("_notist/plugins/mermaid");
+        let mut copied = 0;
+        copy_plugin_asset_tree(&source, &target, &mut copied).unwrap();
+
+        assert_eq!(copied, 2);
+        assert_eq!(
+            fs::read_to_string(target.join("merman/dist/package-entries/render.js")).unwrap(),
+            "export const ready = true;"
+        );
+        assert_eq!(fs::read(target.join("merman.wasm")).unwrap(), b"wasm");
     }
 
     #[test]
