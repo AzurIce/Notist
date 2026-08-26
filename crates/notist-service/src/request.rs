@@ -1999,6 +1999,9 @@ fn render_workspace(
     workspace: &notist_analysis::WorkspaceSnapshot,
     cancelled: &AtomicBool,
 ) -> io::Result<RenderedWorkspaceRecord> {
+    let _span =
+        tracing::debug_span!(target: "notist_service", "render_workspace", revision = workspace.revision().raw())
+            .entered();
     let modules = workspace.modules().collect::<Vec<_>>();
     let known = modules
         .iter()
