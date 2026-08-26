@@ -41,8 +41,20 @@ baseline 与 it1 同协议对比暴露：**md-bash / null 组完全不受 CLI �
 
 == 迭代 2：SearchHit 节归属 + check 渲染卫生
 
-进行中（it2 跑分后台）。改动：
+改动：
 - A7 SearchHit 新增 `section_id`（覆盖命中的显式 scope label）/`section_title`（最近前序 heading 标题），两个执行器（lexical/exact/regex）都填充；agent 引用 `module#id` 可直接来自首跳结果，省一次 outline 往返。
 - check 文本渲染两处修复：诊断 severity 真实映射（此前 info 一律标成 error[...]，现在 warning 黄 / info 青）；默认 severity=error 过滤导致 showing 0 时明确输出 "showing X of Y (severity/error filters may hide the rest)"。
 
+**verdict：无显著改进（attempt 2/5）。** 工具组 18/18 维持饱和；total tokens 409k→397k 平稳；唯一翻转仍是 null-notools/T2（连续第二轮同格反向，进一步确证该格噪声本质）。受 CLI 影响的条件格零变化。
 
+附带实证：md 对照组 T5 本轮 22.7k→9.4k tokens、T6 72k→42k，幅度超过 CLI 影响组多数格子——再次印证 n=1 单元格置信度极低，宏评测只能当确认层。
+
+== 迭代 3：字节成本层 + 输出引用卫生（微基准主战场）
+
+假设库余项里 A9（公开投影剥离 canonical 绝对路径）与"含空格 ModulePath 无法引用"两条都具备确定性判据且低风险，组成第三轮：
+
+改动目标：
+1. 快照投影不再携带宿主绝对路径（跨 checkout 输出确定性；每响应省 ~70B 且消除机器信息泄漏）。
+2. 文本模式中 ModulePath 含空格时加引号，使其成为可整体复制引用的 token。
+
+验收：sanity probe 断言标准查询 JSON 中不再出现宿主路径前缀；modules/read 的文本行对含空格 id 加引号；单测全绿；一轮快速确认评测无 pass 回退。
