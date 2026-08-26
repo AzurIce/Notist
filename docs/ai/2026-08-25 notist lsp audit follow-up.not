@@ -1,0 +1,50 @@
+= notist LSP 审计跟进：重写后核实
+
+对 [[vault::ai::2026-08-24 notist lsp implementation audit]] 的逐条核实。该审计的问题经 [[vault::ai::2026-08-25 lsp architecture redesign]] 重设计后随 `640f569`（rebuild session scheduler and close contract audit gaps）与 `39f6086`（adopt PassiveDebouncedWatcher）并入 main。核实对象：main @ `39f6086` 的 `crates/notist-cli/src/lsp.rs`（重写后 1948 行）、`crates/notist-cli/src/service.rs`、`crates/notist-service`。行号均为当前 main。
+
+== 已闭环
+
+- *severity 透传*：`lsp_severity()`（`lsp.rs:1114-1120`）映射 warning→WARNING、info/hint→INFORMATION、其余→ERROR。瑕疵：hint 归为 INFORMATION 而非 LSP 的 HINT，未知标签回落 ERROR。
+- *错误码区分*：params 解析失败→InvalidParams，执行失败→InternalError，未知方法→MethodNotFound，取消→RequestCanceled（`lsp.rs:258-397`），有测试。
+- *didChange version 回退拒绝*（`lsp.rs:776-786`，相等容忍）。
+- *诊断批量化 + delta*：每 vault 一次 `CoreRequest::Diagnostics`（`lsp.rs:1063-1066`）按 path 分组；内容签名 diffing（`diagnostics_signature` 1036-1054 + `published_signatures`），未变不重发、消失路径发空集；initialize 后立即发布 baseline（`lsp.rs:225`）；附带文档 version。
+- *同步全量 rebuild → latest-wins 调度器*：主循环独占 `LspSession`，notification 只更新 overlay + `mark_dirty`（递增 input_generation，`lsp.rs:656-659`）；single-flight 后台 builder（`submit_build_if_dirty` 661-670），build 期间新输入在 `SessionEvent::Build` 分支按最新输入重提交（296-308）；结果经 `apply_outcome` 整体替换后驱动诊断发布。
+- *全局写锁消除*：worker 只捕获 `RequestContext`（Arc 句柄 + sources 快照，`lsp.rs:496-518, 732-749`），build 在独立 builder 线程，不再堵主循环与读请求。
+- *无界线程 → 有界池*：`available_parallelism().clamp(2, 8)`（`lsp.rs:166-170`），共享单队列；builder 独立单线程。
+- *FULL sync 契约强制*：恰好一个无 range change（`lsp.rs:765-775`），有测试。
+- *URI 多级缺失 parent*：`normalize_uri_path` 逐级收集缺失祖先再拼回（`lsp.rs:971-997`），`nested/a/b/new.not` 不再压平。
+- *watcher 自通知 bug*：旧版 watcher 回调向客户端出站流注入自定义 notification，fs 驱动的 rebuild 在生产从未生效（旧版隐藏 bug，审计时未抓到）；新版回调改发进程内 `SessionEvent::WorkspaceChanged`（`lsp.rs:62-66 → 292-295`），旧 `notist/workspaceChanged` 通知已删除。watcher 本体换为 `PassiveDebouncedWatcher`（`notist-service/src/watcher.rs:11-83`，250ms 去抖，只过滤事件种类）。
+- *embedded 路径并发与真取消*：`RequestHandle::Embedded` 直接 `&self` 并发执行（`service.rs:22-34`）；取消经 `execute_cancellable` 入口检查与 search 中途检查协作生效（`request.rs:854-859, 1413`）。
+- *CloseView 泄漏面缩小*：失败改 `eprintln` 不再静默（`lsp.rs:625-632`）；daemon 连接断开时服务端按 lease 自动回收该连接所有 view（`transport.rs:367-370`）。
+- *协议拒绝客户端反馈*：2026-08-26 起 `report_issue` 统一把服务端问题同时写 stderr 并推送 `window/logMessage`——didChange 拒绝（FULL sync 违规 / version 回退）发 WARNING，workspace rebuild 失败发 ERROR，有测试（`reports_rejected_did_change_via_log_message`）。
+
+== 部分闭环 / 未闭环
+
+- *daemon 路径仍串行 + 假取消*：per-vault `Arc<Mutex<LocalNotistClient>>` 保留（`service.rs:24-52`，注释明说 "until protocol multiplexing lands"）；`DaemonClient::request` 严格一问一答。讽刺的是 daemon 服务端已支持并发与 `ClientMessage::Cancel`（`transport.rs:288-331`），`DaemonClient::cancel()` 方法存在（`transport.rs:135-137`）但 CLI 侧从未调用。这是当前最大的残留结构债。
+- *Sources 仍全量载入 LSP 进程*：每次 build 拉全量文本做 LineIndex 坐标换算（`lsp.rs:609-623`）；且 `Diagnostics` 响应每条记录内嵌该文件全文（`request.rs:992-995`），daemon 路径下诊断多的文件 payload = O（诊断数 × 文件大小）。
+- *didSave 无 text 不同步*：维持原状（`lsp.rs:797-801`），靠 watcher 收敛——watcher 现在真能工作了，此问题实际已缓解。
+
+== 新发现问题
+
+- *畸形 notification 杀死整个 server*：`handle_notification` 的 serde 解析错误经 `?` 传播致主循环退出（`lsp.rs:286, 414`）；`publish_diagnostics` 失败（如 daemon 瞬断）同样终止循环（`lsp.rs:306`）。一次瞬时错误即关 server，对长驻编辑器场景偏脆。
+- *协议拒绝无客户端反馈*：已闭环（2026-08-26），见"已闭环"末条。
+- *请求池无优先级分层*：hover/completion 与 workspace_symbols（遍历全部 vault，`lsp.rs:921`）共用同一 2-8 线程池，重任务可占满池饿死轻请求。
+- *诊断发布在主循环同步执行*（`lsp.rs:1058` 起），daemon 路径下与 worker 共用 per-vault mutex，一个在途重请求可阻塞诊断发布乃至主循环吸收事件。
+
+== 对 Obsidian 客户端设计的影响
+
+客户端方案（[[vault::obsidian-notist::lsp]]）结论不变（spawn stdio + 自写薄 client），约束更新：
+
+- *客户端 debounce 从必需降级为可选*：server latest-wins 已消化击键风暴；保留短 throttle 只为减少 FULL 全文传输。
+- *FULL sync 必须严格合规*：恰好一个无 range change、version 单调——违规仍会被拒绝，但客户端现在会收到 `window/logMessage` 警告（2026-08-26 起），不再静默失步。
+- *诊断是 delta 推送*：baseline + 按 path 增量，客户端存储按 path 累加，不能全量替换。
+- *取消语义按路径分化*：embedded 真取消、daemon 假取消；客户端照常发取消，但别指望 daemon 模式省 server 资源。
+- *崩溃重启逻辑是必需项*：server 存在单消息致命路径。
+- capabilities 与 initialize 流程与旧版完全一致，无新增协议面。
+
+== 参考
+
+- [[vault::ai::2026-08-24 notist lsp implementation audit]]：被核实的原始审计。
+- [[vault::ai::2026-08-25 lsp architecture redesign]]：重设计文档（阶段 A/C/D 子集/E 已落地的自述）。
+- [[vault::obsidian-notist::lsp]]：客户端接入设计方案（已按本文结论更新）。
+- 核实对象：`crates/notist-cli/src/lsp.rs`、`crates/notist-cli/src/service.rs`、`crates/notist-service/src/{lib.rs,request.rs,transport.rs,watcher.rs}`（main @ 39f6086）。

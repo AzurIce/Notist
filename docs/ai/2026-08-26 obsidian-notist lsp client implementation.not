@@ -1,0 +1,51 @@
+= obsidian-notist LSP 客户端实现记录
+
+obsidian-notist 插件接入 notist LSP 的实现记录（2026-08-26），方案见 [[vault::obsidian-notist::lsp]]，server 侧行为依据 [[vault::ai::2026-08-25 notist lsp audit follow-up]] 核实过的 main @ 39f6086。实现范围超出原「落地顺序」的前两步：diagnostics、completion、hover、definition 四项一次落地（references/symbols 仍留给语义面板阶段）。
+
+== 结构
+
+`src/lsp/` 三层，全部不 import obsidian API（守「借壳架空」纪律），壳在 `main.ts`/`settings.ts`/`notist-view.ts`：
+
+- `protocol.ts`：手写最小 LSP 类型面（Position/Range/Diagnostic/CompletionItem/Hover/Location），零依赖。
+- `transport.ts`：spawn 子进程 + Content-Length framing + id 关联。Node API 一律惰性 `require`（移动端 `require` 不存在时只在真正启动 LSP 时才报错，模块导入本身安全）。
+- `session.ts`：initialize 握手、文档注册表（绝对路径为 key、多 leaf 引用计数、didChange 200ms trailing throttle、FULL sync 严格单 change 无 range）、position 请求封装（同类请求 latest-wins + `$/cancelRequest`）、per-path 诊断存储（delta 累加）。
+- `cm.ts`：per-view 扩展工厂——`linter(null)` + `lintGutter()` 收推送诊断、`autocompletion({override})`、`hoverTooltip`、F12 definition。UTF-16 position 与 CM offset 直接换算（`doc.lineAt/line`），与 tree-sitter 高亮同一坐标约定。
+
+壳层职责：设置项（启用开关默认关 + 二进制路径）、状态栏、start/stop/崩溃重启（指数退避 ×3）、vault rename/delete 事件翻译成 didClose+didOpen、definition 跨文件跳转（`openFile` + `revealLspRange`）。
+
+== 实机验证结论（obsidian CLI 驱动运行中实例）
+
+- spawn/握手/基线诊断/编辑联动 delta 推送全通：`#missing[]` 报 unknown-function、改对引用后 unresolved-module 消失、编辑器内删除错误行后 lint range 从 2 变 1。
+- hover 返回模块逻辑路径 + source path；definition 返回目标文件 Location，`openLspLocation` 跳转并 reveal 成功；completion 在 `#he` 处返回 `heading` 且 replacement range 正确（1..3）。
+- 视觉确认：gutter 红点 + 波浪下划线渲染正常（截图抽查）。
+
+== 踩坑（高复用价值）
+
+- *推送诊断必须 `linter(null)`*：写成 `linter(() => [])` 时，这个 dummy source 的例行运行会把 `setDiagnostics` 推入的诊断刷成 `[]`——表现为「手动 dispatch 有下划线、自动链路没有」。`linter(null)` 的语义就是「只装 lint state field，不跑自动检查」，是 setDiagnostics 推送模型的正确配对。
+- *setViewData 回声 vs 外部修改*：server 端 overlay 永远压过磁盘，打开中的文件被外部（sync/git/其他插件/`vault.modify`）改动时，view 的 `setViewData` 刷新若一律当回声抑制，server 的 overlay 就永远停在旧文本（watcher 读盘也救不回来）。解法是*内容比对*：session 记录每文档「最后发送文本 + pending 文本」，setViewData 数据与已知最新文本相同才是回声，不同则按 didChange 转发。
+- *插件 reload 的 unload 竞态*：`onunload` 里异步 `stopLsp()` 的 shutdown 导致 server 退出 → `onExit` → error 状态 → *已卸载的旧实例*按退避策略自重启，泄漏 server 进程与状态栏元素（实测泄漏 3 个 `notist lsp` 进程）。修复：onunload 先置 `unloaded` 标志，onLspState 开头直接 return；`startLsp` 防御性清理遗留状态栏元素。僵尸实例只能重启 Obsidian 清理。
+- *shutdown 监听顺序*：必须在发 `exit` 通知*之前*注册 exit 监听——server 收到 exit 可能秒退，先注册后发送否则等满 2s grace 还白挨一个 SIGKILL 噪音日志。另外主动 stop 时的退出不该报 error：session 加 `stopping` 标志区分。
+- *spawn 成败判定*：用 ChildProcess 的 `spawn` 事件确认启动成功、`error` 事件捕获 ENOENT，不要 setTimeout 猜测。
+- *obsidian CLI eval*：async IIFE 的返回值*偶尔*不打印（同步返回 + 轮询更稳）；`dev:errors` 只捕获未处理异常，自己 console.error 的要走 `dev:console level=error` 看。
+- *已知坑复现*：`bun add -d` 仍因 `install` 钩子（scripts/install.ts 缺参数退出 1）不写 package.json——依赖实际装好了，手动把 `@codemirror/autocomplete`/`@codemirror/lint` 补进 devDependencies 即可（两者在 esbuild external 清单里，只为 tsc 类型）。
+
+== 未做与后续
+
+- references/document symbol/workspace symbol 的 UI（等 explorer/backlinks/graph 的语义面板阶段）。
+- hover 内容是 Markdown 但按纯文本渲染（MarkdownRenderer 属 md world）。
+- Mod-Click 跳转、诊断面板（`openLintPanel` 可用但首版未接）。
+- server 侧已知残留（daemon 路径串行/假取消、畸形 notification 杀主循环等）见 [[vault::ai::2026-08-25 notist lsp audit follow-up]]——客户端的崩溃重启逻辑已为它们兜底。
+
+== 补记（2026-08-26 当日后续）
+
+启动命令改为 Zed 式两段（path + 整体替换 argv）后又踩了四个坑：
+
+- *设置文本输入 onChange 逐击键触发*：Obsidian 的 text setting 每敲一个字符就回调，直接接 setter 会拿半截 argv 反复重启 server（用户配 `nix develop` 时的连番 exit 101 一半是这个）。修复：settings 层统一 800ms 防抖。
+- *cwd 语义*：第一版加了「working directory」设置，被指出概念混淆——LSP server 的 cwd 应该是 workspace（vault 根），`cargo run` 需要 repo 目录是*启动器*的需求。定稿：spawn cwd 固定 vault 根（LSP 惯例），启动器需求写进 argv（`--manifest-path`）；`nix develop <flake> -c` 和 `direnv exec <dir>` 都*不会* cd 到目录，这是 exit 101 的另一半根因（cargo 在 Obsidian 的 cwd 即 `$HOME` 找不到 Cargo.toml）。
+- *快速连续 restartLsp 双开 server*：设置连改时 startLsp 未串行，泄漏了一个无 session 对应的 server 进程。修复：`lspStarting` 守卫 + restartLsp 全程 await。
+- *stderr 不可见*：exit 101 排障全靠猜因为 stderr 只进 console.debug；session 现在留 4KB stderr 环形缓冲，error 态 detail 带末三行（Notice 与 console.error 均可见）。同日 notist 侧把协议拒绝改为 `window/logMessage` 推送（见 [[vault::ai::2026-08-25 notist lsp audit follow-up]]），客户端 session 同步接入：logMessage 按级别进 console，之前「违规静默失步」的不对称闭合。
+
+== 参考
+
+- [[vault::obsidian-notist::lsp]]：设计方案本文档（含 server 行为约束与降级策略）。
+- [[vault::ai::2026-08-24 obsidian-notist editor cm6 migration]]：Compartment 热切换与 update 周期 dispatch 异常的先例（本次 setLspExtension 沿用同款模式）。
