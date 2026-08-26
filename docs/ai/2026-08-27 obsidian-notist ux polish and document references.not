@@ -13,6 +13,8 @@
 
 行为：文件行显示 severity 色调（error/warning/info）的计数 pill；文件夹聚合全部后代计数（读诊断 Map 而非 DOM，折叠的文件夹也能显示）；点击 pill 跳到该文件第一条诊断（capture 阶段拦截，不触发 explorer 自身的打开行为）；`layout-change` 后 leaf 重建时自愈重绑。根目录 `/` 不放徽标（状态栏已有全库计数，vault 头部常驻徽标是噪音）。
 
+*高价值踩坑（同日实机回归逼出）*：`stopObserving()` 将 `this.observer` 置 null，而 `startObserving()` 用 `this.observer?.observe(...)` 可选链——`apply()` 的 finally 里调用它时字段已是 null，静默 no-op。此后 observer 永久死亡：LSP 推送期间 `refresh() → sync()` 不断重建 observer 掩盖了问题，推送一旦平息（正是"启动完成"的常态），展开目录产生的 DOM 变更无人监听，子节点永远拿不到角标。修复：`startObserving()` 负责补建 observer（`stopped` 时拒绝复活）；另配合 `sync()` 在 explorer 暂时找不到（布局切换中）时保留存活设置 + 300ms 重试收敛。验证基线不是"重启后有角标"，而是"observer 存活跨越目录折叠/展开往返，且新渲染行立即获得正确计数"。
+
 == Problems 底栏重构
 
 - 文件分组头变成真按钮（键盘可达），chevron 折叠/展开单文件分组，目录以灰色面包屑显示在文件名后。
