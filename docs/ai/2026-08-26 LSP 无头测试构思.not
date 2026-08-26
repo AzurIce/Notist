@@ -93,4 +93,16 @@ crates/notist-cli/tests/
 - 接入侧发现的每个 bug 从此有标准归宿：变成一个 headless 场景用例。
 - 配合 AGENTS.md 的跨仓库审查流程：LSP 契约变更时先跑本层测试再评估三姊妹项目影响。
 
-实施记录（herdr worktree 子代理开搭 harness 骨架 + 首批场景）：见后续补记。
+== 实施记录（2026-08-26，分支 feat/lsp-headless-tests）
+
+方案 B 已落地：`crates/notist-cli/tests/{common/mod.rs, lsp_lifecycle.rs, lsp_sync.rs, lsp_queries.rs}`，7 个场景全绿（capabilities+优雅退出、自发 baseline、FULL sync delta 推送、三类违规拒绝后会话存活+logMessage+stderr、didClose 清空、跨文件 references、emoji/CJK UTF-16 往返）。生产侧最小改动三处，全部是黑箱测试逼出的真实缺陷：
+
+- *shutdown/exit 竞态*：原 `connection.handle_shutdown` 在内部从 receiver 等 exit 通知，与 Runtime 事件泵线程构成双消费者竞争；改为主循环内联回复 shutdown、把 `exit` 通知作为断环事件。
+- *退出挂死*：main_loop 返回后 Connection 未释放，io_threads 的 writer 阻塞在 channel 上导致 join 永不返回；改为在 join 前 drop(Connection)。这两个 bug 此前从未暴露，因为没有任何测试真正走过完整进程生命周期——正是本文所定位的缺口。
+- *拒绝反馈*：rejected didChange 除 stderr 外新增 `window/logMessage` WARNING 推送（obsidian 侧已有 onLog 接收点，无破坏性）。
+
+harness 自身的两条教训（后续写协议级测试通用）：等待循环若"backlog 未命中就压回队尾"，会在 backlog 非空时无限轮转、饿死真正的收包通道——必须每轮全量扫描后强制阻塞收包一次并受 deadline 约束；子进程 stderr 要增量读入共享缓冲，`read_to_string` 会拖到 EOF 才可见。
+
+夹具语义发现：`[[target]]` 从嵌套模块文件解析为子模块路径（`vault::wide::target`），只有根模块（README.not）才解析兄弟模块——queries 场景必须用 README.not 作引用方。另外干净 vault 启动也会推空集 baseline，测试谓词需带 version 或先耗尽 baseline，否则滞留消息会被误匹配。
+
+遗留（后续批次）：exit-without-shutdown 应按规范非零退出（现返回 0）；daemon 双模式变体；didSave；$/cancelRequest；跨文件联动推送（改 A 清 B）。
