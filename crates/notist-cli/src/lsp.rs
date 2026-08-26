@@ -11,7 +11,7 @@ use std::time::Duration;
 use lsp_server::{Connection, ErrorCode, Message, Notification, Request, Response};
 use lsp_types::notification::{
     Cancel, DidChangeTextDocument, DidCloseTextDocument, DidOpenTextDocument, DidSaveTextDocument,
-    Notification as _, PublishDiagnostics,
+    Exit, LogMessage, Notification as _, PublishDiagnostics,
 };
 use lsp_types::request::{
     Completion, DocumentSymbolRequest, GotoDefinition, HoverRequest, References, Request as _,
@@ -23,10 +23,11 @@ use lsp_types::{
     DidChangeTextDocumentParams, DidCloseTextDocumentParams, DidOpenTextDocumentParams,
     DidSaveTextDocumentParams, DocumentSymbol, DocumentSymbolParams, DocumentSymbolResponse,
     Documentation, GotoDefinitionParams, GotoDefinitionResponse, Hover, HoverContents, HoverParams,
-    HoverProviderCapability, InitializeParams, Location, MarkupContent, MarkupKind, NumberOrString,
-    OneOf, Position, PositionEncodingKind, PublishDiagnosticsParams, Range, ReferenceParams,
-    ServerCapabilities, SymbolKind, TextDocumentSyncCapability, TextDocumentSyncKind, TextEdit,
-    Uri, WorkspaceSymbolParams, WorkspaceSymbolResponse,
+    HoverProviderCapability, InitializeParams, Location, LogMessageParams, MarkupContent,
+    MarkupKind, MessageType, NumberOrString, OneOf, Position, PositionEncodingKind,
+    PublishDiagnosticsParams, Range, ReferenceParams, ServerCapabilities, SymbolKind,
+    TextDocumentSyncCapability, TextDocumentSyncKind, TextEdit, Uri, WorkspaceSymbolParams,
+    WorkspaceSymbolResponse,
 };
 use notist_analysis::{LineIndex, discover_vault_roots};
 use notist_model::TextRange;
@@ -66,7 +67,7 @@ pub fn run(no_daemon: bool) -> Result<ExitCode, Box<dyn Error>> {
     })?;
     watcher.watch_recursive(session.root())?;
 
-    main_loop(&connection, session, runtime)?;
+    main_loop(connection, session, runtime)?;
     drop(watcher);
     io_threads.join()?;
     Ok(ExitCode::SUCCESS)
@@ -195,7 +196,7 @@ impl Runtime {
 }
 
 fn main_loop(
-    connection: &Connection,
+    connection: Connection,
     session: LspSession,
     runtime: Runtime,
 ) -> Result<(), Box<dyn Error>> {
@@ -206,7 +207,10 @@ fn main_loop(
         handles,
         ..
     } = runtime;
-    let result = main_loop_inner(connection, session, &events, &builder, &pool);
+    let result = main_loop_inner(&connection, session, &events, &builder, &pool);
+    // Releasing the connection ends the stdio writer/dropper threads; it must
+    // happen before `io_threads.join()` or those joins would wait forever.
+    drop(connection);
     drop(builder);
     drop(pool);
     for handle in handles {
@@ -235,8 +239,14 @@ fn main_loop_inner(
             SessionEvent::Protocol(Message::Response(_)) => {}
             SessionEvent::Eof => break,
             SessionEvent::Protocol(Message::Request(request)) => {
-                if connection.handle_shutdown(&request)? {
-                    return Ok(());
+                if request.method.as_str() == Shutdown::METHOD {
+                    // Single-consumer shutdown: answering here and awaiting
+                    // `exit` on the event bus avoids racing `handle_shutdown`,
+                    // whose internal receive competes with the pump thread.
+                    let _ = connection
+                        .sender
+                        .send(Message::Response(Response::new_ok(request.id, ())));
+                    continue;
                 }
                 let id = request.id.clone();
                 let cancelled = Arc::new(AtomicBool::new(false));
@@ -272,6 +282,9 @@ fn main_loop_inner(
                 }
             }
             SessionEvent::Protocol(Message::Notification(notification)) => {
+                if notification.method == Exit::METHOD {
+                    break;
+                }
                 if notification.method == Cancel::METHOD {
                     let params: CancelParams = serde_json::from_value(notification.params)?;
                     let id = match params.id {
@@ -283,7 +296,7 @@ fn main_loop_inner(
                     }
                     continue;
                 }
-                let changed = handle_notification(&mut session, notification)?;
+                let changed = handle_notification(connection, &mut session, notification)?;
                 if changed {
                     session.mark_dirty();
                     session.submit_build_if_dirty(builder, &mut build_in_flight);
@@ -381,7 +394,6 @@ fn handle_request(context: &RequestContext, request: Request, cancelled: &Atomic
                             .map_err(|error| (ErrorCode::InternalError, error.to_string()))
                     })
             }),
-        Shutdown::METHOD => Ok(serde_json::Value::Null),
         _ => {
             return Response::new_err(
                 id,
@@ -406,6 +418,7 @@ fn to_json<T: serde::Serialize>(value: T) -> Result<serde_json::Value, String> {
 }
 
 fn handle_notification(
+    connection: &Connection,
     session: &mut LspSession,
     notification: Notification,
 ) -> Result<bool, Box<dyn Error>> {
@@ -421,6 +434,15 @@ fn handle_notification(
                 Ok(changed) => Ok(changed),
                 Err(error) => {
                     eprintln!("notist lsp: rejected didChange: {error}");
+                    connection
+                        .sender
+                        .send(Message::Notification(Notification::new(
+                            LogMessage::METHOD.to_owned(),
+                            LogMessageParams {
+                                typ: MessageType::WARNING,
+                                message: format!("rejected didChange: {error}"),
+                            },
+                        )))?;
                     Ok(false)
                 }
             }
@@ -1722,7 +1744,7 @@ mod tests {
         let (server, client) = Connection::memory();
         let server_thread = std::thread::spawn(move || {
             let runtime = Runtime::spawn(&server);
-            main_loop(&server, state, runtime).unwrap();
+            main_loop(server, state, runtime).unwrap();
         });
 
         // The server must publish an initial diagnostics baseline before any
