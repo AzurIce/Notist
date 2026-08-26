@@ -89,7 +89,7 @@ plugin-system/ 插件系统：package、ABI、贡献、信任模型与生命周�
 1. #<vault::designs::language::markup-surface>：Markup 表面语法与 scope 书写形态。
 2. #<vault::designs::language::code-grammar>：Code 核心语法。
 3. #<vault::designs::language::type-system>：核心类型系统。
-4. #<vault::designs::language::collection-types>：集合类型草案，尚未进入 current surface。
+4. #<vault::designs::language::collection-types>：集合类型草案，尚未进入 current surface（最小 union 切片见 #<vault::designs::language::target-and-union>）。
 5. #<vault::designs::language::scope-environment>：词法作用域与值层 scope。
 6. #<vault::designs::language::call-model>：函数签名与调用模型；rest 部分待实现。
 7. #<vault::designs::language::property-table>：旁置属性表。

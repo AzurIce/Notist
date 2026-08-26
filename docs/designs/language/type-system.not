@@ -22,7 +22,7 @@ Type
 
 错误恢复使用独立的 Error marker——Error 不是 `None` 或空 Content，后两者都有各自的合法语义。（发散类型（类似 Rust 的 `!`）暂不进入语言，待出现不会正常返回的表达式时再引入。）
 
-赋值兼容性（assignability）与 coercion 是分离的概念：相同类型直接赋值；`Int` 传给 `Float` 形参时，静态检查在解析结果中插入显式数值 coercion（coercion insertion）。不做隐式函数 subtyping，也不做全局 subtyping。（集合类型的 Union/Never 目标设计见 #<vault::designs::language::collection-types>；未进入现行 surface 前，Union 暂不进入语言。）
+赋值兼容性（assignability）与 coercion 是分离的概念：相同类型直接赋值；`Int` 传给 `Float` 形参时，静态检查在解析结果中插入显式数值 coercion（coercion insertion）。不做隐式函数 subtyping，也不做全局 subtyping。最小 union 切片（`T | U`）已随 #<vault::designs::language::target-and-union> 进入 surface，目前用于 `link(target: Target | String)`；完整的集合类型 Union/Never 目标设计见 #<vault::designs::language::collection-types>。
 
 === 可空与可省略
 
