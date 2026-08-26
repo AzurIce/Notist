@@ -18,6 +18,14 @@ pub enum Type {
     /// A callable value. Its concrete signature is carried by symbol metadata
     /// (D0002); the written form is `fn(parameters) -> R` (D0007).
     Function,
+    /// A reference target: a module path plus an optional module-local
+    /// selector (scope id or resource file name). External urls are
+    /// represented as plain `String` values, never as `Target`.
+    Target,
+    /// A union of alternative types: `A | B`. Unions are normalized at
+    /// construction (flattened, deduplicated, sorted) and never contain
+    /// another `Union` or fewer than two members.
+    Union(Vec<Type>),
     /// Either `none` or a value of the nested type.
     Optional(Box<Type>),
     /// An inferred or unchecked type. This is an internal marker, never
@@ -28,6 +36,25 @@ pub enum Type {
 }
 
 impl Type {
+    /// Builds a normalized union type. Single-member unions collapse to the
+    /// member; nested unions flatten; duplicates are removed.
+    pub fn union(members: impl IntoIterator<Item = Type>) -> Type {
+        let mut flattened: Vec<Type> = Vec::new();
+        for member in members {
+            match member {
+                Type::Union(inner) => flattened.extend(inner),
+                other => flattened.push(other),
+            }
+        }
+        flattened.sort_by(|left, right| left.to_string().cmp(&right.to_string()));
+        flattened.dedup();
+        match flattened.len() {
+            0 => Type::None,
+            1 => flattened.pop().expect("one member"),
+            _ => Type::Union(flattened),
+        }
+    }
+
     /// Returns whether a value of the `actual` type can bind to this type.
     pub fn accepts(&self, actual: &Self) -> bool {
         if self == actual || matches!(actual, Self::Inferred) {
@@ -35,6 +62,14 @@ impl Type {
         }
         match (self, actual) {
             (Self::Float, Self::Int) => true,
+            // A union expectation accepts any member; a union actual must be
+            // wholly acceptable to the expectation.
+            (Self::Union(expected), actual) => {
+                expected.iter().any(|member| member.accepts(actual))
+            }
+            (expected, Self::Union(actual)) => {
+                actual.iter().all(|member| expected.accepts(member))
+            }
             (Self::Optional(_), Self::None) => true,
             (Self::Optional(expected), Self::Optional(actual)) => expected.accepts(actual),
             (Self::Optional(expected), actual) => expected.accepts(actual),
@@ -56,6 +91,16 @@ impl fmt::Display for Type {
             Self::String => formatter.write_str("String"),
             Self::Content => formatter.write_str("Content"),
             Self::Function => formatter.write_str("Function"),
+            Self::Target => formatter.write_str("Target"),
+            Self::Union(members) => {
+                for (index, member) in members.iter().enumerate() {
+                    if index > 0 {
+                        formatter.write_str(" | ")?;
+                    }
+                    write!(formatter, "{member}")?;
+                }
+                Ok(())
+            }
             Self::Optional(inner) => write!(formatter, "{inner}?"),
             Self::Inferred => formatter.write_str("Inferred"),
         }
@@ -142,12 +187,13 @@ pub struct FunctionSignature {
     pub result: Type,
 }
 
-/// The signature of the built-in `ref` function.
-pub fn ref_signature() -> FunctionSignature {
+/// The signature of the unified built-in `link` function: a vault `Target`
+/// or an external url `String`.
+pub fn link_signature() -> FunctionSignature {
     FunctionSignature {
         parameters: vec![Parameter {
-            name: "url".into(),
-            ty: Type::String,
+            name: "target".into(),
+            ty: Type::union([Type::Target, Type::String]),
             default: None,
         }],
         trailing_content: None,
@@ -380,7 +426,7 @@ pub fn empty_content_signature() -> FunctionSignature {
 /// The names and signatures of all built-in functions.
 pub fn builtin_signatures() -> [(&'static str, FunctionSignature); 14] {
     [
-        ("ref", ref_signature()),
+        ("link", link_signature()),
         ("heading", heading_signature()),
         ("raw", raw_signature()),
         ("rule", empty_content_signature()),

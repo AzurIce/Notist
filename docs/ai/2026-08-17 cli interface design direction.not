@@ -1,6 +1,6 @@
 = CLI 接口设计与实现方向综合分析
 
-本文综合 docs/ai 下全部 CLI 相关文档（[[vault::ai::2026-07-26 agent-friendly CLI output and Notist improvements]]、[[vault::ai::2026-07-27 agent-facing CLI and MCP interface redesign]]、[[vault::ai::2026-07-27 cli token cost and search ergonomics evaluation]]、[[vault::ai::2026-08-14 implementation design audit and rulings]]、[[vault::ai::2026-08-15 cli agent navigation and retrieval interface]]、[[vault::ai::2026-08-15 cli v3 clean interface redesign]]），结合对 2025–2026 年面向 Agent 的外部 CLI 实践（InfoQ agent-driven CLI 综述、cli-output-spec、agentnative-cli、gh、kubectl、ripgrep、QMD、RTK、Repomix、MCP 规范、Anthropic 工具设计指南）的接口调查，并对照当前代码现状（crates/notist-cli、crates/notist-service），给出设计方向判断与实现路径建议。
+本文综合 docs/ai 下全部 CLI 相关文档（#<vault::ai::2026-07-26 agent-friendly CLI output and Notist improvements>、#<vault::ai::2026-07-27 agent-facing CLI and MCP interface redesign>、#<vault::ai::2026-07-27 cli token cost and search ergonomics evaluation>、#<vault::ai::2026-08-14 implementation design audit and rulings>、#<vault::ai::2026-08-15 cli agent navigation and retrieval interface>、#<vault::ai::2026-08-15 cli v3 clean interface redesign>），结合对 2025–2026 年面向 Agent 的外部 CLI 实践（InfoQ agent-driven CLI 综述、cli-output-spec、agentnative-cli、gh、kubectl、ripgrep、QMD、RTK、Repomix、MCP 规范、Anthropic 工具设计指南）的接口调查，并对照当前代码现状（crates/notist-cli、crates/notist-service），给出设计方向判断与实现路径建议。
 
 == 内部想法的演进主线
 

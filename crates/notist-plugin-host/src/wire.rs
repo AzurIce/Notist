@@ -56,6 +56,7 @@ pub(crate) fn value_to_node_value(value: &Value) -> Result<NodeValue, String> {
         Value::Float(value) => NodeValue::Float(*value),
         Value::String(value) => NodeValue::String(value.clone()),
         Value::Content(forest) => NodeValue::Stream(forest.clone()),
+        Value::Target(reference) => NodeValue::Target(reference.clone()),
         Value::Function(_) => {
             return Err("function values cannot cross the plugin boundary".into());
         }

@@ -1,7 +1,7 @@
 @![implementation = "partial"]
 = Termination, Resource Limits, and Determinism
 
-本文定义插件执行的安全边界。信任模型的裁决见 [[vault::designs::plugin-system::capability]]；reduce 阶段如何消耗预算见 [[vault::designs::pipeline::plugin-call-reduction]]。
+本文定义插件执行的安全边界。信任模型的裁决见 #<vault::designs::plugin-system::capability>；reduce 阶段如何消耗预算见 #<vault::designs::pipeline::plugin-call-reduction>。
 
 == 终止性
 

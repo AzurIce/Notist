@@ -1,6 +1,6 @@
 = WIT 递归类型最佳实践：call 规约树的 ABI 表示
 
-本文调查 WIT（Wasm Interface Types）表示递归类型的现状与最佳实践，动机是 Notist 插件 ABI 需要跨组件边界传递递归的 `Stream<Call | Leaf>` 规约树。现行 ABI 与设计契约见 [[vault::designs::plugin-system::abi]] 与 [[vault::designs::pipeline::plugin-call-reduction]]。
+本文调查 WIT（Wasm Interface Types）表示递归类型的现状与最佳实践，动机是 Notist 插件 ABI 需要跨组件边界传递递归的 `Stream<Call | Leaf>` 规约树。现行 ABI 与设计契约见 #<vault::designs::plugin-system::abi> 与 #<vault::designs::pipeline::plugin-call-reduction>。
 
 == 结论
 

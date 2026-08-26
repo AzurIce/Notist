@@ -12,12 +12,7 @@ pub use argument::{
 pub use raw::{RawLiteral, RawLiteralForm, SpannedText};
 pub use scope::{Attribute, AttributeValue, Attributes, BodyForm, SpannedName};
 
-/// A parsed wiki-style module or label reference.
-#[derive(Clone, Debug, Eq, PartialEq)]
-pub struct WikiLink {
-    pub target: WikiReference,
-    pub range: TextRange,
-}
+
 
 /// A recoverable syntax error with a precise source range.
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -46,7 +41,6 @@ impl Default for Markup {
 #[derive(Clone, Debug, PartialEq)]
 pub enum MarkupItem {
     Text(SpannedText),
-    Wiki(WikiLink),
     Raw(RawLiteral),
     Embedded(EmbeddedExpression),
     /// A line-leading `= ...` heading sugar (D0003). The body is Markup up
@@ -171,17 +165,6 @@ pub struct Parse {
 }
 
 impl Parse {
-    /// Collects wiki links in source order.
-    pub fn links(&self) -> Vec<&WikiLink> {
-        let mut output = Vec::new();
-        visit_markup(&self.root, &mut |item| {
-            if let MarkupItem::Wiki(link) = item {
-                output.push(link);
-            }
-        });
-        output
-    }
-
     /// Collects Function calls in source order.
     pub fn calls(&self) -> Vec<&Call> {
         let mut output = Vec::new();
@@ -212,6 +195,69 @@ impl Parse {
                 output.push(expression);
             }
         });
+        output
+    }
+
+    /// Collects static Target literals (`<...>`) in source order.
+    pub fn targets(&self) -> Vec<&Expression> {
+        let mut output = Vec::new();
+        visit_markup_expressions(&self.root, &mut |expression| {
+            if matches!(expression.kind, ExpressionKind::Target(_)) {
+                output.push(expression);
+            }
+        });
+        output
+    }
+
+    /// Collects Target literals that produce Reference elements: directly
+    /// embedded targets (`#<...>`) and targets inside Content blocks. Target
+    /// values bound by `let` or passed to arbitrary calls are dynamic and are
+    /// not reference edges; `link(<...>)` is indexed separately.
+    pub fn reference_targets(&self) -> Vec<&Expression> {
+        fn walk_markup<'a>(markup: &'a Markup, output: &mut Vec<&'a Expression>) {
+            for item in &markup.items {
+                match item {
+                    MarkupItem::Embedded(embedded) => walk_expression(&embedded.expression, output),
+                    MarkupItem::Heading(sugar) => walk_markup(&sugar.body, output),
+                    MarkupItem::List(sugar) => {
+                        for row in &sugar.rows {
+                            walk_markup(&row.body, output);
+                        }
+                    }
+                    MarkupItem::Table(sugar) => {
+                        for cell in &sugar.header {
+                            walk_markup(&cell.body, output);
+                        }
+                        for row in &sugar.rows {
+                            for cell in row {
+                                walk_markup(&cell.body, output);
+                            }
+                        }
+                    }
+                    _ => {}
+                }
+            }
+        }
+        fn walk_expression<'a>(expression: &'a Expression, output: &mut Vec<&'a Expression>) {
+            match &expression.kind {
+                ExpressionKind::Target(_) => output.push(expression),
+                ExpressionKind::Content(block) => walk_markup(&block.markup, output),
+                ExpressionKind::Call(call) => {
+                    for argument in &call.arguments {
+                        if matches!(argument.expression.kind, ExpressionKind::Content(_)) {
+                            walk_expression(&argument.expression, output);
+                        }
+                    }
+                    for block in &call.trailing {
+                        walk_markup(&block.markup, output);
+                    }
+                }
+                ExpressionKind::Parenthesized(inner) => walk_expression(inner, output),
+                _ => {}
+            }
+        }
+        let mut output = Vec::new();
+        walk_markup(&self.root, &mut output);
         output
     }
 
@@ -381,6 +427,123 @@ fn visit_expression<'a>(expression: &'a Expression, visitor: &mut impl FnMut(&'a
 /// Parses a complete Notist source as top-level Markup.
 pub fn parse(source: &str) -> Parse {
     parser::parse(source)
+}
+
+/// Parses the body of a Target literal (`<...>`, with escapes already
+/// resolved by the lexer). The body is `ModulePath[/label]`: everything up
+/// to the first `/` is the module path, the remainder is the module-local
+/// selector. External urls are rejected: they must be written as `String`.
+pub fn parse_target_body(source: &str) -> Result<WikiReference, String> {
+    let source = source.trim();
+    if source.is_empty() {
+        return Err("target literal cannot be empty".into());
+    }
+    if looks_like_external(source) {
+        return Err(
+            "external urls are not allowed inside `<...>`; pass the url string directly to `link`"
+                .into(),
+        );
+    }
+
+    let (module_part, label) = match source.split_once('/') {
+        Some((module, label)) => {
+            let label = label.trim();
+            if label.is_empty() {
+                return Err("target label after `/` cannot be empty".into());
+            }
+            (module.trim(), Some(label.to_owned()))
+        }
+        None => (source, None),
+    };
+    if module_part.is_empty() {
+        return Err("target module path cannot be empty".into());
+    }
+    let module = parse_target_module_path(module_part)?;
+    Ok(WikiReference { module, label })
+}
+
+fn parse_target_module_path(source: &str) -> Result<ModuleReference, String> {
+    let segments: Vec<&str> = source.split("::").map(str::trim).collect();
+    if segments.iter().any(|segment| segment.is_empty()) {
+        return Err("target path contains an empty segment".into());
+    }
+    if let Some(segment) = segments.iter().find(|segment| !is_target_segment(segment)) {
+        return Err(format!("invalid target path segment `{segment}`"));
+    }
+
+    if segments[0] == "vault" {
+        if segments[1..]
+            .iter()
+            .any(|segment| matches!(*segment, "vault" | "super" | "self"))
+        {
+            return Err(
+                "`vault`, `super`, and `self` are only allowed at the start of a path".into(),
+            );
+        }
+        return Ok(ModuleReference::Absolute(
+            segments[1..]
+                .iter()
+                .map(|segment| (*segment).to_owned())
+                .collect(),
+        ));
+    }
+
+    if segments[0] == "super" {
+        let levels = segments
+            .iter()
+            .take_while(|segment| **segment == "super")
+            .count();
+        if segments[levels..]
+            .iter()
+            .any(|segment| matches!(*segment, "vault" | "super" | "self"))
+        {
+            return Err(
+                "`vault`, `super`, and `self` are only allowed at the start of a path".into(),
+            );
+        }
+        return Ok(ModuleReference::Parent {
+            levels,
+            remainder: segments[levels..]
+                .iter()
+                .map(|segment| (*segment).to_owned())
+                .collect(),
+        });
+    }
+
+    if segments[0] == "self" {
+        if segments[1..]
+            .iter()
+            .any(|segment| matches!(*segment, "vault" | "super" | "self"))
+        {
+            return Err(
+                "`vault`, `super`, and `self` are only allowed at the start of a path".into(),
+            );
+        }
+        return Ok(ModuleReference::Relative(
+            segments[1..]
+                .iter()
+                .map(|segment| (*segment).to_owned())
+                .collect(),
+        ));
+    }
+
+    if segments
+        .iter()
+        .any(|segment| matches!(*segment, "vault" | "super" | "self"))
+    {
+        return Err("`vault`, `super`, and `self` are reserved path segments".into());
+    }
+
+    Ok(ModuleReference::Relative(
+        segments
+            .iter()
+            .map(|segment| (*segment).to_owned())
+            .collect(),
+    ))
+}
+
+fn is_target_segment(source: &str) -> bool {
+    !source.chars().any(char::is_control)
 }
 
 /// Parses a wiki reference body without the surrounding `[[` and `]]`.
@@ -565,6 +728,48 @@ mod tests {
     }
 
     #[test]
+    fn parses_target_literals_with_slash_labels_and_escapes() {
+        let parse = parse("#<vault::wiki link/install> and #<vault::a\\>b>");
+        assert!(parse.errors.is_empty(), "{:?}", parse.errors);
+        let targets = parse.targets();
+        assert_eq!(targets.len(), 2);
+        let ExpressionKind::Target(first) = &targets[0].kind else {
+            panic!("expected target literal");
+        };
+        assert_eq!(first.module, ModuleReference::Absolute(vec!["wiki link".into()]));
+        assert_eq!(first.label.as_deref(), Some("install"));
+        let ExpressionKind::Target(second) = &targets[1].kind else {
+            panic!("expected target literal");
+        };
+        assert_eq!(second.module, ModuleReference::Absolute(vec!["a>b".into()]));
+        assert!(second.label.is_none());
+    }
+
+    #[test]
+    fn rejects_external_and_unclosed_target_literals() {
+        let parse = parse("#<https://example.com/a>");
+        assert_eq!(parse.errors.len(), 1, "{:?}", parse.errors);
+        let unclosed_parse = crate::parse("#<vault::x");
+        assert_eq!(unclosed_parse.errors.len(), 1, "{:?}", unclosed_parse.errors);
+    }
+
+    #[test]
+    fn parses_union_type_annotations() {
+        let parse = parse(r#"#let x: Target | String = "a""#);
+        assert!(parse.errors.is_empty(), "{:?}", parse.errors);
+        let MarkupItem::Embedded(embedded) = &parse.root.items[0] else {
+            panic!("expected embedded expression");
+        };
+        let ExpressionKind::Let { annotation, .. } = &embedded.expression.kind else {
+            panic!("expected let");
+        };
+        assert_eq!(
+            annotation.as_ref(),
+            Some(&Type::union([Type::Target, Type::String]))
+        );
+    }
+
+    #[test]
     fn parses_content_literals_as_ordinary_and_trailing_arguments() {
         let parse = parse("#quote(body=[ordinary]) #quote[trailing]");
         assert!(parse.errors.is_empty(), "{:?}", parse.errors);
@@ -684,10 +889,10 @@ mod tests {
 
     #[test]
     fn parses_module_references_and_hides_markup_inside_raw() {
-        let parse = parse("[[intro]] `[[hidden]]` #[[[self::target]]]");
+        let parse = parse("#<intro> `<vault::hidden>` #<self::target>");
         assert!(parse.errors.is_empty(), "{:?}", parse.errors);
-        let links = parse.links();
-        assert_eq!(links.len(), 2);
+        let targets = parse.targets();
+        assert_eq!(targets.len(), 2);
         assert_eq!(parse.raw_literals().len(), 1);
     }
 
@@ -1022,7 +1227,7 @@ mod tests {
 
     #[test]
     fn parses_imports_with_explicit_selectors_and_aliases() {
-        let parsed = parse("#import super::shared::{format as shared_format, warning}");
+        let parsed = parse("#import <super::shared>::{format as shared_format, warning}");
         assert!(parsed.errors.is_empty(), "{:?}", parsed.errors);
         let imports = parsed.imports();
         assert_eq!(imports.len(), 1);
@@ -1048,7 +1253,7 @@ mod tests {
         assert_eq!(selectors[1].name, "warning");
         assert!(selectors[1].alias.is_none());
         // `path::{...}`: the brace separator does not extend the path.
-        let parsed = parse("#import vault::theme::{accent}");
+        let parsed = parse("#import <vault::theme>::{accent}");
         assert!(parsed.errors.is_empty(), "{:?}", parsed.errors);
         let ExpressionKind::Import { module, .. } = &parsed.imports()[0].kind else {
             panic!()

@@ -1,7 +1,7 @@
 @![implementation = "partial"]
 = Core Namespace and Plugin Boundary
 
-本文是 core namespace 与插件边界的独立成篇，吸收第一代 core namespace 设计的裁决并更新到当前 surface。当前内置构造器见 [[vault::designs::plugin-system::core]]；函数签名与调用模型见 [[vault::designs::language::call-model]]；Vault 配置容器见 [[vault::designs::world::boundary-discovery]]。
+本文是 core namespace 与插件边界的独立成篇，吸收第一代 core namespace 设计的裁决并更新到当前 surface。当前内置构造器见 #<vault::designs::plugin-system::core>；函数签名与调用模型见 #<vault::designs::language::call-model>；Vault 配置容器见 #<vault::designs::world::boundary-discovery>。
 
 == Core Namespace
 
@@ -34,11 +34,11 @@ Prelude 是每个 Module root 自动获得的普通 binding 层，不是第二�
 
 - prelude 名字可以被 author `let` 或 import 遮蔽；
 - import 显式 selector 可以引入非 prelude 的 core 短名；
-- prelude 内容随语言版本变化，并在 WorkspaceSnapshot 的 function environment identity 中记录（[[vault::designs::host::analyzer-snapshot]]）。
+- prelude 内容随语言版本变化，并在 WorkspaceSnapshot 的 function environment identity 中记录（#<vault::designs::host::analyzer-snapshot>）。
 
 == Call 契约
 
-所有内容统一为一种节点：call。不再有内置 Element 变体与 `Custom` 的区分（[[vault::designs::pipeline::plugin-call-reduction]]）：
+所有内容统一为一种节点：call。不再有内置 Element 变体与 `Custom` 的区分（#<vault::designs::pipeline::plugin-call-reduction>）：
 
 ```text
 Node {
@@ -53,11 +53,11 @@ Node {
 - `name` 与参数 schema 由构造器或插件 `init` 注册声明，进入索引与渲染兜底；
 - `children` 是 call 森林，不是 source string，也不重新 parse；
 - `block` 是语义参数，不由 call-site delimiter 猜测；
-- serializer 对未注册投影的名字有安全 fallback；富渲染的资产注入与 trusted 收口属于 target 侧（[[vault::designs::plugin-system::projection]]）。
+- serializer 对未注册投影的名字有安全 fallback；富渲染的资产注入与 trusted 收口属于 target 侧（#<vault::designs::plugin-system::projection>）。
 
 == 信任模型
 
-完整插件 package 模型与宿主 ABI 见 [[vault::designs::plugin-system]]；能力系统的删除裁决见 [[vault::designs::plugin-system::capability]]。
+完整插件 package 模型与宿主 ABI 见 #<vault::designs::plugin-system>；能力系统的删除裁决见 #<vault::designs::plugin-system::capability>。
 
 - 插件 Function 是带 signature 与 implementation 的普通 Function Value；
 - 内容组合不做 per-call 授权：wasm 沙箱（无 IO import + 资源预算）是唯一执行边界；
@@ -87,10 +87,10 @@ styles = ["assets/user.css"]
 - language revision 决定语法、core/prelude 与诊断 surface；
 - plugins 是显式加载表；
 - `[site]` 是站点级呈现配置：`styles` 列出额外样式表，条目必须是 vault 根内的相对 `.css` 路径（拒绝绝对路径、`\` 分隔与 `..` 逃逸），解析在 notist-plugin-host 的配置读取处统一校验；
-- 配置变更进入 source-set fingerprint（[[vault::designs::host::query-contract]]）。
+- 配置变更进入 source-set fingerprint（#<vault::designs::host::query-contract>）。
 
 具体字段 schema、版本迁移与插件加载协议由实现切片补齐；在实现前，Notist.toml 保持空标记或未知键预留。
 
 == 语法扩展边界
 
-语义层的"宏"已被规约模型吸收：handler 把 call 重写为新 call 就是宏展开，不存在独立的 macro design（见 [[vault::designs::pipeline::plugin-call-reduction]]）。仍然独立的是记号层扩展：parser 的新语法由独立的 grammar-extension design 定义；普通 Function/plugin registration 永远不授予修改 parser、重新解释已有 token 的能力。
+语义层的"宏"已被规约模型吸收：handler 把 call 重写为新 call 就是宏展开，不存在独立的 macro design（见 #<vault::designs::pipeline::plugin-call-reduction>）。仍然独立的是记号层扩展：parser 的新语法由独立的 grammar-extension design 定义；普通 Function/plugin registration 永远不授予修改 parser、重新解释已有 token 的能力。

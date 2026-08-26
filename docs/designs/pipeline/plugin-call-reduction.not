@@ -5,7 +5,7 @@
   Notist 的求值系统基于“规约”实现。
 ]@type=user,.user
 
-本文记录 Notist 的内容求值模型：规约（reduction）。它把三个问题合并成一个模型——插件如何调用内置或其它插件、插件如何组合任意内容、求值结果如何进入成型与投影。本文是 PluginSystem 与 pipeline 的 reduce 契约；package / ABI / 信任模型 / safety 的完整定义见 [[vault::designs::plugin-system]]。
+本文记录 Notist 的内容求值模型：规约（reduction）。它把三个问题合并成一个模型——插件如何调用内置或其它插件、插件如何组合任意内容、求值结果如何进入成型与投影。本文是 PluginSystem 与 pipeline 的 reduce 契约；package / ABI / 信任模型 / safety 的完整定义见 #<vault::designs::plugin-system>。
 
 == 核心模型：一切皆 call
 
@@ -47,7 +47,7 @@ text("world")
 由此推出：
 
 - **遍历策略无关**。规则是 confluent 的：先规约父还是先规约子只影响诊断出现的顺序，不影响最终森林。（实现按 descend-first：先规约参数与 body 子流，再 dispatch 当前 call。）
-- **预算只记在 handler 调用上**。每次 dispatch 计一次 depth 与一次 call；没有 handler 的 call 不参与规约，不消耗预算。限额见 [[vault::designs::plugin-system::safety]]。
+- **预算只记在 handler 调用上**。每次 dispatch 计一次 depth 与一次 call；没有 handler 的 call 不参与规约，不消耗预算。限额见 #<vault::designs::plugin-system::safety>。
 - **输入函数式、输出宏式**。handler 收到的参数与 body 总是规约完成的；返回的森林是未规约的，重新进入不动点。规约纯且 total（无副作用、未知名字不报错），输入侧先规约永远安全——模型因此不需要 quote。
 - **诊断**。类型错误、向不接受 body 的函数传 body 产生诊断；未知名字不产生规约诊断。单个 call 的失败只收集诊断并跳过它，兄弟节点继续（sibling recovery）；诊断不伪装成成功。
 
@@ -99,21 +99,21 @@ source
 - 相邻同类 `core::item` 合并为 `core::list`；
 - `core::heading` 与其后内容归组为 `core::section`。
 
-成型按容器模式递归：每个 body 按其 schema 的 body-mode（flow / inline / table-cells 等）执行同一套成型，而不是只处理文档顶层。插件元素通过 shaping schema 参与成型，见 [[vault::designs::plugin-system::shaping]]。
+成型按容器模式递归：每个 body 按其 schema 的 body-mode（flow / inline / table-cells 等）执行同一套成型，而不是只处理文档顶层。插件元素通过 shaping schema 参与成型，见 #<vault::designs::plugin-system::shaping>。
 
 成型是 **total 的构造器**。由于提及自由（任何 handler 都能写任何名字），成型输出森林的性质——无 parbreak、`core::item` 只作为 `core::list` 的直接子级、每个 body 已按容器模式归组——由成型的构造本身保证，不依赖输入来源。
 
 == 投影
 
-投影本身是第二阶段规约：target package（如 html）注册投影 handler，把 `core::heading` 规约为 `html::h1` 这样的目标词表节点，哑 serializer 再直出标签。语义规约与投影规约是两个独立的 registry——`html::*` 不进语义层，内容编写与投影端无关。与成型同理，投影不假设名字的来源。详见 [[vault::designs::plugin-system::projection]] 与 [[vault::designs::host::html-renderer]]。
+投影本身是第二阶段规约：target package（如 html）注册投影 handler，把 `core::heading` 规约为 `html::h1` 这样的目标词表节点，哑 serializer 再直出标签。语义规约与投影规约是两个独立的 registry——`html::*` 不进语义层，内容编写与投影端无关。与成型同理，投影不假设名字的来源。详见 #<vault::designs::plugin-system::projection> 与 #<vault::designs::host::html-renderer>。
 
 == 插件边界
 
-插件可见的 IR 就是 call 森林。WIT 定义 component ABI；`evaluate` 的 opaque payload 是一个 wire version byte 加 postcard 编码的 `Node` 森林。`init` 注册与 `evaluate` 语义见 [[vault::designs::plugin-system::abi]]。
+插件可见的 IR 就是 call 森林。WIT 定义 component ABI；`evaluate` 的 opaque payload 是一个 wire version byte 加 postcard 编码的 `Node` 森林。`init` 注册与 `evaluate` 语义见 #<vault::designs::plugin-system::abi>。
 
 handler 通过返回包含新 call 的森林表达组合；组件返回后，宿主把整片森林统一送回同一个规约不动点。插件不在组件调用期间嵌套执行宿主规约，也不需要第二套组合 API。
 
-内容组合不做 per-call 授权：名字的语义由宿主 registry 决定，执行信任边界是 wasm 沙箱本身，见 [[vault::designs::plugin-system::capability]]；预算约束见 [[vault::designs::plugin-system::safety]]。
+内容组合不做 per-call 授权：名字的语义由宿主 registry 决定，执行信任边界是 wasm 沙箱本身，见 #<vault::designs::plugin-system::capability>；预算约束见 #<vault::designs::plugin-system::safety>。
 
 == 示例：组合 details
 
@@ -154,4 +154,4 @@ handler 通过返回包含新 call 的森林表达组合；组件返回后，宿
 - 已裁定：规约是声明式不动点；预算只记 handler 调用；遍历策略不属于语义。
 - 已裁定：名字所有权只在注册侧；提及自由，`core::*` 与其他 package 同权。
 - 已裁定：函数永远返回 `Value`；`Content` 值即 call 森林。
-- 待定：whitespace-only `core::text` 的 framing 语义（实现现状：段落起点的空白被丢弃），与 [[vault::designs::pipeline::structure#已裁定 / 待定]] 联动。
+- 待定：whitespace-only `core::text` 的 framing 语义（实现现状：段落起点的空白被丢弃），与 #<vault::designs::pipeline::structure/已裁定 / 待定> 联动。

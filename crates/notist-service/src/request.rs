@@ -2270,6 +2270,14 @@ fn binding_detail(value: &Value) -> String {
         Value::String(value) => format!("String = {}", truncated_string(value)),
         Value::Content(_) => "Content".into(),
         Value::Function(function) => format_signature(&function.signature),
+        Value::Target(reference) => {
+            let mut detail = reference.module.to_string();
+            if let Some(label) = &reference.label {
+                detail.push('/');
+                detail.push_str(label);
+            }
+            format!("Target = {detail}")
+        }
     }
 }
 
@@ -2890,7 +2898,7 @@ mod tests {
         fs::write(root.path().join("Notist.toml"), "").unwrap();
         fs::write(
             root.path().join("README.not"),
-            "= 首页\n\nSee [[guide#简介]] and [[guide#不存在]].",
+            "= 首页\n\nSee #<guide/简介> and #<guide/不存在>.",
         )
         .unwrap();
         fs::write(root.path().join("guide.not"), "= 指南\n\n== 简介\n\n内容").unwrap();
@@ -2924,7 +2932,7 @@ mod tests {
         assert_eq!(home.title.as_deref(), Some("首页"));
         assert_eq!(
             home.source.as_deref(),
-            Some("= 首页\n\nSee [[guide#简介]] and [[guide#不存在]].")
+            Some("= 首页\n\nSee #<guide/简介> and #<guide/不存在>.")
         );
         assert_eq!(
             home.headings,
@@ -2942,7 +2950,7 @@ mod tests {
         );
         // Unknown labels stay visible but unclickable.
         assert!(home.fragment.contains("notist-reference-unresolved"));
-        assert!(home.fragment.contains("guide#不存在"));
+        assert!(home.fragment.contains("guide/不存在"));
         assert!(!home.fragment.contains("#%E4%B8%8D%E5%AD%98%E5%9C%A8"));
 
         let guide = page(&["guide"]);
@@ -2968,7 +2976,7 @@ mod tests {
         fs::write(root.path().join("Notist.toml"), "").unwrap();
         fs::write(
             root.path().join("README.not"),
-            "= Home\n\nLogo: [[vault::images#logo.png]], spec: [[vault::images#spec sheet.pdf]].",
+            "= Home\n\nLogo: #<vault::images/logo.png>, spec: #<vault::images/spec sheet.pdf>.",
         )
         .unwrap();
         fs::create_dir(root.path().join("images")).unwrap();

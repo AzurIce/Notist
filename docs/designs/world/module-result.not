@@ -1,7 +1,7 @@
 @![implementation = "aligned"]
 = Module and ModuleResult
 
-本文是 Module 与 ModuleResult 的独立成篇，从归档的历史混合文档中独立成篇。Vault 边界见 [[vault::designs::world::boundary-discovery]]；import 见 [[vault::designs::world::import]]；引用寻址见 [[vault::designs::world::reference-ref-target]]。
+本文是 Module 与 ModuleResult 的独立成篇，从归档的历史混合文档中独立成篇。Vault 边界见 #<vault::designs::world::boundary-discovery>；import 见 #<vault::designs::world::import>；引用寻址见 #<vault::designs::world::reference-ref-target>。
 
 Module 是求值单元：Vault 内的文件树映射为 Module 树，每个 source-backed Module 独立求值，产生 ModuleResult。Module 同时是知识库中的稳定逻辑节点（被引用）和可编程文档的求值单元（被 import）——同一身份，两种语义。
 
@@ -31,7 +31,7 @@ vault-root/
 
 === ModuleResult
 
-每个 source-backed Module 在自己的根 scope 中按源码顺序求值（[[vault::designs::pipeline::evaluate#求值规则]]，scope 见 [[vault::designs::language::scope-environment#scope 是值层节点]]），得到：
+每个 source-backed Module 在自己的根 scope 中按源码顺序求值（#<vault::designs::pipeline::evaluate/求值规则>，scope 见 #<vault::designs::language::scope-environment/scope 是值层节点>），得到：
 
 ```text
 ModuleResult {
@@ -41,7 +41,7 @@ ModuleResult {
 }
 ```
 
-[[vault::designs::pipeline::evaluate#求值结果]] 中单文件的"求值结果"在此正式成为 ModuleResult。bindings 是程序的一面——跨模块复用的入口；content 是文档的一面——渲染与查询消费的产物；annotations 是属性的一面——标注与模块元数据的唯一入口。
+#<vault::designs::pipeline::evaluate/求值结果> 中单文件的"求值结果"在此正式成为 ModuleResult。bindings 是程序的一面——跨模块复用的入口；content 是文档的一面——渲染与查询消费的产物；annotations 是属性的一面——标注与模块元数据的唯一入口。
 
 === bindings ownership
 

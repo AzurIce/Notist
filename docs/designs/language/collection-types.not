@@ -2,10 +2,10 @@
 = Collection Types and Union
 
 #callout(kind="note", title=[状态])[
-本文是集合类型的目标设计草案；当前 surface 尚未实现。进入实现切片后，本文与 [[vault::designs::language::type-system]]、[[vault::designs::language::code-grammar]] 同步成为现行规范。
+本文是集合类型的目标设计草案；当前 surface 尚未实现。进入实现切片后，本文与 #<vault::designs::language::type-system>、#<vault::designs::language::code-grammar> 同步成为现行规范。
 ]
 
-本文承接 [[vault::designs::language::type-system#类型系统]]（Type/Value 对应与 assignability）、[[vault::designs::language::code-grammar#Code 核心语法]]（literal 与类型语法）与 [[vault::designs::pipeline::evaluate#值的宇宙]]（Value 宇宙）。本文重新打开 R07 中 Array/Dict/Union 的集合类型部分：不是回到旧实现，而是先把“值、类型、字面量”作为一个完整切片定义清楚。rest 参数与调用顺序属于函数模型，见 [[vault::designs::language::call-model]]。
+本文承接 #<vault::designs::language::type-system/类型系统>（Type/Value 对应与 assignability）、#<vault::designs::language::code-grammar/Code 核心语法>（literal 与类型语法）与 #<vault::designs::pipeline::evaluate/值的宇宙>（Value 宇宙）。本文重新打开 R07 中 Array/Dict/Union 的集合类型部分：不是回到旧实现，而是先把“值、类型、字面量”作为一个完整切片定义清楚。rest 参数与调用顺序属于函数模型，见 #<vault::designs::language::call-model>。
 
 == 动机
 
@@ -101,7 +101,7 @@ Array literal 从左到右求值每个元素；Dict literal 从左到右求值�
 == 实现切片
 
 1. **Type/Value/字面量**：`Type::Array` / `Type::Dict` / `Type::Union` / `Type::Never`；parser literal、checker 与 evaluator；
-2. **Rest 与调用模型**：按 [[vault::designs::language::call-model]] 实施，并在迁移 table/table-header 时使用集合类型；
+2. **Rest 与调用模型**：按 #<vault::designs::language::call-model> 实施，并在迁移 table/table-header 时使用集合类型；
 3. **Dict 与序列化**：Dict 构造、key 检查、协议 TypeRecord；
 4. **观察与转换操作**：以内部多态签名提供 `len` / `at` / `contains` / `append` / `concat` / `keys` / `values` / `pairs` 等核心 builtin；用户可写 generic 仍不进入 Type grammar；
 5. **后续独立设计**：`for`、method syntax、spread（`..xs` at call site）与可变集合。

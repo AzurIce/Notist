@@ -742,6 +742,7 @@ pub mod node_engine {
             NodeValue::String(value) => Some(Value::String(value.clone())),
             NodeValue::Stream(forest) => Some(Value::Content(forest.clone())),
             NodeValue::Array(_) => None,
+            NodeValue::Target(reference) => Some(Value::Target(reference.clone())),
         }
     }
 

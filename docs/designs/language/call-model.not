@@ -1,11 +1,11 @@
 @![implementation = "partial"]
 = Function Parameters and Call Model
 
-本文是 L4 调用模型的独立成篇。承接 [[vault::designs::language::type-system]] 的类型系统与 [[vault::designs::language::code-grammar#声明]] 的函数声明语法。本文定义：函数签名如何记录可调用形状；positional/named/default/trailing 如何绑定；rest parameter 与 Typst 式实参交错（随 [[vault::designs::language::collection-types]] 实现进入现行）。
+本文是 L4 调用模型的独立成篇。承接 #<vault::designs::language::type-system> 的类型系统与 #<vault::designs::language::code-grammar/声明> 的函数声明语法。本文定义：函数签名如何记录可调用形状；positional/named/default/trailing 如何绑定；rest parameter 与 Typst 式实参交错（随 #<vault::designs::language::collection-types> 实现进入现行）。
 
 == 函数类型与调用模型
 
-函数的可调用签名（callable signature）包含：形参（parameter）的名称与类型；形参是否带默认值（default）而可省略（omittable，记号见 [[vault::designs::language::type-system#可空与可省略]]）；显式声明的末尾内容形参（trailing content parameter）；结果类型（result type）。集合类型进入语言后，签名还包含可选 rest parameter（见下节）。
+函数的可调用签名（callable signature）包含：形参（parameter）的名称与类型；形参是否带默认值（default）而可省略（omittable，记号见 #<vault::designs::language::type-system/可空与可省略>）；显式声明的末尾内容形参（trailing content parameter）；结果类型（result type）。集合类型进入语言后，签名还包含可选 rest parameter（见下节）。
 
 形参的绑定方式由是否带默认值决定，不需要额外的修饰符——分界线就是 default：
 
@@ -44,13 +44,13 @@ fn(kind: String =, trailing body: Content) -> Content
 
 Trailing content 是最后一个 positional 形参：定义中用显式 `trailing` 修饰符声明，至多一个，必须接受 Content；`#f(kind: "warning")[内容]` 与 `#f(kind: "warning", [内容])` 等价——trailing block 只是追加一个 positional 实参的语法糖，没有独立的绑定通道。当前 surface 中它是唯一允许跟在具名实参之后的位置实参；其余形参没有这种紧凑写法。
 
-函数值（function value）是闭包（closure）：携带签名、实现与捕获环境（captured environment，见 [[vault::designs::language::scope-environment]]）。
+函数值（function value）是闭包（closure）：携带签名、实现与捕获环境（captured environment，见 #<vault::designs::language::scope-environment>）。
 
 函数与元素的边界在 Content 类型上汇合：builtin 元素就是 first-class 构造器函数。
 
 == Rest 与 Typst 式实参交错
 
-本节来自 [[vault::designs::language::collection-types]]，随集合类型实现切片进入现行；进入后替换上一节的 R05 顺序规则。
+本节来自 #<vault::designs::language::collection-types>，随集合类型实现切片进入现行；进入后替换上一节的 R05 顺序规则。
 
 === Rest parameter
 
@@ -85,7 +85,7 @@ R05 被替换后：
 
 == 静态计划与求值
 
-静态检查为每个调用点生成唯一 binding plan：callee、parameter sources、defaults、coercions、trailing/rest target 与 result type。求值器先求值 callee，再按 source order 求值所有显式实参与 trailing block，最后按形参声明顺序建立绑定；每个表达式只求值一次。该规则继承 [[vault::designs::pipeline::evaluate#求值规则]] 的 E1–E4。
+静态检查为每个调用点生成唯一 binding plan：callee、parameter sources、defaults、coercions、trailing/rest target 与 result type。求值器先求值 callee，再按 source order 求值所有显式实参与 trailing block，最后按形参声明顺序建立绑定；每个表达式只求值一次。该规则继承 #<vault::designs::pipeline::evaluate/求值规则> 的 E1–E4。
 
 == Conformance 候选
 

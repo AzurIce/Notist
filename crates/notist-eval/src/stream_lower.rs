@@ -163,13 +163,6 @@ impl LowerState<'_> {
                         self.push_node(node);
                     }
                 }
-                MarkupItem::Wiki(link) => {
-                    let range = link.range.shifted(self.base_offset);
-                    self.push_node(
-                        Node::call("core::reference", range)
-                            .arg("url", format_wiki_reference(&link.target)),
-                    );
-                }
                 MarkupItem::Raw(raw) => self.lower_raw(raw),
                 MarkupItem::List(sugar) => self.lower_list_sugar(sugar),
                 MarkupItem::Table(sugar) => self.lower_table_sugar(sugar),
@@ -559,6 +552,7 @@ impl LowerState<'_> {
             Value::Float(value) => NodeValue::Float(value),
             Value::String(value) => NodeValue::String(value),
             Value::Content(forest) => NodeValue::Stream(forest),
+            Value::Target(reference) => NodeValue::Target(reference),
             Value::Function(_) => {
                 self.diagnostics.push(EvalDiagnostic {
                     message: "function values cannot live on content nodes".into(),
@@ -589,6 +583,12 @@ impl LowerState<'_> {
             Value::String(text) => {
                 self.push_node(Node::call("core::text", range).arg("text", text));
             }
+            Value::Target(reference) => {
+                self.push_node(
+                    Node::call("core::reference", range)
+                        .arg("target", NodeValue::Target(reference)),
+                );
+            }
             Value::Int(value) => self.push_text_leaf(value.to_string(), range),
             Value::Float(value) => self.push_text_leaf(value.to_string(), range),
             Value::Bool(value) => self.push_text_leaf(value.to_string(), range),
@@ -605,37 +605,6 @@ impl LowerState<'_> {
     }
 }
 
-/// Formats a wiki reference target into its canonical `url` argument spelling.
-pub(crate) fn format_wiki_reference(reference: &notist_model::WikiReference) -> String {
-    let module = match &reference.module {
-        notist_model::ModuleReference::Absolute(segments) => {
-            format!("vault::{}", segments.join("::"))
-        }
-        notist_model::ModuleReference::Relative(segments) => {
-            if segments.is_empty() {
-                String::new()
-            } else {
-                format!("self::{}", segments.join("::"))
-            }
-        }
-        notist_model::ModuleReference::Parent { levels, remainder } => {
-            let mut path = vec!["super"; *levels]
-                .into_iter()
-                .chain(remainder.iter().map(String::as_str))
-                .collect::<Vec<_>>()
-                .join("::");
-            if path.is_empty() {
-                path = "super".into();
-            }
-            path
-        }
-        notist_model::ModuleReference::External(url) => url.clone(),
-    };
-    match &reference.label {
-        Some(label) => format!("{module}#{label}"),
-        None => module,
-    }
-}
 
 /// Lowers one Markup text run into inline `core::*` nodes, splitting blank
 /// lines into `core::parbreak` separators and scanning the inline sugar

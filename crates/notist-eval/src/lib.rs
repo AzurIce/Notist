@@ -411,7 +411,7 @@ mod tests {
 
     #[test]
     fn lowers_transparent_scopes_references_and_parbreaks() {
-        let source = "Hello #[[[self::target]]]@concept,#important\n\nAfter";
+        let source = "Hello #<self::target>@concept,#important\n\nAfter";
         let evaluation = Evaluator::default().evaluate(source);
 
         assert!(
@@ -429,7 +429,7 @@ mod tests {
     fn preserves_unknown_calls_with_optional_trailing_content() {
         // Unregistered names stay in the forest as data: reduction is total
         // and never rewrites a call nobody handles.
-        let content = Evaluator::default().evaluate("#missing(x=1)[[[self::target]]]");
+        let content = Evaluator::default().evaluate("#missing(x=1)[#<self::target>]");
         let bodyless = Evaluator::default().evaluate("#missing(x=1)");
 
         assert!(content.diagnostics.is_empty(), "{:?}", content.diagnostics);

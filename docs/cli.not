@@ -1,7 +1,7 @@
 @![implementation = "partial"]
 = Notist CLI: Command Design and Reference
 
-本文是 `notist` CLI 的完整规范，同时承担设计文档与使用文档两个职责：每个命令既给出“为什么这样设计、边界在哪里”，也给出“怎么调用、输出什么、如何继续”。本文是 CLI 命令面的单一真相；高层分发边界（Skill、官方 docs Vault、发布边界）仍在 [[vault::designs::host::cli-command-surface-skill-distribution]]，查询契约见 [[vault::designs::host::query-contract]]，检索语义见 [[vault::designs::host::search-retrieval-index]]，daemon 与协议见 [[vault::designs::host::daemon-process-views]] 与 [[vault::designs::host::client-interface-protocol]]。
+本文是 `notist` CLI 的完整规范，同时承担设计文档与使用文档两个职责：每个命令既给出“为什么这样设计、边界在哪里”，也给出“怎么调用、输出什么、如何继续”。本文是 CLI 命令面的单一真相；高层分发边界（Skill、官方 docs Vault、发布边界）仍在 #<vault::designs::host::cli-command-surface-skill-distribution>，查询契约见 #<vault::designs::host::query-contract>，检索语义见 #<vault::designs::host::search-retrieval-index>，daemon 与协议见 #<vault::designs::host::daemon-process-views> 与 #<vault::designs::host::client-interface-protocol>。
 
 当前实现状态：`partial`。本文描述 2026-08-15 裁决的目标命令面；已安装二进制的 `notist --help` 在迁移完成前是实际可执行 surface 的最终依据。本文与代码不一致之处按实施计划收敛，不应把旧 flag 重新当作长期契约。
 
@@ -38,7 +38,7 @@ Internal
 
 === Vault 发现与 ROOT
 
-需要 Vault 的命令把 `[ROOT]` 放在最后一个 positional，默认 `.`。ROOT 可以是 Vault 内文件或目录；Notist 按 [[vault::designs::world::boundary-discovery#发现规则]] 向上查找最近的 `Notist.toml`，canonicalize 后连接该 root 对应的 daemon。Nested Vault 不进入外层扫描。
+需要 Vault 的命令把 `[ROOT]` 放在最后一个 positional，默认 `.`。ROOT 可以是 Vault 内文件或目录；Notist 按 #<vault::designs::world::boundary-discovery/发现规则> 向上查找最近的 `Notist.toml`，canonicalize 后连接该 root 对应的 daemon。Nested Vault 不进入外层扫描。
 
 ```shell
 notist status .
@@ -406,7 +406,7 @@ text source frame：
 error[unresolved-module]: target module was not found
   --> designs/host/query-contract.not:12
    |
-12 | [[vault::does::not::exist]]
+12 | #<vault::does::not::exist>
    |    ^^^^^^^^^^^^^^^^^^^^^^
 hint: create the module or correct the reference
 
@@ -520,7 +520,7 @@ notist daemon stop [ROOT]
 - `daemon`：为一个 canonical Vault root 持有长期 Engine、watcher、cache 与 disk View；前台运行，stdout 只允许 daemon framing。
 - `daemon stop`：显式停止 root 对应 daemon；没有 daemon 时成功退出，脚本可幂等调用。
 - CLI 默认惰性连接或启动 daemon；`--no-daemon` 是隔离部署形态，不是第二套语义。
-- stale daemon 的 binary stamp 回收规则见 [[vault::designs::host::client-interface-protocol#过期 daemon 的回收]]。
+- stale daemon 的 binary stamp 回收规则见 #<vault::designs::host::client-interface-protocol/过期 daemon 的回收>。
 
 === lsp
 
@@ -541,7 +541,7 @@ notist skill init <OUTPUT> [--force]
 - 默认要求 OUTPUT 是尚不存在的目录，只生成确定性的 `SKILL.md`。
 - `--force`：OUTPUT 必须是已有目录，原子替换其中的 `SKILL.md`，保留其他文件。
 - 不猜测 Host 安装目录，不修改 Host registry，不接受把当前 Vault 导出为 Skill。
-- 分发与 docs Vault 边界见 [[vault::designs::host::cli-command-surface-skill-distribution]]。
+- 分发与 docs Vault 边界见 #<vault::designs::host::cli-command-surface-skill-distribution>。
 
 == Internal
 

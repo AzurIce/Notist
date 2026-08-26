@@ -430,6 +430,16 @@ impl ExpressionState<'_> {
                 (Value::None, ValueOrigin::Default, Vec::new())
             }
             ExpressionKind::Parenthesized(inner) => self.evaluate_expression(inner, inner.range),
+            ExpressionKind::Target(reference) => (
+                Value::Target((**reference).clone()),
+                ValueOrigin::Literal {
+                    range: expression.range,
+                    payload_range: None,
+                    string_form: None,
+                    string_style: None,
+                },
+                Vec::new(),
+            ),
             ExpressionKind::Error => (Value::None, ValueOrigin::Default, Vec::new()),
             ExpressionKind::None
             | ExpressionKind::Bool(_)

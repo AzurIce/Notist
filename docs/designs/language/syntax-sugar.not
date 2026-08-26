@@ -1,7 +1,7 @@
 @![implementation = "aligned"]
 = Syntax Sugar
 
-本文是 L9 Markup 语法糖的独立成篇，从归档的历史混合文档中独立成篇。每个糖降低到的构造器签名与校验见 [[vault::designs::plugin-system::core]]；call 森林与求值见 [[vault::designs::pipeline::evaluate]]。
+本文是 L9 Markup 语法糖的独立成篇，从归档的历史混合文档中独立成篇。每个糖降低到的构造器签名与校验见 #<vault::designs::plugin-system::core>；call 森林与求值见 #<vault::designs::pipeline::evaluate>。
 
 == 设计原则
 
@@ -70,7 +70,7 @@
 - error recovery：符号后无内容 → 空条目；缩进嵌套由 parser 结构化处理；
 - editor consequence：条目符号显示；缩进由格式化处理。
 
-item 是 structural sugar：相邻同类条目由成型组合为 List/Enum；动态 `item` 进入同一算法（[[vault::designs::pipeline::structure]]）。
+item 是 structural sugar：相邻同类条目由成型组合为 List/Enum；动态 `item` 进入同一算法（#<vault::designs::pipeline::structure>）。
 
 === table
 
@@ -88,18 +88,20 @@ item 是 structural sugar：相邻同类条目由成型组合为 List/Enum；动
 - error recovery：body 缺 cell 补空；多 cell 诊断并截断；分隔行不合法时整段为文本；
 - editor consequence：cell 是 Markup 子文档；编辑器维护 `|` 对齐并提供 cell 导航。
 
-=== ref
+=== link
 
-糖：`[[...]]`。
+Target 字面量 `<...>` 与构造器 `link(target: Target | String)`。
 
 ```text
-[[target]] ~= ref("target")
+#<vault::guide/install>            ~= link(<vault::guide/install>)
+#link("https://example.com")       # String 分支只表示外部 url
 ```
 
-- syntax boundary：`[[` 与 `]]` 之间是字面 url，不解析 markup、不嵌套 `[[`；
-- error recovery：未闭合 `[[` → 诊断并按文本恢复；
+- syntax boundary：`<` 与 `>` 之间是 Target 字面量，不解析 markup；`\<`、`\>`、`\\` 是字面定界符与反斜杠；
+- `/` 后是模块内 label（scope id / 标题默认 id / 资源文件名）；
+- error recovery：未闭合 `<` → 诊断并按文本恢复；
 - editor consequence：vault 路径补全与目标存在性检查。
-目标空间与解析产物见 [[vault::designs::world::reference-ref-target]]。
+目标空间与解析产物见 #<vault::designs::world::reference-ref-target>。
 
 === strong / emph / underline / strike
 
@@ -123,9 +125,9 @@ __text__  ~= underline([text])
 - `quote`：无糖构造器；
 - inline raw：`` `code` ``；
 - `link`：外部链接与裸 URL 自动链接；
-- `preview`：`![[...]]`。
+- `preview`：`!<...>`。
 
-它们进入设计时须满足 Sugar budget、四要素与 [[vault::designs::plugin-system::core#构造器校验]]。
+它们进入设计时须满足 Sugar budget、四要素与 #<vault::designs::plugin-system::core/构造器校验>。
 
 == 语法糖总表
 
@@ -138,7 +140,7 @@ __text__  ~= underline([text])
 + A                 ~= item(ordered: true, [A])
 | a | b |
 | - | - |           ~= table(columns: n, header: true, [table-cell[...] ...])
-[[target]]          ~= ref("target")
+#<target>          ~= ref("target")
 *text*              ~= strong([text])
 _text_              ~= emph([text])
 __text__            ~= underline([text])

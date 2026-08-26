@@ -36,6 +36,6 @@ lambda 调用：#(double(21))；函数定义糖：#(triple(14))。
 
 Code 上下文支持 `//` 行注释与 `/* ... */` 嵌套块注释：#{ /* 块注释 */ let y = 1; y + 1 }。
 
-#import super::submodule::{shared}
+#import <super::submodule>::{shared}
 
 从子模块导入绑定：#(shared)

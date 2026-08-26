@@ -35,7 +35,7 @@ fn is_parbreak(node: &Node) -> bool {
 /// Builds the semantic contribution provided by the native core package.
 pub fn contribution() -> PluginContribution {
     let functions: Vec<Arc<dyn Function>> = vec![
-        Arc::new(RefFunction),
+        Arc::new(LinkFunction),
         Arc::new(HeadingFunction),
         Arc::new(RawFunction),
         Arc::new(CalloutFunction),
@@ -57,7 +57,7 @@ pub fn contribution() -> PluginContribution {
         .map(|function| (function.name().to_owned(), function.signature()))
         .collect();
     let aliases = [
-        ("core::ref", "ref"),
+        ("core::link", "link"),
         ("core::heading", "heading"),
         ("core::raw", "raw"),
         ("core::callout", "callout"),
@@ -278,15 +278,15 @@ impl Function for ParbreakFunction {
     }
 }
 
-struct RefFunction;
+struct LinkFunction;
 
-impl Function for RefFunction {
+impl Function for LinkFunction {
     fn name(&self) -> &str {
-        "ref"
+        "link"
     }
 
     fn signature(&self) -> FunctionSignature {
-        notist_model::ref_signature()
+        notist_model::link_signature()
     }
 
     fn call(
@@ -294,18 +294,47 @@ impl Function for RefFunction {
         _context: &FunctionContext<'_>,
         input: FunctionInput<'_>,
     ) -> Result<Value, Vec<EvalDiagnostic>> {
-        let target = input.arguments.string("url");
-        // The reference is validated eagerly; the node carries the source
-        // spelling and projection parses it again downstream.
-        notist_syntax::parse_wiki_reference(target).map_err(|message| {
-            vec![EvalDiagnostic {
-                message,
+        let Some(value) = input.arguments.get("target") else {
+            return Ok(Value::Content(Vec::new()));
+        };
+        match value {
+            Value::Target(reference) => Ok(Value::Content(vec![Node::call(
+                "core::reference",
+                input.range,
+            )
+            .arg("target", NodeValue::Target(reference.clone()))])),
+            Value::String(url) => {
+                // The String branch is exclusively for external urls.
+                match notist_syntax::parse_wiki_reference(url) {
+                    Ok(reference)
+                        if matches!(
+                            reference.module,
+                            notist_model::ModuleReference::External(_)
+                        ) =>
+                    {
+                        Ok(Value::Content(vec![Node::call(
+                            "core::reference",
+                            input.range,
+                        )
+                        .arg("target", NodeValue::String(url.clone()))]))
+                    }
+                    Ok(_) => Err(vec![EvalDiagnostic {
+                        message:
+                            "internal targets must use a `<...>` target literal, not a String"
+                                .into(),
+                        range: input.range,
+                    }]),
+                    Err(message) => Err(vec![EvalDiagnostic { message, range: input.range }]),
+                }
+            }
+            other => Err(vec![EvalDiagnostic {
+                message: format!(
+                    "link target must be a Target or an external url String, found {}",
+                    other.ty()
+                ),
                 range: input.range,
-            }]
-        })?;
-        Ok(Value::Content(vec![
-            Node::call("core::reference", input.range).arg("url", target.to_owned()),
-        ]))
+            }]),
+        }
     }
 }
 
@@ -903,10 +932,10 @@ mod tests {
     }
 
     #[test]
-    fn evaluates_ref_function_with_wiki_reference_validation() {
+    fn evaluates_link_function_and_target_sugar_into_one_reference_node() {
         let evaluator = evaluator();
-        let explicit = evaluator.evaluate("#ref(\"vault::guide::intro#overview\")");
-        let sugar = evaluator.evaluate("[[vault::guide::intro#overview]]");
+        let explicit = evaluator.evaluate("#link(<vault::guide::intro/overview>)");
+        let sugar = evaluator.evaluate("#<vault::guide::intro/overview>");
         assert!(
             explicit.diagnostics.is_empty(),
             "{:?}",
@@ -921,7 +950,7 @@ mod tests {
         assert_eq!(stripped(&explicit.forest[0]), stripped(&sugar.forest[0]));
         assert!(explicit.forest[0].is_core("reference"));
 
-        let invalid = evaluator.evaluate("#ref(\"vault::::guide\")");
+        let invalid = evaluator.evaluate("#link(\"vault::::guide\")");
         assert!(
             invalid
                 .diagnostics

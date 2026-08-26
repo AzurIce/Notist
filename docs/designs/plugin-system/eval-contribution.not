@@ -1,11 +1,11 @@
 @![implementation = "partial"]
 = Eval Contribution
 
-本文定义插件如何贡献语义函数：组件 `init` 注册的元素声明如何变成 `FunctionRegistry` 中的可调用对象，以及静态分析与 runtime 如何分别消费这些贡献。Call 的规约规则见 [[vault::designs::pipeline::plugin-call-reduction]]。
+本文定义插件如何贡献语义函数：组件 `init` 注册的元素声明如何变成 `FunctionRegistry` 中的可调用对象，以及静态分析与 runtime 如何分别消费这些贡献。Call 的规约规则见 #<vault::designs::pipeline::plugin-call-reduction>。
 
 == FunctionDecl
 
-每个语义元素对应一个函数签名。签名不再由 manifest 声明，而是在装载时由组件 `init` 注册提供（[[vault::designs::plugin-system::abi]]）。WIT 不镜像声明结构；`init` 的 opaque bytes 解码为 `notist_model::PluginElementDecl`：
+每个语义元素对应一个函数签名。签名不再由 manifest 声明，而是在装载时由组件 `init` 注册提供（#<vault::designs::plugin-system::abi>）。WIT 不镜像声明结构；`init` 的 opaque bytes 解码为 `notist_model::PluginElementDecl`：
 
 ```text
 PluginElementDecl {
@@ -40,7 +40,7 @@ registry 中的 Function 实现按 backend 区分，而不是按语义 package �
 
 - 装载器按 `init` 声明逐个生成函数并 `register_arc`；重名在加载时拒绝。
 - `core::*` qualified alias 指向 `core` package 的注册实现；插件只能占用自己的 namespace，不能覆盖受保留的 `core::*`。
-- package namespace 与 core namespace policy 由 [[vault::designs::world::core-namespace-plugin-boundary]] 定义；这属于注册策略，不是 reducer 的特殊分支。
+- package namespace 与 core namespace policy 由 #<vault::designs::world::core-namespace-plugin-boundary> 定义；这属于注册策略，不是 reducer 的特殊分支。
 
 == 当前实现映射
 

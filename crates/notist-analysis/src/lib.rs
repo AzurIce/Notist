@@ -14,7 +14,7 @@ use notist_model::{
     WikiReference,
 };
 use notist_plugin_core as core_plugin;
-use notist_syntax::{Call, Expression, ExpressionKind, Parse, parse, parse_wiki_reference};
+use notist_syntax::{Call, ExpressionKind, Parse, parse, parse_wiki_reference};
 
 mod check;
 
@@ -290,6 +290,14 @@ fn placeholder_value(ty: &Type, name: &str) -> Value {
             implementation: notist_eval::FunctionImplementation::Builtin(name.to_owned()),
             captured: std::collections::HashMap::new(),
         })),
+        Type::Target => Value::Target(notist_model::WikiReference {
+            module: notist_model::ModuleReference::Relative(Vec::new()),
+            label: None,
+        }),
+        Type::Union(members) => members
+            .first()
+            .map(|member| placeholder_value(member, name))
+            .unwrap_or(Value::None),
         Type::Optional(_) | Type::Inferred => Value::None,
     }
 }
@@ -1804,7 +1812,7 @@ impl WorkspaceSnapshot {
         if let Some(reference) = self.references_at(file_id, offset).next() {
             let mut contents = reference.target_module.to_string();
             if let Some(label) = &reference.target_label {
-                contents.push('#');
+                contents.push('/');
                 contents.push_str(label);
             }
             if let Some(module) = self.module_by_id(reference.target_module_id) {
@@ -1951,7 +1959,7 @@ impl WorkspaceSnapshot {
                 })
                 .collect();
         }
-        if let Some(context) = wiki_completion_context(&source.text, &source.parse, offset)
+        if let Some(context) = target_completion_context(&source.text, &source.parse, offset)
             && let Some(current) = self.module_at(file_id)
         {
             if context.kind == CompletionContextKind::Label {
@@ -2443,21 +2451,24 @@ impl WorkspaceSnapshot {
                 range: Some(error.range),
             }));
 
-            let mut module_references: Vec<_> = parse
-                .links()
-                .into_iter()
-                .map(|link| (link.target.clone(), link.range))
-                .collect();
+            let mut module_references: Vec<_> = Vec::new();
+            for expression in parse.reference_targets() {
+                let ExpressionKind::Target(reference) = &expression.kind else {
+                    continue;
+                };
+                module_references.push(((**reference).clone(), expression.range));
+            }
             for call in parse.calls() {
-                if let Some(reference) = explicit_ref_target(call) {
-                    match reference {
-                        Ok(reference) => module_references.push((reference, call.range)),
-                        Err(message) => diagnostics.push(Diagnostic {
+                if call.name.value == "link" {
+                    match link_call_target(call) {
+                        Some(Ok(reference)) => module_references.push((reference, call.range)),
+                        Some(Err(message)) => diagnostics.push(Diagnostic {
                             kind: DiagnosticKind::InvalidArguments,
                             message,
                             source_path: Some(source_path.clone()),
                             range: Some(call.range),
                         }),
+                        None => {}
                     }
                 }
             }
@@ -3144,24 +3155,24 @@ struct CompletionContext {
     prefix: String,
     replace: TextRange,
     kind: CompletionContextKind,
-    /// For `Label` contexts: the module part before `#` in the wiki link.
+    /// For `Label` contexts: the module part before `/` in the target.
     label_target: Option<String>,
 }
 
-fn wiki_completion_context(
+fn target_completion_context(
     source: &str,
     parse: &Parse,
     offset: usize,
 ) -> Option<CompletionContext> {
-    if let Some(link) = parse
-        .links()
+    if let Some(expression) = parse
+        .targets()
         .into_iter()
-        .find(|link| contains(link.range, offset))
+        .find(|expression| contains(expression.range, offset))
     {
-        let start = link.range.start + 2;
-        let content_end = link.range.end.saturating_sub(2);
+        let start = expression.range.start + 1;
+        let content_end = expression.range.end.saturating_sub(1);
         let module_end = source[start..content_end]
-            .find('#')
+            .find('/')
             .map_or(content_end, |relative| start + relative);
         if start <= offset && offset <= module_end {
             return Some(CompletionContext {
@@ -3182,17 +3193,17 @@ fn wiki_completion_context(
         }
     }
     let before = source.get(..offset)?;
-    let start = before.rfind("[[")? + 2;
-    if before[start..].contains("]]") || before[start..].contains('\n') {
+    let start = before.rfind("#<")? + 2;
+    if before[start..].contains('>') || before[start..].contains('\n') {
         return None;
     }
-    if let Some(hash) = before[start..].find('#') {
-        let hash = start + hash;
+    if let Some(slash) = before[start..].find('/') {
+        let slash = start + slash;
         return Some(CompletionContext {
-            prefix: source[hash + 1..offset].to_owned(),
-            replace: TextRange::new(hash + 1, offset),
+            prefix: source[slash + 1..offset].to_owned(),
+            replace: TextRange::new(slash + 1, offset),
             kind: CompletionContextKind::Label,
-            label_target: Some(source[start..hash].to_owned()),
+            label_target: Some(source[start..slash].to_owned()),
         });
     }
     Some(CompletionContext {
@@ -3535,8 +3546,11 @@ fn changed_diagnostic_files(
         .collect()
 }
 
-fn explicit_ref_target(call: &Call) -> Option<Result<WikiReference, String>> {
-    if call.name.value != "ref" || !call.trailing.is_empty() || call.arguments.len() != 1 {
+/// Extracts a static reference from a `link` call: a Target literal, or a
+/// String literal that parses as an external url. Internal target strings are
+/// rejected with a migration diagnostic; dynamic arguments stay unindexed.
+fn link_call_target(call: &Call) -> Option<Result<WikiReference, String>> {
+    if call.name.value != "link" || !call.trailing.is_empty() || call.arguments.len() != 1 {
         return None;
     }
     let argument = &call.arguments[0];
@@ -3547,15 +3561,25 @@ fn explicit_ref_target(call: &Call) -> Option<Result<WikiReference, String>> {
     {
         return None;
     }
-    let value = string_expression(&argument.expression)?;
-    Some(parse_wiki_reference(value))
+    match &argument.expression.kind {
+        ExpressionKind::Target(reference) => Some(Ok((**reference).clone())),
+        ExpressionKind::String(literal) => Some(parse_link_url(&literal.value)),
+        ExpressionKind::Parenthesized(inner) => match &inner.kind {
+            ExpressionKind::Target(reference) => Some(Ok((**reference).clone())),
+            ExpressionKind::String(literal) => Some(parse_link_url(&literal.value)),
+            _ => None,
+        },
+        _ => None,
+    }
 }
 
-fn string_expression(expression: &Expression) -> Option<&str> {
-    match &expression.kind {
-        ExpressionKind::String(literal) => Some(&literal.value),
-        ExpressionKind::Parenthesized(inner) => string_expression(inner),
-        _ => None,
+fn parse_link_url(url: &str) -> Result<WikiReference, String> {
+    match parse_wiki_reference(url) {
+        Ok(reference) if matches!(reference.module, ModuleReference::External(_)) => {
+            Ok(reference)
+        }
+        Ok(_) => Err("internal targets must use a `<...>` target literal, not a String".into()),
+        Err(message) => Err(message),
     }
 }
 
@@ -3958,13 +3982,13 @@ mod tests {
     fn maps_files_and_resolves_relative_absolute_and_parent_paths() {
         let root = TempDir::new().unwrap();
         fs::create_dir(root.path().join("pages")).unwrap();
-        fs::write(root.path().join("README.not"), "[[pages]]").unwrap();
+        fs::write(root.path().join("README.not"), "#<pages>").unwrap();
         fs::write(
             root.path().join("pages/README.not"),
-            "[[intro]] [[vault::pages::intro]]",
+            "#<intro> #<vault::pages::intro>",
         )
         .unwrap();
-        fs::write(root.path().join("pages/intro.not"), "[[super]]").unwrap();
+        fs::write(root.path().join("pages/intro.not"), "#<super>").unwrap();
 
         let workspace = WorkspaceSnapshot::load(root.path()).unwrap();
         assert!(workspace.diagnostics().is_empty());
@@ -3982,7 +4006,7 @@ mod tests {
         fs::create_dir(root.path().join("pages")).unwrap();
         fs::write(
             root.path().join("README.not"),
-            "#ref(\"pages\") #ref(\"missing\") #ref(\"vault::::bad\")",
+            "#link(<pages>) #link(<missing>) #link(\"vault::::bad\")",
         )
         .unwrap();
         fs::write(root.path().join("pages/README.not"), "Target").unwrap();
@@ -4024,7 +4048,7 @@ mod tests {
     #[test]
     fn reports_missing_modules_and_unresolved_labels() {
         let root = TempDir::new().unwrap();
-        fs::write(root.path().join("README.not"), "[[missing]] [[#label]]").unwrap();
+        fs::write(root.path().join("README.not"), "#<missing> #<self/label>").unwrap();
 
         let workspace = WorkspaceSnapshot::load(root.path()).unwrap();
         assert_eq!(workspace.diagnostics().len(), 2);
@@ -4048,7 +4072,7 @@ mod tests {
         fs::create_dir(root.path().join("pages")).unwrap();
         fs::write(
             root.path().join("README.not"),
-            "[[pages::guide#intro]] [[#here]] #[Here]@here",
+            "#<pages::guide/intro> #<self/here> #[Here]@here",
         )
         .unwrap();
         fs::write(
@@ -4090,7 +4114,7 @@ mod tests {
         let root = TempDir::new().unwrap();
         fs::write(
             root.path().join("README.not"),
-            "#[one]@same #[two]@same [[#same]]",
+            "#[one]@same #[two]@same #<self/same>",
         )
         .unwrap();
 
@@ -4189,7 +4213,7 @@ mod tests {
         fs::create_dir(root.path().join("images")).unwrap();
         fs::write(
             root.path().join("README.not"),
-            "[[vault::images#logo.png]] [[vault::images#missing.png]]",
+            "#<vault::images/logo.png> #<vault::images/missing.png>",
         )
         .unwrap();
         fs::write(root.path().join("images/logo.png"), [0x89, 0x50]).unwrap();
@@ -4221,7 +4245,7 @@ mod tests {
         let root = TempDir::new().unwrap();
         fs::write(
             root.path().join("README.not"),
-            "[[guide#简介]] [[guide#安装]]",
+            "#<guide/简介> #<guide/安装>",
         )
         .unwrap();
         fs::write(
@@ -4276,7 +4300,7 @@ mod tests {
         .unwrap();
         fs::write(
             root.path().join("explicit.not"),
-            "[[vault::guide#intro]] [[vault::guide#Intro]]",
+            "#<vault::guide/intro> #<vault::guide/Intro>",
         )
         .unwrap();
 
@@ -4301,7 +4325,7 @@ mod tests {
     #[test]
     fn definition_jumps_to_heading_default_id_not_just_file() {
         let root = TempDir::new().unwrap();
-        fs::write(root.path().join("README.not"), "[[guide#Intro]]").unwrap();
+        fs::write(root.path().join("README.not"), "#<guide/Intro>").unwrap();
         fs::write(
             root.path().join("guide.not"),
             "= Guide\n\n== Intro\n\ncontent here",
@@ -4311,7 +4335,7 @@ mod tests {
         let workspace = WorkspaceSnapshot::load(root.path()).unwrap();
         let source_path = dunce::canonicalize(root.path().join("README.not")).unwrap();
         let file_id = workspace.file_id(&source_path).unwrap();
-        // The reference `[[guide#Intro]]` starts at offset 0; pick a position
+        // The reference `#<guide/Intro>` starts at offset 0; pick a position
         // inside the reference text.
         let definition = workspace.definition_at(file_id, 3).unwrap();
 
@@ -4339,18 +4363,18 @@ mod tests {
     fn overlays_replace_disk_sources_without_writing_files() {
         let root = TempDir::new().unwrap();
         let source_path = root.path().join("README.not");
-        fs::write(&source_path, "[[missing]]").unwrap();
+        fs::write(&source_path, "#<missing>").unwrap();
         let source_path = dunce::canonicalize(source_path).unwrap();
         let mut overlays = SourceOverlays::new();
-        overlays.insert(source_path.clone(), Arc::from("[[child]]"));
+        overlays.insert(source_path.clone(), Arc::from("#<child>"));
         fs::write(root.path().join("child.not"), "child").unwrap();
 
         let workspace = WorkspaceSnapshot::load_with_overlays(root.path(), overlays).unwrap();
         let module = workspace.module_for_source(&source_path).unwrap();
 
-        assert_eq!(module.source.as_deref(), Some("[[child]]"));
+        assert_eq!(module.source.as_deref(), Some("#<child>"));
         assert!(workspace.diagnostics().is_empty());
-        assert_eq!(fs::read_to_string(source_path).unwrap(), "[[missing]]");
+        assert_eq!(fs::read_to_string(source_path).unwrap(), "#<missing>");
     }
 
     #[test]
@@ -4620,7 +4644,7 @@ mod tests {
     #[test]
     fn snapshot_queries_and_delta_use_captured_semantics() {
         let root = TempDir::new().unwrap();
-        fs::write(root.path().join("README.not"), "[[page#intro]]").unwrap();
+        fs::write(root.path().join("README.not"), "#<page/intro>").unwrap();
         fs::write(root.path().join("page.not"), "#heading[Intro]@intro").unwrap();
         let engine = VaultEngine::open(root.path()).unwrap();
         let mut view = engine.disk_view().unwrap();
@@ -4634,7 +4658,7 @@ mod tests {
         assert_eq!(definition.annotation.unwrap().name, "intro");
         assert!(first.structured_module(target.id).is_some());
         let hover = first.hover_at(root_file, 3).unwrap().contents;
-        assert!(hover.starts_with("vault::page#intro"));
+        assert!(hover.starts_with("vault::page/intro"));
         assert!(hover.contains("page.not"));
         assert!(
             first
@@ -5001,14 +5025,14 @@ mod tests {
         let root = TempDir::new().unwrap();
         fs::create_dir(root.path().join("notes")).unwrap();
         fs::write(root.path().join("README.not"), "root").unwrap();
-        fs::write(root.path().join("notes/today.not"), "[[self::d").unwrap();
+        fs::write(root.path().join("notes/today.not"), "#<self::d").unwrap();
         fs::create_dir(root.path().join("notes/today")).unwrap();
         fs::write(root.path().join("notes/today/details.not"), "details").unwrap();
         fs::write(root.path().join("notes/index.not"), "index").unwrap();
         let snapshot = WorkspaceSnapshot::load(root.path()).unwrap();
         let today_path = dunce::canonicalize(root.path().join("notes/today.not")).unwrap();
         let file_id = snapshot.file_id(&today_path).unwrap();
-        let candidates = snapshot.completions_at(file_id, "[[self::d".len());
+        let candidates = snapshot.completions_at(file_id, "#<self::d".len());
 
         assert!(candidates.iter().any(|candidate| {
             candidate.label == "self::details" && candidate.kind == CompletionKind::Module
@@ -5031,20 +5055,20 @@ mod tests {
     fn snapshot_completion_wiki_hash_offers_labels_not_functions() {
         let root = TempDir::new().unwrap();
         let main_path = root.path().join("main.not");
-        fs::write(&main_path, "[[#").unwrap();
+        fs::write(&main_path, "#<self/").unwrap();
         fs::write(root.path().join("foo.not"), "#[Intro]@intro").unwrap();
         let snapshot = WorkspaceSnapshot::load(root.path()).unwrap();
         let main_path = dunce::canonicalize(&main_path).unwrap();
         let file_id = snapshot.file_id(&main_path).unwrap();
 
-        // `[[#` has an empty label target: no candidates, and in particular no
-        // function candidates leaking from the `#` prefix.
-        assert!(snapshot.completions_at(file_id, 3).is_empty());
+        // `#<self/` has an empty label prefix: no candidates, and in particular
+        // no function candidates leaking from the `#` prefix.
+        assert!(snapshot.completions_at(file_id, "#<self/".len()).is_empty());
 
-        // `[[vault::foo#` completes labels of `vault::foo`, not function signatures.
-        fs::write(&main_path, "[[vault::foo#").unwrap();
+        // `#<vault::foo/` completes labels of `vault::foo`, not function signatures.
+        fs::write(&main_path, "#<vault::foo/").unwrap();
         let snapshot = WorkspaceSnapshot::load(root.path()).unwrap();
-        let candidates = snapshot.completions_at(file_id, "[[vault::foo#".len());
+        let candidates = snapshot.completions_at(file_id, "#<vault::foo/".len());
         assert!(
             candidates
                 .iter()

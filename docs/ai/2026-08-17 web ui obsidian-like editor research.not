@@ -1,6 +1,6 @@
 = 基于 Web UI 的类 Obsidian 编辑器技术预调研
 
-回应 [[vault::designs::thoughts]] 中「Web Editor：基于 Web 实现编辑能力」与「Web UI 信息增强」两条想法，预调研用 Web 技术栈做出类 Obsidian 编辑器的技术方案。与 [[vault::ai::2026-07-20 notist native desktop architecture research]] 的关系：那篇以原生桌面为目标、把「编辑器 pane 换成 CodeMirror 6 WebView」列为保底路线；本文反过来以 Web 为第一目标。两篇在「编辑器内核选 CodeMirror 6」与「预览渲染复用 notist-html、前端不重新解释 .not 源码」两点上结论一致。
+回应 #<vault::designs::thoughts> 中「Web Editor：基于 Web 实现编辑能力」与「Web UI 信息增强」两条想法，预调研用 Web 技术栈做出类 Obsidian 编辑器的技术方案。与 #<vault::ai::2026-07-20 notist native desktop architecture research> 的关系：那篇以原生桌面为目标、把「编辑器 pane 换成 CodeMirror 6 WebView」列为保底路线；本文反过来以 Web 为第一目标。两篇在「编辑器内核选 CodeMirror 6」与「预览渲染复用 notist-html、前端不重新解释 .not 源码」两点上结论一致。
 
 == 仓库现状（与 Web UI 相关的既有资产）
 
@@ -39,7 +39,7 @@
 
 == .not 语法接入 CM6 的两条路径
 
-.not 不是 Markdown 超集（`=` 标题、`@![]` annotation、`[[wiki]]` 引用、函数调用等），直接扩展 @lezer/markdown 的 MarkdownConfig 覆盖有限，更现实的是二选一：
+.not 不是 Markdown 超集（`=` 标题、`@![]` annotation、`#<wiki>` 引用、函数调用等），直接扩展 @lezer/markdown 的 MarkdownConfig 覆盖有限，更现实的是二选一：
 
 - 独立 Lezer grammar：为 .not 写一份 Lezer 语法，浏览器内增量解析、与 CM6 高亮/折叠/Live Preview 装饰天然集成。代价是维护第二份解析器，存在与 notist-syntax 语义漂移的风险；但 Lezer 只需覆盖「编辑时展示」所需的语法形状，不需要求值语义。
 - notist-syntax 编译 WASM：单一事实来源、零漂移；但 notist-syntax 目前是整篇一次性解析，无增量 reparse，每次击键全量 parse（笔记级文档体量下大概率可接受，需 spike 实测）；且 wasm-bindgen 包体在数百 KB–数 MB 级。

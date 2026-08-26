@@ -1,7 +1,7 @@
 @![implementation = "research"]
 = LSP 架构重设计调查
 
-本文基于 2026-08-25 当前 worktree 的实现与设计文档调查，目标不是为现有 `lsp.rs` 增加补丁，而是确定可迁移的 LSP session/query 架构。证据范围包括 `crates/notist-cli/src/lsp.rs`、`service.rs`、`crates/notist-service`、`crates/notist-analysis`、`crates/notist-syntax`、`crates/notist-eval`，以及 [[vault::designs::host::lsp-adapter]]、[[vault::designs::host::analyzer-snapshot]]、[[vault::designs::host::query-contract]]。
+本文基于 2026-08-25 当前 worktree 的实现与设计文档调查，目标不是为现有 `lsp.rs` 增加补丁，而是确定可迁移的 LSP session/query 架构。证据范围包括 `crates/notist-cli/src/lsp.rs`、`service.rs`、`crates/notist-service`、`crates/notist-analysis`、`crates/notist-syntax`、`crates/notist-eval`，以及 #<vault::designs::host::lsp-adapter>、#<vault::designs::host::analyzer-snapshot>、#<vault::designs::host::query-contract>。
 
 == 结论摘要
 
@@ -51,7 +51,7 @@ rebuild 后，LSP 对当前 source 与历史 published path 的并集逐路径�
 - “每个 path 请求 diagnostics”：错误；应按 snapshot delta 批量发布。
 - “现有 symbol index 代表完整语言绑定”：错误；`SymbolKind` 当前只有 Function/Parameter，`let`、lambda 参数、import binding 没有统一 definition/reference identity（`crates/notist-analysis/src/check.rs:80-128,184-279`）。
 - “watcher 向 `connection.sender` 注入内部 notification 能触发 rebuild”：错误；`sender` 是客户端出站流，见第一节 diagnostics 小节。任何进程内部事件（watcher、build 完成）都必须走进程内事件总线，而不是 LSP 消息通道。
-- “query-time structured evaluation 可以安全重载插件”：错误；`structured_module` 会重新从 vault 加载插件并 reduction，而 LSP 设计要求普通请求不执行有外部副作用 runtime（`crates/notist-analysis/src/lib.rs:1545-1584`；[[vault::designs::host::lsp-adapter#Syntax 真相与求值安全]])。
+- “query-time structured evaluation 可以安全重载插件”：错误；`structured_module` 会重新从 vault 加载插件并 reduction，而 LSP 设计要求普通请求不执行有外部副作用 runtime（`crates/notist-analysis/src/lib.rs:1545-1584`；#<vault::designs::host::lsp-adapter/Syntax 真相与求值安全>)。
 
 == 三、目标协议模型：LSP Session
 
@@ -147,7 +147,7 @@ SymbolReference { symbol_id, kind, file_id, byte_range, context }
 SnapshotLocation { stamp, file_id, byte_range, symbol_id? }
 ```
 
-`FileId`/`ModuleId` 在 VaultEngine 生命周期内稳定；显式 scope id 与标题默认 id 是可引用的文档身份；无 id 的普通节点只能有 `SnapshotNodeId { revision, file_id, local_id }`，不能用相同 byte range 假装跨 revision 稳定（[[vault::designs::host::analyzer-snapshot#身份分为稳定身份与 Snapshot-local 身份]])。任何 protocol result 都同时带 snapshot stamp，adapter 不再拼接来自不同 query 的 path/range。
+`FileId`/`ModuleId` 在 VaultEngine 生命周期内稳定；显式 scope id 与标题默认 id 是可引用的文档身份；无 id 的普通节点只能有 `SnapshotNodeId { revision, file_id, local_id }`，不能用相同 byte range 假装跨 revision 稳定（#<vault::designs::host::analyzer-snapshot/身份分为稳定身份与 Snapshot-local 身份>)。任何 protocol result 都同时带 snapshot stamp，adapter 不再拼接来自不同 query 的 path/range。
 
 扩展 `SymbolKind` 至 Function、Parameter、Let、LambdaParameter、ImportBinding、Module、ExplicitElement、Heading、PluginCall。Module/ExplicitElement 的 identity 由 module graph/id resolver 提供；local identity 由单一 lexical binder 分配。definition/reference 的范围来自 syntax source facts；heading 默认 id 若由 evaluated tree 得到，也必须在同一 candidate 中保留原始 source range。
 
@@ -166,7 +166,7 @@ Document outline 是 snapshot query，不是 adapter 遍历 HTML/tree。它合�
 
 === Workspace symbol
 
-Workspace symbol 是跨文件、稳定身份的发现索引，默认只包含 Module、显式 scope id、标题默认 id、顶层函数；不包含参数、局部 let、临时 plugin call。每项带 `SymbolId`、module/path、source range、container 和 snapshot stamp，按稳定 key 排序并支持 bounded query。当前位置转换把有 file_id 支撑的模块（含 README-backed 目录模块）映射成 `TextRange::new(0,0)` 假位置，纯虚拟模块（`file_id: None`）则被直接丢成无结果（`crates/notist-analysis/src/lib.rs:1216-1229,1399-1407`）。目标契约：source-backed 模块返回真实 range，纯虚拟模块只返回逻辑对象；两者都不伪造坐标（[[vault::designs::host::lsp-adapter]])。
+Workspace symbol 是跨文件、稳定身份的发现索引，默认只包含 Module、显式 scope id、标题默认 id、顶层函数；不包含参数、局部 let、临时 plugin call。每项带 `SymbolId`、module/path、source range、container 和 snapshot stamp，按稳定 key 排序并支持 bounded query。当前位置转换把有 file_id 支撑的模块（含 README-backed 目录模块）映射成 `TextRange::new(0,0)` 假位置，纯虚拟模块（`file_id: None`）则被直接丢成无结果（`crates/notist-analysis/src/lib.rs:1216-1229,1399-1407`）。目标契约：source-backed 模块返回真实 range，纯虚拟模块只返回逻辑对象；两者都不伪造坐标（#<vault::designs::host::lsp-adapter>)。
 
 当前 workspace symbols 只包含 module、显式 label 和 heading default id（`lib.rs:1607-1669`），函数和变量缺失；应由 SemanticIndex 的 symbol table 统一供给，而不是显示名称搜索。
 

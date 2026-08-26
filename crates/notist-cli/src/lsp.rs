@@ -309,6 +309,13 @@ fn main_loop_inner(
             SessionEvent::Build(outcome) => {
                 build_in_flight = false;
                 let generation = outcome.generation();
+                if let BuildOutcome::Failed { error, .. } = &outcome {
+                    report_issue(
+                        connection,
+                        MessageType::ERROR,
+                        format!("workspace rebuild failed: {error}"),
+                    );
+                }
                 session.apply_outcome(outcome);
                 if generation < session.input_generation {
                     eprintln!(
@@ -417,6 +424,23 @@ fn to_json<T: serde::Serialize>(value: T) -> Result<serde_json::Value, String> {
     serde_json::to_value(value).map_err(|error| error.to_string())
 }
 
+/// Reports a server-side condition on both channels the client can actually
+/// see: stderr for host logs and `window/logMessage` for LSP clients.
+/// Protocol violations and rebuild failures used to be stderr-only, which
+/// left clients wondering why diagnostics went stale.
+fn report_issue(connection: &Connection, level: MessageType, message: String) {
+    eprintln!("notist lsp: {message}");
+    let _ = connection
+        .sender
+        .send(Message::Notification(Notification::new(
+            LogMessage::METHOD.into(),
+            LogMessageParams {
+                typ: level,
+                message,
+            },
+        )));
+}
+
 fn handle_notification(
     connection: &Connection,
     session: &mut LspSession,
@@ -433,16 +457,11 @@ fn handle_notification(
             match session.change(params) {
                 Ok(changed) => Ok(changed),
                 Err(error) => {
-                    eprintln!("notist lsp: rejected didChange: {error}");
-                    connection
-                        .sender
-                        .send(Message::Notification(Notification::new(
-                            LogMessage::METHOD.to_owned(),
-                            LogMessageParams {
-                                typ: MessageType::WARNING,
-                                message: format!("rejected didChange: {error}"),
-                            },
-                        )))?;
+                    report_issue(
+                        connection,
+                        MessageType::WARNING,
+                        format!("rejected didChange: {error}"),
+                    );
                     Ok(false)
                 }
             }
@@ -745,9 +764,9 @@ impl LspSession {
                     })
                     .collect();
             }
-            BuildOutcome::Failed { error, .. } => {
-                eprintln!("notist lsp: workspace rebuild failed: {error}");
-            }
+            // Failure reporting happens in the main loop, which owns the
+            // client connection; there is no state to roll back.
+            BuildOutcome::Failed { .. } => {}
         }
     }
 
@@ -1461,7 +1480,7 @@ mod tests {
     #[test]
     fn completion_uses_unsaved_workspace_sources() {
         let root = tempfile::TempDir::new_in(std::env::current_dir().unwrap()).unwrap();
-        fs::write(root.path().join("README.not"), "[[ch]]").unwrap();
+        fs::write(root.path().join("README.not"), "#<ch").unwrap();
         fs::write(root.path().join("child.not"), "child").unwrap();
         let root_path = dunce::canonicalize(root.path()).unwrap();
         let mut session = LspSession::new(root_path.clone(), true).unwrap();
@@ -1470,7 +1489,7 @@ mod tests {
             path.clone(),
             OpenDocument {
                 version: 1,
-                source: Arc::from("[[ch]]"),
+                source: Arc::from("#<ch"),
             },
         );
         session.rebuild_blocking().unwrap();
@@ -1479,7 +1498,7 @@ mod tests {
         let params = CompletionParams {
             text_document_position: lsp_types::TextDocumentPositionParams::new(
                 lsp_types::TextDocumentIdentifier::new(uri),
-                Position::new(0, 4),
+                Position::new(0, 3),
             ),
             work_done_progress_params: Default::default(),
             partial_result_params: Default::default(),
@@ -1731,6 +1750,68 @@ mod tests {
     }
 
     #[test]
+    fn reports_rejected_did_change_via_log_message() {
+        let root = tempfile::TempDir::new_in(std::env::current_dir().unwrap()).unwrap();
+        fs::write(root.path().join("README.not"), "disk").unwrap();
+        let root_path = dunce::canonicalize(root.path()).unwrap();
+        let mut session = LspSession::new(root_path, true).unwrap();
+        let path = dunce::canonicalize(root.path().join("README.not")).unwrap();
+        let uri = file_path_to_uri(&path).unwrap();
+        let (server, client) = Connection::memory();
+        let change_at = |version: i32, text: &str| {
+            Notification::new(
+                DidChangeTextDocument::METHOD.into(),
+                DidChangeTextDocumentParams {
+                    text_document: lsp_types::VersionedTextDocumentIdentifier {
+                        uri: uri.clone(),
+                        version,
+                    },
+                    content_changes: vec![lsp_types::TextDocumentContentChangeEvent {
+                        range: None,
+                        range_length: None,
+                        text: text.into(),
+                    }],
+                },
+            )
+        };
+
+        session
+            .open(DidOpenTextDocumentParams {
+                text_document: TextDocumentItem::new(
+                    uri.clone(),
+                    "notist".into(),
+                    1,
+                    "first".into(),
+                ),
+            })
+            .unwrap();
+
+        // An accepted change stays silent.
+        handle_notification(&server, &mut session, change_at(2, "second")).unwrap();
+        assert!(
+            client
+                .receiver
+                .recv_timeout(Duration::from_millis(200))
+                .is_err()
+        );
+
+        // A rejected violation must reach the client as a log message;
+        // stderr alone leaves clients guessing why diagnostics went stale.
+        handle_notification(&server, &mut session, change_at(1, "regressed")).unwrap();
+        let Message::Notification(notification) = client
+            .receiver
+            .recv_timeout(Duration::from_secs(2))
+            .unwrap()
+        else {
+            panic!("expected log message notification");
+        };
+        assert_eq!(notification.method, LogMessage::METHOD);
+        let params: LogMessageParams = serde_json::from_value(notification.params).unwrap();
+        assert_eq!(params.typ, MessageType::WARNING);
+        assert!(params.message.contains("rejected didChange"), "{params:?}");
+    }
+
+    #[test]
     fn protocol_loop_serves_overlay_diagnostics_completion_hover_and_definition() {
         let root = tempfile::TempDir::new_in(std::env::current_dir().unwrap()).unwrap();
         fs::write(root.path().join("README.not"), "disk").unwrap();
@@ -1739,7 +1820,7 @@ mod tests {
         let readme_path = dunce::canonicalize(root.path().join("README.not")).unwrap();
         let child_path = dunce::canonicalize(root.path().join("child.not")).unwrap();
         let readme_uri = file_path_to_uri(&readme_path).unwrap();
-        let source = "[[child]] #heading[] #missing[]";
+        let source = "#<child> #heading[] #missing[]";
         let state = LspSession::new(root_path.clone(), true).unwrap();
         let (server, client) = Connection::memory();
         let server_thread = std::thread::spawn(move || {
@@ -1812,7 +1893,7 @@ mod tests {
                 CompletionParams {
                     text_document_position: TextDocumentPositionParams::new(
                         TextDocumentIdentifier::new(readme_uri.clone()),
-                        Position::new(0, 15),
+                        Position::new(0, 13),
                     ),
                     work_done_progress_params: Default::default(),
                     partial_result_params: Default::default(),
@@ -1840,7 +1921,7 @@ mod tests {
                 HoverParams {
                     text_document_position_params: TextDocumentPositionParams::new(
                         TextDocumentIdentifier::new(readme_uri.clone()),
-                        Position::new(0, 12),
+                        Position::new(0, 10),
                     ),
                     work_done_progress_params: Default::default(),
                 },

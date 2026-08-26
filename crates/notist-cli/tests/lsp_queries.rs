@@ -9,10 +9,10 @@ use serde_json::json;
 #[test]
 fn references_returns_cross_file_locations_through_the_real_loop() {
     // The referencing file must be the root module (`README.not`): a
-    // `[[target]]` link inside a nested module resolves to a child module.
+    // `#<target>` link inside a nested module resolves to a child module.
     let vault = Vault::new(&[
         ("target.not", "= Target\n"),
-        ("README.not", "see [[target]] here\n"),
+        ("README.not", "see #<target> here\n"),
     ]);
     let readme = vault.uri("README.not");
     let target = vault.uri("target.not");
@@ -38,8 +38,8 @@ fn references_returns_cross_file_locations_through_the_real_loop() {
     assert!(locations[0].range.start.character <= 8);
     assert!(locations[0].range.end.character > 8);
     assert_eq!(
-        utf16_slice("see [[target]] here\n", locations[0].range),
-        "[[target]]"
+        utf16_slice("see #<target> here\n", locations[0].range),
+        "<target>"
     );
 
     let including_definition = client.request(
@@ -70,11 +70,11 @@ fn references_returns_cross_file_locations_through_the_real_loop() {
 
 #[test]
 fn wide_character_lines_round_trip_utf16_positions_end_to_end() {
-    // The root module (`README.not`) keeps the `[[target]]` links resolvable
+    // The root module (`README.not`) keeps the `#<target>` links resolvable
     // while exercising UTF-16 positions over emoji and CJK characters.
     let vault = Vault::new(&[
         ("target.not", "= Target\n"),
-        ("README.not", "😀中 [[target]]\n😀中 [[tar"),
+        ("README.not", "😀中 #<target>\n😀中 #<tar"),
     ]);
     let wide = vault.uri("README.not");
     let mut client = Client::spawn(&vault);
@@ -93,8 +93,8 @@ fn wide_character_lines_round_trip_utf16_positions_end_to_end() {
             .expect("hover response shape");
     let hover = hover.expect("hover over the wiki reference");
     let range = hover.range.expect("hover range");
-    assert_eq!(range.start, Position::new(0, 4));
-    assert_eq!(range.end, Position::new(0, 14));
+    assert_eq!(range.start, Position::new(0, 5));
+    assert_eq!(range.end, Position::new(0, 13));
     assert!(matches!(
         hover.contents,
         HoverContents::Markup(ref markup) if markup.value.contains("target")
@@ -124,7 +124,7 @@ fn wide_character_lines_round_trip_utf16_positions_end_to_end() {
     assert_eq!(edit.new_text, "target");
     assert_eq!(edit.range.start, Position::new(1, 6));
     assert_eq!(edit.range.end, Position::new(1, 9));
-    assert_eq!(utf16_slice("😀中 [[tar", edit.range), "tar");
+    assert_eq!(utf16_slice("😀中 #<tar", edit.range), "tar");
 
     let status = client.shutdown_and_exit();
     assert_eq!(status.code(), Some(0));

@@ -1,7 +1,7 @@
 @![implementation = "aligned"]
 = Core Constructors
 
-本文定义标准 `core` package 的内容词表：构造器的签名与校验。`core` 是默认 App 预装的 package；它可以由 native backend 提供，但不因此成为 eval engine 的特权模块。词表随语言 surface 发布，经 prelude 进入每个 module；语法糖的完整规格见 [[vault::designs::language::syntax-sugar]]；节点名字词表见 [[vault::designs::pipeline::evaluate#Call 与 Node]]；调用模型见 [[vault::designs::language::call-model]]。
+本文定义标准 `core` package 的内容词表：构造器的签名与校验。`core` 是默认 App 预装的 package；它可以由 native backend 提供，但不因此成为 eval engine 的特权模块。词表随语言 surface 发布，经 prelude 进入每个 module；语法糖的完整规格见 #<vault::designs::language::syntax-sugar>；节点名字词表见 #<vault::designs::pipeline::evaluate/Call 与 Node>；调用模型见 #<vault::designs::language::call-model>。
 
 == 设计原则
 
@@ -15,13 +15,13 @@
 
 == 内置构造器
 
-=== ref
+=== link
 
 ```text
-ref(url: String) -> Content
+link(target: Target | String) -> Content
 ```
 
-产生 Reference 节点。`url` 是字面引用串，与 `[[...]]` 糖共享同一解析入口；目标空间与解析产物见 [[vault::designs::world::reference-ref-target]]。
+产生 Reference 节点。`Target` 是 ModulePath 加可选 label 的结构化拼写；`String` 只表示外部 url。`#<...>` 糖与 `link(<...>)` 共享同一解析入口；目标空间与解析产物见 #<vault::designs::world::reference-ref-target>。
 
 === heading
 
@@ -29,7 +29,7 @@ ref(url: String) -> Content
 heading(level: Int = 1, trailing body: Content) -> Content
 ```
 
-产生 Heading 节点。`level` 必须至少为 1，无上限（渲染时折叠到 h6）。heading 的默认 id 规则见 [[vault::designs::world::reference-ref-target#scope id]]。糖见 [[vault::designs::language::syntax-sugar#heading]]。
+产生 Heading 节点。`level` 必须至少为 1，无上限（渲染时折叠到 h6）。heading 的默认 id 规则见 #<vault::designs::world::reference-ref-target/scope id>。糖见 #<vault::designs::language::syntax-sugar/heading>。
 
 === raw
 
@@ -37,7 +37,7 @@ heading(level: Int = 1, trailing body: Content) -> Content
 raw(source: String, lang: String? = none, block: Bool = false) -> Content
 ```
 
-产生 Raw 节点。`source` 无默认值；`lang`、`block` 具名绑定。构造器校验：`block: false` 时 `source` 含换行产生诊断；`block: true` 的单行 `source` 合法。糖见 [[vault::designs::language::syntax-sugar#raw]]。
+产生 Raw 节点。`source` 无默认值；`lang`、`block` 具名绑定。构造器校验：`block: false` 时 `source` 含换行产生诊断；`block: true` 的单行 `source` 合法。糖见 #<vault::designs::language::syntax-sugar/raw>。
 
 === rule
 
@@ -45,7 +45,7 @@ raw(source: String, lang: String? = none, block: Bool = false) -> Content
 rule() -> Content
 ```
 
-产生 Rule 分割线。糖见 [[vault::designs::language::syntax-sugar#rule]]。
+产生 Rule 分割线。糖见 #<vault::designs::language::syntax-sugar/rule>。
 
 === callout
 
@@ -69,7 +69,7 @@ details(summary: Content? = none, open: Bool = false, trailing body: Content) ->
 item(ordered: Bool = false, trailing body: Content) -> Content
 ```
 
-`ordered` 为 false 时产生无序条目节点，为 true 时产生有序条目节点。相邻同类条目由成型组合为 `core::list`（[[vault::designs::pipeline::structure]]）。糖见 [[vault::designs::language::syntax-sugar#item]]。
+`ordered` 为 false 时产生无序条目节点，为 true 时产生有序条目节点。相邻同类条目由成型组合为 `core::list`（#<vault::designs::pipeline::structure>）。糖见 #<vault::designs::language::syntax-sugar/item>。
 
 === table-cell
 
@@ -86,14 +86,14 @@ table(columns: Int, header: Bool = false, align: String? = none,
       trailing body: Content) -> Content
 ```
 
-产生 Table。`columns` 必填（1..=65535）；`header` 决定首行是否渲染为表头；`align` 是逗号分隔的列对齐串（`left` / `center` / `right` / `default`，数量必须等于 `columns`，`none` 表示全部 default）。body 只接受 `table-cell`；纯空白 `core::text` 与 `core::parbreak` 是排版间隔。Table 自身没有 caption——题注属于 [[vault::designs::plugin-system::core#figure]]。构造器校验：
+产生 Table。`columns` 必填（1..=65535）；`header` 决定首行是否渲染为表头；`align` 是逗号分隔的列对齐串（`left` / `center` / `right` / `default`，数量必须等于 `columns`，`none` 表示全部 default）。body 只接受 `table-cell`；纯空白 `core::text` 与 `core::parbreak` 是排版间隔。Table 自身没有 caption——题注属于 #<vault::designs::plugin-system::core/figure>。构造器校验：
 
 - columns、colspan/rowspan 越界 → 诊断；
 - body 出现非 `table-cell` 的可见节点 → 诊断；
 - cell 必须恰好铺满行、rowspan 不得越出末行、span 不得重叠或越界；
 - 错误调用不产生 Table，求值继续。
 
-糖见 [[vault::designs::language::syntax-sugar#table]]。
+糖见 #<vault::designs::language::syntax-sugar/table>。
 
 === figure
 
@@ -113,4 +113,4 @@ underline(trailing body: Content) -> Content
 strike(trailing body: Content)    -> Content
 ```
 
-四个行内 wrapper，只包装已经求值的 Content body。糖见 [[vault::designs::language::syntax-sugar#strong / emph / underline / strike]]。
+四个行内 wrapper，只包装已经求值的 Content body。糖见 #<vault::designs::language::syntax-sugar/strong / emph / underline / strike>。

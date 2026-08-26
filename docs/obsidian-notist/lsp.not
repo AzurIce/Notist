@@ -1,6 +1,6 @@
 = LSP 接入方案
 
-obsidian-notist 插件为 `.not` 编辑器接入 notist LSP 的设计方案。插件端现状（极简 CM6、tree-sitter 高亮、双 World 壳层）见 [[vault::ai::2026-08-24 obsidian-notist editor cm6 migration]] 与 [[vault::obsidian-notist::highlight]]；server 端设计见 [[vault::designs::host::lsp-adapter]]。本文的 server 行为描述以 2026-08-25 重写后的 `crates/notist-cli/src/lsp.rs`（LspSession 事件循环架构，main @ 39f6086）为准；重写前的审计与重写过程见 [[vault::ai::2026-08-24 notist lsp implementation audit]] 与 [[vault::ai::2026-08-25 lsp architecture redesign]]。
+obsidian-notist 插件为 `.not` 编辑器接入 notist LSP 的设计方案。插件端现状（极简 CM6、tree-sitter 高亮、双 World 壳层）见 #<vault::ai::2026-08-24 obsidian-notist editor cm6 migration> 与 #<vault::obsidian-notist::highlight>；server 端设计见 #<vault::designs::host::lsp-adapter>。本文的 server 行为描述以 2026-08-25 重写后的 `crates/notist-cli/src/lsp.rs`（LspSession 事件循环架构，main @ 39f6086）为准；重写前的审计与重写过程见 #<vault::ai::2026-08-24 notist lsp implementation audit> 与 #<vault::ai::2026-08-25 lsp architecture redesign>。
 
 == 决策
 
@@ -14,7 +14,7 @@ obsidian-notist 插件为 `.not` 编辑器接入 notist LSP 的设计方案。�
 放弃或推迟的路线：
 
 - *LSP wasm 化*：不可行，排除。依赖链上有 wasmtime（插件宿主）、tokio、lsp-server 的 stdio/线程模型、notify 文件监控，无一能上 wasm32。想要纯 wasm 语义只能新做一个基于 `notist-model/syntax/eval` 薄链的 wasm crate，放弃 analysis/service 层能力——与「语义唯一权威是 notist-service」的纪律冲突，不做。
-- *daemon 加 HTTP/WS 服务层*：是 [[vault::ai::2026-08-17 web ui obsidian-like editor research]] 给自建 Web 编辑器规划的路线，能让移动端与纯 web 受益，但属 notist 侧独立工作，插件接入不等它。二期再议。
+- *daemon 加 HTTP/WS 服务层*：是 #<vault::ai::2026-08-17 web ui obsidian-like editor research> 给自建 Web 编辑器规划的路线，能让移动端与纯 web 受益，但属 notist 侧独立工作，插件接入不等它。二期再议。
 - *现成 CM LSP client 包*（`@replit/codemirror-lspclient` 等）：协议面小、单 server、FULL 同步，自写薄层更贴合，少一个依赖。
 
 == Server 侧行为要点（实现约束）
@@ -33,7 +33,7 @@ obsidian-notist 插件为 `.not` 编辑器接入 notist LSP 的设计方案。�
 
 == 客户端架构
 
-四层，遵守「语义组件不 import obsidian API」的纪律（[[vault::obsidian-notist]]），前三层只依赖 Node 与 CM：
+四层，遵守「语义组件不 import obsidian API」的纪律（#<vault::obsidian-notist>），前三层只依赖 Node 与 CM：
 
 - *`src/lsp/transport.ts`*：spawn 子进程 + Content-Length framing + JSON-RPC 请求/响应 id 关联 + 通知分发。零依赖，可直接单测。
 - *`src/lsp/session.ts`*：LSP 会话——initialize 握手（`workspaceFolders = [vault 根]`）、生命周期（start/stop/崩溃重启）、文档注册表、请求封装（hover/completion/definition/...）、`publishDiagnostics` 落地为 per-path 存储。
@@ -59,7 +59,7 @@ obsidian-notist 插件为 `.not` 编辑器接入 notist LSP 的设计方案。�
 
 === 生命周期与降级
 
-- 设置项：启用开关（*默认关，opt-in*——外部进程执行在 Obsidian 审核中趋严，opt-in + README 披露是 Code Workbench 已验证的先例）+ server 启动命令的 Zed 式两段配置：binary path（默认从 PATH 找 `notist`）+ binary arguments（*整体替换* argv，默认 `lsp`，必须含 `lsp` 子命令）。*server 进程的 cwd 固定为 vault 根*（LSP 惯例，也是 server 的语义工作区）；启动器自身的 cwd 需求必须写在 argv 里——dev 场景配 path `nix` + arguments `develop /path/to/notist -c cargo run --manifest-path /path/to/notist/Cargo.toml -- lsp`（`nix develop` 与 `direnv exec` 都不会 cd，少了 `--manifest-path` 会以 Obsidian 的 cwd 找 Cargo.toml 报 exit 101）；或 `nix run /path/to/notist -- lsp`（crane 构建，源码变动即重建但非增量，见 [[vault::ai::2026-08-26 obsidian-notist lsp client implementation]]）。
+- 设置项：启用开关（*默认关，opt-in*——外部进程执行在 Obsidian 审核中趋严，opt-in + README 披露是 Code Workbench 已验证的先例）+ server 启动命令的 Zed 式两段配置：binary path（默认从 PATH 找 `notist`）+ binary arguments（*整体替换* argv，默认 `lsp`，必须含 `lsp` 子命令）。*server 进程的 cwd 固定为 vault 根*（LSP 惯例，也是 server 的语义工作区）；启动器自身的 cwd 需求必须写在 argv 里——dev 场景配 path `nix` + arguments `develop /path/to/notist -c cargo run --manifest-path /path/to/notist/Cargo.toml -- lsp`（`nix develop` 与 `direnv exec` 都不会 cd，少了 `--manifest-path` 会以 Obsidian 的 cwd 找 Cargo.toml 报 exit 101）；或 `nix run /path/to/notist -- lsp`（crane 构建，源码变动即重建但非增量，见 #<vault::ai::2026-08-26 obsidian-notist lsp client implementation>）。
 - 启动在 `onload` 的 `initHighlight` 旁路（`main.ts:124-138` 同款 best-effort 模式）：二进制不存在、spawn 失败、initialize 握手失败，一律降级为当前纯高亮模式 + 状态栏标记，绝不阻塞编辑器。
 - 崩溃处理：进程退出 → 状态栏置错 → 指数退避重启，封顶次数后放弃并提示。stderr 尾部进 console。*这个重启路径必须可靠*：当前 server 对畸形 notification 的解析错误或 publish 期间的 daemon 瞬断会直接终止主循环（见风险节），客户端要把它当成「会发生的故障」而非理论边界。
 - `onunload`：先发 `shutdown`/`exit` 优雅关闭，超时强杀；daemon 由 server 侧自治（idle 5 分钟自退），客户端不管。
@@ -69,9 +69,9 @@ obsidian-notist 插件为 `.not` 编辑器接入 notist LSP 的设计方案。�
 
 1. *骨架 + diagnostics*：transport + session + 文档同步 + lint 渲染。诊断是最早可见的价值，且不依赖任何新 UI 设施。
 2. *completion + hover*：打字体验核心。
-3. *definition 跳转*；references/document symbol/workspace symbol 暂不接 UI——它们与 explorer 模块树、backlinks 面板、graph 同属「语义面板」阶段（[[vault::obsidian-notist]] 落地顺序），届时数据源直接复用本方案的 session 层。
+3. *definition 跳转*；references/document symbol/workspace symbol 暂不接 UI——它们与 explorer 模块树、backlinks 面板、graph 同属「语义面板」阶段（#<vault::obsidian-notist> 落地顺序），届时数据源直接复用本方案的 session 层。
 
-*实施状态（2026-08-26）*：1–3 已全部落地并实机验证（diagnostics/completion/hover/definition 一次做完），实现记录与踩坑见 [[vault::ai::2026-08-26 obsidian-notist lsp client implementation]]。
+*实施状态（2026-08-26）*：1–3 已全部落地并实机验证（diagnostics/completion/hover/definition 一次做完），实现记录与踩坑见 #<vault::ai::2026-08-26 obsidian-notist lsp client implementation>。
 
 == 风险与开放点
 
@@ -79,16 +79,16 @@ obsidian-notist 插件为 `.not` 编辑器接入 notist LSP 的设计方案。�
 - *server 健壮性*：畸形 notification 的解析错误、publish 期间的 daemon 错误会终止 server 主循环——客户端崩溃重启逻辑是必需项而非可选项（见生命周期节）。
 - *FULL sync 失步不可检测*：违规的 didChange 被 server 静默拒绝（仅 stderr）。客户端实现后应有一个开发期自检（例如对照 server stderr 或定期校验文档 hash），至少在设计文档层面记录这个不对称。
 - *多 view 并发编辑同一文件*：两个 leaf 同时编辑同一 `.not` 时，注册表以「最后到达的变更」为准推给 server，另一 view 经 Obsidian 落盘回声收敛——与现有保存行为同源，不引入新的一致性问题，但需要实机验证。
-- *tree-sitter 树与 server 语义双轨*：高亮树不参与语义，server 语义不回填高亮（无 semantic tokens capability），两轨并行不冲突；长期若 notist-service 直接供能高亮，只替换 token 来源（[[vault::obsidian-notist::highlight]] 已预留此演进）。
+- *tree-sitter 树与 server 语义双轨*：高亮树不参与语义，server 语义不回填高亮（无 semantic tokens capability），两轨并行不冲突；长期若 notist-service 直接供能高亮，只替换 token 来源（#<vault::obsidian-notist::highlight> 已预留此演进）。
 - *审核披露*：插件执行外部进程需在 README 明确说明（spawn 什么、何时、如何关闭），opt-in 默认关即满足。
 
 == 参考
 
-- [[vault::designs::host::lsp-adapter]]：server 侧 LSP 适配层设计（进程与传输、overlay 语义、capabilities 契约）。
-- [[vault::obsidian-notist]]：插件立项与「借壳架空」纪律；[[vault::obsidian-notist::highlight]]：编辑器挂载点与坐标系约定，本文直接承接。
-- [[vault::ai::2026-08-26 obsidian-notist lsp client implementation]]：本方案的实现记录与踩坑（linter(null) 推送模型、setViewData 回声内容比对、reload 泄漏竞态等）。
-- [[vault::ai::2026-08-25 lsp architecture redesign]]：LSP session/scheduler 重设计（本文 server 行为描述的实现依据）；[[vault::ai::2026-08-25 notist lsp audit follow-up]]：重写后的逐条核实与残留问题。
-- [[vault::ai::2026-08-24 notist lsp implementation audit]]：重写前的实现审计（历史对照）。
-- [[vault::ai::2026-08-24 obsidian plugin feasibility research]]：桌面增强层（spawn `notist lsp`）的原始调研与 Code Workbench 先例。
-- [[vault::ai::2026-08-17 web ui obsidian-like editor research]]：daemon HTTP/WS 服务层与 LSP-over-WS 的二期方向。
+- #<vault::designs::host::lsp-adapter>：server 侧 LSP 适配层设计（进程与传输、overlay 语义、capabilities 契约）。
+- #<vault::obsidian-notist>：插件立项与「借壳架空」纪律；#<vault::obsidian-notist::highlight>：编辑器挂载点与坐标系约定，本文直接承接。
+- #<vault::ai::2026-08-26 obsidian-notist lsp client implementation>：本方案的实现记录与踩坑（linter(null) 推送模型、setViewData 回声内容比对、reload 泄漏竞态等）。
+- #<vault::ai::2026-08-25 lsp architecture redesign>：LSP session/scheduler 重设计（本文 server 行为描述的实现依据）；#<vault::ai::2026-08-25 notist lsp audit follow-up>：重写后的逐条核实与残留问题。
+- #<vault::ai::2026-08-24 notist lsp implementation audit>：重写前的实现审计（历史对照）。
+- #<vault::ai::2026-08-24 obsidian plugin feasibility research>：桌面增强层（spawn `notist lsp`）的原始调研与 Code Workbench 先例。
+- #<vault::ai::2026-08-17 web ui obsidian-like editor research>：daemon HTTP/WS 服务层与 LSP-over-WS 的二期方向。
 - 实现依据：`notist` 仓库 `crates/notist-cli/src/lsp.rs`（main @ 39f6086）、`crates/notist-cli/src/service.rs`；插件仓库 `src/main.ts`、`src/notist-view.ts`、`esbuild.config.mjs`。

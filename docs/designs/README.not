@@ -1,6 +1,46 @@
-= Design Records
+= Designs
 
-本目录是当前世代的设计文档。目录结构直接表达设计分层，README 负责阅读顺序；文档没有编号 ID，历史追溯交给 Git。
+#[
+  Notist 的设计文档。
+
+  目前 Notist 的 crate 架构：
+
+  ```
+               notist-plugin-sdk ->
+    notist-eval -> notist-syntax -> notist-model
+
+    notist-service -> notist-analysis -> notist-plugin-host -> notist-eval
+  ```
+
+  #mermaid(
+    source: r#"""
+    graph TD
+        cli["notist-cli<br>binary：命令面 / LSP / preview / skill"]
+        service["notist-service<br>daemon / transport / watcher / query"]
+        analysis["notist-analysis<br>分析层：check / 快照 / Analyzer View<br>语义侧组合根"]
+        htm["notist-html<br>HTML target package<br>投影 registry + serializer<br>（内置 native 实现）"]
+        phost["notist-plugin-host<br>Wasm 组件宿主<br>运行时加载 vault 内第三方插件"]
+        pcore["notist-plugin-core<br>core 标准语义 package<br>（内置 native 实现）"]
+        psdk["notist-plugin-sdk<br>插件作者 SDK"]
+        evl["notist-eval<br>求值引擎与规约"]
+        syn["notist-syntax<br>mode-aware 解析与 AST"]
+        model["notist-model<br>共享数据模型"]
+
+        cli --> service
+        service --> analysis
+        analysis --> phost
+        htm --> evl
+        phost --> evl
+        pcore --> evl
+        evl --> syn
+        syn --> model
+        psdk --> model
+
+        analysis -.->|"预装 core package"| pcore
+        service -.->|"HTML target"| htm
+    """#,
+    )[]
+  ]@type=user,.user
 
 ```text
 pipeline/      编译管线：parse → check → evaluate → structure → project
@@ -15,67 +55,67 @@ plugin-system/ 插件系统：package、ABI、贡献、信任模型与生命周�
 
 === 入口
 
-1. [[vault::designs::pipeline]]：编译管线总览：parse → check → evaluate → structure → project。
-2. [[vault::designs::overview]]：语言概览与最小示例。
+1. #<vault::designs::pipeline>：编译管线总览：parse → check → evaluate → structure → project。
+2. #<vault::designs::overview>：语言概览与最小示例。
 
 === 管线阶段
 
 按数据流阅读：
 
-1. [[vault::designs::pipeline::parse]]：解析阶段与 mode-aware 语法树。
-2. [[vault::designs::pipeline::evaluate]]：求值 + Call Reduction 与 call 森林。
-3. [[vault::designs::pipeline::structure]]：递归成型与结构化重写。
-4. [[vault::designs::pipeline::project]]：按 name 分发到 target 投影。
-5. [[vault::designs::pipeline::plugin-call-reduction]]：插件调用在 reduce 阶段如何规约。
+1. #<vault::designs::pipeline::parse>：解析阶段与 mode-aware 语法树。
+2. #<vault::designs::pipeline::evaluate>：求值 + Call Reduction 与 call 森林。
+3. #<vault::designs::pipeline::structure>：递归成型与结构化重写。
+4. #<vault::designs::pipeline::project>：按 name 分发到 target 投影。
+5. #<vault::designs::pipeline::plugin-call-reduction>：插件调用在 reduce 阶段如何规约。
 
 === 插件系统
 
 按模块依赖阅读：
 
-1. [[vault::designs::plugin-system]]：PluginSystem 模块入口与 pipeline / world / host 边界。
-2. [[vault::designs::plugin-system::package]]：插件 package、manifest、core package 与生命周期。
-3. [[vault::designs::plugin-system::core]]：core package 的内容词表——内置构造器签名与校验。
-4. [[vault::designs::plugin-system::abi]]：共享类型、WIT 边界与语义 ABI。
-5. [[vault::designs::plugin-system::eval-contribution]]：语义函数贡献与 FunctionRegistry。
-6. [[vault::designs::plugin-system::capability]]：插件信任模型与能力系统删除裁决。
-7. [[vault::designs::plugin-system::safety]]：终止性、资源预算与确定性。
-8. [[vault::designs::plugin-system::shaping]]：成型 schema 贡献。
-9. [[vault::designs::plugin-system::projection]]：target 投影贡献与 fallback。
+1. #<vault::designs::plugin-system>：PluginSystem 模块入口与 pipeline / world / host 边界。
+2. #<vault::designs::plugin-system::package>：插件 package、manifest、core package 与生命周期。
+3. #<vault::designs::plugin-system::core>：core package 的内容词表——内置构造器签名与校验。
+4. #<vault::designs::plugin-system::abi>：共享类型、WIT 边界与语义 ABI。
+5. #<vault::designs::plugin-system::eval-contribution>：语义函数贡献与 FunctionRegistry。
+6. #<vault::designs::plugin-system::capability>：插件信任模型与能力系统删除裁决。
+7. #<vault::designs::plugin-system::safety>：终止性、资源预算与确定性。
+8. #<vault::designs::plugin-system::shaping>：成型 schema 贡献。
+9. #<vault::designs::plugin-system::projection>：target 投影贡献与 fallback。
 
 === 语言层
 
 按概念依赖顺序阅读：
 
-1. [[vault::designs::language::markup-surface]]：Markup 表面语法与 scope 书写形态。
-2. [[vault::designs::language::code-grammar]]：Code 核心语法。
-3. [[vault::designs::language::type-system]]：核心类型系统。
-4. [[vault::designs::language::collection-types]]：集合类型草案，尚未进入 current surface。
-5. [[vault::designs::language::scope-environment]]：词法作用域与值层 scope。
-6. [[vault::designs::language::call-model]]：函数签名与调用模型；rest 部分待实现。
-7. [[vault::designs::language::property-table]]：旁置属性表。
-8. [[vault::designs::language::annotation-syntax]]：标注语法。
-9. [[vault::designs::language::syntax-sugar]]：Markup 语法糖规格。
+1. #<vault::designs::language::markup-surface>：Markup 表面语法与 scope 书写形态。
+2. #<vault::designs::language::code-grammar>：Code 核心语法。
+3. #<vault::designs::language::type-system>：核心类型系统。
+4. #<vault::designs::language::collection-types>：集合类型草案，尚未进入 current surface。
+5. #<vault::designs::language::scope-environment>：词法作用域与值层 scope。
+6. #<vault::designs::language::call-model>：函数签名与调用模型；rest 部分待实现。
+7. #<vault::designs::language::property-table>：旁置属性表。
+8. #<vault::designs::language::annotation-syntax>：标注语法。
+9. #<vault::designs::language::syntax-sugar>：Markup 语法糖规格。
 
 === Vault 层
 
-1. [[vault::designs::world::boundary-discovery]]：Vault 边界、marker 与发现规则。
-2. [[vault::designs::world::module-result]]：Module 与 ModuleResult。
-3. [[vault::designs::world::import]]：显式 import 与依赖图。
-4. [[vault::designs::world::reference-ref-target]]：引用寻址与 RefTarget。
-5. [[vault::designs::world::core-namespace-plugin-boundary]]：core namespace、prelude 与插件边界。
+1. #<vault::designs::world::boundary-discovery>：Vault 边界、marker 与发现规则。
+2. #<vault::designs::world::module-result>：Module 与 ModuleResult。
+3. #<vault::designs::world::import>：显式 import 与依赖图。
+4. #<vault::designs::world::reference-ref-target>：引用寻址与 RefTarget。
+5. #<vault::designs::world::core-namespace-plugin-boundary>：core namespace、prelude 与插件边界。
 
 === 宿主层
 
-1. [[vault::designs::host::analyzer-snapshot]]：分析层与 WorkspaceSnapshot。
-2. [[vault::designs::host::query-contract]]：查询契约与 Selector/Citation。
-3. [[vault::designs::host::search-retrieval-index]]：Search 模式与检索索引。
-4. [[vault::designs::host::daemon-process-views]]：daemon 进程与 Analyzer View。
-5. [[vault::designs::host::client-interface-protocol]]：client interface、本地协议与生命周期。
-6. [[vault::designs::host::cli-command-surface-skill-distribution]]：CLI 产品边界与官方 Skill 分发；完整逐命令规范和使用文档在 [[vault::cli]]。
-7. [[vault::designs::host::lsp-adapter]]：LSP 适配。
-8. [[vault::designs::lsp::test]]：LSP 无头契约测试：黑箱层判据、harness 确定性规则与场景目录。
-9. [[vault::designs::host::html-renderer]]：HTML 渲染。
-10. [[vault::designs::host::build-preview]]：静态构建与本地预览。
+1. #<vault::designs::host::analyzer-snapshot>：分析层与 WorkspaceSnapshot。
+2. #<vault::designs::host::query-contract>：查询契约与 Selector/Citation。
+3. #<vault::designs::host::search-retrieval-index>：Search 模式与检索索引。
+4. #<vault::designs::host::daemon-process-views>：daemon 进程与 Analyzer View。
+5. #<vault::designs::host::client-interface-protocol>：client interface、本地协议与生命周期。
+6. #<vault::designs::host::cli-command-surface-skill-distribution>：CLI 产品边界与官方 Skill 分发；完整逐命令规范和使用文档在 #<vault::cli>。
+7. #<vault::designs::host::lsp-adapter>：LSP 适配。
+8. #<vault::designs::lsp::test>：LSP 无头契约测试：黑箱层判据、harness 确定性规则与场景目录。
+9. #<vault::designs::host::html-renderer>：HTML 渲染。
+10. #<vault::designs::host::build-preview>：静态构建与本地预览。
 
 == 状态属性
 
@@ -96,26 +136,26 @@ plugin-system/ 插件系统：package、ABI、贡献、信任模型与生命周�
 当前已知的非 `aligned` 文档：
 
 
-- [[vault::designs::language::collection-types]]：`missing`
-- [[vault::designs::language::call-model]]：`partial`（rest 调用模型未实现）
-- [[vault::designs::pipeline]]：`aligned`（统一 Node 管线与 HTML target 二阶段投影已实现）
-- [[vault::designs::pipeline::evaluate]]：`partial`（Node 值域已对齐；递归绑定与部分语言细节仍待实现）
-- [[vault::designs::plugin-system]]：`partial`（完整 native/Wasm App API 与独立 runtime crate 尚未抽出）
-- [[vault::designs::plugin-system::package]]：`partial`（package 模型与 core/native contribution 已实现；完整 package lifecycle/API 尚未收口）
-- [[vault::designs::plugin-system::runtime-composition]]：`partial`（WorkspaceSnapshot 与统一 `PluginContribution` 已实现；独立 App/runtime crate 尚未抽出）
-- [[vault::designs::plugin-system::eval-contribution]]：`partial`（native/Wasm 已走统一 contribution；高层 native Plugin trait 尚未提供）
-- [[vault::designs::world::core-namespace-plugin-boundary]]：`partial`（namespace policy 已明确；完整 package policy 校验仍需收口）
-- [[vault::designs::plugin-system::capability]]：`partial`（backend 信任边界已裁定；统一 App composition 尚未收口）
-- [[vault::designs::plugin-system::safety]]：`partial`（精确循环检测与完整 App 资源治理仍待收口）
-- [[vault::designs::pipeline::plugin-call-reduction]]：`aligned`（统一 Node、handler 不动点与 target-side 投影边界已实现）
-- [[vault::designs::pipeline::project]]：`aligned`（HTML target 已有独立 projection registry 与 serializer）
-- [[vault::designs::plugin-system::projection]]：`partial`（Node 投影规约与 fallback 已实现；trusted/词表收口仍待定）
-- [[vault::designs::host::query-contract]]：`partial`（text-only 投影、`read` citation footer 与 `--exclude-scope` 尚未完整实现）
-- [[vault::designs::host::search-retrieval-index]]：`partial`（`--exclude-scope` 未实现）
-- [[vault::designs::host::cli-command-surface-skill-distribution]]：`partial`（2026-08-15 裁决的命令面未落地：`next`/`locate`/`refs`/`definition` 与 text-only 投影待实现）
-- [[vault::cli]]：`partial`（完整 CLI 命令设计+使用规范；目标为 2026-08-15 裁决的命令面，当前 binary 仍为过渡 surface）
-- [[vault::designs::host::lsp-adapter]]：`partial`（Document Symbol 尚未覆盖函数与变量）
-- [[vault::designs::lsp::test]]：`partial`（首批 7 场景已覆盖；错误规范接线、exit 非零码、cancel、跨文件联动、didSave 与 daemon 变体待补）
+- #<vault::designs::language::collection-types>：`missing`
+- #<vault::designs::language::call-model>：`partial`（rest 调用模型未实现）
+- #<vault::designs::pipeline>：`aligned`（统一 Node 管线与 HTML target 二阶段投影已实现）
+- #<vault::designs::pipeline::evaluate>：`partial`（Node 值域已对齐；递归绑定与部分语言细节仍待实现）
+- #<vault::designs::plugin-system>：`partial`（完整 native/Wasm App API 与独立 runtime crate 尚未抽出）
+- #<vault::designs::plugin-system::package>：`partial`（package 模型与 core/native contribution 已实现；完整 package lifecycle/API 尚未收口）
+- #<vault::designs::plugin-system::runtime-composition>：`partial`（WorkspaceSnapshot 与统一 `PluginContribution` 已实现；独立 App/runtime crate 尚未抽出）
+- #<vault::designs::plugin-system::eval-contribution>：`partial`（native/Wasm 已走统一 contribution；高层 native Plugin trait 尚未提供）
+- #<vault::designs::world::core-namespace-plugin-boundary>：`partial`（namespace policy 已明确；完整 package policy 校验仍需收口）
+- #<vault::designs::plugin-system::capability>：`partial`（backend 信任边界已裁定；统一 App composition 尚未收口）
+- #<vault::designs::plugin-system::safety>：`partial`（精确循环检测与完整 App 资源治理仍待收口）
+- #<vault::designs::pipeline::plugin-call-reduction>：`aligned`（统一 Node、handler 不动点与 target-side 投影边界已实现）
+- #<vault::designs::pipeline::project>：`aligned`（HTML target 已有独立 projection registry 与 serializer）
+- #<vault::designs::plugin-system::projection>：`partial`（Node 投影规约与 fallback 已实现；trusted/词表收口仍待定）
+- #<vault::designs::host::query-contract>：`partial`（text-only 投影、`read` citation footer 与 `--exclude-scope` 尚未完整实现）
+- #<vault::designs::host::search-retrieval-index>：`partial`（`--exclude-scope` 未实现）
+- #<vault::designs::host::cli-command-surface-skill-distribution>：`partial`（2026-08-15 裁决的命令面未落地：`next`/`locate`/`refs`/`definition` 与 text-only 投影待实现）
+- #<vault::cli>：`partial`（完整 CLI 命令设计+使用规范；目标为 2026-08-15 裁决的命令面，当前 binary 仍为过渡 surface）
+- #<vault::designs::host::lsp-adapter>：`partial`（Document Symbol 尚未覆盖函数与变量）
+- #<vault::designs::lsp::test>：`partial`（首批 7 场景已覆盖；错误规范接线、exit 非零码、cancel、跨文件联动、didSave 与 daemon 变体待补）
 
 位置本身表达治理状态：active 目录中的文档是现行设计；退休的文档直接移除。Git 是完整历史，不维护编号 ID 或 `Design:` trailer。
 

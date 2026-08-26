@@ -1,6 +1,6 @@
 = CLI v3 Clean Interface Redesign
 
-本文是 dated design proposal，并且是对 [[vault::ai::2026-08-15 cli agent navigation and retrieval interface]] 中“保持现有命令面、只做增量”这一结论的推翻。触发点是同一轮审计暴露出的真实感受：当前 CLI 把 token budget、分页、rendering 与 daemon 部署这些实现策略混进了每个语义命令，导致 `--help` 不可读、Agent 需要理解过多与“找信息”无关的参数。本文提出 v3：命令只表达意图，预算与翻页退到运行时，输出只保留模型需要的字段。
+本文是 dated design proposal，并且是对 #<vault::ai::2026-08-15 cli agent navigation and retrieval interface> 中“保持现有命令面、只做增量”这一结论的推翻。触发点是同一轮审计暴露出的真实感受：当前 CLI 把 token budget、分页、rendering 与 daemon 部署这些实现策略混进了每个语义命令，导致 `--help` 不可读、Agent 需要理解过多与“找信息”无关的参数。本文提出 v3：命令只表达意图，预算与翻页退到运行时，输出只保留模型需要的字段。
 
 == 问题确认
 
@@ -199,15 +199,15 @@ v3 是有意 breaking change：
 - schemaVersion 从 2 升到 3；`result.items` 保留，`page/budget/coverage` 消失。
 - `--format json` 先作为 `--json` 的 deprecated alias 保留一个 release，再删除。
 - `references` 先作为 `refs` alias 保留一个 release；`query definition` 先作为 `definition` alias 保留一个 release；`search --mode/--exact/--regex/--limit/--max-bytes/--cursor` 不保留普通 alias，只接受隐藏 flag 供迁移脚本过渡。
-- Skill 与 [[vault::cli]] 在同一 release 切换到 v3；旧教程不进入新帮助。
+- Skill 与 #<vault::cli> 在同一 release 切换到 v3；旧教程不进入新帮助。
 
 == 需要同步修订的规范
 
-- [[vault::designs::host::cli-command-surface-skill-distribution]]：命令面、分组、`next`、预算策略与 Skill 分发边界。
-- [[vault::designs::host::query-contract]]：PageRequest 从 CLI 参数层下沉到 core/runtime；公开 JSON 改为 next/complete/matched。
-- [[vault::designs::host::search-retrieval-index]]：search/locate 两个 CLI 投影；`--mode` 不再是 CLI 规范；字段与排序语义不变。
-- [[vault::designs::host::client-interface-protocol]]：新增 ContinuePage core request 或等价 page-session 语义。
-- [[vault::ai::2026-08-15 cli agent navigation and retrieval interface]]：其中“保持命令面、增量补 flag”的结论被本文取代；G1–G9 的检索正确性发现仍有效，应进入 v3 core 实现。
+- #<vault::designs::host::cli-command-surface-skill-distribution>：命令面、分组、`next`、预算策略与 Skill 分发边界。
+- #<vault::designs::host::query-contract>：PageRequest 从 CLI 参数层下沉到 core/runtime；公开 JSON 改为 next/complete/matched。
+- #<vault::designs::host::search-retrieval-index>：search/locate 两个 CLI 投影；`--mode` 不再是 CLI 规范；字段与排序语义不变。
+- #<vault::designs::host::client-interface-protocol>：新增 ContinuePage core request 或等价 page-session 语义。
+- #<vault::ai::2026-08-15 cli agent navigation and retrieval interface>：其中“保持命令面、增量补 flag”的结论被本文取代；G1–G9 的检索正确性发现仍有效，应进入 v3 core 实现。
 
 == 实施顺序
 
@@ -228,7 +228,7 @@ v3 是有意 breaking change：
 
 === Phase C：检索正确性
 
-- 执行 [[vault::ai::2026-08-15 cli agent navigation and retrieval interface]] 的 G1/G2/G3/G4/G5/G8：节范围、module 级 AND、authority prior、exact/lexical 字段 parity、matched count、section context。
+- 执行 #<vault::ai::2026-08-15 cli agent navigation and retrieval interface> 的 G1/G2/G3/G4/G5/G8：节范围、module 级 AND、authority prior、exact/lexical 字段 parity、matched count、section context。
 - ranking/index/cursor version 同步提升，旧索引与旧 token 拒绝而不是猜测。
 
 === Phase D：Skill 与验收

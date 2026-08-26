@@ -2,7 +2,7 @@
 
 == 背景
 
-语法层从 flat syntax vectors(多个独立扫描器产出的平铺事件数组,靠 range 包含关系互斥与重建结构)迁移到单一 mode-aware 语法树后,静态求值模型仍有若干目标未落地。本文记录 2026-07-17 这次收尾迁移的决策与实现,对应 [[vault::types]] 的"当前迁移边界"章节。
+语法层从 flat syntax vectors(多个独立扫描器产出的平铺事件数组,靠 range 包含关系互斥与重建结构)迁移到单一 mode-aware 语法树后,静态求值模型仍有若干目标未落地。本文记录 2026-07-17 这次收尾迁移的决策与实现,对应 #<vault::types> 的"当前迁移边界"章节。
 
 == 五项核心决策
 
@@ -47,5 +47,5 @@ typst 验证了单树路线:lossless untyped CST(错误是树内节点)+ 惰性 
 
 == 参考
 
-- 规范:[[vault::types]]、[[vault::grammar]]、[[vault::functions]]
-- typst 语法树调查:[[vault::ai::2026-07-11 typst element function and syntax sugar]]
+- 规范:#<vault::types>、#<vault::grammar>、#<vault::functions>
+- typst 语法树调查:#<vault::ai::2026-07-11 typst element function and syntax sugar>

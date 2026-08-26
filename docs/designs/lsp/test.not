@@ -11,7 +11,7 @@ crates/notist-cli/tests/    外面看到的对不对（真实二进制 + stdio �
 
 前两层早已存在；本设计规定的是第三层——黑箱无头契约测试。它是唯一以客户端身份说话的一层：不 import 任何内部类型来构造状态、不直调任何 handler，从 `initialize` 开始与真实 server 进程对话。动因：接入侧曾只能靠人工"感受"发现问题，表面异常（诊断没刷、刷了旧的）无法定位到实现，且修复无法沉淀为回归。
 
-相关设计：被测行为见 [[vault::designs::host::lsp-adapter]]；进程模型见 [[vault::designs::host::daemon-process-views]]；本地协议见 [[vault::designs::host::client-interface-protocol]]。
+相关设计：被测行为见 #<vault::designs::host::lsp-adapter>；进程模型见 #<vault::designs::host::daemon-process-views>；本地协议见 #<vault::designs::host::client-interface-protocol>。
 
 == 判据：规范一致与自我一致
 
@@ -45,7 +45,7 @@ crates/notist-cli/tests/    外面看到的对不对（真实二进制 + stdio �
 
 === 夹具规则
 
-wiki 引用从嵌套模块文件解析为子模块路径（`wide.not` 里的 `[[target]]` 指向 `vault::wide::target`），只有根模块（`README.not`）解析兄弟模块。引用类场景（references/definition/hover/completion 的目标解析）的引用方必须放在根模块，否则夹具自身语义错误会被误判为 server 缺陷。
+wiki 引用从嵌套模块文件解析为子模块路径（`wide.not` 里的 `#<target>` 指向 `vault::wide::target`），只有根模块（`README.not`）解析兄弟模块。引用类场景（references/definition/hover/completion 的目标解析）的引用方必须放在根模块，否则夹具自身语义错误会被误判为 server 缺陷。
 
 == 场景目录
 

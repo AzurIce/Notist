@@ -1,4 +1,4 @@
-use notist_model::{ModuleReference, TableAlignment, TextRange, Type};
+use notist_model::{TableAlignment, TextRange, Type};
 
 use crate::argument::parse_string_at;
 use crate::scope::{
@@ -8,7 +8,7 @@ use crate::{
     Argument, Attributes, BinaryOperator, BlockAnnotation, BodyForm, Call, ContentBlock,
     EmbeddedExpression, Expression, ExpressionKind, HeadingSugar, ListSugar, ListSugarRow, Markup,
     MarkupItem, Parse, SpannedName, SpannedText, SyntaxError, TableSugar, TableSugarCell,
-    UnaryOperator, UserFunctionDefinition, UserParameter, WikiLink, parse_wiki_reference,
+    UnaryOperator, UserFunctionDefinition, UserParameter, parse_target_body,
 };
 
 /// Precedence of unary `not`: tighter than `and`/`or`, looser than comparison,
@@ -105,14 +105,6 @@ impl Parser<'_> {
 
             if self.byte() == Some(b'\\') && self.source.as_bytes().get(self.cursor + 1).is_some() {
                 self.cursor = self.next_char_end(self.cursor + 1);
-                at_line_start = false;
-                continue;
-            }
-
-            if self.source.as_bytes().get(self.cursor..self.cursor + 2) == Some(b"[[") {
-                self.push_text(&mut items, text_start, self.cursor);
-                self.parse_wiki_link(&mut items);
-                text_start = self.cursor;
                 at_line_start = false;
                 continue;
             }
@@ -753,31 +745,6 @@ impl Parser<'_> {
         })
     }
 
-    fn parse_wiki_link(&mut self, items: &mut Vec<MarkupItem>) {
-        let start = self.cursor;
-        let content_start = start + 2;
-        let Some(relative_end) = self.source[content_start..self.end].find("]]") else {
-            self.errors.push(SyntaxError {
-                message: "unclosed wiki reference".into(),
-                range: TextRange::new(start, self.end),
-            });
-            self.cursor = self.end;
-            self.push_text(items, start, self.end);
-            return;
-        };
-        let content_end = content_start + relative_end;
-        let end = content_end + 2;
-        let range = TextRange::new(start, end);
-        match parse_wiki_reference(&self.source[content_start..content_end]) {
-            Ok(target) => items.push(MarkupItem::Wiki(WikiLink { target, range })),
-            Err(message) => {
-                self.errors.push(SyntaxError { message, range });
-                self.push_text(items, start, end);
-            }
-        }
-        self.cursor = end;
-    }
-
     fn parse_embedded_expression(&mut self) -> EmbeddedExpression {
         let start = self.cursor;
         self.cursor += 1;
@@ -971,6 +938,7 @@ impl Parser<'_> {
                     range: raw.range,
                 }
             }
+            Some(b'<') => self.parse_target_literal(start),
             Some(_) => self.parse_keyword_or_call_expression(),
             None => self.missing_expression(start),
         }
@@ -1256,52 +1224,128 @@ impl Parser<'_> {
         }
     }
 
-    /// Parses `import path::{name, name as alias}` (D0004): an explicit
-    /// ModulePath with an explicit selector list, no wildcard.
-    fn parse_import(&mut self, start: usize) -> Expression {
-        self.skip_trivia();
-        let mut segments: Vec<String> = Vec::new();
-        let mut segment_ranges = Vec::new();
-        loop {
-            let segment_start = self.cursor;
-            let Some((segment, end)) = parse_identifier(self.source, self.cursor) else {
-                return self.invalid_expression(start);
-            };
-            segments.push(segment);
-            segment_ranges.push(TextRange::new(segment_start, end));
-            self.cursor = end;
-            self.skip_trivia();
-            if self.source.get(self.cursor..self.cursor + 2) == Some("::") {
-                // `path::{selectors}`: the `::` directly before the selector
-                // brace ends the path instead of introducing another segment.
-                let mut probe = self.cursor + 2;
-                while probe < self.end && self.source.as_bytes()[probe].is_ascii_whitespace() {
-                    probe += 1;
+    /// Parses a Target literal `<path[/label]>`. Backslash escapes
+    /// `\<`, `\>`, and `\\`; any other escape is a syntax error.
+    fn parse_target_literal(&mut self, start: usize) -> Expression {
+        let mut cursor = start + 1;
+        let mut body = String::new();
+        let mut closed = false;
+        while cursor < self.end {
+            let rest = &self.source[cursor..];
+            match rest.as_bytes()[0] {
+                b'\\' => {
+                    let Some(next) = rest[1..].chars().next() else {
+                        self.errors.push(SyntaxError {
+                            message: "unclosed target literal".into(),
+                            range: TextRange::new(start, self.end),
+                        });
+                        self.cursor = self.end;
+                        return Expression {
+                            kind: ExpressionKind::Error,
+                            range: TextRange::new(start, self.end),
+                        };
+                    };
+                    if matches!(next, '<' | '>' | '\\') {
+                        body.push(next);
+                        cursor += 1 + next.len_utf8();
+                    } else {
+                        self.errors.push(SyntaxError {
+                            message: format!("unknown escape `\\{next}` in target literal"),
+                            range: TextRange::new(cursor, cursor + 1 + next.len_utf8()),
+                        });
+                        cursor += 1 + next.len_utf8();
+                    }
                 }
-                if self.source.as_bytes().get(probe) == Some(&b'{') {
-                    self.cursor += 2;
+                b'>' => {
+                    cursor += 1;
+                    closed = true;
                     break;
                 }
-                self.cursor += 2;
-                self.skip_trivia();
-                continue;
-            }
-            break;
-        }
-        let module = match segments.first().map(String::as_str) {
-            Some("vault") => ModuleReference::Absolute(segments[1..].to_vec()),
-            Some("self") => ModuleReference::Relative(segments[1..].to_vec()),
-            Some("super") => {
-                let levels = segments
-                    .iter()
-                    .take_while(|segment| segment.as_str() == "super")
-                    .count();
-                ModuleReference::Parent {
-                    levels,
-                    remainder: segments[levels..].to_vec(),
+                _ => {
+                    let character = rest.chars().next().expect("cursor inside source");
+                    body.push(character);
+                    cursor += character.len_utf8();
                 }
             }
-            _ => ModuleReference::Relative(segments),
+        }
+        if !closed {
+            self.errors.push(SyntaxError {
+                message: "unclosed target literal".into(),
+                range: TextRange::new(start, self.end),
+            });
+            self.cursor = self.end;
+            return Expression {
+                kind: ExpressionKind::Error,
+                range: TextRange::new(start, self.end),
+            };
+        }
+        self.cursor = cursor;
+        match parse_target_body(&body) {
+            Ok(target) => Expression {
+                kind: ExpressionKind::Target(Box::new(target)),
+                range: TextRange::new(start, cursor),
+            },
+            Err(message) => {
+                self.errors.push(SyntaxError {
+                    message,
+                    range: TextRange::new(start, cursor),
+                });
+                Expression {
+                    kind: ExpressionKind::Error,
+                    range: TextRange::new(start, cursor),
+                }
+            }
+        }
+    }
+
+    /// Parses `import <path>::{name, name as alias}` (D0004): an explicit
+    /// ModulePath with an explicit selector list, no wildcard. The legacy
+    /// unbracketed `import path::{...}` spelling remains accepted.
+    fn parse_import(&mut self, start: usize) -> Expression {
+        self.skip_trivia();
+        let module = if self.byte() == Some(b'<') {
+            let target = self.parse_target_literal(self.cursor);
+            let module = match &target.kind {
+                ExpressionKind::Target(reference) if reference.label.is_none() => {
+                    reference.module.clone()
+                }
+                ExpressionKind::Target(_) => {
+                    self.errors.push(SyntaxError {
+                        message: "import target must be a ModulePath and cannot carry a label"
+                            .into(),
+                        range: target.range,
+                    });
+                    return Expression {
+                        kind: ExpressionKind::Error,
+                        range: TextRange::new(start, self.cursor),
+                    };
+                }
+                _ => {
+                    return Expression {
+                        kind: ExpressionKind::Error,
+                        range: TextRange::new(start, self.cursor),
+                    };
+                }
+            };
+            self.skip_trivia();
+            if self.source.get(self.cursor..self.cursor + 2) == Some("::") {
+                self.cursor += 2;
+            } else {
+                self.errors.push(SyntaxError {
+                    message: "expected `::` after import target".into(),
+                    range: TextRange::new(self.cursor, self.next_char_end(self.cursor)),
+                });
+            }
+            module
+        } else {
+            self.errors.push(SyntaxError {
+                message: "import target must be a `<...>` Target literal".into(),
+                range: TextRange::new(self.cursor, self.next_char_end(self.cursor)),
+            });
+            return Expression {
+                kind: ExpressionKind::Error,
+                range: TextRange::new(start, self.cursor),
+            };
         };
         self.skip_trivia();
         if self.byte() != Some(b'{') {
@@ -1580,6 +1624,21 @@ impl Parser<'_> {
     }
 
     fn parse_type(&mut self) -> Type {
+        let mut members = Vec::new();
+        loop {
+            self.skip_trivia();
+            members.push(self.parse_type_member());
+            self.skip_trivia();
+            if self.byte() == Some(b'|') {
+                self.cursor += 1;
+            } else {
+                break;
+            }
+        }
+        Type::union(members)
+    }
+
+    fn parse_type_member(&mut self) -> Type {
         let mut ty = self.parse_primary_type();
         if self.byte() == Some(b'?') {
             self.cursor += 1;
@@ -1609,6 +1668,7 @@ impl Parser<'_> {
             "Float" => Type::Float,
             "String" => Type::String,
             "Content" => Type::Content,
+            "Target" => Type::Target,
             "fn" => self.parse_function_type(start),
             _ => {
                 self.errors.push(SyntaxError {

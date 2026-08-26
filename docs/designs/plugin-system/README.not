@@ -2,7 +2,7 @@
 = Plugin System
 
 #[
-notist 的内容是求值的结果，而求值是函数式的规约过程（[[vault::designs::pipeline]]），因此所有的不同内容都可以被表示为各自独立的的“函数名”+“参数”的函数调用。
+notist 的内容是求值的结果，而求值是函数式的规约过程（#<vault::designs::pipeline>），因此所有的不同内容都可以被表示为各自独立的的“函数名”+“参数”的函数调用。
 
 于是 notist 具有了丰富且可控的拓展性：
 - 求值层面：新的内容类型本质是对对应类型函数调用规约的实现。
@@ -17,7 +17,7 @@ notist 内置的全部内容函数（包括 text）都通过插件系统提供�
 
 == 定位
 
-插件系统不是 [[vault::designs::pipeline]] 的一个阶段，而是 pipeline 之外的横切扩展面。pipeline 拥有 `parse → check → lower → reduce → structure → project` 的阶段语义；插件系统负责定义 package、ABI 与贡献，并在三个固定阶段被 pipeline 消费：
+插件系统不是 #<vault::designs::pipeline> 的一个阶段，而是 pipeline 之外的横切扩展面。pipeline 拥有 `parse → check → lower → reduce → structure → project` 的阶段语义；插件系统负责定义 package、ABI 与贡献，并在三个固定阶段被 pipeline 消费：
 
 ```text
 PluginSystem 贡献              pipeline 消费点
@@ -27,7 +27,7 @@ ElementSchema / ShapingRegistry → structure
 投影 handler / 声明式贡献 → project（target 侧第二阶段规约）
 ```
 
-插件调用在 reduce 阶段如何被规约，是 PluginSystem 与 pipeline 的契约，见 [[vault::designs::pipeline::plugin-call-reduction]]。core namespace / prelude 与插件边界见 [[vault::designs::world::core-namespace-plugin-boundary]]；HTML target 的消费方式见 [[vault::designs::host::html-renderer]] 与 [[vault::designs::pipeline::project]]。
+插件调用在 reduce 阶段如何被规约，是 PluginSystem 与 pipeline 的契约，见 #<vault::designs::pipeline::plugin-call-reduction>。core namespace / prelude 与插件边界见 #<vault::designs::world::core-namespace-plugin-boundary>；HTML target 的消费方式见 #<vault::designs::host::html-renderer> 与 #<vault::designs::pipeline::project>。
 
 == 目标
 
@@ -49,17 +49,17 @@ ElementSchema / ShapingRegistry → structure
 
 按依赖顺序阅读：
 
-1. [[vault::designs::plugin-system::package]]：插件 package、manifest、namespace、backend 与生命周期。
-2. [[vault::designs::plugin-system::runtime-composition]]：native/Wasm 等同、App composition root 与统一 contribution。
-3. [[vault::designs::plugin-system::core]]：标准 `core` package 的内容词表——构造器签名与校验。
-4. [[vault::designs::plugin-system::abi]]：Wasm backend 的共享类型、WIT 边界与语义 ABI。
-5. [[vault::designs::plugin-system::eval-contribution]]：native/Wasm Function contribution 与注册。
-6. [[vault::designs::plugin-system::capability]]：信任模型——内容组合不授权，backend 各自承担执行边界。
-7. [[vault::designs::plugin-system::safety]]：终止性、资源预算与确定性。
-8. [[vault::designs::plugin-system::shaping]]：ElementDecl 与成型 schema。
-9. [[vault::designs::plugin-system::projection]]：target 投影贡献与 fallback。
+1. #<vault::designs::plugin-system::package>：插件 package、manifest、namespace、backend 与生命周期。
+2. #<vault::designs::plugin-system::runtime-composition>：native/Wasm 等同、App composition root 与统一 contribution。
+3. #<vault::designs::plugin-system::core>：标准 `core` package 的内容词表——构造器签名与校验。
+4. #<vault::designs::plugin-system::abi>：Wasm backend 的共享类型、WIT 边界与语义 ABI。
+5. #<vault::designs::plugin-system::eval-contribution>：native/Wasm Function contribution 与注册。
+6. #<vault::designs::plugin-system::capability>：信任模型——内容组合不授权，backend 各自承担执行边界。
+7. #<vault::designs::plugin-system::safety>：终止性、资源预算与确定性。
+8. #<vault::designs::plugin-system::shaping>：ElementDecl 与成型 schema。
+9. #<vault::designs::plugin-system::projection>：target 投影贡献与 fallback。
 
-面向用户的插件示例见 [[vault::plugins]]；插件系统的早期调研与设计过程见 [[vault::ai::2026-08-18 notist plugin system design]]。
+面向用户的插件示例见 #<vault::plugins>；插件系统的早期调研与设计过程见 #<vault::ai::2026-08-18 notist plugin system design>。
 
 == 当前实现映射
 
@@ -75,7 +75,7 @@ ElementSchema / ShapingRegistry → structure
 | 组件 eval contribution | 已实现：Wasm `init` 声明 + `evaluate` dispatcher；作者侧由 `notist-plugin-sdk` 提供 `Plugin::init(reg)` / `ElementFn::reduce` / `export_plugin!`；返回 call 森林由宿主统一继续 fixpoint |
 | native plugin contribution | `notist-eval::PluginContribution` / 原子安装 API 已实现；独立 `notist-plugin-core` crate 已通过同一接口提供 core package |
 | runtime composition | `WorkspaceSnapshot` 已承担组合根职责；native/Wasm semantic contribution 已汇合到同一 registry 安装路径，完整 App API 尚未抽出 |
-| capability checker | 已删除：内容组合不授权；native 进程信任与 Wasm sandbox 的 backend 差异见 [[vault::designs::plugin-system::capability]] |
+| capability checker | 已删除：内容组合不授权；native 进程信任与 Wasm sandbox 的 backend 差异见 #<vault::designs::plugin-system::capability> |
 | core native package 迁移 | 已完成：`plugins/core` 是独立 `notist-plugin-core` crate；默认 App 显式安装其 contribution，`notist-eval` 不再嵌入 core |
 | PluginSet 指纹 | `FunctionEnvironmentId` 已结合 view salt、插件 surface、配置与签名集合；插件 package 变更会分配新语义世界 |
 | 插件文件 watcher | daemon 会递归 watch `Notist.toml` 声明的外部 package 目录；plugin.json / wasm / assets 变化触发 disk view reload |

@@ -146,6 +146,8 @@ pub enum NodeValue {
     String(String),
     Stream(Vec<Node>),
     Array(Vec<NodeValue>),
+    /// A structured reference target (module reference plus optional label).
+    Target(crate::WikiReference),
 }
 
 impl NodeValue {

@@ -1,7 +1,7 @@
 @![implementation = "partial"]
 = Plugin Package and Lifecycle
 
-本文定义插件 package 的形态、manifest、namespace、core package 以及装载生命周期。插件求值语义见 [[vault::designs::pipeline::plugin-call-reduction]]；共享类型与 WIT 边界见 [[vault::designs::plugin-system::abi]]。
+本文定义插件 package 的形态、manifest、namespace、core package 以及装载生命周期。插件求值语义见 #<vault::designs::pipeline::plugin-call-reduction>；共享类型与 WIT 边界见 #<vault::designs::plugin-system::abi>。
 
 == Package 模型
 
@@ -25,7 +25,7 @@ PluginPackage {
 
 == Manifest
 
-插件包是目录或 zip，根下是 `plugin.json`。manifest 只是信封：身份、Wasm 装载参数与投影资产；semantic 接口由组件的 `init` 注册提供（[[vault::designs::plugin-system::abi]]），不写入 manifest：
+插件包是目录或 zip，根下是 `plugin.json`。manifest 只是信封：身份、Wasm 装载参数与投影资产；semantic 接口由组件的 `init` 注册提供（#<vault::designs::plugin-system::abi>），不写入 manifest：
 
 ```json
 {
@@ -54,7 +54,7 @@ PluginPackage {
 ```
 
 - 出现 `wasm.module` 就表示该 artifact 是 WIT `plugin` component；宿主统一实例化它并调用 `init` / `evaluate`，信封没有格式分流 flag。
-- 顶层 `render` 描述投影面；投影贡献是静态文件引用，保留在信封里，细节见 [[vault::designs::plugin-system::projection]]。
+- 顶层 `render` 描述投影面；投影贡献是静态文件引用，保留在信封里，细节见 #<vault::designs::plugin-system::projection>。
 - JSON 只承担人工编辑的 `plugin.json` 信封；semantic declarations、defaults、节点与调用载荷不进入 manifest，统一由 version byte + postcard 承载。
 
 == core package
@@ -80,7 +80,7 @@ core 与其它 package 共享：
 - target projection registry；
 - namespace、signature、schema 的原子校验。
 
-core namespace 的保留属于语言/package policy：其它 package 不能注册或覆盖 `core::*`，但这不授予 core handler 特殊的 reduction 权限。core 的内容词表见 [[vault::designs::plugin-system::core]]；HTML 映射属于 HTML target（[[vault::designs::plugin-system::projection]]）。
+core namespace 的保留属于语言/package policy：其它 package 不能注册或覆盖 `core::*`，但这不授予 core handler 特殊的 reduction 权限。core 的内容词表见 #<vault::designs::plugin-system::core>；HTML 映射属于 HTML target（#<vault::designs::plugin-system::projection>）。
 
 == Notist.toml 配置
 

@@ -1,11 +1,11 @@
 = Built-in Functions
 
-本文记录当前工具 surface 实际提供的 14 个内置构造器。未列出的名称不是现行 built-in：未注册名称由 check 层报 unknown function 诊断，调用本身保留为内容节点（渲染有 fallback 标签兜底）；加载插件后 `{package}::{element}` 是注册名，不报 unknown。调用模型与类型规则见 [[vault::types]]，语法细节见 [[vault::grammar]]，速查见 [[vault::cheatsheet]]。
+本文记录当前工具 surface 实际提供的 14 个内置构造器。未列出的名称不是现行 built-in：未注册名称由 check 层报 unknown function 诊断，调用本身保留为内容节点（渲染有 fallback 标签兜底）；加载插件后 `{package}::{element}` 是注册名，不报 unknown。调用模型与类型规则见 #<vault::types>，语法细节见 #<vault::grammar>，速查见 #<vault::cheatsheet>。
 
 == 签名总览
 
 ```text
-ref(url: String) -> Content
+link(target: Target | String) -> Content
 heading(level: Int = 1, trailing body: Content) -> Content
 raw(source: String, lang: String? = none, block: Bool = false) -> Content
 rule() -> Content
@@ -37,23 +37,23 @@ strike(trailing body: Content) -> Content
 - 重复绑定、未知实参、缺失必填实参与类型不匹配都产生指向调用位置的诊断；
 - 内置构造器是 first-class 函数：可以绑定、传递与组合——`#let make_title = heading` 合法。
 
-== ref
+== link
 
 ```text
-ref(url: String) -> Content
+link(target: Target | String) -> Content
 ```
 
-产生 Reference 元素。`url` 是字面引用串，与 `[[...]]` 糖共享同一解析入口——不解析 markup、不嵌套 `[[`：
+产生 Reference 元素。`Target` 是 ModulePath 加可选 label 的结构化拼写，`String` 只表示外部 url。`#<...>` 是 Target 字面量糖，与 `link(<...>)` 共享同一解析入口：
 
 ```not
-[[vault::grammar]]
-#ref("vault::grammar")
-[[vault::guide#install]]
+#<vault::grammar>
+#link(<vault::grammar>)
+#<vault::guide/install>
 ```
 
 - 目标空间：文档模块（`vault::path::to::file`）、模块内目标（`... #id`，标题默认 id 亦匹配）、资源文件（`vault::path::to::assets#logo.png`，完整文件名精确匹配）；
 - 带 scheme（`https://` 等）的外部 URL 语法合法：解析为 External 目标，当前渲染为未解析的可见文本并产生 info 级 `external-reference-unsupported` 诊断；
-- 目标解析产物与引用图见 [[vault::designs::world::reference-ref-target]]。
+- 目标解析产物与引用图见 #<vault::designs::world::reference-ref-target>。
 
 == heading
 
@@ -70,8 +70,8 @@ heading(level: Int = 1, trailing body: Content) -> Content
 
 - 语法边界：行首 `=` 连续出现一个或多个，其后必须跟空白（或行尾），再后是标题 body；`=foo` 是普通文本；
 - 错误恢复：行首 `=` 后无内容 → 空 body 的 Heading；
-- 标题拥有默认 id：body 提取的纯文本（Text 元素按顺序拼接，含嵌套）——`= 安装指南` 默认即可被 `[[...#安装指南]]` 引用；显式 `@id` 覆盖默认 id；无效文本回退为 `loc-<起始字节偏移>` 锚点；
-- 同级标题与其后内容归组为嵌套的 Section 节点（见 [[vault::designs::pipeline::structure]] 与 [[vault::designs::host::html-renderer]]）。
+- 标题拥有默认 id：body 提取的纯文本（Text 元素按顺序拼接，含嵌套）——`= 安装指南` 默认即可被 `#<.../安装指南>` 引用；显式 `@id` 覆盖默认 id；无效文本回退为 `loc-<起始字节偏移>` 锚点；
+- 同级标题与其后内容归组为嵌套的 Section 节点（见 #<vault::designs::pipeline::structure> 与 #<vault::designs::host::html-renderer>）。
 
 == raw
 
@@ -254,6 +254,6 @@ __text__  ~= underline([text])
 
 == 未知函数
 
-不在上表的内置名称由 check 层报 unknown function 诊断；`::` 命名空间形式在对应插件经 `Notist.toml` 加载后是合法注册名（见 [[vault::plugins]]），不报 unknown。
+不在上表的内置名称由 check 层报 unknown function 诊断；`::` 命名空间形式在对应插件经 `Notist.toml` 加载后是合法注册名（见 #<vault::plugins>），不报 unknown。
 
-调用不会被静默丢弃——调用本身原样保留为内容节点，预览与工具恢复可以继续处理其余源码；渲染器把未注册投影的名字投影为 `<{package}-{element}>` 形式的 fallback 标签。插件元素是普通内容节点，不改变内置构造器集合（节点模型见 [[vault::designs::pipeline::evaluate#Call 与 Node]]）。
+调用不会被静默丢弃——调用本身原样保留为内容节点，预览与工具恢复可以继续处理其余源码；渲染器把未注册投影的名字投影为 `<{package}-{element}>` 形式的 fallback 标签。插件元素是普通内容节点，不改变内置构造器集合（节点模型见 #<vault::designs::pipeline::evaluate/Call 与 Node>）。

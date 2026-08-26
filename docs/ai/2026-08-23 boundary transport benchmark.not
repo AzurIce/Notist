@@ -1,6 +1,6 @@
 = 边界传输方案基准：JSON vs postcard vs typed-WIT arena
 
-本文是插件 ABI 边界表示的三方性能基准与方案裁决，回应 [[vault::ai::2026-08-22 plugin form and unified ir roadmap]] 遗留的「codec 演进」问题：JSON（现状）、postcard（二进制 serde）、typed-WIT arena（canonical ABI 直通）到底选谁。实证代码位于 `/tmp/opencode/codec-bench`。
+本文是插件 ABI 边界表示的三方性能基准与方案裁决，回应 #<vault::ai::2026-08-22 plugin form and unified ir roadmap> 遗留的「codec 演进」问题：JSON（现状）、postcard（二进制 serde）、typed-WIT arena（canonical ABI 直通）到底选谁。实证代码位于 `/tmp/opencode/codec-bench`。
 
 == 方法
 

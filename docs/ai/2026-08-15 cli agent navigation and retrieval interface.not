@@ -1,6 +1,6 @@
 = CLI Agent Navigation and Retrieval Interface
 
-本文是 dated research：调查 Notist CLI 面向 Agent 的最佳接口形式。它不替代 [[vault::designs::host::cli-command-surface-skill-distribution]] 与 [[vault::designs::host::query-contract]]；本文的结论是它们的下一轮增量修订建议，以及对当前实现的可复现实测记录。最终稳定接口仍以 [[vault::cli]] 与当前 `notist --help` 为准。
+本文是 dated research：调查 Notist CLI 面向 Agent 的最佳接口形式。它不替代 #<vault::designs::host::cli-command-surface-skill-distribution> 与 #<vault::designs::host::query-contract>；本文的结论是它们的下一轮增量修订建议，以及对当前实现的可复现实测记录。最终稳定接口仍以 #<vault::cli> 与当前 `notist --help` 为准。
 
 == 摘要
 
@@ -23,15 +23,15 @@ status -> modules -> search -> outline -> read -> references -> check -> edit
 
 === Notist 仓库内先例
 
-- [[vault::ai::2026-07-26 agent-friendly CLI output and Notist improvements]]：720 次 Agent run 成本取证；确立“普通查询必须硬上界，全量只能显式 export”的产品原则。
-- [[vault::ai::2026-07-27 agent-facing CLI and MCP interface redesign]]：把成本取证收束为统一 PageRequest/QueryPage、cursor、selector、typed error 与 CLI/MCP 分工。
-- [[vault::ai::2026-07-27 cli token cost and search ergonomics evaluation]]：默认预算从 20×512B 收紧到 8×256B，引入 source/section/match grouping；同一 query 从 23,974 B 降到 6,647 B。
-- [[vault::ai::2026-08-14 implementation design audit and rulings]]：确认 service/CLI 层已对齐设计序列，并完成 RefTarget、标题默认 id、cursor v3、MCP 移除等收敛。
-- [[vault::ai::2026-08-15 design record separation audit]]：设计文档完成 L/V/A 分离；本报告基于分离后的 D0023/D0024/D0032/D0035/D0036。
-- [[vault::designs::host::query-contract]]：ordinary query / human rendering / full export 三形态，PageRequest 与 selector/cursor 契约。
-- [[vault::designs::host::cli-command-surface-skill-distribution]]：当前 CLI 命令面、Skill 分发与 docs-as-Vault。
-- [[vault::designs::host::search-retrieval-index]]：四 search mode、字段权重、SearchUnit、Tantivy 索引边界。
-- [[vault::designs::host::client-interface-protocol]]：core request 到 CLI/LSP 的投影，snapshot 与写入前置条件。
+- #<vault::ai::2026-07-26 agent-friendly CLI output and Notist improvements>：720 次 Agent run 成本取证；确立“普通查询必须硬上界，全量只能显式 export”的产品原则。
+- #<vault::ai::2026-07-27 agent-facing CLI and MCP interface redesign>：把成本取证收束为统一 PageRequest/QueryPage、cursor、selector、typed error 与 CLI/MCP 分工。
+- #<vault::ai::2026-07-27 cli token cost and search ergonomics evaluation>：默认预算从 20×512B 收紧到 8×256B，引入 source/section/match grouping；同一 query 从 23,974 B 降到 6,647 B。
+- #<vault::ai::2026-08-14 implementation design audit and rulings>：确认 service/CLI 层已对齐设计序列，并完成 RefTarget、标题默认 id、cursor v3、MCP 移除等收敛。
+- #<vault::ai::2026-08-15 design record separation audit>：设计文档完成 L/V/A 分离；本报告基于分离后的 D0023/D0024/D0032/D0035/D0036。
+- #<vault::designs::host::query-contract>：ordinary query / human rendering / full export 三形态，PageRequest 与 selector/cursor 契约。
+- #<vault::designs::host::cli-command-surface-skill-distribution>：当前 CLI 命令面、Skill 分发与 docs-as-Vault。
+- #<vault::designs::host::search-retrieval-index>：四 search mode、字段权重、SearchUnit、Tantivy 索引边界。
+- #<vault::designs::host::client-interface-protocol>：core request 到 CLI/LSP 的投影，snapshot 与写入前置条件。
 
 === 外部对照（转引自上述 dated notes）
 
@@ -46,7 +46,7 @@ status -> modules -> search -> outline -> read -> references -> check -> edit
 
 === 方法
 
-- 审计当前 `crates/notist-cli`、`crates/notist-service` 与 [[vault::cli]] 的一致性。
+- 审计当前 `crates/notist-cli`、`crates/notist-service` 与 #<vault::cli> 的一致性。
 - 用加入本文前的 75 source docs Vault 实测所有普通命令的 JSON envelope 大小与典型耗时。
 - 模拟 6 个 Agent 查询轨迹和 14 个“概念 -> 设计文档”检索查询，记录目标模块排名。
 - 与 `ls`/`find`/`grep` 的同任务输出字节数对照，说明结构信息与 token 成本的关系。
@@ -71,7 +71,7 @@ status -> modules -> search -> outline -> read -> references -> check -> edit
 
 === 命令面
 
-当前命令面与 [[vault::designs::host::cli-command-surface-skill-distribution]] 基本一致：
+当前命令面与 #<vault::designs::host::cli-command-surface-skill-distribution> 基本一致：
 
 ```text
 status [ROOT]
@@ -171,7 +171,7 @@ D0016 core type system             1
 
 === G1 标题默认 id 的节范围错误
 
-`read 'vault::designs::language::property-table#属性表'` 当前只返回标题行（byte range 237..249），而不是 [[vault::designs::host::cli-command-surface-skill-distribution]] 承诺的“对应节”。根因是标题默认 id 的 scope range 来自 heading range 本身，没有展开到下一个同级/上级 heading 前的节子树；`references --direction outgoing` 使用同一 selection，因此对节的选择也会漏掉节内引用。修复应在 core 复用 outline 已经计算的 subtree range：heading default id 的 selection = 标题起点 .. 下一同级或更高级 heading 起点（或 module 末尾）；显式 scope id 继续使用 annotation 的 scope_range。
+`read 'vault::designs::language::property-table#属性表'` 当前只返回标题行（byte range 237..249），而不是 #<vault::designs::host::cli-command-surface-skill-distribution> 承诺的“对应节”。根因是标题默认 id 的 scope range 来自 heading range 本身，没有展开到下一个同级/上级 heading 前的节子树；`references --direction outgoing` 使用同一 selection，因此对节的选择也会漏掉节内引用。修复应在 core 复用 outline 已经计算的 subtree range：heading default id 的 selection = 标题起点 .. 下一同级或更高级 heading 起点（或 module 末尾）；显式 scope id 继续使用 annotation 的 scope_range。
 
 === G2 多概念 AND 作用在 unit 而非 module
 
@@ -259,7 +259,7 @@ edit        如何安全变更
 
 === 命令面增量
 
-在 [[vault::designs::host::cli-command-surface-skill-distribution]] 的命令面上做最小增量：
+在 #<vault::designs::host::cli-command-surface-skill-distribution> 的命令面上做最小增量：
 
 ```text
 search <QUERY> [ROOT]
@@ -294,7 +294,7 @@ bm25-v4
   cursor fingerprint    包含 ranking/index/tokenizer/schema version
 ```
 
-公开语义仍与 [[vault::designs::host::search-retrieval-index]] 一致：lexical 是 fielded token match + BM25，默认 `operator=all`；只是把“all 作用域”从 unit 修正为 module candidate，并把排序依据从单个 unit document 改成 module 聚合。exact/fuzzy/regex 的模式语义不变。
+公开语义仍与 #<vault::designs::host::search-retrieval-index> 一致：lexical 是 fielded token match + BM25，默认 `operator=all`；只是把“all 作用域”从 unit 修正为 module candidate，并把排序依据从单个 unit document 改成 module 聚合。exact/fuzzy/regex 的模式语义不变。
 
 === Output schema v3 的边界
 
@@ -336,7 +336,7 @@ bm25-v4
 
 - G7：公开 SnapshotStamp 去 canonical root。
 - outline/read 单源 context 去重；benchmark 证明字节下降且 pass@1 不降。
-- 在固定任务、固定模型、固定 seed 上重跑 [[vault::ai::2026-07-26 agent-friendly CLI output and Notist improvements]] 式成本验收；不把 bytes/4 当账单 token。
+- 在固定任务、固定模型、固定 seed 上重跑 #<vault::ai::2026-07-26 agent-friendly CLI output and Notist improvements> 式成本验收；不把 bytes/4 当账单 token。
 
 == 验收
 

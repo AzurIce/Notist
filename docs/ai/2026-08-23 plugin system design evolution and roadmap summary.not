@@ -1,6 +1,6 @@
 = 插件系统设计演进与实施路线总结
 
-本文完整梳理 2026-08-22/23 两日会话中插件系统的**设计意图演进**、**全部设计变更裁决**，以及对应的**实施路线完成状态**。它是这一阶段的收口文档：规范性现状以 [[vault::designs::plugin-system]] 为准；逐日过程记录见 [[vault::ai::2026-08-22 plugin form and unified ir roadmap]] 与 [[vault::ai::2026-08-23 boundary transport benchmark]]；本文回答「我们为什么走到这里、走到了哪里、还剩什么」。
+本文完整梳理 2026-08-22/23 两日会话中插件系统的**设计意图演进**、**全部设计变更裁决**，以及对应的**实施路线完成状态**。它是这一阶段的收口文档：规范性现状以 #<vault::designs::plugin-system> 为准；逐日过程记录见 #<vault::ai::2026-08-22 plugin form and unified ir roadmap> 与 #<vault::ai::2026-08-23 boundary transport benchmark>；本文回答「我们为什么走到这里、走到了哪里、还剩什么」。
 
 == 设计意图的演进（六次关键转向）
 

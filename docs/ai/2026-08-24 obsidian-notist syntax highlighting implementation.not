@@ -1,6 +1,6 @@
 = obsidian-notist 语法高亮实现记录
 
-承接 [[vault::obsidian-notist::highlight]] 的方案：tree-sitter-notist 语法经 web-tree-sitter 在插件内运行，captures 映射为 CM6 mark decoration。实现仓库 `~/Files/obsidian-notist`，obsidian CLI 实机验证。
+承接 #<vault::obsidian-notist::highlight> 的方案：tree-sitter-notist 语法经 web-tree-sitter 在插件内运行，captures 映射为 CM6 mark decoration。实现仓库 `~/Files/obsidian-notist`，obsidian CLI 实机验证。
 
 == 结构（与方案一致）
 
@@ -27,5 +27,5 @@ obsidian CLI：`plugin:reload` 后 `dev:errors` 干净；全语法面 fixture（
 
 == 参考
 
-- [[vault::obsidian-notist::highlight]]：本文实现的方案文档。
-- [[vault::ai::2026-08-24 obsidian-notist editor cm6 migration]]：编辑器内核与验证手法。
+- #<vault::obsidian-notist::highlight>：本文实现的方案文档。
+- #<vault::ai::2026-08-24 obsidian-notist editor cm6 migration>：编辑器内核与验证手法。

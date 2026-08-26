@@ -31,6 +31,6 @@ obsidian-notist 插件当前的交互契约。实现见 `obsidian-notist` 仓库
 
 == 参考
 
-- [[vault::ai::2026-08-24 obsidian-notist plugin mvp implementation]]：上述交互的实现方案、废弃弯路与踩坑记录（titleEl 遮蔽、CSS 特异性、chokepoint 选型过程）。
-- [[vault::ai::2026-08-24 obsidian-notist editor cm6 migration]]：.not 编辑器内核 CM6 化、vim 键位与样式精致化的实现与踩坑。
-- [[vault::ai::2026-08-24 obsidian plugin feasibility research]]：可行性与选型调研，含 Obsidian 双链/图谱引擎与 World 切换 UI 两个专题。
+- #<vault::ai::2026-08-24 obsidian-notist plugin mvp implementation>：上述交互的实现方案、废弃弯路与踩坑记录（titleEl 遮蔽、CSS 特异性、chokepoint 选型过程）。
+- #<vault::ai::2026-08-24 obsidian-notist editor cm6 migration>：.not 编辑器内核 CM6 化、vim 键位与样式精致化的实现与踩坑。
+- #<vault::ai::2026-08-24 obsidian plugin feasibility research>：可行性与选型调研，含 Obsidian 双链/图谱引擎与 World 切换 UI 两个专题。

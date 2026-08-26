@@ -1,7 +1,7 @@
 @![#example, status = "stable"]
 = Notist 语法示例
 
-本页简明演示 Notist 的全部基础语法与功能，可直接用 `notist preview` 预览；精确规则见 [[vault::cheatsheet]] 与 [[vault::grammar]]。
+本页简明演示 Notist 的全部基础语法与功能，可直接用 `notist preview` 预览；精确规则见 #<vault::cheatsheet> 与 #<vault::grammar>。
 
 == 标题与行内样式
 
@@ -47,9 +47,9 @@ fn main() {
 
 == Code 与标注
 
-- [[code]]：Code 模式——`#let` 绑定、lambda、运算符、String 四种形态、注释与 `#import`；
-- [[annotations]]：Scope 与标注——`@id` 锚点、`#tag`、`.class`、键值属性与模块属性。
+- #<code>：Code 模式——`#let` 绑定、lambda、运算符、String 四种形态、注释与 `#import`；
+- #<annotations>：Scope 与标注——`@id` 锚点、`#tag`、`.class`、键值属性与模块属性。
 
 == 引用
 
-[[submodule]] 相对引用；[[self::submodule#target]] 带锚点；[[vault::cheatsheet]] 绝对路径。
+#<submodule> 相对引用；#<self::submodule/target> 带锚点；#<vault::cheatsheet> 绝对路径。

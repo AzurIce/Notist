@@ -1,7 +1,7 @@
 @![implementation = "partial"]
 = Projection Contribution
 
-本文定义投影的模型：投影是 target package 注册的第二阶段规约。project 阶段在 pipeline 中的位置见 [[vault::designs::pipeline::project]]；HTML target 的宿主渲染环境见 [[vault::designs::host::html-renderer]]。
+本文定义投影的模型：投影是 target package 注册的第二阶段规约。project 阶段在 pipeline 中的位置见 #<vault::designs::pipeline::project>；HTML target 的宿主渲染环境见 #<vault::designs::host::html-renderer>。
 
 == 投影即规约
 

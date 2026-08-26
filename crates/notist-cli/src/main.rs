@@ -156,7 +156,7 @@ enum Command {
     },
     /// Read bounded authored source by module, path, id, line, or byte range.
     Read {
-        /// Exact ModulePath, path, or `module#id` selector.
+        /// Exact ModulePath, path, `module/id`, or `path#id` selector.
         selector: String,
         #[arg(default_value = ".")]
         root: PathBuf,
@@ -171,7 +171,7 @@ enum Command {
     },
     /// Find references to a logical module.
     References {
-        /// Exact ModulePath or `module#id` selector.
+        /// Exact ModulePath or `module/id` selector.
         selector: String,
         #[arg(default_value = ".")]
         root: PathBuf,

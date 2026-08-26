@@ -1,6 +1,6 @@
 = obsidian-notist LSP 客户端实现记录
 
-obsidian-notist 插件接入 notist LSP 的实现记录（2026-08-26），方案见 [[vault::obsidian-notist::lsp]]，server 侧行为依据 [[vault::ai::2026-08-25 notist lsp audit follow-up]] 核实过的 main @ 39f6086。实现范围超出原「落地顺序」的前两步：diagnostics、completion、hover、definition 四项一次落地（references/symbols 仍留给语义面板阶段）。
+obsidian-notist 插件接入 notist LSP 的实现记录（2026-08-26），方案见 #<vault::obsidian-notist::lsp>，server 侧行为依据 #<vault::ai::2026-08-25 notist lsp audit follow-up> 核实过的 main @ 39f6086。实现范围超出原「落地顺序」的前两步：diagnostics、completion、hover、definition 四项一次落地（references/symbols 仍留给语义面板阶段）。
 
 == 结构
 
@@ -34,7 +34,7 @@ obsidian-notist 插件接入 notist LSP 的实现记录（2026-08-26），方案
 - references/document symbol/workspace symbol 的 UI（等 explorer/backlinks/graph 的语义面板阶段）。
 - hover 内容是 Markdown 但按纯文本渲染（MarkdownRenderer 属 md world）。
 - Mod-Click 跳转、诊断面板（`openLintPanel` 可用但首版未接）。
-- server 侧已知残留（daemon 路径串行/假取消、畸形 notification 杀主循环等）见 [[vault::ai::2026-08-25 notist lsp audit follow-up]]——客户端的崩溃重启逻辑已为它们兜底。
+- server 侧已知残留（daemon 路径串行/假取消、畸形 notification 杀主循环等）见 #<vault::ai::2026-08-25 notist lsp audit follow-up>——客户端的崩溃重启逻辑已为它们兜底。
 
 == 补记（2026-08-26 当日后续）
 
@@ -43,9 +43,9 @@ obsidian-notist 插件接入 notist LSP 的实现记录（2026-08-26），方案
 - *设置文本输入 onChange 逐击键触发*：Obsidian 的 text setting 每敲一个字符就回调，直接接 setter 会拿半截 argv 反复重启 server（用户配 `nix develop` 时的连番 exit 101 一半是这个）。修复：settings 层统一 800ms 防抖。
 - *cwd 语义*：第一版加了「working directory」设置，被指出概念混淆——LSP server 的 cwd 应该是 workspace（vault 根），`cargo run` 需要 repo 目录是*启动器*的需求。定稿：spawn cwd 固定 vault 根（LSP 惯例），启动器需求写进 argv（`--manifest-path`）；`nix develop <flake> -c` 和 `direnv exec <dir>` 都*不会* cd 到目录，这是 exit 101 的另一半根因（cargo 在 Obsidian 的 cwd 即 `$HOME` 找不到 Cargo.toml）。
 - *快速连续 restartLsp 双开 server*：设置连改时 startLsp 未串行，泄漏了一个无 session 对应的 server 进程。修复：`lspStarting` 守卫 + restartLsp 全程 await。
-- *stderr 不可见*：exit 101 排障全靠猜因为 stderr 只进 console.debug；session 现在留 4KB stderr 环形缓冲，error 态 detail 带末三行（Notice 与 console.error 均可见）。同日 notist 侧把协议拒绝改为 `window/logMessage` 推送（见 [[vault::ai::2026-08-25 notist lsp audit follow-up]]），客户端 session 同步接入：logMessage 按级别进 console，之前「违规静默失步」的不对称闭合。
+- *stderr 不可见*：exit 101 排障全靠猜因为 stderr 只进 console.debug；session 现在留 4KB stderr 环形缓冲，error 态 detail 带末三行（Notice 与 console.error 均可见）。同日 notist 侧把协议拒绝改为 `window/logMessage` 推送（见 #<vault::ai::2026-08-25 notist lsp audit follow-up>），客户端 session 同步接入：logMessage 按级别进 console，之前「违规静默失步」的不对称闭合。
 
 == 参考
 
-- [[vault::obsidian-notist::lsp]]：设计方案本文档（含 server 行为约束与降级策略）。
-- [[vault::ai::2026-08-24 obsidian-notist editor cm6 migration]]：Compartment 热切换与 update 周期 dispatch 异常的先例（本次 setLspExtension 沿用同款模式）。
+- #<vault::obsidian-notist::lsp>：设计方案本文档（含 server 行为约束与降级策略）。
+- #<vault::ai::2026-08-24 obsidian-notist editor cm6 migration>：Compartment 热切换与 update 周期 dispatch 异常的先例（本次 setLspExtension 沿用同款模式）。

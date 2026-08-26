@@ -66,6 +66,10 @@ pub enum ExpressionKind {
         module: ModuleReference,
         selectors: Vec<ImportSelector>,
     },
+    /// A static reference target literal `<path[/label]>`: a vault module
+    /// path plus an optional module-local selector. External urls are
+    /// rejected by the literal grammar and must use a `String`.
+    Target(Box<notist_model::WikiReference>),
     LetFunction(Box<UserFunctionDefinition>),
     Parenthesized(Box<Expression>),
     /// A recoverable invalid expression retained in the tree.

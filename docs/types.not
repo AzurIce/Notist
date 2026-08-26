@@ -1,6 +1,6 @@
 = Type System
 
-本文定义当前工具保证的类型与求值模型。精确语法见 [[vault::grammar]]，内置构造器签名见 [[vault::functions]]，日常速查见 [[vault::cheatsheet]]。完整设计见 [[vault::designs::language::type-system]]（类型）、[[vault::designs::language::call-model]]（调用模型）、[[vault::designs::language::property-table]]（属性表）与 [[vault::designs::pipeline::evaluate]]（求值模型）。
+本文定义当前工具保证的类型与求值模型。精确语法见 #<vault::grammar>，内置构造器签名见 #<vault::functions>，日常速查见 #<vault::cheatsheet>。完整设计见 #<vault::designs::language::type-system>（类型）、#<vault::designs::language::call-model>（调用模型）、#<vault::designs::language::property-table>（属性表）与 #<vault::designs::pipeline::evaluate>（求值模型）。
 
 == 三个阶段
 
@@ -104,7 +104,7 @@ core::*           # 内置节点：core::text / core::heading / core::callout / 
 {package}::*      # 插件节点：插件元素就是普通内容节点
 ```
 
-不存在封闭的元素集合：封闭的只是注册侧——`core::*` 的 handler 永远由宿主提供；没有 handler 的名字不被规约触碰，它自己就是终态内容。内置构造器以 first-class 函数的形式存在——`callout(kind: ..., body: ...)` 产生一个 `core::callout` 节点，其类型就是 `Content`；用户函数与内置构造器因此同构，渲染与查询按节点身份消费结果，不区分来源。节点名字词表的具体分类见 [[vault::designs::pipeline::evaluate#Call 与 Node]]。
+不存在封闭的元素集合：封闭的只是注册侧——`core::*` 的 handler 永远由宿主提供；没有 handler 的名字不被规约触碰，它自己就是终态内容。内置构造器以 first-class 函数的形式存在——`callout(kind: ..., body: ...)` 产生一个 `core::callout` 节点，其类型就是 `Content`；用户函数与内置构造器因此同构，渲染与查询按节点身份消费结果，不区分来源。节点名字词表的具体分类见 #<vault::designs::pipeline::evaluate/Call 与 Node>。
 
 == 插入规则
 
@@ -146,7 +146,7 @@ Function 不能插入，产生诊断
 }
 ```
 
-每个 Module 独立求值后，这三者成为 ModuleResult；bindings 可被其他 Module import，content 供渲染与查询消费，annotations 是标注与模块元数据的唯一入口。见 [[vault::designs::world::module-result]]。
+每个 Module 独立求值后，这三者成为 ModuleResult；bindings 可被其他 Module import，content 供渲染与查询消费，annotations 是标注与模块元数据的唯一入口。见 #<vault::designs::world::module-result>。
 
 === 成型
 
@@ -156,7 +156,7 @@ Function 不能插入，产生诊断
 
 属性（标注）在求值期绑定到值，求值收尾转写为旁置的属性表：以元素序列区间为键、属性集为值的映射。树不携带属性——属性是位置注解，与结构解耦。三类条目：元素条目（实元素上的属性 → 单元素区间）、区间条目（透明 scope 溶解后的属性与身份 → 内容覆盖的区间）、节条目（修饰节头部 heading 的属性 → 该节覆盖的区间）。
 
-属性是值的属性：绑定在值上的属性随值复制——`#let alert = [注意]@wip` 后 `#alert #alert` 产生两个元素个体，属性表里有两条 `wip` 条目。标注语法见 [[vault::designs::language::annotation-syntax]]。
+属性是值的属性：绑定在值上的属性随值复制——`#let alert = [注意]@wip` 后 `#alert #alert` 产生两个元素个体，属性表里有两条 `wip` 条目。标注语法见 #<vault::designs::language::annotation-syntax>。
 
 == 诊断与恢复
 

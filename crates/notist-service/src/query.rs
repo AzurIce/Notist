@@ -151,12 +151,20 @@ pub enum Selector {
 
 impl Selector {
     pub fn parse(value: &str) -> Self {
-        let (head, label) = value
-            .split_once('#')
-            .map_or((value, None), |(head, label)| {
-                (head, Some(label.to_owned()))
-            });
-        if head == "vault" || head.starts_with("vault::") {
+        // Module selectors use the source-level `/` label separator:
+        // `vault::guide/install`. Path selectors keep `#` because `/` is the
+        // filesystem separator: `docs/guide.not#install`.
+        let module_style = value == "vault" || value.starts_with("vault::");
+        let (head, label) = if module_style {
+            value
+                .split_once('/')
+                .map_or((value, None), |(head, label)| (head, Some(label.to_owned())))
+        } else {
+            value
+                .split_once('#')
+                .map_or((value, None), |(head, label)| (head, Some(label.to_owned())))
+        };
+        if module_style {
             Self::Module {
                 module: head.to_owned(),
                 label,

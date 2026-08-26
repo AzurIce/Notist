@@ -220,6 +220,7 @@ impl SymbolResolver {
                 self.resolve_expression(left);
                 self.resolve_expression(right);
             }
+            ExpressionKind::Target(_) => {}
             ExpressionKind::Unary { operand, .. } => {
                 self.resolve_expression(operand);
             }
@@ -462,16 +463,7 @@ impl Checker<'_> {
             if let notist_syntax::MarkupItem::Embedded(embedded) = item {
                 let checked = self.type_of_expression(&embedded.expression);
                 if let Some(ty) = checked.ty {
-                    let insertable = matches!(
-                        &ty,
-                        Type::Content
-                            | Type::String
-                            | Type::None
-                            | Type::Int
-                            | Type::Float
-                            | Type::Bool
-                            | Type::Inferred
-                    );
+                    let insertable = Self::type_insertable(&ty);
                     if !insertable {
                         self.push(
                             DiagnosticKind::TypeMismatch,
@@ -483,6 +475,22 @@ impl Checker<'_> {
             }
         }
     }
+
+fn type_insertable(ty: &Type) -> bool {
+    match ty {
+        Type::Content
+        | Type::String
+        | Type::None
+        | Type::Int
+        | Type::Float
+        | Type::Bool
+        | Type::Target
+        | Type::Inferred => true,
+        Type::Optional(inner) => Self::type_insertable(inner),
+        Type::Union(members) => members.iter().all(Self::type_insertable),
+        Type::Function => false,
+    }
+}
 
     /// Statically types an expression, recording diagnostics along the way.
     ///
@@ -496,6 +504,7 @@ impl Checker<'_> {
             ExpressionKind::Int(_) => CheckedType::known(Type::Int),
             ExpressionKind::Float(_) => CheckedType::known(Type::Float),
             ExpressionKind::String(_) => CheckedType::known(Type::String),
+            ExpressionKind::Target(_) => CheckedType::known(Type::Target),
             ExpressionKind::Content(block) => {
                 self.check_markup(&block.markup);
                 CheckedType::known(Type::Content)
@@ -1268,7 +1277,7 @@ mod tests {
         let source = concat!(
             "#let greeting = \"hi\"\n",
             "#greeting #greeting\n",
-            "#import vault::extras::{echo as shout, plain}\n",
+            "#import <vault::extras>::{echo as shout, plain}\n",
             "#let twice = (n: Int) => {\n",
             "  let doubled = n * 2\n",
             "  doubled\n",

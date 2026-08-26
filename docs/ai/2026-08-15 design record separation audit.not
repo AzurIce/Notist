@@ -1,12 +1,12 @@
 = Design Record 分层分离审计
 
 #callout(kind="note", title=[文档定位])[
-本文是 dated audit：审查 [[vault::designs]] 当前设计稿与 [[vault::designs]] 分层地图之间是否做到“一部分一篇、单一真相”。它记录结论与拆分建议，不替代分层地图。
+本文是 dated audit：审查 #<vault::designs> 当前设计稿与 #<vault::designs> 分层地图之间是否做到“一部分一篇、单一真相”。它记录结论与拆分建议，不替代分层地图。
 ]
 
 == 审查方法
 
-- 以 [[vault::designs]] 的 L/V/A 地图为唯一分层真相；
+- 以 #<vault::designs> 的 L/V/A 地图为唯一分层真相；
 - 逐篇提取标题树，判断一篇内是否承载多个可独立修订的主题；
 - grep 关键定义在 D 编号之间的重复（嵌入边界、形参形态、属性表语义、scope id、RefTarget、查询契约等）；
 - 区分：已分离、部分分离、未分离、可归档。
@@ -104,22 +104,22 @@
 
 == 审计后索引修正
 
-本次审计修正了 [[vault::designs]] 中两处：
+本次审计修正了 #<vault::designs> 中两处：
 - L2 集合类型不再宣称包含 rest/实参交错（那属于 L4/D0015）；
 - L4 调用模型已指向 D0015，计划中的“待独立成篇”移除。
 
 == 执行状态（审计后补充）
 
-- D0002 已完成拆分：核心类型系统 → [[vault::designs::language::type-system]]；属性表 → [[vault::designs::language::property-table]]；D0002 保留全部 anchor 作 redirect；D0006 属性语义半边同步收编入 D0017。
-- D0006 已完成三向拆分：scope 语法 → [[vault::designs::language::markup-surface]]；标注语法 → [[vault::designs::language::annotation-syntax]]；属性语义 → [[vault::designs::language::property-table]]；D0006 保留全部 anchor 作 redirect。
+- D0002 已完成拆分：核心类型系统 → #<vault::designs::language::type-system>；属性表 → #<vault::designs::language::property-table>；D0002 保留全部 anchor 作 redirect；D0006 属性语义半边同步收编入 D0017。
+- D0006 已完成三向拆分：scope 语法 → #<vault::designs::language::markup-surface>；标注语法 → #<vault::designs::language::annotation-syntax>；属性语义 → #<vault::designs::language::property-table>；D0006 保留全部 anchor 作 redirect。
 - 分层索引已同步：L2 → D0016、L7 → D0017、L8 → D0018；L1 范围补入 scope 书写形态。
-- D0004 已完成 V1–V4 拆分：Vault → [[vault::designs::world::boundary-discovery]]；Module/ModuleResult → [[vault::designs::world::module-result]]；import → [[vault::designs::world::import]]；引用与 RefTarget → [[vault::designs::world::reference-ref-target]]。D0004 保留全部 anchor 作 redirect。
-- D0008 已完成 A2/A4 拆分：查询契约 → [[vault::designs::host::query-contract]]；检索语义与索引 → [[vault::designs::host::search-retrieval-index]]；CLI/Skill → [[vault::designs::host::cli-command-surface-skill-distribution]]。D0008 保留全部 anchor 作 redirect。
-- D0009 已完成 A1/A5 拆分：Analyzer/Snapshot → [[vault::designs::host::analyzer-snapshot]]；LSP → [[vault::designs::host::lsp-adapter]]；CLI 适配归入 D0024。D0009 保留全部 anchor 作 redirect。
-- D0010 已完成 A6/A7 拆分：HTML 渲染 → [[vault::designs::host::html-renderer]]；构建/预览 → [[vault::designs::host::build-preview]]。D0010 保留全部 anchor 作 redirect。
+- D0004 已完成 V1–V4 拆分：Vault → #<vault::designs::world::boundary-discovery>；Module/ModuleResult → #<vault::designs::world::module-result>；import → #<vault::designs::world::import>；引用与 RefTarget → #<vault::designs::world::reference-ref-target>。D0004 保留全部 anchor 作 redirect。
+- D0008 已完成 A2/A4 拆分：查询契约 → #<vault::designs::host::query-contract>；检索语义与索引 → #<vault::designs::host::search-retrieval-index>；CLI/Skill → #<vault::designs::host::cli-command-surface-skill-distribution>。D0008 保留全部 anchor 作 redirect。
+- D0009 已完成 A1/A5 拆分：Analyzer/Snapshot → #<vault::designs::host::analyzer-snapshot>；LSP → #<vault::designs::host::lsp-adapter>；CLI 适配归入 D0024。D0009 保留全部 anchor 作 redirect。
+- D0010 已完成 A6/A7 拆分：HTML 渲染 → #<vault::designs::host::html-renderer>；构建/预览 → #<vault::designs::host::build-preview>。D0010 保留全部 anchor 作 redirect。
 - D0001 的 `#` 嵌入边界已迁入 D0007；D0001 降为纯阅读入口，不再承载规范。
-- V5 已起草：core namespace / prelude / Custom 契约 / capability / 插件边界 / Notist.toml 配置模型 → [[vault::designs::world::core-namespace-plugin-boundary]]；第一代 `vault::old-designs::archive::D0004-core-functions-and-syntax-sugar` 已移入 archive。
-- D0003 已拆分 L9 双主题：内置构造器 → [[vault::designs::plugin-system::core]]；Markup 语法糖 → [[vault::designs::language::syntax-sugar]]。D0003 已移入 `vault::designs::archive`。
+- V5 已起草：core namespace / prelude / Custom 契约 / capability / 插件边界 / Notist.toml 配置模型 → #<vault::designs::world::core-namespace-plugin-boundary>；第一代 `vault::old-designs::archive::D0004-core-functions-and-syntax-sugar` 已移入 archive。
+- D0003 已拆分 L9 双主题：内置构造器 → #<vault::designs::plugin-system::core>；Markup 语法糖 → #<vault::designs::language::syntax-sugar>。D0003 已移入 `vault::designs::archive`。
 
 == 完成判定（审计后补充）
 
@@ -137,19 +137,19 @@
 
 == Round 4 复核
 
-- L9 双主题继续拆分：内置构造器 → [[vault::designs::plugin-system::core]]；Markup 语法糖 → [[vault::designs::language::syntax-sugar]]；D0003 redirect 壳已归档。
-- A2 双主题继续拆分：查询契约保留 [[vault::designs::host::query-contract]]；Search 四模式、Scope/Excerpt/分组、检索单元与索引 → [[vault::designs::host::search-retrieval-index]]。
+- L9 双主题继续拆分：内置构造器 → #<vault::designs::plugin-system::core>；Markup 语法糖 → #<vault::designs::language::syntax-sugar>；D0003 redirect 壳已归档。
+- A2 双主题继续拆分：查询契约保留 #<vault::designs::host::query-contract>；Search 四模式、Scope/Excerpt/分组、检索单元与索引 → #<vault::designs::host::search-retrieval-index>。
 - active designs 现为 D0001、D0005、D0007、D0011–D0032；无待拆分标记。
 - 验证：`notist check docs` 0 diagnostics / 71 sources；`notist build docs` 71 pages；`cargo test --workspace` 233 passed + 15 ignored。
 
 == Round 5 复核
 
-- L1 双模式继续拆分：Markup/scope 表面语法 → [[vault::designs::language::markup-surface]]；Code 核心语法 → [[vault::designs::language::code-grammar]]；D0007 已移入 `vault::designs::archive`。
+- L1 双模式继续拆分：Markup/scope 表面语法 → #<vault::designs::language::markup-surface>；Code 核心语法 → #<vault::designs::language::code-grammar>；D0007 已移入 `vault::designs::archive`。
 - 验证：`notist check docs` 0 diagnostics / 73 sources；`notist build docs` 73 pages；`cargo test --workspace` 233 passed + 15 ignored。
 
 == Round 6 复核
 
-- A3 双主题继续拆分：daemon 进程与 View → [[vault::designs::host::daemon-process-views]]；client interface、协议与生命周期 → [[vault::designs::host::client-interface-protocol]]；D0005 已移入 `vault::designs::archive`。
+- A3 双主题继续拆分：daemon 进程与 View → #<vault::designs::host::daemon-process-views>；client interface、协议与生命周期 → #<vault::designs::host::client-interface-protocol>；D0005 已移入 `vault::designs::archive`。
 - 验证：`notist check docs` 0 diagnostics / 75 sources；`notist build docs` 75 pages；`cargo test --workspace` 233 passed + 15 ignored。
 
 == Round 7 复核
@@ -176,7 +176,7 @@
 == Round 10 复核
 
 - 归档位置修正：current-generation 拆分档案不放在 `old-designs/archive/current-generation`，统一移入 `vault::designs::archive`（D0002–D0010 的 redirect 壳与目录 README）。
-- 同步更新现行 [[vault::designs]] 索引；已删除的历史设计不再保留 vault 入口，完整历史由 Git 追溯。
+- 同步更新现行 #<vault::designs> 索引；已删除的历史设计不再保留 vault 入口，完整历史由 Git 追溯。
 - 验证：`notist check docs` 0 diagnostics / 75 sources；`notist build docs` 75 pages。
 
 == Round 11 复核（最终收尾）
@@ -184,9 +184,9 @@
 - 归档稿完整性：`vault::designs::archive` 下 D0002–D0010 全部为 redirect 壳；D0003/D0005/D0007 三篇由残留全文改为保留原 heading anchors 的 redirect 壳，所有文档 ≤150 行。
 - 拆分残留修正：D0014 状态注记的语法依赖 D0033 → D0034；D0032 的出处 D0023 → 已归档 `D0008`；D0033 移除“Code 模式是本文主体 / 引用索引 / 字面量载荷”等 D0007 残留表述；D0034 的裸 `#` 嵌入边界指向 D0033；D0035 动线不再包含已移入 D0036 的 client/protocol 段落；D0023/D0024/D0026 的 core request 指向统一到 D0036。
 - 自引用与旧编号清理：D0018 不再引用自身；D0033 正文内自引用改为本文内指向；`docs/grammar.not` 引用索引 D0003/D0006/D0004 → D0031/D0018/D0033/D0022；SKILL.md 示例 D0005 → D0035。
-- README 结构：[[vault::designs]] 增加状态记号、当前世代 archive、实现切片与未来主题分区；`vault::designs::archive` 目录改为可解析的 `self::` 链接索引；`vault::old-designs::archive` 补全第一代 16 篇索引；`docs/README.not` 增加设计 archive 入口。
+- README 结构：#<vault::designs> 增加状态记号、当前世代 archive、实现切片与未来主题分区；`vault::designs::archive` 目录改为可解析的 `self::` 链接索引；`vault::old-designs::archive` 补全第一代 16 篇索引；`docs/README.not` 增加设计 archive 入口。
 - 验证：active designs 27 篇、archive 9 篇全部 ≤150 行；`notist check docs` 0 diagnostics / 75 sources；`notist build docs` 75 pages；`cargo test --workspace` 233 passed + 15 ignored；`git diff --check` 通过。
-- 遗留：统一模板的 Conformance / 已裁定待定覆盖率为 5/27（D0001 为概览，其余后续按篇补齐）；[[vault::designs::language::collection-types]] 仍为草案；table/figure 进入 current surface 的决策目前只记录在 D0030/D0031，尚无单独 dated 裁决记录。
+- 遗留：统一模板的 Conformance / 已裁定待定覆盖率为 5/27（D0001 为概览，其余后续按篇补齐）；#<vault::designs::language::collection-types> 仍为草案；table/figure 进入 current surface 的决策目前只记录在 D0030/D0031，尚无单独 dated 裁决记录。
 
 == Round 12 复核（无编号语义目录迁移）
 

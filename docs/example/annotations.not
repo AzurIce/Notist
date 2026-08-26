@@ -7,7 +7,7 @@
 
 #heading(level: 3)[显式 id 的标题]@explicit-id
 
-同模块回链 [[self#explicit-id]]；跨模块 [[vault::example::annotations#explicit-id]]。标题文本本身也是默认 id，例如 [[vault::example::annotations#标注属性]]。
+同模块回链 #<self/explicit-id>；跨模块 #<vault::example::annotations/explicit-id>。标题文本本身也是默认 id，例如 #<vault::example::annotations/标注属性>。
 
 == 标注属性
 

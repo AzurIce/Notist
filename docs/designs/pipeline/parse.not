@@ -1,7 +1,7 @@
 @![implementation = "aligned"]
 = Parse Stage
 
-本文定义 Notist 的第一阶段：把 source text 解析为 mode-aware 语法树。Markup 与 Code 的完整表面语法见 [[vault::designs::language::markup-surface]] 与 [[vault::designs::language::code-grammar]]；语法糖语义见 [[vault::designs::language::syntax-sugar]]。
+本文定义 Notist 的第一阶段：把 source text 解析为 mode-aware 语法树。Markup 与 Code 的完整表面语法见 #<vault::designs::language::markup-surface> 与 #<vault::designs::language::code-grammar>；语法糖语义见 #<vault::designs::language::syntax-sugar>。
 
 ```text
 source: String ── parse ──> Parse {
@@ -27,17 +27,16 @@ parser 默认处于 Markup 模式。Markup 扫描在遇到下列结构时切换�
 | `#expr` | 嵌入 Code 表达式，记录 scope range 与完整 range |
 | `[markup]` | Content literal；方括号内回到 Markup 模式 |
 | 反引号 / fenced raw | 保护扫描，不把内容当 Markup/Code |
-| `[[target]]` | wiki reference 字面量扫描 |
+| `#<target>` | Target 字面量扫描（`<` 到未转义 `>`） |
 | `@[...]` / `@![...]` | 属性列表，不是 Markup 内容 |
 
-Markup 与 Code 的边界规则由 [[vault::designs::language::markup-surface#嵌入的边界]] 定义；parser 只消费静态边界，不依赖函数签名判断 `[` / `-` 含义。
+Markup 与 Code 的边界规则由 #<vault::designs::language::markup-surface/嵌入的边界> 定义；parser 只消费静态边界，不依赖函数签名判断 `[` / `-` 含义。
 
 == Markup 节点
 
 ```text
 MarkupItem =
   | Text(SpannedText)
-  | Wiki(WikiLink)
   | Raw(RawLiteral)
   | Embedded(EmbeddedExpression)
   | Heading(HeadingSugar)
@@ -48,7 +47,7 @@ MarkupItem =
   | ModuleAnnotation(BlockAnnotation)
 ```
 
-- Text / Wiki / Raw / Embedded 是通用内容节点；
+- Text / Raw / Embedded 是通用内容节点；
 - Heading / Rule / List / Table 是 syntax frontend 专用糖节点，lowering 时获得 `core::*` 构造器身份；
 - BlockAnnotation 与 ModuleAnnotation 是属性挂载点，不直接成为内容节点。
 
@@ -69,9 +68,9 @@ ExpressionKind =
 
 == 受保护扫描
 
-- raw literal 的 delimiter、inline/fenced 形态与关闭规则见 [[vault::designs::language::syntax-sugar#raw]]；
-- wiki reference 的 `[[...]]` 内是字面 url，不再扫描 Markup；
-- Code 注释与 string literal 按 [[vault::designs::language::code-grammar]] 扫描，不泄漏到外层结构。
+- raw literal 的 delimiter、inline/fenced 形态与关闭规则见 #<vault::designs::language::syntax-sugar/raw>；
+- Target 字面量的 `<...>` 内是路径拼写，不再扫描 Markup；
+- Code 注释与 string literal 按 #<vault::designs::language::code-grammar> 扫描，不泄漏到外层结构。
 
 == 错误恢复
 

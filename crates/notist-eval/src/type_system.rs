@@ -21,6 +21,10 @@ pub enum Value {
     /// handler-addressed calls that re-enter the fixpoint).
     Content(Vec<Node>),
     Function(Box<FunctionValue>),
+    /// A structured reference target: a module reference plus an optional
+    /// module-local selector. Inserting a Target into Markup produces a
+    /// `core::reference` element.
+    Target(notist_model::WikiReference),
 }
 
 /// A first-class function value (D0002): a closure carrying its callable
@@ -55,6 +59,7 @@ impl Value {
             Self::String(_) => Type::String,
             Self::Content(_) => Type::Content,
             Self::Function(_) => Type::Function,
+            Self::Target(_) => Type::Target,
         }
     }
 }

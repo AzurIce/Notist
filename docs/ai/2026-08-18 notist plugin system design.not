@@ -2,7 +2,7 @@
 
 本文把 Notist 插件系统收敛为一个明确范围：插件扩展两个面——求值面与 HTML 展示面。SSG、模板、gallery、native 等多目标呈现暂不进入本设计；它们作为未来消费者，只要求本设计留下的 `target` 与 fallback 边界不被破坏。
 
-本文是调研与决策记录；现行插件系统规范见 [[vault::designs::plugin-system]]。
+本文是调研与决策记录；现行插件系统规范见 #<vault::designs::plugin-system>。
 
 == 范围声明
 

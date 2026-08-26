@@ -1,7 +1,7 @@
 @![implementation = "partial"]
 = Search Modes and Retrieval Index
 
-本文是 A2 检索语义与索引的独立成篇，从归档的历史混合文档中独立成篇。分页预算、cursor 与 selector 见 [[vault::designs::host::query-contract]]；Analyzer 与 snapshot 见 [[vault::designs::host::analyzer-snapshot]]。
+本文是 A2 检索语义与索引的独立成篇，从归档的历史混合文档中独立成篇。分页预算、cursor 与 selector 见 #<vault::designs::host::query-contract>；Analyzer 与 snapshot 见 #<vault::designs::host::analyzer-snapshot>。
 
 
 == Search 不是一种模式
@@ -15,7 +15,7 @@
 | `fuzzy` | lexical BM25 + bounded term expansion | relevance | 拼写错误（`langauge`、`WorkspaceSnaphot`） |
 | `regex` | Rust-compatible regular expression | source order | CLI 专家级源码调查 |
 
-Core query 保留四种模式：`lexical|exact|fuzzy|regex`。CLI 不再暴露 `--mode` 与 alias：lexical/fuzzy 投影为 `notist search`，exact/regex 投影为 `notist locate`；完整 CLI 参数见 [[vault::cli]]。默认 `lexical`。Lexical 不提供隐藏 query mini-language（引号、冒号、减号默认是待分词文本），默认 `operator=all`，CLI 用 `--any` 切换到 any；不做 stop-word 删除与 stemming——否则 `not`、类型名、数字和缩写会在知识库中丢失真实含义。
+Core query 保留四种模式：`lexical|exact|fuzzy|regex`。CLI 不再暴露 `--mode` 与 alias：lexical/fuzzy 投影为 `notist search`，exact/regex 投影为 `notist locate`；完整 CLI 参数见 #<vault::cli>。默认 `lexical`。Lexical 不提供隐藏 query mini-language（引号、冒号、减号默认是待分词文本），默认 `operator=all`，CLI 用 `--any` 切换到 any；不做 stop-word 删除与 stemming——否则 `not`、类型名、数字和缩写会在知识库中丢失真实含义。
 
 可检索字段（权重属于 ranking version）：
 
@@ -39,7 +39,7 @@ Exact（CLI `locate`）默认大小写敏感，`--ignore-case` 显式启用；�
 
 === Scope、Excerpt 与分组
 
-`--scope` 与 `--exclude-scope` 都接受精确绝对 ModulePath prefix，可重复：include 取并集，exclude 在 include 之后生效。匹配按段边界进行——`vault::foo` 只命中自身与 `vault::foo::*`，不命中 `vault::foobar`；完整 CLI 语义见 [[vault::cli#Selector、Scope 与 Citation]]。`--field`、scope 与访问控制在 candidate generation 前生效（Vault 外路径永远不进入 index 或 result），不能先取全 Vault 候选再过滤。
+`--scope` 与 `--exclude-scope` 都接受精确绝对 ModulePath prefix，可重复：include 取并集，exclude 在 include 之后生效。匹配按段边界进行——`vault::foo` 只命中自身与 `vault::foo::*`，不命中 `vault::foobar`；完整 CLI 语义见 #<vault::cli/Selector、Scope 与 Citation>。`--field`、scope 与访问控制在 candidate generation 前生效（Vault 外路径永远不进入 index 或 result），不能先取全 Vault 候选再过滤。
 
 ```text
 SearchHit {

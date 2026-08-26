@@ -1,6 +1,6 @@
 = Agent-friendly CLI output and Notist improvements
 
-这份调查是 [[vault::ai::2026-07-21 notist agent mcp semantic retrieval and vector indexing]] 的实证补充。前一份文档已经提出 `list_modules`、`get_context`、`top_k` 和截断标记；本轮 720 次真实 Agent run 证明，输出预算不是后续优化，而是查询协议的正确性边界。
+这份调查是 #<vault::ai::2026-07-21 notist agent mcp semantic retrieval and vector indexing> 的实证补充。前一份文档已经提出 `list_modules`、`get_context`、`top_k` 和截断标记；本轮 720 次真实 Agent run 证明，输出预算不是后续优化，而是查询协议的正确性边界。
 
 核心结论只有一句：
 

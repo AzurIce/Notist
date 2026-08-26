@@ -2742,7 +2742,7 @@ mod tests {
         let root = tempfile::TempDir::new_in(std::env::current_dir().unwrap()).unwrap();
         fs::write(
             root.path().join("README.not"),
-            "[[guide#intro]]\n\n#heading[Home]@home",
+            "#<guide/intro>\n\n#heading[Home]@home",
         )
         .unwrap();
         fs::write(
@@ -2791,7 +2791,7 @@ mod tests {
         fs::create_dir(root.path().join("images")).unwrap();
         fs::write(
             root.path().join("README.not"),
-            "= Home\n\nSee [[vault::images#logo.png]].",
+            "= Home\n\nSee #<vault::images/logo.png>.",
         )
         .unwrap();
         fs::write(

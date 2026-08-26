@@ -1,6 +1,6 @@
 = 语法高亮实现方案
 
-obsidian-notist 插件为 `.not` 编辑器接入语法高亮的设计与落地方案。编辑器内核现状（极简 CM6、无 language 扩展、vim 键位、样式约定）见 [[vault::ai::2026-08-24 obsidian-notist editor cm6 migration]]，本文承接之。
+obsidian-notist 插件为 `.not` 编辑器接入语法高亮的设计与落地方案。编辑器内核现状（极简 CM6、无 language 扩展、vim 键位、样式约定）见 #<vault::ai::2026-08-24 obsidian-notist editor cm6 migration>，本文承接之。
 
 == 决策
 
@@ -86,8 +86,8 @@ obsidian-notist 插件为 `.not` 编辑器接入语法高亮的设计与落地�
 
 == 参考
 
-- [[vault::ai::2026-08-24 obsidian-notist syntax highlighting implementation]]：本方案的实现记录与踩坑（wasm 兼容性、esbuild CJS 的 import.meta.url、UTF-16 offset、heading marker 尾空格等）。
-- [[vault::obsidian-notist::dual-world]]：插件整体交互契约。
-- [[vault::ai::2026-08-24 obsidian-notist editor cm6 migration]]：编辑器内核与样式约定，本文的挂载点。
-- [[vault::ai::2026-08-24 obsidian plugin feasibility research]]：壳/语义分层原则（语义组件不 import obsidian API）——解析层设计同样遵守。
+- #<vault::ai::2026-08-24 obsidian-notist syntax highlighting implementation>：本方案的实现记录与踩坑（wasm 兼容性、esbuild CJS 的 import.meta.url、UTF-16 offset、heading marker 尾空格等）。
+- #<vault::obsidian-notist::dual-world>：插件整体交互契约。
+- #<vault::ai::2026-08-24 obsidian-notist editor cm6 migration>：编辑器内核与样式约定，本文的挂载点。
+- #<vault::ai::2026-08-24 obsidian plugin feasibility research>：壳/语义分层原则（语义组件不 import obsidian API）——解析层设计同样遵守。
 - `zed-notist` 仓库（`~/Files/zed-notist`）：`grammars/notist.wasm`、`languages/notist/*.scm` 资产来源。

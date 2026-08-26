@@ -13,8 +13,8 @@ pub use plugin::{PluginElementDecl, PluginParamDecl};
 pub use signature::{
     DefaultValue, FunctionSignature, Parameter, Type, builtin_signatures, callout_signature,
     details_signature, empty_content_signature, figure_signature, heading_signature,
-    inline_body_signature, item_signature, raw_signature, ref_signature, table_cell_signature,
-    table_signature,
+    inline_body_signature, item_signature, link_signature, raw_signature,
+    table_cell_signature, table_signature,
 };
 
 /// A half-open byte range in a source file.
@@ -100,7 +100,7 @@ impl fmt::Display for ModulePath {
     }
 }
 
-#[derive(Clone, Debug, Eq, PartialEq)]
+#[derive(Clone, Debug, Eq, PartialEq, serde::Serialize, serde::Deserialize)]
 pub enum ModuleReference {
     Absolute(Vec<String>),
     Relative(Vec<String>),
@@ -153,7 +153,7 @@ impl std::fmt::Display for ModuleReference {
     }
 }
 
-#[derive(Clone, Debug, Eq, PartialEq)]
+#[derive(Clone, Debug, Eq, PartialEq, serde::Serialize, serde::Deserialize)]
 pub struct WikiReference {
     pub module: ModuleReference,
     pub label: Option<String>,

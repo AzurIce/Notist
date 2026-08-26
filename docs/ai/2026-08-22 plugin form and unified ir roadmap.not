@@ -1,6 +1,6 @@
 = 插件形态定型、边界表示实证与统一 IR 路线
 
-本文记录 2026-08-22 插件系统的一次集中设计收敛：插件形态从「manifest 声明 semantic」演进为「Rust crate + SDK `init` 注册自描述」，用双端 bindgen spike 实证了 WIT 递归类型的不可行与 arena 拍平的可行性（与本日 [[vault::ai::2026-08-22 wit recursive types best practices]] 的上游调查互相印证），并裁定「native rlib / wasm component 双注册通道」与三步走路线。现行插件系统规范见 [[vault::designs::plugin-system]]；本文是过程与实证记录，规范以 designs 为准。
+本文记录 2026-08-22 插件系统的一次集中设计收敛：插件形态从「manifest 声明 semantic」演进为「Rust crate + SDK `init` 注册自描述」，用双端 bindgen spike 实证了 WIT 递归类型的不可行与 arena 拍平的可行性（与本日 #<vault::ai::2026-08-22 wit recursive types best practices> 的上游调查互相印证），并裁定「native rlib / wasm component 双注册通道」与三步走路线。现行插件系统规范见 #<vault::designs::plugin-system>；本文是过程与实证记录，规范以 designs 为准。
 
 == 形态演进：init 注册即自描述
 
@@ -75,5 +75,5 @@ trait Registrar { fn element<E: ElementFn>(&mut self, e: E); }
 == 参考
 
 - 实证代码：`/tmp/opencode/wit-spike`（host/guest 双 crate + round-trip 测试）
-- 上游调查与本日互证：[[vault::ai::2026-08-22 wit recursive types best practices]]
-- 现行规范：[[vault::designs::plugin-system]]、[[vault::designs::pipeline::plugin-call-reduction]]
+- 上游调查与本日互证：#<vault::ai::2026-08-22 wit recursive types best practices>
+- 现行规范：#<vault::designs::plugin-system>、#<vault::designs::pipeline::plugin-call-reduction>

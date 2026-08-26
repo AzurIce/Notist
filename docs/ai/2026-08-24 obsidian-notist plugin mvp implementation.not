@@ -1,6 +1,6 @@
 = obsidian-notist 插件 MVP 实现记录
 
-按 [[vault::obsidian-notist]] 的「借壳架空」立项，在 `~/Files/obsidian-notist`（独立 git 仓库）实现 Obsidian 插件 MVP：双 World UI、文件树过滤、.not 纯文本编辑。不引入 LSP/notist 后端。交互契约见 [[vault::obsidian-notist::dual-world]]，本文记录实现方案与踩坑。
+按 #<vault::obsidian-notist> 的「借壳架空」立项，在 `~/Files/obsidian-notist`（独立 git 仓库）实现 Obsidian 插件 MVP：双 World UI、文件树过滤、.not 纯文本编辑。不引入 LSP/notist 后端。交互契约见 #<vault::obsidian-notist::dual-world>，本文记录实现方案与踩坑。
 
 == 技术栈与工程化
 
@@ -28,7 +28,7 @@
 
 == .not 编辑器（NotistTextView）
 
-- `registerExtensions(["not"], "notist-view")` + TextFileView：顶部内联标题 input（对齐 markdown view 的 inline title，Enter/失焦提交 `fileManager.renameFile`，Escape 还原，重名弹 Notice）+ CodeMirror 6 纯文本编辑（行号/软换行/history/可选 vim，见 [[vault::ai::2026-08-24 obsidian-notist editor cm6 migration]]）。
+- `registerExtensions(["not"], "notist-view")` + TextFileView：顶部内联标题 input（对齐 markdown view 的 inline title，Enter/失焦提交 `fileManager.renameFile`，Escape 还原，重名弹 Notice）+ CodeMirror 6 纯文本编辑（行号/软换行/history/可选 vim，见 #<vault::ai::2026-08-24 obsidian-notist editor cm6 migration>）。
 - 打开用 view registry 自然分发即可；注意 `openFile` 对已持有该文件的 leaf 不换视图（跟随改名的 markdown leaf 会被判"已打开"）——需要强制时用 `leaf.setViewState({type, state:{file}})`。
 
 == 踩坑记录（复用价值高）

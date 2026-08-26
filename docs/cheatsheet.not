@@ -1,6 +1,6 @@
 = Notist Cheatsheet
 
-这份文档汇总 Notist 当前 surface 的日常速查。语法糖只解决高频书写中构造器调用过于繁琐的问题；精确规则以 [[vault::grammar]] 为准，构造器逐一说明见 [[vault::functions]]，类型规则见 [[vault::types]]，概念介绍见 [[vault::intro]]。
+这份文档汇总 Notist 当前 surface 的日常速查。语法糖只解决高频书写中构造器调用过于繁琐的问题；精确规则以 #<vault::grammar> 为准，构造器逐一说明见 #<vault::functions>，类型规则见 #<vault::types>，概念介绍见 #<vault::intro>。
 
 == 语法糖总表
 
@@ -12,7 +12,7 @@
 + A                        → item(ordered: true, [A])
 | a | b |
 | - | - |                  → table(columns: n, header: true, [table-cell[...] ...])
-[[target#id]]              → ref("target#id")
+#<target/id>              → ref("target#id")
 *text*                     → strong([text])
 _text_                     → emph([text])
 __text__                   → underline([text])
@@ -25,7 +25,7 @@ __text__                   → underline([text])
 == 内置构造器签名
 
 ```text
-ref(url: String) -> Content
+link(target: Target | String) -> Content
 heading(level: Int = 1, trailing body: Content) -> Content
 raw(source: String, lang: String? = none, block: Bool = false) -> Content
 rule() -> Content
@@ -82,7 +82,7 @@ kind: String? =   可省略且可为 None
 == 标注速查
 
 ```text
-@id                        赋 scope id（模块内唯一，可被 [[...#id]] 引用）
+@id                        赋 scope id（模块内唯一，可被 #<.../id> 引用）
 #tag                       标签（任意多个）
 .class                     类名（任意多个）
 key = value                键值属性（String / Int / Bool 字面量）
@@ -123,7 +123,7 @@ key = value                键值属性（String / Int / Bool 字面量）
 #if 2 > 1 [对] else [错]               // if 表达式（Content 分支）
 #(1 + 2)                              // 括号嵌入完整表达式
 #{ let x = 1; x + 2 }                 // Code block
-#import self::theme::{accent as a}    // import（显式选择器，无 wildcard）
+#import <self::theme>::{accent as a}    // import（显式选择器，无 wildcard）
 ```
 
 String 四种形态：`"转义"`、`"""多行"""`（opening 后立即换行）、`r#"raw"#`、`r#"""raw 多行"""#`。
@@ -131,11 +131,11 @@ String 四种形态：`"转义"`、`"""多行"""`（opening 后立即换行）�
 == 引用与模块速查
 
 ```not
-[[setup]]                   # 裸名（当前模块解析）
-[[self::setup]]             # 当前模块
-[[super::intro]]            # 父级
-[[vault::grammar]]          # 绝对路径
-[[vault::guide#install]]    # 绝对路径 + scope id
+#<setup>                   # 裸名（当前模块解析）
+#<self::setup>             # 当前模块
+#<super::intro>            # 父级
+#<vault::grammar>          # 绝对路径
+#<vault::guide/install>    # 绝对路径 + scope id
 ```
 
 `README.not` 表示所在目录；目录只要有 `.not` 后代或资源文件后代就形成 virtual module；外部 URL 语法合法但当前渲染为未解析文本并产生 info 级诊断。

@@ -1,7 +1,7 @@
 @![implementation = "partial"]
 = Shaping Contribution
 
-本文定义插件元素如何声明成型 schema。成型算法本身由 pipeline 的 structure 阶段拥有，见 [[vault::designs::pipeline::structure]]；插件节点如何从 call 规约出来见 [[vault::designs::pipeline::plugin-call-reduction]]。
+本文定义插件元素如何声明成型 schema。成型算法本身由 pipeline 的 structure 阶段拥有，见 #<vault::designs::pipeline::structure>；插件节点如何从 call 规约出来见 #<vault::designs::pipeline::plugin-call-reduction>。
 
 == ElementDecl
 

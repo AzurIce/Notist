@@ -19,38 +19,38 @@ source
 
 | 阶段 | 输入 | 输出 | 所有者 | 详细文档 |
 |---|---|---|---|---|
-| parse | source text | `syntax::Parse` | notist-syntax | [[parse]] |
-| check | `Parse` + WorkspaceSnapshot | 已解析调用 / 类型 / Symbol identity | notist-analysis | [[vault::designs::language::type-system]] |
-| lower | 静态检查产物 | call 森林 | notist-eval | [[evaluate#Lowering：Call 的来源]] |
-| reduce | call 森林 | call 森林（不动点） | notist-eval | [[evaluate#调用规约]] |
-| structure | call 森林 | 成型后的森林 | notist-eval | [[structure]] |
-| project | 成型森林 + 属性表 + target 上下文 | target fragment | notist-html / target renderer | [[project]] |
+| parse | source text | `syntax::Parse` | notist-syntax | #<parse> |
+| check | `Parse` + WorkspaceSnapshot | 已解析调用 / 类型 / Symbol identity | notist-analysis | #<vault::designs::language::type-system> |
+| lower | 静态检查产物 | call 森林 | notist-eval | #<evaluate/Lowering：Call 的来源> |
+| reduce | call 森林 | call 森林（不动点） | notist-eval | #<evaluate/调用规约> |
+| structure | call 森林 | 成型后的森林 | notist-eval | #<structure> |
+| project | 成型森林 + 属性表 + target 上下文 | target fragment | notist-html / target renderer | #<project> |
 
 当前实现中 clean parse 的求值、成型与 HTML 投影都运行在统一 `Node` 森林上；`ElementTree` 只是成型后的 Node 容器，不存在转回 legacy `Content` / `StructuredDocument` 的生产桥接。HTML target 在渲染前使用独立的 target-side projection registry，再由 serializer 输出 HTML。
 
 == 阶段边界
 
 - **P1 只向前**：任一阶段不得反向调用前一阶段，尤其不允许 project 阶段重新 parse source。
-- **P2 单一语义真相**：值层是 call 森林与属性表；成型后的结构是它们的可重建投影（[[vault::designs::pipeline::structure#不变量]]）。
+- **P2 单一语义真相**：值层是 call 森林与属性表；成型后的结构是它们的可重建投影（#<vault::designs::pipeline::structure/不变量>）。
 - **P3 Range 稳定**：所有阶段保持 byte range 语义，诊断与属性表可以在 source、节点、target 之间互相定位。
 - **P4 错误可恢复**：parse/check/evaluate 产生诊断后继续，后续阶段仍能消费部分结果；错误不伪装成合法值。
 - **P5 确定性**：parse、check、evaluate、structure 是纯函数；project 允许读取 target 上下文，但不改变语义树。
 
 == Parse
 
-parse 把 source 变成 mode-aware 的语法树：Markup 与 Code 交替扫描，语法糖以专用节点保留。详细规则见 [[vault::designs::pipeline::parse]]；两个语法表面见 [[vault::designs::language::markup-surface]] 与 [[vault::designs::language::code-grammar]]。
+parse 把 source 变成 mode-aware 的语法树：Markup 与 Code 交替扫描，语法糖以专用节点保留。详细规则见 #<vault::designs::pipeline::parse>；两个语法表面见 #<vault::designs::language::markup-surface> 与 #<vault::designs::language::code-grammar>。
 
 == Check
 
-check 在求值前完成三件事：名称解析、类型检查、调用解析。它产出求值器唯一消费的语义输入；求值器不重新猜名字或实参绑定。详细规则见 [[vault::designs::language::type-system]]、[[vault::designs::language::scope-environment]] 与 [[vault::designs::language::call-model]]。
+check 在求值前完成三件事：名称解析、类型检查、调用解析。它产出求值器唯一消费的语义输入；求值器不重新猜名字或实参绑定。详细规则见 #<vault::designs::language::type-system>、#<vault::designs::language::scope-environment> 与 #<vault::designs::language::call-model>。
 
 == Lower
 
-lower 是 evaluate 的前半段：它消费 check 后的语法树，产出统一的 call 森林。`Call` 并不由 parser 直接产生——parse 产出 `syntax::Call` 与糖节点；lower 才把显式调用、语法糖与文档文字统一成 reduction IR。详细规则见 [[vault::designs::pipeline::evaluate#Lowering：Call 的来源]]。
+lower 是 evaluate 的前半段：它消费 check 后的语法树，产出统一的 call 森林。`Call` 并不由 parser 直接产生——parse 产出 `syntax::Call` 与糖节点；lower 才把显式调用、语法糖与文档文字统一成 reduction IR。详细规则见 #<vault::designs::pipeline::evaluate/Lowering：Call 的来源>。
 
 == Reduce
 
-reduce 是 evaluate 的后半段：声明式不动点——反复把存在 handler 的 call 替换为 handler 的输出森林，直到一整轮不再变化。规约后的森林允许 `core::parbreak` 与未归组的 `core::item`，由成型消除。插件调用、终止预算与插件 ABI 见 [[vault::designs::pipeline::plugin-call-reduction]]；完整插件 package 模型见 [[vault::designs::plugin-system]]。
+reduce 是 evaluate 的后半段：声明式不动点——反复把存在 handler 的 call 替换为 handler 的输出森林，直到一整轮不再变化。规约后的森林允许 `core::parbreak` 与未归组的 `core::item`，由成型消除。插件调用、终止预算与插件 ABI 见 #<vault::designs::pipeline::plugin-call-reduction>；完整插件 package 模型见 #<vault::designs::plugin-system>。
 
 == Structure
 
@@ -58,7 +58,7 @@ structure 是森林上的结构化重写：消费 `core::parbreak`，把连续 i
 
 == Project
 
-project 是 target 侧的第二阶段规约：target package 注册投影 handler，把语义名字规约为目标词表节点，哑 serializer 直出。详细契约见 [[vault::designs::pipeline::project]] 与 [[vault::designs::plugin-system::projection]]；HTML target 中 core 节点投影为原生标签，插件节点可以投影为 Web Component；投影层统一，但 target 结果不强制都是 Web Component。HTML 映射见 [[vault::designs::host::html-renderer]]；跨 target 投影边界见 [[vault::designs::world::core-namespace-plugin-boundary]]。
+project 是 target 侧的第二阶段规约：target package 注册投影 handler，把语义名字规约为目标词表节点，哑 serializer 直出。详细契约见 #<vault::designs::pipeline::project> 与 #<vault::designs::plugin-system::projection>；HTML target 中 core 节点投影为原生标签，插件节点可以投影为 Web Component；投影层统一，但 target 结果不强制都是 Web Component。HTML 映射见 #<vault::designs::host::html-renderer>；跨 target 投影边界见 #<vault::designs::world::core-namespace-plugin-boundary>。
 
 == 诊断流动
 

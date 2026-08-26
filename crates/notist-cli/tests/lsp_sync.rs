@@ -14,7 +14,7 @@ fn full_sync_did_change_updates_pushed_diagnostics() {
     client.notify(
         "textDocument/didOpen",
         json!({
-            "textDocument": {"uri": readme, "languageId": "notist", "version": 1, "text": "[[child]]"}
+            "textDocument": {"uri": readme, "languageId": "notist", "version": 1, "text": "#<child>"}
         }),
     );
 
@@ -40,7 +40,7 @@ fn full_sync_did_change_updates_pushed_diagnostics() {
         "textDocument/didChange",
         json!({
             "textDocument": {"uri": readme, "version": 3},
-            "contentChanges": [{"text": "[[child]]"}]
+            "contentChanges": [{"text": "#<child>"}]
         }),
     );
     let repaired = client.expect_diagnostics(

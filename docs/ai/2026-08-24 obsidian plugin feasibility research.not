@@ -1,6 +1,6 @@
 = Obsidian 插件接入方案可行性调研
 
-评估把 notist 以 Obsidian 插件形态接入的可行性：notist 侧可用资产与缺口、Obsidian 插件 API 能力边界、推荐分层架构与残余风险。结论先行：**可行，且已按「借壳架空」方向立项**，见 [[vault::obsidian-notist]]。与 [[vault::ai::2026-08-17 web ui obsidian-like editor research]] 的关系：那篇主线是自建类 Obsidian 的 Web 编辑器，本文是其 CM6/语法接入结论在 Obsidian 插件形态下的复用与补充。
+评估把 notist 以 Obsidian 插件形态接入的可行性：notist 侧可用资产与缺口、Obsidian 插件 API 能力边界、推荐分层架构与残余风险。结论先行：**可行，且已按「借壳架空」方向立项**，见 #<vault::obsidian-notist>。与 #<vault::ai::2026-08-17 web ui obsidian-like editor research> 的关系：那篇主线是自建类 Obsidian 的 Web 编辑器，本文是其 CM6/语法接入结论在 Obsidian 插件形态下的复用与补充。
 
 == notist 侧资产与缺口
 
@@ -91,4 +91,4 @@ file explorer *没有官方过滤/替换钩子*（2025-12 forum 108593、2026-01
 
 == 后续决策（2026-08-24 同日）
 
-用户拍板采用*借壳架空*定位：Obsidian 只作 GUI 外壳（容器、workspace 骨架、同步、CM6 运行时），graph/backlinks/搜索等语义能力全部由 notist 重造；两个 world 默认隔离、不堵死桥接；语义组件不得 import obsidian API 以便与自建编辑器路线复用。立项文档：[[vault::obsidian-notist]]。
+用户拍板采用*借壳架空*定位：Obsidian 只作 GUI 外壳（容器、workspace 骨架、同步、CM6 运行时），graph/backlinks/搜索等语义能力全部由 notist 重造；两个 world 默认隔离、不堵死桥接；语义组件不得 import obsidian API 以便与自建编辑器路线复用。立项文档：#<vault::obsidian-notist>。

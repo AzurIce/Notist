@@ -1,6 +1,6 @@
 = obsidian-notist 编辑器 CM6 化迁移记录
 
-承接 [[vault::ai::2026-08-24 obsidian-notist plugin mvp implementation]] 的 textarea 占位编辑器，本次聚焦编辑体验：迁移 CodeMirror 6、行号、可选 vim 键位、对齐 Zed 精致度的样式。实现仓库 `~/Files/obsidian-notist`，全程 obsidian CLI 实机迭代验证。
+承接 #<vault::ai::2026-08-24 obsidian-notist plugin mvp implementation> 的 textarea 占位编辑器，本次聚焦编辑体验：迁移 CodeMirror 6、行号、可选 vim 键位、对齐 Zed 精致度的样式。实现仓库 `~/Files/obsidian-notist`，全程 obsidian CLI 实机迭代验证。
 
 == 编辑器内核：textarea → CodeMirror 6
 

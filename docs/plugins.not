@@ -1,6 +1,6 @@
 = 插件示例：Shader
 
-本文演示 Notist 插件系统的一个 Wasm 插件包闭环：`shader` 插件是一个通过 `docs/Notist.toml` 声明加载的 WebAssembly 插件，LSP/analysis 会因此认识 `shader` 函数。 插件系统设计见 [[vault::designs::plugin-system]]。
+本文演示 Notist 插件系统的一个 Wasm 插件包闭环：`shader` 插件是一个通过 `docs/Notist.toml` 声明加载的 WebAssembly 插件，LSP/analysis 会因此认识 `shader` 函数。 插件系统设计见 #<vault::designs::plugin-system>。
 
 == 插件声明
 

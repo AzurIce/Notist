@@ -40,7 +40,7 @@ samply 剖析（11k 采样权重聚合）与此完全一致：user CPU 的约 92
 
 == 落地记录（2026-08-26 当日）
 
-修复方向 1 已落地：新增 `WorkspaceSnapshot::runtime_plugins()`——每次投影 pass（render/preview/export）调用一次，把 vault 插件包装载到快照捕获的 registry 之上并返回可共享的 `RuntimePlugins` 句柄；`structured_module_with_runtime_plugins` 改为接收该句柄逐模块复用，`RenderWorkspace` 在模块循环外构造它。命名与职责对齐 [[vault::designs::plugin-system::runtime-composition]] 的 App/composition-root 裁定：组合根留在 analysis 层，不把 App 塞进 `notist-plugin-host`（该结构被该设计显式拒绝），且满足「一次文档求值只消费已捕获的 registry」规则。
+修复方向 1 已落地：新增 `WorkspaceSnapshot::runtime_plugins()`——每次投影 pass（render/preview/export）调用一次，把 vault 插件包装载到快照捕获的 registry 之上并返回可共享的 `RuntimePlugins` 句柄；`structured_module_with_runtime_plugins` 改为接收该句柄逐模块复用，`RenderWorkspace` 在模块循环外构造它。命名与职责对齐 #<vault::designs::plugin-system::runtime-composition> 的 App/composition-root 裁定：组合根留在 analysis 层，不把 App 塞进 `notist-plugin-host`（该结构被该设计显式拒绝），且满足「一次文档求值只消费已捕获的 registry」规则。
 
 实测（docs vault，release）：wall 1.40s → 0.20–0.43s、user CPU 12.03s → 0.41s（约 -97%）、CPU 占用 882% → 112–234%、peak RSS 154MB → 90MB（余量来自整次 pass 常驻的一个 Engine + 编译产物与 registry 克隆）。功能回归：94 页 0 diagnostics，shader 组件投影正常。方向 2/3（进程级共享 Engine、编译缓存）与 Winch/Pulley 后端备选留待后续设计。
 

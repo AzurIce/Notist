@@ -1,11 +1,11 @@
 @![implementation = "aligned"]
 = Plugin ABI: Shared Types and WIT Boundary
 
-本文定义宿主与 Wasm guest 之间的共享类型与 component ABI。call 森林在 reduce 阶段的求值语义见 [[vault::designs::pipeline::plugin-call-reduction]]；package 如何声明 Wasm module 见 [[vault::designs::plugin-system::package]]。
+本文定义宿主与 Wasm guest 之间的共享类型与 component ABI。call 森林在 reduce 阶段的求值语义见 #<vault::designs::pipeline::plugin-call-reduction>；package 如何声明 Wasm module 见 #<vault::designs::plugin-system::package>。
 
 == 共享类型
 
-`Node` 是唯一的语义表示（[[vault::ai::2026-08-22 plugin form and unified ir roadmap]] 的 IR 统一裁决）；`PluginElementDecl` / `PluginParamDecl` / `DefaultValue` 是唯一的插件声明表示。它们都定义在 `notist-model` 并由宿主与 guest 直接共享，WIT 不引入声明或节点镜像。
+`Node` 是唯一的语义表示（#<vault::ai::2026-08-22 plugin form and unified ir roadmap> 的 IR 统一裁决）；`PluginElementDecl` / `PluginParamDecl` / `DefaultValue` 是唯一的插件声明表示。它们都定义在 `notist-model` 并由宿主与 guest 直接共享，WIT 不引入声明或节点镜像。
 
 - WIT 的 `init` 与 `evaluate` 都只暴露 opaque bytes `result`；
 - 每个 payload 的第一个字节是 wire version byte，其后是 postcard：`init` 承载 `Vec<PluginElementDecl>`，`evaluate` 的请求与响应承载 `Vec<Node>`；
@@ -83,7 +83,7 @@ world plugin {
 - 插件以 `notist-plugin-sdk` 编写：`Plugin::init(reg)` 注册元素，`ElementFn::reduce` 实现规约，`export_plugin!` 生成组件导出。
 - 所有可执行 Wasm package 都实例化为上述 component；宿主不保留 core Wasm dispatcher 或旧载荷转换分支。
 - JSON 只用于读取人工编辑的 `plugin.json` 信封；semantic declarations、defaults、`Node` / `Value`、request / response 全部使用共享类型的 version byte + postcard frame。
-- Component response 的大小与节点上限见 [[vault::designs::plugin-system::safety]]。
+- Component response 的大小与节点上限见 #<vault::designs::plugin-system::safety>。
 
 == 已裁定 / 待定
 

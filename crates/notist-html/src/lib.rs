@@ -362,7 +362,7 @@ fn scalar_value_string(value: &NodeValue) -> Option<String> {
         NodeValue::Int(value) => Some(value.to_string()),
         NodeValue::Float(value) => Some(value.to_string()),
         NodeValue::String(value) => Some(value.clone()),
-        NodeValue::Stream(_) | NodeValue::Array(_) => None,
+        NodeValue::Stream(_) | NodeValue::Array(_) | NodeValue::Target(_) => None,
     }
 }
 
@@ -588,11 +588,22 @@ impl Renderer<'_, '_> {
                 self.output.push('>');
             }
             "reference" => {
-                let Some(NodeValue::String(url)) = node.get("url") else {
-                    return;
-                };
-                if let Ok(reference) = notist_syntax::parse_wiki_reference(url) {
-                    self.reference_range(&reference, node.range);
+                match node.get("target") {
+                    Some(NodeValue::Target(reference)) => {
+                        self.reference_range(reference, node.range, true);
+                    }
+                    Some(NodeValue::String(url)) => {
+                        self.external_reference_range(url, node.range);
+                    }
+                    _ => {
+                        // Legacy nodes carry a raw `url` spelling.
+                        let Some(NodeValue::String(url)) = node.get("url") else {
+                            return;
+                        };
+                        if let Ok(reference) = notist_syntax::parse_wiki_reference(url) {
+                            self.reference_range(&reference, node.range, false);
+                        }
+                    }
                 }
             }
             "raw" => {
@@ -1139,7 +1150,7 @@ impl Renderer<'_, '_> {
         }
     }
 
-    fn reference_range(&mut self, reference: &WikiReference, range: TextRange) {
+    fn reference_range(&mut self, reference: &WikiReference, range: TextRange, slash: bool) {
         let target = match &reference.module {
             ModuleReference::Absolute(_) => reference.module.resolve_from(&ModulePath::root()),
             _ => self
@@ -1167,7 +1178,7 @@ impl Renderer<'_, '_> {
 
         self.range_attributes_range(range);
         self.output.push('>');
-        self.reference_text(reference);
+        self.reference_text(reference, slash);
 
         if href.is_some() {
             self.output.push_str("</a>");
@@ -1186,10 +1197,19 @@ impl Renderer<'_, '_> {
         href
     }
 
-    fn reference_text(&mut self, reference: &WikiReference) {
+    fn external_reference_range(&mut self, url: &str, range: TextRange) {
+        self.output
+            .push_str("<span class=\"notist-reference notist-reference-external\"");
+        self.range_attributes_range(range);
+        self.output.push('>');
+        escape_text(&mut self.output, url);
+        self.output.push_str("</span>");
+    }
+
+    fn reference_text(&mut self, reference: &WikiReference, slash: bool) {
         let mut text = reference.module.to_string();
         if let Some(label) = &reference.label {
-            text.push('#');
+            text.push(if slash { '/' } else { '#' });
             text.push_str(label);
         }
         escape_text(&mut self.output, &text);
@@ -2004,7 +2024,7 @@ mod tests {
 
     #[test]
     fn resolves_and_encodes_reference_links() {
-        let evaluation = evaluate("[[intro page#A B]] [[super::index]] [[vault::shared]]");
+        let evaluation = evaluate("#<intro page/A B> #<super::index> #<vault::shared>");
         let current = ModulePath::from_segments(["notes".into(), "today".into()]);
         let options = RenderOptions {
             current_module: Some(&current),
@@ -2028,7 +2048,7 @@ mod tests {
 
     #[test]
     fn leaves_relative_references_unclickable_without_a_current_module() {
-        let evaluation = evaluate("[[child]] [[vault::shared]]");
+        let evaluation = evaluate("#<child> #<vault::shared>");
 
         let html = render_element_tree(&evaluation.tree);
 
@@ -2043,8 +2063,8 @@ mod tests {
             current_module: Some(&current),
             module_url_prefix: "?module=",
         };
-        let explicit = evaluate("#ref(\"child\")");
-        let sugar = evaluate("[[child]]");
+        let explicit = evaluate("#link(<child>)");
+        let sugar = evaluate("#<child>");
         let render = |evaluation: &notist_eval::Evaluation| {
             render_element_tree_with_renderers(
                 &evaluation.tree,
@@ -2060,7 +2080,7 @@ mod tests {
 
     #[test]
     fn uses_a_caller_provided_reference_resolver() {
-        let evaluation = evaluate("[[child]] [[missing]]");
+        let evaluation = evaluate("#<child> #<missing>");
         let current = ModulePath::root();
         let options = RenderOptions {
             current_module: Some(&current),
@@ -2618,12 +2638,12 @@ mod tests {
 
     #[test]
     fn unsafe_url_references_render_without_executable_hrefs() {
-        // R10: external url references are syntactically legal; the renderer
+        // External urls live on the String branch of `link`; the renderer
         // must never emit them as clickable hrefs.
         let evaluation =
-            evaluate("[[javascript:alert(1)]] [[data:text/html,<script>alert(1)</script>]]");
+            evaluate("#link(\"javascript:alert(1)\") #link(\"data:text/html,<script>alert(1)</script>\")");
         let html = render_element_tree(&evaluation.tree);
-        assert!(html.contains("notist-reference-unresolved"));
+        assert!(html.contains("notist-reference-external"));
         assert!(!html.contains("href=\"javascript:"));
         assert!(!html.contains("href=\"data:text/html"));
         assert!(!html.contains("<script>"));
