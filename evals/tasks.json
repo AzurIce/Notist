@@ -45,6 +45,27 @@
             "desc": "names an authoritative doc"
           }
         ]
+      },
+      {
+        "id": "T5-table-constructor-section-read",
+        "prompt": "请查 notist 函数参考里 table 构造器的完整说明：表格的列数和表头分别由哪个参数控制？请给出确切参数名，并指出这份说明出现在哪篇文档中（文档文件名）。",
+        "checks": [
+          { "type": "pattern_all", "patterns": ["columns"], "desc": "columns parameter named" },
+          { "type": "pattern_all", "patterns": ["header"], "desc": "header parameter named" },
+          { "type": "pattern_any", "patterns": ["functions\\.not", "functions\\.md"], "desc": "names functions doc" }
+        ]
+      },
+      {
+        "id": "T6-cursor-continuation-rule-doc",
+        "prompt": "用 notist 检索时如果一页结果看不完，续读行为是怎么回事？这套分页与停止规则的权威设计是哪篇文档？给出文档名，以及里面讲停止规则的那一节标题。",
+        "checks": [
+          {
+            "type": "pattern_any",
+            "patterns": ["query-contract", "cli\\.md", "cli\\.not"],
+            "desc": "names an authoritative doc"
+          },
+          { "type": "pattern_all", "patterns": ["(停止|stop)"], "desc": "mentions the stop-rule section/topic" }
+        ]
       }
     ]
   }
