@@ -375,7 +375,7 @@ impl FunctionRegistry {
                     reason: RegistryErrorReason::Duplicate,
                 });
             }
-            if !contribution_names.contains(target) && self.functions.get(target).is_none() {
+            if !contribution_names.contains(target) && !self.functions.contains_key(target) {
                 return Err(RegistryError {
                     name: alias.clone(),
                     reason: RegistryErrorReason::InvalidSignature(format!(
