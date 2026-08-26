@@ -1,0 +1,52 @@
+= mermaid plugin package
+
+该目录是可分发的 Notist Wasm component 插件包，采用「Rust 校验 + 浏览器
+渲染」的混合架构：
+
+- `plugin.json` 只声明 package envelope：identity、`wasm.module` 与顶层
+  `render` contribution；
+- `semantic.wasm` 是由 `plugins/mermaid-wasm` 构建的 wasip2 component；
+  computed `mermaid` handler 在求值期用
+  https://github.com/1jehuang/mermaid-rs-renderer（mmdr）的 parser 校验
+  `source` 的合法性（坏图在 build / LSP 阶段即报诊断，不等到浏览器），
+  然后把调用规约为 data-only `mermaid::diagram` 节点，携带 `source` 与
+  `theme` 字段。不做 SVG 渲染——图表布局的燃料开销与宿主 per-call
+  预算不匹配（实测 10 节点链式 flowchart 渲染需 ~855M fuel），故渲染
+  放在浏览器端；
+- `assets/mermaid.js` 为 HTML target 提供 Web Component hydration：从
+  CDN 动态 import Mermaid v11 并在 Shadow DOM 内渲染；CDN 不可达或渲
+  染失败时回退展示源码。
+
+从 `Notist.toml` 装载：
+
+```toml
+[plugins.mermaid]
+path = "../plugins/mermaid"
+```
+
+调用形态：
+
+```not
+#mermaid(
+  source: r#"""
+flowchart LR
+  A --> B --> C
+"""#,
+)[题注]
+```
+
+签名等价于 `mermaid(source: String, theme: String = "default", trailing
+body: Content) -> Content`；`theme` 支持 Mermaid 的 `default`、`dark`、
+`neutral`、`forest`，非法取值与解析失败都产生宿主诊断。
+
+沙箱约束：每次 dispatch 受宿主 per-call fuel 预算（50M）限制；flowchart
+路径首次解析含 guest 惰性 regex 初始化（约 21M），后续常规解析在个位数
+M 内。
+
+重建 component fixture：
+
+```sh
+cd plugins/mermaid-wasm
+cargo build --target wasm32-wasip2 --release
+cp target/wasm32-wasip2/release/notist_plugin_mermaid_wasm.wasm ../mermaid/semantic.wasm
+```

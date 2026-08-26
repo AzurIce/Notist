@@ -1,0 +1,20 @@
+[package]
+name = "notist-plugin-mermaid-wasm"
+version = "0.1.0"
+edition = "2024"
+publish = false
+
+[workspace]
+
+[lib]
+crate-type = ["cdylib"]
+
+[dependencies]
+mermaid-rs-renderer = { version = "0.3.1", default-features = false }
+notist-model = { path = "../../crates/notist-model" }
+notist-plugin-sdk = { path = "../../crates/notist-plugin-sdk" }
+wit-bindgen = "0.60"
+
+[profile.release]
+opt-level = "s"
+lto = true
