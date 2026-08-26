@@ -2020,6 +2020,9 @@ fn render_workspace(
 
     // Precompute every module's annotations and label-to-anchor mapping so that
     // reference resolution and fragment rendering share one anchor assignment.
+    // Plugin packages are composed once per pass and shared by every module;
+    // per-module reloading would re-run the Wasm backend lifecycle N times.
+    let runtime_plugins = workspace.runtime_plugins();
     let mut prepared = Vec::with_capacity(modules.len());
     let mut anchor_maps = BTreeMap::new();
     let mut titles = BTreeMap::new();
@@ -2033,7 +2036,7 @@ fn render_workspace(
         let mut module_prepared = None;
         if let (Some(source_path), Some(source)) = (&module.source_path, module.source.as_deref()) {
             let structured = workspace
-                .structured_module_with_runtime_plugins(module.id)
+                .structured_module_with_runtime_plugins(module.id, &runtime_plugins)
                 .expect("source-backed modules have structured results");
             let annotations = rendered_annotations(&structured.annotations);
             let anchors = module_anchors_tree(&structured.tree, &annotations);

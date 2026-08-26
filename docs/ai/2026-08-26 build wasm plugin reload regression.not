@@ -1,0 +1,60 @@
+@![implementation = "research"]
+= 规约插件系统重构后 build 性能回归调查
+
+回应「重构基于规约的插件系统后，build 过程 CPU/内存占用大且很慢」的问题。调查基于 main @ f4b976a，对照基线取插件系统迁移前夜 ab8bc43；方法为 `/usr/bin/time` 计时对照、samply 采样剖析、探针计数与控制实验。结论先行：**回归不是求值或序列化变慢，而是 render 路径上早已存在的「每模块重载插件」设计撞上了真实 WASM 组件——一次 build 触发约 90 次 wasmtime 组件全量 cranelift 编译**。
+
+== 测量总览
+
+docs vault（89 个 `.not` 模块，`Notist.toml` 声明 `plugins.shader`），release 构建，`--no-daemon`：
+
+| 场景 | wall | user CPU | CPU% | peak RSS |
+|---|---|---|---|---|
+| ab8bc43（迁移前） | 0.12s | 0.13s | 117% | 52MB |
+| f4b976a（HEAD） | **1.40s** | **12.03s** | **882%** | **154MB** |
+| f4b976a，去掉 `[plugins.shader]` | 0.16s | 0.15s | ~100% | 43MB |
+
+控制实验（第三行）说明：同一二进制仅移除 wasm 插件声明即完全回到基线水平（甚至更低）。回归 100% 归因于 shader 组件装载，重构的其余部分（postcard ABI、core 拆分为 native 插件 crate 等）在 build 路径上性能中性。
+
+== 根因链
+
+1. `render_workspace` 对每个模块调用 `structured_module_with_runtime_plugins`（`crates/notist-service/src/request.rs:2036`）。
+2. 该函数每次都从磁盘重载全部插件包并克隆整个 FunctionRegistry（`crates/notist-analysis/src/lib.rs:1583-1623`）：`load_plugins_from_vault` → `load_package`。
+3. `load_package` → `load_component_runtime` 每次新建一个 `wasmtime::Engine` 并对组件字节做全量 cranelift JIT 编译（`crates/notist-plugin-host/src/lib.rs:746-790` 的 `Engine::new` + `WasmComponent::new`），随后实例化并跑 guest `init`。
+4. docs vault 有 89 个模块，加上 snapshot 构建自身的一次装载（`crates/notist-analysis/src/lib.rs:756`），探针实测**一次 build 共触发 90 次 `load_package`**。
+5. 自 45a5bf3 起 `plugins/shader/semantic.wasm` 从 160 字节的手写 WAT stub 变成真实的 Rust→wasip2 组件（118KB）。探针计时：单次 `WasmComponent::new` 平均 **10.8ms wall / 峰值 12.8ms**（内部 rayon 多线程编译函数体，故每次编译消耗约 130ms+ CPU）；90 次 ≈ **0.97s wall**，与总回归量吻合。`Engine::new` 本身可忽略（均值 0.01ms）。
+
+samply 剖析（11k 采样权重聚合）与此完全一致：user CPU 的约 92% 位于 wasmtime/cranelift 编译栈——`Context::compile_stencil`（56%）、`compile_function`（38%）、regalloc2 寄存器分配（22%）、egraph 优化（21%）等，且分布在 rayon worker 线程上（`Engine::run_maybe_parallel`），这正是 882% CPU 占用的来源。业务侧代码（解析、求值、HTML 投影）在剖析中几乎不可见。
+
+== 为什么重构会触发
+
+「每模块重载插件」并非新设计：ab8bc43 的 `structured_module` 就已经每次从磁盘重载并重新实例化（当时的注释即「fresh component instances rather than instances captured when the snapshot was built」）。但它长期无害，因为编译对象是 160 字节的 stub，cranelift 编译成本趋近于零。45a5bf3（unify plugin component ABI with postcard）让 shader 成为真实组件后，这一隐藏常数的量级被放大了约三个数量级；640f569 把该行为显式化为 projection 专用路径 `structured_module_with_runtime_plugins`（LSP/check 用静态路径），但 render/export 仍保持请求内逐模块重载。内存回归同理：并行编译的 arena 与 rayon 线程池是 peak RSS 154MB 的主要来源，移除插件后反而降到 43MB。
+
+== 修复方向
+
+按性价比排序：
+
+1. **请求级提升（最小改动，消除 ~99% 开销）**：`RenderWorkspace` 入口处加载一次插件、构建一个共享 runtime registry，传入逐模块求值复用。「fresh instance」语义保留在请求粒度——对「渲染期间插件不换」而言逐模块刷新本就多余。顺带消除每模块的 FunctionRegistry 全量克隆。
+2. **进程级共享 Engine**：以 `OnceLock<Engine>` 全局共享一个 `wasmtime::Engine`（fuel 配置不变）。Engine 创建本身不贵，但共享是编译缓存与 pooling allocator 的前提。
+3. **编译产物缓存**：`Component::serialize`/`deserialize_file` 按 wasm 内容 hash 键控落盘，或开启 wasmtime 磁盘缓存（`Config::cache_config`）。更进一步可在插件发布管线预编 `.cwasm` 随包分发。此项同时惠及 daemon 冷启动与 LSP snapshot 构建。
+4. 不构成问题的项（避免误伤）：per-call fuel 重置、postcard 编解码边界、`init` 自描述注册——采样中均不显著，无需改动。
+
+== 落地记录（2026-08-26 当日）
+
+修复方向 1 已落地：新增 `WorkspaceSnapshot::runtime_plugins()`——每次投影 pass（render/preview/export）调用一次，把 vault 插件包装载到快照捕获的 registry 之上并返回可共享的 `RuntimePlugins` 句柄；`structured_module_with_runtime_plugins` 改为接收该句柄逐模块复用，`RenderWorkspace` 在模块循环外构造它。命名与职责对齐 [[vault::designs::plugin-system::runtime-composition]] 的 App/composition-root 裁定：组合根留在 analysis 层，不把 App 塞进 `notist-plugin-host`（该结构被该设计显式拒绝），且满足「一次文档求值只消费已捕获的 registry」规则。
+
+实测（docs vault，release）：wall 1.40s → 0.20–0.43s、user CPU 12.03s → 0.41s（约 -97%）、CPU 占用 882% → 112–234%、peak RSS 154MB → 90MB（余量来自整次 pass 常驻的一个 Engine + 编译产物与 registry 克隆）。功能回归：94 页 0 diagnostics，shader 组件投影正常。方向 2/3（进程级共享 Engine、编译缓存）与 Winch/Pulley 后端备选留待后续设计。
+
+== 复现与测量方法
+
+```sh
+# 计时与内存（对照任意两个 commit，用 git worktree 各建 release）
+\time -v ./target/release/notist build docs --output /tmp/dist --no-daemon
+
+# samply 采样（profile 为 Firefox Profiler JSON，函数名需自行用 nm -S -U -n -C 按 RVA 解析；
+# samply 在本环境不回填符号，funcTable.name 是十六进制地址字符串）
+samply record --save-only --rate 1000 -o profile.json.gz -- \
+  ./target/release/notist build docs --output /tmp/dist --no-daemon
+
+# 装载计数探针：在 notist-plugin-host::load_package 入口临时 eprintln，
+# --format json 运行后 grep -c 统计；单次编译耗时在 load_component_runtime 内打点。
+```

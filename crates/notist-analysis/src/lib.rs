@@ -632,6 +632,20 @@ pub struct StructuredModule {
     pub annotations: Vec<notist_eval::AnnotationEntry>,
 }
 
+/// The App-side composition root handle for one projection pass (render,
+/// preview, export): plugin packages freshly loaded from disk exactly once
+/// by [`WorkspaceSnapshot::runtime_plugins`], with their handlers installed
+/// over the snapshot's captured registry.
+///
+/// This is the projection counterpart of the snapshot-time composition the
+/// design library assigns to the App: expensive backend lifecycle work
+/// (Wasm Engine creation, component compilation, guest `init`) happens once
+/// per pass here, and every module of the pass consumes this one captured
+/// environment instead of re-loading packages mid-pass.
+pub struct RuntimePlugins {
+    evaluator: Evaluator,
+}
+
 /// Semantic changes derived from two complete snapshots.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct WorkspaceDelta {
@@ -1574,15 +1588,51 @@ impl WorkspaceSnapshot {
         })
     }
 
-    /// Runtime projection variant: re-loads plugin packages from disk and
-    /// swaps them into a cloned registry so reduction dispatches against
-    /// fresh component instances rather than the instances captured when
-    /// the snapshot was built. Only explicit projection flows (preview,
-    /// build, export) may call this; ordinary queries must use
+    /// Composes the runtime plugin environment for one projection pass.
+    ///
+    /// Plugin packages are loaded from disk exactly once here — fresh Engine
+    /// and component instances against the vault's current manifest — and
+    /// installed over the snapshot's captured registry. The returned handle
+    /// is cheap to share: every module of the pass evaluates against this
+    /// single composed environment, honoring the rule that a document
+    /// evaluation consumes one captured registry instead of reloading
+    /// packages mid-pass. A failing package load degrades to the captured
+    /// registry, mirroring snapshot-build behavior.
+    pub fn runtime_plugins(&self) -> RuntimePlugins {
+        let mut registry = (*self.function_registry).clone();
+        if let Some(configuration) = self.configuration.as_deref()
+            && let Ok(plugins) =
+                notist_plugin_host::load_plugins_from_vault(&self.root, Some(configuration))
+        {
+            for plugin in &plugins {
+                for function in &plugin.functions {
+                    registry.unregister(function.name());
+                    if let Some((package, element)) = function.name().split_once("::")
+                        && let Some(alias) =
+                            notist_plugin_host::plugin_legacy_alias(package, element)
+                    {
+                        registry.unregister(&alias);
+                    }
+                }
+            }
+            let _ = notist_plugin_host::register_loaded(&mut registry, &plugins);
+        }
+        RuntimePlugins {
+            evaluator: Evaluator::new(registry),
+        }
+    }
+
+    /// Runtime projection variant of [`WorkspaceSnapshot::structured_module`]:
+    /// reduction dispatches against the fresh component instances captured by
+    /// [`WorkspaceSnapshot::runtime_plugins`] rather than the instances
+    /// captured when the snapshot was built. Only explicit projection flows
+    /// (preview, build, export) may call this, once per pass with one shared
+    /// `RuntimePlugins`; ordinary queries must use
     /// [`WorkspaceSnapshot::structured_module`].
     pub fn structured_module_with_runtime_plugins(
         &self,
         module_id: ModuleId,
+        runtime: &RuntimePlugins,
     ) -> Option<StructuredModule> {
         let module = self.module_by_id(module_id)?;
         let source = module.source.as_deref()?;
@@ -1591,27 +1641,13 @@ impl WorkspaceSnapshot {
             .get(&module_id)
             .cloned()
             .unwrap_or_default();
-        let mut runtime_registry = (*self.function_registry).clone();
-        if let Some(plugins) = self.configuration.as_deref().and_then(|configuration| {
-            notist_plugin_host::load_plugins_from_vault(&self.root, Some(configuration)).ok()
-        }) {
-            for plugin in &plugins {
-                for function in &plugin.functions {
-                    runtime_registry.unregister(function.name());
-                    if let Some((package, element)) = function.name().split_once("::")
-                        && let Some(alias) =
-                            notist_plugin_host::plugin_legacy_alias(package, element)
-                    {
-                        runtime_registry.unregister(&alias);
-                    }
-                }
-            }
-            let _ = notist_plugin_host::register_loaded(&mut runtime_registry, &plugins);
-        }
-        let evaluator = Evaluator::new(runtime_registry);
         let parse = module.parse.as_ref()?;
-        let evaluation =
-            evaluator.evaluate_parsed_with_shaping(source, parse, seeds, &self.shaping_registry);
+        let evaluation = runtime.evaluator.evaluate_parsed_with_shaping(
+            source,
+            parse,
+            seeds,
+            &self.shaping_registry,
+        );
         Some(StructuredModule {
             revision: self.revision,
             module_id,
