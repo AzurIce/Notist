@@ -1,0 +1,74 @@
+@![implementation = "partial"]
+= LSP 无头契约测试
+
+`notist lsp` 的对外行为由三层测试共同守护，每层回答不同的问题：
+
+```text
+notist-analysis 单元测试    语义算得对不对（纯 Rust API，无协议）
+lsp.rs 内联白盒             内部路径对不对（handler/session 直调，绕过协议）
+crates/notist-cli/tests/    外面看到的对不对（真实二进制 + stdio 完整协议）
+```
+
+前两层早已存在；本设计规定的是第三层——黑箱无头契约测试。它是唯一以客户端身份说话的一层：不 import 任何内部类型来构造状态、不直调任何 handler，从 `initialize` 开始与真实 server 进程对话。动因：接入侧曾只能靠人工"感受"发现问题，表面异常（诊断没刷、刷了旧的）无法定位到实现，且修复无法沉淀为回归。
+
+相关设计：被测行为见 [[vault::designs::host::lsp-adapter]]；进程模型见 [[vault::designs::host::daemon-process-views]]；本地协议见 [[vault::designs::host::client-interface-protocol]]。
+
+== 判据：规范一致与自我一致
+
+黑箱场景的断言依据有两层，缺一不可：
+
+1. *LSP 规范*——生命周期顺序、错误码分类（未知方法 `-32601`、坏参数 `-32602`）、消息 shape；
+2. *自我一致*——`server_capabilities()` 广播的每个 provider 必须真实响应且 shape 正确。capabilities 一经广播即是契约：声明了 `referencesProvider` 却从未被测试打过这个方法，等于契约无人验证（这曾是事实：references 在黑箱层出现前零覆盖）。
+
+编辑器客户端依赖的服务端行为约定——FULL sync 严格拒绝违规变更、initialize 后必有 baseline 推送、之后只发增量、didClose 清空——都必须在本层有可执行断言。契约破坏先在这里红灯，而不是在接入侧被感知。
+
+== Harness 模型
+
+每个测试独立拉起一个真实 server 与一个临时 vault：
+
+- 被测进程用 `env!("CARGO_BIN_EXE_notist")` 启动，参数 `lsp --no-daemon`（embedded 路径；daemon 双模式是第二阶段），cwd 即 vault 根，`initialize` 显式携带 rootUri/workspaceFolders；
+- 帧编解码复用 `lsp_server::Message::read/write`，不得手写 Content-Length 解析——被测对象是 server 不是传输格式；
+- 测试端 client 是唯一的共享设施（`tests/common/mod.rs`）：按 id 关联 request/response、按 method+谓词等待通知、增量捕获 stderr、Drop 时 kill 兜底。
+
+=== 确定性规则
+
+诊断是异步推送的，等待必须确定性，由此产生硬性规则：
+
+| 规则 | 防止的失败 |
+| --- | --- |
+| 不得用 sleep 同步；一切等待走带 deadline 的 expect 原语 | CI 抖动、慢机器假失败 |
+| 等待循环每轮全量扫描积压消息后，必须阻塞收包一次 | 只轮转积压会饿死收包通道，表现为无限空转 |
+| 诊断谓词须能区分推送代际：带 version 匹配，或先耗尽启动 baseline | 滞留的旧推送被误匹配为断言证据 |
+| stderr 增量读入共享缓冲 | `read_to_string` 到 EOF 才可见，活进程期间永远读不到 |
+
+其中"启动 baseline"对空 vault 也存在：server 在主循环开始时对所有文件发布一次（含空集）。这是对外契约的一部分，测试必须显式消化它。
+
+=== 夹具规则
+
+wiki 引用从嵌套模块文件解析为子模块路径（`wide.not` 里的 `[[target]]` 指向 `vault::wide::target`），只有根模块（`README.not`）解析兄弟模块。引用类场景（references/definition/hover/completion 的目标解析）的引用方必须放在根模块，否则夹具自身语义错误会被误判为 server 缺陷。
+
+== 场景目录
+
+| 类别 | 场景 | 状态 |
+| :--- | --- | --- |
+| 生命周期 | capabilities 逐字段断言；shutdown → exit 进程零退出 | 已覆盖 |
+| 同步契约 | 合法 FULL didChange 接受并推送 delta；增量 range / 多 change / 版本回退三类违规拒绝后会话存活，logMessage 与 stderr 双通道可见 | 已覆盖 |
+| 推送语义 | 无文档活动时的自发 baseline；didClose 清空 | 已覆盖 |
+| 编码端到端 | emoji/CJK 行上的 hover/completion 以 UTF-16 发起并以 UTF-16 回读校验 | 已覆盖 |
+| 查询面 | references 跨文件 Location 与 includeDeclaration 两种形态 | 已覆盖 |
+| 错误规范 | 未知方法 `-32601`、坏参数 `-32602` 经真实循环（白盒已覆盖分类，黑箱待补接线） | 待补 |
+| 生命周期 | exit-without-shutdown 按规范非零退出 | 未实现（现返回 0） |
+| 取消 | `$/cancelRequest` 后会话不崩、后续请求 id 不串 | 待补 |
+| 推送语义 | 改文件 A 清除文件 B 的跨文件联动推送 | 待补 |
+| 同步契约 | didSave 行为 | 待补 |
+| 双模式 | daemon 变体（同一 harness 去掉 `--no-daemon`），覆盖 spawn/socket 回收路径 | 二阶段 |
+
+== 与生产代码的关系
+
+黑箱层发现的行为缺陷在生产侧修复时保持最小，不得为可测试性引入仅测试可见的后门。已有先例证明该层的价值：完整生命周期路径一旦被真正走过，立即暴露出 shutdown 应答与事件泵的双消费者竞争、Connection 未释放导致 io 线程 join 永久等待——两个此前不可见的缺陷。
+
+== 后果
+
+- 接入侧发现的每个 bug 的标准归宿是一个新场景函数，先红后绿；
+- LSP 契约变更时（三仓库联动审查）本层是第一道回归网；
+- 白盒与单元测试保留原职责，三层互不替代。
