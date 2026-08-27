@@ -1,4 +1,4 @@
-@![#reference, kind = "demo"]
+@![#reference, kind = "demo", kind = "reference", status = "current"]
 = Scope 与标注
 
 标注为任意值绑定元数据：`@id` 赋 scope id、`#tag` 标签、`.class` 类名、`key = value` 键值属性。在 preview 中开启 Enhanced 模式，本页所有标注区域与属性都会高亮并列入右侧 Symbols 标签页。

@@ -1,9 +1,17 @@
-= Query Contract
+---
+implementation: partial
+kind: design
+status: current
+---
+
+<a id="query-contract"></a>
+# Query Contract
 
 本文是 A2 查询契约的独立成篇，从归档的历史混合文档中独立成篇。CLI 命令面与 Skill 分发见 [cli-command-surface-skill-distribution](cli-command-surface-skill-distribution.md)；daemon 进程与 View 见 [daemon-process-views](daemon-process-views.md)；core request 与本地协议见 [client-interface-protocol](client-interface-protocol.md)；Analyzer 对查询契约的实现见 [analyzer-snapshot](analyzer-snapshot.md)。
 
 
-== 查询产品形态
+<a id="查询产品形态"></a>
+## 查询产品形态
 
 一个 Agent 为了回答"属性表为什么是旁置的"而探索文档时，正常路径应当是：
 
@@ -30,7 +38,8 @@ full export
 
 普通查询始终由服务端 runtime policy 应用默认预算与硬上界；CLI 语义命令不暴露 page/budget 参数，需要完整数据时必须显式进入 export。这个规则同时避免终端被大结果淹没、脚本意外缓存整库正文，以及 Agent 把大段正文反复回放进对话上下文。
 
-== Core Query Contract
+<a id="core-query-contract"></a>
+## Core Query Contract
 
 CLI 与未来 adapter 都把输入投影到协议无关的 core operation（#<vault::designs::host::client-interface-protocol/Client Interface>）：core operation 接受一个已经捕获的 WorkspaceSnapshot 和结构化 request，返回 typed result；CLI 只负责参数拼写与展示。
 
@@ -70,7 +79,8 @@ QueryPage<T> {
 | diagnostics detail | 20 items / 16 KiB | 100 / 64 KiB |
 | read | 120 lines / 16 KiB | 1,000 lines / 64 KiB |
 
-=== ModulePath Scope
+<a id="modulepath-scope"></a>
+### ModulePath Scope
 
 集合发现命令可以在 Vault 内部进一步限定逻辑范围。Scope 是可能匹配多个 Module 的集合过滤，不是 selector（selector 只解析一个精确身份）：
 
@@ -93,7 +103,8 @@ in_scope(module) =
 
 CLI 投影见 #<vault::cli/Selector、Scope 与 Citation>。`check` 不接受 scope：它的 exit status 是完整 Vault 的健康结论。
 
-=== Snapshot Stamp 与可恢复 Cursor
+<a id="snapshot-stamp-与可恢复-cursor"></a>
+### Snapshot Stamp 与可恢复 Cursor
 
 一次 query 在开始时捕获一个 snapshot，所有 item、excerpt、range、source fingerprint 与计数都来自它：
 
@@ -113,7 +124,8 @@ Cursor 是 opaque、self-contained、带 schema version 和完整性校验的 to
 
 Source-order query 的稳定 key 是 ModulePath、Vault-relative path、match range 与 record kind；ranked query 的 key 是固定精度 score 的降序值、ModulePath、range 与 search-unit identity——浮点 backend score 必须先按 ranking version 量化再参与排序，使 tie 不依赖 hash 顺序或线程调度。
 
-== Selector 与 Citation
+<a id="selector-与-citation"></a>
+## Selector 与 Citation
 
 Scope 与 selector 是两种不同的 ModulePath 用法：scope 表达「可能命中哪些 Module」的集合过滤；selector 表达「就是这一个 Module/Path/节」的精确身份。两者不互相替代——模糊发现属于 search 的 scope+query，不属于 selector resolution。
 

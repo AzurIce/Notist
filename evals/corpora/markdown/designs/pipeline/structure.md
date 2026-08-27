@@ -1,6 +1,13 @@
-= Structure Stage
+---
+implementation: aligned
+kind: design
+status: current
+---
 
-本文承接 [求值结果](evaluate.md#求值结果)（求值结果 `content` 与 call 森林）、[property-table](../language/property-table.md)（`annotations` 属性表）和 [属性](../language/annotation-syntax.md#属性)（属性区间与挂载语义）。#<vault::designs::pipeline::evaluate/Content 值> 定义值层：求值结束时的 `content` 是 call 森林；[property-table](../language/property-table.md) 定义属性不挂在树上。本文定义 `<vault::designs::pipeline>` 的成型阶段（shaping）：把 call 森林折叠成成型后的森林，并规定投影必须保持的区间稳定不变量。
+<a id="structure-stage"></a>
+# Structure Stage
+
+本文承接 [evaluate](evaluate.md#求值结果)（求值结果 `content` 与 call 森林）、[property-table](../language/property-table.md)（`annotations` 属性表）和 [annotation-syntax](../language/annotation-syntax.md#属性)（属性区间与挂载语义）。#<vault::designs::pipeline::evaluate/Content 值> 定义值层：求值结束时的 `content` 是 call 森林；[property-table](../language/property-table.md) 定义属性不挂在树上。本文定义 `<vault::designs::pipeline>` 的成型阶段（shaping）：把 call 森林折叠成成型后的森林，并规定投影必须保持的区间稳定不变量。
 
 ```text
 call 森林 ── shape ──> 成型后的森林
@@ -11,18 +18,20 @@ Call Reduction 模型把求值结果定义为 call 森林：成型前的 `conten
 
 成型是规范纯函数：输入相同则输出相同；不读源码、名称环境、配置或插件状态。它作用于任何 call 森林，不只整份文档——scope 内部、单个元素等局部视野使用同一套规则，输入随视野选择。
 
-== 输入与输出
+<a id="输入与输出"></a>
+## 输入与输出
 
 - 输入：一个已求值的 call 森林。透明 scope（Content literal 与手动 scope）在进入成型视野前溶解为其 call 森林（#<vault::designs::language::scope-environment/与成型、属性表的关系>），属性与身份转为区间条目（[property-table](../language/property-table.md) 属性表、[property-table](../language/property-table.md)）。
 - 输出：成型后的森林。成型产物也是 call 节点：
   - 连续 inline 节点合并为 `core::paragraph`；
   - 相邻同类 `core::item` 合并为 `core::list`；
   - Heading 与其后内容归组为 `core::section`。
-- `core::parbreak` 是输入流中的 transient 节点，成型时被消费，不进入输出树；渲染上也不产生节点（[notist-html](../host/html-renderer.md#notist-html)）。
+- `core::parbreak` 是输入流中的 transient 节点，成型时被消费，不进入输出树；渲染上也不产生节点（[html-renderer](../host/html-renderer.md#notist-html)）。
 
 成型是递归的：每个 body 按其容器模式（flow / inline / table-cells 等）执行同一套流折叠，最终整棵树都不含 `core::parbreak`。
 
-== 元素分类
+<a id="元素分类"></a>
+## 元素分类
 
 分类由节点名字的 schema 决定：
 
@@ -42,7 +51,8 @@ separator core::parbreak
 
 分类是封闭的：进入语言的新节点必须同时取得 inline/block 分类，否则不能通过成型。行内节点参与段落组合；块级节点独立成块，并在到来前收束当前段落与列表组合状态。
 
-== 段落与列表组合
+<a id="段落与列表组合"></a>
+## 段落与列表组合
 
 对 call 森林做一次左折叠：
 
@@ -55,11 +65,12 @@ S4 block     → flush paragraph；flush list；输出独立块。
 结束          → flush paragraph；flush list。
 ```
 
-- 相邻同类条目（`ordered` 相同、之间无块级间隔）合并；`-`/`+` 糖与显式 `item(ordered: ...)` 产生同一输入，走同一算法（[item](../language/syntax-sugar.md#item)）。
+- 相邻同类条目（`ordered` 相同、之间无块级间隔）合并；`-`/`+` 糖与显式 `item(ordered: ...)` 产生同一输入，走同一算法（[syntax-sugar](../language/syntax-sugar.md#item)）。
 - 段落只包含行内节点；`core::paragraph` 的 source range 从首节点起点到末节点终点。
 - `core::list` 是成型产生的容器节点，其 source range 从首条目起点到末条目终点；`core::parbreak` 的区间由段落断开这一事实覆盖，不产生独立输出节点。
 
-== Section 归组
+<a id="section-归组"></a>
+## Section 归组
 
 对任意块序列递归应用：
 
@@ -69,22 +80,25 @@ G2 非 heading 块进入最深的 open section；没有 open section 时输出�
 G3 序列结束收束全部 open section。
 ```
 
-- `=`/`==` 糖与显式 `#heading(level: n)` 产生同一个 Heading 节点，归组不区分来源（[heading](../language/syntax-sugar.md#heading)）。
+- `=`/`==` 糖与显式 `#heading(level: n)` 产生同一个 Heading 节点，归组不区分来源（[syntax-sugar](../language/syntax-sugar.md#heading)）。
 - `core::section` 的 source range 从 heading 起点到 body 最后一个块的终点（空节到 heading 终点）。
 - 归组递归作用于任何 call 森林；属性表的节条目边界由同一规则确定（[property-table](../language/property-table.md)）。
 
-== 不变量
+<a id="不变量"></a>
+## 不变量
 
-- **I1 投影**：成型只重组元素，不合并、不删除个体；结构树是值层的投影，可丢弃、可重建，任何消费者都不能把投影当作新的真相。
-- **I2 区间稳定**：属性表以节点序列区间为键（[property-table](../language/property-table.md)）；成型重组元素但保持个体区间在求值、成型与投影之间稳定。文本拼接是渲染层优化，不是成型语义。
-- **I3 确定性**：shape 是纯函数，因此不需要 reconcile——没有内容变换规则、没有迭代收敛、没有增量 diff。每次变更都对整份代码重新求值；增量更新只属于分析层的优化，不进入求值语义。
-- **I4 节层级**：Section 嵌套只由 heading level 比较产生；同一序列中不出现跨越层级的平铺归组。
+- ***I1 投影***：成型只重组元素，不合并、不删除个体；结构树是值层的投影，可丢弃、可重建，任何消费者都不能把投影当作新的真相。
+- ***I2 区间稳定***：属性表以节点序列区间为键（[property-table](../language/property-table.md)）；成型重组元素但保持个体区间在求值、成型与投影之间稳定。文本拼接是渲染层优化，不是成型语义。
+- ***I3 确定性***：shape 是纯函数，因此不需要 reconcile——没有内容变换规则、没有迭代收敛、没有增量 diff。每次变更都对整份代码重新求值；增量更新只属于分析层的优化，不进入求值语义。
+- ***I4 节层级***：Section 嵌套只由 heading level 比较产生；同一序列中不出现跨越层级的平铺归组。
 
-== 诊断
+<a id="诊断"></a>
+## 诊断
 
-成型消费已经过静态检查与求值的结果。当前 surface 中 shape 是总函数，不产生新诊断；求值诊断原样透传（`structuring_preserves_evaluation_diagnostics`）。元素值的约束在构造器校验（[构造器校验](../plugin-system/core.md#构造器校验)）完成；成型只组合节点序列中的个体。Table 的填行/span 不变量随 Table 构造器校验（[table](../plugin-system/core.md#table)），不由成型检查；当前尚未命名其他成型期容器不变量，因此成型检查表为空。
+成型消费已经过静态检查与求值的结果。当前 surface 中 shape 是总函数，不产生新诊断；求值诊断原样透传（`structuring_preserves_evaluation_diagnostics`）。元素值的约束在构造器校验（[core](../plugin-system/core.md#构造器校验)）完成；成型只组合节点序列中的个体。Table 的填行/span 不变量随 Table 构造器校验（[core](../plugin-system/core.md#table)），不由成型检查；当前尚未命名其他成型期容器不变量，因此成型检查表为空。
 
-== Conformance
+<a id="conformance"></a>
+## Conformance
 
 | 输入 | 预期结构 | 测试 |
 |---|---|---|
@@ -97,10 +111,11 @@ G3 序列结束收束全部 open section。
 | `= 一级` / `== 二级` / `= 一级二` | 两个顶层 Section，二级 Section 嵌套于第一个 | `sections_nest_and_receive_section_level_projection` |
 | 带求值诊断的输入 | 结构树保留全部诊断 | `structuring_preserves_evaluation_diagnostics` |
 
-== 已裁定 / 待定
+<a id="已裁定-待定"></a>
+## 已裁定 / 待定
 
 - 已裁定：`core::parbreak` 是 transient 节点，不进入结构树也不渲染；Section 递归归组；item 组合只看 ordered 与块级间隔；shape 是规范纯函数。
 - 已裁定：成型是递归流折叠，输入为 call 森林，输出为成型后的森林；完整模型见 [plugin-call-reduction](plugin-call-reduction.md)。
 - 待定：段落起点的纯空白 `core::text` 段是否属于可丢弃的段间副产物。当前实现跳过这类段，与 I1 的字面"不删除个体"存在张力；需要裁决空白段是"分段副产物"还是"个体"，并补 conformance。
-- 待定：容器子元素不变量的第一条命名、诊断与恢复形状待定；[构造器校验](../plugin-system/core.md#构造器校验) 引入第一条此类约束时，本文同步补充成型期检查规则。
+- 待定：容器子元素不变量的第一条命名、诊断与恢复形状待定；[core](../plugin-system/core.md#构造器校验) 引入第一条此类约束时，本文同步补充成型期检查规则。
 - 已裁定：Section 在成型后的森林中使用 `core::section` 节点；`Block::Section` 只属于已删除的旧投影术语。

@@ -1,3 +1,4 @@
+@![kind = "reference", status = "current"]
 = Notist Grammar
 
 本文定义当前工具与写作者可以依赖的语法 surface。语言包含 Markup 与 Code 两种模式：文档默认处于 Markup，`#` 把一个 Code 表达式嵌入当前内容，Code 中的 `[...]` 创建 Content literal 并暂时切回 Markup。概念说明见 #<vault::intro>，类型与求值规则见 #<vault::types>，内置构造器见 #<vault::functions>，日常速查见 #<vault::cheatsheet>。

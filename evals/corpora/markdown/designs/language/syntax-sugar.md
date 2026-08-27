@@ -1,14 +1,24 @@
-= Syntax Sugar
+---
+implementation: aligned
+kind: design
+status: current
+---
+
+<a id="syntax-sugar"></a>
+# Syntax Sugar
 
 本文是 L9 Markup 语法糖的独立成篇，从归档的历史混合文档中独立成篇。每个糖降低到的构造器签名与校验见 [core](../plugin-system/core.md)；call 森林与求值见 [evaluate](../pipeline/evaluate.md)。
 
-== 设计原则
+<a id="设计原则"></a>
+## 设计原则
 
-=== 糖与遮蔽隔离
+<a id="糖与遮蔽隔离"></a>
+### 糖与遮蔽隔离
 
 语法糖的语义不经过名字查找：`= 标题` 不是"调用名为 heading 的函数"，而是语法层构造，lowering 时直接获得构造器的 intrinsic identity。`#let heading = ...` 遮蔽裸名不影响 `= 标题`；显式 `#heading[...]` 是普通名字解析，会被遮蔽影响。
 
-=== Sugar budget
+<a id="sugar-budget"></a>
+### Sugar budget
 
 只有同时满足三个条件的构造才配给语法糖：
 
@@ -16,17 +26,21 @@
 2. 边界能从局部语法决定：不需要跨块知识或函数签名；
 3. 有稳定的 core 语义等价：能降低为某个内置构造器调用。
 
-=== 糖不产生假节点
+<a id="糖不产生假节点"></a>
+### 糖不产生假节点
 
 糖在 syntax frontend 建立专用节点，lowering 时获得构造器身份，与显式调用汇合到同一个 call。求值器不扫描 Text 重新识别糖，parser 也不依赖函数签名判断 `[` 或 `-` 的含义。
 
-=== 四要素
+<a id="四要素"></a>
+### 四要素
 
 每个糖写明 syntax boundary、core equivalence、error recovery 与 editor consequence。
 
-== 语法糖规格
+<a id="语法糖规格"></a>
+## 语法糖规格
 
-=== heading
+<a id="heading"></a>
+### heading
 
 糖：行首 `=` 序列，`=` 数量即 level。
 
@@ -35,7 +49,8 @@
 - error recovery：行首 `=` 后无内容 → 空 body Heading；level 无上限；
 - editor consequence：标题进入 DocumentSymbol 与大纲；增减 `=` 即编辑 level。
 
-=== raw
+<a id="raw"></a>
+### raw
 
 糖：行首围栏代码块；闭合围栏长度不得小于 opener；opening line 上的非空文本是 lang。
 
@@ -49,14 +64,16 @@
 
 行内 backtick 糖仍属暂缓，见"暂缓与候选"。
 
-=== rule
+<a id="rule"></a>
+### rule
 
 糖：行首三个以上连续 `-`，其后只有空白。
 
 - core equivalence：`---` ~= `rule()`；
 - error recovery：不足三个连字符按普通文本，不产生诊断。
 
-=== item
+<a id="item"></a>
+### item
 
 糖：行首 `- ` 或 `+ `。
 
@@ -71,7 +88,8 @@
 
 item 是 structural sugar：相邻同类条目由成型组合为 List/Enum；动态 `item` 进入同一算法（[structure](../pipeline/structure.md)）。
 
-=== table
+<a id="table"></a>
+### table
 
 糖：pipe table。行首 `|` 开始连续行，第一行 header，第二行分隔行，之后 body：
 
@@ -87,7 +105,8 @@ item 是 structural sugar：相邻同类条目由成型组合为 List/Enum；动
 - error recovery：body 缺 cell 补空；多 cell 诊断并截断；分隔行不合法时整段为文本；
 - editor consequence：cell 是 Markup 子文档；编辑器维护 `|` 对齐并提供 cell 导航。
 
-=== link
+<a id="link"></a>
+### link
 
 Target 字面量 `<...>` 与构造器 `link(target: Target | String)`。
 
@@ -102,7 +121,8 @@ Target 字面量 `<...>` 与构造器 `link(target: Target | String)`。
 - editor consequence：vault 路径补全与目标存在性检查。
 目标空间与解析产物见 [reference-ref-target](../world/reference-ref-target.md)。
 
-=== strong / emph / underline / strike
+<a id="strong-emph-underline-strike"></a>
+### strong / emph / underline / strike
 
 ```text
 *text*    ~= strong([text])
@@ -115,7 +135,8 @@ __text__  ~= underline([text])
 - 可嵌套其他强调；
 - error recovery：行尾未闭合 → 恢复为普通文本并诊断。
 
-== 暂缓与候选
+<a id="暂缓与候选"></a>
+## 暂缓与候选
 
 - `task`：`- [ ]` / `- [x]`；
 - `math`：`$...$`；
@@ -126,9 +147,10 @@ __text__  ~= underline([text])
 - `link`：外部链接与裸 URL 自动链接；
 - `preview`：`!<...>`。
 
-它们进入设计时须满足 Sugar budget、四要素与 [构造器校验](../plugin-system/core.md#构造器校验)。
+它们进入设计时须满足 Sugar budget、四要素与 [core](../plugin-system/core.md#构造器校验)。
 
-== 语法糖总表
+<a id="语法糖总表"></a>
+## 语法糖总表
 
 ````text
 = Title             ~= heading(level: 1, [Title])
@@ -146,6 +168,7 @@ __text__            ~= underline([text])
 ~~text~~            ~= strike([text])
 ````
 
-== 与求值、成型的关系
+<a id="与求值成型的关系"></a>
+## 与求值、成型的关系
 
 糖在 syntax frontend 建立节点，lowering 获得构造器的 intrinsic identity 后，与显式调用走完全相同的解析、检查与求值路径；求值器不扫描 Text 重新识别糖。structural sugar（item）在求值后由成型组合；全部糖都不创造求值器之外的"假节点"。

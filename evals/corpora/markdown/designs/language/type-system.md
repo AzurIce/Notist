@@ -1,16 +1,25 @@
-= Type System
+---
+implementation: aligned
+kind: design
+status: current
+---
+
+<a id="type-system"></a>
+# Type System
 
 本文是 L2 核心类型系统的独立成篇，从归档的历史混合文档中独立成篇。函数签名与调用模型见 [call-model](call-model.md)；集合类型目标设计见 [collection-types](collection-types.md)；属性表见 [property-table](property-table.md)。
 
 一段源代码经过 `<vault::designs::pipeline>` 中的解析、静态检查、求值等阶段。解析把源码变成语法结构；静态检查解析名称、推断并检查类型，并把每个调用点解析为确定的已解析调用；求值器只消费静态检查的产物，产生元素序列后由成型投影为结构树。本文只定义类型系统：类型是值的静态投影，静态检查产出求值器唯一的语义输入。
 
-== 类型系统
+<a id="类型系统"></a>
+## 类型系统
 
-静态检查在求值之前运行：它以类型判断（type judgment）Γ ⊢ e : T 描述"表达式 e 产出什么值"，并产出求值器唯一消费的语义输入。类型是值的静态投影；名称解析沿 scope 链进行——scope 与词法环境见 #<vault::designs::language::scope-environment/scope 是值层节点>，值的定义见 [值的宇宙](../pipeline/evaluate.md#值的宇宙)。
+静态检查在求值之前运行：它以类型判断（type judgment）Γ ⊢ e : T 描述"表达式 e 产出什么值"，并产出求值器唯一消费的语义输入。类型是值的静态投影；名称解析沿 scope 链进行——scope 与词法环境见 #<vault::designs::language::scope-environment/scope 是值层节点>，值的定义见 [evaluate](../pipeline/evaluate.md#值的宇宙)。
 
-=== Type 与 Value 对应
+<a id="type-与-value-对应"></a>
+### Type 与 Value 对应
 
-类型是值的静态投影：每个类型描述一类值；求值阶段的值宇宙（[值的宇宙](../pipeline/evaluate.md#值的宇宙)）与类型系统共享同一套概念，类型系统是它的静态面。
+类型是值的静态投影：每个类型描述一类值；求值阶段的值宇宙（[evaluate](../pipeline/evaluate.md#值的宇宙)）与类型系统共享同一套概念，类型系统是它的静态面。
 
 ```text
 Type
@@ -23,7 +32,8 @@ Type
 
 赋值兼容性（assignability）与 coercion 是分离的概念：相同类型直接赋值；`Int` 传给 `Float` 形参时，静态检查在解析结果中插入显式数值 coercion（coercion insertion）。不做隐式函数 subtyping，也不做全局 subtyping。最小 union 切片（`T | U`）已随 [target-and-union](target-and-union.md) 进入 surface，目前用于 `link(target: Target | String)`；完整的集合类型 Union/Never 目标设计见 [collection-types](collection-types.md)。
 
-=== 可空与可省略
+<a id="可空与可省略"></a>
+### 可空与可省略
 
 `T?` 是可空类型（nullable type）：值空间等于 T 的值空间并上 `None`。它是独立的内置类型构造，不依赖一般 Union——语义上 `T?` 与 `T | None` 等价，但现行实现与规则独立。规则：
 
@@ -34,7 +44,8 @@ Type
 
 "可省略"（omittable）是函数签名概念：由形参是否带 default 决定，与值域上的可空正交。函数类型、四种形参形态与 default 规则见 [call-model](call-model.md)。
 
-=== Content 类型
+<a id="content-类型"></a>
+### Content 类型
 
 `Content` 是不透明类型：一个类型涵盖所有内容组合，其值是 call 森林（#<vault::designs::pipeline::evaluate/Content 值>）。森林的内部形状由规约不动点与提及自由决定——任何函数都可以返回含有任意名字的森林——因此静态检查不追踪它，森林表示也不泄露为语言操作：`Content` 不可模式匹配、不可比较相等。森林中的每个节点携带自己的名字（构造器身份）；builtin 内容以 first-class 构造器函数的形式存在——`callout(kind: ..., body: ...)` 产生一个 `callout` 节点，其类型就是 `Content`。用户函数与 builtin 构造器因此同构：`warning` 与 `callout` 遵守同一套签名、调用与求值规则，渲染与查询按节点身份消费结果，不区分来源。
 
@@ -48,7 +59,8 @@ Type
 
 普通函数要求 Content 参数时仍然拒绝 String——"可展示"不会渗透成所有 API 的隐式转换规则；插入转换只存在于 Markup insertion 边界（[evaluate](../pipeline/evaluate.md)）。
 
-=== 静态检查
+<a id="静态检查"></a>
+### 静态检查
 
 求值之前先执行静态检查，三个职责：
 
@@ -58,4 +70,4 @@ Type
 
 错误恢复：语法、未解析名称与类型错误允许产生 partial HIR，使编辑器与预览能继续处理其他源码；恢复节点保留自己的 Error 状态——错误实参不使用默认值，错误 callee 不伪装成返回 `None` 的成功函数。
 
-静态检查的产物——名称解析结果、类型与已解析调用——构成求值器唯一的语义输入：求值器不重新猜测名字指向哪个函数、实参如何绑定，只执行这份输入。求值如何消费这份输入见 [求值规则](../pipeline/evaluate.md#求值规则)。
+静态检查的产物——名称解析结果、类型与已解析调用——构成求值器唯一的语义输入：求值器不重新猜测名字指向哪个函数、实参如何绑定，只执行这份输入。求值如何消费这份输入见 [evaluate](../pipeline/evaluate.md#求值规则)。

@@ -1,4 +1,4 @@
-@![implementation = "aligned"]
+@![implementation = "aligned", kind = "design", status = "current"]
 = Project Stage
 
 本文定义 #<vault::designs::pipeline> 的最后阶段：把成型后的森林投影为 target 可见的结果。HTML target 的完整映射见 #<vault::designs::host::html-renderer>；插件节点的 namespace 契约见 #<vault::designs::world::core-namespace-plugin-boundary>。

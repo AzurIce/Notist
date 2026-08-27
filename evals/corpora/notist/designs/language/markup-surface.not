@@ -1,4 +1,4 @@
-@![implementation = "aligned"]
+@![implementation = "aligned", kind = "design", status = "current"]
 = Markup and Scope Surface
 
 本文是 L1 Markup 表面语法的独立成篇，从归档的历史混合文档中独立成篇。Code 核心语法见 #<vault::designs::language::code-grammar>；语法糖见 #<vault::designs::language::syntax-sugar>；标注语法见 #<vault::designs::language::annotation-syntax>。

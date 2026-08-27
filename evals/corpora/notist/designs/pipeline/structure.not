@@ -1,4 +1,4 @@
-@![implementation = "aligned"]
+@![implementation = "aligned", kind = "design", status = "current"]
 = Structure Stage
 
 本文承接 #<vault::designs::pipeline::evaluate/求值结果>（求值结果 `content` 与 call 森林）、#<vault::designs::language::property-table>（`annotations` 属性表）和 #<vault::designs::language::annotation-syntax/属性>（属性区间与挂载语义）。#<vault::designs::pipeline::evaluate/Content 值> 定义值层：求值结束时的 `content` 是 call 森林；#<vault::designs::language::property-table> 定义属性不挂在树上。本文定义 #<vault::designs::pipeline> 的成型阶段（shaping）：把 call 森林折叠成成型后的森林，并规定投影必须保持的区间稳定不变量。

@@ -1,4 +1,11 @@
-= LSP 无头契约测试
+---
+implementation: partial
+kind: design
+status: current
+---
+
+<a id="lsp-无头契约测试"></a>
+# LSP 无头契约测试
 
 `notist lsp` 的对外行为由三层测试共同守护，每层回答不同的问题：
 
@@ -12,16 +19,18 @@ crates/notist-cli/tests/    外面看到的对不对（真实二进制 + stdio �
 
 相关设计：被测行为见 [lsp-adapter](../host/lsp-adapter.md)；进程模型见 [daemon-process-views](../host/daemon-process-views.md)；本地协议见 [client-interface-protocol](../host/client-interface-protocol.md)。
 
-== 判据：规范一致与自我一致
+<a id="判据规范一致与自我一致"></a>
+## 判据：规范一致与自我一致
 
 黑箱场景的断言依据有两层，缺一不可：
 
-1. *LSP 规范*——生命周期顺序、错误码分类（未知方法 `-32601`、坏参数 `-32602`）、消息 shape；
-2. *自我一致*——`server_capabilities()` 广播的每个 provider 必须真实响应且 shape 正确。capabilities 一经广播即是契约：声明了 `referencesProvider` 却从未被测试打过这个方法，等于契约无人验证（这曾是事实：references 在黑箱层出现前零覆盖）。
+1. **LSP 规范**——生命周期顺序、错误码分类（未知方法 `-32601`、坏参数 `-32602`）、消息 shape；
+2. **自我一致**——`server_capabilities()` 广播的每个 provider 必须真实响应且 shape 正确。capabilities 一经广播即是契约：声明了 `referencesProvider` 却从未被测试打过这个方法，等于契约无人验证（这曾是事实：references 在黑箱层出现前零覆盖）。
 
 编辑器客户端依赖的服务端行为约定——FULL sync 严格拒绝违规变更、initialize 后必有 baseline 推送、之后只发增量、didClose 清空——都必须在本层有可执行断言。契约破坏先在这里红灯，而不是在接入侧被感知。
 
-== Harness 模型
+<a id="harness-模型"></a>
+## Harness 模型
 
 每个测试独立拉起一个真实 server 与一个临时 vault：
 
@@ -29,7 +38,8 @@ crates/notist-cli/tests/    外面看到的对不对（真实二进制 + stdio �
 - 帧编解码复用 `lsp_server::Message::read/write`，不得手写 Content-Length 解析——被测对象是 server 不是传输格式；
 - 测试端 client 是唯一的共享设施（`tests/common/mod.rs`）：按 id 关联 request/response、按 method+谓词等待通知、增量捕获 stderr、Drop 时 kill 兜底。
 
-=== 确定性规则
+<a id="确定性规则"></a>
+### 确定性规则
 
 诊断是异步推送的，等待必须确定性，由此产生硬性规则：
 
@@ -42,11 +52,13 @@ crates/notist-cli/tests/    外面看到的对不对（真实二进制 + stdio �
 
 其中"启动 baseline"对空 vault 也存在：server 在主循环开始时对所有文件发布一次（含空集）。这是对外契约的一部分，测试必须显式消化它。
 
-=== 夹具规则
+<a id="夹具规则"></a>
+### 夹具规则
 
-wiki 引用从嵌套模块文件解析为子模块路径（`wide.not` 里的 `[test](test.md)` 指向 `vault::wide::target`），只有根模块（`README.not`）解析兄弟模块。引用类场景（references/definition/hover/completion 的目标解析）的引用方必须放在根模块，否则夹具自身语义错误会被误判为 server 缺陷。
+wiki 引用从嵌套模块文件解析为子模块路径（`wide.not` 里的 `#<target>` 指向 `vault::wide::target`），只有根模块（`README.not`）解析兄弟模块。引用类场景（references/definition/hover/completion 的目标解析）的引用方必须放在根模块，否则夹具自身语义错误会被误判为 server 缺陷。
 
-== 场景目录
+<a id="场景目录"></a>
+## 场景目录
 
 | 类别 | 场景 | 状态 |
 | :--- | --- | --- |
@@ -62,11 +74,13 @@ wiki 引用从嵌套模块文件解析为子模块路径（`wide.not` 里的 `[t
 | 同步契约 | didSave 行为 | 待补 |
 | 双模式 | daemon 变体（同一 harness 去掉 `--no-daemon`），覆盖 spawn/socket 回收路径 | 二阶段 |
 
-== 与生产代码的关系
+<a id="与生产代码的关系"></a>
+## 与生产代码的关系
 
 黑箱层发现的行为缺陷在生产侧修复时保持最小，不得为可测试性引入仅测试可见的后门。已有先例证明该层的价值：完整生命周期路径一旦被真正走过，立即暴露出 shutdown 应答与事件泵的双消费者竞争、Connection 未释放导致 io 线程 join 永久等待——两个此前不可见的缺陷。
 
-== 后果
+<a id="后果"></a>
+## 后果
 
 - 接入侧发现的每个 bug 的标准归宿是一个新场景函数，先红后绿；
 - LSP 契约变更时（三仓库联动审查）本层是第一道回归网；

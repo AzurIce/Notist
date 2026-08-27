@@ -1,10 +1,18 @@
-= Function Parameters and Call Model
+---
+implementation: partial
+kind: design
+status: current
+---
 
-本文是 L4 调用模型的独立成篇。承接 [type-system](type-system.md) 的类型系统与 [声明](code-grammar.md#声明) 的函数声明语法。本文定义：函数签名如何记录可调用形状；positional/named/default/trailing 如何绑定；rest parameter 与 Typst 式实参交错（随 [collection-types](collection-types.md) 实现进入现行）。
+<a id="function-parameters-and-call-model"></a>
+# Function Parameters and Call Model
 
-== 函数类型与调用模型
+本文是 L4 调用模型的独立成篇。承接 [type-system](type-system.md) 的类型系统与 [code-grammar](code-grammar.md#声明) 的函数声明语法。本文定义：函数签名如何记录可调用形状；positional/named/default/trailing 如何绑定；rest parameter 与 Typst 式实参交错（随 [collection-types](collection-types.md) 实现进入现行）。
 
-函数的可调用签名（callable signature）包含：形参（parameter）的名称与类型；形参是否带默认值（default）而可省略（omittable，记号见 [可空与可省略](type-system.md#可空与可省略)）；显式声明的末尾内容形参（trailing content parameter）；结果类型（result type）。集合类型进入语言后，签名还包含可选 rest parameter（见下节）。
+<a id="函数类型与调用模型"></a>
+## 函数类型与调用模型
+
+函数的可调用签名（callable signature）包含：形参（parameter）的名称与类型；形参是否带默认值（default）而可省略（omittable，记号见 [type-system](type-system.md#可空与可省略)）；显式声明的末尾内容形参（trailing content parameter）；结果类型（result type）。集合类型进入语言后，签名还包含可选 rest parameter（见下节）。
 
 形参的绑定方式由是否带默认值决定，不需要额外的修饰符——分界线就是 default：
 
@@ -47,11 +55,13 @@ Trailing content 是最后一个 positional 形参：定义中用显式 `trailin
 
 函数与元素的边界在 Content 类型上汇合：builtin 元素就是 first-class 构造器函数。
 
-== Rest 与 Typst 式实参交错
+<a id="rest-与-typst-式实参交错"></a>
+## Rest 与 Typst 式实参交错
 
 本节来自 [collection-types](collection-types.md)，随集合类型实现切片进入现行；进入后替换上一节的 R05 顺序规则。
 
-=== Rest parameter
+<a id="rest-parameter"></a>
+### Rest parameter
 
 ```text
 parameter = ".." name ":" Type
@@ -71,7 +81,8 @@ table-header(repeat: Bool = true, ..cells: Content) -> Content
 table-cell(colspan: Int = 1, rowspan: Int = 1, trailing body: Content) -> Content
 ```
 
-=== 调用顺序
+<a id="调用顺序"></a>
+### 调用顺序
 
 R05 被替换后：
 
@@ -82,11 +93,13 @@ R05 被替换后：
 
 因此 `#table(columns: 2, align: ("left", "right"), #table-cell[A], #table-cell[B])` 合法，且不是 parser 特例，而是统一调用模型的结果。
 
-== 静态计划与求值
+<a id="静态计划与求值"></a>
+## 静态计划与求值
 
-静态检查为每个调用点生成唯一 binding plan：callee、parameter sources、defaults、coercions、trailing/rest target 与 result type。求值器先求值 callee，再按 source order 求值所有显式实参与 trailing block，最后按形参声明顺序建立绑定；每个表达式只求值一次。该规则继承 [求值规则](../pipeline/evaluate.md#求值规则) 的 E1–E4。
+静态检查为每个调用点生成唯一 binding plan：callee、parameter sources、defaults、coercions、trailing/rest target 与 result type。求值器先求值 callee，再按 source order 求值所有显式实参与 trailing block，最后按形参声明顺序建立绑定；每个表达式只求值一次。该规则继承 [evaluate](../pipeline/evaluate.md#求值规则) 的 E1–E4。
 
-== Conformance 候选
+<a id="conformance-候选"></a>
+## Conformance 候选
 
 | source | 预期 | 测试名 |
 |---|---|---|
@@ -95,7 +108,8 @@ R05 被替换后：
 | `#table(columns: 2, #table-cell[A], #table-cell[B])` | rest 收两个 cell | `table_accepts_variadic_cells` |
 | `#f[a][b]`（f 只有 `..body: Content`） | 两个 trailing block 进入 rest | `trailing_blocks_feed_content_rest` |
 
-== 已裁定 / 待定
+<a id="已裁定-待定"></a>
+## 已裁定 / 待定
 
 - 已裁定：函数签名记录 parameter order/name/type/default/trailing；必填 positional、可选 named；trailing 至多一个且必须 Content。
 - 待随集合类型实现生效：rest 与 trailing 互斥；R05 由 Typst 式交错规则取代；table/table-header 迁移到 rest 签名。

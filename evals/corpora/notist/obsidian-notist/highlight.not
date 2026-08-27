@@ -1,3 +1,4 @@
+@![kind = "integration-doc", status = "current"]
 = 语法高亮实现方案
 
 obsidian-notist 插件为 `.not` 编辑器接入语法高亮的设计与落地方案。编辑器内核现状（极简 CM6、无 language 扩展、vim 键位、样式约定）见 #<vault::ai::2026-08-24 obsidian-notist editor cm6 migration>，本文承接之。

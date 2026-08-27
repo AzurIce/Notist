@@ -1,4 +1,4 @@
-@![implementation = "aligned"]
+@![implementation = "aligned", kind = "design", status = "current"]
 = Scope and Environment
 
 本文承接 #<vault::designs::language::type-system/静态检查>（静态检查、类型与属性表）与 #<vault::designs::language::markup-surface/scope 的语法形态>（scope 的语法形态）。本文定义值层 scope 与词法环境：节点如何同时承载内容与名字、名称如何解析、绑定如何可见，以及 scope 在进入成型（#<vault::designs::pipeline::structure/输入与输出>）前如何落到节点序列与属性表。求值过程如何消费 scope 并产生 call 森林见 #<vault::designs::pipeline::evaluate/求值结果>。

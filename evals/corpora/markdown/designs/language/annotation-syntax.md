@@ -1,19 +1,28 @@
-= Annotation Syntax
+---
+implementation: aligned
+kind: design
+status: current
+---
+
+<a id="annotation-syntax"></a>
+# Annotation Syntax
 
 本文是 L8 标注语法的独立成篇，从归档的历史混合文档中独立成篇。属性如何绑定到值、求值收尾如何转写为属性表见 [property-table](property-table.md)；scope 的语法形态见 #<vault::designs::language::markup-surface/scope 的语法形态>。
 
-== 属性
+<a id="属性"></a>
+## 属性
 
 属性（annotation）是绑定到求值结果（值）上的标记：标注语法在求值期绑定属性，求值收尾转写为旁置的属性表（[property-table](property-table.md) 属性表一节）——树不携带属性。属性列表只有一套语法，挂载位置是变体。
 
-=== 属性列表
+<a id="属性列表"></a>
+### 属性列表
 
 ```text
 属性列表 = 条目（逗号分隔）
 条目     = id | #tag | .class | key = value
 ```
 
-- `id`：裸标识符，赋 scope id——模块内唯一，可被引用（``<vault::guide/install>``，见 #<vault::designs::world::reference-ref-target/scope id>）；
+- `id`：裸标识符，赋 scope id——模块内唯一，可被引用（`#<vault::guide/install>`，见 #<vault::designs::world::reference-ref-target/scope id>）；
 - `#tag`：标签，任意多个，用于归类与查询；
 - `.class`：类名，任意多个，用于样式与查询；
 - `key = value`：键值属性，value 是字面量（String / Int / Bool）。
@@ -24,7 +33,8 @@ id 至多一个；tag、class 与 key=value 任意多个。示例：
 @install,#design,.highlight,status = "draft"
 ```
 
-=== 三种挂载位置
+<a id="三种挂载位置"></a>
+### 三种挂载位置
 
 1. 行内 postfix：`@...`
 
@@ -69,13 +79,15 @@ id 至多一个；tag、class 与 key=value 任意多个。示例：
    - 与行内/块级标注同一模型：等价于把属性列表绑定为模块属性；
    - 属性列表中不使用 id——模块本身已是可寻址目标（Module target，见 #<vault::designs::world::reference-ref-target/scope id>），id 无意义。
 
-== 语法边界
+<a id="语法边界"></a>
+## 语法边界
 
 - `@[`、`@![` 与 `@id`（`@` + 标识符）是三种不同的 token 序列，lexer 层面区分：`@` 后跟 `[` 是块级前缀，`@!` 后必须跟 `[`，`@` 后跟标识符是行内 postfix；
 - `@[...]` 内部按属性列表解析：标识符、`#tag`、`key = value`；字符串字面量内的逗号与 `]` 属于字符串；
 - 错误恢复：未闭合 `@[...]` → 诊断并按文本恢复，内容到第一个 `]` 为止；悬空的 `@[...]`（其后没有块级节点，如文件或容器在此结束）→ 诊断，属性不绑定；`@!` 后不是 `[` → 诊断；
 - 转义：正文中字面 `@`（邮箱、提及等）与 Markup 其他符号一致用 `\` 转义（`\@`），与 `#`、`[` 的转义规则统一。
 
-== 与查询的关系
+<a id="与查询的关系"></a>
+## 与查询的关系
 
 属性表是查询的唯一入口：id 是模块内唯一身份（#<vault::designs::world::reference-ref-target/scope id>），tag 与 key=value 支持按属性查询——编辑器与 Agent 借此检索"打了某个标签/某个状态的内容"。模块属性是模块的稳定元数据，随 ModuleResult 发布，`@![...]` 的"文件开头"约束保证它可以不求值地读取。

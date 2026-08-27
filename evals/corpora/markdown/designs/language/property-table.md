@@ -1,8 +1,16 @@
-= Property Table
+---
+implementation: aligned
+kind: design
+status: current
+---
+
+<a id="property-table"></a>
+# Property Table
 
 本文是 L7 属性表的独立成篇，从归档的历史混合文档中独立成篇，并吸收旧标注文档中属性与求值、成型的语义半边。标注的表面语法仍见 [annotation-syntax](annotation-syntax.md)。
 
-== 属性表
+<a id="属性表"></a>
+## 属性表
 
 属性（标注）在求值期绑定到值，求值收尾转写为旁置的属性表（annotation table）：以节点序列区间为键、属性集为值的映射。树（scope 树、结构树）不携带属性——属性是位置注解，与结构解耦。
 
@@ -24,7 +32,8 @@
 
 模块属性（`@![...]`）作为模块级条目进入属性表，随求值结果发布为模块元数据。
 
-== 属性与求值、成型
+<a id="属性与求值成型"></a>
+## 属性与求值、成型
 
 求值期：标注语法求值时把属性绑定到"值"上——postfix 绑定前面紧接着的表达式结果，前缀绑定下一个块级节点，模块属性绑定根 scope。
 
@@ -32,6 +41,7 @@
 
 查询一律以区间命中（单节点区间是特例），没有节点命中与区间命中两种形状——属性表是唯一入口。
 
-== 与求值、成型的关系
+<a id="与求值成型的关系"></a>
+## 与求值、成型的关系
 
-求值结果三元组与 `content`（call 森林）的产生见 [求值结果](../pipeline/evaluate.md#求值结果)；scope 溶解见 #<vault::designs::language::scope-environment/与成型、属性表的关系>；结构树投影见 [不变量](../pipeline/structure.md#不变量)。值层与属性表是唯一真相，成型后的结构树是它们的投影：可丢弃、可重建，任何消费者都不能把投影当作新的真相；消费端联合消费结构树与属性表。
+求值结果三元组与 `content`（call 森林）的产生见 [evaluate](../pipeline/evaluate.md#求值结果)；scope 溶解见 #<vault::designs::language::scope-environment/与成型、属性表的关系>；结构树投影见 [structure](../pipeline/structure.md#不变量)。值层与属性表是唯一真相，成型后的结构树是它们的投影：可丢弃、可重建，任何消费者都不能把投影当作新的真相；消费端联合消费结构树与属性表。

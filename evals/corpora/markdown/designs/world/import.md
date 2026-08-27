@@ -1,8 +1,16 @@
-= Import
+---
+implementation: aligned
+kind: design
+status: current
+---
 
-本文是 import 的独立成篇，从归档的历史混合文档中独立成篇。Module root bindings 见 #<vault::designs::world::module-result/bindings ownership>；import graph 的跨模块图语义见 [两张跨模块图](reference-ref-target.md#两张跨模块图)。
+<a id="import"></a>
+# Import
 
-== import
+本文是 import 的独立成篇，从归档的历史混合文档中独立成篇。Module root bindings 见 #<vault::designs::world::module-result/bindings ownership>；import graph 的跨模块图语义见 [reference-ref-target](reference-ref-target.md#两张跨模块图)。
+
+<a id="import-1"></a>
+## import
 
 Code import 取得目标 Module 的 root bindings：
 
@@ -11,8 +19,8 @@ Code import 取得目标 Module 的 root bindings：
 #import <super::shared>::{format as shared_format}
 ```
 
-- 花括号左侧是 ModulePath，selector 是目标 root 的 Code name——显式选择，**无 wildcard**：分析器、review 与缓存必须能看见每条依赖边；
+- 花括号左侧是 ModulePath，selector 是目标 root 的 Code name——显式选择，***无 wildcard***：分析器、review 与缓存必须能看见每条依赖边；
 - import 扩展当前根 scope 后续节点的环境，产生空 Content；
 - ModulePath 是静态语法：即使 import 写在嵌套 scope 里，依赖边也在求值前进入 import graph；
 - ModulePath 与 Code name 使用不同 grammar：路径段容纳人类知识库名（`design-notes`），代码名参与词法绑定（`design_notes`）；`as` 把 root name 映射为合法 Code identifier；`vault`、`self`、`super` 是 Module 引用前缀，不是普通变量；
-- import 不插入目标 Module 的 content——**没有跨模块 Content insertion**：知识导航、代码依赖与文档组合是三条不同的边，不合并。
+- import 不插入目标 Module 的 content——***没有跨模块 Content insertion***：知识导航、代码依赖与文档组合是三条不同的边，不合并。

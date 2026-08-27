@@ -1,4 +1,11 @@
-= Daemon Process and Views
+---
+implementation: aligned
+kind: design
+status: current
+---
+
+<a id="daemon-process-and-views"></a>
+# Daemon Process and Views
 
 本文是 A3 daemon 进程与 View 模型的独立成篇，从归档的历史混合文档中独立成篇。Client Interface、本地协议与生命周期见 [client-interface-protocol](client-interface-protocol.md)；Vault 边界见 [boundary-discovery](../world/boundary-discovery.md)；Analyzer View 见 [analyzer-snapshot](analyzer-snapshot.md)。
 
@@ -6,7 +13,8 @@
 
 动线：为什么需要 daemon → 每 Vault 一个 daemon → Daemon 持有什么 → 共享 Engine，不共享 Overlay。Client interface、本地协议与生命周期见 [client-interface-protocol](client-interface-protocol.md)。
 
-== 为什么需要 daemon
+<a id="为什么需要-daemon"></a>
+## 为什么需要 daemon
 
 用户连续执行几条命令时，不应该为每条命令重新扫描、解析与索引同一个 Vault：
 
@@ -16,11 +24,12 @@ notist check docs
 notist references vault::designs::host::daemon-process-views
 ```
 
-编辑器与 Agent 同时工作时，也不应该为同一个 Vault 维护两份 watcher、Module 图与索引。Notist 为每个活动 Vault 使用一个本地 daemon 持有长期状态；CLI 与 LSP 是面向不同调用者的 client interface，Agent 通过 CLI 命令与官方 Skill 使用（见 [daemon](../../cli.md#daemon)）。
+编辑器与 Agent 同时工作时，也不应该为同一个 Vault 维护两份 watcher、Module 图与索引。Notist 为每个活动 Vault 使用一个本地 daemon 持有长期状态；CLI 与 LSP 是面向不同调用者的 client interface，Agent 通过 CLI 命令与官方 Skill 使用（见 [cli](../../cli.md#daemon)）。
 
 这个形态类似 ADB：短命令是 client，后台进程保存可复用状态。类比只到进程拓扑为止：Notist daemon 绑定一个 Vault，而不是当前用户访问过的所有知识库。
 
-== 形态：每 Vault 一个 daemon
+<a id="形态每-vault-一个-daemon"></a>
+## 形态：每 Vault 一个 daemon
 
 ```text
 Editor          shell / Agent
@@ -42,9 +51,10 @@ notist lsp        notist query
 
 同一 canonical root 只对应一个 daemon 实例。canonical path 必须在 endpoint 派生前完成解析——避免同一目录因相对路径、symlink 或大小写表示得到多个 daemon。由 Notist 发布和替换内容的 managed Vault 可以额外声明 generation；同一 root 与 generation 组合对应一个实例，升级前的 daemon 因 endpoint 不同而停止接收新 client，并在 idle 后退出。generation 不是普通用户 Vault 的版本号，也不能用于绕过每 Vault 隔离。
 
-== Daemon 持有什么
+<a id="daemon-持有什么"></a>
+## Daemon 持有什么
 
-Daemon 是一个 Vault application core 的长期进程宿主，不是新的语言语义层。启动时传入的 canonical root 固定它服务的 Vault（发现规则见 [发现规则](../world/boundary-discovery.md#发现规则)）；进程内只有这个 root 对应的 VaultEngine。Client 不能连接一个已存在 daemon 后要求它再打开任意 root。
+Daemon 是一个 Vault application core 的长期进程宿主，不是新的语言语义层。启动时传入的 canonical root 固定它服务的 Vault（发现规则见 [boundary-discovery](../world/boundary-discovery.md#发现规则)）；进程内只有这个 root 对应的 VaultEngine。Client 不能连接一个已存在 daemon 后要求它再打开任意 root。
 
 VaultEngine 持有适合在客户端之间复用的状态：
 
@@ -54,9 +64,10 @@ VaultEngine 持有适合在客户端之间复用的状态：
 - 全文、向量、reference graph 与摘要等可重建派生索引；
 - 对磁盘写入、rename 与索引发布的串行化入口。
 
-Daemon 不成为 authored source 的真相来源。`.not` source 与明确的 editor overlay 仍是输入；缓存、索引与 daemon 内存都可以在进程退出后重建——这是求值确定性的推论：求值（[求值规则](../pipeline/evaluate.md#求值规则)）与成型（[输入与输出](../pipeline/structure.md#输入与输出)）是纯函数，增量更新只属于分析层的优化，不进入求值语义。持久化索引必须记录 schema、模型、Vault identity 与 source fingerprint，版本不匹配时丢弃或迁移，不能静默解释为新数据。
+Daemon 不成为 authored source 的真相来源。`.not` source 与明确的 editor overlay 仍是输入；缓存、索引与 daemon 内存都可以在进程退出后重建——这是求值确定性的推论：求值（[evaluate](../pipeline/evaluate.md#求值规则)）与成型（[structure](../pipeline/structure.md#输入与输出)）是纯函数，增量更新只属于分析层的优化，不进入求值语义。持久化索引必须记录 schema、模型、Vault identity 与 source fingerprint，版本不匹配时丢弃或迁移，不能静默解释为新数据。
 
-== 共享 Engine，不共享 Overlay
+<a id="共享-engine不共享-overlay"></a>
+## 共享 Engine，不共享 Overlay
 
 多个客户端可能同时看到同一文件的不同内容：
 

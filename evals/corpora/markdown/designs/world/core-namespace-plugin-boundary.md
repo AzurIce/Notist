@@ -1,8 +1,16 @@
-= Core Namespace and Plugin Boundary
+---
+implementation: partial
+kind: design
+status: current
+---
+
+<a id="core-namespace-and-plugin-boundary"></a>
+# Core Namespace and Plugin Boundary
 
 本文是 core namespace 与插件边界的独立成篇，吸收第一代 core namespace 设计的裁决并更新到当前 surface。当前内置构造器见 [core](../plugin-system/core.md)；函数签名与调用模型见 [call-model](../language/call-model.md)；Vault 配置容器见 [boundary-discovery](boundary-discovery.md)。
 
-== Core Namespace
+<a id="core-namespace"></a>
+## Core Namespace
 
 `core` 是语言标准 package 的保留 namespace，保存语言 surface 定义的标准构造器与基础操作。它由默认 App 预装，但不属于 eval engine 的内建 dispatch 表：
 
@@ -27,7 +35,8 @@ core::strong / emph / underline / strike
 
 当前实现中 `core::` qualified call 与 prelude 裸名均已启用；宿主语法糖（`= Title`、pipe table 等）始终取得对应 core intrinsic identity，不经过名字查找，因此 local binding 不影响糖。
 
-== Prelude
+<a id="prelude"></a>
+## Prelude
 
 Prelude 是每个 Module root 自动获得的普通 binding 层，不是第二套全局环境：
 
@@ -35,7 +44,8 @@ Prelude 是每个 Module root 自动获得的普通 binding 层，不是第二�
 - import 显式 selector 可以引入非 prelude 的 core 短名；
 - prelude 内容随语言版本变化，并在 WorkspaceSnapshot 的 function environment identity 中记录（[analyzer-snapshot](../host/analyzer-snapshot.md)）。
 
-== Call 契约
+<a id="call-契约"></a>
+## Call 契约
 
 所有内容统一为一种节点：call。不再有内置 Element 变体与 `Custom` 的区分（[plugin-call-reduction](../pipeline/plugin-call-reduction.md)）：
 
@@ -54,7 +64,8 @@ Node {
 - `block` 是语义参数，不由 call-site delimiter 猜测；
 - serializer 对未注册投影的名字有安全 fallback；富渲染的资产注入与 trusted 收口属于 target 侧（[projection](../plugin-system/projection.md)）。
 
-== 信任模型
+<a id="信任模型"></a>
+## 信任模型
 
 完整插件 package 模型与宿主 ABI 见 `<vault::designs::plugin-system>`；能力系统的删除裁决见 [capability](../plugin-system/capability.md)。
 
@@ -62,7 +73,8 @@ Node {
 - 内容组合不做 per-call 授权：wasm 沙箱（无 IO import + 资源预算）是唯一执行边界；
 - 若未来出现文件/网络级需求，作为独立 capability 面另行设计。
 
-== 加载、作用域与生命周期
+<a id="加载作用域与生命周期"></a>
+## 加载、作用域与生命周期
 
 - 插件通过显式 namespace 与 import/prelude 进入环境，不注册到 `core`；
 - 插件 schema 由 Vault 配置声明（见下），Analyzer 在 snapshot 中捕获 schema identity；
@@ -70,7 +82,8 @@ Node {
 - 插件失败是 host boundary diagnostic，不伪装成 `None` 成功；
 - 插件不能修改 parser、不能重新解释已有 token。
 
-== Notist.toml 配置内容模型
+<a id="notisttoml-配置内容模型"></a>
+## Notist.toml 配置内容模型
 
 Vault marker 从空文件扩展为受限配置容器：
 
@@ -90,6 +103,7 @@ styles = ["assets/user.css"]
 
 具体字段 schema、版本迁移与插件加载协议由实现切片补齐；在实现前，Notist.toml 保持空标记或未知键预留。
 
-== 语法扩展边界
+<a id="语法扩展边界"></a>
+## 语法扩展边界
 
 语义层的"宏"已被规约模型吸收：handler 把 call 重写为新 call 就是宏展开，不存在独立的 macro design（见 [plugin-call-reduction](../pipeline/plugin-call-reduction.md)）。仍然独立的是记号层扩展：parser 的新语法由独立的 grammar-extension design 定义；普通 Function/plugin registration 永远不授予修改 parser、重新解释已有 token 的能力。

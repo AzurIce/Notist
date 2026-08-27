@@ -1,3 +1,4 @@
+@![kind = "reference", status = "current"]
 == 存在的问题
 
 - #[下面的内容删除线没有正确在 preview 中显示出来]@#parse

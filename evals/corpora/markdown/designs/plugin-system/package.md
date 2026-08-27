@@ -1,8 +1,16 @@
-= Plugin Package and Lifecycle
+---
+implementation: partial
+kind: design
+status: current
+---
+
+<a id="plugin-package-and-lifecycle"></a>
+# Plugin Package and Lifecycle
 
 本文定义插件 package 的形态、manifest、namespace、core package 以及装载生命周期。插件求值语义见 [plugin-call-reduction](../pipeline/plugin-call-reduction.md)；共享类型与 WIT 边界见 [abi](abi.md)。
 
-== Package 模型
+<a id="package-模型"></a>
+## Package 模型
 
 ```text
 PluginPackage {
@@ -22,7 +30,8 @@ PluginPackage {
 - `core` 是 package id 为 `core` 的标准 package，默认 App 预装它，但不因此成为 eval engine 的特权对象。
 - `PackageId` 成为 `ElementName` 的 namespace：插件节点写作 `shader::canvas`。
 
-== Manifest
+<a id="manifest"></a>
+## Manifest
 
 插件包是目录或 zip，根下是 `plugin.json`。manifest 只是信封：身份、Wasm 装载参数与投影资产；semantic 接口由组件的 `init` 注册提供（[abi](abi.md)），不写入 manifest：
 
@@ -56,7 +65,8 @@ PluginPackage {
 - 顶层 `render` 描述投影面；投影贡献是静态文件引用，保留在信封里，细节见 [projection](projection.md)。
 - JSON 只承担人工编辑的 `plugin.json` 信封；semantic declarations、defaults、节点与调用载荷不进入 manifest，统一由 version byte + postcard 承载。
 
-== core package
+<a id="core-package"></a>
+## core package
 
 `core` 是标准 package，不是 eval engine 内部的一组特殊 handler：
 
@@ -81,7 +91,8 @@ core 与其它 package 共享：
 
 core namespace 的保留属于语言/package policy：其它 package 不能注册或覆盖 `core::*`，但这不授予 core handler 特殊的 reduction 权限。core 的内容词表见 [core](core.md)；HTML 映射属于 HTML target（[projection](projection.md)）。
 
-== Notist.toml 配置
+<a id="notisttoml-配置"></a>
+## Notist.toml 配置
 
 Vault 在 `Notist.toml` 中声明要加载的 package：
 
@@ -95,7 +106,8 @@ path = "../plugins/component-echo"
 
 - `path` 指向相对 Vault root 的 package 目录或 zip；registry 形式的 `package` 字段为未来入口保留。
 
-== 装载与生命周期
+<a id="装载与生命周期"></a>
+## 装载与生命周期
 
 package 的组合只有一条语义路径，backend 的装载步骤可以不同：
 
@@ -117,7 +129,8 @@ native package                  Wasm package
 - package、manifest、native surface、Wasm module 或 assets 变化进入 source-set / plugin fingerprint，分配新的 `FunctionEnvironmentId` 并发布新 snapshot revision。
 - daemon 递归 watch 外部 package 目录；`plugin.json` / wasm / assets 变化触发 disk view reload。
 
-== 已裁定 / 待定
+<a id="已裁定-待定"></a>
+## 已裁定 / 待定
 
 - 已裁定：插件是带 package identity 的语义 contribution；Rust native crate 与 wasip2 component 都是可用 backend，Wasm package 可以附带信封 manifest 与 assets。
 - 已裁定：core 是默认 App 预装的标准 package；它与其它 native/Wasm package 共享 registry、schema 和 namespace policy，不是 eval engine 的特权模块。

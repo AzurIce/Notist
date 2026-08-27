@@ -1,4 +1,4 @@
-@![implementation = "aligned"]
+@![implementation = "aligned", kind = "design", status = "current"]
 = Module and ModuleResult
 
 本文是 Module 与 ModuleResult 的独立成篇，从归档的历史混合文档中独立成篇。Vault 边界见 #<vault::designs::world::boundary-discovery>；import 见 #<vault::designs::world::import>；引用寻址见 #<vault::designs::world::reference-ref-target>。

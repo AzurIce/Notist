@@ -1,12 +1,21 @@
-= Reference and RefTarget
+---
+implementation: aligned
+kind: design
+status: current
+---
 
-本文是引用寻址与 RefTarget 的独立成篇，从归档的历史混合文档中独立成篇。Reference 元素的值层定义见 [link](../plugin-system/core.md#link)；scope 是值层节点见 #<vault::designs::language::scope-environment/scope 是值层节点>。
+<a id="reference-and-reftarget"></a>
+# Reference and RefTarget
 
-== 引用与寻址
+本文是引用寻址与 RefTarget 的独立成篇，从归档的历史混合文档中独立成篇。Reference 元素的值层定义见 [core](../plugin-system/core.md#link)；scope 是值层节点见 #<vault::designs::language::scope-environment/scope 是值层节点>。
 
-Reference 连接知识：`[reference-ref-target](reference-ref-target.md)` 产生 Reference 元素（见 [link](../language/syntax-sugar.md#link)）。解析针对 ModulePath 与可选的 scope id，不针对磁盘路径；它不执行目标 Module、不读取其 bindings、不内联其 content。
+<a id="引用与寻址"></a>
+## 引用与寻址
 
-=== 目标书写形式
+Reference 连接知识：`#<target>` 产生 Reference 元素（见 [syntax-sugar](../language/syntax-sugar.md#link)）。解析针对 ModulePath 与可选的 scope id，不针对磁盘路径；它不执行目标 Module、不读取其 bindings、不内联其 content。
+
+<a id="目标书写形式"></a>
+### 目标书写形式
 
 ```not
 #<setup>                        # 裸名：从当前模块解析
@@ -19,17 +28,19 @@ Reference 连接知识：`[reference-ref-target](reference-ref-target.md)` 产�
 - 裸名与相对前缀在补全时插入相对路径，保持源码可读与可移动；
 - `#scope-id` 后缀是"模块内目标"：文档模块中是带 id 的 scope/元素，资源目录中是完整文件名。
 
-=== scope id
+<a id="scope-id"></a>
+### scope id
 
 scope 是值层节点（#<vault::designs::language::scope-environment/scope 是值层节点>：节点即环境）。带 id 的 scope 承担模块内身份（module-local identity）：
 
 - id 在模块内唯一；
-- ``<vault::guide/install>`` 解析到该 scope 在模块内的位置；
+- `#<vault::guide/install>` 解析到该 scope 在模块内的位置；
 - 匿名 scope 不可寻址——想被引用或查询，就创建带 id 的节点（这正是手动 scope 的意义之一）。
 
-heading 额外拥有**默认 id**：标题 body 提取的纯文本（见 [heading](../plugin-system/core.md#heading)）。引用 `/` 后缀的匹配顺序：先按显式 id 精确匹配，再按标题默认 id（标题文本）精确匹配——标题文本不需要符合标识符语法（`<...>` 的 label 是字面字符串，可再含 `/` 与 `#`）。重复标题产生歧义诊断，作者用显式 `@id` 消歧；显式 id 总是覆盖默认 id。
+heading 额外拥有**默认 id**：标题 body 提取的纯文本（见 [core](../plugin-system/core.md#heading)）。引用 `/` 后缀的匹配顺序：先按显式 id 精确匹配，再按标题默认 id（标题文本）精确匹配——标题文本不需要符合标识符语法（`<...>` 的 label 是字面字符串，可再含 `/` 与 `#`）。重复标题产生歧义诊断，作者用显式 `@id` 消歧；显式 id 总是覆盖默认 id。
 
-=== 资源文件解析
+<a id="资源文件解析"></a>
+### 资源文件解析
 
 `vault::docs::images#logo.png` 的解析：
 
@@ -39,9 +50,10 @@ heading 额外拥有**默认 id**：标题 body 提取的纯文本（见 [headin
 
 资源的 kind（Image | File）由解析给出，不属于值层。
 
-=== 解析产物：RefTarget
+<a id="解析产物reftarget"></a>
+### 解析产物：RefTarget
 
-Reference 元素的值层携带 `target: Target | String`（见 [link](../language/syntax-sugar.md#link)）：`Target` 是 ModulePath 加可选 label 的结构化拼写，`String` 只表示外部 url；目标指向什么由分析层解析，解析产物：
+Reference 元素的值层携带 `target: Target | String`（见 [syntax-sugar](../language/syntax-sugar.md#link)）：`Target` 是 ModulePath 加可选 label 的结构化拼写，`String` 只表示外部 url；目标指向什么由分析层解析，解析产物：
 
 ```text
 RefTarget
@@ -57,11 +69,13 @@ RefTarget
 - 目标类型是解析产物，不是元素字段：`path#id` 是资源还是 scope，只有解析才知道；值层的 Reference 元素不携带目标类型；
 - "是什么目标"（分析层）与"以什么关系引用"（元素层）正交：relation 是引用元素自己的属性——当前只有 Reference（导航），Preview（嵌入预览）预留分支，`!<...>` 糖暂缓。
 
-=== 外部 URL（暂缓）
+<a id="外部-url暂缓"></a>
+### 外部 URL（暂缓）
 
-带 scheme（`https://`、`mailto:` 等）的外部目标暂缓进入语言：当前的引用目标空间只包含 vault 内部目标。RefTarget 预留 External 分支，待外部目标进入时启用；配套的 `link` 构造器与裸 URL 自动链接糖同步暂缓（见 [link](../language/syntax-sugar.md#link)）。`#link("https://...")` 语法合法（target 是字面 url 字符串，见 [link](../language/syntax-sugar.md#link)）：解析产物为 `External(url)`，当前渲染为未解析的可见文本并产生 info 级 `external-reference-unsupported` 诊断——不是语法错误。
+带 scheme（`https://`、`mailto:` 等）的外部目标暂缓进入语言：当前的引用目标空间只包含 vault 内部目标。RefTarget 预留 External 分支，待外部目标进入时启用；配套的 `link` 构造器与裸 URL 自动链接糖同步暂缓（见 [syntax-sugar](../language/syntax-sugar.md#link)）。`#link("https://...")` 语法合法（target 是字面 url 字符串，见 [syntax-sugar](../language/syntax-sugar.md#link)）：解析产物为 `External(url)`，当前渲染为未解析的可见文本并产生 info 级 `external-reference-unsupported` 诊断——不是语法错误。
 
-== 两张跨模块图
+<a id="两张跨模块图"></a>
+## 两张跨模块图
 
 Reference graph 与 import graph 使用同一 Module identity，但环语义不同：
 

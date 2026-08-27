@@ -1,9 +1,17 @@
-= CLI Command Surface and Skill Distribution
+---
+implementation: partial
+kind: design
+status: current
+---
+
+<a id="cli-command-surface-and-skill-distribution"></a>
+# CLI Command Surface and Skill Distribution
 
 本文是 A4 CLI 命令面与官方 Skill 分发的独立成篇，从归档的历史混合文档中独立成篇。查询契约见 [query-contract](query-contract.md)；daemon 进程与 View 见 [daemon-process-views](daemon-process-views.md)；core request 与本地协议见 [client-interface-protocol](client-interface-protocol.md)。
 
 
-== CLI 命令面
+<a id="cli-命令面"></a>
+## CLI 命令面
 
 完整的逐命令设计与使用文档在 [cli](../../cli.md)；本文只固定 CLI 作为产品边界的治理规则，避免命令细节在这里形成第二真相。
 
@@ -15,7 +23,8 @@
 - 普通命令不提供 `--all`。需要完整数据时使用 export；Debug 与 export 不进入 Agent 的默认 discovery。
 - 任何命令的 stdout 边界由本文与 [cli](../../cli.md) 共同决定：有限 query 输出 bounded text，协议命令输出自己的 framing，artifact 命令只回摘要。
 
-== 官方 Skill 与文档 Vault
+<a id="官方-skill-与文档-vault"></a>
+## 官方 Skill 与文档 Vault
 
 一个刚接触 Notist 的 Agent 不能只靠模型先验猜测 `.not` 语法，也不应该为了理解 Vault、Module、Function、CLI 与安全编辑规则而依赖网络或源码仓库。两个职责分开：
 
@@ -43,7 +52,8 @@ notist check ~/.notist/docs
 
 `~/.notist/docs` 表示各平台约定的 user-data 位置。Skill 说明如何找到该 Vault，但不拥有、复制或修改它。
 
-=== 一个 Skill 文件，而不是一个运行时目录
+<a id="一个-skill-文件而不是一个运行时目录"></a>
+### 一个 Skill 文件，而不是一个运行时目录
 
 官方 Skill 由显式命令初始化：`notist skill init <OUTPUT> [--force]`。默认要求尚不存在的目录，初始化结果只有 `SKILL.md`；`--force` 只原子替换已有目录中的 `SKILL.md`，保留 host metadata 与其他文件。命令不猜测任何 Agent host 的安装目录，也不修改 host registry。
 
@@ -57,7 +67,8 @@ Skill 安装目录是不可变的发布输入，不是 cache 或工作目录。`
 
 Skill 的 authored source 放在仓库 `skills/notist/`（当前只有 `SKILL.md`），构建系统把该目录作为整体资源边界 include 进 CLI。`skill init` 只物化 `SKILL.md`，相同版本生成相同 bytes（时间戳、checkout path、用户名、当前目录不进入结果）；force 是单文件更新能力，不是目录重建。
 
-=== Docs 是普通 Vault
+<a id="docs-是普通-vault"></a>
+### Docs 是普通 Vault
 
 官方 docs 保留仓库 `docs/` 下的完整 authored corpus、相对目录与 Module 关系（公开语言文档、活动设计、历史设计、`docs/ai` 调研），不打包人工挑选的摘要，也不把 HTML/CSS/JS 产物当作知识源。完整保留不等于一次读入上下文——Agent 仍然先搜索、再读取候选。
 
@@ -65,7 +76,8 @@ Skill 的 authored source 放在仓库 `skills/notist/`（当前只有 `SKILL.md
 
 官方 docs 没有专用的 `notist docs search` 等命令——增加这类命令会复制 Vault root、query、snapshot、daemon 与输出格式的概念。它唯一特殊的地方是来源与同步方式。
 
-=== 当前 CLI 是文档版本的真相来源
+<a id="当前-cli-是文档版本的真相来源"></a>
+### 当前 CLI 是文档版本的真相来源
 
 构建系统从完整 docs Vault 产生确定性的压缩 bundle 并嵌入 `notist` 可执行文件：
 
@@ -85,11 +97,13 @@ CLI 的共享启动路径在进入正常工作流前执行一次廉价的 manife
 
 多个短命 CLI 同时启动由跨进程锁串行同步；已经运行的 daemon 必须把 `docs_fingerprint` 纳入 root handshake 或 snapshot identity——client 不能把升级后 CLI 的查询静默发送给仍声明旧 bundle 的 daemon。Notist 假设一个用户环境同时只有一个 active CLI 版本；升级原子替换 docs Vault，不保留历史 release 并行。
 
-=== 向量化属于 Vault 运行时状态
+<a id="向量化属于-vault-运行时状态"></a>
+### 向量化属于 Vault 运行时状态
 
 完整 docs source 可以嵌入 CLI，向量模型和向量索引不能据此一起嵌入：它们有不同生命周期（模型可能本地或远程；embedding 随 model identity、chunking、normalization 与 schema 变化；索引随 snapshot 增量更新）。官方 docs 同步成普通 Vault 后，向量检索自然沿用普通 Vault 边界——daemon 为这个 root 维护派生索引，索引记录 canonical vault identity、docs fingerprint、provider/model identity、chunking schema 与 indexed revision。CLI 二进制不包含大模型权重与预计算向量；删除 cache 后可从 `.not` source 重建。
 
-== 发布边界
+<a id="发布边界"></a>
+## 发布边界
 
 仓库中的 Skill 模板与 `docs/**` 都是 authored source。构建产生嵌入 bundle；运行产生用户数据目录中的官方 docs Vault 与可再生索引；`skill init` 只产生一个可安装的 `SKILL.md`。三类内容不能反向成为彼此的编辑入口：
 
@@ -105,8 +119,9 @@ docs/** -> deterministic bundle -> notist binary
 
 `notist skill init` 不接受用户 Vault root，也不把当前目录导出为 Skill——个人 Vault 可能包含 secrets、prompt injection 与不明确的发布权限；未来若支持这种发布，应使用独立命令与设计。
 
-== CLI 适配
+<a id="cli-适配"></a>
+## CLI 适配
 
-CLI 是 [cli](../../cli.md) 命令面与 daemon 之间的最薄适配层：参数解析 → core request（#<vault::designs::host::client-interface-protocol/Client Interface> 表）→ daemon 或 embedded service → response 格式化为 bounded text。`--no-daemon` 在当前进程创建临时 VaultEngine 与 disk View，执行相同 core request——embedded mode 不是第二套实现，只是把同一 service object 放在 client 进程中（[失败与重启](client-interface-protocol.md#失败与重启)）。
+CLI 是 [cli](../../cli.md) 命令面与 daemon 之间的最薄适配层：参数解析 → core request（#<vault::designs::host::client-interface-protocol/Client Interface> 表）→ daemon 或 embedded service → response 格式化为 bounded text。`--no-daemon` 在当前进程创建临时 VaultEngine 与 disk View，执行相同 core request——embedded mode 不是第二套实现，只是把同一 service object 放在 client 进程中（[client-interface-protocol](client-interface-protocol.md#失败与重启)）。
 
 `daemon`、`lsp`、`skill init`、`build`、`preview`、`export` 各自是固定协议的 adapter（[cli](../../cli.md)）；它们的 stdout 边界由协议决定，不混入普通查询 text。CLI 不做任何语义猜测：selector 解析、cursor 验证、fingerprint 检查都在 core 侧完成，CLI 只投影与展示。

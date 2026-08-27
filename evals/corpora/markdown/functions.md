@@ -1,8 +1,15 @@
-= Built-in Functions
+---
+kind: reference
+status: current
+---
+
+<a id="built-in-functions"></a>
+# Built-in Functions
 
 本文记录当前工具 surface 实际提供的 14 个内置构造器。未列出的名称不是现行 built-in：未注册名称由 check 层报 unknown function 诊断，调用本身保留为内容节点（渲染有 fallback 标签兜底）；加载插件后 `{package}::{element}` 是注册名，不报 unknown。调用模型与类型规则见 [types](types.md)，语法细节见 [grammar](grammar.md)，速查见 [cheatsheet](cheatsheet.md)。
 
-== 签名总览
+<a id="签名总览"></a>
+## 签名总览
 
 ```text
 link(target: Target | String) -> Content
@@ -23,7 +30,8 @@ strike(trailing body: Content) -> Content
 
 签名记号：`T?` 是可空类型（可传 `none`）；`= 默认值` 表示形参可省略且只能具名绑定；`trailing` 表示末尾 Content 形参，调用时写作尾随 `[内容]`。
 
-== 调用规则
+<a id="调用规则"></a>
+## 调用规则
 
 ```not
 #heading(level: 2)[标题]
@@ -37,13 +45,14 @@ strike(trailing body: Content) -> Content
 - 重复绑定、未知实参、缺失必填实参与类型不匹配都产生指向调用位置的诊断；
 - 内置构造器是 first-class 函数：可以绑定、传递与组合——`#let make_title = heading` 合法。
 
-== link
+<a id="link"></a>
+## link
 
 ```text
 link(target: Target | String) -> Content
 ```
 
-产生 Reference 元素。`Target` 是 ModulePath 加可选 label 的结构化拼写，`String` 只表示外部 url。`[functions](functions.md)` 是 Target 字面量糖，与 `link(<...>)` 共享同一解析入口：
+产生 Reference 元素。`Target` 是 ModulePath 加可选 label 的结构化拼写，`String` 只表示外部 url。`#<...>` 是 Target 字面量糖，与 `link(<...>)` 共享同一解析入口：
 
 ```not
 #<vault::grammar>
@@ -55,7 +64,8 @@ link(target: Target | String) -> Content
 - 带 scheme（`https://` 等）的外部 URL 语法合法：解析为 External 目标，当前渲染为未解析的可见文本并产生 info 级 `external-reference-unsupported` 诊断；
 - 目标解析产物与引用图见 [reference-ref-target](designs/world/reference-ref-target.md)。
 
-== heading
+<a id="heading"></a>
+## heading
 
 ```text
 heading(level: Int = 1, trailing body: Content) -> Content
@@ -70,10 +80,11 @@ heading(level: Int = 1, trailing body: Content) -> Content
 
 - 语法边界：行首 `=` 连续出现一个或多个，其后必须跟空白（或行尾），再后是标题 body；`=foo` 是普通文本；
 - 错误恢复：行首 `=` 后无内容 → 空 body 的 Heading；
-- 标题拥有默认 id：body 提取的纯文本（Text 元素按顺序拼接，含嵌套）——`= 安装指南` 默认即可被 `[.../安装指南](functions.md#安装指南)` 引用；显式 `@id` 覆盖默认 id；无效文本回退为 `loc-<起始字节偏移>` 锚点；
+- 标题拥有默认 id：body 提取的纯文本（Text 元素按顺序拼接，含嵌套）——`= 安装指南` 默认即可被 `#<.../安装指南>` 引用；显式 `@id` 覆盖默认 id；无效文本回退为 `loc-<起始字节偏移>` 锚点；
 - 同级标题与其后内容归组为嵌套的 Section 节点（见 [structure](designs/pipeline/structure.md) 与 [html-renderer](designs/host/html-renderer.md)）。
 
-== raw
+<a id="raw"></a>
+## raw
 
 ```text
 raw(source: String, lang: String? = none, block: Bool = false) -> Content
@@ -105,7 +116,8 @@ println!("Hello");
 
 等价于 `raw("println!(\"Hello\");", lang: "rust", block: true)`。行内反引号（一对相同长度的 backtick run）同样产生 Raw 元素，block 为 false；未闭合围栏 → 内容到文件尾并产生诊断。
 
-== rule
+<a id="rule"></a>
+## rule
 
 ```text
 rule() -> Content
@@ -120,7 +132,8 @@ rule() -> Content
 - `---` 是 rule；`-` 后跟空白与内容 → 列表条目糖（见 item）；
 - 不足三个的连字符（如 `--`）按普通文本处理，不产生诊断。
 
-== callout
+<a id="callout"></a>
+## callout
 
 ```text
 callout(kind: String = "note", title: Content? = none, trailing body: Content) -> Content
@@ -134,7 +147,8 @@ callout(kind: String = "note", title: Content? = none, trailing body: Content) -
 #callout(kind: "warning", title: [风险])[保存前请检查配置。]
 ```
 
-== details
+<a id="details"></a>
+## details
 
 ```text
 details(summary: Content? = none, open: Bool = false, trailing body: Content) -> Content
@@ -148,7 +162,8 @@ details(summary: Content? = none, open: Bool = false, trailing body: Content) ->
 ]
 ```
 
-== item
+<a id="item"></a>
+## item
 
 ```text
 item(ordered: Bool = false, trailing body: Content) -> Content
@@ -174,7 +189,8 @@ item(ordered: Bool = false, trailing body: Content) -> Content
 #item[显式条目]#item[另一个条目]
 ```
 
-== table-cell / table
+<a id="table-cell-table"></a>
+## table-cell / table
 
 ```text
 table-cell(colspan: Int = 1, rowspan: Int = 1, trailing body: Content) -> Content
@@ -205,7 +221,8 @@ table(columns: Int, header: Bool = false, align: String? = none,
 - body 行缺 cell 补空 cell；多 cell 产生诊断并截断；
 - 没有合法分隔行时，整段按普通文本处理。
 
-== figure
+<a id="figure"></a>
+## figure
 
 ```text
 figure(kind: String? = none, supplement: Content? = none,
@@ -225,7 +242,8 @@ figure(kind: String? = none, supplement: Content? = none,
 
 Typst figure 的 `placement` / `scope` / `gap` / `outlined` / `numbering` 依赖尚未进入 Notist 的 float、counter 与 outline；当前只提供 caption/kind/supplement 子集。无语法糖。
 
-== strong / emph / underline / strike
+<a id="strong-emph-underline-strike"></a>
+## strong / emph / underline / strike
 
 ```text
 strong(trailing body: Content)    -> Content
@@ -252,7 +270,8 @@ __text__  ~= underline([text])
 *加粗*、_斜体_、__下划线__、~~删除线~~。
 ```
 
-== 未知函数
+<a id="未知函数"></a>
+## 未知函数
 
 不在上表的内置名称由 check 层报 unknown function 诊断；`::` 命名空间形式在对应插件经 `Notist.toml` 加载后是合法注册名（见 [plugins](plugins.md)），不报 unknown。
 

@@ -1,8 +1,16 @@
-= Projection Contribution
+---
+implementation: partial
+kind: design
+status: current
+---
+
+<a id="projection-contribution"></a>
+# Projection Contribution
 
 本文定义投影的模型：投影是 target package 注册的第二阶段规约。project 阶段在 pipeline 中的位置见 [project](../pipeline/project.md)；HTML target 的宿主渲染环境见 [html-renderer](../host/html-renderer.md)。
 
-== 投影即规约
+<a id="投影即规约"></a>
+## 投影即规约
 
 投影不是一张硬编码的渲染分发表，而是 target package 注册的第二阶段规约：
 
@@ -15,12 +23,13 @@
 
 由此推出：
 
-- **两个独立的 registry**。语义规约不认识 `html::*`——target 词表不在语义阶段注册，作者在文档里写 `html::` 名字会被 check 层报 unknown。内容编写永远与投影端无关：想要某种呈现，作者在投影无关的 call 上写内容，由插件在投影端实现呈现逻辑。
-- **target package 注册两类东西**：投影 handler（插件 call → `html::*`）与 `html::*` 数据名字的 serializer 规则；core 的原生节点由同一 target 的内置分支处理。
-- **core 与插件共享 target 边界**：原生标签与 Web Component 都由 HTML target 负责，区别只在 target 侧的映射实现与是否携带资产；语义层不因此引入 HTML 名字。
-- **多 target 同构**：native target 是另一个 target package，把同一森林规约到自己的节点词表。"原生"是 per-target 概念。
+- ***两个独立的 registry***。语义规约不认识 `html::*`——target 词表不在语义阶段注册，作者在文档里写 `html::` 名字会被 check 层报 unknown。内容编写永远与投影端无关：想要某种呈现，作者在投影无关的 call 上写内容，由插件在投影端实现呈现逻辑。
+- ***target package 注册两类东西***：投影 handler（插件 call → `html::*`）与 `html::*` 数据名字的 serializer 规则；core 的原生节点由同一 target 的内置分支处理。
+- ***core 与插件共享 target 边界***：原生标签与 Web Component 都由 HTML target 负责，区别只在 target 侧的映射实现与是否携带资产；语义层不因此引入 HTML 名字。
+- ***多 target 同构***：native target 是另一个 target package，把同一森林规约到自己的节点词表。"原生"是 per-target 概念。
 
-== Render Contribution
+<a id="render-contribution"></a>
+## Render Contribution
 
 插件不输出 HTML 字符串。它声明后端无关的投影贡献，宿主把它合成为投影 handler：
 
@@ -48,7 +57,8 @@
 - 未注册投影的名字走安全 fallback（见下）；
 - core 节点的 HTML 映射（`core::heading` → `<h1>` 等）是 HTML target 的内置投影分支；插件贡献通过同一 target registry 接入。
 
-== 当前 HTML contribution
+<a id="当前-html-contribution"></a>
+## 当前 HTML contribution
 
 当前只开放声明式 Web Component projection：
 
@@ -71,11 +81,13 @@ WebComponentDecl {
 - `tag` 必须是包含 `-` 的 lowercase custom-element 名，manifest 校验时拒绝非法 tag。
 - 任意 HTML 字符串 renderer 暂不开放；`trusted` 是 manifest 声明的信任标记，未来用于 Wasm HTML renderer 的 gate。
 
-== Fallback
+<a id="fallback"></a>
+## Fallback
 
 投影规约后仍没有 handler 的名字由 serializer 保底：直接以 call 名出标签——`{package}::{element}` 投影为 `<{package}-{element}>`（合法的 custom element 名，可被 CSS 选中，无需 JS），标量字段转义为 `data-*` 属性，子森林照常投影。fallback 永远 total，build 不失败。
 
-== 已裁定 / 待定
+<a id="已裁定-待定"></a>
+## 已裁定 / 待定
 
 - 已裁定：投影是 target package 注册的第二阶段规约；语义规约与投影规约是两个独立的 registry，`html::*` 不进语义层。
 - 已裁定：插件只声明投影贡献，target 结果由宿主生成。

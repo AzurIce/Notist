@@ -1,4 +1,4 @@
-@![implementation = "aligned"]
+@![implementation = "aligned", kind = "design", status = "current"]
 = Reference and RefTarget
 
 本文是引用寻址与 RefTarget 的独立成篇，从归档的历史混合文档中独立成篇。Reference 元素的值层定义见 #<vault::designs::plugin-system::core/link>；scope 是值层节点见 #<vault::designs::language::scope-environment/scope 是值层节点>。

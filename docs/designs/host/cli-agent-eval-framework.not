@@ -10,10 +10,10 @@
 
 | 语料 | 来源 | 指纹（sha256 前 16 位） |
 | - | - | - |
-| `corpora/notist` | main 仓库 docs @ c86a090 经 `git archive` 提取 | 29ee536fd1793f67 |
-| `corpora/markdown` | 上者经确定性转换器（@29d757b）导出 | cc01510f6a3dbc3d |
+| `corpora/notist` | main 仓库 docs+plugins @ **1666adc**（全量含 ai/，插件捆绑）经 `prepare` 增强 | e3177ce57590b04b |
+| `corpora/markdown` | 上者经严格转换器 `build_corpus_v2.py convert` 导出 | a77e7cc5623659d7 |
 
-提取时的裁剪：剔除 `ai/`、`.obsidian`、`AGENTS.md`；`Notist.toml` 置空以避免插件路径解析。指纹算法与逐文件清单见 `evals/corpora/README.md`。
+裁剪仅剔除 `.obsidian` 与 `AGENTS.md`；mermaid/shader 插件包随语料捆绑、以仓库相对路径在 Notist.toml 声明，使裸调用可注册。冻结时点上游缺口（未提交的调查条目、slash 引用笔误、断行行内码）已在 main 提交 981f7f4 与 1666adc 先行修复——语料本身零诊断。指纹算法与逐文件清单见 `evals/corpora/README.md`。
 
 === 同步规则
 

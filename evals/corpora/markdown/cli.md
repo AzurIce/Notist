@@ -1,12 +1,21 @@
-= Notist CLI: Command Design and Reference
+---
+implementation: partial
+kind: reference
+status: current
+---
+
+<a id="notist-cli-command-design-and-reference"></a>
+# Notist CLI: Command Design and Reference
 
 本文是 `notist` CLI 的完整规范，同时承担设计文档与使用文档两个职责：每个命令既给出“为什么这样设计、边界在哪里”，也给出“怎么调用、输出什么、如何继续”。本文是 CLI 命令面的单一真相；高层分发边界（Skill、官方 docs Vault、发布边界）仍在 [cli-command-surface-skill-distribution](designs/host/cli-command-surface-skill-distribution.md)，查询契约见 [query-contract](designs/host/query-contract.md)，检索语义见 [search-retrieval-index](designs/host/search-retrieval-index.md)，daemon 与协议见 [daemon-process-views](designs/host/daemon-process-views.md) 与 [client-interface-protocol](designs/host/client-interface-protocol.md)。
 
 当前实现状态：`partial`。本文描述 2026-08-15 裁决的目标命令面；已安装二进制的 `notist --help` 在迁移完成前是实际可执行 surface 的最终依据。本文与代码不一致之处按实施计划收敛，不应把旧 flag 重新当作长期契约。
 
-== 设计总览
+<a id="设计总览"></a>
+## 设计总览
 
-=== 三层分离
+<a id="三层分离"></a>
+### 三层分离
 
 CLI 只保留三层，且每层只有一个入口：
 
@@ -18,7 +27,8 @@ CLI 只保留三层，且每层只有一个入口：
 
 命令参数只表达语义意图。`limit`、`max_bytes`、`cursor`、`snippet-bytes`、`wait-index` 等策略参数不进入命令语法；它们由服务端 runtime policy 固定执行。翻页是全局唯一动作 `next`。
 
-=== 命令分组
+<a id="命令分组"></a>
+### 命令分组
 
 ```text
 Explore
@@ -35,9 +45,10 @@ Internal
 
 普通知识工作的默认 discovery 只包含 Explore、check、edit。`debug`、`export` 之外的 Artifacts/Runtime 命令是显式维护或运行时能力。
 
-=== Vault 发现与 ROOT
+<a id="vault-发现与-root"></a>
+### Vault 发现与 ROOT
 
-需要 Vault 的命令把 `[ROOT]` 放在最后一个 positional，默认 `.`。ROOT 可以是 Vault 内文件或目录；Notist 按 [发现规则](designs/world/boundary-discovery.md#发现规则) 向上查找最近的 `Notist.toml`，canonicalize 后连接该 root 对应的 daemon。Nested Vault 不进入外层扫描。
+需要 Vault 的命令把 `[ROOT]` 放在最后一个 positional，默认 `.`。ROOT 可以是 Vault 内文件或目录；Notist 按 [boundary-discovery](designs/world/boundary-discovery.md#发现规则) 向上查找最近的 `Notist.toml`，canonicalize 后连接该 root 对应的 daemon。Nested Vault 不进入外层扫描。
 
 ```shell
 notist status .
@@ -45,7 +56,8 @@ notist search "type system" docs
 notist check docs/designs/host/query-contract.not
 ```
 
-=== Selector、Scope 与 Citation
+<a id="selectorscope-与-citation"></a>
+### Selector、Scope 与 Citation
 
 Selector 是精确身份，Scope 是集合过滤：
 
@@ -64,7 +76,8 @@ scope:
 
 所有可作为证据的位置统一为 `module + relative path + byte range + line range + id + source fingerprint`。普通 text 输出默认显示 `path:line`；只有 `read` 必须打印完整 citation footer，因为它是 edit precondition 的直接来源。
 
-=== 全局参数
+<a id="全局参数"></a>
+### 全局参数
 
 ```text
 notist [--color auto|always|never] [--pager auto|always|never] [--no-daemon] <COMMAND>
@@ -79,7 +92,8 @@ notist [--color auto|always|never] [--pager auto|always|never] [--no-daemon] <CO
 
 `daemon` 与 `lsp` 只允许自己的 framing：传 `--color` 或 `--pager` 是 usage error。`preview` 的 stdout 是启动状态与 SSE revision stream，不是有限 query text。
 
-=== 输出投影
+<a id="输出投影"></a>
+### 输出投影
 
 有限 CLI 命令只有一种公开投影：有界 text。没有 `--format text|json`，也没有 schema-versioned JSON envelope。需要完整机器 artifact 时显式使用 `export --output`；LSP/daemon 使用各自协议 framing。
 
@@ -91,7 +105,8 @@ Text 投影契约：
 - logical result 先受预算约束，再投影为 text；text 最坏上界是 `2 × applied max_bytes + 8 KiB`。
 - excerpt 只用于挑选候选；形成事实结论前必须 `read` authored source。
 
-=== Runtime policy：默认预算
+<a id="runtime-policy默认预算"></a>
+### Runtime policy：默认预算
 
 预算从命令语法下沉为版本化服务策略。普通命令只承诺默认页；完整数据走 export。
 
@@ -111,7 +126,8 @@ refs excerpt         256 bytes                    256 bytes
 
 这些数值是可版本化 policy，不是语言语义；调整通过服务端配置与版本提升，不进入 CLI flag。
 
-=== 继续读取：next
+<a id="继续读取next"></a>
+### 继续读取：next
 
 Collection 命令返回 `continue: notist next <TOKEN>` 或 `complete`。续读时：
 
@@ -124,7 +140,8 @@ notist next <TOKEN>
 - source set 变化返回 `cursor_stale`，token schema 过期返回 `cursor_expired`，token 损坏或不属于该 Vault/View 返回 `invalid_cursor`。
 - 正向事实查找不需要为了形式上的 complete 读完所有页；否定或“列出全部”必须在 `complete` 后下结论。
 
-=== Error 与退出状态
+<a id="error-与退出状态"></a>
+### Error 与退出状态
 
 ```text
 exit 0   成功；零 search result 也属于成功
@@ -138,9 +155,11 @@ exit 70  internal failure
 
 稳定 error code 至少包括 `not_found`、`ambiguous_selector`、`invalid_cursor`、`cursor_expired`、`cursor_stale`、`snapshot_changed`、`index_not_ready`、`query_timeout`、`query_limit`、`invalid_regex`、`edit_conflict`、`plan_expired`。调用者按 exit status 粗分、按 error code 恢复，不解析 message 子串。
 
-== Explore
+<a id="explore"></a>
+## Explore
 
-=== status
+<a id="status"></a>
+### status
 
 用途：轻量入口，回答“这是哪个 Vault、快照是否可信、index 是否 ready”。
 
@@ -168,7 +187,8 @@ Daemon       pid 12345
 - 不返回正文、Heading 或 semantic item；固定 8 KiB 逻辑上限。
 - exit 恒为 0，除非 Vault 无法打开或服务不可用。
 
-=== modules
+<a id="modules"></a>
+### modules
 
 用途：列出稳定逻辑地址，是 `ls` 的语义版。发现 ModulePath，而不是发现文件。
 
@@ -190,7 +210,8 @@ vault::cli  cli.not  source  Notist CLI: Command Design and Reference
 vault::designs  designs/README.not  source  Design Records
 ```
 
-=== search
+<a id="search"></a>
+### search
 
 用途：ranked recall。按概念找候选，不做逐字定位。候选不是证据。
 
@@ -228,7 +249,8 @@ continue: notist next eyJ...
 
 输出 item 的完整语义记录包含 Location、matched field、match/unit/excerpt range、excerpt 与固定精度 score；text 只显示其中与选择候选直接相关的部分。score 只能在同 query、index stamp、ranking version 内比较，不是概率。
 
-=== locate
+<a id="locate"></a>
+### locate
 
 用途：precision。按字面量或正则逐处定位，不参与 BM25 排序。
 
@@ -263,7 +285,8 @@ notist locate --regex "D00[0-9]+" docs --scope vault::designs
 continue: notist next eyJ...
 ```
 
-=== outline
+<a id="outline"></a>
+### outline
 
 用途：只看一个 Module 的 Heading 结构，不读正文。结构是求值后的 Heading，不是源码正则猜测。
 
@@ -286,7 +309,8 @@ notist outline vault::designs::host::query-contract docs --depth 2
   == Core Query Contract  host/query-contract.not:23  #Core Query Contract
 ```
 
-=== read
+<a id="read"></a>
+### read
 
 用途：按稳定地址读 authored source，是形成事实与编辑前置条件的唯一证据入口。
 
@@ -321,7 +345,8 @@ continue: notist next eyJ...
 
 citation footer 是 text-only 契约下 edit precondition 的直接来源：byte range 与 fingerprint 必须直接可复制进 `edit replace` 与 `--expected-fingerprint`。
 
-=== refs
+<a id="refs"></a>
+### refs
 
 用途：遍历已经解析的 Reference graph。默认 incoming，回答“谁引用这个目标”。
 
@@ -348,7 +373,8 @@ vault::designs::host::cli-command-surface-skill-distribution -> vault::designs::
   ... query contract ...
 ```
 
-=== definition
+<a id="definition"></a>
+### definition
 
 用途：由精确 source offset 找定义，是 LSP definition 的 CLI 投影。
 
@@ -362,7 +388,8 @@ notist definition <PATH> <UTF8_BYTE_OFFSET> [ROOT]
 - 返回零或一个 location，不分页；text 只打印 `module path:line`，没有结果时打印 `no definition`。
 - `query definition` 是迁移期 alias。
 
-=== next
+<a id="next"></a>
+### next
 
 用途：继续上一个未完成 collection 页面。这是翻页在 CLI 上的唯一入口。
 
@@ -381,9 +408,11 @@ notist search "workspace snapshot" docs
 notist next eyJ...
 ```
 
-== Validate & edit
+<a id="validate-edit"></a>
+## Validate & edit
 
-=== check
+<a id="check"></a>
+### check
 
 用途：对完整 Vault 下健康结论，不提供 module scope。跨模块 import/reference 的语义世界不能靠局部 scope 变成“检查通过”。
 
@@ -412,7 +441,8 @@ hint: create the module or correct the reference
 2 diagnostics in 1 source; showing 2
 ```
 
-=== edit
+<a id="edit"></a>
+### edit
 
 用途：唯一写入口。所有编辑经过 propose → validate → apply pipeline；不做 fuzzy patch，也不因调用者“看起来像 Agent”而隐式授权。
 
@@ -441,9 +471,11 @@ proposed edit designs/host/query-contract.not 12..40
 pass --yes to apply
 ```
 
-== Artifacts
+<a id="artifacts"></a>
+## Artifacts
 
-=== export
+<a id="export"></a>
+### export
 
 用途：完整机器 artifact 的显式出口。普通 query 永不无界；需要全量数据时写文件，stdout 只回摘要。
 
@@ -466,7 +498,8 @@ snapshot: disk revision 42
 checksum: sha256:9f2c...
 ```
 
-=== build
+<a id="build"></a>
+### build
 
 用途：从一个 captured snapshot 生成多页静态 HTML artifact。
 
@@ -479,7 +512,8 @@ notist build [ROOT] --output DIR [--clean]
 - 构建诊断与页面来自同一 snapshot；存在 error 时 exit 1。
 - stdout 只回 page count、输出目录与 error count。
 
-=== preview
+<a id="preview"></a>
+### preview
 
 用途：本地预览与 live reload；是长时间 runtime，不是有限 query。
 
@@ -493,9 +527,11 @@ notist preview [ROOT] [--host IP] [--port N] [--open]
 - stdout 是启动状态 + SSE revision stream；不要混入普通查询语义。
 - Enhanced 模式：页面侧边栏显示 Symbols（锚点、根 `let` 绑定、标注区域），标注区域高亮并可跳转；状态在同一标签页 live reload 间保持。
 
-== Runtime & tooling
+<a id="runtime-tooling"></a>
+## Runtime & tooling
 
-=== index
+<a id="index"></a>
+### index
 
 用途：检查或重建派生检索索引；不修改 authored Vault。
 
@@ -509,7 +545,8 @@ notist index rebuild [ROOT] [--wait]
 - `--no-daemon` 下 rebuild 隐式等待，避免后台任务随进程退出丢失。
 - search/locate 不依赖调用者手动 rebuild；首次 search 会按 snapshot 惰性提交 build task。
 
-=== daemon
+<a id="daemon"></a>
+### daemon
 
 ```shell
 notist daemon [ROOT]
@@ -521,7 +558,8 @@ notist daemon stop [ROOT]
 - CLI 默认惰性连接或启动 daemon；`--no-daemon` 是隔离部署形态，不是第二套语义。
 - stale daemon 的 binary stamp 回收规则见 #<vault::designs::host::client-interface-protocol/过期 daemon 的回收>。
 
-=== lsp
+<a id="lsp"></a>
+### lsp
 
 ```shell
 notist lsp
@@ -531,7 +569,8 @@ notist lsp
 - 只允许 LSP framing；不接受 `--color`/`--pager`。
 - LSP 维护 editor overlay View；CLI 普通命令查询 disk View，二者不共享未保存文本。
 
-=== skill
+<a id="skill"></a>
+### skill
 
 ```shell
 notist skill init <OUTPUT> [--force]
@@ -542,9 +581,11 @@ notist skill init <OUTPUT> [--force]
 - 不猜测 Host 安装目录，不修改 Host registry，不接受把当前 Vault 导出为 Skill。
 - 分发与 docs Vault 边界见 [cli-command-surface-skill-distribution](designs/host/cli-command-surface-skill-distribution.md)。
 
-== Internal
+<a id="internal"></a>
+## Internal
 
-=== debug
+<a id="debug"></a>
+### debug
 
 ```shell
 notist debug inspect [ROOT]
@@ -557,7 +598,8 @@ notist debug inspect [ROOT]
 - 分页与其他 collection 相同，只通过 `next`。
 - 旧的全库 `inspect` 与无界 dump 不复存在；完整数据走 export。
 
-== 迁移与兼容
+<a id="迁移与兼容"></a>
+## 迁移与兼容
 
 2026-08-15 裁决的新命令面是有意 breaking change。迁移窗口只保留下列 alias：
 
@@ -585,7 +627,8 @@ check --scope
 
 旧 cursor 与旧 index 在版本不匹配时拒绝，而不是猜测迁移。release notes 必须写明：需要机器结果的使用者改走 `export --output`；需要继续读取的调用者改用 `notist next`。
 
-== Agent 工作流
+<a id="agent-工作流"></a>
+## Agent 工作流
 
 ```text
 status / modules
@@ -604,7 +647,8 @@ status / modules
 - 否定或“列出全部”：必须读到 complete，或使用 export。
 - search/locate excerpt 不是最终证据；refs 不是正文替代品。
 
-== Conformance
+<a id="conformance"></a>
+## Conformance
 
 一个命令要进入本文公开 surface，必须同时满足：
 

@@ -1,4 +1,11 @@
-= Parse Stage
+---
+implementation: aligned
+kind: design
+status: current
+---
+
+<a id="parse-stage"></a>
+# Parse Stage
 
 本文定义 Notist 的第一阶段：把 source text 解析为 mode-aware 语法树。Markup 与 Code 的完整表面语法见 [markup-surface](../language/markup-surface.md) 与 [code-grammar](../language/code-grammar.md)；语法糖语义见 [syntax-sugar](../language/syntax-sugar.md)。
 
@@ -9,7 +16,8 @@ source: String ── parse ──> Parse {
 }
 ```
 
-== 输入与输出
+<a id="输入与输出"></a>
+## 输入与输出
 
 - 输入：一个 UTF-8 source string，以及调用方提供的 absolute base offset。
 - 输出：`Parse`。
@@ -17,7 +25,8 @@ source: String ── parse ──> Parse {
   - `errors: Vec<SyntaxError>`：可恢复语法错误，每个错误带 byte range。
 - parse 不做名称解析、不查函数签名、不执行用户代码。
 
-== Markup / Code 交替
+<a id="markup-code-交替"></a>
+## Markup / Code 交替
 
 parser 默认处于 Markup 模式。Markup 扫描在遇到下列结构时切换到 Code 或进入受保护的子扫描：
 
@@ -26,12 +35,13 @@ parser 默认处于 Markup 模式。Markup 扫描在遇到下列结构时切换�
 | `#expr` | 嵌入 Code 表达式，记录 scope range 与完整 range |
 | `[markup]` | Content literal；方括号内回到 Markup 模式 |
 | 反引号 / fenced raw | 保护扫描，不把内容当 Markup/Code |
-| `[parse](parse.md)` | Target 字面量扫描（`<` 到未转义 `>`） |
+| `#<target>` | Target 字面量扫描（`<` 到未转义 `>`） |
 | `@[...]` / `@![...]` | 属性列表，不是 Markup 内容 |
 
-Markup 与 Code 的边界规则由 [嵌入的边界](../language/markup-surface.md#嵌入的边界) 定义；parser 只消费静态边界，不依赖函数签名判断 `[` / `-` 含义。
+Markup 与 Code 的边界规则由 [markup-surface](../language/markup-surface.md#嵌入的边界) 定义；parser 只消费静态边界，不依赖函数签名判断 `[` / `-` 含义。
 
-== Markup 节点
+<a id="markup-节点"></a>
+## Markup 节点
 
 ```text
 MarkupItem =
@@ -50,7 +60,8 @@ MarkupItem =
 - Heading / Rule / List / Table 是 syntax frontend 专用糖节点，lowering 时获得 `core::*` 构造器身份；
 - BlockAnnotation 与 ModuleAnnotation 是属性挂载点，不直接成为内容节点。
 
-== Code 节点
+<a id="code-节点"></a>
+## Code 节点
 
 ```text
 ExpressionKind =
@@ -65,13 +76,15 @@ ExpressionKind =
 - Call 记录 name、arguments 与 trailing Content blocks；
 - Error 是保留源码范围的可恢复占位，不是合法值。
 
-== 受保护扫描
+<a id="受保护扫描"></a>
+## 受保护扫描
 
-- raw literal 的 delimiter、inline/fenced 形态与关闭规则见 [raw](../language/syntax-sugar.md#raw)；
+- raw literal 的 delimiter、inline/fenced 形态与关闭规则见 [syntax-sugar](../language/syntax-sugar.md#raw)；
 - Target 字面量的 `<...>` 内是路径拼写，不再扫描 Markup；
 - Code 注释与 string literal 按 [code-grammar](../language/code-grammar.md) 扫描，不泄漏到外层结构。
 
-== 错误恢复
+<a id="错误恢复"></a>
+## 错误恢复
 
 parser 是总函数：错误记录到 `Parse.errors`，当前节点以 `Error` 或最佳局部结果继续。规则：
 
@@ -79,14 +92,16 @@ parser 是总函数：错误记录到 `Parse.errors`，当前节点以 `Error` �
 - 诊断 range 指向造成错误的精确区间；
 - 调用方应展示错误，同时仍可使用 `Parse.root` 执行后续阶段。
 
-== 不变量
+<a id="不变量"></a>
+## 不变量
 
-- **S1 顺序**：`Markup.items` 与表达式子节点保持 source order。
-- **S2 Range**：每个节点携带半开 byte range；parser 不改变 source 文本。
-- **S3 无语义猜测**：parse 不 resolve 名字、不查 registry、不猜 trailing Content 属于哪个形参。
-- **S4 糖保留身份**：语法糖以专用节点保留，直到 lowering 才替换为 `core::*` intrinsic 调用。
+- ***S1 顺序***：`Markup.items` 与表达式子节点保持 source order。
+- ***S2 Range***：每个节点携带半开 byte range；parser 不改变 source 文本。
+- ***S3 无语义猜测***：parse 不 resolve 名字、不查 registry、不猜 trailing Content 属于哪个形参。
+- ***S4 糖保留身份***：语法糖以专用节点保留，直到 lowering 才替换为 `core::*` intrinsic 调用。
 
-== Conformance
+<a id="conformance"></a>
+## Conformance
 
 | 输入 | 预期 | 测试 |
 |---|---|---|
@@ -96,7 +111,8 @@ parser 是总函数：错误记录到 `Parse.errors`，当前节点以 `Error` �
 | unclosed block comment | 记录恢复错误 | `reports_unclosed_block_comments_in_code_contexts` |
 | raw literal 内 Markup 字符 | 保持原文，不嵌套扫描 | `parses_module_references_and_hides_markup_inside_raw` |
 
-== 已裁定 / 待定
+<a id="已裁定-待定"></a>
+## 已裁定 / 待定
 
 - 已裁定：parse 是纯函数；输出 `Parse { root, errors }`；不做名称解析。
 - 已裁定：Markup 与 Code 共用一棵 mode-aware 树，ContentBlock body 递归为 Markup。

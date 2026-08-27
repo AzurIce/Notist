@@ -1,4 +1,4 @@
-@![implementation = "aligned"]
+@![implementation = "aligned", kind = "design", status = "current"]
 = Build and Preview
 
 本文是 A7 静态构建与本地预览的独立成篇，从归档的历史混合文档中独立成篇。HTML fragment 渲染见 #<vault::designs::host::html-renderer>；RefTarget 见 #<vault::designs::world::reference-ref-target>；WorkspaceSnapshot 见 #<vault::designs::host::analyzer-snapshot>。

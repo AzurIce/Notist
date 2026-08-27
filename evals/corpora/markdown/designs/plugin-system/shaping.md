@@ -1,8 +1,16 @@
-= Shaping Contribution
+---
+implementation: partial
+kind: design
+status: current
+---
+
+<a id="shaping-contribution"></a>
+# Shaping Contribution
 
 本文定义插件元素如何声明成型 schema。成型算法本身由 pipeline 的 structure 阶段拥有，见 [structure](../pipeline/structure.md)；插件节点如何从 call 规约出来见 [plugin-call-reduction](../pipeline/plugin-call-reduction.md)。
 
-== ElementDecl
+<a id="elementdecl"></a>
+## ElementDecl
 
 ```json
 {
@@ -16,7 +24,8 @@
 
 宿主把每个 ElementDecl 投影为 `ElementSchema { name, kind, body_mode, role }` 并注册进 `ShapingRegistry`。
 
-== kind
+<a id="kind"></a>
+## kind
 
 `kind` 是段落流分类；未声明时由 `block` 推导：
 
@@ -29,7 +38,8 @@
 
 `core::parbreak` 是默认 core contribution 注册的 `separator`；`separator` 行为来自 schema 与宿主成型算法，不来自 core 的 reducer 特权。
 
-== body-mode
+<a id="body-mode"></a>
+## body-mode
 
 `body-mode` 决定 body 的递归成型方式：
 
@@ -40,7 +50,8 @@
 | `cells` | body 保持 cell 序列，不做段落组合 |
 | `none` | body 不参与成型 |
 
-== role
+<a id="role"></a>
+## role
 
 | role | 成型行为 |
 |---|---|
@@ -48,7 +59,8 @@
 | `heading` | 开启 `core::section` 归组 |
 | `item` | 相邻同类合并为 `core::list` |
 
-== 成型所有权
+<a id="成型所有权"></a>
+## 成型所有权
 
 宿主成型引擎固定，规则全部来自 schema：
 
@@ -60,13 +72,15 @@
 - 每个 body 都按其容器模式递归成型，而不是只处理文档顶层。
 - core package 的 `core::parbreak` / `core::heading` / `core::item` 只是该 registry 中由标准 package 提供的 schema；其它 package 也可按同一 schema 契约声明对应成型行为。
 
-== 当前实现映射
+<a id="当前实现映射"></a>
+## 当前实现映射
 
 - `ShapingRegistry` / `ElementSchema` 已实现；core schema 内置，插件 schema 由组件 `init` 注册。
 - 组件声明支持 `block`、`body-mode`、`role`、`kind`。
 - 主 structure/project 已直接消费 `Node` 森林；`ElementTree` 是成型后的 Node 容器，不再经过 legacy 兼容投影。
 
-== 已裁定 / 待定
+<a id="已裁定-待定"></a>
+## 已裁定 / 待定
 
 - 已裁定：成型引擎由宿主拥有；插件通过 schema 参与，不提供 shaping hook。
 - 待定：若未来需要自定义 body shaping，作为 additive 的 shaping contribution 单独设计。

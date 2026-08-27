@@ -1,4 +1,4 @@
-@![implementation = "aligned"]
+@![implementation = "aligned", kind = "design", status = "current"]
 = Annotation Syntax
 
 本文是 L8 标注语法的独立成篇，从归档的历史混合文档中独立成篇。属性如何绑定到值、求值收尾如何转写为属性表见 #<vault::designs::language::property-table>；scope 的语法形态见 #<vault::designs::language::markup-surface/scope 的语法形态>。

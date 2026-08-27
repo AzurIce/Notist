@@ -1,4 +1,10 @@
-= Designs
+---
+kind: design
+status: current
+---
+
+<a id="designs"></a>
+# Designs
 
 #[
   Notist 的设计文档。
@@ -42,7 +48,7 @@
     """#,
     )[]
 ```
-  ]
+  ] <!-- @ann: type=user,.user -->
 
 ```text
 pipeline/      编译管线：parse → check → evaluate → structure → project
@@ -53,14 +59,17 @@ lsp/           LSP 对外契约的黑箱无头验证
 plugin-system/ 插件系统：package、ABI、贡献、信任模型与生命周期
 ```
 
-== 阅读顺序
+<a id="阅读顺序"></a>
+## 阅读顺序
 
-=== 入口
+<a id="入口"></a>
+### 入口
 
 1. `<vault::designs::pipeline>`：编译管线总览：parse → check → evaluate → structure → project。
 2. [overview](overview.md)：语言概览与最小示例。
 
-=== 管线阶段
+<a id="管线阶段"></a>
+### 管线阶段
 
 按数据流阅读：
 
@@ -70,7 +79,8 @@ plugin-system/ 插件系统：package、ABI、贡献、信任模型与生命周�
 4. [project](pipeline/project.md)：按 name 分发到 target 投影。
 5. [plugin-call-reduction](pipeline/plugin-call-reduction.md)：插件调用在 reduce 阶段如何规约。
 
-=== 插件系统
+<a id="插件系统"></a>
+### 插件系统
 
 按模块依赖阅读：
 
@@ -84,7 +94,8 @@ plugin-system/ 插件系统：package、ABI、贡献、信任模型与生命周�
 8. [shaping](plugin-system/shaping.md)：成型 schema 贡献。
 9. [projection](plugin-system/projection.md)：target 投影贡献与 fallback。
 
-=== 语言层
+<a id="语言层"></a>
+### 语言层
 
 按概念依赖顺序阅读：
 
@@ -98,7 +109,8 @@ plugin-system/ 插件系统：package、ABI、贡献、信任模型与生命周�
 8. [annotation-syntax](language/annotation-syntax.md)：标注语法。
 9. [syntax-sugar](language/syntax-sugar.md)：Markup 语法糖规格。
 
-=== Vault 层
+<a id="vault-层"></a>
+### Vault 层
 
 1. [boundary-discovery](world/boundary-discovery.md)：Vault 边界、marker 与发现规则。
 2. [module-result](world/module-result.md)：Module 与 ModuleResult。
@@ -106,7 +118,8 @@ plugin-system/ 插件系统：package、ABI、贡献、信任模型与生命周�
 4. [reference-ref-target](world/reference-ref-target.md)：引用寻址与 RefTarget。
 5. [core-namespace-plugin-boundary](world/core-namespace-plugin-boundary.md)：core namespace、prelude 与插件边界。
 
-=== 宿主层
+<a id="宿主层"></a>
+### 宿主层
 
 1. [analyzer-snapshot](host/analyzer-snapshot.md)：分析层与 WorkspaceSnapshot。
 2. [query-contract](host/query-contract.md)：查询契约与 Selector/Citation。
@@ -119,7 +132,8 @@ plugin-system/ 插件系统：package、ABI、贡献、信任模型与生命周�
 9. [html-renderer](host/html-renderer.md)：HTML 渲染。
 10. [build-preview](host/build-preview.md)：静态构建与本地预览。
 
-== 状态属性
+<a id="状态属性"></a>
+## 状态属性
 
 每篇 active design 在文件开头用模块属性声明实现对齐状态：
 
@@ -161,7 +175,8 @@ plugin-system/ 插件系统：package、ABI、贡献、信任模型与生命周�
 
 位置本身表达治理状态：active 目录中的文档是现行设计；退休的文档直接移除。Git 是完整历史，不维护编号 ID 或 `Design:` trailer。
 
-== 写作规范
+<a id="写作规范"></a>
+## 写作规范
 
 - 一篇文档回答一个概念或一组强耦合概念；目录层级只到 pipeline/language/world/host/lsp/plugin-system 为止，避免更深嵌套。
 - 模块路径一旦发布，不因标题或阅读顺序调整而重命名；拆分或合并时才允许移动，并同步更新全部引用。
@@ -169,6 +184,7 @@ plugin-system/ 插件系统：package、ABI、贡献、信任模型与生命周�
 - 设计正文解释模型、边界与后果；实现状态只在文件头属性中声明，不写进行文。
 - 保持正文干练；判定规则用表，状态迁移用伪代码；每篇可独立 `notist check` 验证。
 
-== 历史编号
+<a id="历史编号"></a>
+## 历史编号
 
 本次重构前，设计文档使用 `D0001`–`D0036` 扁平编号。旧编号与语义路径的映射已随 archive 目录移除；旧提交仍可通过 Git 查看，不需要在当前树中保留编号壳。

@@ -1,4 +1,4 @@
-@![implementation = "partial"]
+@![implementation = "partial", kind = "design", status = "current"]
 = Plugin System
 
 #[

@@ -1,4 +1,4 @@
-@![implementation = "aligned"]
+@![implementation = "aligned", kind = "design", status = "current"]
 = Target and Union
 
 本文定义引用目标的一等值设计与 union 类型的最小切片，替代旧 `[[...]]` wiki 引用与 `ref(url: String)`。

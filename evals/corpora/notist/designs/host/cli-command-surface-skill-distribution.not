@@ -1,4 +1,4 @@
-@![implementation = "partial"]
+@![implementation = "partial", kind = "design", status = "current"]
 = CLI Command Surface and Skill Distribution
 
 本文是 A4 CLI 命令面与官方 Skill 分发的独立成篇，从归档的历史混合文档中独立成篇。查询契约见 #<vault::designs::host::query-contract>；daemon 进程与 View 见 #<vault::designs::host::daemon-process-views>；core request 与本地协议见 #<vault::designs::host::client-interface-protocol>。

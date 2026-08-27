@@ -1,0 +1,80 @@
+---
+kind: reference
+status: current
+---
+
+<a id="mermaid-plugin-package"></a>
+# mermaid plugin package
+
+该目录是可分发的 Notist Wasm component 插件包。浏览器渲染使用本地 vendored 的
+`@mermanjs/web-render`，不依赖 CDN 或网页运行时下载：
+
+- 求值期：`plugins/mermaid-wasm` 构建的 wasip2 component 用 mmdr 的
+  parser 校验 `source` 合法性，坏图在 build / LSP 阶段即报宿主诊断；
+  通过后调用规约为 data-only `mermaid::diagram` 节点，携带 `source` 与
+  `theme` 字段；
+- 浏览器期：`assets/merman-web-render/` 内保存精简的 `@mermanjs/web-render`
+  运行时 JS、WASM 与第三方许可文件，custom element 通过相对路径加载，
+  浏览器不会访问网页或 CDN。
+- 求值期校验仍使用 mmdr，因为 Notist 的语义插件是 WASI component，而
+  `@mermanjs/web-render` 是浏览器专用 wasm-bindgen transport；两者的版本和
+  能力边界在这里明确分开，渲染阶段以 Merman 的布局结果为准。
+
+浏览器展示层保留 `default`、`dark`、`neutral`、`forest` 四个公开主题名，
+并把主题名传给 Merman 的 site config。宽图放在可横向滚动的带边界容器内，
+避免挤压正文列；SVG 通过 Merman 的 DOM 安全挂载 API 插入，而不是直接拼接
+未验证的 `innerHTML`。
+
+目录结构：
+
+```text
+plugins/mermaid/
+├── plugin.json          # envelope + 声明式 web-component 投影
+├── semantic.wasm        # 求值期校验（来自 plugins/mermaid-wasm）
+├── README.not
+└── assets/
+    ├── mermaid.js       # custom element hydration
+    └── merman-web-render/
+        ├── dist/         # @mermanjs/web-render runtime modules
+        ├── artifacts/    # matching wasm-bindgen JS + WASM
+        └── THIRD_PARTY_* # package and dependency notices
+```
+
+从 `Notist.toml` 装载：
+
+```toml
+[plugins.mermaid]
+path = "../plugins/mermaid"
+```
+
+调用形态：
+
+```not
+#mermaid(
+  source: r#"""
+flowchart LR
+  A --> B --> C
+"""#,
+)[题注]
+```
+
+签名等价于 `mermaid(source: String, theme: String = "default", trailing body: Content) -> Content`；`theme` 支持 `default`、`dark`、`neutral`、
+`forest`，两侧词表一致。
+
+求值期 mmdr 仍按 `plugins/mermaid-wasm/Cargo.toml` 的版本构建；浏览器期
+Merman 使用自身 vendored text measurement，两个阶段不要混用各自的 WASM
+初始化或 API。
+
+重建 / 更新 vendored 浏览器包：
+
+```sh
+# 求值期校验组件（仍是 mmdr，保持 WASI component 契约）
+cd plugins/mermaid-wasm
+cargo build --target wasm32-wasip2 --release
+cp target/wasm32-wasip2/release/notist_plugin_mermaid_wasm.wasm ../mermaid/semantic.wasm
+
+# 浏览器端使用固定版本的 @mermanjs/web-render，更新时同步其 dist/、
+# artifacts/wasm/ 与 THIRD_PARTY_* 文件，并保留包内相对目录结构。
+nix shell nixpkgs#nodejs nixpkgs#npm -c npm pack \
+  @mermanjs/web-render@0.8.0-alpha.5 --pack-destination /tmp
+```

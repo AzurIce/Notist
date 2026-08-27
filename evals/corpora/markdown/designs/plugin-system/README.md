@@ -1,4 +1,11 @@
-= Plugin System
+---
+implementation: partial
+kind: design
+status: current
+---
+
+<a id="plugin-system"></a>
+# Plugin System
 
 #[
 notist 的内容是求值的结果，而求值是函数式的规约过程（`<vault::designs::pipeline>`），因此所有的不同内容都可以被表示为各自独立的的“函数名”+“参数”的函数调用。
@@ -8,7 +15,7 @@ notist 的内容是求值的结果，而求值是函数式的规约过程（`<va
 - 显示层面：对应的 web component 呈现实现。
 
 notist 内置的全部内容函数（包括 text）都通过插件系统提供。
-]
+] <!-- @ann: type=user,.user -->
 
 ```not
 #rule()
@@ -16,7 +23,8 @@ notist 内置的全部内容函数（包括 text）都通过插件系统提供�
 
 本文是 Notist 插件系统设计的模块入口。它回答：一个插件 package 如何声明自己、native 与 Wasm backend 如何提供等同的语义 contribution、运行时如何组合 package、插件如何实现语义与投影，以及宿主如何保证终止性 / 确定性 / 资源预算。
 
-== 定位
+<a id="定位"></a>
+## 定位
 
 插件系统不是 `<vault::designs::pipeline>` 的一个阶段，而是 pipeline 之外的横切扩展面。pipeline 拥有 `parse → check → lower → reduce → structure → project` 的阶段语义；插件系统负责定义 package、ABI 与贡献，并在三个固定阶段被 pipeline 消费：
 
@@ -30,7 +38,8 @@ ElementSchema / ShapingRegistry → structure
 
 插件调用在 reduce 阶段如何被规约，是 PluginSystem 与 pipeline 的契约，见 [plugin-call-reduction](../pipeline/plugin-call-reduction.md)。core namespace / prelude 与插件边界见 [core-namespace-plugin-boundary](../world/core-namespace-plugin-boundary.md)；HTML target 的消费方式见 [html-renderer](../host/html-renderer.md) 与 [project](../pipeline/project.md)。
 
-== 目标
+<a id="目标"></a>
+## 目标
 
 ```text
 插件 package = 语义 identity + PluginContribution
@@ -42,11 +51,12 @@ ElementSchema / ShapingRegistry → structure
 
 三条原则：
 
-1. **统一 contribution**：core、第三方 native plugin 与 Wasm plugin 共享同一 call 森林表示（`Node`）、注册契约与 registry。
-2. **backend 与语义分离**：native/Wasm 只描述实现、装载和信任边界；package identity 才决定 namespace 与环境身份。core 是默认 App 预装的标准 package，不是 eval engine 的特权对象。
-3. **宿主执规约与成型**：插件贡献规则与实现，宿主执行 dispatch、shaping 与终止/资源检查。
+1. ***统一 contribution***：core、第三方 native plugin 与 Wasm plugin 共享同一 call 森林表示（`Node`）、注册契约与 registry。
+2. ***backend 与语义分离***：native/Wasm 只描述实现、装载和信任边界；package identity 才决定 namespace 与环境身份。core 是默认 App 预装的标准 package，不是 eval engine 的特权对象。
+3. ***宿主执规约与成型***：插件贡献规则与实现，宿主执行 dispatch、shaping 与终止/资源检查。
 
-== 模块内容
+<a id="模块内容"></a>
+## 模块内容
 
 按依赖顺序阅读：
 
@@ -62,7 +72,8 @@ ElementSchema / ShapingRegistry → structure
 
 面向用户的插件示例见 [plugins](../../plugins.md)；插件系统的早期调研与设计过程见 #<vault::ai::2026-08-18 notist plugin system design>。
 
-== 当前实现映射
+<a id="当前实现映射"></a>
+## 当前实现映射
 
 | 组件 | 状态 |
 |---|---|
@@ -84,7 +95,8 @@ ElementSchema / ShapingRegistry → structure
 | 数据型元素声明 | `Registrar::declare`（`computed=false`）：签名 + 成型 schema 全量注册、无派发条目，文档 call 即终态；web-component 投影直接可用 |
 | Wasm 终止/资源预算 | 已实现 fuel-per-call（init 同预算）、16 MiB memory cap、table cap，以及 component response 1 MiB / 10k 节点上限 |
 
-== 已裁定 / 待定
+<a id="已裁定-待定"></a>
+## 已裁定 / 待定
 
 - 已裁定：插件是带 package identity 的语义 contribution；native 与 Wasm 是可替换 backend，Wasm package 仍可由 manifest + wasip2 组件 + assets 组成。
 - 已裁定：core 是默认 App 预装的标准 package，不是 eval engine 的特权 package；作者以 Rust crate / SDK 提供 contribution，Wasm backend 由 `init` 自描述，manifest 不携带 semantic 接口。

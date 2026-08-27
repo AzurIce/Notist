@@ -1,3 +1,4 @@
+@![kind = "reference", status = "current"]
 = 认识 Notist
 
 Notist 是一门带有静态类型系统的文档编程语言。它只有两个语法模式：默认处于 Markup 模式书写正文，`#` 把求值表达式嵌入正文（Code 模式）——写法与感受像标记语言，能力却来自真实的求值。

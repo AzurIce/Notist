@@ -1,8 +1,15 @@
-= Notist Cheatsheet
+---
+kind: reference
+status: current
+---
+
+<a id="notist-cheatsheet"></a>
+# Notist Cheatsheet
 
 这份文档汇总 Notist 当前 surface 的日常速查。语法糖只解决高频书写中构造器调用过于繁琐的问题；精确规则以 [grammar](grammar.md) 为准，构造器逐一说明见 [functions](functions.md)，类型规则见 [types](types.md)，概念介绍见 [intro](intro.md)。
 
-== 语法糖总表
+<a id="语法糖总表"></a>
+## 语法糖总表
 
 ````text
 = Title / == Title         → heading(level: n, [Title])
@@ -22,7 +29,8 @@ __text__                   → underline([text])
 
 糖的语义不经过名字查找：`= 标题` 是语法层构造，显式 `#heading[...]` 才是普通名字解析。
 
-== 内置构造器签名
+<a id="内置构造器签名"></a>
+## 内置构造器签名
 
 ```text
 link(target: Target | String) -> Content
@@ -43,7 +51,8 @@ strong / emph / underline / strike
 
 未注册的内置名称一律产生 unknown function 诊断（调用保留为内容节点）；加载插件后的 `{package}::{element}` 是注册名，不受此限。
 
-== 调用规则
+<a id="调用规则"></a>
+## 调用规则
 
 ```not
 #heading(level: 2)[标题]
@@ -62,7 +71,8 @@ strong / emph / underline / strike
 - `#f(kind: "warning")[内容]` 与 `#f(kind: "warning", [内容])` 等价；
 - 带默认值的形参只能具名绑定；重复/未知/缺失实参、类型不匹配都有确定诊断。
 
-== 类型速查
+<a id="类型速查"></a>
+## 类型速查
 
 ```text
 None / Bool / Int / Float / String / Content   基础类型
@@ -79,7 +89,8 @@ kind: String? =   可省略且可为 None
 
 唯一 coercion：Int 传给 Float 形参时自动数值转换。插入规则：Content 原样；String 转 Text；Int/Float/Bool 转 Text；None 为空；Function 不能插入。
 
-== 标注速查
+<a id="标注速查"></a>
+## 标注速查
 
 ```text
 @id                        赋 scope id（模块内唯一，可被 #<.../id> 引用）
@@ -101,7 +112,8 @@ key = value                键值属性（String / Int / Bool 字面量）
 
 注意：标注的键值用等号（`key = value`），调用点命名实参用冒号（`name: value`）。
 
-== 运算符优先级
+<a id="运算符优先级"></a>
+## 运算符优先级
 
 ```text
 高  一元 -、not
@@ -114,7 +126,8 @@ key = value                键值属性（String / Int / Bool 字面量）
 
 `-a * b` 是 `(-a) * b`；`not a == b` 是 `not (a == b)`；`a and not b` 是 `a and (not b)`。
 
-== Code 速查
+<a id="code-速查"></a>
+## Code 速查
 
 ```not
 #let accent = "violet"                // let 绑定（顺序作用域）
@@ -128,7 +141,8 @@ key = value                键值属性（String / Int / Bool 字面量）
 
 String 四种形态：`"转义"`、`"""多行"""`（opening 后立即换行）、`r#"raw"#`、`r#"""raw 多行"""#`。
 
-== 引用与模块速查
+<a id="引用与模块速查"></a>
+## 引用与模块速查
 
 ```not
 #<setup>                   # 裸名（当前模块解析）
@@ -140,7 +154,8 @@ String 四种形态：`"转义"`、`"""多行"""`（opening 后立即换行）�
 
 `README.not` 表示所在目录；目录只要有 `.not` 后代或资源文件后代就形成 virtual module；外部 URL 语法合法但当前渲染为未解析文本并产生 info 级诊断。
 
-== 模式与边界速查
+<a id="模式与边界速查"></a>
+## 模式与边界速查
 
 - Markup：文档默认；`#` 进入 Code；Code 中 `[...]` 回到 Markup；`#[...]` 是 Markup 中 Content literal 的书写形式；裸 `[` `]` 是文本；
 - `#` 嵌入边界：顶层嵌入以空白终止（R01），二元运算符必须与操作数相邻；完整表达式写进括号 `#(...)`；紧跟文字时用 `;` 结束（`;` 被消费、不产生输出）；

@@ -1,9 +1,17 @@
-= Client Interface and Protocol
+---
+implementation: aligned
+kind: design
+status: current
+---
+
+<a id="client-interface-and-protocol"></a>
+# Client Interface and Protocol
 
 本文是 A3 client interface、本地协议与 daemon 生命周期的独立成篇，从归档的历史混合文档中独立成篇。Daemon 进程与 View 模型见 [daemon-process-views](daemon-process-views.md)；CLI 命令面见 [cli-command-surface-skill-distribution](cli-command-surface-skill-distribution.md)；LSP 适配见 [lsp-adapter](lsp-adapter.md)。
 
 
-== Client Interface
+<a id="client-interface"></a>
+## Client Interface
 
 所有 client interface 调用同一组协议无关的 core request；差异只在生命周期、参数投影与返回格式：
 
@@ -25,7 +33,8 @@ references_in    references --direction outgoing —
 
 CLI 命令不直接扫描 Vault 或访问 parser 私有结构：它连接 daemon，把参数转换为 core request，再把 response 格式化为 bounded text projection。LSP 负责 URI、Position、document lifecycle 与 capability negotiation；Agent 侧的调用约定由 [cli](../../cli.md) 与官方 Skill 定义。一个能力可以同时出现在多个 interface，但语义必须来自同一个 core operation——不能让 `notist refs` 与 LSP references 分别实现两套解析规则。
 
-== LSP Adapter 按 Client 存在
+<a id="lsp-adapter-按-client-存在"></a>
+## LSP Adapter 按 Client 存在
 
 编辑器通常要求自己启动一个 stdio language server。`notist lsp` 因而仍是跟随编辑器生命周期的 adapter，但它只维护协议连接与对应的 Analyzer View，不再独占整个 Vault 的磁盘状态与索引：
 
@@ -39,7 +48,8 @@ Agent    -> notist cli -> daemon -> View(disk)
 
 一个编辑器 worktree 可以发现多个 Notist.toml。这不把多个 Vault 塞进同一个 daemon：LSP adapter 按最近 marker 路由 source，并维护以 canonical root 为 key 的 daemon connection。Workspace symbol 等显式 worktree 级请求可以查询多个 connection 再合并仍带各自 source identity 的结果；definition、references、diagnostics 与 overlay update 始终只进入 source 所属 Vault。
 
-== 本地协议
+<a id="本地协议"></a>
+## 本地协议
 
 Daemon 默认只接受本机 IPC：Unix domain socket 或 Windows named pipe。它不默认监听 TCP，也不因为运行在 loopback 就跳过身份边界；endpoint 位于当前用户拥有的 runtime directory，并使用 OS ACL 或 peer credential 限制其他用户连接。
 
@@ -62,7 +72,8 @@ Handshake {
 
 每个 response 至少能关联 daemon instance、Vault identity、View identity 与 snapshot revision。长查询支持 cancellation；notification 与 response 使用有界队列，不能让一个缓慢 client 阻塞 watcher publication 或其他 View。
 
-== Snapshot 与写入
+<a id="snapshot-与写入"></a>
+## Snapshot 与写入
 
 一次 request 开始时，daemon 为它捕获一个不可变 WorkspaceSnapshot（`Arc<WorkspaceSnapshot>`）。即使文件 watcher 随后发布新 revision，当前 response 中的 source、range、引用与诊断仍来自被捕获的 snapshot。
 
@@ -80,13 +91,15 @@ apply_edit(plan_hash, expected_fingerprints, idempotency_key)
 
 Editor View 上的未保存 overlay 不会因为 disk write 自动消失。LSP adapter 通过 watcher 或 file notification 观察磁盘变化；editor buffer 与磁盘的偏离由编辑器的正常冲突流程决定，daemon 不覆盖 overlay。
 
-== 失败与重启
+<a id="失败与重启"></a>
+## 失败与重启
 
 一个 Vault daemon 崩溃不会终止其他 Vault 的服务，也不会损坏 authored source。重启后，VaultEngine 从磁盘与有效派生索引恢复，失效缓存重建；所有 View、overlay、in-flight request 与未应用的 edit plan 都是进程会话状态，不能在没有明确持久化语义的情况下假装恢复。LSP adapter 失去连接时应终止或重建 session，不能把新 daemon instance 的 revision 与旧 instance 混用。
 
 Daemon 不应成为所有命令的单点强制依赖。Core library 保持可嵌入：CI、受限容器或显式 `--no-daemon` 的命令在进程内创建临时 VaultEngine 与 disk View，执行相同的 core request。Embedded mode 不是第二套实现——它只是把同一 service object 放在 client 进程中，输出语义不因是否连接 daemon 而改变。
 
-== 过期 daemon 的回收
+<a id="过期-daemon-的回收"></a>
+## 过期 daemon 的回收
 
 本地 `cargo run` 开发循环里，CLI 与 daemon 是同一 target 目录下新老两个二进制：重建后再次运行命令会连上仍持有 endpoint 的旧 daemon，让 daemon 侧代码的改动不生效，并留下无人管理的隐式进程。协议为此提供确定性回收：
 

@@ -1,3 +1,4 @@
+@![kind = "reference", status = "current"]
 = 示例子模块
 
 #let shared = "来自子模块的绑定"

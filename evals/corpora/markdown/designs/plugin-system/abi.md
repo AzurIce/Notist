@@ -1,8 +1,16 @@
-= Plugin ABI: Shared Types and WIT Boundary
+---
+implementation: aligned
+kind: design
+status: current
+---
+
+<a id="plugin-abi-shared-types-and-wit-boundary"></a>
+# Plugin ABI: Shared Types and WIT Boundary
 
 本文定义宿主与 Wasm guest 之间的共享类型与 component ABI。call 森林在 reduce 阶段的求值语义见 [plugin-call-reduction](../pipeline/plugin-call-reduction.md)；package 如何声明 Wasm module 见 [package](package.md)。
 
-== 共享类型
+<a id="共享类型"></a>
+## 共享类型
 
 `Node` 是唯一的语义表示（#<vault::ai::2026-08-22 plugin form and unified ir roadmap> 的 IR 统一裁决）；`PluginElementDecl` / `PluginParamDecl` / `DefaultValue` 是唯一的插件声明表示。它们都定义在 `notist-model` 并由宿主与 guest 直接共享，WIT 不引入声明或节点镜像。
 
@@ -11,9 +19,10 @@
 - 宿主与 guest 共享 `notist_model::wire` 的 declarations / forest encode/decode API；解码严格检查 wire version byte，不提供 JSON 或旧编码 fallback；
 - 参数默认值直接使用共享 `DefaultValue`，不经过 JSON 字符串；
 - `range` 随共享 `Node` 传输，使插件透传的子树保留诊断位置；它只是可被 guest 伪造的定位元数据，不参与 call identity、规约或权限判定；
-- **响应森林继续参与 fixpoint**：handler 返回 call 森林后，宿主统一把它重新送入不动点；其中指向已注册名字的 call 会再次派发。handler 返回与输入完全相同的 call 表示 identity；持续产生新的自返 call 才是作者错误，由 depth/fuel 兜底并给出诊断；纯数据元素不注册运行时 handler。
+- ***响应森林继续参与 fixpoint***：handler 返回 call 森林后，宿主统一把它重新送入不动点；其中指向已注册名字的 call 会再次派发。handler 返回与输入完全相同的 call 表示 identity；持续产生新的自返 call 才是作者错误，由 depth/fuel 兜底并给出诊断；纯数据元素不注册运行时 handler。
 
-== Wasm backend
+<a id="wasm-backend"></a>
+## Wasm backend
 
 Wasm plugin 是 Rust crate 编译出的 wasip2 组件。作者面对宿主 SDK；native plugin 面对等价的 native registrar：
 
@@ -37,7 +46,8 @@ notist_sdk::export_plugin!(Plugin);
 
 这与 Unreal 模块的 StartupModule 同构：装载时执行一次注册，宿主之后按名字查询与调度。对作者而言组件边界等同一个 dylib；沙箱机制（fuel、内存帽）是宿主既有设施，不进入作者视野。
 
-== WIT component ABI
+<a id="wit-component-abi"></a>
+## WIT component ABI
 
 当前 WIT 只有最小 `plugin` world：
 
@@ -53,7 +63,8 @@ world plugin {
 - WIT 只描述 component 调用 ABI；唯一运行面是 `init` 与 `evaluate` 两个导出，不包含共享声明的 interface，也不提供宿主语义回调。
 - `init` 一次性返回声明 payload 而不是逐条回调注册：注册内容是编译期已知的纯数据，宿主先完整解码、整体校验再入 registry，不存在部分注册状态。
 
-== init 注册语义
+<a id="init-注册语义"></a>
+## init 注册语义
 
 `init` 在实例化后、任何 `evaluate` 之前被调用恰好一次，消耗与 `evaluate` 相同的 fuel 预算：
 
@@ -63,19 +74,22 @@ world plugin {
 
 注册即自描述：schema 的唯一真相来源是插件代码里的 `init` 实现，manifest 不再携带 semantic 接口。静态分析、completion 与 runtime 读到的是同一份注册结果，不存在漂移面。
 
-== 语义 ABI
+<a id="语义-abi"></a>
+## 语义 ABI
 
 `evaluate` 是单个 dispatcher；`init` 声明的每个元素都对应它的一个可调用名字。
 
 插件只有一种语义实现模式：`evaluate` 返回 call 森林，宿主把整个返回森林统一送回规约不动点。插件通过在森林中写 `core::details` 或其它 package 的名字表达组合，不在组件调用期间嵌套执行宿主规约。无限递归由统一 depth/call budget 与组件 fuel 预算兜底（持续自返属于作者 bug）。
 
-=== 插件不能做什么
+<a id="插件不能做什么"></a>
+### 插件不能做什么
 
 - 不能 import 文件系统、网络、随机数或进程；Rust std 所需的 WASI 0.2 imports 由宿主以空 `WasiCtx` 满足；
 - 不能修改 parser、不能重新解释已有 token；
 - 不能覆盖其他 package 的 namespace。
 
-== 当前实现
+<a id="当前实现"></a>
+## 当前实现
 
 - WIT 已由 wasmtime bindgen 编译校验；单一 `plugin` world 的 bytes `export init` 与 `export evaluate` 均已接入 loader。
 - `model::wire::{encode_declarations,decode_declarations}` 与 `{encode_forest,decode_forest}` 复用同一严格 version byte + postcard frame；组件返回的 call 森林由 node engine 统一继续规约。
@@ -84,7 +98,8 @@ world plugin {
 - JSON 只用于读取人工编辑的 `plugin.json` 信封；semantic declarations、defaults、`Node` / `Value`、request / response 全部使用共享类型的 version byte + postcard frame。
 - Component response 的大小与节点上限见 [safety](safety.md)。
 
-== 已裁定 / 待定
+<a id="已裁定-待定"></a>
+## 已裁定 / 待定
 
 - 已裁定：WIT 是最小 component 调用 ABI；`init` / `evaluate` payload 均为共享 `notist-model` 类型的 wire version byte + postcard frame。
 - 已裁定：插件形态是 Rust crate → wasip2 组件；作者通过 SDK trait 与 `init` 注册贡献。

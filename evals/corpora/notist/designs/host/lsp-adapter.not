@@ -1,4 +1,4 @@
-@![implementation = "partial"]
+@![implementation = "partial", kind = "design", status = "current"]
 = LSP Adapter
 
 本文是 A5 LSP 适配的独立成篇，从归档的历史混合文档中独立成篇。Analyzer 与 WorkspaceSnapshot 见 #<vault::designs::host::analyzer-snapshot>；daemon 进程与 View 见 #<vault::designs::host::daemon-process-views>；core request 与本地协议见 #<vault::designs::host::client-interface-protocol>。

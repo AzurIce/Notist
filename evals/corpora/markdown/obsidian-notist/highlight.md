@@ -1,63 +1,77 @@
-= 语法高亮实现方案
+---
+kind: integration-doc
+status: current
+---
+
+<a id="语法高亮实现方案"></a>
+# 语法高亮实现方案
 
 obsidian-notist 插件为 `.not` 编辑器接入语法高亮的设计与落地方案。编辑器内核现状（极简 CM6、无 language 扩展、vim 键位、样式约定）见 #<vault::ai::2026-08-24 obsidian-notist editor cm6 migration>，本文承接之。
 
-== 决策
+<a id="决策"></a>
+## 决策
 
 复用 tree-sitter-notist 语法，经 `web-tree-sitter` 在插件内运行。理由：
 
-- *语法单一事实源*：editor 侧语法就是 AzurIce/tree-sitter-notist，`zed-notist` 已钉一个 published revision；obsidian-notist 钉同一 revision，两个编辑器的高亮定义不漂移。
-- *现成产物*：`zed-notist` 仓库里有 `grammars/notist.wasm`（92KB，ABI 15，标准 wasm MVP module）和 `languages/notist/highlights.scm`（77 行 capture 规则，覆盖标题、列表/任务/枚举 marker、强调族、行内 raw、围栏、wiki 引用、注释、调用、函数字面量等全部语法面）。
-- *白拿增量解析与错误恢复*：输入到一半的中间态是编辑器常态，tree-sitter 的 error recovery 正好兜住。
-- *附赠查询*：`outline.scm`/`folds.scm`/`brackets.scm`/`injections.scm` 现成，后续折叠、括号匹配、围栏语言注入可直接接。
+- **语法单一事实源**：editor 侧语法就是 AzurIce/tree-sitter-notist，`zed-notist` 已钉一个 published revision；obsidian-notist 钉同一 revision，两个编辑器的高亮定义不漂移。
+- **现成产物**：`zed-notist` 仓库里有 `grammars/notist.wasm`（92KB，ABI 15，标准 wasm MVP module）和 `languages/notist/highlights.scm`（77 行 capture 规则，覆盖标题、列表/任务/枚举 marker、强调族、行内 raw、围栏、wiki 引用、注释、调用、函数字面量等全部语法面）。
+- **白拿增量解析与错误恢复**：输入到一半的中间态是编辑器常态，tree-sitter 的 error recovery 正好兜住。
+- **附赠查询**：`outline.scm`/`folds.scm`/`brackets.scm`/`injections.scm` 现成，后续折叠、括号匹配、围栏语言注入可直接接。
 
 放弃或降级的路线：
 
-- *手写 CM tokenizer*：降级为 fallback——仅当 wasm 在宿主加载失败时启用，只覆盖标题、围栏、wiki 引用、`\#` sigil 等粗粒度着色。
-- *Lezer 移植*：等于把 tree-sitter grammar 手工再实现一遍，维护两份语法不值。
-- *LSP semantic tokens*：notist LSP 当前只有 completion/hover/diagnostics，无 semantic tokens；长期可由 notist-service 直接供能（顺带拿诊断/hover），届时只替换 token 来源，decoration 与样式层不动。
+- **手写 CM tokenizer**：降级为 fallback——仅当 wasm 在宿主加载失败时启用，只覆盖标题、围栏、wiki 引用、`\#` sigil 等粗粒度着色。
+- **Lezer 移植**：等于把 tree-sitter grammar 手工再实现一遍，维护两份语法不值。
+- **LSP semantic tokens**：notist LSP 当前只有 completion/hover/diagnostics，无 semantic tokens；长期可由 notist-service 直接供能（顺带拿诊断/hover），届时只替换 token 来源，decoration 与样式层不动。
 
-== 架构
+<a id="架构"></a>
+## 架构
 
 三层，每层可独立替换：
 
-- *解析层*：`web-tree-sitter` 加载 `notist.wasm`，每个 `.not` view 持有一棵 `Tree`；`Parser` 全局单例（parse 是同步调用，无跨 view 状态竞争）。
-- *增量同步层*：CM `updateListener` 把 transaction 的 `ChangeDesc` 翻译成 tree-sitter `InputEdit` 喂 `tree.edit()`，再带旧 tree 增量 reparse。
-- *高亮层*：`highlights.scm` 编译为 `Query`（全局一次），captures 映射为 `Decoration.mark` 的 CSS class，经 `StateField<DecorationSet>` 输出；样式全部在 `styles.css` 走 Obsidian 主题变量，延续 Zed 式克制约定。
+- **解析层**：`web-tree-sitter` 加载 `notist.wasm`，每个 `.not` view 持有一棵 `Tree`；`Parser` 全局单例（parse 是同步调用，无跨 view 状态竞争）。
+- **增量同步层**：CM `updateListener` 把 transaction 的 `ChangeDesc` 翻译成 tree-sitter `InputEdit` 喂 `tree.edit()`，再带旧 tree 增量 reparse。
+- **高亮层**：`highlights.scm` 编译为 `Query`（全局一次），captures 映射为 `Decoration.mark` 的 CSS class，经 `StateField<DecorationSet>` 输出；样式全部在 `styles.css` 走 Obsidian 主题变量，延续 Zed 式克制约定。
 
-== 资产与打包
+<a id="资产与打包"></a>
+## 资产与打包
 
 - `assets/notist.wasm` 与 `assets/highlights.scm` 从 `zed-notist` 拷贝入库，commit message 记录所钉的 tree-sitter-notist revision；`web-tree-sitter`（需 0.25+，才支持 ABI 15）作为普通打包依赖进 bundle——Obsidian 宿主不提供它。
 - wasm 加载不能用 `fetch`（插件环境无静态服务器）：用 `app.vault.adapter.readBinary(manifest.dir + "/assets/notist.wasm")` 读字节。`Parser.init()` 所需的 `tree-sitter.wasm`（web-tree-sitter 自带运行时）同样按资产处理。
 - `scripts/install.ts` 的 `artifacts` 列表增加 `assets/` 目录的拷贝（拷贝模式）；`--link` 模式天然可见，无需改。
 
-== 解析生命周期
+<a id="解析生命周期"></a>
+## 解析生命周期
 
 - 初始与 `setViewData`：`parser.parse(全文)` 重建。
 - `updateListener` 内 `docChanged`：遍历 `ChangeDesc` 的每个 change 生成 `InputEdit`（`startIndex`/`oldEndIndex`/`newEndIndex` 加行列位置），依次 `tree.edit`，然后 `parser.parse(新全文, 旧tree)` 增量重解析。
-- *offset 对齐*：web-tree-sitter 对字符串输入按 UTF-16 code unit 计 index，与 CM 的 char offset 天然对齐；行列由 CM `doc.lineAt` 换算。中文内容正是 web-tree-sitter 历史修复场景，实现时用全中文 fixture 实测确认。
+- **offset 对齐**：web-tree-sitter 对字符串输入按 UTF-16 code unit 计 index，与 CM 的 char offset 天然对齐；行列由 CM `doc.lineAt` 换算。中文内容正是 web-tree-sitter 历史修复场景，实现时用全中文 fixture 实测确认。
 - 文档未变不重跑 query；`.not` 文档普遍很小，captures 全量重算即可，需要优化时再按 changed range 裁剪 `QueryCursor`。
 
-== capture 映射与样式
+<a id="capture-映射与样式"></a>
+## capture 映射与样式
 
 - 通用规则：capture 名 `a.b.c` → class `cm-notist-a-b-c`（如 `punctuation.special` → `cm-notist-punctuation-special`）；少数语义条目做覆盖映射。
 - 主要条目：`title.markup`（标题正文，按 marker 长度分级）、`punctuation.special`（`\#` sigil、heading/强调 marker）、`link_uri`（wiki target）、`string`/`string.special`（含行内 raw、围栏载荷、行内 math）/`string.escape`、`number`/`boolean`/`constant.builtin`、`comment`、`function.call`、`variable.parameter`、`attribute`/`tag`/`type`/`property`/`label`（标注属性族与 fence info）。
 - 强调族（`emphasis.strong` 等）用 CSS 表现加粗/斜体/删除线/下划线，marker 弱化或隐藏。
 
-== 编辑器集成点
+<a id="编辑器集成点"></a>
+## 编辑器集成点
 
 - 新文件 `src/highlight.ts`，export 一个异步初始化的 Extension 工厂；`notist-view.ts` 的 extensions 数组在 keymap 链之后挂载。
 - 初始化是异步的（wasm 加载）：倾向 plugin `onload` 先 `await` 初始化完成再 `registerView`——失败可整体退到 fallback tokenizer，编辑器无"先无色后上色"的中间态。
 - 与 vim 正交：decoration 不参与键位与 `drawSelection`，无交互风险。
 
-== 验证计划
+<a id="验证计划"></a>
+## 验证计划
 
 - 造一个覆盖全语法面的 fixture `.not`：各级标题、列表/任务/枚举、强调族、行内 raw（含多 backtick run）、围栏（带语言标注）、wiki 引用、嵌入表达式（含 `;` 消隐与全角标点断开）、标注（`@[...]`/`@![...]`/postfix）、注释、四种 String 形态、数字、if/lambda/import。
 - obsidian CLI 实机：`plugin:reload` + `dev:errors` 无错，`dev:screenshot` 截图迭代，`eval` + `getComputedStyle` 抽点核验 class 与颜色（与 cm6 迁移同款手法）。
 - 增量正确性：在围栏内、字符串内、嵌套 `#[...]` 中连续编辑，断言无串色。
 - 性能：大文档连续击键，全量 reparse + query 耗时需在帧预算内；超了再上 changed-range 裁剪。
 
-== 风险与开放点
+<a id="风险与开放点"></a>
+## 风险与开放点
 
 - ~~`notist.wasm` 兼容性~~（已实锤并解决）：zed-notist 的 `grammars/notist.wasm` 是 Zed 工具链产物、dylink 依赖 `libc.so`，web-tree-sitter 加载即失败；已改用 `tree-sitter build --wasm`（wasi-sdk）从 `grammars/notist` 源码重出的自包含产物。
 - ABI 15 锁定 web-tree-sitter 0.25+；升级 grammar 时需同步核对 ABI 兼容窗口。
@@ -65,7 +79,8 @@ obsidian-notist 插件为 `.not` 编辑器接入语法高亮的设计与落地�
 - 围栏内语言注入（`injections.scm`）需要桥接宿主其他语言的高亮，后续单独设计，首版围栏载荷一律单色。
 - tree-sitter 语法与 Rust parser 的残余漂移对高亮可容错（最坏涂错颜色）；但诊断、跳转等语义功能必须等 notist-service 供能，不能拿 tree-sitter 树冒充权威。
 
-== 更新流程（grammar 更新后）
+<a id="更新流程grammar-更新后"></a>
+## 更新流程（grammar 更新后）
 
 语法与查询的单一事实源是 `tree-sitter-notist` 仓库（`~/Files/tree-sitter-notist`，github.com/AzurIce/tree-sitter-notist，自带 `queries/*.scm`）；zed-notist 的 `languages/*.scm` 只是它的拷贝。流程：
 
@@ -75,16 +90,19 @@ obsidian-notist 插件为 `.not` 编辑器接入语法高亮的设计与落地�
 - 核对 ABI：`src/parser.c` 的 `LANGUAGE_VERSION` 不得超过 web-tree-sitter 支持窗口（0.25.x 上限 15；上游升 ABI 时同步升 web-tree-sitter 并重拷 `tree-sitter.wasm`）；
 - 用 Vault 根部的 `notist-highlight-fixture.not`（全语法面 fixture，随 Vault 常驻）实机回归：reload 后目测 + eval 统计 `cm-notist-*` span。
 
-== 更新记录
+<a id="更新记录"></a>
+## 更新记录
 
-=== 2026-08-24 tree-sitter-notist f17618a
+<a id="2026-08-24-tree-sitter-notist-f17618a"></a>
+### 2026-08-24 tree-sitter-notist f17618a
 
 「align grammar with notist language design」：命名实参从 `name = value` 改为 `name: value`；新增表格、分割线、关键字（`let`/`if`/`else`/`fn`/`trailing`/`import`/`as`/`not`/`and`/`or`）、`@module`/`@variable`/`@function`/`@type` 等 capture。ABI 仍为 15，web-tree-sitter 0.25.10 兼容。样式侧补了 keyword/module/variable/function 的 CSS。发现的两个上游问题（暂绕过，待上游修）：
 
-- *行内注释被除号吃掉*：`#let x = 1  // c` 解析成 `1 / / c` 报错——外部 scanner 在「二元延续」状态看到 `/` 直接产 operator，没给 `//` 让路（`#f(a, // note` 括号内正常；Rust parser 无此问题）。fixture 里注释改写独立行或块注释 `/* */` 规避。
-- *query 字段顺序敏感*：`(let_expression parameters: (parameters) name: (identifier) @function)` 不命中，换成 `name:` 在前即正常——tree-sitter query 的字段约束按声明顺序匹配，上游 `highlights.scm` 该模式需调序。
+- **行内注释被除号吃掉**：`#let x = 1  // c` 解析成 `1 / / c` 报错——外部 scanner 在「二元延续」状态看到 `/` 直接产 operator，没给 `//` 让路（`#f(a, // note` 括号内正常；Rust parser 无此问题）。fixture 里注释改写独立行或块注释 `/* */` 规避。
+- **query 字段顺序敏感**：`(let_expression parameters: (parameters) name: (identifier) @function)` 不命中，换成 `name:` 在前即正常——tree-sitter query 的字段约束按声明顺序匹配，上游 `highlights.scm` 该模式需调序。
 
-== 参考
+<a id="参考"></a>
+## 参考
 
 - #<vault::ai::2026-08-24 obsidian-notist syntax highlighting implementation>：本方案的实现记录与踩坑（wasm 兼容性、esbuild CJS 的 import.meta.url、UTF-16 offset、heading marker 尾空格等）。
 - [dual-world](dual-world.md)：插件整体交互契约。

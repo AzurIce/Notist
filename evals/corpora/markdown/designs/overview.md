@@ -1,5 +1,11 @@
+---
+kind: design
+status: current
+---
+
 // 分割线之上的为基本确定的不再更改表述的内容（除非用户主动要求）。
-= Language Overview
+<a id="language-overview"></a>
+# Language Overview
 
 Notist 是一门带有静态类型系统的文档编程语言，它具有两个语法模式：Markup 和 Code（类似 typst）。完整编译管线见 `<vault::designs::pipeline>`。
 
@@ -39,7 +45,7 @@ println!("Hello");
 
 上面的 `#warning[...]` 是 trailing Content 参数的紧凑写法：`#warning[这是一段可以通过函数构造的内容。]` 与 `#warning([这是一段可以通过函数构造的内容。])` 等价——trailing block 只是追加一个位置实参的语法糖。
 
-`#` 后表达式的精确边界规则见 [嵌入的边界](language/markup-surface.md#嵌入的边界)；本文只保留语言概览与最小示例。
+`#` 后表达式的精确边界规则见 [markup-surface](language/markup-surface.md#嵌入的边界)；本文只保留语言概览与最小示例。
 
 Markup 模式下的标题、代码块、分割线等写法，本质都是对内置函数的语法糖：
 
@@ -62,7 +68,8 @@ println!("Hello");
 
 ---
 
-== 最小示例
+<a id="最小示例"></a>
+## 最小示例
 
 以下面这段 notist 代码为例：
 
@@ -95,4 +102,4 @@ annotations = {}   // 示例中没有标注，属性表为空
 
 标题来自变量 `accent` 的值，callout 的内容由函数调用构造——文档里的每一处内容都来自同一次求值。`bindings` 是程序的一面，`content` 是文档的一面，`annotations` 是标注的一面；三者来自同一次求值，却承担不同职责。
 
-这个结果如何产生——类型系统见 [类型系统](language/type-system.md#类型系统)，属性表见 [property-table](language/property-table.md)，求值模型与 call 森林见 [求值规则](pipeline/evaluate.md#求值规则)，scope 与词法环境见 #<vault::designs::language::scope-environment/scope 是值层节点>。
+这个结果如何产生——类型系统见 [type-system](language/type-system.md#类型系统)，属性表见 [property-table](language/property-table.md)，求值模型与 call 森林见 [evaluate](pipeline/evaluate.md#求值规则)，scope 与词法环境见 #<vault::designs::language::scope-environment/scope 是值层节点>。

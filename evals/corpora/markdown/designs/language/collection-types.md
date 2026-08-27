@@ -1,4 +1,11 @@
-= Collection Types and Union
+---
+implementation: missing
+kind: design
+status: current
+---
+
+<a id="collection-types-and-union"></a>
+# Collection Types and Union
 
 ```not
 #callout(kind="note", title=[状态])[
@@ -6,15 +13,17 @@
 ]
 ```
 
-本文承接 [类型系统](type-system.md#类型系统)（Type/Value 对应与 assignability）、#<vault::designs::language::code-grammar/Code 核心语法>（literal 与类型语法）与 [值的宇宙](../pipeline/evaluate.md#值的宇宙)（Value 宇宙）。本文重新打开 R07 中 Array/Dict/Union 的集合类型部分：不是回到旧实现，而是先把“值、类型、字面量”作为一个完整切片定义清楚。rest 参数与调用顺序属于函数模型，见 [call-model](call-model.md)。
+本文承接 [type-system](type-system.md#类型系统)（Type/Value 对应与 assignability）、#<vault::designs::language::code-grammar/Code 核心语法>（literal 与类型语法）与 [evaluate](../pipeline/evaluate.md#值的宇宙)（Value 宇宙）。本文重新打开 R07 中 Array/Dict/Union 的集合类型部分：不是回到旧实现，而是先把“值、类型、字面量”作为一个完整切片定义清楚。rest 参数与调用顺序属于函数模型，见 [call-model](call-model.md)。
 
-== 动机
+<a id="动机"></a>
+## 动机
 
 - Typst 风格 table/table-header 需要 rest parameter 接收任意个 cell；
 - 配置、元数据与组合 API 需要把多个值作为一个 Value 传递；
 - 旧实现曾有 Array/Dict Value 与空 Union 冒充推断哨兵的问题；R07 是正确收缩，但集合需求是真实的，需要重新设计而不是重新泄漏 `Inferred`。
 
-== 范围与边界
+<a id="范围与边界"></a>
+## 范围与边界
 
 进入本文：
 
@@ -30,13 +39,16 @@
 - 独立 tuple 类型（Array 即 tuple）；
 - plugin/opaque 集合 identity。
 
-== 设计目标
+<a id="设计目标"></a>
+## 设计目标
 
-=== C1 集合是一等不可变 Value
+<a id="c1-集合是一等不可变-value"></a>
+### C1 集合是一等不可变 Value
 
 Array/Dict 与 None/Bool/Int/Float/String/Content/Function 一样：可以字面量构造、绑定、传递、返回与比较。集合构造后不可原地修改；转换操作产生新集合。
 
-=== C2 类型参数化
+<a id="c2-类型参数化"></a>
+### C2 类型参数化
 
 ```text
 Array<T>     T 为元素类型
@@ -45,7 +57,8 @@ Dict<K, V>   K 为 key 类型，V 为 value 类型
 
 Collection 默认 invariant：`Array<Int>` 不赋值给 `Array<Float>`。literal 在 expected type 下可以逐元素 coercion，这不是既有 collection 之间的 covariance。
 
-=== C3 Literal 语法
+<a id="c3-literal-语法"></a>
+### C3 Literal 语法
 
 ```not
 (1, 2, 3)                    // Array<Int>
@@ -60,33 +73,39 @@ Collection 默认 invariant：`Array<Int>` 不赋值给 `Array<Float>`。literal
 - call argument 中 `#f(name: value)` 仍是 named argument；把 Dict 作为单个实参时写 `#f((name: value))`；
 - dict 按 source order 求值并保存 insertion order；相同 key 的后者替换 value，不移动位置。
 
-=== C4 Union 与 Never
+<a id="c4-union-与-never"></a>
+### C4 Union 与 Never
 
 - `T?` 是 `T | None` 的 sugar；
 - Union 在 semantic Type 中 flatten、去重、稳定排序；单成员 union 归一到该成员；含 `Never` 的 union 删除 `Never`；
 - `Never` 没有 runtime Value，是内部 bottom type：表示空 collection 的成员类型；它可赋值给任意期望类型，但不可书写；
 - `Inferred` 继续只表示“尚未推断”的内部标记；它不进入公开 Type，也不作为空 collection 的成员类型。Compiler Error 与 `Never`、`None`、空 Content 相互独立。
 
-=== C5 Dict key 约束
+<a id="c5-dict-key-约束"></a>
+### C5 Dict key 约束
 
 Dict key 只能是 None / Bool / Int / String 或它们的 union。Runtime key identity 包含具体 Type tag，所以 `true`、`1`、`"1"` 是不同 key。Float、Content、collection 与 Function 不能作为 key——checker 在 literal 与操作参数处报告。
 
-=== C6 相等与插入
+<a id="c6-相等与插入"></a>
+### C6 相等与插入
 
 - Array 按位置递归比较；Dict 按 key/value mapping 比较，忽略 insertion order；
 - 仅当元素/key/value 自身支持 equality 时，collection 才支持 `==`；Content 与 Function 不自动获得 equality；
 - Array/Dict 不能插入 Markup；插入边界产生确定诊断，不 stringify。
 
-== 类型与求值规则
+<a id="类型与求值规则"></a>
+## 类型与求值规则
 
-=== Literal typing
+<a id="literal-typing"></a>
+### Literal typing
 
 - 无 expected type：Array literal 的成员类型归并为 union；Dict literal 的 K/V 分别归并为 union；
 - 有 expected `Array<T>`：空 literal 取得 `Array<T>`；每个成员按 T 检查，Int 可按既有规则 coercion 为 Float；
 - 有 expected `Dict<K, V>`：空 literal 取得 `Dict<K, V>`；每个 key/value 分别按 K/V 检查；
 - 未标注的空 literal 类型为 `Array<Never>` / `Dict<Never, Never>`，随后可流向任意具体 `Array<T>` / `Dict<K, V>` 期望。
 
-=== Value 表示
+<a id="value-表示"></a>
+### Value 表示
 
 ```text
 Value::Array { elements: Vec<Value>, ty: Type }
@@ -95,19 +114,22 @@ Value::Dict { entries: Vec<(Value, Value)>, ty: Type }
 
 Value 保存归一化后的元素类型，使空 collection 在运行时仍有静态身份；`Value::ty()` 返回该类型。
 
-=== 求值顺序
+<a id="求值顺序"></a>
+### 求值顺序
 
 Array literal 从左到右求值每个元素；Dict literal 从左到右求值每个 key/value pair。重复 key 的替换不改变原 key 位置。集合不可变，因此任何绑定或传递都不需要 copy-on-write。
 
-== 实现切片
+<a id="实现切片"></a>
+## 实现切片
 
-1. **Type/Value/字面量**：`Type::Array` / `Type::Dict` / `Type::Union` / `Type::Never`；parser literal、checker 与 evaluator；
-2. **Rest 与调用模型**：按 [call-model](call-model.md) 实施，并在迁移 table/table-header 时使用集合类型；
-3. **Dict 与序列化**：Dict 构造、key 检查、协议 TypeRecord；
-4. **观察与转换操作**：以内部多态签名提供 `len` / `at` / `contains` / `append` / `concat` / `keys` / `values` / `pairs` 等核心 builtin；用户可写 generic 仍不进入 Type grammar；
-5. **后续独立设计**：`for`、method syntax、spread（`..xs` at call site）与可变集合。
+1. ***Type/Value/字面量***：`Type::Array` / `Type::Dict` / `Type::Union` / `Type::Never`；parser literal、checker 与 evaluator；
+2. ***Rest 与调用模型***：按 [call-model](call-model.md) 实施，并在迁移 table/table-header 时使用集合类型；
+3. ***Dict 与序列化***：Dict 构造、key 检查、协议 TypeRecord；
+4. ***观察与转换操作***：以内部多态签名提供 `len` / `at` / `contains` / `append` / `concat` / `keys` / `values` / `pairs` 等核心 builtin；用户可写 generic 仍不进入 Type grammar；
+5. ***后续独立设计***：`for`、method syntax、spread（`..xs` at call site）与可变集合。
 
-== 诊断
+<a id="诊断"></a>
+## 诊断
 
 | 输入 | 诊断 |
 |---|---|
@@ -118,7 +140,8 @@ Array literal 从左到右求值每个元素；Dict literal 从左到右求值�
 | `value: #(1, 2)` | Array 不能插入 Markup |
 | `#let xs: Array<Int> = ()` | 合法 |
 
-== Conformance 候选
+<a id="conformance-候选"></a>
+## Conformance 候选
 
 | source | 预期 | 测试名 |
 |---|---|---|
@@ -128,7 +151,8 @@ Array literal 从左到右求值每个元素；Dict literal 从左到右求值�
 | `("theme": "dark", "n": 2)` | `Dict<String, Int | String>`，插入序保留 | `dict_literal_infers_and_preserves_order` |
 | `(1, 2) == (1, 2)` | true | `array_equality_is_positional` |
 
-== 待裁定 / 待定
+<a id="待裁定-待定"></a>
+## 待裁定 / 待定
 
 - 待裁定：C1–C6 是否作为正式裁决进入现行规范；集合不可变、Array/Dict 参数化、`(...)` / `(:)` literal。
 - 待定：观察/转换 builtin 的完整名单与签名；Dict 是否先于 rest 落地；`for` 与 method syntax 的独立设计编号。

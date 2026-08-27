@@ -1,8 +1,15 @@
-= Type System
+---
+kind: reference
+status: current
+---
+
+<a id="type-system"></a>
+# Type System
 
 本文定义当前工具保证的类型与求值模型。精确语法见 [grammar](grammar.md)，内置构造器签名见 [functions](functions.md)，日常速查见 [cheatsheet](cheatsheet.md)。完整设计见 [type-system](designs/language/type-system.md)（类型）、[call-model](designs/language/call-model.md)（调用模型）、[property-table](designs/language/property-table.md)（属性表）与 [evaluate](designs/pipeline/evaluate.md)（求值模型）。
 
-== 三个阶段
+<a id="三个阶段"></a>
+## 三个阶段
 
 一段源代码经过解析、静态检查、求值三个阶段：
 
@@ -17,7 +24,8 @@ source Document
 
 静态检查在求值之前运行：它解析名称、推断并检查类型、把每个调用点解析为确定的已解析调用；求值器只消费这份语义输入，不重新猜测。整篇文档是隐式的 Markup 表达式，静态类型与求值结果均为 `Content`。
 
-== Type 与 Value 对应
+<a id="type-与-value-对应"></a>
+## Type 与 Value 对应
 
 类型是值的静态投影：每个类型描述一类值，类型系统与值宇宙共享同一套概念。
 
@@ -34,7 +42,8 @@ fn(形参表) -> R                Function（闭包：签名 + 实现 + 捕获�
 
 集合类型与联合类型暂不进入语言；可空由独立的内置类型构造 `T?` 承担（见下）。
 
-=== 类型语法
+<a id="类型语法"></a>
+### 类型语法
 
 ```text
 Type
@@ -52,7 +61,8 @@ Type
 
 函数的可调用签名包含：形参的名称与类型、是否带默认值而可省略、显式声明的 trailing Content 形参、结果类型。函数值的具体签名由符号元数据携带；`fn(...) -> R` 是书写层面上的函数类型。
 
-== 可空与可省略
+<a id="可空与可省略"></a>
+## 可空与可省略
 
 `T?` 是可空类型：值空间等于 T 的值空间并上 `None`。规则：
 
@@ -72,7 +82,8 @@ kind: String? =   可省略且值可为 None（default 通常为 none），具�
 
 可省略与位置绑定互斥：位置实参按声明顺序依次填充、无法跳过——任何可以省略的形参都必须具名绑定。因此 positional 的 `T?` 是必填但可空的形参：调用必须显式传 `none` 或值。
 
-== 调用与绑定
+<a id="调用与绑定"></a>
+## 调用与绑定
 
 必填即 positional、可选即 named，两种表面不互通。调用点按位或按名绑定：
 
@@ -90,11 +101,13 @@ kind: String? =   可省略且值可为 None（default 通常为 none），具�
 #heading(2, [标题])                       // 位置实参按声明顺序填充
 ```
 
-=== 赋值兼容与 coercion
+<a id="赋值兼容与-coercion"></a>
+### 赋值兼容与 coercion
 
 相同类型直接赋值；不做隐式函数 subtyping，也不做全局 subtyping。唯一的 coercion 是数值方向：`Int` 传给 `Float` 形参时，静态检查在解析结果中插入显式数值 coercion。普通函数要求 Content 参数时仍然拒绝 String——「可展示」不会渗透成所有 API 的隐式转换规则。
 
-== Content 类型
+<a id="content-类型"></a>
+## Content 类型
 
 `Content` 是不透明类型：一个类型涵盖所有内容组合，节点结构（名字、嵌套、参数）是运行时数据，静态检查不追踪它。Content 值是 call 森林：每个节点是 `Node`（name + args + children），`name` 标识构造器身份，分两类：
 
@@ -106,7 +119,8 @@ core::*           # 内置节点：core::text / core::heading / core::callout / 
 
 不存在封闭的元素集合：封闭的只是注册侧——`core::*` 的 handler 永远由宿主提供；没有 handler 的名字不被规约触碰，它自己就是终态内容。内置构造器以 first-class 函数的形式存在——`callout(kind: ..., body: ...)` 产生一个 `core::callout` 节点，其类型就是 `Content`；用户函数与内置构造器因此同构，渲染与查询按节点身份消费结果，不区分来源。节点名字词表的具体分类见 #<vault::designs::pipeline::evaluate/Call 与 Node>。
 
-== 插入规则
+<a id="插入规则"></a>
+## 插入规则
 
 嵌入表达式的结果按插入规则进入外层 Content：
 
@@ -124,17 +138,21 @@ Function 不能插入，产生诊断
 
 插入转换只在 Markup insertion 边界成立——普通函数要求 Content 参数时仍然拒绝 String。
 
-== 求值模型
+<a id="求值模型"></a>
+## 求值模型
 
-=== scope：节点即环境
+<a id="scope节点即环境"></a>
+### scope：节点即环境
 
 值层组合树上的每个节点同时就是一个 scope，承担两种角色：内容的容器与名字的容器。名称解析沿节点链自内向外进行，最近绑定者胜出；`let` 绑定从声明处开始对后续节点可见——没有全局 hoist，前向引用产生诊断。scope 按来源分为根、Content literal、Code block、元素形成的 scope 与手动 scope（`#[...]`）。
 
-=== 顺序求值
+<a id="顺序求值"></a>
+### 顺序求值
 
 声明与正文按源码顺序求值：`let` 绑定扩展后续节点的环境；可展示的 Markup 与嵌入表达式通过 Content insertion 追加内容。函数应用遵循统一顺序：求值 callee → 按源码顺序求值显式实参与 trailing Content → 按形参声明顺序建立绑定（应用 coercion 或代入默认值）→ 调用函数值 → 校验返回值。每个表达式只求值一次。
 
-=== 求值结果
+<a id="求值结果"></a>
+### 求值结果
 
 求值结果是三元组：
 
@@ -148,16 +166,19 @@ Function 不能插入，产生诊断
 
 每个 Module 独立求值后，这三者成为 ModuleResult；bindings 可被其他 Module import，content 供渲染与查询消费，annotations 是标注与模块元数据的唯一入口。见 [module-result](designs/world/module-result.md)。
 
-=== 成型
+<a id="成型"></a>
+### 成型
 
 求值收尾时，成型规则把元素序列组成结构树：连续的行内元素组成段落，段间分隔（Parbreak）断开段落，相邻同类条目组成列表或枚举；heading 与其后内容（直到下一个同级或更高级 heading 之前）归组为 Section 节点——节归组递归作用于任何内容序列。块级元素独立存在，其到来前先收束当前段落；成型只重组元素，不合并、不删除个体——属性表区间在成型前后稳定。
 
-== 属性表
+<a id="属性表"></a>
+## 属性表
 
 属性（标注）在求值期绑定到值，求值收尾转写为旁置的属性表：以元素序列区间为键、属性集为值的映射。树不携带属性——属性是位置注解，与结构解耦。三类条目：元素条目（实元素上的属性 → 单元素区间）、区间条目（透明 scope 溶解后的属性与身份 → 内容覆盖的区间）、节条目（修饰节头部 heading 的属性 → 该节覆盖的区间）。
 
 属性是值的属性：绑定在值上的属性随值复制——`#let alert = [注意]@wip` 后 `#alert #alert` 产生两个元素个体，属性表里有两条 `wip` 条目。标注语法见 [annotation-syntax](designs/language/annotation-syntax.md)。
 
-== 诊断与恢复
+<a id="诊断与恢复"></a>
+## 诊断与恢复
 
 语法、未解析名称与类型错误允许产生 partial 结果，使编辑器与预览能继续处理其他源码；恢复节点保留自己的错误状态——错误实参不使用默认值，错误 callee 不伪装成返回 `None` 的成功函数。未注册名字的调用原样保留为内容节点；unknown function 诊断由 check 层产生，渲染有 fallback 标签兜底。

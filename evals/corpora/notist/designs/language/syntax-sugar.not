@@ -1,4 +1,4 @@
-@![implementation = "aligned"]
+@![implementation = "aligned", kind = "design", status = "current"]
 = Syntax Sugar
 
 本文是 L9 Markup 语法糖的独立成篇，从归档的历史混合文档中独立成篇。每个糖降低到的构造器签名与校验见 #<vault::designs::plugin-system::core>；call 森林与求值见 #<vault::designs::pipeline::evaluate>。

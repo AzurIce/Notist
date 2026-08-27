@@ -1,4 +1,10 @@
-= obsidian-notist
+---
+kind: integration-doc
+status: current
+---
+
+<a id="obsidian-notist"></a>
+# obsidian-notist
 
 #[
   现在 Notist 需要一个 GUI 来承载人机交互体验的试验。
@@ -18,31 +24,35 @@
 
   在 UI 上面，或许有一个地方（随手能碰到的地方）有一个 World 切换的滑块（类似 Trae 编辑器最上方标题栏处的那种切换滑块），一经切换则将整个 UI 切换到对应 World。两个 World 不互相干扰。
   #<vault::ai::2026-08-24 obsidian plugin feasibility research/World 切换 UI 专题>
-]
+] <!-- @ann: type=user,.user -->
 
 ---
 
-*以下为 AI 生成内容。*
+**以下为 AI 生成内容。**
 
-把 notist 以 Obsidian 插件形态接入：**只借 Obsidian 的 GUI 外壳，语义层完全架空**。一个 Vault 里 markdown 是一个 world、notist 是一个 world；graph、backlinks、搜索等一切语义能力由 notist 自己重造。
+把 notist 以 Obsidian 插件形态接入：***只借 Obsidian 的 GUI 外壳，语义层完全架空***。一个 Vault 里 markdown 是一个 world、notist 是一个 world；graph、backlinks、搜索等一切语义能力由 notist 自己重造。
 
-== 定位
+<a id="定位"></a>
+## 定位
 
 - 壳白给的：跨平台容器（Electron/移动）、workspace 骨架（leaf/分屏/布局/文件树/命令面板/主题）、同步（.not 作为不透明文本走 Sync/git）、CM6 运行时。
 - 壳不给、要自建的：渲染、graph、backlinks/hover preview、内容搜索、链接补全——凡沾语义的，一样都剩不下。
 - 语义唯一权威是 notist-service，与「前端不重新解释 .not」原则一致，不存在与 markdown 索引打架的问题。
 
-== 纪律
+<a id="纪律"></a>
+## 纪律
 
 - 两个 world 默认完全隔离；但架构上不堵死桥接（hover/点击跳转），摩擦是永久性的，桥迟早要建。
 - 凡 notist 语义相关的组件（CM6 language、渲染器、LSP client、graph）不 import obsidian API，壳适配层单独成目录——与自建 Web 编辑器路线复用。
 - 接受宿主耦合（闭源、API 漂移、审核政策），此路线是「快速获得可用 GUI 与用户」的过渡形态，不是终态旗舰。
 
-== 落地顺序
+<a id="落地顺序"></a>
+## 落地顺序
 
 view + 渲染 + 基础编辑（MVP）→ 搜索/backlinks 面板 → graph → 跨 world 桥接。graph 是纯 UI 重活，放后面。
 
-== 参考
+<a id="参考"></a>
+## 参考
 
 - [dual-world](dual-world.md)：当前插件的双 World 交互契约（切换机制、隔离规则、取舍与脆弱点）。
 - [highlight](highlight.md)：.not 编辑器语法高亮方案（复用 tree-sitter-notist + web-tree-sitter，含打包、增量同步、capture 映射与验证计划）。

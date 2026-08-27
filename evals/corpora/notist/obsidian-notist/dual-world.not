@@ -1,3 +1,4 @@
+@![kind = "integration-doc", status = "current"]
 = 双 World 交互逻辑
 
 obsidian-notist 插件当前的交互契约。实现见 `obsidian-notist` 仓库（`~/Files/obsidian-notist`）。

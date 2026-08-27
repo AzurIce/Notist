@@ -1,4 +1,4 @@
-@![implementation = "aligned"]
+@![implementation = "aligned", kind = "design", status = "current"]
 = Parse Stage
 
 本文定义 Notist 的第一阶段：把 source text 解析为 mode-aware 语法树。Markup 与 Code 的完整表面语法见 #<vault::designs::language::markup-surface> 与 #<vault::designs::language::code-grammar>；语法糖语义见 #<vault::designs::language::syntax-sugar>。

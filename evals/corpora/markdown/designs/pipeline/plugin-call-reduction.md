@@ -1,12 +1,20 @@
-= Plugin Call Reduction
+---
+implementation: aligned
+kind: design
+status: current
+---
+
+<a id="plugin-call-reduction"></a>
+# Plugin Call Reduction
 
 #[
   Notist 的求值系统基于“规约”实现。
-]
+] <!-- @ann: type=user,.user -->
 
 本文记录 Notist 的内容求值模型：规约（reduction）。它把三个问题合并成一个模型——插件如何调用内置或其它插件、插件如何组合任意内容、求值结果如何进入成型与投影。本文是 PluginSystem 与 pipeline 的 reduce 契约；package / ABI / 信任模型 / safety 的完整定义见 `<vault::designs::plugin-system>`。
 
-== 核心模型：一切皆 call
+<a id="核心模型一切皆-call"></a>
+## 核心模型：一切皆 call
 
 整个内容系统就是一句话：
 
@@ -20,9 +28,9 @@
 
 三条推论：
 
-1. **统一表示**：一个 call 的"已规约 / 未规约"是同一节点的两个阶段。数据型元素（`declare`，无运行时 handler）不注册 handler，它的 call 天然就是最终结果，投影按 name + 参数直接出标签；
-2. **生产性契约**：注册了 handler 的名字意味着"这个 call 需要计算"。handler 返回与输入完全相同的 call 表示 identity，本轮停止；若持续产生新的自返 call，则是作者 bug，由深度与调用预算兜底。需要组合时返回其它名字的 call，规约继续；
-3. **诊断分层**：名字拼错归 check 层报告（对照 SignatureSet）；规约层对未知名字保持 total——未注册名字留在森林里，不阻塞整篇。
+1. ***统一表示***：一个 call 的"已规约 / 未规约"是同一节点的两个阶段。数据型元素（`declare`，无运行时 handler）不注册 handler，它的 call 天然就是最终结果，投影按 name + 参数直接出标签；
+2. ***生产性契约***：注册了 handler 的名字意味着"这个 call 需要计算"。handler 返回与输入完全相同的 call 表示 identity，本轮停止；若持续产生新的自返 call，则是作者 bug，由深度与调用预算兜底。需要组合时返回其它名字的 call，规约继续；
+3. ***诊断分层***：名字拼错归 check 层报告（对照 SignatureSet）；规约层对未知名字保持 total——未注册名字留在森林里，不阻塞整篇。
 
 写作文档时，作者写的就是一个流：
 
@@ -34,7 +42,8 @@ text("world")
 
 其中 `parbreak` 不是杂质，而是流中合法的、成型后消失的 call。
 
-== 规约：声明式不动点
+<a id="规约声明式不动点"></a>
+## 规约：声明式不动点
 
 规约的语义只有一条规则：
 
@@ -45,12 +54,13 @@ text("world")
 
 由此推出：
 
-- **遍历策略无关**。规则是 confluent 的：先规约父还是先规约子只影响诊断出现的顺序，不影响最终森林。（实现按 descend-first：先规约参数与 body 子流，再 dispatch 当前 call。）
-- **预算只记在 handler 调用上**。每次 dispatch 计一次 depth 与一次 call；没有 handler 的 call 不参与规约，不消耗预算。限额见 [safety](../plugin-system/safety.md)。
-- **输入函数式、输出宏式**。handler 收到的参数与 body 总是规约完成的；返回的森林是未规约的，重新进入不动点。规约纯且 total（无副作用、未知名字不报错），输入侧先规约永远安全——模型因此不需要 quote。
-- **诊断**。类型错误、向不接受 body 的函数传 body 产生诊断；未知名字不产生规约诊断。单个 call 的失败只收集诊断并跳过它，兄弟节点继续（sibling recovery）；诊断不伪装成成功。
+- ***遍历策略无关***。规则是 confluent 的：先规约父还是先规约子只影响诊断出现的顺序，不影响最终森林。（实现按 descend-first：先规约参数与 body 子流，再 dispatch 当前 call。）
+- ***预算只记在 handler 调用上***。每次 dispatch 计一次 depth 与一次 call；没有 handler 的 call 不参与规约，不消耗预算。限额见 [safety](../plugin-system/safety.md)。
+- ***输入函数式、输出宏式***。handler 收到的参数与 body 总是规约完成的；返回的森林是未规约的，重新进入不动点。规约纯且 total（无副作用、未知名字不报错），输入侧先规约永远安全——模型因此不需要 quote。
+- ***诊断***。类型错误、向不接受 body 的函数传 body 产生诊断；未知名字不产生规约诊断。单个 call 的失败只收集诊断并跳过它，兄弟节点继续（sibling recovery）；诊断不伪装成成功。
 
-== 值域：Content 即 call 森林
+<a id="值域content-即-call-森林"></a>
+## 值域：Content 即 call 森林
 
 函数永远返回 `Value`；内容值就是 call 森林：
 
@@ -65,7 +75,8 @@ enum Value {
 - handler 返回 `Content` 森林后，不动点继续在其中寻找有 handler 的 call——"返回内容"与"返回待规约流"是同一件事，函数没有"规约完再返回"的义务；
 - 标量与 `Function` 不参与规约；出现在内容位置是类型错误，产生诊断。
 
-== 名字与 namespace
+<a id="名字与-namespace"></a>
+## 名字与 namespace
 
 call 的名字分两类：
 
@@ -74,9 +85,10 @@ core::*            宿主注册的内置构造器与基础操作
 {package}::*       插件注册的元素
 ```
 
-名字的所有权只体现在**注册**侧：`init` 注册时元素名必须落在自己 package 的 namespace 内，`core::*` 永远由宿主注册、不可覆盖。**提及完全自由**：任何 handler 都可以在输出森林里写任何名字——写 `core::paragraph` 与写 `other-package::foo` 没有任何区别。提及不是伪造：名字的语义永远由注册方决定，没有 handler 的名字只是数据。
+名字的所有权只体现在**注册**侧：`init` 注册时元素名必须落在自己 package 的 namespace 内，`core::*` 永远由宿主注册、不可覆盖。***提及完全自由***：任何 handler 都可以在输出森林里写任何名字——写 `core::paragraph` 与写 `other-package::foo` 没有任何区别。提及不是伪造：名字的语义永远由注册方决定，没有 handler 的名字只是数据。
 
-== Pipeline
+<a id="pipeline"></a>
+## Pipeline
 
 ```text
 source
@@ -89,7 +101,8 @@ source
 
 规约必须在成型之前：`raw(block:)`、插件返回内容、`heading` / `item` 的运行时参数都会影响成型，不执行函数就无法判断 inline/block 与归组关系。成型前的流只是 eval 内部工作区，对外公开的规范树是成型后的结果。
 
-== 成型：森林上的结构化重写
+<a id="成型森林上的结构化重写"></a>
+## 成型：森林上的结构化重写
 
 规约改语义，成型改结构。成型的输入输出都是 call 森林，它做一次结构化重写：
 
@@ -100,13 +113,15 @@ source
 
 成型按容器模式递归：每个 body 按其 schema 的 body-mode（flow / inline / table-cells 等）执行同一套成型，而不是只处理文档顶层。插件元素通过 shaping schema 参与成型，见 [shaping](../plugin-system/shaping.md)。
 
-成型是 **total 的构造器**。由于提及自由（任何 handler 都能写任何名字），成型输出森林的性质——无 parbreak、`core::item` 只作为 `core::list` 的直接子级、每个 body 已按容器模式归组——由成型的构造本身保证，不依赖输入来源。
+成型是 ***total 的构造器***。由于提及自由（任何 handler 都能写任何名字），成型输出森林的性质——无 parbreak、`core::item` 只作为 `core::list` 的直接子级、每个 body 已按容器模式归组——由成型的构造本身保证，不依赖输入来源。
 
-== 投影
+<a id="投影"></a>
+## 投影
 
 投影本身是第二阶段规约：target package（如 html）注册投影 handler，把 `core::heading` 规约为 `html::h1` 这样的目标词表节点，哑 serializer 再直出标签。语义规约与投影规约是两个独立的 registry——`html::*` 不进语义层，内容编写与投影端无关。与成型同理，投影不假设名字的来源。详见 [projection](../plugin-system/projection.md) 与 [html-renderer](../host/html-renderer.md)。
 
-== 插件边界
+<a id="插件边界"></a>
+## 插件边界
 
 插件可见的 IR 就是 call 森林。WIT 定义 component ABI；`evaluate` 的 opaque payload 是一个 wire version byte 加 postcard 编码的 `Node` 森林。`init` 注册与 `evaluate` 语义见 [abi](../plugin-system/abi.md)。
 
@@ -114,7 +129,8 @@ handler 通过返回包含新 call 的森林表达组合；组件返回后，宿
 
 内容组合不做 per-call 授权：名字的语义由宿主 registry 决定，执行信任边界是 wasm 沙箱本身，见 [capability](../plugin-system/capability.md)；预算约束见 [safety](../plugin-system/safety.md)。
 
-== 示例：组合 details
+<a id="示例组合-details"></a>
+## 示例：组合 details
 
 一个 `shader` 包的 handler 收到：
 
@@ -138,7 +154,8 @@ handler 通过返回包含新 call 的森林表达组合；组件返回后，宿
 
 不动点继续规约 `core::details` 与 `core::raw`；`shader::canvas` 是数据型元素，没有 handler，作为数据留存，最终由投影层按名字出 Web Component 标签。插件不返回指向自己的 call。
 
-== 实现现状
+<a id="实现现状"></a>
+## 实现现状
 
 当前实现已与上述核心模型对齐：
 
@@ -147,7 +164,8 @@ handler 通过返回包含新 call 的森林表达组合；组件返回后，宿
 - lower、reduce、shape 都直接消费和产出 `Node` 森林。`ElementTree` 只是成型后的 Node 容器；旧的 `Content` / `ElementInstance` / `InstanceNode` / `FieldValue` 和 Stream/Leaf 桥接已删除。
 - HTML target 在 project 阶段使用独立的 `HtmlProjectionRegistry`：插件投影与未知调用 fallback 先生成 `html::*` 数据节点，再由 serializer 输出标签、属性和子森林；语义 registry 不注册 `html::*`。
 
-== 已裁定 / 待定
+<a id="已裁定-待定"></a>
+## 已裁定 / 待定
 
 - 已裁定：一切皆 call；`Node` 是唯一表示；"leaf" 只是阶段术语，不是类型。
 - 已裁定：规约是声明式不动点；预算只记 handler 调用；遍历策略不属于语义。

@@ -1,4 +1,10 @@
-= 示例子模块
+---
+kind: reference
+status: current
+---
+
+<a id="示例子模块"></a>
+# 示例子模块
 
 #let shared = "来自子模块的绑定"
 
@@ -8,4 +14,4 @@
 #heading(level: 2)[锚点目标]@target
 ```
 
-首页的 `[submodule/target](submodule.md#target)` 即跳转到这里的 `@target` 锚点。
+首页的 `#<self::submodule/target>` 即跳转到这里的 `@target` 锚点。

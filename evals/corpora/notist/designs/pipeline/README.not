@@ -1,4 +1,4 @@
-@![implementation = "aligned"]
+@![implementation = "aligned", kind = "design", status = "current"]
 = Compilation Pipeline Overview
 
 本文是 Notist 编译管线的总入口：把一篇 source 如何一步步变成可投影文档讲清楚。各阶段细节分别由自己的文档定义；本文只规定阶段边界、输入输出、所有权与不变量。

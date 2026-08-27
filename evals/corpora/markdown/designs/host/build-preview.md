@@ -1,9 +1,17 @@
-= Build and Preview
+---
+implementation: aligned
+kind: design
+status: current
+---
+
+<a id="build-and-preview"></a>
+# Build and Preview
 
 本文是 A7 静态构建与本地预览的独立成篇，从归档的历史混合文档中独立成篇。HTML fragment 渲染见 [html-renderer](html-renderer.md)；RefTarget 见 [reference-ref-target](../world/reference-ref-target.md)；WorkspaceSnapshot 见 [analyzer-snapshot](analyzer-snapshot.md)。
 
 
-== 产品模型
+<a id="产品模型"></a>
+## 产品模型
 
 Notist 的基本单位是 vault/module，HTML 输出以整个 Vault 为单位：
 
@@ -24,7 +32,8 @@ Notist 的基本单位是 vault/module，HTML 输出以整个 Vault 为单位：
 
 语法、函数、scope、引用与属性的语义只在语言管线中定义一次；build、preview 与编辑器 Hover 只是这些结果的不同消费者。
 
-== Static Build
+<a id="static-build"></a>
+## Static Build
 
 ```shell
 notist build [ROOT] -o DIR [--clean]
@@ -40,17 +49,18 @@ vault::designs::type-system  -> designs/type-system/index.html
 
 URL 中的路径 segment 单独 percent encode；页面之间使用相对链接，使构建结果可直接从任意静态文件服务器或子路径部署。
 
-- **资源复制**：资源目录虚拟模块（[资源目录](../world/module-result.md#资源目录)）中的文件按引用复制到输出（`vault::docs::images#logo.png` → 输出下对应路径），Reference 指向复制后的相对路径；未被引用的资源文件也可以整体复制（站点资源），由 CLI 决定——值层只有 Reference，资源解析属于构建层。当前 CLI 决策：默认整体复制所有模块资源（无额外旗标）；
+- ***资源复制***：资源目录虚拟模块（[module-result](../world/module-result.md#资源目录)）中的文件按引用复制到输出（`vault::docs::images#logo.png` → 输出下对应路径），Reference 指向复制后的相对路径；未被引用的资源文件也可以整体复制（站点资源），由 CLI 决定——值层只有 Reference，资源解析属于构建层。当前 CLI 决策：默认整体复制所有模块资源（无额外旗标）；
 - **虚拟目录模块**生成索引页（列出子模块与资源）；
 - 引用在构建时解析：目标存在输出链接，不存在保留可见文本与 unresolved 样式；
 - syntax/analysis/evaluation diagnostics 不阻止生成其他可用页面，但 `notist build` 输出 diagnostics 并返回非零退出码；
-- 默认不清空整个输出目录（只创建或覆盖本次 Vault 对应的页面与 `_notist` 资源），删除旧产物必须显式 `--clean`；`--clean` 只允许清理已解析、验证位于目标 output root 内的 artifact（[build](../../cli.md#build)）。
+- 默认不清空整个输出目录（只创建或覆盖本次 Vault 对应的页面与 `_notist` 资源），删除旧产物必须显式 `--clean`；`--clean` 只允许清理已解析、验证位于目标 output root 内的 artifact（[cli](../../cli.md#build)）。
 
 站点级职责（完整 HTML page shell、vault 名称与模块导航、`_notist/style.css` 等共享资源）属于 CLI build 层，不进入 fragment renderer。
 
 Vault 可通过 `Notist.toml` 的 `[site] styles` 声明额外站点样式表（配置模型见 #<vault::designs::world::core-namespace-plugin-boundary/Notist.toml 配置内容模型>）：CLI 站点层把每个文件复制到 `_notist/styles/<相对路径>` 并在每个页面 head 注入 link，位置在内置 `_notist/style.css` 之后、插件资源之前——用户样式可以覆盖默认样式；build 与 preview 走同一条注入路径，不发展两套语义。文件缺失时降级为 warning 并从页面 head 中省略，不阻塞构建。daemon watcher 把声明的样式文件变化视为 reload 事件（[daemon-process-views](daemon-process-views.md)），preview 因此能在纯 CSS 编辑后自动重建。
 
-== Local Preview
+<a id="local-preview"></a>
+## Local Preview
 
 本地预览复用 static build，不维护独立的动态渲染 API：
 
@@ -82,10 +92,12 @@ filesystem event or explicit rebuild
 
 HTTP 服务只有两个表面：`GET /` 与各 Module clean URL（静态目录服务）；`GET /_notist/events`（SSE，发送当前 revision 与后续更新）。页面中的 `_notist/reload.js` 用 EventSource 订阅 revision；连接建立与重连时先收到当前值，浏览器可以发现断线期间错过的构建。完整页面 reload 不需要 WebSocket、DOM diff 或自定义文档协议。
 
-=== Atomic Rebuild 与失败
+<a id="atomic-rebuild-与失败"></a>
+### Atomic Rebuild 与失败
 
 文件变化后先在 staging 目录生成完整站点，成功后再替换当前服务目录；致命错误时旧站点继续可见，CLI 输出 rebuild failed。可恢复的 diagnostics 不属于构建基础设施失败——页面仍以降级语义生成。目录替换必须保证浏览器读不到写了一半的页面集合；需要更严格的跨平台原子切换时，服务状态持有不可变 generation 目录，而不是让请求观察原地删除后 rename 的中间状态。
 
-=== Network Boundary
+<a id="network-boundary"></a>
+### Network Boundary
 
 Preview 暴露用户正在编辑的文档内容，默认只监听 loopback；显式使用非 loopback 地址必须显示警告。源码读取、编辑操作或远程共享需要随机访问 token、Origin 检查与独立授权边界；只读静态页面与 revision stream 不应被自然扩展成无认证的编辑 API。

@@ -1,4 +1,4 @@
-@![implementation = "partial"]
+@![implementation = "partial", kind = "design", status = "current"]
 = LSP 无头契约测试
 
 `notist lsp` 的对外行为由三层测试共同守护，每层回答不同的问题：

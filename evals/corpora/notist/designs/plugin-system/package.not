@@ -1,4 +1,4 @@
-@![implementation = "partial"]
+@![implementation = "partial", kind = "design", status = "current"]
 = Plugin Package and Lifecycle
 
 本文定义插件 package 的形态、manifest、namespace、core package 以及装载生命周期。插件求值语义见 #<vault::designs::pipeline::plugin-call-reduction>；共享类型与 WIT 边界见 #<vault::designs::plugin-system::abi>。

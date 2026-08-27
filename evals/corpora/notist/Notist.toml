@@ -1,0 +1,5 @@
+[plugins.shader]
+path = "plugins/shader"
+
+[plugins.mermaid]
+path = "plugins/mermaid"

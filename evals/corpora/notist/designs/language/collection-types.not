@@ -1,4 +1,4 @@
-@![implementation = "missing"]
+@![implementation = "missing", kind = "design", status = "current"]
 = Collection Types and Union
 
 #callout(kind="note", title=[状态])[

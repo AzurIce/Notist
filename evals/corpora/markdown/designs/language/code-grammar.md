@@ -1,19 +1,30 @@
-= Code Core Grammar
+---
+implementation: aligned
+kind: design
+status: current
+---
+
+<a id="code-core-grammar"></a>
+# Code Core Grammar
 
 本文是 L1 Code 核心语法的独立成篇，从归档的历史混合文档中独立成篇。Markup/scope 表面语法见 [markup-surface](markup-surface.md)；函数声明语法见 [call-model](call-model.md)；类型语义见 [type-system](type-system.md)。
 
 
-== Code 核心语法
+<a id="code-核心语法"></a>
+## Code 核心语法
 
-=== 标识符
+<a id="标识符"></a>
+### 标识符
 
-标识符由 Unicode 字母（含中文）、数字、`-`、`_` 组成，首字符不能是数字或 `-`。`-` 属于标识符字符：`my-var` 是一个名字，不是减法——想写减法要加空格（`my - var`）。本节的分隔规则作用于 Code 内部（`#(...)`、Code block）；裸 `#` 嵌入的顶层边界见 [嵌入的边界](markup-surface.md#嵌入的边界)——`#1 + 2` 的 `1` 在空格处终止，` + 2` 是文本。
+标识符由 Unicode 字母（含中文）、数字、`-`、`_` 组成，首字符不能是数字或 `-`。`-` 属于标识符字符：`my-var` 是一个名字，不是减法——想写减法要加空格（`my - var`）。本节的分隔规则作用于 Code 内部（`#(...)`、Code block）；裸 `#` 嵌入的顶层边界见 [markup-surface](markup-surface.md#嵌入的边界)——`#1 + 2` 的 `1` 在空格处终止，` + 2` 是文本。
 
-=== 注释
+<a id="注释"></a>
+### 注释
 
-`//` 行注释与 `/* ... */` 嵌套块注释是 Code 上下文的词法 trivia；Markup 文本流中 `//` 与 `/*` 是普通文本，不做注释剥离。注释不进入值或 Content（检索字段见 [检索单元与索引](../host/search-retrieval-index.md#检索单元与索引) 的 `comment` 字段）。
+`//` 行注释与 `/* ... */` 嵌套块注释是 Code 上下文的词法 trivia；Markup 文本流中 `//` 与 `/*` 是普通文本，不做注释剥离。注释不进入值或 Content（检索字段见 [search-retrieval-index](../host/search-retrieval-index.md#检索单元与索引) 的 `comment` 字段）。
 
-=== 字面量
+<a id="字面量"></a>
+### 字面量
 
 ```text
 Int       十进制数字序列
@@ -39,7 +50,8 @@ r#"""..."""#   raw 多行（同样要求 opening 后立即换行）
 - Multiline 形态的 opening framing newline 不属于值；closing 前紧邻的一个 framing newline 被裁掉；除此之外不裁空白、不 dedent；
 - 四种形态产生同一个 `String` 类型——form/style 是字面量 provenance，不影响值语义（#<vault::designs::language::type-system/Type 与 Value 对应>）。
 
-=== primary 与运算符
+<a id="primary-与运算符"></a>
+### primary 与运算符
 
 primary：字面量、名字、括号表达式、调用、Content literal、Code block、lambda。
 
@@ -61,11 +73,12 @@ primary：字面量、名字、括号表达式、调用、Content literal、Code
 - `a and not b` 是 `a and (not b)`；
 - 相等定义在 None/Bool/Int/Float/String 上（同族值比较，跨族不等）；Content 与 Function 没有自动相等（#<vault::designs::language::type-system/Type 与 Value 对应>）。
 
-=== 表达式
+<a id="表达式"></a>
+### 表达式
 
-**调用**：`callee(实参)` 加可选 trailing block `[...]`——绑定、默认值、coercion 与调用点检查见 [call-model](call-model.md)。
+***调用***：`callee(实参)` 加可选 trailing block `[...]`——绑定、默认值、coercion 与调用点检查见 [call-model](call-model.md)。
 
-**if**：表达式，typst 风格：
+***if***：表达式，typst 风格：
 
 ```not
 #if 条件 { ... } else { ... }
@@ -73,10 +86,10 @@ primary：字面量、名字、括号表达式、调用、Content literal、Code
 ```
 
 - 分支是 Code block（求值为值）或 Content block（求值为内容），复用既有块语法；
-- `else` 可省略：两个分支都存在时，类型为两分支类型的 join；**无 `else` 时**，条件为假产生 `None`——Code block 分支的类型 `T` 提升为 `T?`（Content 分支无 else 时类型仍是 `Content`，空内容合法）；
+- `else` 可省略：两个分支都存在时，类型为两分支类型的 join；***无 `else` 时***，条件为假产生 `None`——Code block 分支的类型 `T` 提升为 `T?`（Content 分支无 else 时类型仍是 `Content`，空内容合法）；
 - 条件必须是 `Bool`。
 
-**lambda**：`(形参表) => 表达式`：
+***lambda***：`(形参表) => 表达式`：
 
 ```not
 #let double = (x: Int) => x * 2
@@ -88,19 +101,21 @@ primary：字面量、名字、括号表达式、调用、Content literal、Code
 - `let f(形参表) -> R = body` 定义糖与 `let f = (形参表) => body` 等价（定义糖的返回类型声明与推断结果一致）；
 - lambda 是普通 Function 值：可以绑定、传递、调用（[call-model](call-model.md)）。
 
-=== 声明
+<a id="声明"></a>
+### 声明
 
-**let**：`let name = 表达式` 或 `let name: T = 表达式`——右侧先在旧环境中求值，绑定对后续可见；类型标注可选（未标注时由右侧推断）。同名遮蔽允许（最近绑定者胜出，见 [名称解析](scope-environment.md#名称解析) 名称解析）。
+***let***：`let name = 表达式` 或 `let name: T = 表达式`——右侧先在旧环境中求值，绑定对后续可见；类型标注可选（未标注时由右侧推断）。同名遮蔽允许（最近绑定者胜出，见 [scope-environment](scope-environment.md#名称解析) 名称解析）。
 
-**函数定义糖**：`let name(形参表) -> R = body`（≡ lambda 绑定，见上）。形参语法与 [call-model](call-model.md) 一致：带 `=` 的形参是 named 可省略，不带的是 positional 必填。
+***函数定义糖***：`let name(形参表) -> R = body`（≡ lambda 绑定，见上）。形参语法与 [call-model](call-model.md) 一致：带 `=` 的形参是 named 可省略，不带的是 positional 必填。
 
-**import**：见 [import](../world/import.md)。
+***import***：见 [import](../world/import.md)。
 
-**模块属性**：`@![...]` 见 [三种挂载位置](annotation-syntax.md#三种挂载位置)。
+***模块属性***：`@![...]` 见 [annotation-syntax](annotation-syntax.md#三种挂载位置)。
 
-（递归绑定暂缓：`let` 的右侧看不到正在声明的名字，递归函数待引入 `let rec` 时再设计——见 [静态检查](type-system.md#静态检查) 静态检查。）
+（递归绑定暂缓：`let` 的右侧看不到正在声明的名字，递归函数待引入 `let rec` 时再设计——见 [type-system](type-system.md#静态检查) 静态检查。）
 
-=== 类型语法
+<a id="类型语法"></a>
+### 类型语法
 
 ```text
 Type
@@ -113,11 +128,13 @@ Type
 
 （Content 形状 refinement（Inline/Block）是类型系统的未来扩展，暂不进入本语法。）
 
-== 字面量载荷
+<a id="字面量载荷"></a>
+## 字面量载荷
 
-围栏代码块（```` ``` ````）内部与 String 字面量内部是词法层的字面量载荷：lexer 以"扫到闭合围栏/闭合引号"为唯一状态，不识别任何 Markup/Code 构造。它们不是语义 context，不参与 quotation。围栏的完整语法（opener 长度、闭合规则、lang 标注、error recovery）见 [raw](syntax-sugar.md#raw) 的 raw 节；编辑器按载荷 range 做语言注入。
+围栏代码块（```` ``` ````）内部与 String 字面量内部是词法层的字面量载荷：lexer 以"扫到闭合围栏/闭合引号"为唯一状态，不识别任何 Markup/Code 构造。它们不是语义 context，不参与 quotation。围栏的完整语法（opener 长度、闭合规则、lang 标注、error recovery）见 [syntax-sugar](syntax-sugar.md#raw) 的 raw 节；编辑器按载荷 range 做语言注入。
 
-== 引用索引
+<a id="引用索引"></a>
+## 引用索引
 
 Markup 中除最小骨架外的一切构造，定义处如下：
 

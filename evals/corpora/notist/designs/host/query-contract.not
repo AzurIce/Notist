@@ -1,4 +1,4 @@
-@![implementation = "partial"]
+@![implementation = "partial", kind = "design", status = "current"]
 = Query Contract
 
 本文是 A2 查询契约的独立成篇，从归档的历史混合文档中独立成篇。CLI 命令面与 Skill 分发见 #<vault::designs::host::cli-command-surface-skill-distribution>；daemon 进程与 View 见 #<vault::designs::host::daemon-process-views>；core request 与本地协议见 #<vault::designs::host::client-interface-protocol>；Analyzer 对查询契约的实现见 #<vault::designs::host::analyzer-snapshot>。

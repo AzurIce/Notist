@@ -1,3 +1,4 @@
+@![kind = "reference", status = "current"]
 = Code 模式
 
 Markup 中 `#` 进入 Code，Code 中 `[...]` 创建 Content literal 并回到 Markup。本页演示 Code 模式的书写能力，每处表达式的求值结果都直接渲染在页面上。

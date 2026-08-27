@@ -1,9 +1,17 @@
-= Search Modes and Retrieval Index
+---
+implementation: partial
+kind: design
+status: current
+---
+
+<a id="search-modes-and-retrieval-index"></a>
+# Search Modes and Retrieval Index
 
 本文是 A2 检索语义与索引的独立成篇，从归档的历史混合文档中独立成篇。分页预算、cursor 与 selector 见 [query-contract](query-contract.md)；Analyzer 与 snapshot 见 [analyzer-snapshot](analyzer-snapshot.md)。
 
 
-== Search 不是一种模式
+<a id="search-不是一种模式"></a>
+## Search 不是一种模式
 
 公开 search 有四种显式模式：
 
@@ -36,7 +44,8 @@ Tokenizer 对 index 与 query 使用同一套 versioned pipeline：Unicode NFKC 
 
 Exact（CLI `locate`）默认大小写敏感，`--ignore-case` 显式启用；不依赖全文索引（index 重建时仍可用）。Fuzzy 先执行与 lexical 相同的分词和 boolean 语义，再对适合纠错的 term 查询词典：默认 Damerau-Levenshtein distance 1（runtime policy 上限 2），长度 <4 的 term、纯数字、单个 Han 字符与结构 delimiter 不扩展，每 term 至多 32 候选、每 query 至多 128，达到上限返回 `expansion_limited=true`。Regex 使用 Rust regex 语义（无 backreference/look-around），pattern 长度、编译大小、扫描时间与响应 bytes 都有上限——它是 CLI 专家能力，Skill 引导 Agent 优先使用 exact/lexical/fuzzy。
 
-=== Scope、Excerpt 与分组
+<a id="scopeexcerpt-与分组"></a>
+### Scope、Excerpt 与分组
 
 `--scope` 与 `--exclude-scope` 都接受精确绝对 ModulePath prefix，可重复：include 取并集，exclude 在 include 之后生效。匹配按段边界进行——`vault::foo` 只命中自身与 `vault::foo::*`，不命中 `vault::foobar`；完整 CLI 语义见 #<vault::cli/Selector、Scope 与 Citation>。`--field`、scope 与访问控制在 candidate generation 前生效（Vault 外路径永远不进入 index 或 result），不能先取全 Vault 候选再过滤。
 
@@ -55,7 +64,8 @@ SearchHit {
 
 默认 excerpt 上限 256 bytes（runtime policy，不进入 CLI 参数），截取优先以实际 query term 的 source range 为中心；单行超限在 UTF-8 scalar boundary 截断。`group_by` 控制首页多样性：`source` 每 Module 保留最佳 hit（lexical/fuzzy 默认）、`section` 以最近 Heading 为边界、`match` 返回每个独立 region（exact/regex 默认）。scope、exclude-scope、grouping 与 fields 都属于 query identity，翻页不能改变。零结果仍是成功，hint 只建议（如 `--any`、改用 `locate`），不自动重试、不把零结果改成 error。
 
-== 检索单元与索引
+<a id="检索单元与索引"></a>
+## 检索单元与索引
 
 Notist 使用独立的 `SearchIndex` 边界，不把 Tantivy type 暴露进 CoreRequest。默认实现选择 Tantivy：Rust-native、fielded BM25、term dictionary、fuzzy term query、增量 segment 与 immutable reader，与 VaultEngine 的 publication 模型契合。
 

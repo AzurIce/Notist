@@ -1,4 +1,11 @@
-= Compilation Pipeline Overview
+---
+implementation: aligned
+kind: design
+status: current
+---
+
+<a id="compilation-pipeline-overview"></a>
+# Compilation Pipeline Overview
 
 本文是 Notist 编译管线的总入口：把一篇 source 如何一步步变成可投影文档讲清楚。各阶段细节分别由自己的文档定义；本文只规定阶段边界、输入输出、所有权与不变量。
 
@@ -14,7 +21,8 @@ source
 
 阶段之间是数据流，不是回调流：每个阶段只消费上一阶段的产物；求值不重新 parse，成型不重新 resolve，投影不重新猜测语义。
 
-== 阶段总览
+<a id="阶段总览"></a>
+## 阶段总览
 
 | 阶段 | 输入 | 输出 | 所有者 | 详细文档 |
 |---|---|---|---|---|
@@ -27,39 +35,47 @@ source
 
 当前实现中 clean parse 的求值、成型与 HTML 投影都运行在统一 `Node` 森林上；`ElementTree` 只是成型后的 Node 容器，不存在转回 legacy `Content` / `StructuredDocument` 的生产桥接。HTML target 在渲染前使用独立的 target-side projection registry，再由 serializer 输出 HTML。
 
-== 阶段边界
+<a id="阶段边界"></a>
+## 阶段边界
 
-- **P1 只向前**：任一阶段不得反向调用前一阶段，尤其不允许 project 阶段重新 parse source。
-- **P2 单一语义真相**：值层是 call 森林与属性表；成型后的结构是它们的可重建投影（[不变量](structure.md#不变量)）。
-- **P3 Range 稳定**：所有阶段保持 byte range 语义，诊断与属性表可以在 source、节点、target 之间互相定位。
-- **P4 错误可恢复**：parse/check/evaluate 产生诊断后继续，后续阶段仍能消费部分结果；错误不伪装成合法值。
-- **P5 确定性**：parse、check、evaluate、structure 是纯函数；project 允许读取 target 上下文，但不改变语义树。
+- ***P1 只向前***：任一阶段不得反向调用前一阶段，尤其不允许 project 阶段重新 parse source。
+- ***P2 单一语义真相***：值层是 call 森林与属性表；成型后的结构是它们的可重建投影（[structure](structure.md#不变量)）。
+- ***P3 Range 稳定***：所有阶段保持 byte range 语义，诊断与属性表可以在 source、节点、target 之间互相定位。
+- ***P4 错误可恢复***：parse/check/evaluate 产生诊断后继续，后续阶段仍能消费部分结果；错误不伪装成合法值。
+- ***P5 确定性***：parse、check、evaluate、structure 是纯函数；project 允许读取 target 上下文，但不改变语义树。
 
-== Parse
+<a id="parse"></a>
+## Parse
 
 parse 把 source 变成 mode-aware 的语法树：Markup 与 Code 交替扫描，语法糖以专用节点保留。详细规则见 [parse](parse.md)；两个语法表面见 [markup-surface](../language/markup-surface.md) 与 [code-grammar](../language/code-grammar.md)。
 
-== Check
+<a id="check"></a>
+## Check
 
 check 在求值前完成三件事：名称解析、类型检查、调用解析。它产出求值器唯一消费的语义输入；求值器不重新猜名字或实参绑定。详细规则见 [type-system](../language/type-system.md)、[scope-environment](../language/scope-environment.md) 与 [call-model](../language/call-model.md)。
 
-== Lower
+<a id="lower"></a>
+## Lower
 
 lower 是 evaluate 的前半段：它消费 check 后的语法树，产出统一的 call 森林。`Call` 并不由 parser 直接产生——parse 产出 `syntax::Call` 与糖节点；lower 才把显式调用、语法糖与文档文字统一成 reduction IR。详细规则见 #<vault::designs::pipeline::evaluate/Lowering：Call 的来源>。
 
-== Reduce
+<a id="reduce"></a>
+## Reduce
 
 reduce 是 evaluate 的后半段：声明式不动点——反复把存在 handler 的 call 替换为 handler 的输出森林，直到一整轮不再变化。规约后的森林允许 `core::parbreak` 与未归组的 `core::item`，由成型消除。插件调用、终止预算与插件 ABI 见 [plugin-call-reduction](plugin-call-reduction.md)；完整插件 package 模型见 `<vault::designs::plugin-system>`。
 
-== Structure
+<a id="structure"></a>
+## Structure
 
 structure 是森林上的结构化重写：消费 `core::parbreak`，把连续 inline 节点合并为 `core::paragraph`，把相邻 item 合并为 `core::list`，把 heading 归组为 `core::section`。输出的森林不含可规约的 Call 与 `core::parbreak`。
 
-== Project
+<a id="project"></a>
+## Project
 
 project 是 target 侧的第二阶段规约：target package 注册投影 handler，把语义名字规约为目标词表节点，哑 serializer 直出。详细契约见 [project](project.md) 与 [projection](../plugin-system/projection.md)；HTML target 中 core 节点投影为原生标签，插件节点可以投影为 Web Component；投影层统一，但 target 结果不强制都是 Web Component。HTML 映射见 [html-renderer](../host/html-renderer.md)；跨 target 投影边界见 [core-namespace-plugin-boundary](../world/core-namespace-plugin-boundary.md)。
 
-== 诊断流动
+<a id="诊断流动"></a>
+## 诊断流动
 
 诊断沿阶段单向累积，并在每个阶段保留 source range：
 
@@ -69,7 +85,8 @@ SyntaxError ──> EvalDiagnostic ──> Evaluation.diagnostics ──> 渲染
 
 parse 错误记录在 `Parse.errors`；check/evaluate 错误进入 `Evaluation.diagnostics`；structure 不新增语义诊断；project 不改变诊断集合。
 
-== 当前实现映射
+<a id="当前实现映射"></a>
+## 当前实现映射
 
 | 阶段 | 当前实现 | 目标 |
 |---|---|---|
@@ -80,7 +97,8 @@ parse 错误记录在 `Parse.errors`；check/evaluate 错误进入 `Evaluation.d
 | structure | `notist-eval::leaf::shape_flat` | `Node` 森林上的递归成型；`ElementTree` 只承载 `Node`，不引入第二种元素表示 |
 | project | `notist-html::HtmlProjectionRegistry` + `render_element_tree_with_renderers` | target-side 独立规约先产出 `html::*` 数据节点，再由 serializer 输出；anchor/outline/annotation 与 flow/inline 继续消费同一 Node tree |
 
-== 已裁定 / 待定
+<a id="已裁定-待定"></a>
+## 已裁定 / 待定
 
 - 已裁定：管线阶段为 parse → check → lower → reduce → structure → project；各阶段只消费上一阶段产物。
 - 已裁定：语义真相是 call 森林与属性表；结构是可重建投影。

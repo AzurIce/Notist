@@ -1,18 +1,28 @@
-= Vault Boundary and Discovery
+---
+implementation: aligned
+kind: design
+status: current
+---
+
+<a id="vault-boundary-and-discovery"></a>
+# Vault Boundary and Discovery
 
 本文是 Vault 边界与发现的独立成篇，从归档的历史混合文档中独立成篇。Module 树与 ModuleResult 见 [module-result](module-result.md)。
 
 Vault 是运行边界：它决定 Module 树的根、discovery boundary、language version 与加载的 plugin。跨 Vault 不解析名称与引用——相邻目录和同一 daemon 进程都不能自动扩大解析范围。
 
-== Vault
+<a id="vault"></a>
+## Vault
 
-=== Notist.toml marker
+<a id="notisttoml-marker"></a>
+### Notist.toml marker
 
 Notist.toml 是 vault root marker：文件所在目录即 vault 根。文件可以为空——存在本身就声明根；配置字段不能改变内容根的位置。
 
 为什么需要显式 marker：编辑器打开的 worktree 不一定等于 vault。一个代码仓库可以把文档放在 docs、笔记放在 notes，甚至还有 examples——如果直接用 workspace root，代码、构建目录和其他文档目录都会错误地参与 Module 扫描。显式 marker 让边界由内容作者声明，不依赖目录名约定或编辑器的项目模型。
 
-=== 发现规则
+<a id="发现规则"></a>
+### 发现规则
 
 - 归属：从文件目录向上寻找最近的 marker，其所在目录即该文件的 vault 根；
 - 嵌套：扫描外层 vault 时，遇到子 marker 停止向该目录递归——同一个 source 只能拥有一个 ModulePath，否则引用与诊断都会重复；
@@ -21,7 +31,8 @@ Notist.toml 是 vault root marker：文件所在目录即 vault 根。文件可�
 
 CLI 与 LSP 的具体行为（overlay 归属、vault 切换）属于实现文档，本文只定归属规则。
 
-=== Vault 决定什么
+<a id="vault-决定什么"></a>
+### Vault 决定什么
 
 - Module 树的根与 discovery boundary；
 - language version 与 core/prelude 环境；

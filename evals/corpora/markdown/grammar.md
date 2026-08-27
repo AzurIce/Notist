@@ -1,10 +1,17 @@
-= Notist Grammar
+---
+kind: reference
+status: current
+---
+
+<a id="notist-grammar"></a>
+# Notist Grammar
 
 本文定义当前工具与写作者可以依赖的语法 surface。语言包含 Markup 与 Code 两种模式：文档默认处于 Markup，`#` 把一个 Code 表达式嵌入当前内容，Code 中的 `[...]` 创建 Content literal 并暂时切回 Markup。概念说明见 [intro](intro.md)，类型与求值规则见 [types](types.md)，内置构造器见 [functions](functions.md)，日常速查见 [cheatsheet](cheatsheet.md)。
 
 Markup 模式只定义最小骨架——文本流、段落分隔、`#` 嵌入与转义；其余一切 Markup 构造（标题、围栏、分割线、列表、表格、引用、强调等）都是语法糖或标注，见文末的引用索引。Code 模式是本文的主体，定义完整的字面量、运算符、表达式、声明与类型语法。
 
-== 两种 lexical context
+<a id="两种-lexical-context"></a>
+## 两种 lexical context
 
 语义模式只有两个，递归 quotation：
 
@@ -15,16 +22,18 @@ Code   —— 产生 Value（Markup 中的 # 进入这里；{...} Code block）
 
 不存在第三种语义 context。围栏代码块与 String 字面量的内部是词法层的字面量载荷，不识别任何 Markup/Code 构造，不参与 quotation。
 
-== Markup 最小骨架
+<a id="markup-最小骨架"></a>
+## Markup 最小骨架
 
-- **文本流**：连续文本成为 `Text` 元素——表达式嵌入、标注、元素构造与段间分隔处切开；
-- **段落分隔**：空行产生 `Parbreak`；单个换行仍属于同一段；
-- **`#` 嵌入式表达式**：边界规则见下；
-- **块构造**：`{...}` Code block 与 `#[...]` 手动 scope（Markup 中 Content literal 的书写形式），见 [annotation-syntax](designs/language/annotation-syntax.md)；裸 `[` 与 `]` 是普通文本；
-- **转义**：`\` 转义 `#`、`[`、`]`、`@` 与 `\` 本身；转义不产生额外输出（`\#` 输出一个 `#`）；
-- **注释**：Markup 文本流中 `//` 与 `/*` 是普通文本——注释是 Code 上下文的词法 trivia（见下）。
+- ***文本流***：连续文本成为 `Text` 元素——表达式嵌入、标注、元素构造与段间分隔处切开；
+- ***段落分隔***：空行产生 `Parbreak`；单个换行仍属于同一段；
+- ***`#` 嵌入式表达式***：边界规则见下；
+- ***块构造***：`{...}` Code block 与 `#[...]` 手动 scope（Markup 中 Content literal 的书写形式），见 [annotation-syntax](designs/language/annotation-syntax.md)；裸 `[` 与 `]` 是普通文本；
+- ***转义***：`\` 转义 `#`、`[`、`]`、`@` 与 `\` 本身；转义不产生额外输出（`\#` 输出一个 `#`）；
+- ***注释***：Markup 文本流中 `//` 与 `/*` 是普通文本——注释是 Code 上下文的词法 trivia（见下）。
 
-=== `#` 嵌入的边界
+<a id="-嵌入的边界"></a>
+### `#` 嵌入的边界
 
 `#` 后的表达式有自己的边界规则：
 
@@ -41,13 +50,16 @@ Code   —— 产生 Value（Markup 中的 # 进入这里；{...} Code block）
 第一段#accent;文字 与 第一段#(accent)文字 输出相同的标题文本。
 ```
 
-== Code 核心语法
+<a id="code-核心语法"></a>
+## Code 核心语法
 
-=== 标识符
+<a id="标识符"></a>
+### 标识符
 
 标识符由 Unicode 字母（含中文）、数字、`-`、`_` 组成，首字符不能是数字或 `-`。`-` 属于标识符字符：`my-var` 是一个名字，不是减法——想写减法要加空格（`my - var`）。`::` 两侧不允许空白，用于限定名（`vault::path`）与函数命名空间。
 
-=== 注释
+<a id="注释"></a>
+### 注释
 
 `//` 行注释与 `/* ... */` 嵌套块注释是 Code 上下文的词法 trivia，不进入值或 Content：
 
@@ -55,7 +67,8 @@ Code   —— 产生 Value（Markup 中的 # 进入这里；{...} Code block）
 #let total = 1 + /* 外层 /* 嵌套 */ 注释 */ 2 // 行注释
 ```
 
-=== 字面量
+<a id="字面量"></a>
+### 字面量
 
 ```text
 Int       十进制数字序列
@@ -79,7 +92,8 @@ r#"""..."""#   raw 多行（同样要求 opening 后立即换行）
 - 多行形态的 opening framing newline 不属于值；closing 前紧邻的一个 framing newline 被裁掉；除此之外不裁空白、不 dedent；
 - 四种形态产生同一个 `String` 类型——form/style 是字面量 provenance，不影响值语义。
 
-=== 运算符
+<a id="运算符"></a>
+### 运算符
 
 ```text
 一元：-    not
@@ -97,11 +111,13 @@ r#"""..."""#   raw 多行（同样要求 opening 后立即换行）
 - `a and not b` 是 `a and (not b)`；
 - 相等定义在 None/Bool/Int/Float/String 上（同族值比较，跨族不等）；Content 与 Function 没有自动相等。
 
-=== 调用
+<a id="调用"></a>
+### 调用
 
 `callee(实参)` 加可选 trailing block `[...]`。命名实参写作 `name: value`；位置实参必须全部出现在具名实参之前，trailing Content block 是唯一例外——它是恒为最后的 positional 实参。绑定、默认值、coercion 与调用点检查见 [types](types.md)。
 
-=== if
+<a id="if"></a>
+### if
 
 ```not
 #if 条件 { ... } else { ... }
@@ -112,7 +128,8 @@ r#"""..."""#   raw 多行（同样要求 opening 后立即换行）
 - `else` 可省略：无 `else` 时条件为假产生 `None`——Code block 分支的类型 `T` 提升为 `T?`（Content 分支无 else 时类型仍是 `Content`，空内容合法）；
 - 条件必须是 `Bool`。
 
-=== lambda
+<a id="lambda"></a>
+### lambda
 
 ```not
 #let double = (x: Int) => x * 2
@@ -123,28 +140,30 @@ r#"""..."""#   raw 多行（同样要求 opening 后立即换行）
 - 参数列表括号必写（单参数省略括号暂不支持）；
 - lambda 是普通 Function 值：可以绑定、传递、调用。
 
-=== 声明
+<a id="声明"></a>
+### 声明
 
-**let**：`let name = 表达式` 或 `let name: T = 表达式`——右侧先在旧环境中求值，绑定对后续可见；类型标注可选（未标注时由右侧推断）。同名遮蔽允许（最近绑定者胜出）；没有全局 hoist——名字按声明顺序可见，前向引用产生诊断。
+***let***：`let name = 表达式` 或 `let name: T = 表达式`——右侧先在旧环境中求值，绑定对后续可见；类型标注可选（未标注时由右侧推断）。同名遮蔽允许（最近绑定者胜出）；没有全局 hoist——名字按声明顺序可见，前向引用产生诊断。
 
-**函数定义糖**：`let name(形参表) -> R = body`，与 `let name = (形参表) => body` 等价。形参带 `=` 的是 named 可省略，不带的是 positional 必填。
+***函数定义糖***：`let name(形参表) -> R = body`，与 `let name = (形参表) => body` 等价。形参带 `=` 的是 named 可省略，不带的是 positional 必填。
 
 ```not
 #let double(x: Int) -> Int = x * 2
 #let double = (x: Int) => x * 2   // 与上一行等价
 ```
 
-**代码块**：`{...}` 是多语句的 Code 表达式——语句以 `;` 或换行分隔（同一行多个语句必须用 `;`，尾随 `;` 合法）。块的值采用 join 语义：块内各表达式的值按插入规则组合，`let` 产生 `None`、不参与组合。块内绑定挂在块节点上，不出块。
+***代码块***：`{...}` 是多语句的 Code 表达式——语句以 `;` 或换行分隔（同一行多个语句必须用 `;`，尾随 `;` 合法）。块的值采用 join 语义：块内各表达式的值按插入规则组合，`let` 产生 `None`、不参与组合。块内绑定挂在块节点上，不出块。
 
-**import**：`#import <path>::{name, name as alias}`——显式选择器，无 wildcard；花括号左侧是 ModulePath，`as` 把名字映射为合法 Code 标识符。import 扩展当前根 scope 后续节点的环境，产生空 Content；依赖边在求值前进入 import graph，import 环一律是诊断。见 [import](designs/world/import.md)。
+***import***：`#import <path>::{name, name as alias}`——显式选择器，无 wildcard；花括号左侧是 ModulePath，`as` 把名字映射为合法 Code 标识符。import 扩展当前根 scope 后续节点的环境，产生空 Content；依赖边在求值前进入 import graph，import 环一律是诊断。见 [import](designs/world/import.md)。
 
 ```not
 #import <self::theme>::{warning, accent as highlight}
 ```
 
-**模块属性**：`@![...]` 见 [annotation-syntax](designs/language/annotation-syntax.md)。
+***模块属性***：`@![...]` 见 [annotation-syntax](designs/language/annotation-syntax.md)。
 
-=== 类型语法
+<a id="类型语法"></a>
+### 类型语法
 
 ```text
 Type
@@ -162,7 +181,8 @@ Type
 
 `trailing` 前缀标记末尾 Content 形参。`(T?)?` 折叠为 `T?`。可空与可省略的完整规则见 [types](types.md)。
 
-== Target 引用
+<a id="target-引用"></a>
+## Target 引用
 
 ```not
 #<setup>                          # 裸名：从当前模块解析
@@ -175,12 +195,13 @@ Type
 - `<` 与 `>` 之间是 Target 字面量：ModulePath 加可选的 `/` 后缀；段内允许空格、数字开头与 `/` 之外的任意 Unicode，`\<`、`\>`、`\\` 转义定界符与反斜杠；
 - `/` 后缀是「模块内目标」：文档模块中是带 id 的 scope 或标题默认 id，资源目录中是完整文件名；label 可以再含 `/` 与 `#`；
 - `vault`、`self`、`super` 是只允许出现在路径开头的保留段；路径段不能包含 control character 或 `::`（`::` 是段分隔符）；
-- 标题拥有默认 id：``<vault::guide/安装>`` 按标题文本精确匹配，重复标题产生歧义诊断；
+- 标题拥有默认 id：`#<vault::guide/安装>` 按标题文本精确匹配，重复标题产生歧义诊断；
 - 外部 url 不是 Target：写 `#link("https://...")`（String 分支），解析为 External 目标，当前渲染为未解析的可见文本并产生 info 级 `external-reference-unsupported` 诊断——不是语法错误。
 
-显式构造 `link(target: Target | String)` 使用同一个引用解析入口：``<vault::guide>`` 与 `#link(<vault::guide>)` 产生同一种 Reference 元素。
+显式构造 `link(target: Target | String)` 使用同一个引用解析入口：`#<vault::guide>` 与 `#link(<vault::guide>)` 产生同一种 Reference 元素。
 
-== 行内 Raw 与围栏
+<a id="行内-raw-与围栏"></a>
+## 行内 Raw 与围栏
 
 Backtick 语法在 Markup 中直接构造 Raw 元素：
 
@@ -198,7 +219,8 @@ fn main() {}
 
 需要以普通函数方式构造 Raw 时，把源码作为 String 实参传给 `raw`（见 [functions](functions.md)）。
 
-== 标注与 scope 形态
+<a id="标注与-scope-形态"></a>
+## 标注与 scope 形态
 
 属性列表只有一套语法，挂载位置是变体：
 
@@ -225,7 +247,8 @@ fn main() {}
 
 完整规则见 [annotation-syntax](designs/language/annotation-syntax.md)。
 
-== 引用索引
+<a id="引用索引"></a>
+## 引用索引
 
 Markup 中除最小骨架外的一切构造，定义处如下：
 
@@ -245,7 +268,8 @@ __text__ / ~~text~~        → underline / strike（syntax-sugar）
 # 表达式边界               → markup-surface
 ```
 
-== 错误与恢复
+<a id="错误与恢复"></a>
+## 错误与恢复
 
 未闭合或非法的引用、Content block、实参、String、Raw 语法与标注产生 SyntaxError。Code 表达式缺失或无法识别时必须产生诊断，不得静默丢弃后回退到默认值。
 

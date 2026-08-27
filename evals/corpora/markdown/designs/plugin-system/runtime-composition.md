@@ -1,8 +1,16 @@
-= Plugin Runtime Composition
+---
+implementation: partial
+kind: design
+status: current
+---
+
+<a id="plugin-runtime-composition"></a>
+# Plugin Runtime Composition
 
 本文定义 plugin contribution 如何进入一次 Notist 运行时，以及 native 与 Wasm plugin 的关系。它补充 [package](package.md) 的 package 形态和 [eval-contribution](eval-contribution.md) 的函数注册契约；求值引擎本身见 [plugin-call-reduction](../pipeline/plugin-call-reduction.md)。
 
-== 先区分 package、backend 与 App
+<a id="先区分-packagebackend-与-app"></a>
+## 先区分 package、backend 与 App
 
 Notist 中的 plugin 首先是一个**语义 package**，而不是一种编译产物：
 
@@ -28,7 +36,8 @@ native backend                       Wasm backend
 
 因此 `core`、第三方 native plugin 和 Wasm plugin 在**语义层**没有不同的 plugin 类别。backend 只影响代码如何装载、如何执行以及信任边界，不影响 call 的名字、参数、handler 不动点、成型或投影规则。
 
-== 引擎不是 App
+<a id="引擎不是-app"></a>
+## 引擎不是 App
 
 `notist-eval` 提供的是可注入的引擎能力：
 
@@ -53,7 +62,8 @@ App
 
 当前 `WorkspaceSnapshot` 的构建过程已经承担这个组合根的职责：它捕获函数 registry、shaping registry、签名集合、插件实例和环境 identity。未来可以把这组职责抽成独立的 `notist-runtime` / `notist-app` crate，但不应把 App 反向塞入 `notist-eval`。
 
-== 统一 contribution
+<a id="统一-contribution"></a>
+## 统一 contribution
 
 backend 的输出必须先归一化为同一份注册贡献：
 
@@ -79,7 +89,8 @@ PluginContribution {
 
 native plugin 和 Wasm plugin 应该经过同一套校验与注册路径。Wasm package 一律实例化最小 WIT component；其 `init` 返回 opaque bytes，宿主以共享 version byte + postcard codec 解码出声明列表，`evaluate` 的请求与响应以同一 frame 承载共享 `Node` 森林。JSON 只读取 `plugin.json` 信封。native plugin 的 `register` 调用产生同样的 contribution；两者差别只在 contribution 的来源。
 
-== Plugin trait 与注册器
+<a id="plugin-trait-与注册器"></a>
+## Plugin trait 与注册器
 
 当前已提供最小的公开 native registration API：`notist_eval::PluginContribution` 携带 package identity、functions、signatures、`ElementSchema` 与兼容 aliases，`FunctionRegistry::register_contribution` 对函数 registry 和 shaping registry 做事务式安装。它还不是独立的 `notist-plugin-api` crate，但普通 native crate 已不必访问 `notist-eval` 的私有模块才能构造 contribution。
 
@@ -109,7 +120,8 @@ shader::canvas → owner = Package("shader")
 
 native/Wasm 是 backend 元数据；不能把 native 等同于 host，也不能把 Wasm 等同于 plugin 的语义身份。
 
-== core 的位置
+<a id="core-的位置"></a>
+## core 的位置
 
 `core` 是语言标准 package，但不是 eval engine 的特权模块：
 
@@ -122,7 +134,8 @@ native/Wasm 是 backend 元数据；不能把 native 等同于 host，也不能�
 
 语法糖可以依赖标准 `core::*` 名称。例如 heading sugar lower 成 `core::heading`，表示语言 surface 依赖 core package；这不等于 lower 或 reducer 内嵌了 core handler。若当前 App 没有安装 core，lower 仍产生该 call，而 check/reduce 按普通未安装 package 处理。
 
-== 信任与可替换性
+<a id="信任与可替换性"></a>
+## 信任与可替换性
 
 语义等同不意味着安全 backend 等同：
 
@@ -133,7 +146,8 @@ native/Wasm 是 backend 元数据；不能把 native 等同于 host，也不能�
 
 这个区别只改变 package 的部署和信任策略，不改变 package 的 Node、FunctionSignature、ElementSchema 或 reduction 语义。
 
-== 生命周期与环境 identity
+<a id="生命周期与环境-identity"></a>
+## 生命周期与环境 identity
 
 App 组合一次 package set，并把它捕获到 immutable snapshot：
 
@@ -150,9 +164,11 @@ package、manifest、Wasm module、native plugin surface 或 target contribution
 
 Wasm runtime 的实例化和 `init` 仍然是 Wasm backend 的生命周期；native plugin 的构造和 `register` 是 native backend 的生命周期。两条路径在 contribution 进入 App registry 后汇合。
 
-== 被拒绝的结构
+<a id="被拒绝的结构"></a>
+## 被拒绝的结构
 
-=== eval 内嵌 core（最终形态中拒绝，当前过渡实现仍存在）
+<a id="eval-内嵌-core最终形态中拒绝当前过渡实现仍存在"></a>
+### eval 内嵌 core（最终形态中拒绝，当前过渡实现仍存在）
 
 ```text
 notist-eval
@@ -161,7 +177,8 @@ notist-eval
 
 最终形态中这会让 engine 偷偷拥有一个默认 package，造成 core 与普通 plugin 的装载路径不同，并阻止独立 native plugin 复用同一边界。当前实现仍保留该 `#[path]` 过渡，但 core 已先通过 `PluginContribution` 和 package owner 语义安装；后续迁移目标是把实现移到普通 native package。
 
-=== 用 backend 区分语义类别
+<a id="用-backend-区分语义类别"></a>
+### 用 backend 区分语义类别
 
 ```text
 HostFunction | PluginFunction
@@ -169,11 +186,13 @@ HostFunction | PluginFunction
 
 这会把“代码在哪里执行”错误地变成“call 具有什么语义”。语义应只由 package registration、signature、schema 和 handler 决定。
 
-=== 让 plugin host 成为 App
+<a id="让-plugin-host-成为-app"></a>
+### 让 plugin host 成为 App
 
 `notist-plugin-host` 负责 Wasm 实例化、ABI、fuel 与 package 文件；它不应决定整个 vault 安装哪些 package，也不应偷偷创建只含 core 的 registry。package set 的组合属于 App / analysis composition root。
 
-== 已裁定 / 待定
+<a id="已裁定-待定"></a>
+## 已裁定 / 待定
 
 - 已裁定：plugin 是语义 package；native 与 Wasm 是可替换 backend，二者进入同一 contribution、registry 和 reduction 路径。
 - 已裁定：core 是默认 App 预装的标准 package，不是 `notist-eval` 的特权实现。

@@ -1,25 +1,35 @@
-= Scope and Environment
+---
+implementation: aligned
+kind: design
+status: current
+---
 
-本文承接 [静态检查](type-system.md#静态检查)（静态检查、类型与属性表）与 #<vault::designs::language::markup-surface/scope 的语法形态>（scope 的语法形态）。本文定义值层 scope 与词法环境：节点如何同时承载内容与名字、名称如何解析、绑定如何可见，以及 scope 在进入成型（[输入与输出](../pipeline/structure.md#输入与输出)）前如何落到节点序列与属性表。求值过程如何消费 scope 并产生 call 森林见 [求值结果](../pipeline/evaluate.md#求值结果)。
+<a id="scope-and-environment"></a>
+# Scope and Environment
 
-== scope 是值层节点
+本文承接 [type-system](type-system.md#静态检查)（静态检查、类型与属性表）与 #<vault::designs::language::markup-surface/scope 的语法形态>（scope 的语法形态）。本文定义值层 scope 与词法环境：节点如何同时承载内容与名字、名称如何解析、绑定如何可见，以及 scope 在进入成型（[structure](../pipeline/structure.md#输入与输出)）前如何落到节点序列与属性表。求值过程如何消费 scope 并产生 call 森林见 [evaluate](../pipeline/evaluate.md#求值结果)。
+
+<a id="scope-是值层节点"></a>
+## scope 是值层节点
 
 值层组合树上的每个节点同时就是一个 scope，承担两种角色：
 
 1. 内容的容器：节点包含一段 Content；
 2. 名字的容器：binding 挂在节点上，名称解析沿节点链向上——词法环境不是树之外的平行结构，就是树本身。
 
-属性不挂在节点上：标注在求值期绑定到值（语法见 [属性](annotation-syntax.md#属性)），求值收尾转写为旁置的属性表（[property-table](property-table.md)）。
+属性不挂在节点上：标注在求值期绑定到值（语法见 [annotation-syntax](annotation-syntax.md#属性)），求值收尾转写为旁置的属性表（[property-table](property-table.md)）。
 
-== 名称解析
+<a id="名称解析"></a>
+## 名称解析
 
-- **N1 节点链**：名称解析沿节点链自内向外进行；求值器消费静态检查给出的 resolved name，不重新猜测名字指向（[静态检查](type-system.md#静态检查) 静态检查）。
-- **N2 遮蔽**：最近绑定者胜出（shadowing）；同名 `let` 允许在后续声明处建立新绑定并遮蔽外层或先前的同名绑定。
-- **N3 let 可见性**：`let` 绑定从声明处开始对同一 scope 的后续节点可见，声明之前的节点不可见。
-- **N4 递归暂缓**：`let` 的右侧看不到正在声明的名字；递归绑定待 `let rec` 引入。
-- **N5 根 bindings**：求值结束后，根 scope 自有的 binding 进入求值结果 `bindings`（[求值结果](../pipeline/evaluate.md#求值结果)）；其他节点上的 binding 只是求值期的环境事实，成型后的结构树消费者不依赖它们。
+- ***N1 节点链***：名称解析沿节点链自内向外进行；求值器消费静态检查给出的 resolved name，不重新猜测名字指向（[type-system](type-system.md#静态检查) 静态检查）。
+- ***N2 遮蔽***：最近绑定者胜出（shadowing）；同名 `let` 允许在后续声明处建立新绑定并遮蔽外层或先前的同名绑定。
+- ***N3 let 可见性***：`let` 绑定从声明处开始对同一 scope 的后续节点可见，声明之前的节点不可见。
+- ***N4 递归暂缓***：`let` 的右侧看不到正在声明的名字；递归绑定待 `let rec` 引入。
+- ***N5 根 bindings***：求值结束后，根 scope 自有的 binding 进入求值结果 `bindings`（[evaluate](../pipeline/evaluate.md#求值结果)）；其他节点上的 binding 只是求值期的环境事实，成型后的结构树消费者不依赖它们。
 
-== scope 形态
+<a id="scope-形态"></a>
+## scope 形态
 
 scope 按来源分为五类；语法书写见 #<vault::designs::language::markup-surface/scope 的语法形态>：
 
@@ -33,9 +43,10 @@ scope 按来源分为五类；语法书写见 #<vault::designs::language::markup
 
 - 手动 scope 与隐式 scope 是同一类东西，区别只在显式与隐式；它渲染上不产生可见元素。
 - Content literal 与 Code block 的词法边界是求值期事实：其内部 `let` 不出块；透明溶解是成型期事实，二者正交。
-- 元素 scope 是实节点：成型时保留为结构树节点，节点身份、参数与 body 继续存在（[输入与输出](../pipeline/structure.md#输入与输出)）。
+- 元素 scope 是实节点：成型时保留为结构树节点，节点身份、参数与 body 继续存在（[structure](../pipeline/structure.md#输入与输出)）。
 
-== 与成型、属性表的关系
+<a id="与成型属性表的关系"></a>
+## 与成型、属性表的关系
 
 scope 节点只存在于值层。进入成型视野前：
 
@@ -45,7 +56,8 @@ scope 节点只存在于值层。进入成型视野前：
 
 结构树里没有透明 scope 节点，只有实节点；属性一律以区间命中（单节点区间是特例），没有第二种形状。
 
-== Conformance
+<a id="conformance"></a>
+## Conformance
 
 | 输入 | 预期 | 测试 |
 |---|---|---|
@@ -53,9 +65,10 @@ scope 节点只存在于值层。进入成型视野前：
 | heading / item / Content literal 内 `#let` | 绑定不逃逸到文档 scope，外部引用产生 unresolved name | `element_and_content_scopes_are_lexical_boundaries` |
 | 文档级 `let` 被元素 body 读取 | 元素 scope 沿节点链看见外层 binding | `element_and_content_scopes_are_lexical_boundaries` |
 | `#let x = { 1 + 2 }` | Code block 是局部作用域，join 值绑定到外层 | `code_block_joins_statement_values_and_scopes_lets` |
-| `#[安装指南]@install` + ``<vault::guide/install>`` | 手动 scope id 解析为模块内 Scope 目标 | `manual_scope_ids_resolve_as_module_labels` |
+| `#[安装指南]@install` + `#<vault::guide/install>` | 手动 scope id 解析为模块内 Scope 目标 | `manual_scope_ids_resolve_as_module_labels` |
 
-== 已裁定 / 待定
+<a id="已裁定-待定"></a>
+## 已裁定 / 待定
 
 - 已裁定：同名 `let` 遮蔽允许，最近绑定者胜出（审查裁决 E02）。
 - 已裁定：元素 scope 与 Content literal / Code block 都是词法边界；透明 scope 在成型前溶解为节点序列，身份与属性进入旁置属性表。

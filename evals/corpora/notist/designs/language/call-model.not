@@ -1,4 +1,4 @@
-@![implementation = "partial"]
+@![implementation = "partial", kind = "design", status = "current"]
 = Function Parameters and Call Model
 
 本文是 L4 调用模型的独立成篇。承接 #<vault::designs::language::type-system> 的类型系统与 #<vault::designs::language::code-grammar/声明> 的函数声明语法。本文定义：函数签名如何记录可调用形状；positional/named/default/trailing 如何绑定；rest parameter 与 Typst 式实参交错（随 #<vault::designs::language::collection-types> 实现进入现行）。

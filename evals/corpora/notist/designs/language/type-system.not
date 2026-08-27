@@ -1,4 +1,4 @@
-@![implementation = "aligned"]
+@![implementation = "aligned", kind = "design", status = "current"]
 = Type System
 
 本文是 L2 核心类型系统的独立成篇，从归档的历史混合文档中独立成篇。函数签名与调用模型见 #<vault::designs::language::call-model>；集合类型目标设计见 #<vault::designs::language::collection-types>；属性表见 #<vault::designs::language::property-table>。

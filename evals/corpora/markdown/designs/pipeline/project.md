@@ -1,4 +1,11 @@
-= Project Stage
+---
+implementation: aligned
+kind: design
+status: current
+---
+
+<a id="project-stage"></a>
+# Project Stage
 
 本文定义 `<vault::designs::pipeline>` 的最后阶段：把成型后的森林投影为 target 可见的结果。HTML target 的完整映射见 [html-renderer](../host/html-renderer.md)；插件节点的 namespace 契约见 [core-namespace-plugin-boundary](../world/core-namespace-plugin-boundary.md)。
 
@@ -8,23 +15,27 @@
   → target fragment
 ```
 
-== 输入与输出
+<a id="输入与输出"></a>
+## 输入与输出
 
 - 输入：已递归成型的森林、旁置属性表、RefTarget 等 target 上下文；
 - 输出：HTML fragment、native render node，或其他 target 定义的结果。
 
-== 投影原则
+<a id="投影原则"></a>
+## 投影原则
 
-- **投影即规约**：project 是 target package 注册的第二阶段规约。`HtmlProjectionRegistry` 将插件 handler 与未知 call fallback 规约为 `html::*` 数据节点，再由 serializer 直出；语义规约与投影规约是两个独立 registry。core 的原生映射由同一 target 的内置 serializer 分支提供，语义 registry 不认识 `html::*`。完整模型见 [projection](../plugin-system/projection.md)。
-- **按 name 分发**：投影依据节点名字选择 handler；`core::*`、插件节点和 fallback 都由 HTML target 统一处理，注册所有权不改变。
-- **语义由宿主保留**：core 节点在 HTML target 投影为原生标签（`core::heading` → `h1`..`h6`、`core::table` → `table`、`core::details` → `details`），不为每个 core 节点强制创建 Web Component。
-- **Range 与属性投影**：source range 与属性表条目投影到 DOM metadata，不改变语义树。
+- ***投影即规约***：project 是 target package 注册的第二阶段规约。`HtmlProjectionRegistry` 将插件 handler 与未知 call fallback 规约为 `html::*` 数据节点，再由 serializer 直出；语义规约与投影规约是两个独立 registry。core 的原生映射由同一 target 的内置 serializer 分支提供，语义 registry 不认识 `html::*`。完整模型见 [projection](../plugin-system/projection.md)。
+- ***按 name 分发***：投影依据节点名字选择 handler；`core::*`、插件节点和 fallback 都由 HTML target 统一处理，注册所有权不改变。
+- ***语义由宿主保留***：core 节点在 HTML target 投影为原生标签（`core::heading` → `h1`..`h6`、`core::table` → `table`、`core::details` → `details`），不为每个 core 节点强制创建 Web Component。
+- ***Range 与属性投影***：source range 与属性表条目投影到 DOM metadata，不改变语义树。
 
-== 安全边界
+<a id="安全边界"></a>
+## 安全边界
 
 投影输出不是可信 HTML：Raw 文本与插件节点内容必须转义（#<vault::designs::host::html-renderer/Source Range 与安全>）。serializer 的词表收口（trusted 边界）目前是待定项，见 #<vault::designs::plugin-system::projection/已裁定 / 待定>。
 
-== 已裁定 / 待定
+<a id="已裁定-待定"></a>
+## 已裁定 / 待定
 
 - 已裁定：project 不改变语义树，只做分发与目标投影。
 - 已裁定：HTML target 中 core 节点使用原生语义标签；插件节点的投影贡献由 manifest 声明。

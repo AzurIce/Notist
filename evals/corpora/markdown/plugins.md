@@ -1,8 +1,15 @@
-= 插件示例：Shader
+---
+kind: reference
+status: current
+---
+
+<a id="插件示例shader"></a>
+# 插件示例：Shader
 
 本文演示 Notist 插件系统的一个 Wasm 插件包闭环：`shader` 插件是一个通过 `docs/Notist.toml` 声明加载的 WebAssembly 插件，LSP/analysis 会因此认识 `shader` 函数。 插件系统设计见 `<vault::designs::plugin-system>`。
 
-== 插件声明
+<a id="插件声明"></a>
+## 插件声明
 
 在 `Notist.toml` 中声明要加载的插件包：
 
@@ -25,7 +32,8 @@ plugins/shader/
 
 `plugin.json` 是只含身份、`wasm.module` 与顶层 HTML contribution 的 JSON 信封；manifest 不含权限请求或 semantic 接口。`semantic.wasm` 是 wasip2 component：装载时 `init` 以 version byte + postcard 返回共享 declarations，`evaluate` 用同一 frame 接收和返回 `Node` 森林。computed `shader` handler 最终产生 data-only `shader::canvas`，并保留 source、尺寸、trailing body 与根 source range；宿主再统一执行 fixpoint。
 
-== 调用方式
+<a id="调用方式"></a>
+## 调用方式
 
 `shader` 是一个插件函数，签名等价于：
 
@@ -43,7 +51,8 @@ fn mainImage(fragCoord: vec2<f32>) -> vec4<f32> {
 }
 ```
 
-== 实际效果
+<a id="实际效果"></a>
+## 实际效果
 
 下面这段文档会渲染为一个可交互的 shader canvas：
 

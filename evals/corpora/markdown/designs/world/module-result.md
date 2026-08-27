@@ -1,12 +1,21 @@
-= Module and ModuleResult
+---
+implementation: aligned
+kind: design
+status: current
+---
+
+<a id="module-and-moduleresult"></a>
+# Module and ModuleResult
 
 本文是 Module 与 ModuleResult 的独立成篇，从归档的历史混合文档中独立成篇。Vault 边界见 [boundary-discovery](boundary-discovery.md)；import 见 [import](import.md)；引用寻址见 [reference-ref-target](reference-ref-target.md)。
 
 Module 是求值单元：Vault 内的文件树映射为 Module 树，每个 source-backed Module 独立求值，产生 ModuleResult。Module 同时是知识库中的稳定逻辑节点（被引用）和可编程文档的求值单元（被 import）——同一身份，两种语义。
 
-== Module
+<a id="module"></a>
+## Module
 
-=== 文件树与 Module 树
+<a id="文件树与-module-树"></a>
+### 文件树与 Module 树
 
 文件系统决定 Module 的逻辑层级，source 不需要再声明一遍：
 
@@ -24,13 +33,15 @@ vault-root/
 - 目录只要有 `.not` 后代或资源文件后代就形成 virtual module（即使没有自己的 `README.not`），只提供命名空间与 child identity，不凭空产生 Content 或 bindings；
 - 移动 source 若改变 ModulePath，就是逻辑 Module 重命名，而不仅是文件移动——Reference 与 import 需要同一个 rename plan。
 
-=== 资源目录
+<a id="资源目录"></a>
+### 资源目录
 
 资源文件（图片等）通过"目录模块 + 文件名 id"寻址：`vault::docs::images#logo.png` 指向 `docs/images/logo.png`。因此资源目录也进入 Module 树，作为虚拟模块：提供命名空间与 child identity（文件名即 id），但没有 source、没有 Content、没有可 import 的 bindings。这是对旧设计"asset 目录不进 Module tree"的修正——寻址空间包含资源文件，求值与导入的语义仍只属于 `.not` source。
 
-=== ModuleResult
+<a id="moduleresult"></a>
+### ModuleResult
 
-每个 source-backed Module 在自己的根 scope 中按源码顺序求值（[求值规则](../pipeline/evaluate.md#求值规则)，scope 见 #<vault::designs::language::scope-environment/scope 是值层节点>），得到：
+每个 source-backed Module 在自己的根 scope 中按源码顺序求值（[evaluate](../pipeline/evaluate.md#求值规则)，scope 见 #<vault::designs::language::scope-environment/scope 是值层节点>），得到：
 
 ```text
 ModuleResult {
@@ -40,9 +51,10 @@ ModuleResult {
 }
 ```
 
-[求值结果](../pipeline/evaluate.md#求值结果) 中单文件的"求值结果"在此正式成为 ModuleResult。bindings 是程序的一面——跨模块复用的入口；content 是文档的一面——渲染与查询消费的产物；annotations 是属性的一面——标注与模块元数据的唯一入口。
+[evaluate](../pipeline/evaluate.md#求值结果) 中单文件的"求值结果"在此正式成为 ModuleResult。bindings 是程序的一面——跨模块复用的入口；content 是文档的一面——渲染与查询消费的产物；annotations 是属性的一面——标注与模块元数据的唯一入口。
 
-=== bindings ownership
+<a id="bindings-ownership"></a>
+### bindings ownership
 
 只有 Module root 自己声明的 `let` binding 进入 `bindings`：
 

@@ -1,4 +1,4 @@
-@![implementation = "aligned"]
+@![implementation = "aligned", kind = "design", status = "current"]
 = Code Core Grammar
 
 本文是 L1 Code 核心语法的独立成篇，从归档的历史混合文档中独立成篇。Markup/scope 表面语法见 #<vault::designs::language::markup-surface>；函数声明语法见 #<vault::designs::language::call-model>；类型语义见 #<vault::designs::language::type-system>。

@@ -1,8 +1,14 @@
-= Notist
+---
+kind: reference
+status: current
+---
+
+<a id="notist"></a>
+# Notist
 
 #[
 
-*Note + ist -> notist(also not an ist)*
+**Note + ist -> notist(also not an ist)**
 
 Notist，一门带有静态类型系统的文档编程语言，它为取代 Markdown 而生，它的目的是解决 Markdown 存在的诸多问题：
 - 没有核心的“官方”实现
@@ -12,7 +18,7 @@ Notist，一门带有静态类型系统的文档编程语言，它为取代 Mark
 
 它在语法和设计上有很多地方受 Rust 和 Typst 启发。
 
-]
+] <!-- @ann: type=user,.user -->
 
 
 
