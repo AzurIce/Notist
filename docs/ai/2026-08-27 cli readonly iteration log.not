@@ -158,3 +158,13 @@ enforced 系统提示前置缺席判定协议：1–2 次带 --exclude-scope vau
 == Phase 3 五轮累计
 
 分档口径五轮序列：p3run2=18、p3run3=17、p3run4=16、p3run5=20（p3base 未分档不可比）。确定性落地累计：bm25-v4 召回、节展开、coverage 计数+breakdown+conclusion、exclude-scope、§/span/摘录投影、severity/路径/引号卫生、runner 重试与计量。剩余欠账：n≥3 正式重锚、TD1 挂起机理（上轮已部分闭环）、SKILL 与 conclusion 字段同步（本轮补）。
+
+
+== Phase 3 n≥3 正式重锚（p3run6a/b/c，2026-08-28）
+
+四条件 × 九任务 × 三轮（108 格），语料/任务/判分均冻结在迭代 5 状态。判读工具 tools/stats.py 输出每格的中位数 token/时长、通过率与极差。
+
+**预注册决策规则（先于 seeing 结果记下）**——enforced/TC1 的处置：
+- 若三轮中位 tokens > 100k **且** ≥2/3 轮超出分档线（26k×2=52k）→ 判定该任务形态在强制条件下需要专用原语，立项 `notist verify-absent`（结构化缺席判定命令：内置排除层、直接输出 verdict、返回最小 token 面积）；
+- 若中位 ≤ 52k，或仅个别轮次越线（纯方差）→ 保持现有 affordance（exclude-scope + conclusion + 分档预算×2），在规范里把该格预算权重固定为 ×2 并注明方差性质；
+- 中间态（中位 52k–100k）→ 先把缺席协议提示收进 SKILL 正文（enforced 也读提示行以外的 skill 注入仅在 skill 条件生效，enforced 不注入——故实际动作是把协议三句话并入 runner 的 ENFORCED_RULE 已有文本），复测一轮再定。
