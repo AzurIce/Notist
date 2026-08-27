@@ -170,16 +170,22 @@ def run_one(cond: str, task: dict, runs_root: Path, timeout_s: int,
             return v.decode("utf-8", errors="replace")
         return v
 
-    try:
-        proc = subprocess.run(cmd, cwd=str(sandbox), env=env,
-                              capture_output=True, text=True, timeout=timeout_s)
-        meta["returncode"] = proc.returncode
-        answer = _text(proc.stdout)
-        meta["stderr_tail"] = _text(proc.stderr)[-1500:]
-    except subprocess.TimeoutExpired as e:
-        meta.update(returncode=None, timed_out=True)
-        answer = _text(e.stdout)
-        meta["stderr_tail"] = _text(e.stderr)[-1500:]
+    for attempt in (1, 2):
+        try:
+            proc = subprocess.run(cmd, cwd=str(sandbox), env=env,
+                                  capture_output=True, text=True, timeout=timeout_s)
+            meta["returncode"] = proc.returncode
+            answer = _text(proc.stdout)
+            meta["stderr_tail"] = _text(proc.stderr)[-1500:]
+            break
+        except subprocess.TimeoutExpired as e:
+            meta.update(returncode=None, timed_out=True)
+            answer = _text(e.stdout)
+            meta["stderr_tail"] = _text(e.stderr)[-1500:]
+            if attempt == 1:
+                # a killed pi can leave zero session records behind: infra
+                # stall, not agent behavior - retry the cell once
+                meta["retried_after_timeout"] = True
     meta["duration_s"] = round(time.time() - start, 1)
 
     (out_dir / "answer.txt").write_text(answer)

@@ -65,4 +65,12 @@ assert not any(m.startswith("vault::ai") for m in mods), "ai leaked under exclus
 print(cov["matched_modules"])')
 python3 -c "import sys;a,b=int('$ALL'),int('${EX:-0}');sys.exit(0 if 0<b<a else 1)" \
   && echo " ok: $ALL -> $EX after excluding vault::ai" || { echo FAIL; exit 1; }
+echo "P8 multi-term query exposes per-scope module buckets"
+$B search "向量 嵌入" "$C" --no-daemon --format json | python3 -c '
+import json,sys
+cov=json.load(sys.stdin)["result"]["coverage"]
+bd=cov.get("scopes_breakdown") or {}
+ok = bd.get("ai",0)>=1 and bd.get("designs",0)>=1
+print(" breakdown:",bd)
+raise SystemExit(0 if ok else 1)' || fail=1
 exit $fail

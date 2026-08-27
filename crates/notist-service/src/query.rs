@@ -1,4 +1,4 @@
-use std::collections::{BTreeSet, HashMap};
+use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::io;
 use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
@@ -80,6 +80,11 @@ pub struct CoverageInfo {
     pub matched_modules: Option<u64>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub matched_units: Option<u64>,
+    /// Distinct matching modules bucketed by their first path segment after
+    /// the vault root (`ai`, `designs`, ...), so a caller can separate
+    /// current specs from dated archives in the same query that found them.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub scopes_breakdown: Option<BTreeMap<String, u64>>,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -858,6 +863,7 @@ pub fn read_source(
             .into(),
             matched_modules: None,
             matched_units: None,
+            scopes_breakdown: None,
         },
         search: None,
         hints: continuation_hints(!reached_end),
@@ -2160,6 +2166,18 @@ impl SearchIndex {
         } else {
             Some(hit_module_count)
         };
+        if let Some(set) = &candidate_modules {
+            let mut buckets: BTreeMap<String, u64> = BTreeMap::new();
+            for module in set {
+                let bucket = module
+                    .split("::")
+                    .nth(1)
+                    .unwrap_or(module)
+                    .to_string();
+                *buckets.entry(bucket).or_insert(0) += 1;
+            }
+            page.coverage.scopes_breakdown = Some(buckets);
+        }
         if !page.page.has_more && total > 10_000 {
             page.coverage.complete = false;
             page.coverage.stop_reason = "query_limit".into();
@@ -2803,6 +2821,7 @@ fn page<T: Clone + Serialize + DeserializeOwned>(
             stop_reason: stop_reason.into(),
             matched_modules: None,
             matched_units: None,
+            scopes_breakdown: None,
         },
         search: None,
         hints: continuation_hints(has_more),

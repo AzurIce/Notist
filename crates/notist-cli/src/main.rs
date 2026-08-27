@@ -1099,6 +1099,16 @@ fn run(cli: Cli) -> Result<ExitCode, Box<dyn std::error::Error>> {
                     "matched {modules} modules / {units} units in full index"
                 );
             }
+            if let Some(breakdown) = &results.coverage.scopes_breakdown {
+                let rendered = breakdown
+                    .iter()
+                    .map(|(scope, count)| format!("{scope}={count}"))
+                    .collect::<Vec<_>>()
+                    .join(" ");
+                if !rendered.is_empty() {
+                    println!("by scope: {rendered}");
+                }
+            }
             for (index, result) in results.items.iter().enumerate() {
                 let score = result.score.map_or(String::new(), |score| {
                     format!(" score={:.3}", score as f64 / 1_000_000.0)
