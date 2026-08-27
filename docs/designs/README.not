@@ -5,13 +5,6 @@
 
   目前 Notist 的 crate 架构：
 
-  ```
-               notist-plugin-sdk ->
-    notist-eval -> notist-syntax -> notist-model
-
-    notist-service -> notist-analysis -> notist-plugin-host -> notist-eval
-  ```
-
   #mermaid(
     source: r#"""
     graph TD

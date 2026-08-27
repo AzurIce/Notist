@@ -1,0 +1,9 @@
+{
+	"id": "obsidian-notist",
+	"name": "Notist",
+	"version": "0.1.0",
+	"minAppVersion": "1.5.0",
+	"description": "Notist World inside Obsidian: isolated world UI, .not file explorer and editing.",
+	"author": "notist",
+	"isDesktopOnly": false
+}

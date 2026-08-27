@@ -7,10 +7,10 @@ license.workspace = true
 [dependencies]
 tracing.workspace = true
 notist-eval.workspace = true
-notist-plugin-core.workspace = true
 notist-model.workspace = true
 notist-syntax.workspace = true
 percent-encoding.workspace = true
 
 [dev-dependencies]
+notist-plugin-core.workspace = true
 

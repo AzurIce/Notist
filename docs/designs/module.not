@@ -1,0 +1,77 @@
+#[
+= Module 设计
+
+== ModulePath
+
+首先我们有一个期望 —— 模块路径直接由文档名/路径定义。
+
+这就模块路径不应该有过多约束（比如不能用数字开头/不能中间出现空格）。
+
+理想的情况下，它应该完全与操作系统/文件系统对路径的约束相同，但是现实情况肯定是有额外的约束，当然额外的约束越少越好。
+
+下面都是一些写文档时常用的命名：
+
+```
+module.not
+2026-08-26 lsp test.not
+obsidian plugin.not
+```
+
+甚至可能会有一些特殊字符（比如 `@` 或者 `#` 之类）。
+
+这其实意味着，我们必须为 ModulePath 单独开辟出一个 Grammer 模式，来避免产生语法冲突。
+
+```notist
+#<vault::wiki link>
+#<vault::wiki link/a scope>
+
+##link("vaultL::wiki link")::foo[asd]
+#import #<vault::wiki link> as link
+#link::foo[asd]
+```
+
+=== ModulePath 与 ScopeId 的分隔符
+
+目前我们用的是 `#`，这导致文件/目录名本身不能出现 `#`。
+
+想到我们其实可以使用 `/`，因为目录/文件名本身就不能出现 `/`，同时我们的 ModulePath 分隔符是 `::` 就不会占用 `/`，刚刚好：
+
+```notist
+#<vault::wiki link/a scope>
+```
+
+想了下，要不类似 C 的头文件，直接用 `<>` 来表示 Target 字面量：
+
+```notist
+参见 #<vault::getting started/how to install> 一节。
+
+目录：
+- #<vault::getting started>
+- #<vault::about>
+
+#<vault::wiki link>::foo[asd]
+#import <vault::wiki link> as link
+#link::foo[asd]
+#import <vault::wiki link>::foo as bar
+#bar[asd]
+```
+
+又想了一下，`vault`、`self`、`super` 这几个关键字本身就可以充当左边界，于是问题只剩下结束标记，于是或许可以这样：
+
+```notist
+参见 #vault::getting started/how to install> 一节。
+
+目录：
+- #vault::getting started>
+- #vault::about>
+
+#vault::wiki link>foo[asd]
+#import vault::wiki link> as link
+#link::foo[asd]
+#import vault::wiki link>foo as bar
+#bar[asd]
+```
+
+还是不好。
+
+]@type=user,.user

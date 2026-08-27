@@ -4,3 +4,4 @@ dist
 result
 plugins/*/lib/
 plugins/*/target/
+.env

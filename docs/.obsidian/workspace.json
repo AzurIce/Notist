@@ -1,0 +1,113 @@
+{
+  "main": {
+    "id": "88581b9d3960151e",
+    "type": "split",
+    "children": [
+      {
+        "id": "b891c828a5bc00b7",
+        "type": "tabs",
+        "children": [
+          {
+            "id": "b0a7cf1a18255891",
+            "type": "leaf",
+            "state": {
+              "type": "notist-view",
+              "state": {
+                "file": "ai/README.not"
+              },
+              "icon": "file-text",
+              "title": "README"
+            }
+          }
+        ]
+      }
+    ],
+    "direction": "vertical"
+  },
+  "left": {
+    "id": "4e1a7bc358335a83",
+    "type": "split",
+    "children": [
+      {
+        "id": "503e4dba14e5ce74",
+        "type": "tabs",
+        "children": [
+          {
+            "id": "4f953964d9da6e42",
+            "type": "leaf",
+            "state": {
+              "type": "file-explorer",
+              "state": {
+                "sortOrder": "alphabetical",
+                "autoReveal": false,
+                "showSearch": false,
+                "searchQuery": ""
+              },
+              "icon": "lucide-folder-closed",
+              "title": "文件列表"
+            }
+          },
+          {
+            "id": "571d94017fc9c5b4",
+            "type": "leaf",
+            "state": {
+              "type": "search",
+              "state": {
+                "query": "",
+                "matchingCase": false,
+                "explainSearch": false,
+                "collapseAll": false,
+                "extraContext": false,
+                "sortOrder": "alphabetical"
+              },
+              "icon": "lucide-search",
+              "title": "搜索"
+            }
+          },
+          {
+            "id": "c87ab99b3ecc5013",
+            "type": "leaf",
+            "state": {
+              "type": "bookmarks",
+              "state": {
+                "showSearch": false,
+                "searchQuery": ""
+              },
+              "icon": "lucide-bookmark",
+              "title": "书签"
+            }
+          }
+        ]
+      }
+    ],
+    "direction": "horizontal",
+    "width": 304.51074600219727
+  },
+  "right": {
+    "id": "f8d03a7322595300",
+    "type": "split",
+    "children": [],
+    "direction": "horizontal",
+    "width": 300,
+    "collapsed": true
+  },
+  "left-ribbon": {
+    "hiddenItems": {
+      "obsidian-notist:Toggle world (Markdown / Notist)": false,
+      "switcher:打开快速切换": false,
+      "graph:查看关系图谱": false,
+      "canvas:新建白板": false,
+      "daily-notes:打开/创建今天的日记": false,
+      "templates:插入模板": false,
+      "command-palette:打开命令面板": false,
+      "bases:新建数据库": false
+    }
+  },
+  "active": "b0a7cf1a18255891",
+  "lastOpenFiles": [
+    "README.not",
+    "plugins.not",
+    "types.not",
+    "todo.not"
+  ]
+}

@@ -1,0 +1,1261 @@
+/* ---- World switching: filter the built-in file explorer by world ---- */
+
+/* Notist world: resources and other project files stay visible; only Markdown
+   source files are hidden (folders stay visible). */
+body.notist-world .nav-file:has(> .nav-file-title[data-path$=".md" i]) {
+	display: none;
+}
+
+/* Markdown world: hide .not files. */
+body.md-world .nav-file:has(> .nav-file-title[data-path$=".not"]) {
+	display: none;
+}
+
+/* ---- Ribbon isolation: Notist world shows only allowlisted icons ---- */
+
+body.notist-world .side-dock-ribbon-action:not(.notist-ribbon-keep) {
+	display: none;
+}
+
+/* Markdown World semantic panes have no Notist data source. Keep their saved
+   leaves out of sight while purgeForeignLeaves removes them from the layout. */
+body.notist-world .workspace-leaf-content[data-type="backlink"],
+body.notist-world .workspace-leaf-content[data-type="outgoing-link"],
+body.notist-world .workspace-leaf-content[data-type="outline"],
+body.notist-world .workspace-leaf-content[data-type="graph"],
+body.notist-world .workspace-leaf-content[data-type="localgraph"],
+body.notist-world .workspace-leaf-content[data-type="tag"],
+body.notist-world .workspace-leaf-content[data-type="tag-explorer"],
+body.notist-world .workspace-leaf-content[data-type="all-properties"],
+body.notist-world .workspace-leaf-content[data-type="file-properties"],
+body.notist-world .workspace-leaf-content[data-type="excalidraw-sidepanel"] {
+	display: none;
+}
+
+/* ---- Vault-wide Problems bottom dock ---- */
+
+.notist-problems-host {
+	position: relative;
+	--notist-problems-height: 2.4rem;
+}
+
+.notist-problems-host.notist-problems-expanded {
+	--notist-problems-height: min(34vh, 22rem);
+}
+
+.workspace-split.mod-root.notist-problems-host {
+	box-sizing: border-box;
+	padding-bottom: var(--notist-problems-height);
+}
+
+.workspace-split.mod-root > .notist-problems-dock {
+	position: absolute;
+	z-index: var(--layer-status-bar, 15);
+	top: auto;
+	right: 0;
+	bottom: 0;
+	left: 0;
+	flex: none;
+	display: flex;
+	flex-direction: column;
+	width: auto;
+	height: var(--notist-problems-height);
+	min-height: 8rem;
+	background-color: var(--background-primary);
+	border-top: 1px solid var(--divider-color);
+	box-shadow: 0 -4px 14px rgb(0 0 0 / 12%);
+}
+
+.workspace-split.mod-root > .notist-problems-dock.is-collapsed {
+	height: 2.4rem;
+	min-height: 2.4rem;
+}
+
+/* Header strip: whole area toggles expand/collapse; chips opt out. */
+
+.notist-problems-header {
+	display: flex;
+	align-items: center;
+	min-height: 2.4rem;
+	gap: var(--size-2-2);
+	flex: none;
+	padding: 0 var(--size-4-2);
+	cursor: pointer;
+	user-select: none;
+	background-color: var(--background-secondary);
+}
+
+.notist-problems-title {
+	display: inline-flex;
+	align-items: center;
+	gap: var(--size-2-2);
+	flex: none;
+	font-size: var(--font-small);
+	font-weight: var(--font-semibold);
+}
+
+.notist-problems-title svg {
+	width: var(--icon-s);
+	height: var(--icon-s);
+}
+
+.notist-problems-summary {
+	flex: 1 1 auto;
+	min-width: 0;
+	overflow: hidden;
+	color: var(--text-muted);
+	font-size: var(--font-smallest);
+	font-variant-numeric: tabular-nums;
+	text-overflow: ellipsis;
+	white-space: nowrap;
+}
+
+/* Severity filter chips (expanded state only). */
+
+.notist-problems-chips {
+	display: flex;
+	align-items: center;
+	gap: var(--size-2-1);
+	flex: 1 1 auto;
+	min-width: 0;
+	overflow-x: auto;
+}
+
+.notist-problems-chip {
+	display: inline-flex;
+	align-items: center;
+	gap: var(--size-2-1);
+	flex: none;
+	padding: 1px var(--size-2-2);
+	border: 1px solid var(--background-modifier-border);
+	border-radius: var(--radius-s);
+	background: transparent;
+	color: var(--text-muted);
+	font-size: var(--font-smallest);
+	line-height: 1.5;
+	cursor: pointer;
+}
+
+.notist-problems-chip:hover {
+	background-color: var(--background-modifier-hover);
+}
+
+.notist-problems-chip[aria-pressed="true"] {
+	border-color: var(--interactive-accent);
+	color: var(--text-normal);
+	background-color: var(--background-modifier-active-hover);
+}
+
+.notist-problems-chip-count {
+	font-variant-numeric: tabular-nums;
+	color: var(--text-faint);
+}
+
+.notist-problems-chip[aria-pressed="true"] .notist-problems-chip-count,
+.notist-problems-chip-count:first-child {
+	color: inherit;
+}
+
+.notist-problems-toggle {
+	flex: none;
+	margin-left: auto;
+}
+
+/* Body */
+
+.notist-problems-list {
+	min-height: 0;
+	flex: 1 1 auto;
+	overflow: auto;
+	padding: var(--size-2-2) var(--size-4-2) var(--size-4-2);
+}
+
+/* File group header: a real button (keyboard reachable), chevron collapses. */
+
+.notist-problems-file {
+	margin-bottom: var(--size-2-1);
+}
+
+button.notist-problems-file-header {
+	display: flex;
+	align-items: center;
+	gap: var(--size-2-1);
+	width: 100%;
+	padding: var(--size-2-1) var(--size-2-2);
+	border: 0;
+	border-radius: var(--radius-s);
+	background: transparent;
+	color: var(--text-normal);
+	text-align: left;
+	cursor: pointer;
+}
+
+button.notist-problems-file-header:hover,
+button.notist-problems-file-header:focus-visible {
+	background-color: var(--background-modifier-hover);
+}
+
+.notist-problems-file-chevron {
+	display: inline-flex;
+	align-items: center;
+	justify-content: center;
+	width: var(--icon-xs);
+	height: var(--icon-xs);
+	color: var(--text-muted);
+}
+
+.notist-problems-file-name {
+	overflow: hidden;
+	font-weight: var(--font-medium);
+	text-overflow: ellipsis;
+	white-space: nowrap;
+}
+
+.notist-problems-file-dir {
+	overflow: hidden;
+	color: var(--text-faint);
+	font-size: var(--font-smallest);
+	text-overflow: ellipsis;
+	white-space: nowrap;
+}
+
+.notist-problems-file-count {
+	flex: none;
+	margin-left: auto;
+	padding: 0 var(--size-2-2);
+	border-radius: var(--radius-s);
+	font-size: var(--font-smallest);
+	font-variant-numeric: tabular-nums;
+}
+
+.notist-problems-file-count.is-error {
+	color: var(--color-red, var(--text-error));
+	background-color: color-mix(in srgb, var(--color-red, red) 15%, transparent);
+}
+
+.notist-problems-file-count.is-warning {
+	color: var(--color-orange);
+	background-color: color-mix(in srgb, var(--color-orange) 15%, transparent);
+}
+
+.notist-problems-file-count.is-info {
+	color: var(--color-blue);
+	background-color: color-mix(in srgb, var(--color-blue) 12%, transparent);
+}
+
+/* Diagnostic rows: icon + message + source/code + position. */
+
+.notist-problem-row {
+	display: flex;
+	align-items: baseline;
+	width: 100%;
+	gap: var(--size-2-2);
+	padding: var(--size-2-1) var(--size-2-2) var(--size-2-1) calc(var(--icon-xs) + var(--size-4-1));
+	border: 0;
+	border-radius: var(--radius-s);
+	background: transparent;
+	color: var(--text-normal);
+	text-align: left;
+	cursor: pointer;
+}
+
+.notist-problem-row:hover,
+.notist-problem-row:focus-visible {
+	background-color: var(--background-modifier-hover);
+	outline: none;
+}
+
+.notist-problem-row:focus-visible {
+	box-shadow: inset 0 0 0 1px var(--background-modifier-border-focus);
+}
+
+.notist-problem-severity {
+	display: inline-flex;
+	align-items: center;
+	justify-content: center;
+	flex: none;
+	align-self: center;
+	width: var(--icon-xs);
+	height: var(--icon-xs);
+}
+
+.notist-problem-severity svg {
+	width: 100%;
+	height: 100%;
+}
+
+.notist-diagnostic-severity-1 { color: var(--text-error, var(--color-red)); }
+.notist-diagnostic-severity-2 { color: var(--text-warning, var(--color-orange)); }
+.notist-diagnostic-severity-3 { color: var(--color-blue); }
+.notist-diagnostic-severity-4 { color: var(--text-faint); }
+
+.notist-problem-message {
+	min-width: 0;
+	overflow: hidden;
+	text-overflow: ellipsis;
+	white-space: nowrap;
+}
+
+.notist-problem-source {
+	flex: none;
+	overflow: hidden;
+	max-width: 12em;
+	color: var(--text-faint);
+	font-size: var(--font-smallest);
+	text-overflow: ellipsis;
+	white-space: nowrap;
+}
+
+.notist-problem-position {
+	flex: none;
+	margin-left: auto;
+	color: var(--text-muted);
+	font-family: var(--font-monospace);
+	font-size: var(--font-smallest);
+	font-variant-numeric: tabular-nums;
+}
+
+/* Status banner + empty state */
+
+.notist-problems-status,
+.notist-problems-empty {
+	display: flex;
+	align-items: center;
+	gap: var(--size-2-2);
+	padding: var(--size-4-2);
+	color: var(--text-muted);
+	font-size: var(--font-small);
+}
+
+.notist-problems-status-icon svg,
+.notist-problems-empty-icon svg {
+	width: var(--icon-s);
+	height: var(--icon-s);
+}
+
+.notist-problems-status.is-error {
+	color: var(--text-error, var(--color-red));
+}
+
+.notist-problems-status.is-starting {
+	color: var(--text-warning, var(--color-orange));
+}
+
+body.md-world .notist-problems-dock {
+	display: none;
+}
+
+body.md-world .workspace-split.mod-root.notist-problems-host {
+	padding-bottom: 0;
+}
+
+body.md-world .workspace-leaf-content[data-type="notist-outline"],
+body.md-world .workspace-leaf-content[data-type="notist-backlinks"],
+body.md-world .workspace-leaf-content[data-type="notist-outgoing-links"] {
+	display: none;
+}
+
+/* Guardrail: the explorer leaf is detached on world switch; this only covers
+   the transient window before that happens. */
+body.md-world .workspace-leaf-content[data-type="notist-explorer"] {
+	display: none;
+}
+
+/* ---- Notist explorer ---- */
+
+.notist-explorer {
+	padding: var(--size-4-2);
+}
+
+/* The header is the sticky toolbar; kill the scroll container's top padding
+   so nothing peeks out above it once it docks. */
+.workspace-leaf-content[data-type="notist-explorer"] .view-content {
+	padding-top: 0;
+}
+
+.notist-explorer-header {
+	position: sticky;
+	top: 0;
+	z-index: 5;
+	display: flex;
+	justify-content: flex-end;
+	align-items: center;
+	gap: var(--size-2-1);
+	margin: calc(-1 * var(--size-4-2)) calc(-1 * var(--size-4-2)) var(--size-4-1);
+	padding: var(--size-4-2) var(--size-4-2) var(--size-2-2);
+	/* Blend with the sidebar pane (--background-secondary); an opaque
+	   editor-white here read as a floating strip over the tree. */
+	background: var(--background-secondary);
+}
+
+/* Filter-style toggles: recoloring the icon is the whole pressed cue. */
+.notist-explorer-header .clickable-icon.is-toggled {
+	color: var(--text-accent);
+}
+
+.notist-explorer-row.is-dimmed > .notist-explorer-icon,
+.notist-explorer-row.is-dimmed > .notist-explorer-chevron,
+.notist-explorer-row.is-dimmed > .notist-explorer-label {
+	color: var(--text-faint);
+}
+
+.notist-explorer-empty {
+	color: var(--text-muted);
+	font-style: italic;
+}
+
+.notist-explorer-tree {
+	outline: none;
+	min-height: 100%;
+	--notist-row-h: 24px;
+	--notist-indent: 14px;
+}
+
+.notist-explorer-children {
+	margin-left: 12px;
+	border-left: 1px solid color-mix(in srgb, var(--background-modifier-border) 60%, transparent);
+}
+
+.notist-explorer-row {
+	display: flex;
+	align-items: center;
+	gap: var(--size-2-2);
+	height: var(--notist-row-h);
+	padding-left: calc(var(--size-4-1) + var(--notist-depth) * var(--notist-indent));
+	padding-right: var(--size-4-2);
+	border-radius: var(--radius-s);
+	cursor: pointer;
+	user-select: none;
+	transition: background-color 80ms ease;
+}
+
+.notist-explorer-row:hover {
+	background-color: var(--background-modifier-hover);
+}
+
+.notist-explorer-row.is-dragged {
+	opacity: 0.45;
+}
+
+/* Drop feedback: thin accent frame + faint wash, folder or root alike. */
+.notist-explorer-row.is-drop-target,
+.notist-explorer-tree.is-root-drop-target {
+	box-shadow: inset 0 0 0 1px rgba(var(--interactive-accent-rgb, 124, 77, 255), 0.55);
+	background-color: rgba(var(--interactive-accent-rgb, 124, 77, 255), 0.07);
+}
+
+/* Full-height cells with internal centering: glyph positions stop depending
+   on the row font's ascent/descent quirks, keeping every child on one axis. */
+.notist-explorer-chevron,
+.notist-explorer-icon {
+	flex: none;
+	display: inline-flex;
+	align-items: center;
+	justify-content: center;
+	width: 14px;
+	height: 100%;
+	color: var(--text-muted);
+}
+
+.notist-explorer-chevron svg {
+	width: 12px;
+	height: 12px;
+	stroke-width: 2.4;
+	transition: transform 100ms ease;
+}
+
+.notist-explorer-icon svg {
+	width: 16px;
+	height: 16px;
+}
+
+.notist-explorer-row[aria-expanded="true"] > .notist-explorer-chevron svg {
+	transform: rotate(90deg);
+}
+
+.notist-explorer-label {
+	min-width: 0;
+	flex: 0 1 auto;
+	overflow: hidden;
+	text-overflow: ellipsis;
+	white-space: nowrap;
+	line-height: var(--notist-row-h);
+}
+
+/* Badges form a right-edge rail so they sit at one predictable spot and the
+   row's free space never wedges between label and pill. (The base chip rule
+   below carries margin-left:auto; this exists only as documentation of the
+   intent for the tree rows.) */
+
+.notist-explorer-rename {
+	flex: 1;
+	min-width: 0;
+	height: 22px;
+	padding: 0 4px;
+	font-size: var(--font-ui-small);
+	border: none;
+	border-radius: var(--radius-s);
+	background: var(--background-primary);
+	box-shadow: 0 1px 0 0 var(--interactive-accent);
+}
+
+.notist-explorer-rename:focus {
+	outline: none;
+	box-shadow: 0 1px 0 0 var(--interactive-accent);
+}
+
+/* Delete confirmation */
+.notist-confirm-body {
+	color: var(--text-muted);
+}
+.notist-confirm-buttons {
+	display: flex;
+	justify-content: flex-end;
+	gap: var(--size-2-2);
+	margin-top: var(--size-4-2);
+}
+
+/* ---- File-explorer diagnostic badges ---- */
+
+/* Pill rendered inside .tree-item-self after the label; captures mousedown /
+   click so badge clicks never open the file. Folders aggregate descendants.
+   Flat compact chip: no ring, tight radius, quiet fill so a busy tree stays
+   calm even with heavy error counts. */
+.nav-file-title .notist-nav-badge,
+.nav-folder-title .notist-nav-badge,
+.notist-explorer-row .notist-nav-badge {
+	display: inline-flex;
+	align-items: center;
+	justify-content: center;
+	flex: none;
+	min-width: 18px;
+	height: 16px;
+	padding: 0 5px;
+	margin-left: auto;
+	border-radius: 4px;
+	font-family: var(--font-interface);
+	font-size: var(--font-smallest);
+	font-weight: 550;
+	font-variant-numeric: tabular-nums;
+	line-height: 16px;
+	letter-spacing: 0.01em;
+	user-select: none;
+	cursor: pointer;
+}
+
+.notist-nav-badge:hover {
+	filter: brightness(1.08);
+}
+
+.notist-nav-badge.is-error {
+	color: color-mix(in srgb, var(--color-red, var(--text-error)) 82%, var(--text-normal));
+	background-color: color-mix(in srgb, var(--color-red, red) 13%, transparent);
+}
+
+.notist-nav-badge.is-warning {
+	color: color-mix(in srgb, var(--color-orange) 82%, var(--text-normal));
+	background-color: color-mix(in srgb, var(--color-orange) 14%, transparent);
+}
+
+.notist-nav-badge.is-info {
+	color: color-mix(in srgb, var(--color-blue) 80%, var(--text-normal));
+	background-color: color-mix(in srgb, var(--color-blue) 11%, transparent);
+}
+
+/* ---- Notist semantic panels ---- */
+
+.notist-semantic-panel {
+	padding: 0;
+	overflow: auto;
+}
+
+/* Sticky strip: target file context + actions; stays put while the list
+   scrolls (contentEl is the scroll container). */
+.notist-panel-toolbar {
+	display: flex;
+	align-items: center;
+	gap: var(--size-2-2);
+	position: sticky;
+	top: 0;
+	z-index: 2;
+	min-height: 2.2rem;
+	padding: var(--size-2-1) var(--size-4-2);
+	background-color: var(--background-primary);
+	border-bottom: 1px solid var(--divider-color);
+}
+
+.notist-panel-toolbar-icon {
+	display: inline-flex;
+	align-items: center;
+	color: var(--text-muted);
+}
+
+.notist-panel-toolbar-icon svg {
+	width: var(--icon-s);
+	height: var(--icon-s);
+}
+
+.notist-panel-toolbar-target {
+	flex: 1 1 auto;
+	min-width: 0;
+	overflow: hidden;
+	color: var(--text-muted);
+	font-size: var(--font-smallest);
+	text-overflow: ellipsis;
+	white-space: nowrap;
+}
+
+.notist-panel-toolbar-actions {
+	display: flex;
+	align-items: center;
+	gap: var(--size-2-1);
+}
+
+.notist-panel-action {
+	padding: var(--size-2-1);
+}
+
+.notist-panel-action svg {
+	width: var(--icon-xs);
+	height: var(--icon-xs);
+}
+
+.notist-semantic-empty,
+.notist-semantic-loading {
+	display: flex;
+	align-items: center;
+	gap: var(--size-2-2);
+	padding: var(--size-4-3) var(--size-4-2);
+	color: var(--text-muted);
+}
+
+.notist-semantic-empty-icon svg {
+	width: var(--icon-s);
+	height: var(--icon-s);
+}
+
+.notist-semantic-loading {
+	color: var(--text-faint);
+	font-style: italic;
+}
+
+/* ---- Outline tree: nested guide lines, per-node chevrons ---- */
+
+.notist-symbol-tree,
+.notist-symbol-children {
+	list-style: none;
+	margin: 0;
+	padding: var(--size-2-1) var(--size-4-2) var(--size-4-2);
+}
+
+.notist-symbol-item,
+.notist-reference-item {
+	margin: 0;
+}
+
+.notist-symbol-children {
+	padding: 0;
+	margin-left: calc(var(--icon-xs) + var(--size-2-1));
+	border-left: 1px solid var(--background-modifier-border);
+}
+
+.notist-tree-row {
+	display: flex;
+	align-items: center;
+	gap: var(--size-2-1);
+	min-height: 24px;
+	padding: 0 var(--size-2-2);
+	border-radius: var(--radius-s);
+	cursor: pointer;
+}
+
+.notist-tree-row:hover {
+	background-color: var(--background-modifier-hover);
+}
+
+/* Caret-tracked current heading (subtle, Zed-like restraint). */
+.notist-tree-row.is-active {
+	background-color: color-mix(in srgb, var(--interactive-accent) 12%, transparent);
+	color: var(--text-normal);
+}
+
+.notist-tree-row.is-active .notist-tree-label {
+	font-weight: var(--font-medium);
+}
+
+.notist-tree-chevron {
+	display: inline-flex;
+	align-items: center;
+	justify-content: center;
+	flex: none;
+	width: var(--icon-xs);
+	height: var(--icon-xs);
+	color: var(--text-muted);
+	padding: 0;
+}
+
+.notist-tree-chevron svg {
+	width: 100%;
+	height: 100%;
+}
+
+.notist-tree-chevron-spacer {
+	cursor: default;
+}
+
+.notist-tree-label {
+	flex: 1 1 auto;
+	min-width: 0;
+	overflow: hidden;
+	text-overflow: ellipsis;
+	white-space: nowrap;
+}
+
+.notist-tree-level {
+	flex: none;
+	color: var(--text-faint);
+	font-size: var(--font-smallest);
+	font-variant-numeric: tabular-nums;
+}
+
+/* ---- Backlinks: grouped by source file with excerpts ---- */
+
+.notist-backlinks-summary {
+	padding: var(--size-2-1) var(--size-4-2) 0;
+	color: var(--text-faint);
+	font-size: var(--font-smallest);
+}
+
+.notist-backlinks-groups {
+	padding: var(--size-2-1) var(--size-4-2) var(--size-4-2);
+}
+
+.notist-backlinks-group {
+	margin-bottom: var(--size-2-2);
+	border: 1px solid var(--background-modifier-border);
+	border-radius: var(--radius-m);
+	overflow: hidden;
+}
+
+.notist-reference-file-header {
+	display: flex;
+	align-items: center;
+	gap: var(--size-2-1);
+	padding: var(--size-2-1) var(--size-2-2);
+	background-color: var(--background-secondary);
+	color: var(--text-normal);
+	font-size: var(--font-small);
+}
+
+.notist-reference-file-icon {
+	display: inline-flex;
+	align-items: center;
+	color: var(--text-muted);
+}
+
+.notist-reference-file-icon svg {
+	width: var(--icon-xs);
+	height: var(--icon-xs);
+}
+
+.notist-reference-file-name {
+	overflow: hidden;
+	font-weight: var(--font-medium);
+	text-overflow: ellipsis;
+	white-space: nowrap;
+}
+
+.notist-reference-file-dir {
+	overflow: hidden;
+	color: var(--text-faint);
+	font-size: var(--font-smallest);
+	text-overflow: ellipsis;
+	white-space: nowrap;
+}
+
+.notist-reference-file-count {
+	flex: none;
+	margin-left: auto;
+	color: var(--text-faint);
+	font-size: var(--font-smallest);
+	font-variant-numeric: tabular-nums;
+}
+
+.notist-reference-kind {
+	flex: none;
+	padding: 0 var(--size-2-1);
+	border-radius: var(--radius-s);
+	background-color: var(--background-modifier-hover);
+	color: var(--text-muted);
+	font-size: var(--font-smallest);
+}
+
+.notist-reference-target-module {
+	flex: none;
+	color: var(--text-accent);
+	font-size: var(--font-smaller);
+}
+
+.notist-reference-list {
+	list-style: none;
+	margin: 0;
+	padding: var(--size-2-1);
+}
+
+button.notist-reference-row {
+	display: flex;
+	align-items: baseline;
+	gap: var(--size-2-2);
+	width: 100%;
+	padding: var(--size-2-1) var(--size-2-2);
+	border: 0;
+	border-radius: var(--radius-s);
+	background: transparent;
+	color: var(--text-normal);
+	text-align: left;
+	cursor: pointer;
+}
+
+button.notist-reference-row:hover {
+	background-color: var(--background-modifier-hover);
+}
+
+.notist-reference-line {
+	flex: none;
+	min-width: 2ch;
+	color: var(--text-faint);
+	font-family: var(--font-monospace);
+	font-size: var(--font-smallest);
+	text-align: right;
+	font-variant-numeric: tabular-nums;
+}
+
+.notist-reference-excerpt {
+	min-width: 0;
+	overflow: hidden;
+	font-family: var(--font-monospace);
+	font-size: var(--font-smaller);
+	text-overflow: ellipsis;
+	white-space: nowrap;
+}
+
+.notist-ref-target {
+	background-color: color-mix(in srgb, var(--interactive-accent) 22%, transparent);
+	border-radius: var(--radius-s);
+	padding: 0 1px;
+}
+
+/* ---- Symbol palette modal ---- */
+
+.notist-symbol-modal-container {
+	min-width: min(620px, 86vw);
+}
+
+.notist-symbol-modal input {
+	width: 100%;
+}
+
+.notist-symbol-results {
+	max-height: 50vh;
+	overflow: auto;
+	margin-top: var(--size-4-2);
+}
+
+button.notist-symbol-result {
+	display: flex;
+	align-items: center;
+	gap: var(--size-2-2);
+	width: 100%;
+	border: 0;
+	background: transparent;
+	color: var(--text-normal);
+	text-align: left;
+	cursor: pointer;
+	padding: var(--size-2-1) var(--size-2-2);
+	border-radius: var(--radius-s);
+}
+
+button.notist-symbol-result.is-selected,
+button.notist-symbol-result:hover {
+	background: var(--background-modifier-hover);
+}
+
+button.notist-symbol-result.is-selected {
+	background: color-mix(in srgb, var(--interactive-accent) 14%, transparent);
+}
+
+.notist-symbol-result-kind {
+	display: inline-flex;
+	align-items: center;
+	justify-content: center;
+	flex: none;
+	width: var(--icon-s);
+	height: var(--icon-s);
+	color: var(--text-muted);
+}
+
+.notist-symbol-result-kind svg {
+	width: var(--icon-s);
+	height: var(--icon-s);
+}
+
+.notist-symbol-result-name {
+	min-width: 0;
+	overflow: hidden;
+	text-overflow: ellipsis;
+	white-space: nowrap;
+}
+
+.notist-symbol-result-path {
+	flex: none;
+	margin-left: auto;
+	overflow: hidden;
+	max-width: 55%;
+	color: var(--text-faint);
+	font-size: var(--font-smaller);
+	text-overflow: ellipsis;
+	white-space: nowrap;
+}
+
+/* ---- Plain-text .not editor ---- */
+
+/* Core's `.view-content` padding (12px/12px/32px) would leave a gap under
+   the editor (visible below the vim panel); out-specify it. */
+.workspace-leaf-content[data-type="notist-view"] .notist-view-root {
+	display: flex;
+	flex-direction: column;
+	height: 100%;
+	padding: 0;
+}
+
+/* Specificity note: must beat the theme's `input[type="text"]` (0,1,1);
+   `input.notist-title` ties it and wins by plugin load order. */
+input.notist-title {
+	flex: none;
+	width: auto;
+	border: none;
+	background: transparent;
+	box-shadow: none;
+	/* Bottom padding mirrors the markdown inline title's gap above the body. */
+	padding: var(--size-4-4);
+	font-size: var(--inline-title-size, var(--h1-size));
+	font-weight: var(--inline-title-weight, var(--h1-weight));
+	line-height: var(--line-height-tight);
+	color: var(--inline-title-color, var(--text-normal));
+}
+
+input.notist-title:focus {
+	outline: none;
+	box-shadow: none;
+	border: none;
+}
+
+/* CodeMirror editor: wrapper fills the view, CM itself is styled via
+   Obsidian's theme variables so it blends in like the markdown editor.
+   Aim for Zed-like restraint: barely-there highlights, quiet gutter. */
+
+.notist-editor {
+	flex: 1 1 auto;
+	min-height: 0;
+}
+
+.notist-editor .cm-editor {
+	height: 100%;
+	background: transparent;
+}
+
+.notist-editor .cm-editor.cm-focused {
+	outline: none;
+}
+
+.notist-editor .cm-scroller {
+	font-family: var(--font-monospace);
+	font-size: var(--font-text-size);
+	line-height: var(--line-height-normal);
+}
+
+/* Horizontal padding lives on .cm-line (not .cm-content) so the active-line
+   background covers it — otherwise a gap shows between gutter and text. */
+.notist-editor .cm-content {
+	padding: var(--size-4-2) 0;
+	caret-color: var(--text-accent);
+}
+
+.notist-editor .cm-line {
+	padding: 0 var(--size-4-4);
+}
+
+/* Quiet gutter: smaller, faint numbers, no background of its own. */
+.notist-editor .cm-gutters {
+	background-color: transparent;
+	border: none;
+	color: var(--text-faint);
+	font-size: 0.85em;
+	user-select: none;
+}
+
+.notist-editor .cm-lineNumbers .cm-gutterElement {
+	min-width: 3ch;
+	padding: 0 var(--size-4-2) 0 var(--size-4-4);
+}
+
+/* Current line: one continuous band across gutter and text (Zed-style). */
+.notist-editor {
+	--notist-active-line: color-mix(
+		in srgb,
+		var(--background-modifier-hover) 40%,
+		transparent
+	);
+}
+
+.notist-editor .cm-activeLineGutter {
+	background-color: var(--notist-active-line);
+	color: var(--text-muted);
+}
+
+.notist-editor .cm-activeLine {
+	background-color: var(--notist-active-line);
+}
+
+/* drawSelection renders its own caret and selection layer (the native
+   ::selection rules below only matter for edge cases). `!important` beats
+   CM's `.cm-editor.cm-focused .cm-selectionBackground` (0,3,0). */
+.notist-editor .cm-cursor {
+	border-left-color: var(--text-accent);
+}
+
+.notist-editor .cm-selectionBackground {
+	background-color: color-mix(
+		in srgb,
+		var(--interactive-accent) 25%,
+		transparent
+	) !important;
+}
+
+/* Native selection (fallback / outside the drawSelection layer). */
+.notist-editor .cm-content ::selection,
+.notist-editor .cm-content ::-moz-selection {
+	background-color: color-mix(
+		in srgb,
+		var(--interactive-accent) 25%,
+		transparent
+	);
+}
+
+/* Vim ex-command/search panel (`:` / `/`): joins the theme's bottom bar —
+   same surface as the status bar / vault profile block (`#f6f6f6` here),
+   flush with the leaf bottom, hairline divider on top. The input is
+   stripped of the theme's boxed styling (same specificity problem as
+   input.notist-title, so beat `input[type="text"]` (0,1,1) with (0,3,1)). */
+.notist-editor .cm-vim-panel {
+	align-items: center;
+	gap: var(--size-2-2);
+	padding: var(--size-2-3) var(--size-4-4);
+	border-top: 1px solid var(--divider-color);
+	background-color: var(--status-bar-background, var(--background-secondary));
+	font-family: var(--font-monospace);
+	font-size: var(--font-text-size);
+	color: var(--text-muted);
+}
+
+.notist-editor .cm-vim-panel input[type="text"] {
+	flex: 1 1 auto;
+	border: none;
+	background: transparent;
+	box-shadow: none;
+	padding: 0;
+	font-family: inherit;
+	font-size: inherit;
+	/* Match the label's line-height so `:` and input text share a baseline. */
+	line-height: inherit;
+	color: var(--text-normal);
+}
+
+/* The panel's label span is display:flex with default (stretch) alignment;
+   baseline-align it with the input. */
+.notist-editor .cm-vim-panel span {
+	align-items: baseline;
+}
+
+.notist-editor .cm-vim-panel input[type="text"]:focus {
+	outline: none;
+	box-shadow: none;
+	border: none;
+}
+
+/* Vim normal-mode block cursor: solid accent with inverted text. The vim
+   extension ships a Prec.highest theme that is injected after plugin styles,
+   so these need `!important` to win. */
+.notist-editor .cm-editor .cm-fat-cursor {
+	background-color: var(--interactive-accent) !important;
+	color: var(--text-on-accent) !important;
+}
+
+.notist-editor .cm-editor:not(.cm-focused) .cm-fat-cursor {
+	background-color: transparent !important;
+	outline: 1px solid var(--interactive-accent) !important;
+	color: var(--text-normal) !important;
+}
+
+/* ---- Syntax highlighting (tree-sitter captures → cm-notist-* marks) ---- */
+
+/* Rules below are single-class selectors of equal specificity; when segments
+   nest (e.g. an escape inside a string), the LATER rule wins. Keep outer
+   concepts above, inner/more specific ones below. */
+
+.notist-editor .cm-notist-punctuation-special,
+.notist-editor .cm-notist-punctuation-bracket,
+.notist-editor .cm-notist-punctuation-delimiter {
+	color: var(--text-faint);
+}
+
+.notist-editor .cm-notist-punctuation-list-marker-markup {
+	color: var(--text-accent);
+}
+
+.notist-editor .cm-notist-operator {
+	color: var(--text-muted);
+}
+
+/* Headings: bold body with a modest size ramp (Zed-like restraint). */
+.notist-editor .cm-notist-title-markup {
+	font-weight: var(--font-semibold, 600);
+}
+
+.notist-editor .cm-notist-heading-1 {
+	font-size: 1.35em;
+}
+
+.notist-editor .cm-notist-heading-2 {
+	font-size: 1.2em;
+}
+
+.notist-editor .cm-notist-heading-3 {
+	font-size: 1.1em;
+}
+
+.notist-editor .cm-notist-link-uri {
+	color: var(--text-accent);
+}
+
+.notist-editor .cm-notist-comment {
+	color: var(--text-faint);
+	font-style: italic;
+}
+
+.notist-editor .cm-notist-string,
+.notist-editor .cm-notist-string-special {
+	color: var(--color-green);
+}
+
+.notist-editor .cm-notist-number {
+	color: var(--color-orange);
+}
+
+.notist-editor .cm-notist-boolean,
+.notist-editor .cm-notist-constant-builtin {
+	color: var(--color-purple);
+}
+
+
+/* Code keywords (let/if/else/fn/trailing/import/as, not/and/or) — after the
+   generic .cm-notist-operator rule so keyword-operator wins on overlap. */
+.notist-editor .cm-notist-keyword,
+.notist-editor .cm-notist-keyword-import,
+.notist-editor .cm-notist-keyword-operator {
+	color: var(--color-purple);
+}
+
+.notist-editor .cm-notist-function,
+.notist-editor .cm-notist-function-call {
+	color: var(--color-blue);
+}
+
+.notist-editor .cm-notist-module {
+	color: var(--color-yellow);
+}
+
+.notist-editor .cm-notist-variable {
+	color: var(--color-cyan);
+}
+
+.notist-editor .cm-notist-variable-parameter {
+	color: var(--color-orange);
+}
+
+/* Annotation attribute family: @attr #tag .class key=value, fence info, ids. */
+.notist-editor .cm-notist-attribute {
+	color: var(--color-orange);
+}
+
+.notist-editor .cm-notist-tag {
+	color: var(--color-purple);
+}
+
+.notist-editor .cm-notist-type {
+	color: var(--color-yellow);
+}
+
+.notist-editor .cm-notist-property {
+	color: var(--color-cyan);
+}
+
+.notist-editor .cm-notist-label {
+	color: var(--color-blue);
+}
+
+/* Inline emphasis family (underline is split out from @emphasis by node type). */
+.notist-editor .cm-notist-emphasis {
+	font-style: italic;
+}
+
+.notist-editor .cm-notist-emphasis-strong {
+	font-weight: var(--bold-weight, 700);
+}
+
+.notist-editor .cm-notist-emphasis-strikethrough {
+	text-decoration: line-through;
+}
+
+.notist-editor .cm-notist-underline {
+	text-decoration: underline;
+}
+
+/* Inner captures: keep last so they win over enclosing spans. */
+.notist-editor .cm-notist-string-escape {
+	color: var(--color-cyan);
+}
+
+
+/* ---- LSP ---- */
+
+.notist-lsp-status {
+	cursor: pointer;
+}
+
+.notist-lsp-status:hover {
+	background-color: var(--background-modifier-hover);
+}
+
+/* Custom hover tooltip for the status-bar item — Obsidian 1.13's built-in
+   aria-label tooltips don't fire on status bar items. */
+.notist-lsp-tooltip {
+	position: fixed;
+	z-index: var(--layer-tooltip);
+	max-width: 60ch;
+	padding: var(--size-2-2) var(--size-4-1);
+	border: 1px solid var(--background-modifier-border);
+	border-radius: var(--radius-s);
+	background-color: var(--background-primary);
+	box-shadow: var(--shadow-s);
+	font-size: var(--font-ui-smaller);
+	color: var(--text-normal);
+	word-break: break-all;
+}
+
+.notist-lsp-hover {
+	padding: 4px 8px;
+	max-width: 480px;
+	white-space: pre-wrap;
+	font-size: var(--font-ui-smaller);
+}
