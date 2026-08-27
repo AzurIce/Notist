@@ -52,8 +52,7 @@ flowchart LR
 )[题注]
 ```
 
-签名等价于 `mermaid(source: String, theme: String = "default", trailing
-body: Content) -> Content`；`theme` 支持 `default`、`dark`、`neutral`、
+签名等价于 `mermaid(source: String, theme: String = "default", trailing body: Content) -> Content`；`theme` 支持 `default`、`dark`、`neutral`、
 `forest`，两侧词表一致。
 
 求值期 mmdr 仍按 `plugins/mermaid-wasm/Cargo.toml` 的版本构建；浏览器期
