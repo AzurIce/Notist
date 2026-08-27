@@ -1,1 +1,2 @@
+window.EVAL_ANSWERS=window.EVAL_ANSWERS||{};
 window.EVAL_ANSWERS["p3run2||T3-pipeline-inventory__notist-enforced"]="\n\ndesigns/pipeline 目录下的设计文档（共 6 个，来源：`notist modules --prefix vault::designs::pipeline`）：\n\n- README.not\n- evaluate.not\n- parse.not\n- plugin-call-reduction.not\n- project.not\n- structure.not\n";

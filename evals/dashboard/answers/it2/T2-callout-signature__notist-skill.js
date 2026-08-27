@@ -1,1 +1,2 @@
+window.EVAL_ANSWERS=window.EVAL_ANSWERS||{};
 window.EVAL_ANSWERS["it2||T2-callout-signature__notist-skill"]="\n\n**确切答案：`kind` 的类型是 `String`，默认值是 `\"note\"`。**\n\n签名（两处文档一致）：\n\n```text\ncallout(kind: String = \"note\", title: Content? = none, trailing body: Content) -> Content\n```\n\n出处：\n- `functions.not`（模块 `vault::functions`）— \"callout\" 节，第 126 行\n- `designs/plugin-system/core.not`（模块 `vault::designs::plugin-system::core`）— \"callout\" 节，第 53 行\n\n补充说明：文档指出 `kind` 是面向语义与导出的稳定分类，为空会产生诊断；该构造器无语法糖，需显式调用（如 `#callout(kind: \"warning\", title: [风险])[...]`）。\n";

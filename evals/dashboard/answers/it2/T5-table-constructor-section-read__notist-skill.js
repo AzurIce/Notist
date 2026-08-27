@@ -1,1 +1,2 @@
+window.EVAL_ANSWERS=window.EVAL_ANSWERS||{};
 window.EVAL_ANSWERS["it2||T5-table-constructor-section-read__notist-skill"]="\n\n**结论：**\n\n- **列数**：由 `columns` 参数控制（类型 `Int`，必填；每 `columns` 个 cell 为一行）。\n- **表头**：由 `header` 参数控制（类型 `Bool`，默认 `false`；决定首行是否进入表头）。\n\n完整签名：\n```not\ntable(columns: Int, header: Bool = false, align: String? = none, trailing body: Content) -> Content\n```\n\n**出处：** 文档文件 `functions.not`，节标题「table-cell / table」（约第 177–185 行）。\n";

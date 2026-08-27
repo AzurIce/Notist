@@ -1,1 +1,2 @@
+window.EVAL_ANSWERS=window.EVAL_ANSWERS||{};
 window.EVAL_ANSWERS["p2base||T1-locate-grammar-spec__md-bash"]="\n\n**结论：读 `grammar.md`（标题「Notist Grammar」），从第一个二级节「== 两种 lexical context」开始。**\n\n- 「两种 lexical context」定义 Markup / Code 两个语义模式与 quotation 规则；\n- 紧接的「== Markup 最小骨架」（含子节「`#` 嵌入的边界」）给出空白与分隔的精确规定：空行产生 `Parbreak`、单换行同段、空格终止表达式并成为文本、`;`/括号结束规则等；\n- 「== Code 核心语法」给出标识符（`::` 两侧禁空白）、注释、字面量、运算符、声明语句分隔（`;`/换行）等 Code 侧精确规则。\n\n依据：cheatsheet.md 明确「精确规则以 [grammar](grammar.md) 为准」，intro.md 只作概念介绍。\n";

@@ -1,1 +1,2 @@
+window.EVAL_ANSWERS=window.EVAL_ANSWERS||{};
 window.EVAL_ANSWERS["p3run2||T4-module-annotation-syntax__md-bash"]="\n\n**语法**：文件开头（第一个有意义 token 之前）写 `@![#tag, ...]`，例如：\n\n```not\n@![#design, #wip, status = \"draft\"]\n```\n\n`!` 表示\"作用于所在模块\"（对应 Rust inner attribute 语义），绑定为模块属性（根 scope）；属性列表内不用 id，标签用 `#tag` 形式。\n\n**权威定义出处**：`designs/language/annotation-syntax.md`（\"模块：`@![...]`\" 一节，含文件开头约束、token 区分与错误恢复规则）。`grammar.md`\"标注与 scope 形态\"一节只是摘要，并指向该文档。\n";

@@ -34,6 +34,9 @@ tr:hover td{background:#1d2230}
 .msg .role{color:var(--dim);font-size:11px;text-transform:uppercase;letter-spacing:.5px}
 .msg details summary{cursor:pointer;color:var(--dim);font-size:12px}
 .toolcall{display:inline-block;background:#20263a;border-radius:6px;padding:2px 8px;margin:2px;color:var(--accent);font-size:12px}
+.msg.tool{border-left:3px solid var(--accent)}
+.pre{background:#0c0e14;border:1px solid var(--line);border-radius:6px;padding:8px;max-height:260px;overflow:auto;white-space:pre-wrap;font-size:12px;margin:6px 0}
+details summary{cursor:pointer;color:var(--dim);font-size:12px}
 .tokbar{height:8px;background:#20263a;border-radius:4px;min-width:60px}
 .tokbar>i{display:block;height:100%;border-radius:4px;background:var(--accent)}
 .hide{display:none}
@@ -51,7 +54,9 @@ a{color:var(--accent)}
 <div class="cards" id="cards"></div>
 <table id="matrix"><thead></thead><tbody></tbody></table>
 <div id="modal"><div class="box" id="mbox"></div></div>
-<script>window.onerror=function(m,s,l,c,e){document.title="ERR:"+m+" @"+l+":"+c;};</script>
+
+<script>window.EVAL_SESSIONS=window.EVAL_SESSIONS||{};window.EVAL_ANSWERS=window.EVAL_ANSWERS||{};
+window.onerror=function(m,s,l){const el=document.getElementById("sess");if(el)el.innerHTML="⚠ 脚本错误: "+esc(String(m));return false;};</script>
 <script src="data.js"></script>
 <script>
 const D=window.EVAL_DASH;
@@ -113,6 +118,62 @@ function render(){
   $("#matrix").querySelector("tbody").innerHTML=rows;
   $("#status").textContent=b?`对比模式：黄框 = 通过状态翻转`:`点格子看详情`;
 }
+
+function renderTrace(msgs){
+  const byId={};const order=[];
+  let totalIn=0,totalOut=0,calls=0;
+  const blocks=[];
+  let thinkingHtml="",textHtml="",pendingTools=[];
+  function flushAssistant(){
+    if(thinkingHtml===""&&textHtml===""&&pendingTools.length===0)return;
+    if(thinkingHtml||textHtml)
+      blocks.push(`<div class="msg assistant"><div class="role">助手</div>`+
+        (thinkingHtml?`<details><summary>思考过程</summary>${thinkingHtml}</details>`:"")+
+        textHtml+`</div>`);
+    pendingTools=[];
+    thinkingHtml="";textHtml="";
+  }
+  for(const m of msgs){
+    if(m.usage){totalIn+=m.usage.in||0;totalOut+=m.usage.out||0;}
+    if(m.role==="user"){
+      flushAssistant();
+      for(const it of m.items)if(it.kind==="text")
+        blocks.push(`<div class="msg user"><div class="role">用户任务</div><div>${esc(it.text)}</div></div>`);
+      continue;
+    }
+    if(m.role==="assistant"){
+      for(const it of m.items){
+        if(it.kind==="thinking")thinkingHtml+=`<div style="white-space:pre-wrap;color:var(--dim)">${esc(it.text)}</div>`;
+        else if(it.kind==="text")textHtml+=`<div>${esc(it.text)}</div>`;
+        else if(it.kind==="toolcall"){
+          flushAssistant();
+          calls++;
+          blocks.push(`<div class="msg tool"><div class="role">工具 · ${esc(it.name)}</div>`+
+            `<details><summary>参数</summary><pre class="pre">${esc(it.args||"")}</pre></details>`+
+            `<div class="pending" id="pending-${esc(it.id)}" style="color:var(--dim);font-size:12px">运行中…</div></div>`);
+          byId[it.id]=blocks.length-1;
+        }
+      }
+      continue;
+    }
+    if(m.role==="toolResult"){
+      for(const it of m.items){
+        if(it.kind!=="toolresult")continue;
+        const idx=byId[it.id];
+        const resHtml=`<details ${it.isError?"open":""}><summary class="${it.isError?"fail":""}">工具结果${it.isError?"（错误）":""}</summary>`+
+          `<pre class="pre out">${esc(it.text||"(空)")}</pre></details>`;
+        if(idx!==undefined&&!String(blocks[idx]).includes("id=\"done\""))
+          blocks[idx]=blocks[idx].replace(`<div class="pending" id="pending-${esc(it.id)}" style="color:var(--dim);font-size:12px">运行中…</div>`,resHtml);
+        else
+          blocks.push(`<div class="msg toolResult"><div class="role">工具结果${it.isError?"（错误）":""}</div><pre class="pre out">${esc(it.text||"(空)")}</pre></div>`);
+      }
+      continue;
+    }
+  }
+  flushAssistant();
+  const header=`<div style="color:var(--dim);font-size:12px;margin:6px 0">${msgs.length} 条消息 · ${calls} 次工具调用 · Σ in ${tok(totalIn)} / out ${tok(totalOut)}</div>`;
+  return header+blocks.join("")||"(空会话)";
+}
 function showCell(runId,cond,taskId){
   const key=taskId+"__"+cond;
   const run=D.runs[runId];
@@ -147,17 +208,9 @@ function loadSession(runId,key){
   const s=document.createElement("script");
   s.src=`sessions/${encodeURIComponent(runId)}/${encodeURIComponent(key)}.js`;
   s.onload=()=>{
-    const msgs=window.EVAL_SESSIONS[runId+"||"+key]||[];
-    $("#sess").innerHTML=msgs.map(m=>{
-      const body=m.items.map(it=>{
-        if(it.kind==="text")return `<div>${esc(it.text)}</div>`;
-        if(it.kind==="thinking")return `<details><summary>thinking</summary><div style="color:var(--dim);white-space:pre-wrap">${esc(it.text)}</div></details>`;
-        if(it.kind==="toolcall")return `<span class="toolcall">🔧 ${esc(it.name)} ${esc(it.args||"")}</span>`;
-        return "";
-      }).join("");
-      const u=m.usage?`<span style="float:right;color:var(--dim);font-size:11px">in ${m.usage.in} / out ${m.usage.out}</span>`:"";
-      return `<div class="msg ${esc(m.role)}"><div class="role">${esc(m.role)} ${u}</div>${body}</div>`;
-    }).join("")||"(空会话)";
+    const msgs=window.EVAL_SESSIONS[runId+"||"+key];
+    if(!msgs||!msgs.length){$("#sess").innerHTML="<span style='color:var(--warn)'>该格没有会话记录——任务超时被终止或模型未产生落盘会话（如 TD1 的 skill 条件这一格）。</span>";return;}
+    $("#sess").innerHTML=renderTrace(msgs);
   };
   s.onerror=()=>{$("#sess").textContent="(会话加载失败)";};
   document.body.appendChild(s);

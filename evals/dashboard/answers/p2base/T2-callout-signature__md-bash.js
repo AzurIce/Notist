@@ -1,1 +1,2 @@
+window.EVAL_ANSWERS=window.EVAL_ANSWERS||{};
 window.EVAL_ANSWERS["p2base||T2-callout-signature__md-bash"]="\n\n**确切答案：**\n\n`callout` 的 `kind` 参数类型是 **`String`**，默认值是 **`\"note\"`**。\n\n完整签名：\n```text\ncallout(kind: String = \"note\", title: Content? = none, trailing body: Content) -> Content\n```\n\n**出处：**\n- `functions.md` — 节标题「== callout」（第 123–129 行）\n- `cheatsheet.md`（第 32 行）、`designs/plugin-system/core.md` — 节标题「=== callout」（第 52 行），签名一致\n\n补充说明（functions.md）：`kind` 是面向语义与导出的稳定分类，为空会产生诊断；例如 `#callout(kind: \"warning\", title: [风险])[...]`。\n";

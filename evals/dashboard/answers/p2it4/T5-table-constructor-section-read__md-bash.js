@@ -1,1 +1,2 @@
+window.EVAL_ANSWERS=window.EVAL_ANSWERS||{};
 window.EVAL_ANSWERS["p2it4||T5-table-constructor-section-read__md-bash"]="\n\n**结论：**\n\n- **列数**由 `columns`（类型 `Int`，必填）控制——文档说明\"`table` 消费按行平铺的 `table-cell`（每 `columns` 个 cell 为一行）\"。\n- **表头**由 `header`（类型 `Bool = false`，可省略）控制——\"`header` 决定首行是否进入表头\"。\n\n完整签名为：\n```text\ntable(columns: Int, header: Bool = false, align: String? = none, trailing body: Content) -> Content\n```\n\n**出处：** `functions.md`（《Built-in Functions》文档）中的 **`== table-cell / table`** 一节。\n\n（注：`cheatsheet.md` 速查表中也列出了该签名，但完整说明在 `functions.md`。）\n";

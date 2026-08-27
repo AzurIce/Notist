@@ -1,1 +1,2 @@
+window.EVAL_ANSWERS=window.EVAL_ANSWERS||{};
 window.EVAL_ANSWERS["it1||T3-pipeline-inventory__notist-bash"]="\n\ndesigns/pipeline 目录下的设计文档（共 6 个）：\n\n- README.not\n- evaluate.not\n- parse.not\n- plugin-call-reduction.not\n- project.not\n- structure.not\n";

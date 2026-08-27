@@ -1,1 +1,2 @@
+window.EVAL_ANSWERS=window.EVAL_ANSWERS||{};
 window.EVAL_ANSWERS["it3||T6-cursor-continuation-rule-doc__null-notools"]="\n\n续读行为：notist 检索按页返回；一页看不完时，不是重新发起新查询，而是携带上一页返回的游标/页码继续取下一页；到无下一页、达到最大页数/条数，或触发停止条件时停止。\n\n权威设计出处：`notist-pagination-and-stop-rules.md`（《Notist 检索分页与停止规则》）  \n停止规则节标题：`停止规则（Stop rules）`\n";

@@ -1,1 +1,2 @@
+window.EVAL_ANSWERS=window.EVAL_ANSWERS||{};
 window.EVAL_ANSWERS["p3base||T6-cursor-continuation-rule-doc__notist-bash"]="\n\n- 机制名：**cursor**（resumable/续读，CLI 动作 `notist next <TOKEN>`）\n- 文档名：**Query Contract**（`designs/host/query-contract.not`，模块 `vault::designs::host::query-contract`）\n";

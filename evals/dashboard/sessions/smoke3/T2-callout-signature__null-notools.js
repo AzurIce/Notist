@@ -1,1 +1,2 @@
+window.EVAL_SESSIONS=window.EVAL_SESSIONS||{};
 window.EVAL_SESSIONS["smoke3||T2-callout-signature__null-notools"]=[{"role": "user", "items": [{"kind": "text", "text": "callout 这个构造器的 kind 参数是什么类型、默认值是多少？给出确切答案。"}], "usage": null}, {"role": "assistant", "items": [{"kind": "thinking", "text": ""}, {"kind": "text", "text": "\n\n**结论**：`kind` 参数通常为字符串（String）或枚举类型，默认值多为 `\"info\"`。\n**出处**：Callout 组件 API 参考 / 属性说明（注：因当前环境无具体文件上下文，此答案基于常见 UI 组件库如 Ant Design/Element Plus 中 Alert/Callout 的通用规范推断）。"}], "usage": {"in": 126, "out": 1463}}];

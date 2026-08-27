@@ -1,1 +1,2 @@
+window.EVAL_ANSWERS=window.EVAL_ANSWERS||{};
 window.EVAL_ANSWERS["p3run2||T1-locate-grammar-spec__md-bash"]="\n\n**文件：`grammar.md`（Notist Grammar）**，从 **「两种 lexical context」** 一节开始读。\n\n- 「两种 lexical context」：定义 Markup / Code 双模式与 quotation 规则；\n- 「Markup 最小骨架」+「`#` 嵌入的边界」：段落分隔（空行/换行）、空格与定界符的精确规定；\n- 「Code 核心语法」：标识符、注释、字面量、运算符等完整 Code 文法。\n\n（README.md 第 28 行亦指向此文：「语法参考：Markup/Code 双模式与核心文法 [grammar](grammar.md)」。）\n";

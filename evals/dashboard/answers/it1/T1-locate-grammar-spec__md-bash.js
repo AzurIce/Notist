@@ -1,1 +1,2 @@
+window.EVAL_ANSWERS=window.EVAL_ANSWERS||{};
 window.EVAL_ANSWERS["it1||T1-locate-grammar-spec__md-bash"]="\n\n**结论：读 `grammar.md`（标题「Notist Grammar」）。**\n\n- 该文档开篇即声明\"本文定义当前工具与写作者可以依赖的语法 surface。语言包含 Markup 与 Code 两种模式\"，主题从第一节 **`== 两种 lexical context`** 开始（定义 Markup/Code 两个语义模式与递归 quotation）。\n- 空白与分隔的精确规定在紧随其后的两节：**`== Markup 最小骨架`**（文本流、空行产生 Parbreak/单换行同段、`#` 嵌入边界——空格终止表达式且成为文本、`;`/括号结束规则、转义）与 **`== Code 核心语法`**（标识符字符集、注释 trivia、字面量、运算符等）。\n\n注意区分：`cheatsheet.md` 只是日常速查（其开头明确\"精确规则以 grammar 为准\"），完整语法规则以 `grammar.md` 为权威。\n";

@@ -1,1 +1,2 @@
+window.EVAL_ANSWERS=window.EVAL_ANSWERS||{};
 window.EVAL_ANSWERS["p3base||T1-locate-grammar-spec__md-bash"]="\n\n**文件：`grammar.md`（Notist Grammar，kind: reference / status: current）**\n\n- 从第一节 **「## 两种 lexical context」** 开始讲 Markup/Code 双模式与递归 quotation；\n- 空白与分隔的精确规定在 **「## Markup 最小骨架」**（含子节「`#` 嵌入的边界」：空格终止表达式、`;`/括号收尾、转义规则）与 **「## Code 核心语法」**（标识符、注释、字面量、语句分隔等）。\n\n注：设计侧对应拆分为 `designs/language/markup-surface.md` 与 `code-grammar.md`，但作为单一权威参考读 `grammar.md` 即可。\n";

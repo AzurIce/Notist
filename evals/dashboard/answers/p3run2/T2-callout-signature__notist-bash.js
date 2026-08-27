@@ -1,1 +1,2 @@
+window.EVAL_ANSWERS=window.EVAL_ANSWERS||{};
 window.EVAL_ANSWERS["p3run2||T2-callout-signature__notist-bash"]="\n\n**`kind: String = \"note\"`** —— 类型是 `String`，默认值 `\"note\"`。\n\n出处：`functions.not` §callout（签名 `callout(kind: String = \"note\", title: Content? = none, trailing body: Content) -> Content`）；同签名亦见 `cheatsheet.not`、`designs/plugin-system/core.not`。\n";

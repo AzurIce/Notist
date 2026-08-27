@@ -1,1 +1,2 @@
+window.EVAL_SESSIONS=window.EVAL_SESSIONS||{};
 window.EVAL_SESSIONS["it3||T3-pipeline-inventory__null-notools"]=[{"role": "user", "items": [{"kind": "text", "text": "designs/pipeline 目录下有哪些设计文档？列出它们的文件名。只要文件名清单。"}], "usage": null}, {"role": "assistant", "items": [{"kind": "thinking", "text": ""}, {"kind": "text", "text": "\n\n- 无法列出（未提供 `designs/pipeline` 目录文件清单）"}], "usage": {"in": 123, "out": 657}}];

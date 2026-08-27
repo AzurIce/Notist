@@ -1,1 +1,2 @@
+window.EVAL_ANSWERS=window.EVAL_ANSWERS||{};
 window.EVAL_ANSWERS["p2base||T6-cursor-continuation-rule-doc__notist-skill"]="\n\n- **机制名**：可恢复 Cursor（opaque、self-contained 的 token；CLI 上通过 `notist next <TOKEN>` 继续翻页）\n- **文档名**：`designs/host/query-contract.not`（模块 `vault::designs::host::query-contract`，节「Snapshot Stamp 与可恢复 Cursor」）\n";

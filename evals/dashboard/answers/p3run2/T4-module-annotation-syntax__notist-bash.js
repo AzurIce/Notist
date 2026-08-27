@@ -1,1 +1,2 @@
+window.EVAL_ANSWERS=window.EVAL_ANSWERS||{};
 window.EVAL_ANSWERS["p3run2||T4-module-annotation-syntax__notist-bash"]="\n\n**语法**（写在文件开头，第一个有意义 token 之前）：\n\n```not\n@![#design, #wip]\n\n= 标题\n```\n\n- `@![...]` = 模块属性（根 scope），`!` 表示\"作用于所在模块\"；\n- 内部是属性列表：`#tag`、`.class`、`key = value`（逗号分隔，可任意多个），**不使用 id**；\n- 必须位于文件开头，保证索引器可不求值直接扫描。\n\n**权威定义出处**：`designs/language/annotation-syntax.not`，节「三种挂载位置」第 3 条\"模块：`@![...]`\"（该文件自身开头即用 `@![implementation = \"aligned\", kind = \"design\", status = \"current\"]` 示范）。\n";

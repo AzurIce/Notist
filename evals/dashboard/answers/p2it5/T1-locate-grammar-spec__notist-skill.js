@@ -1,1 +1,2 @@
+window.EVAL_ANSWERS=window.EVAL_ANSWERS||{};
 window.EVAL_ANSWERS["p2it5||T1-locate-grammar-spec__notist-skill"]="\n\n**文件：`grammar.not`（Notist Grammar）**，从第 7 行的 **「两种 lexical context」** 一节开始读。\n\n- 该节起定义 Markup / Code 两种语义模式（递归 quotation，无第三种 context）；\n- 紧随其后的 **「Markup 最小骨架」**（第 18 行）与子节 **\"`#` 嵌入的边界\"**（第 27 行）给出空白与分隔的精确规定：空行产生 `Parbreak`、单换行不切段、空格终止表达式并成为文本、`;`/括号结束嵌入等；\n- 再往下 **「Code 核心语法」**（第 44 行）覆盖标识符、字面量、运算符、声明与类型语法，即完整语法规则的主体。\n";

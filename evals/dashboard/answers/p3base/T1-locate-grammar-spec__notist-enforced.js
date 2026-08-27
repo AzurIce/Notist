@@ -1,1 +1,2 @@
+window.EVAL_ANSWERS=window.EVAL_ANSWERS||{};
 window.EVAL_ANSWERS["p3base||T1-locate-grammar-spec__notist-enforced"]="\n\n**文件：`grammar.not`（模块 `vault::grammar`，标题 \"Notist Grammar\"）**\n\n- 从 **`== 两种 lexical context`**（第 8 行）开始：定义 Markup / Code 两个语义模式及递归 quotation。\n- 空白与分隔的精确规定在紧随其后的 **`== Markup 最小骨架`**（第 19 行，含子节 `=== # 嵌入的边界`：段落分隔、空格终止表达式等规则）；Code 完整语法在 **`== Code 核心语法`**（第 45 行）。\n\n文档开头（第 4–6 行）已声明：Markup 只定义最小骨架，Code 是本文主体。\n";

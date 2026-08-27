@@ -1,1 +1,2 @@
+window.EVAL_ANSWERS=window.EVAL_ANSWERS||{};
 window.EVAL_ANSWERS["p2base||T1-locate-grammar-spec__notist-bash"]="\n\n**结论：** 读 `grammar.not`（标题 \"Notist Grammar\"）。\n\n- **起始节**：从第 7 行的 `== 两种 lexical context` 开始——该节定义 Markup/Code 两个语义模式及递归 quotation 规则。\n- **空白与分隔的精确规定**：紧随其后的 `== Markup 最小骨架`（第 18 行，含段落分隔、`\\` 转义）及其子节 `=== # 嵌入的边界`（空格终止表达式、`;`/括号结束规则），以及 `== Code 核心语法` 下的 `=== 标识符`（`::` 两侧禁空白）、`=== 声明`（代码块语句以 `;` 或换行分隔）等节。\n\n补充：Markup 的其余构造（标题、列表、表格等语法糖）不在该文展开，需按文末 `== 引用索引` 跳转（如 `designs/language/syntax-sugar.not`）。\n";

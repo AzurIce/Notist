@@ -1,1 +1,2 @@
+window.EVAL_ANSWERS=window.EVAL_ANSWERS||{};
 window.EVAL_ANSWERS["p3run2||T1-locate-grammar-spec__notist-enforced"]="\n\n**结论：**\n\n- **文件：`grammar.not`（Notist Grammar）** —— intro 中明确指向它：\"精确的字符、空白与分隔规则见 #<vault::grammar>\"。\n- **起始节：`== 两种 lexical context`（第 8 行）**，随后依次是 `Markup 最小骨架`（含段落分隔、空白与 `#` 嵌入边界，第 19/28 行）和 `Code 核心语法`（标识符、注释、字面量、运算符等，第 45 行起）。\n";

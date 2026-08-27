@@ -1,1 +1,2 @@
+window.EVAL_ANSWERS=window.EVAL_ANSWERS||{};
 window.EVAL_ANSWERS["p3run2||TD1-modpath-scope-byte-span__notist-enforced"]="\n\n**ModulePath Scope 节字节区间：3927 .. 4929**（起始 3927，结束 4929）\n\n出处：`designs/host/query-contract.not`（模块 `vault::designs::host::query-contract`），由 `notist outline` 给出（第 74 行，span=3927..4929），并经 `notist read --byte-range 3927..4929` 验证：区间恰从 `=== ModulePath Scope` 标题起，至下一节「Snapshot Stamp 与可恢复 Cursor」之前止。\n";

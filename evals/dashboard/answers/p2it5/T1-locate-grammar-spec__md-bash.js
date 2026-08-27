@@ -1,1 +1,2 @@
+window.EVAL_ANSWERS=window.EVAL_ANSWERS||{};
 window.EVAL_ANSWERS["p2it5||T1-locate-grammar-spec__md-bash"]="\n\n**结论：** 读 **`grammar.md`**（README 中列为\"语法参考：Markup/Code 双模式与核心文法\"的权威文档）。\n\n从 **`== 两种 lexical context`** 一节开始读——该节定义 Markup/Code 两个语义模式与 quotation 规则，随后依次是 `== Markup 最小骨架`（文本流、段落分隔/空行规则、`#` 嵌入边界与转义，即空白与分隔的精确规定）和 `== Code 核心语法`（标识符、注释、字面量、运算符、声明与类型语法）。\n\n补充：若需要更细的设计层规则，可再查 `designs/language/markup-surface.md`（Markup 表面语法）与 `designs/language/code-grammar.md`（Code 核心文法独立成篇），但完整语法规则的入口是 `grammar.md`。\n";

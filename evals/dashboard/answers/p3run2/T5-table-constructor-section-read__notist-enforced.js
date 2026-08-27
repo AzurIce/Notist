@@ -1,1 +1,2 @@
+window.EVAL_ANSWERS=window.EVAL_ANSWERS||{};
 window.EVAL_ANSWERS["p3run2||T5-table-constructor-section-read__notist-enforced"]="\n\n**结论**（出自函数参考 `functions.not`，模块 `vault::functions` 的「table-cell / table」节）：\n\n- **列数**：由 `columns: Int` 参数控制（必填，每 `columns` 个 cell 为一行）。\n- **表头**：由 `header: Bool = false` 参数控制（决定首行是否进入表头）。\n\n签名：`table(columns: Int, header: Bool = false, align: String? = none, trailing body: Content) -> Content`\n\n**出处文档文件名：`functions.not`**（节标题「table-cell / table」，第 178–207 行）。\n";

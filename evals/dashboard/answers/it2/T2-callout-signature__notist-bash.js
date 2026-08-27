@@ -1,1 +1,2 @@
+window.EVAL_ANSWERS=window.EVAL_ANSWERS||{};
 window.EVAL_ANSWERS["it2||T2-callout-signature__notist-bash"]="\n\n**结论：** `callout` 构造器的 `kind` 参数类型是 **`String`**，默认值是 **`\"note\"`**。\n\n完整签名：\n```text\ncallout(kind: String = \"note\", title: Content? = none, trailing body: Content) -> Content\n```\n\n**出处：** `functions.not` 的「callout」节（第 123–134 行）；同一签名也出现在 `cheatsheet.not:32` 和 `designs/plugin-system/core.not:50-53`。文档补充说明：`kind` 是面向语义与导出的稳定分类，为空会产生诊断。\n";

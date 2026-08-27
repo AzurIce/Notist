@@ -1,1 +1,2 @@
+window.EVAL_ANSWERS=window.EVAL_ANSWERS||{};
 window.EVAL_ANSWERS["it3||T1-locate-grammar-spec__md-bash"]="\n\n**结论：读 `grammar.md`，从「== 两种 lexical context」一节开始。**\n\n- 该节定义 Markup / Code 两个语义模式及递归 quotation（`#` 进入 Code、`[...]` 切回 Markup）；\n- 紧接着「== Markup 最小骨架」（含 `#` 嵌入的边界、段落分隔/空行规则）与「== Code 核心语法」（标识符、注释、字面量、运算符等，即空白与分隔的精确规定）两节构成完整语法主体；\n- 文末「引用索引」列出其余 Markup 构造（标题、围栏、列表等语法糖）的出处。\n\n文件开头也自述：「语言包含 Markup 与 Code 两种模式……Markup 模式只定义最小骨架——文本流、段落分隔、`#` 嵌入与转义；Code 模式是本文的主体」。\n";

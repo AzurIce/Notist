@@ -1,1 +1,2 @@
+window.EVAL_ANSWERS=window.EVAL_ANSWERS||{};
 window.EVAL_ANSWERS["it3||T5-table-constructor-section-read__notist-skill"]="\n\n**结论：**\n\n- **列数**由参数 `columns`（Int，必填）控制——每 `columns` 个 cell 组成一行。\n- **表头**由参数 `header`（Bool，默认 `false`）控制——决定首行是否进入表头。\n\n完整签名：\n```not\ntable(columns: Int, header: Bool = false, align: String? = none, trailing body: Content) -> Content\n```\n\n**出处：** 文档文件 `functions.not`（Notist 函数参考），节标题 **`== table-cell / table`**（约第 177–205 行）。该节还说明 `align` 是逗号分隔的列对齐串（数量必须等于 `columns`），并给出 pipe table 语法糖规则。\n";

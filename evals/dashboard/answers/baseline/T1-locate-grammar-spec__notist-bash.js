@@ -1,1 +1,2 @@
+window.EVAL_ANSWERS=window.EVAL_ANSWERS||{};
 window.EVAL_ANSWERS["baseline||T1-locate-grammar-spec__notist-bash"]="\n\n**结论：**\n\n- **文件**：`grammar.not`（标题 \"Notist Grammar\"）\n- **起始节**：从第 7 行的 `== 两种 lexical context` 一节开始——该节定义 Markup / Code 两个语义模式及递归 quotation 规则；紧接着第 18 行 `== Markup 最小骨架`（含其子节 `` === `#` 嵌入的边界``，第 27 行）给出空白与分隔的精确规定（空行产生 `Parbreak`、单换行属同段、空格终止表达式并成为文本等）；Code 模式的完整语法在第 44 行 `== Code 核心语法`。\n";

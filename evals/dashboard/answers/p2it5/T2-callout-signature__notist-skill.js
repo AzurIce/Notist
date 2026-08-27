@@ -1,1 +1,2 @@
+window.EVAL_ANSWERS=window.EVAL_ANSWERS||{};
 window.EVAL_ANSWERS["p2it5||T2-callout-signature__notist-skill"]="\n\n**确切答案：`kind` 的类型是 `String`，默认值是 `\"note\"`。**\n\n出处（签名一致）：\n- `functions.not` 的 `== callout` 节：`callout(kind: String = \"note\", title: Content? = none, trailing body: Content) -> Content`\n- `cheatsheet.not` 第 32 行给出相同签名。\n\n补充：文档说明 `kind` 是面向语义与导出的稳定分类，为空会产生诊断；未提供 `title` 时不生成标题。\n";

@@ -1,1 +1,2 @@
+window.EVAL_ANSWERS=window.EVAL_ANSWERS||{};
 window.EVAL_ANSWERS["p3base||T4-module-annotation-syntax__notist-bash"]="\n\n**语法**：在文件开头（第一个有意义的 token 之前）写 `@![#tag, ...]`，例如：\n\n```not\n@![#design, #wip]\n\n= 标题\n```\n\n`!` 表示\"作用于所在模块\"（inner attribute 语义），绑定为模块属性；tag、class、key=value 可任意多个，但 id 不用写（模块本身已是可寻址目标）。\n\n**权威定义出处**：`designs/language/annotation-syntax.not`（模块 `vault::designs::language::annotation-syntax`），\"三种挂载位置\"一节第 3 条「模块：`@![...]`」。`grammar.not`（Notist Grammar）中仅概述并指向该篇（\"完整规则见 #<vault::designs::language::annotation-syntax>\"）。\n";

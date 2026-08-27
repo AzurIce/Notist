@@ -1,1 +1,2 @@
+window.EVAL_ANSWERS=window.EVAL_ANSWERS||{};
 window.EVAL_ANSWERS["it2||T5-table-constructor-section-read__md-bash"]="\n\n**结论：**\n\n- **列数**：由 `columns`（Int，必填）控制——每 `columns` 个 cell 为一行。\n- **表头**：由 `header`（Bool，默认 `false`）控制——决定首行是否进入表头。\n\n完整签名：\n```not\ntable(columns: Int, header: Bool = false, align: String? = none, trailing body: Content) -> Content\n```\n\n**出处：** `functions.md`（notist 函数参考），节标题 **\"== table-cell / table\"**；签名另见该文件开头的函数清单（第 16 行）。\n";

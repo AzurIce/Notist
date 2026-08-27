@@ -1,1 +1,2 @@
+window.EVAL_ANSWERS=window.EVAL_ANSWERS||{};
 window.EVAL_ANSWERS["smoke3||T2-callout-signature__notist-skill"]="\n\n**确切答案：**\n\n`callout` 构造器的签名（`functions.not`，\"== callout\" 节）：\n\n```text\ncallout(kind: String = \"note\", title: Content? = none, trailing body: Content) -> Content\n```\n\n- **`kind` 的类型：`String`**（面向语义与导出的稳定分类，为空会产生诊断）\n- **默认值：`\"note\"`**\n\n出处：\n- `functions.not:126`（callout 节，权威签名）\n- `designs/plugin-system/core.not:53`（同一签名的设计文档佐证）\n";

@@ -1,1 +1,2 @@
+window.EVAL_ANSWERS=window.EVAL_ANSWERS||{};
 window.EVAL_ANSWERS["baseline||T1-locate-grammar-spec__notist-skill"]="\n\n**结论：**\n\n- **文件**：`grammar.not`（Notist Grammar，官方文档库中的语法权威参考）\n- **起始节**：`== 两种 lexical context`（grammar.not:7）——从这一节开始定义 Markup / Code 两种模式及递归 quotation 规则；紧接着的 `== Markup 最小骨架`（grammar.not:18，含子节 `` === `#` 嵌入的边界 ``，grammar.not:27）给出空白、段落分隔与 `#` 嵌入边界的精确规定，其后 `== Code 核心语法`（grammar.not:44）覆盖标识符、字面量、运算符等完整 Code 语法。\n\n即：读 `grammar.not`，从「两种 lexical context」一节开始即可覆盖该主题。\n";

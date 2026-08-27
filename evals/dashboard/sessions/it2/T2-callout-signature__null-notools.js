@@ -1,1 +1,2 @@
+window.EVAL_SESSIONS=window.EVAL_SESSIONS||{};
 window.EVAL_SESSIONS["it2||T2-callout-signature__null-notools"]=[{"role": "user", "items": [{"kind": "text", "text": "callout 这个构造器的 kind 参数是什么类型、默认值是多少？给出确切答案。"}], "usage": null}, {"role": "assistant", "items": [{"kind": "thinking", "text": ""}, {"kind": "text", "text": "\n\n无法给出确切答案。由于未指定具体的代码库或文档（如特定的 Markdown 解析器、UI 组件库等），且当前无可用工具进行检索，请提供具体的文件或节标题。"}], "usage": {"in": 125, "out": 1495}}];

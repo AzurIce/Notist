@@ -1,1 +1,2 @@
+window.EVAL_SESSIONS=window.EVAL_SESSIONS||{};
 window.EVAL_SESSIONS["it3||T1-locate-grammar-spec__null-notools"]=[{"role": "user", "items": [{"kind": "text", "text": "我想确认 notist 的完整语法规则（Markup 与 Code 两种模式、空白与分隔的精确规定）应该读哪篇文档。请告诉我文件名，以及具体从哪一节开始讲这个主题。只需回答结论。"}], "usage": null}, {"role": "assistant", "items": [{"kind": "thinking", "text": ""}, {"kind": "text", "text": "\n\n读 `notist-syntax.md`，从 “Syntax” 一节开始。"}], "usage": {"in": 155, "out": 7174}}];

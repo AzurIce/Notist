@@ -1,1 +1,2 @@
+window.EVAL_ANSWERS=window.EVAL_ANSWERS||{};
 window.EVAL_ANSWERS["p3run2||T3-pipeline-inventory__notist-skill"]="\n\ndesigns/pipeline 下的设计文档：\n\n- evaluate.not\n- parse.not\n- plugin-call-reduction.not\n- project.not\n- README.not\n- structure.not\n";

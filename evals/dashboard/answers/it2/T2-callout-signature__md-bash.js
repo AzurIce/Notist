@@ -1,1 +1,2 @@
+window.EVAL_ANSWERS=window.EVAL_ANSWERS||{};
 window.EVAL_ANSWERS["it2||T2-callout-signature__md-bash"]="\n\n**确切答案：** `kind` 参数类型是 **`String`**，默认值是 **`\"note\"`**。\n\n出处：\n- `functions.md` 的「== callout」节，签名：`callout(kind: String = \"note\", title: Content? = none, trailing body: Content) -> Content`\n- 同签名亦见 `cheatsheet.md`（第 32 行）与 `designs/plugin-system/core.md`（第 52 行）\n\n补充：文档说明 `kind` 是面向语义与导出的稳定分类，为空会产生诊断；示例中常用 `\"note\"`、`\"warning\"` 等取值。\n";

@@ -1,1 +1,2 @@
+window.EVAL_ANSWERS=window.EVAL_ANSWERS||{};
 window.EVAL_ANSWERS["p3run2||T4-module-annotation-syntax__notist-enforced"]="\n\n**语法**：文件开头（第一个有意义 token 之前）写 `@![...]`，标签用 `#tag` 条目：\n\n```not\n@![#design, #wip]\n= 标题\n```\n\n`!` 表示作用于所在模块（inner attribute 语义）；tag 可任意多个，属性列表中不写 id。\n\n**权威定义**：`designs/language/annotation-syntax.not`（模块 `vault::designs::language::annotation-syntax`），节「三种挂载位置」第 3 条「模块：`@![...]`」。grammar.not / code-grammar.not 的「声明」节均指向该处。\n";

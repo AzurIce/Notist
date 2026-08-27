@@ -1,1 +1,2 @@
+window.EVAL_ANSWERS=window.EVAL_ANSWERS||{};
 window.EVAL_ANSWERS["p2it4||T3-pipeline-inventory__md-bash"]="\n\ndesigns/pipeline 目录下的设计文档（共 6 个）：\n\n- `README.md` — Compilation Pipeline Overview（管线总入口）\n- `parse.md` — Parse Stage\n- `evaluate.md` — Evaluation and Reduction Stage\n- `structure.md` — Structure Stage\n- `project.md` — Project Stage\n- `plugin-call-reduction.md` — Plugin Call Reduction\n";

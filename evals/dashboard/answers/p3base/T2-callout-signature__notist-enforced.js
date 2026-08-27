@@ -1,1 +1,2 @@
+window.EVAL_ANSWERS=window.EVAL_ANSWERS||{};
 window.EVAL_ANSWERS["p3base||T2-callout-signature__notist-enforced"]="\n\n**答案：`kind` 的类型是 `String`，默认值是 `\"note\"`。**\n\n出处（两处签名一致）：\n- `functions.not` §callout（第 127 行）：`callout(kind: String = \"note\", title: Content? = none, trailing body: Content) -> Content`\n- `designs/plugin-system/core.not` §callout（第 53 行）：同上\n\n补充说明（文档原文）：`kind` 是面向语义与导出的稳定分类，为空会产生诊断。\n";
