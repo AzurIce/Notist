@@ -42,6 +42,21 @@ docs/designs/plugin-system/abi.not。
 - 结论：core module 稳定小幅省 CPU、消除组件层依赖；对构建耗时的大头
   （Cranelift 编译）两种形态相同，要消编译得配 AOT 产物缓存。
 
+## wasmi 后端（2026-08-28 追加）
+
+core module 路径改由 wasmi 1.1 解释执行（组件路径仍在 wasmtime）。全库实测
+（shader + mermaid 均为 core module，`check`/`build` 各 3 次）：
+
+- `check`：1.86 → **0.14 CPU s**（wasmtime module 路径的 ~13 倍速），
+  峰值 RSS 168–194MB → **45–46MB**；
+- `build`：3.64 → **0.24 CPU s**（~15 倍），峰值 RSS 220–270MB → **65MB**；
+- 正确性：`check` 摘要与 `build` 的 105 页 dist 树与全组件基线**逐字节一致**；
+- 解释执行的重派发开销在本库规模下不可见（build 总 CPU 与无插件基线
+  0.18s 仅差 0.06s）；
+- 已知差距：wasmi 路径未接 16MiB 内存帽（wasmi 无 ResourceLimiter，需另行
+  裁决限制机制）；fuel 数值口径与 wasmtime 不同（锚定输入 wasm 字节码），
+  统一 wasmi 后只有一种口径；SIMD 不支持，插件构建必须不开 `+simd128`。
+
 ## 复现
 
 ```sh

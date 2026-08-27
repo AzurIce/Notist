@@ -27,9 +27,7 @@ use notist_plugin_core as core_plugin;
 use serde::Deserialize;
 use tracing::instrument;
 use wasmtime::component::{Component as WasmComponent, Linker};
-use wasmtime::{
-    Config, Engine, Instance, Memory, Module as WasmModule, ResourceLimiter, Store, TypedFunc,
-};
+use wasmtime::{Config, Engine, ResourceLimiter, Store};
 use wasmtime_wasi::{ResourceTable, WasiCtx, WasiCtxBuilder, WasiCtxView, WasiView, p2};
 
 /// A plugin entry in `Notist.toml`.
@@ -767,21 +765,27 @@ impl ResourceLimiter for ModuleStoreState {
 }
 
 /// One instantiated core-module plugin.
+///
+/// Runs on wasmi: plugins are zero-import pure-compute modules, so the
+/// interpreter's cheap translation replaces Cranelift compilation, and the
+/// same runtime can later be compiled into a web-deployed engine. The
+/// component path above stays on wasmtime.
 struct ModuleRuntime {
-    store: Store<ModuleStoreState>,
-    memory: Memory,
-    alloc: TypedFunc<i32, i32>,
-    free: TypedFunc<(i32, i32), ()>,
-    init: TypedFunc<(), i64>,
-    evaluate: TypedFunc<(i32, i32), i64>,
+    store: wasmi::Store<ModuleStoreState>,
+    memory: wasmi::Memory,
+    alloc: wasmi::TypedFunc<i32, i32>,
+    free: wasmi::TypedFunc<(i32, i32), ()>,
+    init: wasmi::TypedFunc<(), i64>,
+    evaluate: wasmi::TypedFunc<(i32, i32), i64>,
 }
 
 impl ModuleRuntime {
     fn load(engine: &Engine, wasm_path: &Path, wasm_bytes: &[u8]) -> Result<Self, String> {
-        let module = WasmModule::new(engine, wasm_bytes)
+        let _ = engine; // wasmi keeps its own engine; kept for signature parity
+        let module = wasmi::Module::new(&wasmi_engine(), wasm_bytes)
             .map_err(|error| format!("invalid wasm module {}: {error}", wasm_path.display()))?;
-        let mut store = Store::new(
-            engine,
+        let mut store = wasmi::Store::new(
+            module.engine(),
             ModuleStoreState {
                 limits: WasmStoreState {
                     max_memory: WASM_MAX_MEMORY_BYTES,
@@ -789,24 +793,23 @@ impl ModuleRuntime {
                 },
             },
         );
-        store.limiter(|state| state);
-        let instance = Instance::new(&mut store, &module, &[])
+        let instance = wasmi::Instance::new(&mut store, &module, &[])
             .map_err(|error| format!("cannot instantiate module {}: {error}", wasm_path.display()))?;
         let export = |name: &str| format!("plugin `{}` module is missing export `{name}`", wasm_path.display());
         let memory = instance
-            .get_memory(&mut store, "memory")
+            .get_memory(&store, "memory")
             .ok_or_else(|| export("memory"))?;
         let alloc = instance
-            .get_typed_func::<i32, i32>(&mut store, "notist_alloc")
+            .get_typed_func::<i32, i32>(&store, "notist_alloc")
             .map_err(|_| export("notist_alloc"))?;
         let free = instance
-            .get_typed_func::<(i32, i32), ()>(&mut store, "notist_free")
+            .get_typed_func::<(i32, i32), ()>(&store, "notist_free")
             .map_err(|_| export("notist_free"))?;
         let init = instance
-            .get_typed_func::<(), i64>(&mut store, "notist_init")
+            .get_typed_func::<(), i64>(&store, "notist_init")
             .map_err(|_| export("notist_init"))?;
         let evaluate = instance
-            .get_typed_func::<(i32, i32), i64>(&mut store, "notist_evaluate")
+            .get_typed_func::<(i32, i32), i64>(&store, "notist_evaluate")
             .map_err(|_| export("notist_evaluate"))?;
         Ok(Self {
             store,
@@ -860,7 +863,7 @@ impl ModuleRuntime {
         let len = (len_raw & 0x7fff_ffff) as usize;
         let mut bytes = vec![0u8; len];
         self.memory
-            .read(&mut self.store, ptr as usize, &mut bytes)
+            .read(&self.store, ptr as usize, &mut bytes)
             .map_err(|error| format!("cannot read plugin response: {error}"))?;
         self.free
             .call(&mut self.store, (ptr as i32, len as i32))
@@ -873,7 +876,15 @@ impl ModuleRuntime {
     }
 }
 
-fn module_call_error(export: &str, error: wasmtime::Error) -> String {
+/// Shared wasmi engine for core-module plugins. Fuel metering is always on
+/// in wasmi; per-call budgets are set on the store.
+fn wasmi_engine() -> wasmi::Engine {
+    let mut config = wasmi::Config::default();
+    config.consume_fuel(true);
+    wasmi::Engine::new(&config)
+}
+
+fn module_call_error(export: &str, error: impl std::fmt::Display) -> String {
     if error.to_string().contains("fuel") {
         format!("wasm module `{export}` exceeded its fuel budget")
     } else {
