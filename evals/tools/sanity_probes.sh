@@ -55,4 +55,14 @@ items=json.load(sys.stdin)["result"]["items"]
 hits=[i for i in items if i.get("section_title") or i.get("section_id")]
 print(" with-section:",len(hits),"/",len(items))
 raise SystemExit(0 if hits else 1)' || fail=1
+echo "P7 exclude-scope drops archive and updates totals"
+ALL=$($B search "检索" "$C" --no-daemon --format json | python3 -c 'import json,sys;r=json.load(sys.stdin)["result"];print(r["coverage"]["matched_modules"])')
+EX=$($B search "检索" "$C" --no-daemon --format json --exclude-scope "vault::ai" | python3 -c '
+import json,sys
+r=json.load(sys.stdin)["result"]; cov=r["coverage"]
+mods={i["location"]["module"] for i in r["items"]}
+assert not any(m.startswith("vault::ai") for m in mods), "ai leaked under exclusion"
+print(cov["matched_modules"])')
+python3 -c "import sys;a,b=int('$ALL'),int('${EX:-0}');sys.exit(0 if 0<b<a else 1)" \
+  && echo " ok: $ALL -> $EX after excluding vault::ai" || { echo FAIL; exit 1; }
 exit $fail

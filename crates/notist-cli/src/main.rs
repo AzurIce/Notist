@@ -118,6 +118,12 @@ enum Command {
         /// Restrict matches to an exact ModulePath prefix; may be repeated.
         #[arg(long = "scope")]
         scopes: Vec<String>,
+        /// Drop matches under an exact ModulePath prefix; may be repeated.
+        #[arg(
+            long = "exclude-scope",
+            help = "Drop matches under an exact ModulePath prefix; may be repeated"
+        )]
+        exclude_scopes: Vec<String>,
         /// Search only selected authored/index fields; comma-separated or repeated.
         #[arg(long, value_enum, value_delimiter = ',')]
         fields: Vec<SearchFieldArg>,
@@ -1006,6 +1012,7 @@ fn run(cli: Cli) -> Result<ExitCode, Box<dyn std::error::Error>> {
             exact,
             fuzzy,
             regex,
+            exclude_scopes,
             scopes,
             fields,
             operator,
@@ -1048,6 +1055,7 @@ fn run(cli: Cli) -> Result<ExitCode, Box<dyn std::error::Error>> {
                     query: query.clone(),
                     mode,
                     scopes,
+                    exclude_scopes,
                     fields: if fields.is_empty() {
                         notist_service::SearchField::defaults()
                     } else {

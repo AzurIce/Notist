@@ -398,6 +398,11 @@ pub struct SearchQuery {
     pub mode: SearchMode,
     #[serde(default)]
     pub scopes: Vec<String>,
+    /// ModulePath prefixes to drop from results (Module-scope boundary, same
+    /// `::` rule as include scopes). Lets a caller prove absence inside a
+    /// subset in one query instead of paging around excluded archives.
+    #[serde(default)]
+    pub exclude_scopes: Vec<String>,
     #[serde(default = "SearchField::defaults")]
     pub fields: Vec<SearchField>,
     #[serde(default)]
@@ -1991,6 +1996,12 @@ impl SearchIndex {
                     0.0,
                 )),
             ));
+            for scope in &request.exclude_scopes {
+                let pattern = format!("{}(::.*)?", regex::escape(scope));
+                let query = RegexQuery::from_pattern(&pattern, self.schema.stored_module)
+                    .map_err(|error| ToolError::new("invalid_argument", error.to_string()))?;
+                groups.push((Occur::MustNot, Box::new(query)));
+            }
             Ok(())
         };
 
@@ -2057,6 +2068,9 @@ impl SearchIndex {
                 }
             }
             if !in_scope(&module_name, &request.scopes) {
+                continue;
+            }
+            if out_of_scope(&module_name, &request.exclude_scopes) {
                 continue;
             }
             let path =
@@ -3254,7 +3268,7 @@ fn add_empty_search_hint(page: &mut QueryPage<SearchHit>, query: &SearchQuery) {
     }
     let hint = match query.mode {
         SearchMode::Lexical | SearchMode::Fuzzy if query.operator == SearchOperator::All => {
-            "no matches; try fewer or simpler keywords, or set operator=any for broader recall"
+            "no matches anywhere in the current index snapshot - with complete coverage this              is authoritative evidence of absence; try fewer keywords, or operator=any to see              partial candidates, or --exclude-scope to rule out an archive layer first"
         }
         SearchMode::Lexical | SearchMode::Fuzzy => {
             "no matches; try fewer or simpler keywords, or use exact mode for a known literal phrase"
@@ -3517,11 +3531,21 @@ fn in_scope(module: &str, scopes: &[String]) -> bool {
         })
 }
 
+fn out_of_scope(module: &str, excludes: &[String]) -> bool {
+    excludes.iter().any(|scope| {
+        module == scope
+            || module
+                .strip_prefix(scope)
+                .is_some_and(|suffix| suffix.starts_with("::"))
+    })
+}
+
 fn search_fingerprint(query: &SearchQuery) -> String {
     serde_json::to_string(&(
         &query.query,
         query.mode,
         &query.scopes,
+        &query.exclude_scopes,
         &query.fields,
         query.operator,
         query.applied_group_by(),
@@ -3651,6 +3675,7 @@ mod tests {
             query: "needle".into(),
             mode: SearchMode::Lexical,
             scopes: Vec::new(),
+            exclude_scopes: Vec::new(),
             fields: SearchField::defaults(),
             operator: SearchOperator::All,
             group_by: None,
@@ -3781,6 +3806,7 @@ mod tests {
                 query: "too many words".into(),
                 mode: SearchMode::Lexical,
                 scopes: Vec::new(),
+                exclude_scopes: Vec::new(),
                 fields: SearchField::defaults(),
                 operator: SearchOperator::All,
                 group_by: None,
