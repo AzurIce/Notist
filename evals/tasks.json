@@ -236,6 +236,10 @@
           }
         ]
       }
-    ]
+    ],
+    "budget_condition_factors": {
+      "notist-enforced": 2.0,
+      "_comment": "enforced agents must do everything through notist primitives, so absence-proof style tasks legitimately cost more; effective budget = budget_tokens * factor(condition, default 1.0)"
+    }
   }
 }

@@ -10,7 +10,8 @@ import sys
 from pathlib import Path
 
 
-def load(run_dir: Path, budgets: dict | None = None) -> dict:
+def load(run_dir: Path, budgets: dict | None = None,
+         factors: dict | None = None) -> dict:
     out = {}
     grades = json.loads((run_dir / "output" / "grades.json").read_text())
     for d in sorted((run_dir / "output").iterdir()):
@@ -21,9 +22,11 @@ def load(run_dir: Path, budgets: dict | None = None) -> dict:
         g = grades["runs"].get(d.name, {})
         toks = int(meta.get("tokens_total") or 0)
         violation = (d / "AUDIT_VIOLATION").exists()
-        budget = (budgets or {}).get(meta["task"])
-        over_budget = bool(budget and toks > budget)
         cond, task = meta["condition"], meta["task"]
+        base_budget = (budgets or {}).get(task)
+        factor = (factors or {}).get(cond, 1.0)
+        budget = base_budget * factor if base_budget else None
+        over_budget = bool(budget and toks > budget)
         passed = g.get("passed", False) and not violation and not over_budget
         out.setdefault(cond, {})[task] = {
             "passed": passed,
@@ -41,10 +44,12 @@ TASKS_FILE = Path(__file__).resolve().parent.parent / "tasks.json"
 
 
 def main() -> None:
-    tasks_spec = json.loads(TASKS_FILE.read_text())["pilot"]["tasks"]
+    spec = json.loads(TASKS_FILE.read_text())["pilot"]
+    tasks_spec = spec["tasks"]
     budgets = {t["id"]: t.get("budget_tokens") for t in tasks_spec}
-    base = load(Path(sys.argv[1]), budgets)
-    it = load(Path(sys.argv[2]), budgets)
+    factors = spec.get("budget_condition_factors", {})
+    base = load(Path(sys.argv[1]), budgets, factors)
+    it = load(Path(sys.argv[2]), budgets, factors)
     conds = sorted({c for side in (base, it) for c in side})
     tasks = sorted({t for side in (base, it) for c in side.values() for t in c})
     print(f"{'cond/task':38s} {'base':>5s} -> {'iter':>5s}   dur(b->i,s)   tok(b->i)")

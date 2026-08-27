@@ -50,6 +50,9 @@ NOTIST_HINT = "\n环境提示：PATH 上有一个名为 notist 的本地 CLI 可
 ENFORCED_RULE = (
     "\n硬性规则：对本目录内文档的任何读取、检索、枚举都必须通过 notist CLI 完成；"
     "禁止使用 grep/find/cat/sed/awk/head/tail/less 等命令触碰文档文件。"
+    "\n缺席判定协议：先做 1–2 次 notist search（可用 --exclude-scope vault::ai 排除历史调查层）；"
+    "coverage 里 matched_modules 与 scopes_breakdown（by scope 行）就是权威结论——"
+    "官方规范层的匹配为 0 即可下“不存在/未支持”结论，不要翻页穷举，也不要打开 ai/ 下的调查文档去验证。"
 )
 FORBIDDEN_BASH = re.compile(
     r"\b(grep|rg|find|cat|sed|awk|head|tail|less|more|tac|nl|strings)\b")
