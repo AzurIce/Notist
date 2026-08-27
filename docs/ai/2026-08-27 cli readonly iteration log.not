@@ -145,3 +145,16 @@ enforced 系统提示前置缺席判定协议：1–2 次带 --exclude-scope vau
 **verdict：记分卡 17→16（n=1，抖动带内持平）。** 本轮靶点的真实读数：enforced/TC1 成本 266k→144k（较上轮恶化值减半，但仍高于 run2 的 84k，且距 52k 分档线尚远）；enforced/TB1 99k→30k（−70%，协议前置的直接受益，格转胜）；skill/TD1 稳定通过、未再挂起。4 处退化散布在 CLI 无关或微小格子（skill/T3 一题 3k→47k 的纯粹爆发），证明单元格噪声带约 ±50%、偶发爆发，单格翻转不构成证据。
 
 **抖动带量化后的格局**：分档口径下 p3run2=18、p3run3=17、p3run4=16，三次落在 17±1.5 的噪声带内。结论：现有 affordance 组合的得分已到平台期，要再上台阶必须是 CLI 侧新原语而非提示词工程。排队靶点：①输出层的一等"缺席结论"结构（complete+排除后零匹配 → 显式 verdict 字段，替代让模型自行解读 coverage）；②T-D 类任务在 md 条件下直接跳过重试（本轮已落地一半）；③n≥3 重锚仍欠。
+
+
+== Phase 3 迭代 5（2026-08-28）：一等缺席判决字段
+
+改动：coverage 新增 `conclusion` 字段——lexical 覆盖完整时输出 `absent-in-snapshot`（0 匹配）或 `present`，把存在性判断从"让模型自行解读 coverage"升级为可直接引用的结构化结论；文本模式在缺席极性打印醒目 `verdict: ABSENT from the current vault snapshot` 行。同时细化超时重试为"仅零记录基建停摆重试"，md/TD1 单窗即止（省 900s）。
+
+**verdict：显著改善（16→20/36，+25%；总 token −23%）。** 六格转胜、两格转败；其中 skill/T3（上轮 3k→47k 的爆发格）回归 3.2k、skill/TD1 稳定通过，证实上轮多处退化确为噪声回归本位。方向为正但幅度受均值回归放大，定论待 n≥3。
+
+**本轮最重要的发现：enforced/TC1 的方差本质。** 四轮序列 84k→266k→144k→280k（均值 ~190k、极差 3.3×），conclusion 字段也未压平它——该格在 enforced 约束下的成本被模型级方差支配，任何 affordance 的单次读数都不可判读。它必须作为 n≥3 重锚的首要观察格；若均值确在 150k+ 且远超 52k 分档线，则结论应是"此任务形态在强制条件下需要专用 affordance（如 `notist verify-absent` 式原语）或调低该格预算权重"，而不是继续堆提示词。
+
+== Phase 3 五轮累计
+
+分档口径五轮序列：p3run2=18、p3run3=17、p3run4=16、p3run5=20（p3base 未分档不可比）。确定性落地累计：bm25-v4 召回、节展开、coverage 计数+breakdown+conclusion、exclude-scope、§/span/摘录投影、severity/路径/引号卫生、runner 重试与计量。剩余欠账：n≥3 正式重锚、TD1 挂起机理（上轮已部分闭环）、SKILL 与 conclusion 字段同步（本轮补）。
