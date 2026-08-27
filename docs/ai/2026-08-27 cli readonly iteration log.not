@@ -58,3 +58,24 @@ baseline 与 it1 同协议对比暴露：**md-bash / null 组完全不受 CLI �
 2. 文本模式中 ModulePath 含空格时加引号，使其成为可整体复制引用的 token。
 
 验收：sanity probe 断言标准查询 JSON 中不再出现宿主路径前缀；modules/read 的文本行对含空格 id 加引号；单测全绿；一轮快速确认评测无 pass 回退。
+
+**verdict：无显著改进（attempt 3/5）。** 工具格 18/18 维持；total 409k→517k 属噪声带。两处"退化"均在 CLI 无关格：null/T2 连续三翻（此后永久隔离该格），md/T6 撞 600s 超时上限。微层确定性产出已验证（无路径泄漏、带空格 id 带引号，实测于主仓库 docs）。
+
+== 协议第 2 阶段（p2）
+
+三轮教训固化为新协议：null 组退出判定；超时提到 900s；T6 措辞收紧为要点式并修正判分（旧判分仍要求提及"停止规则"，与新措辞矛盾造成 p2base 初跑三连误判，修正后重判）；此后对比一律用工具组 18 格对位网格，p2base 与 p2itN 必须同任务集、同判分、n=1 并承认噪声底。
+
+p2base（iteration 3 后二进制的锚）：18/18 全过。
+
+== 迭代 4：outline 字节跨度 + references 摘录行
+
+改动：outline 文本行附 `span=start..end` 节字节区间（引用定位免二次 read）；references 文本每行下输出摘录内容。
+
+verdict：无显著改进（attempt 4/5）。对位 18→18 全平，tokens 302k→318k 持平，零翻转。微层价值确定成立（实测 `span=483..1707` 等）。
+
+== 迭代 5：search 文本行 §节归属
+
+改动：命中行追加最近 heading 标题（`§…`）并把 module 引号化，与 JSON section_title 对齐——首跳即得引用句柄（实测 `§Snapshot Stamp 与可恢复 Cursor`）。
+
+verdict：待 p2it5 对位后填写。若持平即为 attempt 5/5，按终止规则收口。
+
