@@ -1,7 +1,7 @@
 @![implementation = "aligned"]
 = Plugin ABI: Shared Types and WIT Boundary
 
-本文定义宿主与 Wasm guest 之间的共享类型与 component ABI。call 森林在 reduce 阶段的求值语义见 #<vault::designs::pipeline::plugin-call-reduction>；package 如何声明 Wasm module 见 #<vault::designs::plugin-system::package>。
+本文定义宿主与 Wasm guest 之间的共享类型与模块 ABI 的载荷层；调用约定（裸内存 ABI、句柄与所有权）见 #<vault::designs::plugin-system::core-wasm>。call 森林在 reduce 阶段的求值语义见 #<vault::designs::pipeline::plugin-call-reduction>；package 如何声明 Wasm module 见 #<vault::designs::plugin-system::package>。
 
 == 共享类型
 
@@ -13,46 +13,6 @@
 - 参数默认值直接使用共享 `DefaultValue`，不经过 JSON 字符串；
 - `range` 随共享 `Node` 传输，使插件透传的子树保留诊断位置；它只是可被 guest 伪造的定位元数据，不参与 call identity、规约或权限判定；
 - **响应森林继续参与 fixpoint**：handler 返回 call 森林后，宿主统一把它重新送入不动点；其中指向已注册名字的 call 会再次派发。handler 返回与输入完全相同的 call 表示 identity；持续产生新的自返 call 才是作者错误，由 depth/fuel 兜底并给出诊断；纯数据元素不注册运行时 handler。
-
-== Wasm backend
-
-Wasm plugin 是 Rust crate 编译出的 wasip2 组件。作者面对宿主 SDK；native plugin 面对等价的 native registrar：
-
-```rust
-struct Shader;
-
-impl ElementFn for Shader {
-    fn signature() -> Signature { /* name, params, trailing body */ }
-    fn reduce(ctx: &mut EvalCtx, args: Args, body: Body) -> Result<Stream> { ... }
-}
-
-struct Plugin;
-impl notist_sdk::Plugin for Plugin {
-    fn init(reg: &mut Registrar) {
-        reg.element::<Shader>();
-    }
-}
-
-notist_sdk::export_plugin!(Plugin);
-```
-
-这与 Unreal 模块的 StartupModule 同构：装载时执行一次注册，宿主之后按名字查询与调度。对作者而言组件边界等同一个 dylib；沙箱机制（fuel、内存帽）是宿主既有设施，不进入作者视野。
-
-== WIT component ABI
-
-当前 WIT 只有最小 `plugin` world：
-
-```wit
-package notist:plugin;
-
-world plugin {
-    export init: func() -> result<list<u8>, string>;
-    export evaluate: func(request: list<u8>) -> result<list<u8>, string>;
-}
-```
-
-- WIT 只描述 component 调用 ABI；唯一运行面是 `init` 与 `evaluate` 两个导出，不包含共享声明的 interface，也不提供宿主语义回调。
-- `init` 一次性返回声明 payload 而不是逐条回调注册：注册内容是编译期已知的纯数据，宿主先完整解码、整体校验再入 registry，不存在部分注册状态。
 
 == init 注册语义
 
@@ -68,7 +28,7 @@ world plugin {
 
 `evaluate` 是单个 dispatcher；`init` 声明的每个元素都对应它的一个可调用名字。
 
-插件只有一种语义实现模式：`evaluate` 返回 call 森林，宿主把整个返回森林统一送回规约不动点。插件通过在森林中写 `core::details` 或其它 package 的名字表达组合，不在组件调用期间嵌套执行宿主规约。无限递归由统一 depth/call budget 与组件 fuel 预算兜底（持续自返属于作者 bug）。
+插件只有一种语义实现模式：`evaluate` 返回 call 森林，宿主把整个返回森林统一送回规约不动点。插件通过在森林中写 `core::details` 或其它 package 的名字表达组合，不在模块调用期间嵌套执行宿主规约。无限递归由统一 depth/call budget 与模块 fuel 预算兜底（持续自返属于作者 bug）。
 
 === 插件不能做什么
 
@@ -79,15 +39,15 @@ world plugin {
 == 当前实现
 
 - WIT 已由 wasmtime bindgen 编译校验；单一 `plugin` world 的 bytes `export init` 与 `export evaluate` 均已接入 loader。
-- `model::wire::{encode_declarations,decode_declarations}` 与 `{encode_forest,decode_forest}` 复用同一严格 version byte + postcard frame；组件返回的 call 森林由 node engine 统一继续规约。
-- 插件以 `notist-plugin-sdk` 编写：`Plugin::init(reg)` 注册元素，`ElementFn::reduce` 实现规约，`export_plugin!` 生成组件导出。
-- 所有可执行 Wasm package 都实例化为上述 component；宿主不保留 core Wasm dispatcher 或旧载荷转换分支。
+- `model::wire::{encode_declarations,decode_declarations}` 与 `{encode_forest,decode_forest}` 复用同一严格 version byte + postcard frame；模块返回的 call 森林由 node engine 统一继续规约。
+- 插件以 `notist-plugin-sdk` 编写：`Plugin::init(reg)` 注册元素，`ElementFn::reduce` 实现规约，`export_plugin!` 生成模块导出。
+- 所有可执行 Wasm package 都实例化为上述 module；宿主不保留 core Wasm dispatcher 或旧载荷转换分支。
 - JSON 只用于读取人工编辑的 `plugin.json` 信封；semantic declarations、defaults、`Node` / `Value`、request / response 全部使用共享类型的 version byte + postcard frame。
 - Component response 的大小与节点上限见 #<vault::designs::plugin-system::safety>。
 
 == 已裁定 / 待定
 
-- 已裁定：WIT 是最小 component 调用 ABI；`init` / `evaluate` payload 均为共享 `notist-model` 类型的 wire version byte + postcard frame。
-- 已裁定：插件形态是 Rust crate → wasip2 组件；作者通过 SDK trait 与 `init` 注册贡献。
+- 已裁定：模块 ABI 的载荷层是共享 `notist-model` 类型的 wire version byte + postcard frame；调用约定见 #<vault::designs::plugin-system::core-wasm>。
+- 已裁定：插件形态是 Rust crate → 零导入 core wasm module；作者通过 SDK trait 与 `init` 注册贡献。
 - 已裁定：schema 真相来源是 guest 的 `init` 注册；manifest 只保留信封字段，不再携带 semantic 接口。
-- 已裁定：component ABI 只有 `init` 与 `evaluate` 两个入口；插件返回 call 森林后由宿主统一执行 fixpoint。
+- 已裁定：module ABI 只有 `init` 与 `evaluate` 两个入口；插件返回 call 森林后由宿主统一执行 fixpoint。

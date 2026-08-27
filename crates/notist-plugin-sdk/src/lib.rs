@@ -1,8 +1,8 @@
 //! Notist plugin SDK.
 //!
-//! 插件是 Rust crate，编译为 wasip2 组件。作者实现 [`Plugin`] 与
+//! 插件是 Rust crate，编译为零导入 core wasm module。作者实现 [`Plugin`] 与
 //! [`ElementFn`]，在 `Plugin::init` 里把元素注册进 [`Registrar`]，再用
-//! [`export_plugin!`](crate::export_plugin) 生成组件导出。
+//! [`export_plugin!`](crate::export_plugin) 生成原始内存 ABI 导出。
 //!
 //! 数据表示与宿主共享：作者直接操作 `notist_model::Node` / `NodeValue`，
 //! 插件返回的 Node forest 由宿主统一继续规约。
@@ -325,65 +325,15 @@ pub unsafe fn core_evaluate(package: &str, ptr: u32, len: u32) -> i64 {
 // a local copy of the interface file.
 // ---------------------------------------------------------------------------
 
-/// Generates the wasip2 component exports for a [`Plugin`] implementation.
-///
-/// `$package` must equal the manifest `package` field so returned leaf names
-/// qualify correctly. Requires `wit-bindgen` as a dependency of the crate.
-#[macro_export]
-macro_rules! export_plugin {
-    ($package:expr, $plugin:ty) => {
-        #[allow(non_camel_case_types)]
-        type __NotistPlugin = $plugin;
-
-        #[allow(dead_code)]
-        mod __notist_plugin {
-            use super::__NotistPlugin as PluginImpl;
-
-            ::wit_bindgen::generate!({
-                world: "plugin",
-                inline: "
-package notist:plugin;
-
-world plugin {
-    export init: func() -> result<list<u8>, string>;
-    export evaluate: func(request: list<u8>) -> result<list<u8>, string>;
-}
-",
-            });
-
-            struct NotistGuest;
-
-            impl Guest for NotistGuest {
-                fn init() -> Result<Vec<u8>, String> {
-                    let state = $crate::build_guest_state::<PluginImpl>();
-                    let declarations = $crate::wire::encode_declarations(&state.declarations)?;
-                    $crate::GUEST_STATE
-                        .set(state)
-                        .map_err(|_| "plugin already initialized".to_owned())?;
-                    Ok(declarations)
-                }
-
-                fn evaluate(request: Vec<u8>) -> Result<Vec<u8>, String> {
-                    let state = $crate::GUEST_STATE.get().ok_or("plugin not initialized")?;
-                    $crate::evaluate_dispatch(state, $package, request)
-                }
-            }
-
-            export!(NotistGuest);
-        }
-    };
-}
-
 /// Generates freestanding core-wasm exports for a [`Plugin`] implementation.
 ///
-/// This is the zero-import counterpart of [`export_plugin!`](crate::export_plugin):
-/// the crate compiles to a plain core wasm module (e.g. `--target
-/// wasm32-unknown-unknown`) with no WASI and no component layer, so the same
-/// `.wasm` artifact instantiates under wasmtime's `Module` API natively and
-/// under the browser's own WebAssembly engine. See the module docs for the
-/// raw memory ABI.
+/// This is the only plugin export form: the crate compiles to a plain
+/// zero-import core wasm module (e.g. `--target wasm32-unknown-unknown`) with
+/// no WASI and no component layer, so the same `.wasm` artifact instantiates
+/// under wasmi natively and under the browser's own WebAssembly engine. See
+/// the module docs for the raw memory ABI.
 #[macro_export]
-macro_rules! export_plugin_core {
+macro_rules! export_plugin {
     ($package:expr, $plugin:ty) => {
         #[allow(non_camel_case_types)]
         type __NotistPluginCore = $plugin;

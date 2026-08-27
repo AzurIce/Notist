@@ -58,10 +58,4 @@ impl notist_plugin_sdk::Plugin for Plugin {
     }
 }
 
-// Default: wasip2 component for the native wasmtime component host.
-// `core-abi`: zero-import core wasm module for the wasmtime `Module` host
-// and the browser's own WebAssembly engine.
-#[cfg(not(feature = "core-abi"))]
 notist_plugin_sdk::export_plugin!("shader", Plugin);
-#[cfg(feature = "core-abi")]
-notist_plugin_sdk::export_plugin_core!("shader", Plugin);

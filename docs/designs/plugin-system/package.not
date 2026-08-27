@@ -1,7 +1,7 @@
 @![implementation = "partial"]
 = Plugin Package and Lifecycle
 
-本文定义插件 package 的形态、manifest、namespace、core package 以及装载生命周期。插件求值语义见 #<vault::designs::pipeline::plugin-call-reduction>；共享类型与 WIT 边界见 #<vault::designs::plugin-system::abi>。
+本文定义插件 package 的形态、manifest、namespace、core package 以及装载生命周期。插件求值语义见 #<vault::designs::pipeline::plugin-call-reduction>；共享类型与模块 ABI 见 #<vault::designs::plugin-system::abi>。
 
 == Package 模型
 
@@ -19,13 +19,13 @@ PluginPackage {
 ```
 
 - package identity、namespace 和 contribution 是语义契约；`backend` 只描述实现与装载方式。
-- `Native` package 由宿主直接加载 Rust registration；`Wasm` package 通过单一 WIT `plugin` world 提供 `init` 与 `evaluate`。
+- `Native` package 由宿主直接加载 Rust registration；`Wasm` package 提供零导入 core wasm module，导出 `init` 与 `evaluate` 的原始内存 ABI。
 - `core` 是 package id 为 `core` 的标准 package，默认 App 预装它，但不因此成为 eval engine 的特权对象。
 - `PackageId` 成为 `ElementName` 的 namespace：插件节点写作 `shader::canvas`。
 
 == Manifest
 
-插件包是目录或 zip，根下是 `plugin.json`。manifest 只是信封：身份、Wasm 装载参数与投影资产；semantic 接口由组件的 `init` 注册提供（#<vault::designs::plugin-system::abi>），不写入 manifest：
+插件包是目录或 zip，根下是 `plugin.json`。manifest 只是信封：身份、Wasm 装载参数与投影资产；semantic 接口由模块的 `init` 注册提供（#<vault::designs::plugin-system::abi>），不写入 manifest：
 
 ```json
 {
@@ -53,7 +53,7 @@ PluginPackage {
 }
 ```
 
-- 出现 `wasm.module` 就表示该 artifact 是 WIT `plugin` component；宿主统一实例化它并调用 `init` / `evaluate`，信封没有格式分流 flag。
+- 出现 `wasm.module` 就表示该 artifact 是零导入 core wasm module；宿主以 wasmi 实例化并调用 `init` / `evaluate`，信封没有格式分流 flag。
 - 顶层 `render` 描述投影面；投影贡献是静态文件引用，保留在信封里，细节见 #<vault::designs::plugin-system::projection>。
 - JSON 只承担人工编辑的 `plugin.json` 信封；semantic declarations、defaults、节点与调用载荷不进入 manifest，统一由 version byte + postcard 承载。
 
@@ -120,9 +120,9 @@ native package                  Wasm package
 
 == 已裁定 / 待定
 
-- 已裁定：插件是带 package identity 的语义 contribution；Rust native crate 与 wasip2 component 都是可用 backend，Wasm package 可以附带信封 manifest 与 assets。
+- 已裁定：插件是带 package identity 的语义 contribution；Rust native crate 与 core wasm module 都是可用 backend，Wasm package 可以附带信封 manifest 与 assets。
 - 已裁定：core 是默认 App 预装的标准 package；它与其它 native/Wasm package 共享 registry、schema 和 namespace policy，不是 eval engine 的特权模块。
 - 已裁定：插件加载失败是 host boundary diagnostic。
-- 已裁定：semantic 接口由组件 `init` 注册提供，manifest 只保留信封字段；schema 真相来源唯一，不存在声明与实现漂移面。
+- 已裁定：semantic 接口由模块 `init` 注册提供，manifest 只保留信封字段；schema 真相来源唯一，不存在声明与实现漂移面。
 - 已裁定：semantic contribution 只有一条原子注册路径；native 走 register，Wasm 走实例化 + init，不再维护不执行 Wasm 的 schema-only 快照路径。
 - 待定：registry package 的解析、校验与缓存协议。

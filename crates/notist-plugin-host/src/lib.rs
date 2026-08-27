@@ -26,9 +26,6 @@ use notist_model::{
 use notist_plugin_core as core_plugin;
 use serde::Deserialize;
 use tracing::instrument;
-use wasmtime::component::{Component as WasmComponent, Linker};
-use wasmtime::{Config, Engine, ResourceLimiter, Store};
-use wasmtime_wasi::{ResourceTable, WasiCtx, WasiCtxBuilder, WasiCtxView, WasiView, p2};
 
 /// A plugin entry in `Notist.toml`.
 #[derive(Clone, Debug, Default, Deserialize)]
@@ -455,24 +452,21 @@ pub fn load_package(package_dir: &Path) -> Result<LoadedPlugin, String> {
         "manifest read"
     );
     let wasm = manifest.wasm.as_ref().ok_or_else(|| {
-        format!(
-            "plugin `{}` declares no wasm module; packages must ship a self-describing component",
-            manifest.package
-        )
+        format!("plugin `{}` declares no wasm module", manifest.package)
     })?;
     let wasm_path = package_dir.join(&wasm.module);
     let wasm_bytes = std::fs::read(&wasm_path)
         .map_err(|error| format!("cannot read {}: {error}", wasm_path.display()))?;
     let compile_started = std::time::Instant::now();
     let (runtime, declarations) =
-        load_component_runtime(&manifest.package, &wasm_path, &wasm_bytes)?;
+        load_module_runtime(&manifest.package, &wasm_path, &wasm_bytes)?;
     tracing::debug!(
         target: "notist_plugin_host",
         package = %manifest.package,
         elapsed_us = compile_started.elapsed().as_micros() as u64,
         declarations = declarations.len(),
         bytes = wasm_bytes.len(),
-        "component compiled, instantiated, and guest init completed"
+        "module translated, instantiated, and guest init completed"
     );
     let runtime = Arc::new(Mutex::new(runtime));
 
@@ -543,26 +537,6 @@ const WASM_MAX_TABLE_ELEMENTS: usize = 64 * 1024;
 struct WasmStoreState {
     max_memory: usize,
     max_table_elements: usize,
-}
-
-impl ResourceLimiter for WasmStoreState {
-    fn memory_growing(
-        &mut self,
-        _current: usize,
-        desired: usize,
-        _maximum: Option<usize>,
-    ) -> wasmtime::Result<bool> {
-        Ok(desired <= self.max_memory)
-    }
-
-    fn table_growing(
-        &mut self,
-        _current: usize,
-        desired: usize,
-        _maximum: Option<usize>,
-    ) -> wasmtime::Result<bool> {
-        Ok(desired <= self.max_table_elements)
-    }
 }
 
 /// Returns the qualified call-site and element name for a manifest element.
@@ -685,91 +659,17 @@ fn parse_type(ty: &str) -> Result<Type, String> {
     }
 }
 
-struct ComponentRuntime {
-    store: Store<ComponentStoreState>,
-    bindings: wit_bindings_semantic::Plugin,
-}
-
-/// Either wasm backend a package can ship, chosen by binary layout.
-enum WasmRuntime {
-    /// A wasip2 component, instantiated through the canonical ABI.
-    Component(ComponentRuntime),
-    /// A zero-import core wasm module speaking the SDK's raw memory ABI
-    /// (`notist_init` / `notist_evaluate` / `notist_alloc` / `notist_free`).
-    CoreModule(ModuleRuntime),
-}
-
-impl WasmRuntime {
-    fn call_evaluate(&mut self, request: &[u8]) -> Result<Vec<u8>, String> {
-        match self {
-            WasmRuntime::Component(runtime) => {
-                let ComponentRuntime { store, bindings } = runtime;
-                bindings
-                    .call_evaluate(store, request)
-                    .map_err(|error| error.to_string())?
-                    .map_err(|message| message)
-            }
-            WasmRuntime::CoreModule(runtime) => runtime.call_evaluate(request),
-        }
-    }
-
-    fn set_fuel(&mut self, fuel: u64) -> Result<(), String> {
-        match self {
-            WasmRuntime::Component(runtime) => {
-                runtime
-                    .store
-                    .set_fuel(fuel)
-                    .map_err(|error| error.to_string())
-            }
-            WasmRuntime::CoreModule(runtime) => {
-                runtime
-                    .store
-                    .set_fuel(fuel)
-                    .map_err(|error| error.to_string())
-            }
-        }
-    }
-
-    fn fuel_remaining(&self) -> u64 {
-        match self {
-            WasmRuntime::Component(runtime) => runtime.store.get_fuel().unwrap_or(u64::MAX),
-            WasmRuntime::CoreModule(runtime) => runtime.store.get_fuel().unwrap_or(u64::MAX),
-        }
-    }
-}
-
 /// Store state for a core-module plugin: resource limits only — the module
 /// has no imports, so there is no WASI context or resource table.
 struct ModuleStoreState {
     limits: WasmStoreState,
 }
 
-impl ResourceLimiter for ModuleStoreState {
-    fn memory_growing(
-        &mut self,
-        _current: usize,
-        desired: usize,
-        _maximum: Option<usize>,
-    ) -> wasmtime::Result<bool> {
-        Ok(desired <= self.limits.max_memory)
-    }
-
-    fn table_growing(
-        &mut self,
-        _current: usize,
-        desired: usize,
-        _maximum: Option<usize>,
-    ) -> wasmtime::Result<bool> {
-        Ok(desired <= self.limits.max_table_elements)
-    }
-}
-
 /// One instantiated core-module plugin.
 ///
 /// Runs on wasmi: plugins are zero-import pure-compute modules, so the
-/// interpreter's cheap translation replaces Cranelift compilation, and the
-/// same runtime can later be compiled into a web-deployed engine. The
-/// component path above stays on wasmtime.
+/// interpreter's cheap translation replaces compilation entirely, and the
+/// same runtime can later be compiled into a web-deployed engine.
 struct ModuleRuntime {
     store: wasmi::Store<ModuleStoreState>,
     memory: wasmi::Memory,
@@ -780,8 +680,7 @@ struct ModuleRuntime {
 }
 
 impl ModuleRuntime {
-    fn load(engine: &Engine, wasm_path: &Path, wasm_bytes: &[u8]) -> Result<Self, String> {
-        let _ = engine; // wasmi keeps its own engine; kept for signature parity
+    fn load(wasm_path: &Path, wasm_bytes: &[u8]) -> Result<Self, String> {
         let module = wasmi::Module::new(&wasmi_engine(), wasm_bytes)
             .map_err(|error| format!("invalid wasm module {}: {error}", wasm_path.display()))?;
         let mut store = wasmi::Store::new(
@@ -822,10 +721,18 @@ impl ModuleRuntime {
     }
 
     /// Calls guest `init` and returns the encoded declaration payload.
-    fn call_init(&mut self) -> Result<Vec<u8>, String> {
+    fn set_fuel(&mut self) -> Result<(), String> {
         self.store
             .set_fuel(WASM_FUEL_PER_CALL)
-            .map_err(|error| format!("cannot set module init fuel: {error}"))?;
+            .map_err(|error| format!("cannot reset module fuel: {error}"))
+    }
+
+    fn fuel_remaining(&self) -> u64 {
+        self.store.get_fuel().unwrap_or(u64::MAX)
+    }
+
+    fn call_init(&mut self) -> Result<Vec<u8>, String> {
+        self.set_fuel()?;
         let handle = self
             .init
             .call(&mut self.store, ())
@@ -834,9 +741,7 @@ impl ModuleRuntime {
     }
 
     fn call_evaluate(&mut self, request: &[u8]) -> Result<Vec<u8>, String> {
-        self.store
-            .set_fuel(WASM_FUEL_PER_CALL)
-            .map_err(|error| format!("cannot reset module fuel: {error}"))?;
+        self.set_fuel()?;
         let len = i32::try_from(request.len())
             .map_err(|_| "plugin request exceeds i32 range".to_string())?;
         let ptr = self
@@ -865,6 +770,12 @@ impl ModuleRuntime {
         self.memory
             .read(&self.store, ptr as usize, &mut bytes)
             .map_err(|error| format!("cannot read plugin response: {error}"))?;
+        if self.memory.data(&self.store).len() > WASM_MAX_MEMORY_BYTES {
+            return Err(format!(
+                "plugin exceeded its {} MiB linear-memory budget",
+                WASM_MAX_MEMORY_BYTES / (1024 * 1024)
+            ));
+        }
         self.free
             .call(&mut self.store, (ptr as i32, len as i32))
             .map_err(|error| format!("cannot free plugin buffer: {error}"))?;
@@ -892,101 +803,6 @@ fn module_call_error(export: &str, error: impl std::fmt::Display) -> String {
     }
 }
 
-/// Detects which wasm backend `bytes` carries from the binary version:
-/// core modules are version 1, components version 13 (`0x0d`).
-fn wasm_binary_kind(bytes: &[u8], wasm_path: &Path) -> Result<bool, String> {
-    match bytes.get(4) {
-        Some(&1) => Ok(false),
-        Some(&0x0d) => Ok(true),
-        _ => Err(format!(
-            "{} is neither a core wasm module nor a wasm component",
-            wasm_path.display()
-        )),
-    }
-}
-
-/// Store state for a plain `plugin` world component: resource limits plus the
-/// empty WASI context required by SDK-generated guests.
-struct ComponentStoreState {
-    limits: WasmStoreState,
-    table: ResourceTable,
-    wasi: WasiCtx,
-}
-
-impl WasiView for ComponentStoreState {
-    fn ctx(&mut self) -> WasiCtxView<'_> {
-        WasiCtxView {
-            ctx: &mut self.wasi,
-            table: &mut self.table,
-        }
-    }
-}
-
-impl ResourceLimiter for ComponentStoreState {
-    fn memory_growing(
-        &mut self,
-        current: usize,
-        desired: usize,
-        maximum: Option<usize>,
-    ) -> wasmtime::Result<bool> {
-        self.limits.memory_growing(current, desired, maximum)
-    }
-
-    fn table_growing(
-        &mut self,
-        current: usize,
-        desired: usize,
-        maximum: Option<usize>,
-    ) -> wasmtime::Result<bool> {
-        self.limits.table_growing(current, desired, maximum)
-    }
-}
-
-/// Calls guest `init` exactly once after instantiation, inside the same fuel
-/// budget as `evaluate`, and decodes its shared declaration payload.
-fn run_component_init(
-    package: &str,
-    wasm_path: &Path,
-    bindings: &wit_bindings_semantic::Plugin,
-    store: &mut Store<ComponentStoreState>,
-) -> Result<Vec<PluginElementDecl>, String> {
-    store.set_fuel(WASM_FUEL_PER_CALL).map_err(|error| {
-        format!(
-            "cannot set component init fuel for {}: {error}",
-            wasm_path.display()
-        )
-    })?;
-    let payload = bindings
-        .call_init(&mut *store)
-        .map_err(|error| component_init_error(package, wasm_path, error))?
-        .map_err(|message| {
-            format!("plugin `{package}`: component init returned error: {message}")
-        })?;
-    tracing::debug!(
-        target: "notist_plugin_host",
-        package,
-        fuel_remaining = store.get_fuel().unwrap_or(u64::MAX),
-        "guest init complete"
-    );
-    notist_model::wire::decode_declarations(&payload)
-        .map_err(|message| format!("plugin `{package}` returned invalid init payload: {message}"))
-}
-
-fn component_init_error(package: &str, wasm_path: &Path, error: wasmtime::Error) -> String {
-    let reason = if error.to_string().contains("fuel") {
-        "component init exceeded its fuel budget"
-    } else {
-        "component init failed"
-    };
-    format!(
-        "plugin `{package}`: {reason} ({}): {error}",
-        wasm_path.display()
-    )
-}
-
-/// Validates one guest-declared element name. Guests can never escape their
-/// package namespace because the host prepends `{package}::`; rejecting empty
-/// names and qualified spellings keeps the namespace rule mechanical.
 fn validate_guest_element_name(package: &str, name: &str) -> Result<(), String> {
     let valid = !name.is_empty()
         && !name.contains("::")
@@ -1002,77 +818,40 @@ fn validate_guest_element_name(package: &str, name: &str) -> Result<(), String> 
     }
 }
 
-fn load_component_runtime(
+fn load_module_runtime(
     package: &str,
     wasm_path: &Path,
     wasm_bytes: &[u8],
-) -> Result<(WasmRuntime, Vec<PluginElementDecl>), String> {
-    let mut config = Config::new();
-    config.consume_fuel(true);
-    let engine = Engine::new(&config)
-        .map_err(|error| format!("cannot create component engine for `{package}`: {error}"))?;
-    if !wasm_binary_kind(wasm_bytes, wasm_path)? {
-        // Zero-import core module speaking the SDK's raw memory ABI.
-        let mut runtime = ModuleRuntime::load(&engine, wasm_path, wasm_bytes)?;
-        let payload = runtime.call_init().map_err(|message| {
-            if message.contains("fuel") {
-                format!("plugin `{package}`: init exceeded its fuel budget: {message}")
-            } else {
-                format!("plugin `{package}`: module init failed: {message}")
-            }
-        })?;
-        let declarations = notist_model::wire::decode_declarations(&payload).map_err(|message| {
-            format!("plugin `{package}` returned invalid init payload: {message}")
-        })?;
-        for declaration in &declarations {
-            validate_guest_element_name(package, &declaration.name)?;
-        }
-        return Ok((WasmRuntime::CoreModule(runtime), declarations));
-    }
-    let component = WasmComponent::new(&engine, wasm_bytes)
-        .map_err(|error| format!("invalid component module {}: {error}", wasm_path.display()))?;
-    let mut linker = Linker::<ComponentStoreState>::new(&engine);
-    p2::add_to_linker_sync(&mut linker)
-        .map_err(|error| format!("cannot link component wasi imports: {error}"))?;
-    let mut store = Store::new(
-        &engine,
-        ComponentStoreState {
-            limits: WasmStoreState {
-                max_memory: WASM_MAX_MEMORY_BYTES,
-                max_table_elements: WASM_MAX_TABLE_ELEMENTS,
-            },
-            table: ResourceTable::new(),
-            wasi: WasiCtxBuilder::new().build(),
-        },
-    );
-    store.limiter(|state| state);
-    store.set_fuel(WASM_FUEL_PER_CALL).map_err(|error| {
-        format!(
-            "cannot set component instantiation fuel for {}: {error}",
-            wasm_path.display()
-        )
-    })?;
-    let bindings = wit_bindings_semantic::Plugin::instantiate(&mut store, &component, &linker)
-        .map_err(|error| {
-            format!(
-                "cannot instantiate component {}: {error}",
+) -> Result<(ModuleRuntime, Vec<PluginElementDecl>), String> {
+    match wasm_bytes.get(4) {
+        Some(&1) => {}
+        _ => {
+            return Err(format!(
+                "{} is not a zero-import core wasm module (plugins ship as core modules, not components)",
                 wasm_path.display()
-            )
-        })?;
-    let declarations = run_component_init(package, wasm_path, &bindings, &mut store)?;
+            ))
+        }
+    }
+    let mut runtime = ModuleRuntime::load(wasm_path, wasm_bytes)?;
+    let payload = runtime.call_init().map_err(|message| {
+        if message.contains("fuel") {
+            format!("plugin `{package}`: init exceeded its fuel budget: {message}")
+        } else {
+            format!("plugin `{package}`: module init failed: {message}")
+        }
+    })?;
+    let declarations = notist_model::wire::decode_declarations(&payload)
+        .map_err(|message| format!("plugin `{package}` returned invalid init payload: {message}"))?;
     for declaration in &declarations {
         validate_guest_element_name(package, &declaration.name)?;
     }
-    Ok((
-        WasmRuntime::Component(ComponentRuntime { store, bindings }),
-        declarations,
-    ))
+    Ok((runtime, declarations))
 }
 
 struct WasmFunction {
     element_name: String,
     signature: FunctionSignature,
-    runtime: Arc<Mutex<WasmRuntime>>,
+    runtime: Arc<Mutex<ModuleRuntime>>,
     owner: FunctionOwner,
 }
 
@@ -1124,7 +903,7 @@ impl Function for WasmFunction {
                 range: input.range,
             }]
         })?;
-        runtime.set_fuel(WASM_FUEL_PER_CALL).map_err(|error| {
+        runtime.set_fuel().map_err(|error| {
             vec![EvalDiagnostic {
                 message: format!("cannot reset component fuel: {error}"),
                 range: input.range,
@@ -1700,9 +1479,4 @@ styles = [""]"#,
             assert!(error.contains(expected), "{config} -> {error}");
         }
     }
-}
-
-#[allow(dead_code, clippy::all)]
-mod wit_bindings_semantic {
-    wasmtime::component::bindgen!({ path: "wit/notist-plugin.wit", world: "plugin" });
 }

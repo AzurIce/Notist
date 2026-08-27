@@ -1,0 +1,43 @@
+@![implementation = "aligned"]
+= Core Wasm Backend
+
+把插件编成零导入 core module，用一套显式的最小约定取代 canonical ABI，使同一份 `semantic.wasm` 能被 wasmtime `Module` 与浏览器 `WebAssembly.Instance` 直接实例化。语义与载荷与组件形态完全共享（#<vault::designs::plugin-system::abi>）。
+
+== wasm 间的数据传输
+
+边界两侧是两套隔离的线性内存，指针互不可见。跨界传数据的唯一方式是把字节拷进对方内存；而目标内存归对方分配器管理——宿主不能在 guest 的堆上分配，guest 也不能在宿主的堆上分配。所以**每一方都必须向对方暴露 alloc / free**。这是跨 wasm 内存传字节的最小必要集，组件形态同样存在，只是被 canonical ABI 藏成了 `cabi_realloc`。
+
+另一条裁定：只有宿主调插件（导出），插件零导入、从不调宿主。规约不动点、终止性与资源预算都在宿主手里。"插件 import 宿主接口"的反向方案被否决：它把实例化绑死在实现了这些导入的宿主上，并把执行权交给插件（#<vault::designs::plugin-system::capability>）。
+
+== 传什么，怎么对应
+
+host 与 plugin 之间只传两种字节，均为 wire version byte + postcard（#<vault::designs::plugin-system::abi>）：
+
+- 装载时一次：元素声明（`Vec<PluginElementDecl>`）；
+- 每次派发：请求（call 节点森林）进，响应（`Node` 森林）出。
+
+对应到导出面：
+
+| 导出 | 职责 |
+|---|---|
+| `notist_abi()` | 调用约定版本门（当前 1） |
+| `notist_init()` | 返回声明 |
+| `notist_alloc(len)` / `notist_free(ptr, len)` | 为上述载荷借出 / 回收缓冲 |
+| `notist_evaluate(ptr, len)` | 请求缓冲进，返回响应句柄 |
+
+每次派发的时序：`alloc` → 宿主写入请求 → `evaluate` → 宿主读出结果 → `free`。所有权两条：请求缓冲随 `evaluate` 移交 guest，无论成败由 guest 释放；结果缓冲由 guest `shrink_to_fit` 后移交（不变量 `len == capacity`），宿主拷贝后 `free`。
+
+句柄是一个 i64 位模式：高 32 位 `ptr`，低 31 位 `len`，最高位为错误标志——置位时缓冲是 UTF-8 错误消息而非载荷。单次载荷上限 2 GiB − 1，实际先被宿主的 16 MiB 内存帽约束（#<vault::designs::plugin-system::safety>）。
+
+=== 两条约束
+
+- **零导入不得破坏**：任何 import 都把可实例化面缩小到实现了它的 embedder；宿主能力（时钟、随机、IO）需求走独立 capability 设计，不进本 ABI。
+- **两层版本各自演进**：`notist_abi` 门调用约定，wire version byte 门载荷编码；解码严格，无 fallback。
+
+=== 为什么不是 canonical ABI
+
+canonical ABI 提供跨语言的类型化调用，而 `plugin` world 已经窄到字节进字节出，类型层是零收益的仪式；代价却是每次派发的 trampoline、component-model / p2 依赖与浏览器侧转译加 shim。约束没有消失，只是换位：Rust 作者由 `export_plugin_core!` 挡住全部 ABI 细节；手写非 Rust guest 的义务是本节约定 + postcard codec。
+
+== 运行时与装载
+
+wasm 插件统一以 wasmi 执行（2026-08-28 裁决）。插件是零导入纯计算模块，解释器的翻译成本比 JIT 编译低一个量级以上，且同一次实现直接覆盖 native 与 web（引擎编译为 wasm 后经两个无逻辑 syscall 原语实例化插件；加载策略全部在引擎 Rust 侧，字节获取由无策略的异步泵交给引擎公开 API）。装载按二进制版本字节校验：第 5 字节必须是 `0x01`（core module），否则拒绝——组件形态不再是可装载输入。fuel 每次派发重置，口径锚定输入 wasm 字节码；线性内存以调用后检查封顶 16 MiB。实测：docs 全库（shader + mermaid）`check` 0.14 CPU s、`build` 0.24 CPU s、峰值 RSS 46/65 MB，与全组件基线逐字节一致。

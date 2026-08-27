@@ -1,11 +1,11 @@
 @![implementation = "partial"]
 = Eval Contribution
 
-本文定义插件如何贡献语义函数：组件 `init` 注册的元素声明如何变成 `FunctionRegistry` 中的可调用对象，以及静态分析与 runtime 如何分别消费这些贡献。Call 的规约规则见 #<vault::designs::pipeline::plugin-call-reduction>。
+本文定义插件如何贡献语义函数：wasm `init` 注册的元素声明如何变成 `FunctionRegistry` 中的可调用对象，以及静态分析与 runtime 如何分别消费这些贡献。Call 的规约规则见 #<vault::designs::pipeline::plugin-call-reduction>。
 
 == FunctionDecl
 
-每个语义元素对应一个函数签名。签名不再由 manifest 声明，而是在装载时由组件 `init` 注册提供（#<vault::designs::plugin-system::abi>）。WIT 不镜像声明结构；`init` 的 opaque bytes 解码为 `notist_model::PluginElementDecl`：
+每个语义元素对应一个函数签名。签名不再由 manifest 声明，而是在装载时由 wasm `init` 注册提供（#<vault::designs::plugin-system::abi>）。WIT 不镜像声明结构；`init` 的 opaque bytes 解码为 `notist_model::PluginElementDecl`：
 
 ```text
 PluginElementDecl {
@@ -26,7 +26,7 @@ PluginElementDecl {
 registry 中的 Function 实现按 backend 区分，而不是按语义 package 区分：
 
 1. **Native function**：任何 package 都可以由 Rust native 实现，直接提供 `Function` 并注册 contribution；core 只是其中的默认 package。
-2. **Component function**：WIT `plugin` 组件；装载时 `init` 返回 version byte + postcard declarations，`evaluate` 以相同 frame 承载共享 `Node` 森林，按 dispatcher 名字分发一次规约后由宿主统一继续 fixpoint。所有声明、默认值与调用载荷都来自共享 `notist-model` 类型，不经过 JSON 转换。
+2. **Core-module function**：零导入 core wasm module；装载时 `init` 返回 version byte + postcard declarations，`evaluate` 以相同 frame 承载共享 `Node` 森林，按 dispatcher 名字分发一次规约后由宿主统一继续 fixpoint。所有声明、默认值与调用载荷都来自共享 `notist-model` 类型，不经过 JSON 转换。
 
 所有实现都实现同一 `Function` trait 并进入同一 `FunctionRegistry`；registry 的 owner 是 package identity，native/Wasm 不改变 call 的语义。Wasm backend 只有 component 实现，不再按 artifact 格式分流。
 
@@ -45,12 +45,12 @@ registry 中的 Function 实现按 backend 区分，而不是按语义 package �
 == 当前实现映射
 
 - `ElementFunction`：已实现于 `notist-eval`，作为声明式 schema 元素的通用 handler。
-- 组件 `init` 注册装载路径：已实现于 `notist-plugin-host`。
+- wasm `init` 注册装载路径：已实现于 `notist-plugin-host`（wasmi 执行）。
 - `notist-plugin-sdk`：作者侧 `Plugin::init(reg)` + `ElementFn::reduce` + `export_plugin!`。
 - `FunctionRegistry` 与 `core::*` 别名：已实现；core 与 Wasm package 都可映射为 `PluginContribution`，通过事务式安装路径进入 registry。
 
 == 已裁定 / 待定
 
 - 已裁定：内置函数与第三方插件共享同一 registry 与签名模型。
-- 已裁定：schema 真相来源是组件 `init` 注册；装载统一执行实例化，不再维护不执行 Wasm 的 schema-only 快照路径。
+- 已裁定：schema 真相来源是 wasm `init` 注册；装载统一执行实例化，不再维护不执行 Wasm 的 schema-only 快照路径。
 - 待定：插件 Function 的复杂值类型（Array / Dict）何时进入 element field 值域。

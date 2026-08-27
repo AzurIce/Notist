@@ -12,13 +12,6 @@ crate-type = ["cdylib", "rlib"]
 [dependencies]
 notist-plugin-sdk = { path = "../../crates/notist-plugin-sdk" }
 notist-model = { path = "../../crates/notist-model" }
-wit-bindgen = "0.60"
-
-[features]
-default = []
-# Build as a zero-import core wasm module instead of a wasip2 component:
-#   cargo build --release --features core-abi --target wasm32-unknown-unknown
-core-abi = []
 
 [profile.release]
 opt-level = "s"

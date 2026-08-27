@@ -1,9 +1,0 @@
-package notist:plugin;
-
-/// 纯求值组件：无宿主导入。共享类型由 opaque bytes payload 承载。
-world plugin {
-    /// 装载后调用一次；返回 version byte + postcard declarations。
-    export init: func() -> result<list<u8>, string>;
-    /// 按 dispatcher 名字规约一次调用；请求与响应都是 version byte + postcard Node forest。
-    export evaluate: func(request: list<u8>) -> result<list<u8>, string>;
-}
