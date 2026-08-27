@@ -1,0 +1,41 @@
+@![implementation = "aligned"]
+= core wasm 插件后端统一与 wasmi 落地
+
+本文记录 wasm 插件后端从 wasip2 组件（wasmtime JIT）整体迁往零导入 core module（wasmi 解释执行）的完整过程：性能归因、ABI 设计、两端字节级验证、重构范围、实测数据与遗留事项。现行规范见 #<vault::designs::plugin-system::core-wasm> 与 #<vault::designs::plugin-system::abi>；实验资产（协议 fixtures + Node/Worker 一致性测试）在 `experiments/core-wasm-plugin/`。合并 commit `e6128db`（worktree 分支 `experiment/freestanding-core-wasm`，含 `7b32d7d`/`e21bb99` 两个前置实验 commit）。
+
+== 归因：为什么动插件后端
+
+perf 采样（samply 在本机符号化失败，改用 `perf record -F1000 -g --call-graph fp`）显示 `notist build` 的 CPU 有 **80.8% 花在 wasmtime/cranelift 把插件 wasm 编译成本机码**，notist 自身解析/检查/规约只占 2.1%；单次 build 插件被装载两次（快照构建 + `runtime_plugins()` 渲染 pass），32 核并行编译拉起 30+ 线程。变体对照（无插件 / 仅 shader / 全量）把成本精确归因到组件编译：每 KB wasm 约 0.9 CPU 秒 + 每 118KB 插件约 50MB 峰值。此前 #<vault::ai::2026-08-26 build wasm plugin reload regression> 已把"每模块重载"修成"每 pass 重载"，剩下的就是装载本身的成本。
+
+一个教训先记下：**heaptrack 跑这个负载会把机器 OOM 到死机**——cranelift 的分配次数 × 每次分配记全栈，内部开销是数据文件的数百倍；分配归因改用变体对照的峰值 RSS 完成。
+
+== 形态裁决：零导入 core module
+
+组件模型对 `plugin` world 是零收益仪式：接口已窄到"字节进字节出"（#<vault::ai::2026-08-23 boundary transport benchmark> 的 postcard 裁决），canonical ABI 的类型层没有东西可校验，却带来 trampoline、component-model/p2 依赖、wasip2 幽灵导入（浏览器侧因此要 jco + preview2 shim）与 wasmtime 版本锁定。裁决：插件统一为**零导入 core module**，wasm 零导入是 wasm 生态的兼容性地板，任何能实例化 wasm 的 embedder 都能装载，web 未来路径由此打开（引擎编到 wasm + 两个无逻辑 syscall 原语实例化插件，加载策略全留引擎 Rust 侧；wasmi-in-engine 是完全自包含的备选）。内存 ABI 全文见 #<vault::designs::plugin-system::core-wasm>：`notist_abi/alloc/free/init/evaluate` 五导出，i64 句柄 `(ptr<<32)|len`、错误位在长度半段最高位、`len==capacity` 移交不变量；载荷与组件形态逐字节共享（wire version byte + postcard）。作者侧仍只写 `Plugin`/`ElementFn`，`export_plugin!` 宏挡住全部细节（组件宏已删除，仅剩这一个）。
+
+执行端选定 **wasmi 1.1**（v0.32 重写型寄存器机解释器，Parity 链上生产 + 0.31 安全审计，fuel 锚定输入 wasm 字节码故跨平台确定；API 与 wasmtime 同构，迁移极小）。不选它的短板恰好对我们无伤：不支持组件模型（我们不再需要）、SIMD 未支持（rustc wasm32 默认不开 `+simd128`，**插件构建必须保持不开**）。统一 wasmi 后 native/web 是同一执行器、同一 fuel 口径。
+
+== 重构范围与验证
+
+删除面：plugin-host 的组件路径全链（`wasmtime`/`wasmtime-wasi` 依赖、`wit_bindings_semantic` bindgen、`wit/`、组件 Store/WASI 上下文/双形态枚举）；SDK 的组件宏与 wit-bindgen；三个插件 crate 的 feature 门。装载只认版本字节 `0x01`，否则指名拒绝；wasmi 路径补了调用后 16 MiB 线性内存帽检查（wasmi 无 ResourceLimiter 等价物）。`semantic.wasm` 产物随 commit 更新为 core module（shader 85KB、mermaid 1.90MB）。
+
+正确性：`check` 摘要与 `build` 105 页 dist 树与全组件基线**逐字节一致**（`CHECK_IDENTICAL`/`DIST_IDENTICAL`）；协议层由 fixtures 验证——Rust 侧 SDK 真实 dispatch 生成 request/response/declarations 三段字节，Node 24 主线程 + Worker 实例化同一份 wasm 逐字节比对通过（shader 与 mermaid 双覆盖）。
+
+数据（docs 全库，同源，热身后 3 次均值）：
+
+| 指标 | 组件基线 | core module + wasmi |
+|---|---|---|
+| `check` CPU | 1.71s | **0.14s**（12×） |
+| `build` CPU | 3.42s | **0.24s**（14×） |
+| 峰值 RSS（build） | 271MB | **65MB** |
+| 宿主二进制 | 55.6MB | **25.3MB** |
+
+build 的 0.24s 仅比无插件基线（0.18s）高 0.06s——装载成本基本归零，此前 AOT 编译缓存方案在 wasmi 路径下不再急需。解释执行的重派发开销在本库规模不可见（mermaid 严格解析含在内）。
+
+== 踩坑与遗留
+
+- **产物过期**：迁移前发现 `plugins/mermaid/semantic.wasm`（1.66MB，8-26 构建）与当前源码重建产物（2.00MB）行为差异比 ABI 选择还大——"构建来源与源码不同步"是既有问题；若日后引入 AOT/翻译缓存，cache key 用内容 hash 可顺带根治。
+- **fuel 口径**：wasmi fuel 锚定输入 wasm 字节码，与 wasmtime 数值不可比；统一 wasmi 后只剩一种口径，但 50M 这个常数的合理性需要按 wasmi 口径重校。
+- **LSP 重派发未实测**：解释执行对逐键路径的派发延迟（mermaid 重解析）需要专门测量；docs 规模下无感不代表编辑器场景无感。
+- **wasmi 无 SIMD**：插件构建文档需写死不开 `+simd128`；若未来插件需要 SIMD，wasmi 路径（issue #1364）与插件构建约束要一起重审。
+- **web 侧未实施**：引擎 wasm 化与 syscall shim（`wasm_new`/`wasm_call` 两个原语 + 无策略 fetch 泵）是设计定的方向，代码尚未存在；同步实例化的主线程体积限制要求放 Worker。
