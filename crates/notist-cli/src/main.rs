@@ -1112,13 +1112,18 @@ fn run(cli: Cli) -> Result<ExitCode, Box<dyn std::error::Error>> {
                         )
                     },
                 );
+                let section = result.section_title.as_ref().map_or(
+                    String::new(),
+                    |title| format!(" §{title}"),
+                );
                 println!(
-                    "\n{}. {}  {} field={}{}",
+                    "\n{}. {}  {} field={}{}{}",
                     index + 1,
-                    result.location.module,
+                    quote_module(&result.location.module),
                     position,
                     result.matched_field,
-                    score
+                    score,
+                    section
                 );
                 println!("   {}", result.excerpt.replace('\n', " "));
             }
@@ -1158,11 +1163,15 @@ fn run(cli: Cli) -> Result<ExitCode, Box<dyn std::error::Error>> {
             }
             for symbol in &outline.items {
                 println!(
-                    "{}{}  {}:{}",
+                    "{}{}  {}:{}{}",
                     "  ".repeat(symbol.level.saturating_sub(1) as usize),
                     symbol.name,
                     symbol.location.relative_path.display(),
-                    symbol.location.line_range.map_or(0, |range| range.start)
+                    symbol.location.line_range.map_or(0, |range| range.start),
+                    format!(
+                        " span={}..{}",
+                        symbol.subtree_range.start, symbol.subtree_range.end
+                    )
                 );
             }
             emit_continuation("outline", &outline.page, &outline.coverage);
@@ -1251,6 +1260,9 @@ fn run(cli: Cli) -> Result<ExitCode, Box<dyn std::error::Error>> {
                     quote_module(&item.target),
                     position
                 );
+                if !item.excerpt.is_empty() {
+                    println!("   {}", item.excerpt.replace('\n', " "));
+                }
             }
             emit_continuation("references", &locations.page, &locations.coverage);
             let _ = root;

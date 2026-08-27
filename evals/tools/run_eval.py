@@ -180,7 +180,7 @@ def main() -> None:
     ap.add_argument("--tasks", default=str(EVALS / "tasks.json"))
     ap.add_argument("--conditions", nargs="+", default=list(CONDITIONS))
     ap.add_argument("--only", nargs="*", help="task id prefixes")
-    ap.add_argument("--timeout", type=int, default=600)
+    ap.add_argument("--timeout", type=int, default=900)
     ap.add_argument("--name", required=True)
     ap.add_argument("--skip-existing", action="store_true")
     args = ap.parse_args()

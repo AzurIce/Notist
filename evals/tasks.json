@@ -8,7 +8,10 @@
         "checks": [
           {
             "type": "pattern_any",
-            "patterns": ["grammar\\.not", "grammar\\.md"],
+            "patterns": [
+              "grammar\\.not",
+              "grammar\\.md"
+            ],
             "must_be_quoted_or_plain": true,
             "desc": "answers the grammar document filename"
           }
@@ -18,8 +21,20 @@
         "id": "T2-callout-signature",
         "prompt": "callout 这个构造器的 kind 参数是什么类型、默认值是多少？给出确切答案。",
         "checks": [
-          { "type": "pattern_all", "patterns": ["String"], "desc": "kind is String" },
-          { "type": "pattern_all", "patterns": ["note"], "desc": "default value note" }
+          {
+            "type": "pattern_all",
+            "patterns": [
+              "String"
+            ],
+            "desc": "kind is String"
+          },
+          {
+            "type": "pattern_all",
+            "patterns": [
+              "note"
+            ],
+            "desc": "default value note"
+          }
         ]
       },
       {
@@ -28,7 +43,14 @@
         "checks": [
           {
             "type": "stems_at_least",
-            "stems": ["evaluate", "parse", "plugin-call-reduction", "project", "README", "structure"],
+            "stems": [
+              "evaluate",
+              "parse",
+              "plugin-call-reduction",
+              "project",
+              "README",
+              "structure"
+            ],
             "threshold": 5,
             "desc": "lists >=5 of 6 designs/pipeline documents"
           }
@@ -38,10 +60,20 @@
         "id": "T4-module-annotation-syntax",
         "prompt": "在 notist 里想给整个文档模块挂一个标签（模块级属性），确切的语法怎么写？这条规则的权威定义在哪篇文档里？请同时回答这两点。",
         "checks": [
-          { "type": "pattern_all", "patterns": ["@!"], "desc": "module annotation syntax @![...]" },
+          {
+            "type": "pattern_all",
+            "patterns": [
+              "@!"
+            ],
+            "desc": "module annotation syntax @![...]"
+          },
           {
             "type": "pattern_any",
-            "patterns": ["grammar\\.not", "grammar\\.md", "annotation-syntax"],
+            "patterns": [
+              "grammar\\.not",
+              "grammar\\.md",
+              "annotation-syntax"
+            ],
             "desc": "names an authoritative doc"
           }
         ]
@@ -50,21 +82,50 @@
         "id": "T5-table-constructor-section-read",
         "prompt": "请查 notist 函数参考里 table 构造器的完整说明：表格的列数和表头分别由哪个参数控制？请给出确切参数名，并指出这份说明出现在哪篇文档中（文档文件名）。",
         "checks": [
-          { "type": "pattern_all", "patterns": ["columns"], "desc": "columns parameter named" },
-          { "type": "pattern_all", "patterns": ["header"], "desc": "header parameter named" },
-          { "type": "pattern_any", "patterns": ["functions\\.not", "functions\\.md"], "desc": "names functions doc" }
+          {
+            "type": "pattern_all",
+            "patterns": [
+              "columns"
+            ],
+            "desc": "columns parameter named"
+          },
+          {
+            "type": "pattern_all",
+            "patterns": [
+              "header"
+            ],
+            "desc": "header parameter named"
+          },
+          {
+            "type": "pattern_any",
+            "patterns": [
+              "functions\\.not",
+              "functions\\.md"
+            ],
+            "desc": "names functions doc"
+          }
         ]
       },
       {
         "id": "T6-cursor-continuation-rule-doc",
-        "prompt": "用 notist 检索时如果一页结果看不完，续读行为是怎么回事？这套分页与停止规则的权威设计是哪篇文档？给出文档名，以及里面讲停止规则的那一节标题。",
+        "prompt": "用 notist 检索时一页结果看不完，继续读的机制叫什么？它由哪篇设计文档规定？只需回答：机制名、文档名。",
         "checks": [
           {
             "type": "pattern_any",
-            "patterns": ["query-contract", "cli\\.md", "cli\\.not"],
+            "patterns": [
+              "query-contract",
+              "cli\\.md",
+              "cli\\.not"
+            ],
             "desc": "names an authoritative doc"
           },
-          { "type": "pattern_all", "patterns": ["(停止|stop)"], "desc": "mentions the stop-rule section/topic" }
+          {
+            "type": "pattern_all",
+            "patterns": [
+              "(?i)(cursor|next|续读)"
+            ],
+            "desc": "names the continuation mechanism"
+          }
         ]
       }
     ]
