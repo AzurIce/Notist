@@ -17,6 +17,7 @@ Isolation audit conclusions (2026-08-27):
   recorded in the manifest.
 """
 import argparse
+import re
 import hashlib
 import json
 import os
@@ -46,6 +47,12 @@ NO_TOOL_SYSTEM_PROMPT = (
     "你没有可用工具。回答用中文，简明扼要：直接给出结论与出处（文件、节标题）。"
 )
 NOTIST_HINT = "\n环境提示：PATH 上有一个名为 notist 的本地 CLI 可用于查询这份文档库。"
+ENFORCED_RULE = (
+    "\n硬性规则：对本目录内文档的任何读取、检索、枚举都必须通过 notist CLI 完成；"
+    "禁止使用 grep/find/cat/sed/awk/head/tail/less 等命令触碰文档文件。"
+)
+FORBIDDEN_BASH = re.compile(
+    r"\b(grep|rg|find|cat|sed|awk|head|tail|less|more|tac|nl|strings)\b")
 
 ISOLATION_FLAGS = [
     "--offline", "--no-context-files", "--no-extensions",
@@ -77,6 +84,12 @@ CONDITIONS = {
         "corpus": "notist",
         "system_prompt": BASE_SYSTEM_PROMPT + NOTIST_HINT,
         "skill": True,
+        "tools": READONLY_TOOLS,
+    },
+    "notist-enforced": {
+        "corpus": "notist",
+        "system_prompt": BASE_SYSTEM_PROMPT + NOTIST_HINT + ENFORCED_RULE,
+        "skill": False,
         "tools": READONLY_TOOLS,
     },
 }
@@ -169,6 +182,31 @@ def run_one(cond: str, task: dict, runs_root: Path, timeout_s: int,
     (out_dir / "answer.txt").write_text(answer)
     sessions = sorted((out_dir / "session").glob("*.jsonl")) if (out_dir / "session").exists() else []
     meta["session_files"] = [str(p.relative_to(out_dir)) for p in sessions]
+
+    total_tokens = 0
+    violations: list[str] = []
+    for f in sessions:
+        for raw in f.read_text().splitlines():
+            try:
+                rec = json.loads(raw)
+            except json.JSONDecodeError:
+                continue
+            msg = rec.get("message") or {}
+            usage = msg.get("usage") or {}
+            total_tokens += (usage.get("input") or 0) + (usage.get("output") or 0)
+            if cond == "notist-enforced":
+                for tc in msg.get("tool_calls") or []:
+                    fn = tc.get("function") or {}
+                    args = fn.get("arguments")
+                    argv_blob = args if isinstance(args, str) else json.dumps(args, ensure_ascii=False) if args else ""
+                    if fn.get("name", "").lower() in ("bash", "shell", "execute_command") or args:
+                        m = FORBIDDEN_BASH.search(argv_blob)
+                        if m:
+                            violations.append(m.group(0))
+    meta["tokens_total"] = total_tokens
+    if violations:
+        meta["audit_violations"] = sorted(set(violations))
+        (out_dir / "AUDIT_VIOLATION").write_text(", ".join(sorted(set(violations))))
     (out_dir / "meta.json").write_text(json.dumps(meta, ensure_ascii=False, indent=2))
     print(f"[{cond}] {task['id']}: rc={meta.get('returncode')} "
           f"{meta['duration_s']}s sessions={len(sessions)}", flush=True)

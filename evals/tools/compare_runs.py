@@ -10,30 +10,26 @@ import sys
 from pathlib import Path
 
 
-def load(run_dir: Path) -> dict:
+def load(run_dir: Path, budgets: dict | None = None) -> dict:
     out = {}
+    grades = json.loads((run_dir / "output" / "grades.json").read_text())
     for d in sorted((run_dir / "output").iterdir()):
         if not d.is_dir():
             continue
         meta = json.loads((d / "meta.json").read_text())
-        answer = (d / "answer.txt").read_text() if (d / "answer.txt").exists() else ""
         grades = json.loads((run_dir / "output" / "grades.json").read_text())
         g = grades["runs"].get(d.name, {})
-        toks = 0
-        sess_dir = d / "session"
-        if sess_dir.is_dir():
-            for f in sess_dir.glob("*.jsonl"):
-                for line in f.read_text().splitlines():
-                    try:
-                        rec = json.loads(line)
-                    except json.JSONDecodeError:
-                        continue
-                    msg = rec.get("message") or {}
-                    usage = msg.get("usage") or {}
-                    toks += (usage.get("input") or 0) + (usage.get("output") or 0)
+        toks = int(meta.get("tokens_total") or 0)
+        violation = (d / "AUDIT_VIOLATION").exists()
+        budget = (budgets or {}).get(meta["task"])
+        over_budget = bool(budget and toks > budget)
         cond, task = meta["condition"], meta["task"]
+        passed = g.get("passed", False) and not violation and not over_budget
         out.setdefault(cond, {})[task] = {
-            "passed": g.get("passed", False),
+            "passed": passed,
+            "reason": "" if g.get("passed") else "wrong"
+                      + ("+violation" if violation else "")
+                      + ("+over_budget" if over_budget else ""),
             "duration": meta.get("duration_s"),
             "tokens": toks,
             "rc": meta.get("returncode"),
@@ -41,9 +37,14 @@ def load(run_dir: Path) -> dict:
     return out
 
 
+TASKS_FILE = Path(__file__).resolve().parent.parent / "tasks.json"
+
+
 def main() -> None:
-    base = load(Path(sys.argv[1]))
-    it = load(Path(sys.argv[2]))
+    tasks_spec = json.loads(TASKS_FILE.read_text())["pilot"]["tasks"]
+    budgets = {t["id"]: t.get("budget_tokens") for t in tasks_spec}
+    base = load(Path(sys.argv[1]), budgets)
+    it = load(Path(sys.argv[2]), budgets)
     conds = ["null-notools", "md-bash", "notist-bash", "notist-skill"]
     tasks = ["T1-locate-grammar-spec", "T2-callout-signature",
              "T3-pipeline-inventory", "T4-module-annotation-syntax",

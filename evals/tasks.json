@@ -4,7 +4,7 @@
     "tasks": [
       {
         "id": "T1-locate-grammar-spec",
-        "prompt": "我想确认 notist 的完整语法规则（Markup 与 Code 两种模式、空白与分隔的精确规定）应该读哪篇文档。请告诉我文件名，以及具体从哪一节开始讲这个主题。只需回答结论。",
+        "prompt": "我想确认 notist 的完整语法规则（Markup 与 Code 两种模式、空白与分隔的精确规定）应该读哪篇文档。请告诉我文件名，以及具体从哪一节开始讲这个主题。只需回答结论。 （回答保持精炼，不要展开解释。）",
         "checks": [
           {
             "type": "pattern_any",
@@ -15,11 +15,14 @@
             "must_be_quoted_or_plain": true,
             "desc": "answers the grammar document filename"
           }
-        ]
+        ],
+        "category": "T-A",
+        "tier": "smoke",
+        "budget_tokens": 14000
       },
       {
         "id": "T2-callout-signature",
-        "prompt": "callout 这个构造器的 kind 参数是什么类型、默认值是多少？给出确切答案。",
+        "prompt": "callout 这个构造器的 kind 参数是什么类型、默认值是多少？给出确切答案。 （回答保持精炼，不要展开解释。）",
         "checks": [
           {
             "type": "pattern_all",
@@ -35,11 +38,14 @@
             ],
             "desc": "default value note"
           }
-        ]
+        ],
+        "category": "T-A",
+        "tier": "smoke",
+        "budget_tokens": 12000
       },
       {
         "id": "T3-pipeline-inventory",
-        "prompt": "designs/pipeline 目录下有哪些设计文档？列出它们的文件名。只要文件名清单。",
+        "prompt": "designs/pipeline 目录下有哪些设计文档？列出它们的文件名。只要文件名清单。 （回答保持精炼，不要展开解释。）",
         "checks": [
           {
             "type": "stems_at_least",
@@ -54,11 +60,14 @@
             "threshold": 5,
             "desc": "lists >=5 of 6 designs/pipeline documents"
           }
-        ]
+        ],
+        "category": "T-A",
+        "tier": "smoke",
+        "budget_tokens": 8000
       },
       {
         "id": "T4-module-annotation-syntax",
-        "prompt": "在 notist 里想给整个文档模块挂一个标签（模块级属性），确切的语法怎么写？这条规则的权威定义在哪篇文档里？请同时回答这两点。",
+        "prompt": "在 notist 里想给整个文档模块挂一个标签（模块级属性），确切的语法怎么写？这条规则的权威定义在哪篇文档里？请同时回答这两点。 （回答保持精炼，不要展开解释。）",
         "checks": [
           {
             "type": "pattern_all",
@@ -76,11 +85,14 @@
             ],
             "desc": "names an authoritative doc"
           }
-        ]
+        ],
+        "category": "T-A",
+        "tier": "smoke",
+        "budget_tokens": 16000
       },
       {
         "id": "T5-table-constructor-section-read",
-        "prompt": "请查 notist 函数参考里 table 构造器的完整说明：表格的列数和表头分别由哪个参数控制？请给出确切参数名，并指出这份说明出现在哪篇文档中（文档文件名）。",
+        "prompt": "请查 notist 函数参考里 table 构造器的完整说明：表格的列数和表头分别由哪个参数控制？请给出确切参数名，并指出这份说明出现在哪篇文档中（文档文件名）。 （回答保持精炼，不要展开解释。）",
         "checks": [
           {
             "type": "pattern_all",
@@ -104,11 +116,14 @@
             ],
             "desc": "names functions doc"
           }
-        ]
+        ],
+        "category": "T-A",
+        "tier": "smoke",
+        "budget_tokens": 20000
       },
       {
         "id": "T6-cursor-continuation-rule-doc",
-        "prompt": "用 notist 检索时一页结果看不完，继续读的机制叫什么？它由哪篇设计文档规定？只需回答：机制名、文档名。",
+        "prompt": "用 notist 检索时一页结果看不完，继续读的机制叫什么？它由哪篇设计文档规定？只需回答：机制名、文档名。 （回答保持精炼，不要展开解释。）",
         "checks": [
           {
             "type": "pattern_any",
@@ -125,6 +140,93 @@
               "(?i)(cursor|next|续读)"
             ],
             "desc": "names the continuation mechanism"
+          }
+        ],
+        "category": "T-A",
+        "tier": "smoke",
+        "budget_tokens": 22000
+      },
+      {
+        "id": "TB1-query-contract-citing-docs",
+        "category": "T-B",
+        "tier": "primary",
+        "budget_tokens": 26000,
+        "prompt": "在 notist 的设计文档里，有哪些文档引用了 query-contract 这篇？请列出至少五个引用方的模块名，并各用一句话说明它们各自关注什么。（回答保持精炼，不要展开解释。）",
+        "checks": [
+          {
+            "type": "pattern_all",
+            "patterns": [
+              "query-contract"
+            ],
+            "desc": "repeats the anchor module"
+          },
+          {
+            "type": "stems_at_least",
+            "threshold": 5,
+            "stems": [
+              "cli",
+              "cli-command-surface-skill-distribution",
+              "search-retrieval-index",
+              "analyzer-snapshot",
+              "core-namespace-plugin-boundary",
+              "lsp-architecture-redesign",
+              "navigation"
+            ],
+            "desc": "names >=5 citing modules"
+          }
+        ]
+      },
+      {
+        "id": "TC1-vector-retrieval-absence",
+        "category": "T-C",
+        "tier": "primary",
+        "budget_tokens": 26000,
+        "prompt": "notist 当前支持基于 embedding/向量的语义检索吗？官方规范层面是怎么规定的？（回答保持精炼，不要展开解释。）",
+        "checks": [
+          {
+            "type": "pattern_any",
+            "patterns": [
+              "不支持",
+              "没有实现",
+              "尚未实现",
+              "暂不",
+              "未支持",
+              "仅.*(词法|lexical|bm25)",
+              "只有.*(词法|lexical|bm25)",
+              "no[,.]|not (yet )?(support|implement)"
+            ],
+            "desc": "asserts absence of vector retrieval"
+          },
+          {
+            "type": "pattern_any",
+            "patterns": [
+              "(?i)(bm25|lexical|词法|倒排)"
+            ],
+            "desc": "cites the lexical index as what exists"
+          }
+        ]
+      },
+      {
+        "id": "TD1-modpath-scope-byte-span",
+        "category": "T-D",
+        "tier": "primary",
+        "budget_tokens": 18000,
+        "prompt": "用 notist 给出 query-contract 设计文档中 『ModulePath Scope』 这一节的字节区间（起始与结束字节）。（回答保持精炼，不要展开解释。）",
+        "checks": [
+          {
+            "type": "pattern_all",
+            "patterns": [
+              "3927",
+              "4929"
+            ],
+            "desc": "reports the exact byte span endpoints"
+          },
+          {
+            "type": "pattern_any",
+            "patterns": [
+              "span|区间|range|字节"
+            ],
+            "desc": "presents it as a range"
           }
         ]
       }
