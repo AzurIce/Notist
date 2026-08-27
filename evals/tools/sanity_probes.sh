@@ -73,4 +73,18 @@ bd=cov.get("scopes_breakdown") or {}
 ok = bd.get("ai",0)>=1 and bd.get("designs",0)>=1
 print(" breakdown:",bd)
 raise SystemExit(0 if ok else 1)' || fail=1
+echo "P9 first-class absence verdict on both polarities"
+$B search "不存在的词组zzz" "$C" --no-daemon --format json | python3 -c '
+import json,sys
+cov=json.load(sys.stdin)["result"]["coverage"]
+ok = cov.get("conclusion")=="absent-in-snapshot"
+print(" conclusion:",cov.get("conclusion"))
+raise SystemExit(0 if ok else 1)' || fail=1
+$B search "检索" "$C" --no-daemon --format json | python3 -c '
+import json,sys
+cov=json.load(sys.stdin)["result"]["coverage"]
+ok = cov.get("conclusion")=="present"
+print(" conclusion:",cov.get("conclusion"))
+raise SystemExit(0 if ok else 1)' || fail=1
+$B search "不存在的词组zzz" "$C" --no-daemon | grep -q "verdict: ABSENT" && echo " text verdict ok" || fail=1
 exit $fail

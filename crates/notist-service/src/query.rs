@@ -80,6 +80,12 @@ pub struct CoverageInfo {
     pub matched_modules: Option<u64>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub matched_units: Option<u64>,
+    /// First-class search verdict for the whole snapshot, emitted whenever
+    /// lexical coverage is complete: `absent-in-snapshot` (zero matching
+    /// modules) or `present`. Callers should quote this instead of deriving
+    /// an existence claim from page items.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub conclusion: Option<String>,
     /// Distinct matching modules bucketed by their first path segment after
     /// the vault root (`ai`, `designs`, ...), so a caller can separate
     /// current specs from dated archives in the same query that found them.
@@ -864,6 +870,7 @@ pub fn read_source(
             matched_modules: None,
             matched_units: None,
             scopes_breakdown: None,
+            conclusion: None,
         },
         search: None,
         hints: continuation_hints(!reached_end),
@@ -2166,6 +2173,11 @@ impl SearchIndex {
         } else {
             Some(hit_module_count)
         };
+        page.coverage.conclusion = match page.coverage.matched_modules {
+            Some(0) if page.coverage.complete => Some("absent-in-snapshot".into()),
+            Some(n) if n > 0 => Some("present".into()),
+            _ => None,
+        };
         if let Some(set) = &candidate_modules {
             let mut buckets: BTreeMap<String, u64> = BTreeMap::new();
             for module in set {
@@ -2822,6 +2834,7 @@ fn page<T: Clone + Serialize + DeserializeOwned>(
             matched_modules: None,
             matched_units: None,
             scopes_breakdown: None,
+            conclusion: None,
         },
         search: None,
         hints: continuation_hints(has_more),

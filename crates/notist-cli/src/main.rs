@@ -1099,6 +1099,11 @@ fn run(cli: Cli) -> Result<ExitCode, Box<dyn std::error::Error>> {
                     "matched {modules} modules / {units} units in full index"
                 );
             }
+            if results.coverage.conclusion.as_deref() == Some("absent-in-snapshot") {
+                println!(
+                    "verdict: ABSENT from the current vault snapshot (complete coverage, 0 matching modules)"
+                );
+            }
             if let Some(breakdown) = &results.coverage.scopes_breakdown {
                 let rendered = breakdown
                     .iter()
