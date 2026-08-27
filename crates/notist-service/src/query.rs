@@ -3539,7 +3539,11 @@ fn relative_path(root: &Path, path: &Path) -> PathBuf {
     path.strip_prefix(root).unwrap_or(path).to_path_buf()
 }
 
-fn fingerprint(source: &str) -> String {
+/// Canonical content fingerprint shared by every surface that reports one
+/// (read/module/search locations and the edit guard): SHA-256, first 16 hex
+/// chars. The edit path must validate against exactly this value - see the
+/// regression test in request.rs.
+pub(crate) fn fingerprint(source: &str) -> String {
     digest(source.as_bytes())[..16].to_owned()
 }
 

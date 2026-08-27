@@ -87,3 +87,7 @@ verdict：无显著改进（attempt 5/5）。18 格对位：notist 两组全过�
 2. **确定性改进被微基准完整证实并保留**（每条都有 probe 证据）：bm25-v4 使 "cursor 续读" 类跨节 AND 查询从 0 hit 变 3 modules/27 units；read 标题选择器从标题一行（21B）变整节（793B）；coverage 计数让存在性判断免翻页；outline span / references 摘录 / search §归属把引用句柄压进首跳；check 渲染如实标注 severity 与隐藏计数；投影剥离宿主绝对路径；含空格 ModulePath 可引用化。
 3. **协议教训已固化**：null 校准组只在建基线时跑；判分必须与任务措辞同步修订；单元格置信度与所用时长上限正相关（md/T6 两类长尾说明超时也要按任务分级设定）；CLI 无关组是免费的噪声对照，永远先看它再下结论。
 4. 未尽的假设库余项（A8 页级去重、A3 --exclude-scope、A5 归档先验、export search）需要契约/规范联动而非纯实现，留给下一阶段配套 spec 修订一起做。
+
+== 附带修复（收口后，写入面）：指纹双实现冲突
+
+edit 守卫校验的指纹是 FNV-1a-64（request.rs source_fingerprint() 经 lib.rs u64 fingerprint），而全部查询面（read/modules/search 的 location.source_fingerprint）报告 SHA-256 前 16 位（query.rs fingerprint(&str)）——同名同宽不同算法，文档化的"read 取指纹 → guarded replace"流程永远被 edit_conflict 拒绝（此前实测验证）。修复：query::fingerprint 提为 crate 规范实现，写入面统一引用；lib.rs FNV 版更名 fnv1a 且只剩 edit_plan_hash 这类内部标识在用；新增回归测试锁定"两种路径对同一内容产出同一指纹"。端到端实测：scratch vault 中 read 指纹一次通过 edit replace。

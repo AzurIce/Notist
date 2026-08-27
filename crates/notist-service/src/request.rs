@@ -2038,9 +2038,12 @@ impl NotistService {
 }
 
 fn source_fingerprint(path: PathBuf, text: &str) -> SourceFingerprint {
+    // Must be identical to what read/module/search surfaces report so the
+    // documented "read -> capture fingerprint -> guarded replace" flow works;
+    // this was briefly an unrelated FNV-1a hash (regression-tested below).
     SourceFingerprint {
         path,
-        fingerprint: format!("{:016x}", super::fingerprint(text.as_bytes())),
+        fingerprint: super::query::fingerprint(text),
     }
 }
 
@@ -2053,7 +2056,7 @@ fn edit_plan_hash(
 ) -> io::Result<String> {
     let payload = serde_json::to_vec(&(view_id, revision, vault, operations, fingerprints))
         .map_err(io::Error::other)?;
-    Ok(format!("{:016x}", super::fingerprint(&payload)))
+    Ok(format!("{:016x}", super::fnv1a(&payload)))
 }
 
 fn replace_file(path: &Path, contents: &[u8], plan_hash: &str) -> io::Result<()> {
@@ -2663,6 +2666,19 @@ mod tests {
     use std::fs;
 
     use super::*;
+
+    /// The edit guard must validate against exactly the fingerprint that
+    /// read/module/search surfaces report, otherwise the documented
+    /// "read -> capture fingerprint -> guarded replace" flow can never pass.
+    #[test]
+    fn edit_fingerprint_matches_query_surface_convention() {
+        // sha256("abc") = ba7816bf8f01cfea414140de5dae2223...
+        let expected = "ba7816bf8f01cfea";
+        let fp = source_fingerprint(PathBuf::from("x.not"), "abc");
+        assert_eq!(fp.fingerprint, expected);
+        assert_eq!(fp.fingerprint, crate::query::fingerprint("abc"));
+    }
+
 
     #[test]
     fn embedded_and_remote_surfaces_share_serializable_core_requests() {
