@@ -186,9 +186,17 @@ def run_one(cond: str, task: dict, runs_root: Path, timeout_s: int,
             answer = _text(e.stdout)
             meta["stderr_tail"] = _text(e.stderr)[-1500:]
             if attempt == 1:
-                # a killed pi can leave zero session records behind: infra
-                # stall, not agent behavior - retry the cell once
-                meta["retried_after_timeout"] = True
+                # retry only infra stalls (killed pi, zero session records);
+                # a timeout WITH progress is the agent genuinely grinding and
+                # a second window would just double the burn
+                sessions_now = sorted((out_dir / "session").glob("*.jsonl")) if (out_dir / "session").exists() else []
+                had_progress = any(f.stat().st_size > 0 for f in sessions_now)
+                if not had_progress:
+                    meta["retried_after_timeout"] = True
+                    meta["timeout_kind"] = "infra_stall"
+                else:
+                    meta["timeout_kind"] = "agent_grind"
+                    break
     meta["duration_s"] = round(time.time() - start, 1)
 
     (out_dir / "answer.txt").write_text(answer)

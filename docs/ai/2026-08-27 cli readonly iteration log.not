@@ -134,3 +134,14 @@ edit 守卫校验的指纹是 FNV-1a-64（request.rs source_fingerprint() 经 li
 **verdict：记分卡无显著改进（13 vs 15，n=1）。** 通过格波动集中在预算线附近的 ±20% 抖动带（bash/TC1 29.4k vs 26k 线、T6/TB1 多格互换）。成本面分化：skill/TC1 39k→32k 继续改善，但 enforced/TC1 84k→266k 恶化（干净单跑、46 条消息，无重试叠加）——breakdown 的可见性反而可能诱导模型深入调查文档做排除论证。n=1 无法归因，但按协议记为本轮无效。
 
 沉淀：①超时重试与计量修复是本轮确定性收益；②"展示调查存在"与"证明规范缺席"是两种相反的引导，affordance 设计要按条件目标分化（enforced 组更适合把排除后的覆盖度前置）；③预算线附近的格子占比过高（约 1/3），下一序列应先按条件分档预算（enforced 系数 ~2×）再判读，否则抖动淹没信号。
+
+
+== Phase 3 迭代 4（2026-08-28）：预算分档 + enforced 缺席协议
+
+协议修正：tasks.json 增加 `budget_condition_factors`（enforced=2.0），compare 按条件乘系数后判读；历史轮在分档口径下重判——p3run2 升至 18/36，证实 enforced 组此前被不公平预算线压制。runner 的超时重试细化为"零 session 记录（基建停摆）才重试"：md/TD1 双超时白烧 110 万 token 的教训。
+
+enforced 系统提示前置缺席判定协议：1–2 次带 --exclude-scope vault::ai 的 search → 以 coverage 的 matched_modules/scopes_breakdown 为权威结论，明确"不要翻页穷举、不要打开 ai/ 验证"。
+
+**verdict：记分卡 17→16（n=1，抖动带内持平）。** 本轮靶点的真实读数：enforced/TC1 成本 266k→144k（较上轮恶化值减半，但仍高于 run2 的 84k，且距 52k 分档线尚远）；enforced/TB1 99k→30k（−70%，协议前置的直接受益，格转胜）；skill/TD1 稳定通过、未再挂起。4 处退化散布在 CLI 无关或微小格子（skill/T3 一题 3k→47k 的纯粹爆发），证明单元格噪声带约 ±50%、偶发爆发，单格翻转不构成证据。
+
+**抖动带量化后的格局**：分档口径下 p3run2=18、p3run3=17、p3run4=16，三次落在 17±1.5 的噪声带内。结论：现有 affordance 组合的得分已到平台期，要再上台阶必须是 CLI 侧新原语而非提示词工程。排队靶点：①输出层的一等"缺席结论"结构（complete+排除后零匹配 → 显式 verdict 字段，替代让模型自行解读 coverage）；②T-D 类任务在 md 条件下直接跳过重试（本轮已落地一半）；③n≥3 重锚仍欠。
