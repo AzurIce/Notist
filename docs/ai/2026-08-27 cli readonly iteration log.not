@@ -123,3 +123,14 @@ edit 守卫校验的指纹是 FNV-1a-64（request.rs source_fingerprint() 经 li
 **verdict（对位 p3base，n=1）：显著改进。** 通过格 9→15（+67%）；总 token 1.56M→1.39M。TB1 多跳链四条件全部由败转胜（引用边 affordance 生效）；enforced/TC1 成本 211k→84k（−60%）、skill/TC1 82k→39k（−52%）——缺席证明的经济性实打实改善，尽管 enforced 仍未过 26k 预算线，仍留改进空间。两处"退化"均为预算/超时层而非内容错：T6-bash 回答正确但超出 22k 预算；skill/TD1 出现 916s 挂起（token 计数为空属 runner 对超时会话的计量缺口，待修）。另按纪律修订 TC1 判据以接受"架构预留/非现行能力"类正确表述，双轮重判。
 
 下一序列靶点：①TD1 在 skill 条件的挂起复现与归因；②缺席证明要过预算线还需更深的 affordance（如把 matched=0 与 complete 直接写进 hint 已做，进一步可在 JSON 顶层加 absent_hint 结构化字段或在 prompt 层示例否定问答式）；③n≥3 协议下的正式重锚。
+
+
+== Phase 3 迭代 3：scopes_breakdown 与 runner 可靠性
+
+思路：TC1 在 enforced 条件的高成本被假设为"无法廉价区分现行规范与历史调查"；于是把多词条候选查询的模块集按顶层 scope 桶分新增为 coverage.scopes_breakdown（JSON 字段 + 文本 `by scope: ai=2 designs=1` 行），期望模型一跳即可完成"官方 vs 调查"归位。同时给 runner 增加超时单次重试（TD1 在 skill 条件 916s 挂起后 session 为空，属 LM Studio 停摆的基础设施抖动而非 agent 行为），并顺带修好超时会话的 token 计量缺口。
+
+确定性验证：P8 探针过（breakdown {'ai': 2, 'designs': 1}）；service 32 测试绿；TD1-skill 本轮 151s 干净通过且 token 计量恢复（44k），证实上轮确为基础设施抖动。
+
+**verdict：记分卡无显著改进（13 vs 15，n=1）。** 通过格波动集中在预算线附近的 ±20% 抖动带（bash/TC1 29.4k vs 26k 线、T6/TB1 多格互换）。成本面分化：skill/TC1 39k→32k 继续改善，但 enforced/TC1 84k→266k 恶化（干净单跑、46 条消息，无重试叠加）——breakdown 的可见性反而可能诱导模型深入调查文档做排除论证。n=1 无法归因，但按协议记为本轮无效。
+
+沉淀：①超时重试与计量修复是本轮确定性收益；②"展示调查存在"与"证明规范缺席"是两种相反的引导，affordance 设计要按条件目标分化（enforced 组更适合把排除后的覆盖度前置）；③预算线附近的格子占比过高（约 1/3），下一序列应先按条件分档预算（enforced 系数 ~2×）再判读，否则抖动淹没信号。
