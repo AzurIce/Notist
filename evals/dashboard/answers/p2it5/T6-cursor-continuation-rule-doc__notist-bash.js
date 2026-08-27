@@ -1,0 +1,1 @@
+window.EVAL_ANSWERS["p2it5||T6-cursor-continuation-rule-doc__notist-bash"]="\n\n- **机制名**：可恢复 Cursor（resumable cursor，opaque 翻页 token）\n- **文档名**：`designs/host/query-contract.not`（模块 `vault::designs::host::query-contract`，节「Snapshot Stamp 与可恢复 Cursor」）\n";

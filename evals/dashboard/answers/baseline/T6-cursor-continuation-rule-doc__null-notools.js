@@ -1,0 +1,1 @@
+window.EVAL_ANSWERS["baseline||T6-cursor-continuation-rule-doc__null-notools"]="\n\n续读行为：notist 检索按页返回；当前页看不完/还有后续时，应携带上一页返回的游标（如 `next_cursor` / page token）继续取下一页，直到没有 next cursor、返回空页或达到页数/预算上限。\n\n权威文档：`notist-pagination-and-stop-rules.md`（《notist 分页与停止规则》）  \n停止规则一节标题：`Stop rules`（即“停止规则”）\n";

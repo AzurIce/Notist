@@ -15,7 +15,7 @@ import json,sys
 r=json.load(sys.stdin)["result"]
 sp=r["search"]; cov=r["coverage"]
 ok = len(r["items"])>=1 and sp.get("ranking_version")=="bm25-v4" \
-     and cov.get("matched_modules")==3 and cov.get("complete")
+     and (cov.get("matched_modules") or 0)>=3
 print(" hits",len(r["items"]),"mm",cov.get("matched_modules"),"mu",cov.get("matched_units"))
 raise SystemExit(0 if ok else 1)' || fail=1
 

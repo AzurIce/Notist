@@ -1,0 +1,1 @@
+window.EVAL_ANSWERS["p2it4||T6-cursor-continuation-rule-doc__md-bash"]="\n\n- **机制名**：cursor（不透明、自包含的续读 token，CLI 上统一为 `notist next <TOKEN>` 翻页）\n- **文档名**：`designs/host/query-contract.md`（Query Contract，「Snapshot Stamp 与可恢复 Cursor」一节）\n";

@@ -1,0 +1,1 @@
+window.EVAL_ANSWERS["p3run2||T5-table-constructor-section-read__notist-bash"]="\n\n**结论（出处：`functions.not`，节 `== table-cell / table`）**\n\n- 列数由参数 **`columns: Int`**（必填）控制；\n- 表头由参数 **`header: Bool = false`** 控制（决定首行是否进入表头）。\n\n签名：`table(columns: Int, header: Bool = false, align: String? = none, trailing body: Content) -> Content`，文档文件为 **functions.not**。\n";

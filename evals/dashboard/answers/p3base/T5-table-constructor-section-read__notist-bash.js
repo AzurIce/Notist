@@ -1,0 +1,1 @@
+window.EVAL_ANSWERS["p3base||T5-table-constructor-section-read__notist-bash"]="\n\n**结论：**\n\n- **列数**：`columns`（Int，必填）\n- **表头**：`header`（Bool = false），决定首行是否进入表头\n\n签名：\n```text\ntable(columns: Int, header: Bool = false, align: String? = none, trailing body: Content) -> Content\n```\n\n**出处：** `functions.not`，节标题「table-cell / table」（约第 178 行起）。\n";

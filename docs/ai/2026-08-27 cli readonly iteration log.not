@@ -95,7 +95,7 @@ edit 守卫校验的指纹是 FNV-1a-64（request.rs source_fingerprint() 经 li
 
 == Phase 3：语料 v2 · 任务 v2 重锚（p3base）
 
-前置修正（main 981f7f4、1666adc）：落库三条被引用但未提交的调查文档、修正 slash 引用笔误、修复插件 README 断行行内码。语料重冻结为全量含 ai/ 的完整 vault 并捆绑 mermaid/shader 插件包，**101 源零诊断**；每模块注入 kind/status 属性。Markdown v2 由 build_corpus_v2.py convert 以严格文法产出（ATX 标题、**strong**、数字有序表、frontmatter、显式锚点），校验器零泄漏。
+前置修正（main 5a17c2a、3ec331c，重写前为 981f7f4/1666adc）：落库三条被引用但未提交的调查文档、修正 slash 引用笔误、修复插件 README 断行行内码。语料重冻结为全量含 ai/ 的完整 vault 并捆绑 mermaid/shader 插件包，**101 源零诊断**；每模块注入 kind/status 属性。Markdown v2 由 build_corpus_v2.py convert 以严格文法产出（ATX 标题、**strong**、数字有序表、frontmatter、显式锚点），校验器零泄漏。
 
 任务集升级为四类九题并全带 token 预算：T-A 烟雾六题沿用收紧措辞；新增 TB1 多跳引用链（真值=10 个引方）、TC1 向量检索否定证明（官方规范仅词法/bm25；向量话题只在 dated 调查里出现）、TD1 字节区间取证（真值 span=3927..4929）。notist-enforced 新条件以硬性规则+事后 session 审计落地，全程零违规。
 

@@ -1,0 +1,1 @@
+window.EVAL_ANSWERS["baseline||T5-table-constructor-section-read__null-notools"]="\n\n表格列数由 `cols` 参数控制，表头由 `header` 参数控制。\n\n出处：`notist-function-reference.md`（“table constructor”/“table 构造器”一节）。\n";

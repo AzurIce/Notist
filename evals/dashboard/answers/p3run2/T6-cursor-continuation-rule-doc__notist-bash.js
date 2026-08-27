@@ -1,0 +1,1 @@
+window.EVAL_ANSWERS["p3run2||T6-cursor-continuation-rule-doc__notist-bash"]="\n\n- **机制名**：cursor（opaque continuation token；CLI 续读动作 `notist next <TOKEN>`）\n- **文档名**：Query Contract（`designs/host/query-contract.not`，§查询产品形态 / Cursor 绑定规则）\n";

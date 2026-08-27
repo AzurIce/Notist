@@ -1,0 +1,1 @@
+window.EVAL_ANSWERS["p2base||T6-cursor-continuation-rule-doc__notist-bash"]="\n\n- **机制名**：cursor（stable continuation cursor，可恢复 Cursor；CLI 续读动作统一为 `notist next <TOKEN>`）\n- **文档名**：`designs/host/query-contract.not`（《Query Contract》，节「Snapshot Stamp 与可恢复 Cursor」）\n";

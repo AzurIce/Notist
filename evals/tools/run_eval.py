@@ -103,7 +103,10 @@ def corpus_digest(root: Path) -> str:
     h = hashlib.sha256()
     for f in sorted(root.rglob("*")):
         if f.is_file():
-            h.update(str(f.relative_to(root)).encode())
+            rel = str(f.relative_to(root))
+            if rel == ".corpus-source-commit":
+                continue  # the pointer is metadata, not corpus content
+            h.update(rel.encode())
             h.update(f.read_bytes())
     return h.hexdigest()[:16]
 

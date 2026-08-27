@@ -10,10 +10,10 @@
 
 | 语料 | 来源 | 指纹（sha256 前 16 位） |
 | - | - | - |
-| `corpora/notist` | main 仓库 docs+plugins @ **1666adc**（全量含 ai/，插件捆绑）经 `prepare` 增强 | e3177ce57590b04b |
+| `corpora/notist` | main 仓库 docs+plugins @ **3ec331c**（全量含 ai/，插件捆绑；重写前为 1666adc）经 `prepare` 增强 | ed6c54bda9027c05 |
 | `corpora/markdown` | 上者经严格转换器 `build_corpus_v2.py convert` 导出 | a77e7cc5623659d7 |
 
-裁剪仅剔除 `.obsidian` 与 `AGENTS.md`；mermaid/shader 插件包随语料捆绑、以仓库相对路径在 Notist.toml 声明，使裸调用可注册。冻结时点上游缺口（未提交的调查条目、slash 引用笔误、断行行内码）已在 main 提交 981f7f4 与 1666adc 先行修复——语料本身零诊断。指纹算法与逐文件清单见 `evals/corpora/README.md`。
+裁剪仅剔除 `.obsidian` 与 `AGENTS.md`；mermaid/shader 插件包随语料捆绑、以仓库相对路径在 Notist.toml 声明，使裸调用可注册。冻结时点上游缺口已在 main 提交 5a17c2a 与 3ec331c 先行修复（重写前为 981f7f4/1666adc）——语料本身零诊断。指纹算法与逐文件清单见 `evals/corpora/README.md`。
 
 === 同步规则
 
@@ -83,7 +83,7 @@ prompt 层禁令不做安全边界，真正的执法是事后审计：runner 逐
 
 == 已决事项备忘
 
-edit 守卫指纹双实现冲突已于 2026-08-27 裁决修复（commit 2c6ec1a：守卫校验改用 canonical content fingerprint，遗留 fnv 助手更名，回归测试钉死两条路径同源）。修复前针对该缺陷设计的微基准条目随之失效。
+edit 守卫指纹双实现冲突已于 2026-08-27 裁决修复（分支提交 edd8462：守卫校验改用 canonical content fingerprint，遗留 fnv 助手更名，回归测试钉死两条路径同源）。修复前针对该缺陷设计的微基准条目随之失效。
 
 == 演进路线
 

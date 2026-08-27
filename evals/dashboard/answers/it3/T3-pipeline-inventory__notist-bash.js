@@ -1,0 +1,1 @@
+window.EVAL_ANSWERS["it3||T3-pipeline-inventory__notist-bash"]="\n\ndesigns/pipeline 目录下的文件清单：\n\n- evaluate.not\n- parse.not\n- plugin-call-reduction.not\n- project.not\n- README.not\n- structure.not\n";

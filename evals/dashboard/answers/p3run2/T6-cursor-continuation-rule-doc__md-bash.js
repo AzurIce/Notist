@@ -1,0 +1,1 @@
+window.EVAL_ANSWERS["p3run2||T6-cursor-continuation-rule-doc__md-bash"]="\n\n- **机制名**：可恢复 Cursor（opaque 自包含 token；CLI 续读动作统一为 `notist next <TOKEN>`）\n- **文档名**：Query Contract（`designs/host/query-contract.md`，节「Snapshot Stamp 与可恢复 Cursor」）\n";

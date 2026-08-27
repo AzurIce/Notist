@@ -1,0 +1,1 @@
+window.EVAL_ANSWERS["it1||T6-cursor-continuation-rule-doc__null-notools"]="\n\n续读不是重新检索，而是基于上一页返回的游标/偏移（如 `next_cursor`、`page_token` 或 offset）继续取下一页；直到满足停止条件（如 `has_more=false`、游标为空或达到最大页数/无相关结果）。\n\n出处：文档 `notist-pagination.md`；讲停止规则的节标题：`Stopping rules`（即“停止规则”）。\n";

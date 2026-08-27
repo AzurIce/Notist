@@ -1,0 +1,1 @@
+window.EVAL_ANSWERS["p3base||T5-table-constructor-section-read__md-bash"]="\n\n**结论：**\n- 列数：`columns: Int`（必填，每 `columns` 个 cell 为一行）\n- 表头：`header: Bool = false`（决定首行是否进入表头）\n\n**出处：** `functions.md`，节标题「## table-cell / table」（签名：`table(columns: Int, header: Bool = false, align: String? = none, trailing body: Content) -> Content`）。\n";

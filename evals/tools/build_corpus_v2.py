@@ -115,8 +115,11 @@ def unprotect(line: str, stash) -> str:
 
 def cmd_prepare(src: Path, dst: Path) -> None:
     repo = Path("/home/azurice/Files/notist")
-    commit = subprocess.run(["git", "-C", str(repo), "rev-parse", "HEAD"],
-                            capture_output=True, text=True).stdout.strip()
+    # freeze source must be explicit: HEAD (often a WIP) must never silently
+    # move the corpus pin; pass the commit as argv[4] when calling prepare.
+    commit = sys.argv[4] if len(sys.argv) > 4 else "3ec331c"
+    subprocess.run(["git", "-C", str(repo), "cat-file", "-t", commit],
+                   capture_output=True, check=True)
     if dst.exists():
         shutil.rmtree(dst)
     dst.mkdir(parents=True)

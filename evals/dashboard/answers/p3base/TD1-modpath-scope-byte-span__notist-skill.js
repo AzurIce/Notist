@@ -1,0 +1,1 @@
+window.EVAL_ANSWERS["p3base||TD1-modpath-scope-byte-span__notist-skill"]="\n\n**§ModulePath Scope：字节区间 3927..4929**（起始 3927，结束 4929）。\n\n出处：`designs/host/query-contract.not:74`（模块 `vault::designs::host::query-contract`，由 `notist outline vault::designs::host::query-contract .` 的 span 行给出）。\n";

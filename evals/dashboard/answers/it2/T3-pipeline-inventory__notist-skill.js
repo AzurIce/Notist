@@ -1,0 +1,1 @@
+window.EVAL_ANSWERS["it2||T3-pipeline-inventory__notist-skill"]="\n\ndesigns/pipeline 目录下共有 6 个设计文档：\n\n- README.not\n- evaluate.not\n- parse.not\n- plugin-call-reduction.not\n- project.not\n- structure.not\n";
