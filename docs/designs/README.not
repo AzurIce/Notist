@@ -109,6 +109,7 @@ plugin-system/ 插件系统：package、ABI、贡献、信任模型与生命周�
 8. #<vault::designs::lsp::test>：LSP 无头契约测试：黑箱层判据、harness 确定性规则与场景目录。
 9. #<vault::designs::host::html-renderer>：HTML 渲染。
 10. #<vault::designs::host::build-preview>：静态构建与本地预览。
+11. #<vault::designs::host::cli-agent-eval-framework>：CLI Agent 评测框架：双语料冻结与同步规则、条件矩阵与审计式执法、任务分类学与记分卡、协议纪律。
 
 == 状态属性
 

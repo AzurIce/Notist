@@ -49,7 +49,7 @@ python3 evals/tools/grader.py evals/tasks.json evals/runs/pilot-002/output
 1. 补跑 pilot（前两次因环境加固先后中断，pilot-002 只完成 T1 null 组一条）。判读顺序：先看 null 组应≈0 分校准信噪比，再看组间差值归因。
 2. 同一轮内做 n>=3 重复后再下任何结论；单次差异只当线索。
 3. 第二层微观基准（无需模型）：固定查询的字节成本 fixture（search/outline/read 各形态 text/json、cursor、scope 过滤），脚本化回归。候选微基准素材即已知 CLI 缺陷清单：
-   - guarded edit 指纹双实现冲突：`read` 系报 SHA-256 前 16 位（`crates/notist-service/src/query.rs` `fn fingerprint(&str)`），edit 校验却用 FNV-1a-64（`crates/notist-service/src/request.rs` `source_fingerprint()` 引 `crates/notist-service/src/lib.rs` u64 版本），CLI 永远提供不出能通过守卫的指纹；
+   - ~~guarded edit 指纹双实现冲突~~ 已裁决修复（2026-08-27，commit 2c6ec1a：edit 守卫改用 canonical content fingerprint 并加回归测试）；
    - codespan 文本渲染把 info 级诊断标成 `error[...]`（JSON 里 severity 正确）；check 默认 `--severity error` 时输出 "showing 0" 无隐藏提示；
    - modules/read 输出中含空格文件名的 ModulePath 无法引用；
    - exact 搜索分组返回里部分命中缺 match_range 字段；
