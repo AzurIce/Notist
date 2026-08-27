@@ -232,6 +232,95 @@ pub fn leaf(name: &str, block: bool) -> Node {
 }
 
 // ---------------------------------------------------------------------------
+// Freestanding core-module ABI.
+//
+// The component world above rides on the canonical ABI; the exports below
+// speak raw linear memory instead so the same plugin logic can be compiled
+// as a zero-import core wasm module and instantiated by any embedder —
+// wasmtime `Module` natively, or the browser's own WebAssembly engine.
+//
+// Convention (little-endian, all pointers into guest linear memory):
+// - `notist_alloc(len: u32) -> u32`  guest allocates `len` writable bytes;
+// - `notist_free(ptr: u32, len: u32)` releases a buffer handed to the host
+//   or allocated for it; `len` is the length the host observed;
+// - `notist_init() -> i64` and `notist_evaluate(ptr: u32, len: u32) -> i64`
+//   pack a result as `(ptr: u32) << 32 | (len: u32)`. A set sign bit on the
+//   length half marks an error message string instead of a payload.
+// Guest buffers are always `shrink_to_fit`-ed before being handed out, so
+// `len == capacity` and `notist_free(ptr, len)` reclaims exactly what was
+// allocated.
+// ---------------------------------------------------------------------------
+
+#[doc(hidden)]
+pub mod core_abi {
+    /// Packs a guest buffer handle; `len` carries the error sign bit.
+    pub fn pack(ptr: u32, len: u32) -> i64 {
+        (((ptr as u64) << 32) | (len as u64 & 0xffff_ffff)) as i64
+    }
+
+    /// Hands ownership of a result buffer to the host.
+    pub fn pack_ok(mut bytes: Vec<u8>) -> i64 {
+        bytes.shrink_to_fit();
+        let handle = pack(bytes.as_ptr() as u32, bytes.len() as u32);
+        std::mem::forget(bytes);
+        handle
+    }
+
+    /// Hands ownership of an error message string to the host. The flag is
+    /// the top bit of the length half, so the payload stays at most 2 GiB.
+    pub fn pack_error(message: &str) -> i64 {
+        pack_ok(message.as_bytes().to_vec()) | (1_i64 << 31)
+    }
+
+    /// Reclaims a buffer handed to the host. `len` must be the length the
+    /// host observed; buffers were shrunk before handoff, so capacity == len.
+    ///
+    /// # Safety
+    /// `ptr` must have been produced by this module's allocator and not
+    /// freed before.
+    pub unsafe fn reclaim(ptr: u32, len: u32) {
+        if len == 0 {
+            return;
+        }
+        // SAFETY: see the function contract; capacity == len by convention.
+        drop(unsafe { Vec::<u8>::from_raw_parts(ptr as *mut u8, 0, len as usize) });
+    }
+}
+
+/// Shared freestanding `notist_init` implementation.
+#[doc(hidden)]
+pub fn core_init<P: Plugin>() -> i64 {
+    let state = build_guest_state::<P>();
+    match wire::encode_declarations(&state.declarations) {
+        Ok(bytes) => {
+            let _ = GUEST_STATE.set(state);
+            core_abi::pack_ok(bytes)
+        }
+        Err(message) => core_abi::pack_error(&format!("plugin init failed: {message}")),
+    }
+}
+
+/// Shared freestanding `notist_evaluate` implementation. Takes ownership of
+/// the host-written request buffer (`ptr`, `len`) and frees it before
+/// returning.
+///
+/// # Safety
+/// `ptr` must have been returned by `notist_alloc` with `len` bytes still
+/// valid, and must not be freed by the host.
+pub unsafe fn core_evaluate(package: &str, ptr: u32, len: u32) -> i64 {
+    // SAFETY: the caller guarantees `ptr` is a live `notist_alloc` buffer of
+    // `len` bytes that the host has not freed.
+    let request = unsafe { Vec::from_raw_parts(ptr as *mut u8, len as usize, len as usize) };
+    match GUEST_STATE.get() {
+        None => core_abi::pack_error("plugin not initialized"),
+        Some(state) => match evaluate_dispatch(state, package, request) {
+            Ok(bytes) => core_abi::pack_ok(bytes),
+            Err(message) => core_abi::pack_error(&message),
+        },
+    }
+}
+
+// ---------------------------------------------------------------------------
 // Export macro. The WIT text is embedded inline so plugin authors do not need
 // a local copy of the interface file.
 // ---------------------------------------------------------------------------
@@ -281,6 +370,61 @@ world plugin {
             }
 
             export!(NotistGuest);
+        }
+    };
+}
+
+/// Generates freestanding core-wasm exports for a [`Plugin`] implementation.
+///
+/// This is the zero-import counterpart of [`export_plugin!`](crate::export_plugin):
+/// the crate compiles to a plain core wasm module (e.g. `--target
+/// wasm32-unknown-unknown`) with no WASI and no component layer, so the same
+/// `.wasm` artifact instantiates under wasmtime's `Module` API natively and
+/// under the browser's own WebAssembly engine. See the module docs for the
+/// raw memory ABI.
+#[macro_export]
+macro_rules! export_plugin_core {
+    ($package:expr, $plugin:ty) => {
+        #[allow(non_camel_case_types)]
+        type __NotistPluginCore = $plugin;
+
+        /// ABI revision of the freestanding core-module exports.
+        #[unsafe(no_mangle)]
+        pub extern "C" fn notist_abi() -> i32 {
+            1
+        }
+
+        /// Allocates `len` writable bytes for the host to fill.
+        #[unsafe(no_mangle)]
+        pub extern "C" fn notist_alloc(len: u32) -> u32 {
+            let mut buffer = Vec::<u8>::with_capacity(len as usize);
+            let ptr = buffer.as_mut_ptr() as u32;
+            std::mem::forget(buffer);
+            ptr
+        }
+
+        /// Releases a buffer handed to the host (`notist_init`,
+        /// `notist_evaluate`) or allocated for it (`notist_alloc`).
+        #[unsafe(no_mangle)]
+        pub extern "C" fn notist_free(ptr: u32, len: u32) {
+            // SAFETY: buffers are only handed out by the paths above and are
+            // freed exactly once by the host.
+            unsafe { $crate::core_abi::reclaim(ptr, len) }
+        }
+
+        /// Runs the plugin's `init`; returns the encoded declarations.
+        #[unsafe(no_mangle)]
+        pub extern "C" fn notist_init() -> i64 {
+            $crate::core_init::<__NotistPluginCore>()
+        }
+
+        /// Evaluates one dispatched call from the host-written request
+        /// buffer; takes ownership of the buffer and returns the response.
+        #[unsafe(no_mangle)]
+        pub extern "C" fn notist_evaluate(ptr: u32, len: u32) -> i64 {
+            // SAFETY: the host allocated `ptr` via `notist_alloc` and has not
+            // freed it.
+            unsafe { $crate::core_evaluate($package, ptr, len) }
         }
     };
 }
