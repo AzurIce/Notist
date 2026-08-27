@@ -1,0 +1,59 @@
+# 实验：freestanding core wasm 插件
+
+验证"插件不依赖 WASI/组件模型，可以直接以零导入 core wasm 模块分发"的判断。
+性能归因背景见 docs/ai 的 2026-08-27 性能剖析条目；协议形状见
+docs/designs/plugin-system/abi.not。
+
+## 改动面
+
+- `notist-plugin-sdk` 新增 `export_plugin_core!`：与 `export_plugin!` 共享
+  `Plugin`/`ElementFn` 逻辑与 `wire` 编解码，但导出原始内存 ABI 而非组件导出。
+- `notist-plugin-host` 按 wasm 二进制版本字节自动分派：`0x01` = core module，
+  `0x0d` = 组件。core 路径走 `wasmtime::Module`，无 WASI linker、无 canonical
+  ABI，fuel 与内存 limiter 照常生效。
+- `plugins/shader-wasm` 加 `core-abi` feature：
+  `cargo build --release --features core-abi --target wasm32-unknown-unknown`。
+
+## 内存 ABI（`notist_plugin_sdk` 模块文档有完整约定）
+
+- `notist_abi() -> i32` 版本号（当前 1）；
+- `notist_alloc(len) -> ptr` / `notist_free(ptr, len)`：宿主写入请求、回收响应；
+- `notist_init() -> i64`、`notist_evaluate(ptr, len) -> i64`：返回
+  `(ptr << 32) | len`，长度半段最高位为 1 表示错误消息字符串。
+- 载荷仍是共享的 version byte + postcard 帧（`notist-model::wire`），
+  与组件形态完全一致。
+
+## 验证结果（2026-08-27）
+
+- `gen-fixtures` 用 SDK 真实 dispatch 生成 request/response/declarations 字节
+  （每插件一个 bin：`gen-shader` / `gen-mermaid`——两个插件 rlib 的组件导出
+  符号同名，不能链接进同一个宿主二进制）；
+- `verify.mjs`（Node 24，主线程 + worker_threads 双跑）加载同一份 core wasm：
+  shader（85KB）与 mermaid（1.90MB，`mermaid-rs-renderer` 纯解析器照常工作）
+  的 `init`/`evaluate` 输出均与 Rust 侧逐字节一致；
+- 全库端到端：同一二进制，`check` 摘要一致、`build` 105 页 dist 树逐字节相同
+  （shader 或 mermaid 单换、双换均验证）；
+- 成本（同源同工具链 A/B，docs 全库，含两次装载/build）：
+  - mermaid：component 1.95 CPU s / 3.82 CPU s → core module 1.86 / 3.67，
+    **约省 5% CPU**，峰值 RSS 差异在噪音内；
+  - shader：0.46 → 0.37 CPU s，峰值 RSS −3.7MB。
+  - 注意对比要同源重建：仓库里旧的 mermaid 组件产物（1.66MB，8 月 26 日）
+    与当前源码的重建产物（2.00MB）行为差异比 ABI 本身还大。
+- 结论：core module 稳定小幅省 CPU、消除组件层依赖；对构建耗时的大头
+  （Cranelift 编译）两种形态相同，要消编译得配 AOT 产物缓存。
+
+## 复现
+
+```sh
+# core module 构建（shader/mermaid 同法）
+cd plugins/mermaid-wasm
+nix develop ~/Files/notist -c cargo build --release --features core-abi --target wasm32-unknown-unknown
+# 把产物覆盖 plugins/<name>/semantic.wasm 后跑 notist check/build
+
+cd experiments/core-wasm-plugin/gen-fixtures
+cargo run -q --bin gen-shader -- ../fixtures
+cargo run -q --bin gen-mermaid -- ../fixtures
+
+node ../verify.mjs ../../plugins/shader-wasm/target/wasm32-unknown-unknown/release/notist_plugin_shader_wasm.wasm ../fixtures/shader
+node ../verify.mjs ../../plugins/mermaid-wasm/target/wasm32-unknown-unknown/release/notist_plugin_mermaid_wasm.wasm ../fixtures/mermaid
+```

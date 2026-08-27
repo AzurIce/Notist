@@ -7,7 +7,13 @@ publish = false
 [workspace]
 
 [lib]
-crate-type = ["cdylib"]
+crate-type = ["cdylib", "rlib"]
+
+[features]
+default = []
+# Build as a zero-import core wasm module instead of a wasip2 component:
+#   cargo build --release --features core-abi --target wasm32-unknown-unknown
+core-abi = []
 
 [dependencies]
 mermaid-rs-renderer = { version = "0.3.1", default-features = false }
@@ -18,3 +24,4 @@ wit-bindgen = "0.60"
 [profile.release]
 opt-level = "s"
 lto = true
+panic = "abort"

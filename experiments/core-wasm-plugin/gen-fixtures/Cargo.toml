@@ -1,0 +1,16 @@
+[package]
+name = "gen-fixtures"
+version = "0.1.0"
+edition = "2024"
+publish = false
+
+[workspace]
+
+[dependencies]
+notist-model = { path = "../../../crates/notist-model" }
+notist-plugin-sdk = { path = "../../../crates/notist-plugin-sdk" }
+notist-plugin-shader-wasm = { path = "../../../plugins/shader-wasm" }
+notist-plugin-mermaid-wasm = { path = "../../../plugins/mermaid-wasm" }
+
+[profile.dev]
+debug = 0
