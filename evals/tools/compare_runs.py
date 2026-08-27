@@ -45,10 +45,8 @@ def main() -> None:
     budgets = {t["id"]: t.get("budget_tokens") for t in tasks_spec}
     base = load(Path(sys.argv[1]), budgets)
     it = load(Path(sys.argv[2]), budgets)
-    conds = ["null-notools", "md-bash", "notist-bash", "notist-skill"]
-    tasks = ["T1-locate-grammar-spec", "T2-callout-signature",
-             "T3-pipeline-inventory", "T4-module-annotation-syntax",
-             "T5-table-constructor-section-read", "T6-cursor-continuation-rule-doc"]
+    conds = sorted({c for side in (base, it) for c in side})
+    tasks = sorted({t for side in (base, it) for c in side.values() for t in c})
     print(f"{'cond/task':38s} {'base':>5s} -> {'iter':>5s}   dur(b->i,s)   tok(b->i)")
     flips = {"fail->pass": [], "pass->fail": []}
     tb = ti = pb = pi = 0

@@ -191,18 +191,24 @@
               "尚未实现",
               "暂不",
               "未支持",
-              "仅.*(词法|lexical|bm25)",
-              "只有.*(词法|lexical|bm25)",
-              "no[,.]|not (yet )?(support|implement)"
+              "未实现",
+              "架构预留",
+              "预留",
+              "非现行",
+              "不是现行",
+              "不属于现行能力",
+              "no[,.]|not (yet )?(support|implement|landed)"
             ],
-            "desc": "asserts absence of vector retrieval"
+            "desc": "asserts vector retrieval is absent / reservation-only"
           },
           {
             "type": "pattern_any",
             "patterns": [
-              "(?i)(bm25|lexical|词法|倒排)"
+              "(?i)(bm25|lexical|词法|倒排)",
+              "(?i)(embedd|向量).{0,24}(研究|调查|archiv|dated|非规范|roadmap|路线)",
+              "只在.{0,12}(调查|研究|ai/)"
             ],
-            "desc": "cites the lexical index as what exists"
+            "desc": "grounds what does exist (lexical) or locates vector talk to dated research"
           }
         ]
       },

@@ -112,3 +112,14 @@ edit 守卫校验的指纹是 FNV-1a-64（request.rs source_fingerprint() 经 li
 1. TD1 证明"接口独有形状"类任务能让原始 bash 无路可绕——Phase 3 的设计目标达成，宏评测重新具备区分度。
 2. TC1 四组全过但成本天差地别（enforced 烧到 211k）：证明缺席的易用性是下一个真实改进靶点——需要更强的负向答案脚手架（zero-hit 即 complete 已实现但模型不信任），以及可选的 --exclude-scope。
 3. notist-bash 与 md-bash 同分不同价（196k vs 581k）：优越性主张首次有量化支撑。
+
+
+== Phase 3 迭代 2：--exclude-scope 落地（A3）与缺席证明经济
+
+思路：p3base 的最大成本异常是 TC1 否定证明在 enforced 条件下烧掉 211k——模型反复翻页试图穷举证明"不存在"。规范预留的 A3 正是为此设计；同时把零结果提示从"换个词试试"升级为缺席语义。
+
+改动：SearchQuery 新增 exclude_scopes（serde default 向后兼容），tantivy 层注入 MustNot 前缀子句、命中层镜像过滤，字段纳入页 fingerprint 保证 cursor 一致；CLI 搜索新增可重复 --exclude-scope；zero-hit 提示明确"完全覆盖即权威缺席证据"。service 单测 32 绿、探针 P7 验证 vault::ai 排除后 matched 15→8。
+
+**verdict（对位 p3base，n=1）：显著改进。** 通过格 9→15（+67%）；总 token 1.56M→1.39M。TB1 多跳链四条件全部由败转胜（引用边 affordance 生效）；enforced/TC1 成本 211k→84k（−60%）、skill/TC1 82k→39k（−52%）——缺席证明的经济性实打实改善，尽管 enforced 仍未过 26k 预算线，仍留改进空间。两处"退化"均为预算/超时层而非内容错：T6-bash 回答正确但超出 22k 预算；skill/TD1 出现 916s 挂起（token 计数为空属 runner 对超时会话的计量缺口，待修）。另按纪律修订 TC1 判据以接受"架构预留/非现行能力"类正确表述，双轮重判。
+
+下一序列靶点：①TD1 在 skill 条件的挂起复现与归因；②缺席证明要过预算线还需更深的 affordance（如把 matched=0 与 complete 直接写进 hint 已做，进一步可在 JSON 顶层加 absent_hint 结构化字段或在 prompt 层示例否定问答式）；③n≥3 协议下的正式重锚。
