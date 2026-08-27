@@ -91,3 +91,24 @@ verdict：无显著改进（attempt 5/5）。18 格对位：notist 两组全过�
 == 附带修复（收口后，写入面）：指纹双实现冲突
 
 edit 守卫校验的指纹是 FNV-1a-64（request.rs source_fingerprint() 经 lib.rs u64 fingerprint），而全部查询面（read/modules/search 的 location.source_fingerprint）报告 SHA-256 前 16 位（query.rs fingerprint(&str)）——同名同宽不同算法，文档化的"read 取指纹 → guarded replace"流程永远被 edit_conflict 拒绝（此前实测验证）。修复：query::fingerprint 提为 crate 规范实现，写入面统一引用；lib.rs FNV 版更名 fnv1a 且只剩 edit_plan_hash 这类内部标识在用；新增回归测试锁定"两种路径对同一内容产出同一指纹"。端到端实测：scratch vault 中 read 指纹一次通过 edit replace。
+
+
+== Phase 3：语料 v2 · 任务 v2 重锚（p3base）
+
+前置修正（main 981f7f4、1666adc）：落库三条被引用但未提交的调查文档、修正 slash 引用笔误、修复插件 README 断行行内码。语料重冻结为全量含 ai/ 的完整 vault 并捆绑 mermaid/shader 插件包，**101 源零诊断**；每模块注入 kind/status 属性。Markdown v2 由 build_corpus_v2.py convert 以严格文法产出（ATX 标题、**strong**、数字有序表、frontmatter、显式锚点），校验器零泄漏。
+
+任务集升级为四类九题并全带 token 预算：T-A 烟雾六题沿用收紧措辞；新增 TB1 多跳引用链（真值=10 个引方）、TC1 向量检索否定证明（官方规范仅词法/bm25；向量话题只在 dated 调查里出现）、TD1 字节区间取证（真值 span=3927..4929）。notist-enforced 新条件以硬性规则+事后 session 审计落地，全程零违规。
+
+**p3 结果：35/36**。唯一失败恰是设计靶点本身——md-bash 在 TD1 超时（900s、约 40 万 token 也拿不出字节区间），而三个 notist 条件 91–120 秒全部精确命中。token 经济同样分化显著：
+
+| 条件 | 总 tokens | 总时长 |
+| - | - | - |
+| md-bash | 580,827 | 1,862s |
+| notist-bash | **196,266** | 1,165s |
+| notist-enforced | 504,416 | 1,785s |
+| notist-skill | 276,640 | 1,389s |
+
+判读：
+1. TD1 证明"接口独有形状"类任务能让原始 bash 无路可绕——Phase 3 的设计目标达成，宏评测重新具备区分度。
+2. TC1 四组全过但成本天差地别（enforced 烧到 211k）：证明缺席的易用性是下一个真实改进靶点——需要更强的负向答案脚手架（zero-hit 即 complete 已实现但模型不信任），以及可选的 --exclude-scope。
+3. notist-bash 与 md-bash 同分不同价（196k vs 581k）：优越性主张首次有量化支撑。
