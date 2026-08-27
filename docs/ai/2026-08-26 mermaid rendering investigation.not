@@ -1,0 +1,81 @@
+= Mermaid 渲染效果调查：Notist 与 Zed
+
+#callout(kind="note", title=[结论])[
+图一比图二丑，主要不是 CSS 颜色问题，而是两边使用了不同的 Mermaid 实现与布局管线。Notist 当前浏览器端把 `mermaid-rs-renderer` 编译成 Wasm，使用它自己的布局、字体测量和 SVG 输出；Zed 的 Markdown 预览使用原生 Rust `merman`，再经过 Zed 专用的主题映射、字体回退、SVG 安全处理和 accent 颜色后处理。要获得接近 Zed 的效果，优先替换/对齐渲染后端，单独调 Web Component 的边距不会解决根因。
+]
+
+== 当前 Notist 渲染链
+
+Notist 的语义插件在 `plugins/mermaid-wasm/src/lib.rs` 做一次解析校验，把 `#mermaid(...)` 规约为数据叶子 `mermaid::diagram`。HTML target 再把它投影为 `<notist-mermaid>` Web Component；Rust 端和浏览器端的职责如下：
+
+- `plugins/mermaid-wasm`：调用 `mermaid_rs_renderer::parse_mermaid_strict`，只负责语法合法性和 theme 名校验。
+- `plugins/mermaid-web/src/lib.rs`：把 `mermaid-rs-renderer` 编译为 `wasm-bindgen` 模块，调用 `render_with_options` 生成 SVG。
+- `plugins/mermaid/assets/mermaid.js`：加载本地 `mmdr-renderer.js`，把 SVG 插入 Shadow DOM；目前只设置 `max-width: 100%` 和自适应高度。
+- `plugins/mermaid/plugin.json`：声明 `diagram` 的 HTML Web Component 投影。
+
+浏览器端的关键配置目前等价于：
+
+```rust
+let options = mermaid_rs_renderer::RenderOptions {
+    theme,
+    ..mermaid_rs_renderer::RenderOptions::default()
+};
+mermaid_rs_renderer::render_with_options(source, options)
+```
+
+因此图一使用 `mermaid-rs-renderer` 自己的 modern theme 和默认 `LayoutConfig`。它没有读取 Notist 页面主题，也没有 Zed 的字体族回退、节点 accent、SVG 后处理或原生缩放容器。
+
+== Zed 的渲染链
+
+以 Zed 仓库 `HEAD`（2026-08-26 拉取，commit `fecc3273ed32643c2ea1b04a74c8780e2c9ffaf8`）为准：
+
+- `crates/markdown/src/markdown.rs` 识别 `mermaid` fenced code block，并在 GPUI Markdown preview 中创建原生 Mermaid 元素；不是浏览器 Markdown 插件。
+- `crates/mermaid_render/Cargo.toml` 使用 `merman = 0.8.0-alpha.5`，启用 `layout-cytoscape` 与 `svg`。
+- `crates/mermaid_render/src/render.rs` 用 `HeadlessRenderer` + `with_vendored_text_measurer()` 生成 SVG，再启用 `SvgPipeline::resvg_safe()`，处理 foreignObject、CSS 和 rasterizer 不兼容项。
+- `crates/mermaid_render/src/postprocess.rs` 及其子模块继续做 Zed 专用的元素修补、accent 色和 CSS 注入。
+- `crates/markdown/src/mermaid.rs` 从当前编辑器主题取背景、文字、边框、字体和协作用户的 player colors；`mermaid_font_family` 强制补 `sans-serif`，避免字体测量偏窄导致文字溢出。
+- Zed 最后用 GPUI 的 SVG renderer 将结果栅格化，缓存自然尺寸，支持 Ctrl/⌘+滚轮缩放；图二的 `Preview / Code` 交互和留白也是这个原生预览容器的一部分，不是 Mermaid SVG 自己提供的。
+
+Zed 的基础 theme 变量是编辑器主题的投影，此外还把 player colors 映射到节点/分支 accent。也就是说，图二的观感来自「merman 布局 + Zed 主题 + Zed 后处理 + GPUI 容器」的组合。
+
+== 差异定位
+
+| 维度 | Notist 当前 | Zed 当前 | 对图一的影响 |
+| - | - | - | - |
+| 解析/布局 | `mermaid-rs-renderer` 自有布局 | `merman` + Cytoscape layout | 节点层级、交叉边、回边路径不同；这是最大差异 |
+| 文本测量 | mmdr 默认测量 | vendored text measurer + `sans-serif` 回退 | 长中文/多行标签的宽度和换行不同 |
+| 主题 | mmdr `modern` 默认 theme | 编辑器主题变量 + player accent | 图形颜色更统一，节点不再单一浅色 |
+| SVG 处理 | 直接把 SVG 写入 Shadow DOM | resvg-safe pipeline + Zed postprocess | foreignObject、CSS、箭头和文字兼容性不同 |
+| 容器 | 普通 Web Component，`max-width` | GPUI 原生滚动/缓存/缩放容器 | 图二的比例、缩放和可读性更稳定 |
+| 运行位置 | 浏览器 Wasm | Zed native background task | 字体、测量和渲染能力边界不同 |
+
+另外，仓库里的 `dist/_notist/plugins/mermaid/mermaid.js` 可能来自更早的 CDN Mermaid.js 版本，而当前源码已经切换到本地 mmdr Wasm；没有重新 build 时，看到的 dist 页面不一定代表当前源码。比较效果前应先清理并重新生成目标目录。
+
+== 建议路线
+
+=== P0：先固定比较基线
+
+- 用同一份 Mermaid 源码、同一 viewport 和同一字体，分别保存 Notist 当前 mmdr SVG 与 Zed merman SVG。
+- build 前清理 `dist`，避免旧的 CDN `mermaid.js` 与当前本地 Wasm 产物混用。
+- 将 SVG 的 `viewBox`、节点数、文本换行数和外接尺寸记入回归样本；不要只凭截图调颜色。
+
+=== P1：选择渲染后端
+
+如果目标是离线、跨浏览器并尽量接近 Zed，优先评估把 Zed 使用的 `merman` 能力移植到 `plugins/mermaid-web`（需要确认 wasm32 依赖、字体测量和包体积）。如果目标是最高 Mermaid 兼容性，保留浏览器 Mermaid.js 作为可选 backend；它的布局/样式通常更接近 Mermaid 生态，但会牺牲离线和沙箱边界。
+
+不建议只在 `plugins/mermaid/assets/mermaid.js` 增加 padding、border 或缩放 CSS：那只能改变外框，不能修复当前布局算法和文本测量造成的交叉边、宽高比与换行问题。
+
+=== P2：补齐宿主投影能力
+
+无论最终选择哪一个后端，都应把 theme、字体族、preferred aspect ratio、max width/height 和 zoom 作为 Web Component 的显式配置，并为长标签、中文、回边、subgraph 和深层 DAG 建立截图/尺寸回归。
+
+== 证据索引
+
+- Notist semantic renderer：`plugins/mermaid-wasm/src/lib.rs`
+- Notist browser renderer：`plugins/mermaid-web/src/lib.rs`
+- Notist Web Component：`plugins/mermaid/assets/mermaid.js`
+- Notist HTML projection test：`crates/notist-html/src/lib.rs:1863`
+- Zed Mermaid entrypoint：`crates/markdown/src/mermaid.rs`
+- Zed renderer adapter：`crates/mermaid_render/src/render.rs`
+- Zed postprocess：`crates/mermaid_render/src/postprocess.rs`
+- Zed theme construction：`crates/markdown/src/mermaid.rs` 的 `build_mermaid_theme`

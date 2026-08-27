@@ -1,0 +1,188 @@
+= 各操作系统 / 文件系统不允许出现的字符
+
+#callout(kind="note", title=[文档定位])[
+回答"哪些字符不能放在文件名里"这件事时，结论会因「文件系统 / 操作系统 / 工具层 / shell」四个层面而完全不同。本文按层拆开梳理：先看文件系统层（FAT/NTFS/ext4/APFS/...）真正禁止的字节，再看 OS 层（Win32/Mac/Unix syscall）附加的过滤，最后看 shell/工具层的实际体验差异。
+
+本文也是 notist 自身 `filesystem_segment` 编码策略的背景调查。notist 当前 `crates/notist-cli/src/build.rs:723` 与 `crates/notist-service/src/request.rs:2406` 已实现"`< > : " / \ | ? * ~ .` 与控制字符 → `~XX` 十六进制"+"Windows 设备名加 `~00` 前缀"，可与本调查的清单互证。
+]
+
+== 一句话总结
+
+跨平台保证可移植的最小字符集（POSIX Portable Filename Character Set）只有 65 个：
+
+```text
+A–Z  a–z  0–9  .  _  -
+```
+
+超出此集合的字符在「至少一个主流目标」上会出现问题（Windows 立即拒、macOS 用 NFD 归一化坑人、shell 需要转义）。文件系统的真禁止集合往往比工具层宽松；工具层的禁止又往往比"用户感觉能用"宽松。
+
+== 文件系统层
+
+== Windows 家族
+
+来源：Wikipedia "Filename"（table 节 11）、Microsoft Learn、FAT/NTFS/exFAT 规范。
+
+| 文件系统 | 真禁止字符（编码层） | 真禁止名（设备保留） | 其它约束 |
+| - | - | - | - |
+| FAT12/16/32 (SFN) | 0x00–0x1F、0x7F、0xFF 与 `" * / : < > ? \ \| + , . ; = [ ]`（SFN 中 `+ , . ; = [ ]`、DOS 1/2 还禁 0xE5 作首字符） | `CON/PRN/AUX/NUL/COM1-9/LPT1-9`、各 DOS 多任务版额外的 `$IDLE$ KEYBD$ SCREEN$ CONFIG$`、CP/M 时代还禁 `LST` | base ≤ 8、ext ≤ 3（共 11）；不区分大小写 |
+| VFAT / FAT32 (LFN) | 0x00–0x1F 与 `" * / : < > ? \ \|` | 同上（设备名仍禁） | 单段 ≤ 255 UCS-2 字符、路径总长 ≤ 32 760（Win32 默认 `MAX_PATH` 260） |
+| NTFS (Win32) | 0x00–0x1F 与 `" * / : < > ? \ \|` | 同上 | 单段 ≤ 255 字符；Win32 还会**自动剥除**末位 `.` 与首尾空格（UNC 例外） |
+| NTFS (POSIX 命名空间) | 仅 `/` 与 0x00 | — | 大小写敏感；POSIX 客户端（Git for Windows 的 Cygwin/MSYS 后端）能写 Win32 不让的字符 |
+| exFAT | 0x0000–0x001F 与 `" * / : < > ? \ \|` | — | 单段 ≤ 255 UTF-16 码元；规范中 255 长度是 UCS-2 限制（与 UTF-16 surrogate pair 行为不同） |
+| ReFS | 0x0000–0x001F 与 `" * / : < > ? \ \|` | 同 NTFS | 单段 ≤ 255；Windows Server 2012+ |
+
+* Win32 `MoveFile`/`CreateFile` 在 `\\?\` 前缀（NT 内核直接路径）下，会**绕过**自动剥除空格/点的处理，行为接近 POSIX 命名空间。这是 NTFS "POSIX 命名空间"在用户态能被利用的途径。
+* Windows 95/98/ME 还把 `...` `....` 等多点的段名当 `..` `../..` 处理（VMS 风格的祖辈引用）；NT 内核不再支持。
+* NTFS 系统内部元数据 `$Mft $MftMirr $LogFile $Volume $AttrDef $Bitmap $Boot $BadClus $Secure $Upcase $Extend $Quota $ObjId $Reparse` 不能被普通 API 创建。
+
+== POSIX / Unix
+
+来源：POSIX.1-2017 §3.282 *Portable Filename Character Set*（pubs.opengroup.org/onlinepubs/9699919799/basedefs/V1_chap03.html）、维基百科 Comparison of file systems。
+
+* **真禁止**：`/`（路径分隔符）与 `0x00`（C 字符串终止符）。除此之外文件系统层**几乎不限制**——ext2/3/4、XFS、Btrfs、JFS、ReiserFS、Reiser4、ZFS/OpenZFS、F2FS、bcachefs、HAMMER、HAMMER2、CephFS/BlueStore、tmpfs 等均接受「任意字节（除 `/` 与 `0x00`）」作为文件名片段。
+* 长度限制几乎都按**字节**计：ext2/3/4、XFS、ReiserFS、Reiser4、JFS、ZFS、Btrfs、tmpfs 等都是单段 ≤ 255 字节（多字节编码下能装的字符更少）；bcachefs 单段 ≤ 512 字节；HAMMER/HAMMER2 单段 ≤ 1023 字节。
+* 早期 Unix 14 字符限制（V7/S3/S5）早就过时。
+* FAT32/VFAT 通过 Linux 的 `vfat` 驱动挂载时，Windows 禁的字符被映射到 0xF000–0xFFFF 区的私有 Unicode 区（reverse mapping 表）；不同挂载选项（`shortname=`、`utf8=`）进一步影响映射行为。
+* ZFS 在传统意义上禁止 `null` 字节与 `/`；OpenZFS 2008 后无额外字符限制，但项目历史上收到过"未来会校验"的"将来时"承诺。
+* `mount -o casefold`（ext4/F2FS 较新内核）：启用 Unicode 大小写不敏感折叠后，`fsync`/`rename` 时由内核而非应用做归一化比较；归一化形式选 NFC 还是 NFD 由挂载选项决定，这是 Linux 5.2+ 之后才稳定的能力。
+* Btrfs 的 `case-insensitive` 子卷也是同样的内核级 Unicode 折叠。归一化在跨平台同步时容易踩坑（见 §4）。
+
+== classic Mac OS / HFS / HFS+ / APFS
+
+来源：Wikipedia "Filename"、"Comparison of file systems"、Apple Support 文档。
+
+* classic Mac OS（1990 年代，HFS）：以 `:` 当路径分隔符，因此**`:` 在文件名里被禁止**；HFS 文件名（cstring/255）基本接受任意 8-bit 字节，文件名长度 ≤ 255 字节。
+* HFS+（macOS 默认直到 2019）：`:` 仍禁；其余接受「任意 UTF-16 码元」（不含 `0x0000`），单段 ≤ 255 UTF-16 code units。HFS+ 写入时**强制 NFD**（参见 Unicode UAX #15）—— `é`（U+00E9 预组合）会被存成 `e` + U+0301（组合用尖音符），导致 Git 跨平台同步时常见「文件名看起来一样但 hash 不同」的问题。
+* APFS（macOS 2017+ 起的默认）：明确禁止 `/` 与 `0x00`（Unicode 9.0 起），其余任意 Unicode 9.0 字符允许；`:` 在 APFS 卷上**仍**被 macOS 用户态自动映射为 `/`（这是 macOS 应用层对 classic Mac OS 的兼容语义）。
+* Finder 对长度还有 31 字符的旧时代限制（OS X 10.0 之前）；现代 Finder 取消此限制。
+
+== 操作系统/工具层（写在文件系统之上的过滤）
+
+== Win32 API / Windows Explorer
+
+* Win32 层的过滤在 CreateFile/MoveFile 等 API 里**显式拒绝** `< > : " / \ | ? *` 与 0x00–0x1F。
+* 文件名**不能**只由 `.` 构成（避免与 `.` `..` 冲突），也不能以 `.` 结尾（自动剥除）；不能以 ` ` 结尾（自动剥除）。
+* 设备名（不分大小写，带/不带扩展都禁）：`CON PRN AUX NUL COM1-9 LPT1-9`（Win10 之前还禁 `CLOCK$`）。带扩展的 `CON.txt`、`NUL.log` 等一律被 `CreateFile` 当设备打开。
+* `\\?\` 前缀（NT 内核直接路径，绕过 Win32 子系统）能写入「自动剥除」之外的内容，但仍受底层 NTFS 元数据规则限制。
+
+== DOS / FreeDOS / DR-DOS
+
+* 走 COMMAND.COM 的命令解析时，`/` 还会被当 switch char 消费（`SwitChar` 设置）。
+* `=` 在 COMMAND.COM / CMD.EXE 里也当分隔符（用于赋值语法 `set =`）。
+* 历史禁字符比 Win32 略宽：DOS 1.x 还禁字符 0xE5 作首字节（保留为「已删除」标记）。
+
+== Bash / Zsh / POSIX shell
+
+* `bash/zsh` 解析层对文件名无禁止，但以下字符在 unquoted 时会被当元字符消耗，需要引号或反斜杠转义：
+  * 空白（IFS 默认含 `space tab newline`，参数切分）
+  * `< > | & ;` 重定向 / pipeline / 顺序
+  * `$` 变量展开
+  * `` ` `` 命令替换（旧式）
+  * `\` 转义符本身
+  * `? * [ ]` 通配（glob）
+  * `'` `"` 引号
+  * `#` 注释起点（开头）
+  * `( ) { }` 子 shell / 大括号扩展
+* 因此 shell 脚本里"安全"的可移植子集就是 POSIX portable set（见 §2.2）。
+
+== zsh 特有的交互坑
+
+* 某些 zsh 配置在文件名包含 `\n` 或其它控制字符时会让 `print -l *` 误对齐；这与 zsh 把控制字符当宽度 0 的设计有关。
+
+== 工具层附带的隐式禁止
+
+* git config `core.protectHFS`/`core.protectNTFS`（Git 2.42+ 默认在 Mac 端开 protectHFS，2.42+ Win 端开 protectNTFS）会在 checkout 时按目标平台的规则拒绝某些字节：Mac 端拒绝 `:` 与 `0x00`；Win 端拒绝 0x00–0x1F 与 `"\*/:<>?\|`。这是 Git 跨平台团队最容易踩的"在 Linux 上能 commit、Mac/Win 拒绝 checkout"问题。
+* rsync、scp、curl 等传输工具在文件名含控制字符时往往能传但显示/日志混乱，需要 `--protect-args` 之类选项或外层引号。
+* ZIP/TAR 在文件名编码上历史混乱（CP437/CP850/Shift-JIS/UTF-8）；现代 tar/pax 格式走 UTF-8，但老归档里日文文件名解压到 Windows 上常显示为 `????` 或抛错。
+* `notist` 自身在 `crates/notist-cli/src/build.rs:723` `filesystem_segment` 里采取的策略是：把控制字符 + `<>:"/\|?*~.` 整段按字节编码为 `~XX` 十六进制，并在整段恰好等于 Windows 保留设备名时前置 `~00`。该策略足以保证产出的 HTML/资源在所有主流目标平台上不踩坑。
+
+== Unicode 归一化与"看起来一样"的坑
+
+来源：Unicode UAX #15 *Normalization Forms*（unicode.org/reports/tr15/）。
+
+```text
+NFD   Canonical Decomposition
+NFC   Canonical Decomposition, then Canonical Composition
+NFKD  Compatibility Decomposition
+NFKC  Compatibility Decomposition, then Canonical Composition
+```
+
+* HFS+ 强制 NFD；NTFS 不归一化但查找走大小写不敏感；APFS 可选 case-sensitive（默认不敏感）；Linux 文件系统层不做归一化。
+* 实际后果：`café.txt` 在 macOS 上 git add 进去，文件实际是 `cafe\u0301.txt`（5 字节 + U+0301），到 Linux 上变 `café`（NFC 形式），git tree 里就出现"两个看起来一样的文件名"。
+* 2018 年的 Unicode 安全问题（U+202E RIGHT-TO-LEFT OVERRIDE、`fsync`/`conflg` 等 Trojan Source 攻击）依赖跨平台工具对控制字符的容忍度——多数主流工具（`git diff`、编辑器、浏览器）在 2014 后都主动剥除或高亮这些字符。
+* Unicode 标准明确建议：做"文件名/标识符"的应用不要把归一化当作唯一比较手段；比较时**先 NFC**，再**字节级比较**（同时按需 casefold）。
+
+== 跨平台"安全文件名"实操
+
+== 严格可移植子集（POSIX portable set）
+
+仅 `A–Z a–z 0–9 . _ -`；第一个字符建议不要是 `-`（部分命令行工具把它当 option）。所有符合此集合的字符在 FAT/NTFS/ext4/HFS+/APFS 上都直接可用，且无需 shell 转义。
+
+== 较宽松但易踩坑
+
+| 字符 | 兼容情况 | 主要陷阱 |
+| - | - | - |
+| 空格 | 所有 FS 允许 | shell 需引号；URL 需 `%20`；`%20` 在某些 CGI 旧实现里再被二次编码 |
+| `+` | POSIX 允许 | URL 路径段里 `+` 等同于空格（form-urlencoded），编码时要用 `%2B`；notist 的 `URL_PATH_SEGMENT_ENCODE_SET` 已含此转换 |
+| `,` | POSIX 允许 | FAT SFN 不允许；旧版 DOS `SwitChar` 把它当分隔符；一些 Makefile 解析器不喜欢 |
+| `;` | POSIX 允许 | shell 需转义；Windows 资源管理器不拒但 `&` `&&` 在 bat 文件里要转义 |
+| `=` | POSIX 允许 | COMMAND.COM/CMD.EXE 当分隔符；URL query 字符串里当键值分隔符 |
+| `(` `)` `[` `]` | POSIX/NTFS 允许 | shell 通配 (`[]`) / 子 shell；某些 FTP 服务器拒绝 |
+| `&` | POSIX 允许 | shell 后台符；HTML 实体里要 `&amp;`；URL 需 `%26` |
+| `~` | POSIX 允许 | Zsh 把它当目录展开（`~user`）；notist `filesystem_segment` 主动编码 `~` 是为了保留 `~XX` 转义格式的辨识度 |
+| Unicode 字母（如中文） | NTFS/VFAT/exFAT/HFS+/APFS/POSIX 全允许 | 跨平台同步时归一化形式差异；Shell 终端显示宽度；URL 路径段编码 |
+| Emoji | NTFS/HFS+/APFS/POSIX 允许 | ZFS 历史上有 8-bit 命名风险（旧版）；终端宽度；Windows console 输出 |
+
+== URL / 配置文件里的额外坑
+
+* URL 路径段（RFC 3986 unreserved + 一些 sub-delims）：`A–Z a–z 0–9 - . _ ~ ! $ & ' ( ) * + , ; = : @`；其他字符必须 percent-encode。`/` 必须编码为 `%2F` 才能在路径段内出现。
+* HTML 实体：`&` 必须 `&amp;`，`<` 必须 `&lt;`，`>` 必须 `&gt;`，`"` 必须 `&quot;` 或 `&#34;`。
+* JSON：必须 JSON-escape `"` `\` 与控制字符（`\n` `\r` `\t` `\b` `\f` `\u00XX`）。
+
+== 对照 Notist 现状
+
+`notist-cli` 与 `notist-service` 当前的 `filesystem_segment` 策略（`crates/notist-cli/src/build.rs:723` 与 `crates/notist-service/src/request.rs:2406`）覆盖了：
+
+* 控制字符（`char::is_control()`）—— 覆盖 POSIX `0x00` 与 Windows 0x00–0x1F、0x7F。
+* Win32 9 个字符 `< > : " / \ | ? *`。
+* `~`（保留为转义前缀）、`.`（保留作扩展名分隔符）。
+* Windows 保留设备名 `CON PRN AUX NUL COM1-9 LPT1-9`（前置 `~00`）。
+
+并附带一份单元测试（`crates/notist-cli/src/build.rs:2778`）：
+
+```rust
+#[test]
+fn filesystem_mapping_escapes_windows_reserved_names_and_characters() {
+    assert_eq!(filesystem_segment("CON"), "~00CON");
+    assert_eq!(filesystem_segment("a:b.not"), "a~3Ab~2Enot");
+    assert_eq!(url_path_segment("chapter one"), "chapter%20one");
+}
+```
+
+未显式覆盖、可能成为后续 bug 报告源的有：
+
+* **Unicode 归一化**：未做 NFD↔NFC 转换。若 vault 里既有 NFC 又有 NFD 形式的同名片段（来自 macOS 编辑或跨平台同步），路径解析与缓存键会分裂；建议至少在 `notist-service` 的路径归一化入口做 NFC 化，并在文档中说明 vault 内容的归一化预期。
+* **`\\?\` NT 路径前缀**：与 notist 自身无关，但产物如需在 Windows 上被 PowerShell/CMD 直接调用，需注意末位 `.` / 空格在 Win32 下的自动剥除会让 round-trip 失败。
+* **FAT/exFAT 大小写不敏感 + Unicode 折叠**：产物部署到 U 盘 / SD 卡（FAT/exFAT 常见）时，大小写差异会丢失；HTML 里的链接若是相对路径并区分大小写，可能变成死链。建议 build 时给一份"产物在 case-insensitive 卷上的健壮性"建议。
+* **Win 设备名 + 扩展**：`CON.txt` / `NUL.log` 这类形式当前 `is_windows_reserved_name` 不会触发（因为它只比较整段名）。建议补一条 strip-trailing-extension 的预检查。
+* **零宽度字符（U+200B、U+FEFF、U+2060 等）** 与 **Bidi 控制符（U+202E 等 Trojan Source 风险）**：`char::is_control()` 不会覆盖这些非控制符类但会引发安全/视觉混淆的字符。如果未来 notist 要把用户输入直接落到文件名 / URL，不排除需要按 Unicode Security Mechanisms（UAX #39）做一次过滤。
+
+== 关键事实清单
+
+* POSIX 唯一文件系统级禁止：`/` 与 `0x00`。
+* Win32 显式禁止：0x00–0x1F、`< > : " / \ | ? *`、末位 `.` 与空格、设备名（不区分大小写、可带扩展）。
+* Win32 默认 260 路径长度（`MAX_PATH`），但 `\\?\` 前缀在 Windows 10 1607+ 已放开。
+* macOS HFS+ 强制 NFD；APFS 不强制但 macOS 应用层把 `:` 替成 `/`。
+* NTFS 的 POSIX 命名空间只有 `/` 与 0x00 真禁止；Win32 是另一个独立的过滤层。
+* notist 当前 `filesystem_segment` 策略基本覆盖 Win32 字符集 + 设备名，但未覆盖 Unicode 归一化、零宽字符与 Bidi 控制符。
+
+== 参考
+
+* Wikipedia: *Filename* — #link("https://en.wikipedia.org/wiki/Filename")
+* Wikipedia: *Comparison of file systems* — #link("https://en.wikipedia.org/wiki/Comparison_of_file_systems")
+* POSIX.1-2017 §3.282 *Portable Filename Character Set* — #link("https://pubs.opengroup.org/onlinepubs/9699919799/basedefs/V1_chap03.html")
+* Unicode UAX #15 *Normalization Forms* — #link("https://unicode.org/reports/tr15/")
+* Unicode UAX #39 *Unicode Security Mechanisms* — #link("https://unicode.org/reports/tr39/")
+* Microsoft: *Naming Files, Paths, and Namespaces* — #link("https://learn.microsoft.com/en-us/windows/win32/fileio/naming-a-file")
+* Apple: *Mac OS Extended format (HFS Plus) volume and file limits* — #link("https://support.apple.com/")
+* notist 现有 `filesystem_segment` 实现：#link("https://github.com/notist/notist") `crates/notist-cli/src/build.rs:723` 与 `crates/notist-service/src/request.rs:2406`

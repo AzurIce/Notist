@@ -5,7 +5,7 @@
 
 == Explorer 诊断角标（推翻早前的"明确放弃"裁决）
 
-#<vault::ai/2026-08-26 obsidian-notist lsp diagnostics design> 曾裁定"文件浏览器徽标不做"，理由是需要依赖未公开 DOM。本次推翻该裁决并落地，理由有三：
+#<vault::ai::2026-08-26 obsidian-notist lsp diagnostics design> 曾裁定"文件浏览器徽标不做"，理由是需要依赖未公开 DOM。本次推翻该裁决并落地，理由有三：
 
 - 实际检查发现 Explorer 的稳定选择器足够可靠：`.nav-file-title[data-path]` / `.nav-folder-title[data-path]` 是长期稳定约定，且两个 World 复用同一个原生 explorer（CSS 过滤），装饰一次同时覆盖两边（自建 `notist-explorer` 已删除，无需双实现）。
 - 没有任何诊断入口时，explorer 里的 `.not` 文件完全无法预示"这个库里有 373 个问题"，这比 DOM 耦合的代价更伤。
@@ -67,8 +67,8 @@
 
 == 参考
 
-- #<vault::ai/2026-08-26 obsidian-notist lsp diagnostics design>：Problems 首版设计与"徽标不做"的原裁决（本文推翻并记录理由）。
-- #<vault::ai/2026-08-26 obsidian-notist semantic panels design>：documentReferences 推荐协议、`(0,0)` 降级的歧义分析、面板分层路线。
+- #<vault::ai::2026-08-26 obsidian-notist lsp diagnostics design>：Problems 首版设计与"徽标不做"的原裁决（本文推翻并记录理由）。
+- #<vault::ai::2026-08-26 obsidian-notist semantic panels design>：documentReferences 推荐协议、`(0,0)` 降级的歧义分析、面板分层路线。
 - #<vault::designs::host::lsp-adapter>：LSP adapter 协议边界。
 - #<vault::designs::language::target-and-union>：`[[wiki]]` 废弃、`#<target>` 现行语法的裁定。
 - #<vault::obsidian-notist::lsp>：插件 LSP 总体接入与 server 契约（本文补充 experimental capability 一节）。
