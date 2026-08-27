@@ -51,6 +51,7 @@ a{color:var(--accent)}
 <div class="cards" id="cards"></div>
 <table id="matrix"><thead></thead><tbody></tbody></table>
 <div id="modal"><div class="box" id="mbox"></div></div>
+<script>window.onerror=function(m,s,l,c,e){document.title="ERR:"+m+" @"+l+":"+c;};</script>
 <script src="data.js"></script>
 <script>
 const D=window.EVAL_DASH;
@@ -127,7 +128,9 @@ function showCell(runId,cond,taskId){
    <div id="sess"></div>
    <p><button onclick="document.getElementById('modal').style.display='none'">关闭</button></p>`;
   $("#modal").style.display="flex";
+  try{history.replaceState(null,"","#"+encodeURIComponent(runId)+"|"+encodeURIComponent(key));}catch(e){}
   fetchCellAnswer(runId,key);
+  loadSession(runId,key);
 }
 function fetchCellAnswer(runId,key){
   // answer embedded in data.js for the latest 200 cells only; else lazy script
@@ -167,7 +170,19 @@ document.addEventListener("click",e=>{
 $("#runA").addEventListener("change",render);
 $("#runB").addEventListener("change",render);
 $("#diffMode").addEventListener("change",render);
-fillRuns();render();
+function openFromHash(){
+  const h=decodeURIComponent(location.hash.slice(1));
+  if(!h)return;
+  const [r,key]=h.split("|");
+  if(!r||!key||!D.runs[r])return;
+  const ti=key.lastIndexOf("__");
+  if(ti<0)return;
+  const task=key.slice(0,ti), cond=key.slice(ti+2);
+  if(!D.runs[r].cells[cond]?.[task])return;
+  $("#runA").value=r;render();showCell(r,cond,task);
+}
+fillRuns();render();openFromHash();
+window.addEventListener("hashchange",openFromHash);
 </script>
 </body>
 </html>

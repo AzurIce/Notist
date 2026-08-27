@@ -33,6 +33,10 @@ null 组的作用：notist 未发布过、参数化知识应为零——若它�
 - PATH 注入 worktree release 二进制并用 `shutil.which` 断言解析位置；manifest 记录二进制与 SKILL.md 的 sha256 前 16 位、commit、两份语料 digest。
 - 模型被试固定 `lmstudio/qwen3.8-27b-uncensored-mlx`（192.168.2.52 本机可达，pi 配置见 ~/.pi/agent/models.json provider 名 lmstudio）。
 
+== 结果查看：Dashboard
+
+`python3 evals/tools/build_dashboard.py` 生成 `evals/dashboard/`（自包含静态页 + JSONP 分片，file:// 双击即可，或 `python3 -m http.server` 后打开）。矩阵总览 / 对比模式（黄框=翻转）/ 单格详情（判据、回答、预算、审计违规）/ 会话全文懒加载回放，支持 `#run|taskId__cond` 深链。产物已 gitignore，跑完新 run 重建一次即可。
+
 == 运行方式
 
 ```text
