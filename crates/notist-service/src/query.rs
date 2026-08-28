@@ -78,7 +78,7 @@ pub struct CoverageInfo {
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct QueryPage<T> {
     pub snapshot: SnapshotIdentity,
-    pub items: Vec<T>,
+    pub records: Vec<T>,
     pub page: PageInfo,
     pub budget: BudgetInfo,
     pub coverage: CoverageInfo,
@@ -140,39 +140,39 @@ pub enum Selector {
     Module {
         module: String,
         #[serde(default)]
-        label: Option<String>,
+        name: Option<String>,
     },
     Path {
         path: PathBuf,
         #[serde(default)]
-        label: Option<String>,
+        name: Option<String>,
     },
 }
 
 impl Selector {
     pub fn parse(value: &str) -> Self {
-        // Module selectors use the source-level `/` label separator:
+        // Module selectors use the source-level `/` ItemName separator:
         // `vault::guide/install`. Path selectors keep `#` because `/` is the
         // filesystem separator: `docs/guide.not#install`.
         let module_style = value == "vault" || value.starts_with("vault::");
-        let (head, label) = if module_style {
+        let (head, name) = if module_style {
             value
                 .split_once('/')
-                .map_or((value, None), |(head, label)| (head, Some(label.to_owned())))
+                .map_or((value, None), |(head, name)| (head, Some(name.to_owned())))
         } else {
             value
                 .split_once('#')
-                .map_or((value, None), |(head, label)| (head, Some(label.to_owned())))
+                .map_or((value, None), |(head, name)| (head, Some(name.to_owned())))
         };
         if module_style {
             Self::Module {
                 module: head.to_owned(),
-                label,
+                name,
             }
         } else {
             Self::Path {
                 path: PathBuf::from(head),
-                label,
+                name,
             }
         }
     }
@@ -209,7 +209,7 @@ pub struct LineRange {
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
-pub struct ModuleItem {
+pub struct ModuleRecord {
     pub module: String,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub relative_path: Option<PathBuf>,
@@ -253,7 +253,7 @@ fn default_outline_depth() -> u8 {
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
-pub struct OutlineItem {
+pub struct OutlineHeading {
     pub name: String,
     pub level: u8,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -313,7 +313,7 @@ pub struct ReferencesQuery {
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
-pub struct ReferenceItem {
+pub struct ReferenceRecord {
     pub source: String,
     pub target: String,
     pub direction: String,
@@ -552,7 +552,7 @@ pub struct DebugQuery {
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
-pub struct DebugItem {
+pub struct DebugRecord {
     pub module: String,
     pub kind: String,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -582,7 +582,7 @@ struct CursorPayload {
 struct ResolvedSource<'a> {
     module: &'a notist_analysis::Module,
     source: &'a notist_analysis::SourceInput,
-    label: Option<String>,
+    name: Option<String>,
     selection: TextRange,
 }
 
@@ -590,9 +590,9 @@ pub fn list_modules(
     workspace: &WorkspaceSnapshot,
     snapshot: &SnapshotIdentity,
     query: &ModulesQuery,
-) -> Result<QueryPage<ModuleItem>, ToolError> {
+) -> Result<QueryPage<ModuleRecord>, ToolError> {
     let prefix = query.prefix.as_deref();
-    let mut items = workspace
+    let mut records = workspace
         .modules()
         .filter(|module| {
             prefix.is_none_or(|prefix| {
@@ -610,7 +610,7 @@ pub fn list_modules(
                 .file_id
                 .and_then(|file_id| workspace.document_symbols(file_id).into_iter().next())
                 .map(|symbol| symbol.name);
-            ModuleItem {
+            ModuleRecord {
                 module: module.logical_path.to_string(),
                 relative_path: module
                     .source_path
@@ -630,14 +630,14 @@ pub fn list_modules(
             }
         })
         .collect::<Vec<_>>();
-    items.sort_by(|left, right| left.module.cmp(&right.module));
+    records.sort_by(|left, right| left.module.cmp(&right.module));
     page(
         snapshot,
         "modules",
         &serde_json::to_string(&(query.prefix.clone(), query.kind)).unwrap(),
         &query.page,
         DEFAULT_LIMIT,
-        items,
+        records,
     )
 }
 
@@ -645,7 +645,7 @@ pub fn outline(
     workspace: &WorkspaceSnapshot,
     snapshot: &SnapshotIdentity,
     query: &OutlineQuery,
-) -> Result<QueryPage<OutlineItem>, ToolError> {
+) -> Result<QueryPage<OutlineHeading>, ToolError> {
     if !(1..=6).contains(&query.depth) {
         return Err(ToolError::new(
             "invalid_argument",
@@ -658,7 +658,7 @@ pub fn outline(
         .into_iter()
         .filter(|symbol| symbol.level <= query.depth)
         .collect::<Vec<_>>();
-    let mut items = Vec::new();
+    let mut records = Vec::new();
     for (index, symbol) in symbols.iter().enumerate() {
         let parent_range = symbols[..index]
             .iter()
@@ -669,7 +669,7 @@ pub fn outline(
             .iter()
             .find(|candidate| candidate.level <= symbol.level)
             .map_or(resolved.selection.end, |candidate| candidate.range.start);
-        items.push(OutlineItem {
+        records.push(OutlineHeading {
             id: workspace
                 .labels()
                 .iter()
@@ -693,14 +693,14 @@ pub fn outline(
             subtree_range: TextRange::new(symbol.range.start, subtree_end).into(),
         });
     }
-    items.sort_by_key(|item| item.location.byte_range.start);
+    records.sort_by_key(|item| item.location.byte_range.start);
     page(
         snapshot,
         "outline",
         &format!("{}:{}", query.selector.fingerprint(), query.depth),
         &query.page,
         HARD_LIMIT,
-        items,
+        records,
     )
 }
 
@@ -802,19 +802,19 @@ pub fn read_source(
             resolved.module,
             resolved.source,
             TextRange::new(start, end),
-            resolved.label.clone(),
+            resolved.name.clone(),
         ),
         source: source[start..end].to_owned(),
         reached_end,
     };
     let next_cursor = (!reached_end).then(|| encode_cursor("read", snapshot, &query_fp, end));
-    let items = vec![chunk];
-    let logical_bytes = serde_json::to_vec(&items)
+    let records = vec![chunk];
+    let logical_bytes = serde_json::to_vec(&records)
         .map(|value| value.len())
         .unwrap_or(0);
     Ok(QueryPage {
         snapshot: snapshot.clone(),
-        items,
+        records,
         page: PageInfo {
             requested_limit: 1,
             applied_limit: 1,
@@ -847,7 +847,8 @@ pub fn ref_target_record(
     workspace: &WorkspaceSnapshot,
     target: RefTarget,
 ) -> super::request::RefTargetRecord {
-    use notist_analysis::ResourceKind;
+    use notist_analysis::{ItemKind, ResourceKind};
+
     let module_name = |module_id| {
         workspace
             .module_by_id(module_id)
@@ -859,23 +860,23 @@ pub fn ref_target_record(
             module: module_name(module_id),
             ..Default::default()
         },
-        RefTarget::Scope { module, id } => super::request::RefTargetRecord {
-            kind: "scope".into(),
-            module: module_name(module),
-            id: Some(id),
-            ..Default::default()
-        },
-        RefTarget::Resource { module, name, kind } => super::request::RefTargetRecord {
-            kind: "resource".into(),
+        RefTarget::Item {
+            module,
+            name,
+            kind,
+        } => super::request::RefTargetRecord {
+            kind: match kind {
+                ItemKind::Scope => "scope",
+                ItemKind::Resource(_) => "resource",
+            }
+            .into(),
             module: module_name(module),
             name: Some(name),
-            resource_kind: Some(
-                match kind {
-                    ResourceKind::Image => "image",
-                    ResourceKind::File => "file",
-                }
-                .into(),
-            ),
+            resource_kind: match kind {
+                ItemKind::Resource(ResourceKind::Image) => Some("image".into()),
+                ItemKind::Resource(ResourceKind::File) => Some("file".into()),
+                ItemKind::Scope => None,
+            },
             ..Default::default()
         },
         RefTarget::External(url) => super::request::RefTargetRecord {
@@ -902,25 +903,25 @@ pub fn references(
     workspace: &WorkspaceSnapshot,
     snapshot: &SnapshotIdentity,
     query: &ReferencesQuery,
-) -> Result<QueryPage<ReferenceItem>, ToolError> {
+) -> Result<QueryPage<ReferenceRecord>, ToolError> {
     validate_snippet(query.snippet_bytes)?;
     let resolved = resolve_source(workspace, &query.selector)?;
-    let target_label = resolved.label.as_deref();
-    let mut items = Vec::new();
+    let target_name = resolved.name.as_deref();
+    let mut records = Vec::new();
     if matches!(
         query.direction,
         ReferenceDirection::Incoming | ReferenceDirection::Both
     ) {
         for reference in workspace.references().iter().filter(|reference| {
             reference.target_module_id == resolved.module.id
-                && reference.target_label.as_deref() == target_label
+                && reference.target_name.as_deref() == target_name
         }) {
             if let Some(source) = workspace.source(reference.source_file_id)
                 && let Some(module) = workspace.module_at(reference.source_file_id)
             {
                 let (excerpt, _, truncated) =
                     excerpt(&source.text, reference.range, query.snippet_bytes);
-                items.push(ReferenceItem {
+                records.push(ReferenceRecord {
                     source: module.logical_path.to_string(),
                     target: resolved.module.logical_path.to_string(),
                     direction: "incoming".into(),
@@ -941,21 +942,24 @@ pub fn references(
     ) {
         for reference in workspace.references().iter().filter(|reference| {
             reference.source_module_id == resolved.module.id
-                && target_label.is_none_or(|label| {
+                && target_name.is_none_or(|name| {
                     resolved.selection.start <= reference.range.start
                         && reference.range.end <= resolved.selection.end
-                        && !label.is_empty()
+                        && !name.is_empty()
                 })
         }) {
             let (excerpt, _, truncated) =
                 excerpt(&resolved.source.text, reference.range, query.snippet_bytes);
-            let target_kind = reference.target_label.as_deref().map_or("module", |label| {
-                match workspace.resolve_module_label(&reference.target_module, label) {
-                    RefTarget::Resource { .. } => "resource",
+            let target_kind = reference.target_name.as_deref().map_or("module", |name| {
+                match workspace.resolve_item_name(&reference.target_module, name) {
+                    RefTarget::Item { kind, .. } => match kind {
+                        notist_analysis::ItemKind::Scope => "scope",
+                        notist_analysis::ItemKind::Resource(_) => "resource",
+                    },
                     _ => "scope",
                 }
             });
-            items.push(ReferenceItem {
+            records.push(ReferenceRecord {
                 source: resolved.module.logical_path.to_string(),
                 target: reference.target_module.to_string(),
                 direction: "outgoing".into(),
@@ -967,7 +971,7 @@ pub fn references(
                     resolved.module,
                     resolved.source,
                     reference.range,
-                    resolved.label.clone(),
+                    resolved.name.clone(),
                 ),
                 excerpt,
                 excerpt_truncated: truncated,
@@ -976,7 +980,7 @@ pub fn references(
         }
     }
     if query.include_definition {
-        items.push(ReferenceItem {
+        records.push(ReferenceRecord {
             source: resolved.module.logical_path.to_string(),
             target: resolved.module.logical_path.to_string(),
             direction: "definition".into(),
@@ -988,14 +992,14 @@ pub fn references(
                 resolved.module,
                 resolved.source,
                 resolved.selection,
-                resolved.label.clone(),
+                resolved.name.clone(),
             ),
             excerpt: String::new(),
             excerpt_truncated: false,
             is_definition: true,
         });
     }
-    items.sort_by(|left, right| {
+    records.sort_by(|left, right| {
         left.location.module.cmp(&right.location.module).then(
             left.location
                 .byte_range
@@ -1014,7 +1018,7 @@ pub fn references(
         ),
         &query.page,
         DEFAULT_LIMIT,
-        items,
+        records,
     )
 }
 
@@ -1105,7 +1109,7 @@ pub fn diagnostics(
 ) -> Result<DiagnosticsResult, ToolError> {
     let mut counts = HashMap::new();
     let mut error_count = 0usize;
-    let mut items = Vec::new();
+    let mut records = Vec::new();
     for diagnostic in workspace.diagnostics() {
         if let Some(scope) = query.scope.as_deref()
             && diagnostic
@@ -1150,7 +1154,7 @@ pub fn diagnostics(
                 line_range(&source.text, range).start,
             ))
         });
-        items.push(DiagnosticItem {
+        records.push(DiagnosticItem {
             code,
             severity: diagnostic.kind.severity_label().into(),
             message: diagnostic.message.clone(),
@@ -1182,7 +1186,7 @@ pub fn diagnostics(
         &format!("{:?}:{:?}", query.scope, query.severity),
         &query.page,
         DEFAULT_LIMIT,
-        items,
+        records,
     )?;
     Ok(DiagnosticsResult {
         summary,
@@ -1194,20 +1198,20 @@ pub fn debug_inspect(
     workspace: &WorkspaceSnapshot,
     snapshot: &SnapshotIdentity,
     query: &DebugQuery,
-) -> Result<QueryPage<DebugItem>, ToolError> {
+) -> Result<QueryPage<DebugRecord>, ToolError> {
     let accepts = |module: &str| {
         query
             .module
             .as_deref()
             .is_none_or(|filter| module == filter)
     };
-    let mut items = Vec::new();
+    let mut records = Vec::new();
     match query.section {
         DebugSection::Modules => {
             for module in workspace.modules() {
                 let name = module.logical_path.to_string();
                 if accepts(&name) {
-                    items.push(DebugItem {
+                    records.push(DebugRecord {
                         module: name,
                         kind: if module.file_id.is_some() {
                             "source"
@@ -1226,10 +1230,10 @@ pub fn debug_inspect(
             for reference in workspace.references() {
                 let module = reference.source_module.to_string();
                 if accepts(&module) {
-                    items.push(DebugItem {
+                    records.push(DebugRecord {
                         module,
                         kind: "reference".into(),
-                        name: reference.target_label.clone(),
+                        name: reference.target_name.clone(),
                         target: Some(reference.target_module.to_string()),
                         range: Some(reference.range.into()),
                     });
@@ -1246,7 +1250,7 @@ pub fn debug_inspect(
                     continue;
                 }
                 for symbol in workspace.document_symbols(module.file_id.unwrap()) {
-                    items.push(DebugItem {
+                    records.push(DebugRecord {
                         module: module_name.clone(),
                         kind: "heading".into(),
                         name: Some(symbol.name),
@@ -1259,7 +1263,7 @@ pub fn debug_inspect(
                     .iter()
                     .filter(|label| label.module == module.logical_path)
                 {
-                    items.push(DebugItem {
+                    records.push(DebugRecord {
                         module: module_name.clone(),
                         kind: "annotation".into(),
                         name: Some(label.name.clone()),
@@ -1270,7 +1274,7 @@ pub fn debug_inspect(
             }
         }
     }
-    items.sort_by(|left, right| {
+    records.sort_by(|left, right| {
         left.module.cmp(&right.module).then(
             left.range
                 .as_ref()
@@ -1284,7 +1288,7 @@ pub fn debug_inspect(
         &format!("{:?}:{:?}", query.section, query.module),
         &query.page,
         DEFAULT_LIMIT,
-        items,
+        records,
     )
 }
 
@@ -2600,10 +2604,10 @@ fn page<T: Clone + Serialize + DeserializeOwned>(
                 .with_hint("omit cursor to restart the query from the first page"),
         );
     }
-    let mut items = Vec::new();
+    let mut records = Vec::new();
     let mut exhausted = false;
     for item in all_items.iter().skip(offset).take(requested_limit) {
-        let mut candidate = items.clone();
+        let mut candidate = records.clone();
         candidate.push(item.clone());
         if serde_json::to_vec(&candidate)
             .map(|value| value.len() + 2048)
@@ -2613,13 +2617,13 @@ fn page<T: Clone + Serialize + DeserializeOwned>(
             exhausted = true;
             break;
         }
-        items.push(item.clone());
+        records.push(item.clone());
     }
-    let next_offset = offset + items.len();
+    let next_offset = offset + records.len();
     let has_more = next_offset < all_items.len();
     let next_cursor =
         has_more.then(|| encode_cursor(operation, snapshot, query_fingerprint, next_offset));
-    let logical_bytes = serde_json::to_vec(&items)
+    let logical_bytes = serde_json::to_vec(&records)
         .map(|value| value.len() + 1024)
         .unwrap_or(0);
     let stop_reason = if !has_more {
@@ -2634,7 +2638,7 @@ fn page<T: Clone + Serialize + DeserializeOwned>(
         page: PageInfo {
             requested_limit,
             applied_limit: requested_limit,
-            returned: items.len(),
+            returned: records.len(),
             has_more,
             next_cursor,
         },
@@ -2650,7 +2654,7 @@ fn page<T: Clone + Serialize + DeserializeOwned>(
         },
         search: None,
         hints: continuation_hints(has_more),
-        items,
+        records,
     })
 }
 
@@ -2922,8 +2926,8 @@ fn resolve_source<'a>(
     workspace: &'a WorkspaceSnapshot,
     selector: &Selector,
 ) -> Result<ResolvedSource<'a>, ToolError> {
-    let (module, label) = match selector {
-        Selector::Module { module, label } => {
+    let (module, name) = match selector {
+        Selector::Module { module, name } => {
             let path = parse_absolute_module_path(module).ok_or_else(|| {
                 ToolError::new(
                     "invalid_selector",
@@ -2933,9 +2937,9 @@ fn resolve_source<'a>(
             let module = workspace.module(&path).ok_or_else(|| {
                 ToolError::new("not_found", format!("module `{module}` was not found"))
             })?;
-            (module, label.clone())
+            (module, name.clone())
         }
-        Selector::Path { path, label } => {
+        Selector::Path { path, name } => {
             let absolute = if path.is_absolute() {
                 path.clone()
             } else {
@@ -2959,7 +2963,7 @@ fn resolve_source<'a>(
                     format!("source `{}` is not a Notist module", path.display()),
                 )
             })?;
-            (module, label.clone())
+            (module, name.clone())
         }
     };
     let file_id = module.file_id.ok_or_else(|| {
@@ -2969,16 +2973,19 @@ fn resolve_source<'a>(
         )
     })?;
     let source = workspace.source(file_id).unwrap();
-    let selection = if let Some(label_name) = &label {
-        match workspace.resolve_module_label(&module.logical_path, label_name) {
-            RefTarget::Scope { .. } => workspace
-                .label_scope_range(&module.logical_path, label_name)
+    let selection = if let Some(item_name) = &name {
+        match workspace.resolve_item_name(&module.logical_path, item_name) {
+            RefTarget::Item {
+                kind: notist_analysis::ItemKind::Scope,
+                ..
+            } => workspace
+                .item_name_range(&module.logical_path, item_name)
                 .unwrap_or(TextRange::new(0, source.text.len())),
             RefTarget::Missing(MissingReason::Ambiguous) => {
                 return Err(ToolError::new(
                     "ambiguous_selector",
                     format!(
-                        "label `{label_name}` in `{}` matches multiple headings; add an explicit `@id` to disambiguate",
+                        "item name `{item_name}` in `{}` matches multiple headings; add an explicit `@id` to disambiguate",
                         module.logical_path
                     ),
                 )
@@ -2988,7 +2995,7 @@ fn resolve_source<'a>(
                 return Err(ToolError::new(
                     "not_found",
                     format!(
-                        "label `{label_name}` was not found in {}",
+                        "item name `{item_name}` was not found in {}",
                         module.logical_path
                     ),
                 ));
@@ -2997,7 +3004,7 @@ fn resolve_source<'a>(
                 return Err(ToolError::new(
                     "not_found",
                     format!(
-                        "label `{label_name}` in `{}` is not a section or scope target",
+                        "item name `{item_name}` in `{}` is not a section or scope target",
                         module.logical_path
                     ),
                 ));
@@ -3009,7 +3016,7 @@ fn resolve_source<'a>(
     Ok(ResolvedSource {
         module,
         source,
-        label,
+        name,
         selection,
     })
 }
@@ -3107,7 +3114,7 @@ fn lexical_match_range(source: &str, unit: TextRange, query: &str) -> Option<Tex
 }
 
 fn add_empty_search_hint(page: &mut QueryPage<SearchHit>, query: &SearchQuery) {
-    if !page.items.is_empty() || !page.coverage.complete {
+    if !page.records.is_empty() || !page.coverage.complete {
         return;
     }
     let hint = match query.mode {

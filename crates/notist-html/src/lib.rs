@@ -6,7 +6,7 @@ use std::fmt::Write;
 use notist_eval::ElementTree;
 use notist_model::{
     ModulePath, ModuleReference, Node, NodeValue, TableAlignment, TableCellPlacement, TextRange,
-    WikiReference, table_layout_nodes,
+    Target, table_layout_nodes,
 };
 use percent_encoding::{NON_ALPHANUMERIC, utf8_percent_encode};
 
@@ -600,7 +600,7 @@ impl Renderer<'_, '_> {
                         let Some(NodeValue::String(url)) = node.get("url") else {
                             return;
                         };
-                        if let Ok(reference) = notist_syntax::parse_wiki_reference(url) {
+                        if let Ok(reference) = notist_syntax::parse_reference_url(url) {
                             self.reference_range(&reference, node.range, false);
                         }
                     }
@@ -1150,7 +1150,7 @@ impl Renderer<'_, '_> {
         }
     }
 
-    fn reference_range(&mut self, reference: &WikiReference, range: TextRange, slash: bool) {
+    fn reference_range(&mut self, reference: &Target, range: TextRange, slash: bool) {
         let target = match &reference.module {
             ModuleReference::Absolute(_) => reference.module.resolve_from(&ModulePath::root()),
             _ => self
@@ -1161,8 +1161,8 @@ impl Renderer<'_, '_> {
 
         let href = target.as_ref().and_then(|target| {
             self.reference_resolver.map_or_else(
-                || Some(self.default_reference_href(target, reference.label.as_deref())),
-                |resolver| resolver(target, reference.label.as_deref()),
+                || Some(self.default_reference_href(target, reference.name.as_deref())),
+                |resolver| resolver(target, reference.name.as_deref()),
             )
         });
 
@@ -1206,11 +1206,11 @@ impl Renderer<'_, '_> {
         self.output.push_str("</span>");
     }
 
-    fn reference_text(&mut self, reference: &WikiReference, slash: bool) {
+    fn reference_text(&mut self, reference: &Target, slash: bool) {
         let mut text = reference.module.to_string();
-        if let Some(label) = &reference.label {
+        if let Some(name) = &reference.name {
             text.push(if slash { '/' } else { '#' });
-            text.push_str(label);
+            text.push_str(name);
         }
         escape_text(&mut self.output, &text);
     }

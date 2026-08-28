@@ -153,8 +153,11 @@ impl std::fmt::Display for ModuleReference {
     }
 }
 
+/// The structured spelling of a reference target: a ModulePath plus an
+/// optional ItemName (`ModulePath[/ItemName]`; D0004). External urls are
+/// represented as plain strings, never as `Target`.
 #[derive(Clone, Debug, Eq, PartialEq, serde::Serialize, serde::Deserialize)]
-pub struct WikiReference {
+pub struct Target {
     pub module: ModuleReference,
-    pub label: Option<String>,
+    pub name: Option<String>,
 }

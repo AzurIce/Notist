@@ -36,7 +36,7 @@ Quote 不进入当前语言（#<vault::designs::language::syntax-sugar/暂缓与
 
 === 锚点与引用链接
 
-- 显式 scope id 与标题默认 id（#<vault::designs::world::reference-ref-target/scope id>）投影为 HTML `id` 锚点。id 满足 HTML id 语法（Unicode 字母/数字/连字符/下划线，不以数字或连字符开头）时直接使用；否则用确定性规则生成稳定锚点——回退锚点是元素起始字节偏移的纯函数（`loc-<offset>`，如 `loc-140`），同 Typst HTML 导出的处理。锚点与源码位置可互相推导，不依赖随机数或文档序历史。
+- 显式 scope id 与标题默认 id（#<vault::designs::world::reference-ref-target/ItemName>）投影为 HTML `id` 锚点。id 满足 HTML id 语法（Unicode 字母/数字/连字符/下划线，不以数字或连字符开头）时直接使用；否则用确定性规则生成稳定锚点——回退锚点是元素起始字节偏移的纯函数（`loc-<offset>`，如 `loc-140`），同 Typst HTML 导出的处理。锚点与源码位置可互相推导，不依赖随机数或文档序历史。
 - Reference 在构建/渲染时 resolve（RefTarget，#<vault::designs::world::reference-ref-target/解析产物：RefTarget>）：
   - `Module(path)` → 目标页面相对 URL；
   - `Scope(module, id)` → 目标页面 URL + `#锚点`（含标题默认 id 定位到节）；

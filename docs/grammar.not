@@ -165,17 +165,17 @@ Type
 == Target 引用
 
 ```not
-#<setup>                          # 裸名：从当前模块解析
+#<setup>                          # 相对 ModulePath：从当前模块解析
 #<self::setup>                    # 当前模块路径前缀
 #<super::intro>                   # 父级
-#<vault::guide/install>           # 绝对路径 + scope id
+#<vault::guide/install>           # 绝对路径 + ItemName（ItemPath）
 #<vault::guide::assets/logo.png>  # 资源文件（完整文件名）
 ```
 
 - `<` 与 `>` 之间是 Target 字面量：ModulePath 加可选的 `/` 后缀；段内允许空格、数字开头与 `/` 之外的任意 Unicode，`\<`、`\>`、`\\` 转义定界符与反斜杠；
-- `/` 后缀是「模块内目标」：文档模块中是带 id 的 scope 或标题默认 id，资源目录中是完整文件名；label 可以再含 `/` 与 `#`；
+- `/` 后缀是「模块内 Item」：文档模块中是带 `@id` 的 scope 或标题默认名，资源目录中是完整文件名；ItemName 是字面字符串，可以再含 `/` 与 `#`（第一个 `/` 是结构符，其后皆为字面）；
 - `vault`、`self`、`super` 是只允许出现在路径开头的保留段；路径段不能包含 control character 或 `::`（`::` 是段分隔符）；
-- 标题拥有默认 id：`#<vault::guide/安装>` 按标题文本精确匹配，重复标题产生歧义诊断；
+- 标题拥有默认名：`#<vault::guide/安装>` 按标题文本精确匹配，重复标题产生歧义诊断；
 - 外部 url 不是 Target：写 `#link("https://...")`（String 分支），解析为 External 目标，当前渲染为未解析的可见文本并产生 info 级 `external-reference-unsupported` 诊断——不是语法错误。
 
 显式构造 `link(target: Target | String)` 使用同一个引用解析入口：`#<vault::guide>` 与 `#link(<vault::guide>)` 产生同一种 Reference 元素。

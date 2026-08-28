@@ -1,0 +1,309 @@
+@![implementation = "partial"]
+= Notist CLI: Command Design and Reference
+
+本文是 `notist` CLI 命令面的单一真相，由两篇组成：本文固定全局治理与跨命令契约（三层分离、命令分组、全局参数、输出投影、runtime 预算、错误与退出状态，以及 Validate/Artifacts/Runtime/Internal 各组命令）；Agent 查询与导航命令（status/modules/search/locate/outline/read/refs/definition/next）与 Selector/Scope/Citation 寻址契约的逐命令规范在 #<vault::cli::inspect>。高层分发边界（Skill、官方 docs Vault、发布边界）在 #<vault::designs::host::cli-command-surface-skill-distribution>，查询契约见 #<vault::designs::host::query-contract>，检索语义见 #<vault::designs::host::search-retrieval-index>，daemon 与协议见 #<vault::designs::host::daemon-process-views> 与 #<vault::designs::host::client-interface-protocol>。
+
+当前实现状态：`partial`。本文描述 2026-08-15 裁决的目标命令面；已安装二进制的 `notist --help` 在迁移完成前是实际可执行 surface 的最终依据。本文与代码不一致之处按实施计划收敛，不应把旧 flag 重新当作长期契约。
+
+== 设计总览
+
+=== 三层分离
+
+CLI 只保留三层，且每层只有一个入口：
+
+```text
+语义命令    我想做什么            status/modules/search/locate/outline/read/refs/definition/check
+运行时策略  服务如何执行          daemon、固定预算、index、cursor/next
+输出投影    结果如何显示          有界 text；完整数据走 export artifact
+```
+
+命令参数只表达语义意图。`limit`、`max_bytes`、`cursor`、`snippet-bytes`、`wait-index` 等策略参数不进入命令语法；它们由服务端 runtime policy 固定执行。翻页是全局唯一动作 `next`。
+
+=== 命令分组
+
+```text
+Explore
+  status modules search locate outline read refs definition next
+Validate
+  check
+Artifacts
+  build preview export
+Runtime & tooling
+  index daemon lsp skill
+Internal
+  debug
+```
+
+普通知识工作的默认 discovery 只包含 Explore 与 check。`debug`、`export` 之外的 Artifacts/Runtime 命令是显式维护或运行时能力。
+
+命令面没有写命令（2026-08-28 裁决）：磁盘写入来自宿主编辑工具或其他外部进程，daemon 通过 watcher 观察并发布新 snapshot；修改 Vault 后运行 `notist check` 验证。
+
+=== Vault 发现与 ROOT
+
+需要 Vault 的命令把 `[ROOT]` 放在最后一个 positional，默认 `.`。ROOT 可以是 Vault 内文件或目录；Notist 按 #<vault::designs::world::boundary-discovery/发现规则> 向上查找最近的 `Notist.toml`，canonicalize 后连接该 root 对应的 daemon。Nested Vault 不进入外层扫描。
+
+```shell
+notist status .
+notist search "type system" docs
+notist check docs/designs/host/query-contract.not
+```
+
+=== Selector 与 Scope
+
+Selector 是精确身份，Scope 是集合过滤，两者不互相替代；完整寻址契约（selector 三形态、段边界匹配、citation 统一位置）在 #<vault::cli::inspect/Selector、Scope 与 Citation>。
+
+=== 全局参数
+
+```text
+notist [--color auto|always|never] [--pager auto|always|never] [--no-daemon] <COMMAND>
+```
+
+- `--color`：只影响 human diagnostic 与 source frame。
+- `--pager`：只分页当前 bounded text page；auto 只在 TTY 启用；不会自动读下一页。
+- `--no-daemon`：在当前进程创建临时 VaultEngine 与 disk View，执行同一 core operation；不关闭 analysis、snapshot、预算与校验。
+- `--help`、`--version` 各自打印当前安装版本信息。
+
+全局参数可放 subcommand 前后，但脚本建议放在命令前。子命令 help 不重复展示这些全局参数。
+
+`daemon` 与 `lsp` 只允许自己的 framing：传 `--color` 或 `--pager` 是 usage error。`preview` 的 stdout 是启动状态与 SSE revision stream，不是有限 query text。
+
+=== 输出投影
+
+有限 CLI 命令只有一种公开投影：有界 text。没有 `--format text|json`，也没有 schema-versioned JSON envelope。需要完整机器 artifact 时显式使用 `export --output`；LSP/daemon 使用各自协议 framing。
+
+Text 投影契约：
+
+- stdout 只包含当前 bounded page 与 continuation。
+- 错误写 stderr：`error[code]: message`，hint 与 candidates 逐行跟随。
+- 颜色、pager、TTY 只能改变渲染，不能改变 logical result、排序、cursor 或 exit status。
+- logical result 先受预算约束，再投影为 text；text 最坏上界是 `2 × applied max_bytes + 8 KiB`。
+- excerpt 只用于挑选候选；形成事实结论前必须 `read` authored source。
+
+=== Runtime policy：默认预算
+
+预算从命令语法下沉为版本化服务策略。普通命令只承诺默认页；完整数据走 export。
+
+```text
+operation            default page                 hard ceiling
+status               fixed 8 KiB                  fixed 8 KiB
+modules              20 items / 16 KiB            100 items / 64 KiB
+search               8 items / 16 KiB             100 items / 64 KiB
+locate               8 items / 16 KiB             100 items / 64 KiB
+outline              100 headings / 16 KiB        100 headings / 64 KiB
+read                 120 lines / 16 KiB           1,000 lines / 64 KiB
+refs                 20 items / 16 KiB            100 items / 64 KiB
+check detail         20 diagnostics / 16 KiB      100 diagnostics / 64 KiB
+search/locate excerpt 256 bytes                   256 bytes
+refs excerpt         256 bytes                    256 bytes
+```
+
+这些数值是可版本化 policy，不是语言语义；调整通过服务端配置与版本提升，不进入 CLI flag。
+
+=== 继续读取：next
+
+Collection 命令返回 `continue: notist next <TOKEN>` 或 `complete`；翻页是全局唯一动作 `notist next <TOKEN>`，token 语义与错误码见 #<vault::cli::inspect/next>。
+
+=== Error 与退出状态
+
+```text
+exit 0   成功；零 search result 也属于成功
+exit 1   命令有效完成但业务结论失败：check 有 error
+exit 2   usage/schema error
+exit 3   可纠正 query error：not_found、invalid_cursor、cursor_stale、index_not_ready...
+exit 4   service/protocol unavailable
+exit 70  internal failure
+```
+
+稳定 error code 至少包括 `not_found`、`ambiguous_selector`、`invalid_cursor`、`cursor_expired`、`cursor_stale`、`snapshot_changed`、`index_not_ready`、`query_timeout`、`query_limit`、`invalid_regex`。调用者按 exit status 粗分、按 error code 恢复，不解析 message 子串。
+
+== Explore
+
+Explore 组是 Agent 的查询与导航原语：status、modules、search、locate、outline、read、refs、definition、next。逐命令规范、Selector/Scope/Citation 寻址契约与 Agent 工作流见 #<vault::cli::inspect>。
+
+== Validate
+
+=== check
+
+用途：对完整 Vault 下健康结论，不提供 module scope。跨模块 import/reference 的语义世界不能靠局部 scope 变成“检查通过”。
+
+```shell
+notist check [ROOT]
+  [--summary]
+  [--severity error|warning|info]
+```
+
+- 始终完整分析整个 Vault；detail 页只受运行时预算限制。
+- `--summary`：只打印 `N sources, N diagnostics, N errors` 与按 code 计数。
+- `--severity`：只过滤 detail 展示；summary 与 exit status 永远反映全部 diagnostics。
+- 只要存在 error，exit 1；只有 warning/info 时 exit 0 但显示 summary。
+- 单模块诊断通过 LSP 或 `export diagnostics` 获得；CLI 不提供 check scope。
+
+text source frame：
+
+```text
+error[unresolved-module]: target module was not found
+  --> designs/host/query-contract.not:12
+   |
+12 | #<vault::does::not::exist>
+   |    ^^^^^^^^^^^^^^^^^^^^^^
+hint: create the module or correct the reference
+
+2 diagnostics in 1 source; showing 2
+```
+
+== Artifacts
+
+=== export
+
+用途：完整机器 artifact 的显式出口。普通 query 永不无界；需要全量数据时写文件，stdout 只回摘要。
+
+```shell
+notist export snapshot [ROOT] --output FILE [--export-format json|jsonl]
+notist export diagnostics [ROOT] --output FILE [--export-format json|jsonl]
+notist export outline [ROOT] --output FILE [--export-format json|jsonl]
+notist export search <QUERY> [ROOT] --output FILE [--export-format json|jsonl] [search options]
+notist export locate <PATTERN> [ROOT] --output FILE [--export-format json|jsonl] [locate options]
+```
+
+- `search`/`locate` export 接受对应命令的 query/filter/grouping 参数，写入完整有序结果，不受普通页 item 上限约束；仍受 artifact 文件大小与 regex scan deadline 约束。
+- `--output -` 是专家级无界 stdout opt-in；官方 Skill 不使用。
+- 默认 `json`；`jsonl` 用于长 artifact 流式消费。
+- stdout 摘要固定包含 kind、path、record/byte count、snapshot stamp 与 SHA-256 checksum。
+
+```text
+exported search 142 records, 45,678 bytes -> results.json
+snapshot: disk revision 42
+checksum: sha256:9f2c...
+```
+
+=== build
+
+用途：从一个 captured snapshot 生成多页静态 HTML artifact。
+
+```shell
+notist build [ROOT] --output DIR [--clean]
+```
+
+- `--output` 默认 `dist`。
+- `--clean` 只清理已验证位于目标内的 build artifact；不得借此删除任意目录。
+- 构建诊断与页面来自同一 snapshot；存在 error 时 exit 1。
+- stdout 只回 page count、输出目录与 error count。
+
+=== preview
+
+用途：本地预览与 live reload；是长时间 runtime，不是有限 query。
+
+```shell
+notist preview [ROOT] [--host IP] [--port N] [--open]
+```
+
+- 默认 host `127.0.0.1`，port `3250`；端口被占用时自动回退到系统分配端口。
+- `--open` 显式打开浏览器；默认不打开，适合脚本与远端端口转发场景。
+- 非 loopback host 需要显式选择并显示安全 warning。
+- stdout 是启动状态 + SSE revision stream；不要混入普通查询语义。
+- Enhanced 模式：页面侧边栏显示 Symbols（锚点、根 `let` 绑定、标注区域），标注区域高亮并可跳转；状态在同一标签页 live reload 间保持。
+
+== Runtime & tooling
+
+=== index
+
+用途：检查或重建派生检索索引；不修改 authored Vault。
+
+```shell
+notist index status [ROOT]
+notist index rebuild [ROOT] [--wait]
+```
+
+- `status`：health `ready|building|stale|error|not_built`、schema/tokenizer/ranking version、indexed source fingerprint、unit count、最近错误。
+- `rebuild`：只替换当前 snapshot 的可重建 generation；默认返回后台 task handle，`--wait` 等待完成。
+- `--no-daemon` 下 rebuild 隐式等待，避免后台任务随进程退出丢失。
+- search/locate 不依赖调用者手动 rebuild；首次 search 会按 snapshot 惰性提交 build task。
+
+=== daemon
+
+```shell
+notist daemon [ROOT]
+notist daemon stop [ROOT]
+```
+
+- `daemon`：为一个 canonical Vault root 持有长期 Engine、watcher、cache 与 disk View；前台运行，stdout 只允许 daemon framing。
+- `daemon stop`：显式停止 root 对应 daemon；没有 daemon 时成功退出，脚本可幂等调用。
+- CLI 默认惰性连接或启动 daemon；`--no-daemon` 是隔离部署形态，不是第二套语义。
+- stale daemon 的 binary stamp 回收规则见 #<vault::designs::host::client-interface-protocol/过期 daemon 的回收>。
+
+=== lsp
+
+```shell
+notist lsp
+```
+
+- 通过 stdin/stdout 提供 LSP JSON-RPC；root 由 editor workspace 动态发现。
+- 只允许 LSP framing；不接受 `--color`/`--pager`。
+- LSP 维护 editor overlay View；CLI 普通命令查询 disk View，二者不共享未保存文本。
+
+=== skill
+
+```shell
+notist skill init <OUTPUT> [--force]
+```
+
+- 默认要求 OUTPUT 是尚不存在的目录，只生成确定性的 `SKILL.md`。
+- `--force`：OUTPUT 必须是已有目录，原子替换其中的 `SKILL.md`，保留其他文件。
+- 不猜测 Host 安装目录，不修改 Host registry，不接受把当前 Vault 导出为 Skill。
+- 分发与 docs Vault 边界见 #<vault::designs::host::cli-command-surface-skill-distribution>。
+
+== Internal
+
+=== debug
+
+```shell
+notist debug inspect [ROOT]
+  --section modules|references|semantic
+  [--module MODULE]
+```
+
+- 面向实现诊断的有界 projection；不属于 Agent 正常 discovery。
+- `--module` 精确过滤一个 ModulePath；section 决定 projection。
+- 分页与其他 collection 相同，只通过 `next`。
+- 旧的全库 `inspect` 与无界 dump 不复存在；完整数据走 export。
+
+== 迁移与兼容
+
+2026-08-15 裁决的新命令面是有意 breaking change。迁移窗口只保留下列 alias：
+
+```text
+references       -> refs
+query definition -> definition
+--prefix MODULE  -> modules --scope MODULE
+```
+
+以下旧 surface（2026-08-15 裁决前）不进入新命令面：
+
+```text
+--format text|json
+-n, --limit
+--max-bytes
+--cursor
+--snippet-bytes
+--wait-index
+--fuzzy-distance
+search --mode / --exact / --regex
+search --fields / --operator
+references --direction / --include-definition
+check --scope
+```
+
+旧 cursor 与旧 index 在版本不匹配时拒绝，而不是猜测迁移。release notes 必须写明：需要机器结果的使用者改走 `export --output`；需要继续读取的调用者改用 `notist next`。
+
+2026-08-28 裁决：`edit` 命令与 daemon 写入操作（propose/apply/rename）整体退出命令面与协议。daemon 不再提供任何写路径；磁盘写入来自宿主编辑工具或其他外部进程，经 watcher 发布为新 snapshot，修改后用 `notist check` 验证。`exit 5` 与 `edit_conflict`/`plan_expired` 错误码随之取消。
+
+== Conformance
+
+一个命令要进入本文公开 surface，必须同时满足：
+
+- 语义参数完整写入本文与 `--help`；help 展示 default 与 validation。
+- 没有 page/budget/rendering 策略 flag 泄漏进语义命令。
+- 有限 query 只输出有界 text；完整数据只出现在 export artifact。
+- 相同参数与 snapshot 产生相同排序与相同 continuation。
+- `--color`、`--pager`、TTY 不改变 logical result。
+- 零结果成功；错误只按 typed code 与 exit status 恢复。

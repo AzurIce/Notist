@@ -29,7 +29,7 @@ link(target: Target | String) -> Content
 heading(level: Int = 1, trailing body: Content) -> Content
 ```
 
-产生 Heading 节点。`level` 必须至少为 1，无上限（渲染时折叠到 h6）。heading 的默认 id 规则见 #<vault::designs::world::reference-ref-target/scope id>。糖见 #<vault::designs::language::syntax-sugar/heading>。
+产生 Heading 节点。`level` 必须至少为 1，无上限（渲染时折叠到 h6）。heading 的默认 id 规则见 #<vault::designs::world::reference-ref-target/ItemName>。糖见 #<vault::designs::language::syntax-sugar/heading>。
 
 === raw
 

@@ -63,7 +63,7 @@ Preview generation、LSP document version 与 snapshot revision 是三个不同�
 
 - `FileId`：VaultEngine 为 canonical source identity 分配，Engine 生命周期内跨 View 与 revision 稳定；文件删除后不立即复用，普通路径重命名产生新 FileId（除非上层以明确 rename event 保留身份）；
 - `ModuleId`：Vault 内的逻辑 Module identity，对应一个 ModulePath；virtual 与 source-backed Module 都有；给 virtual Module 增加 `README.not` 不改变 identity，source move 改变 ModulePath 就是语言层面的 Module rename（#<vault::designs::world::module-result>）；
-- 显式 scope id：可跨 revision、可引用（#<vault::designs::world::reference-ref-target/scope id>：显式 `@id` 与标题默认 id）；没有显式 id 的节点只获得 snapshot-local identity：
+- 显式 ItemName：可跨 revision、可引用（#<vault::designs::world::reference-ref-target/ItemName>：显式 `@id` 与标题默认名）；没有显式 `@id` 的节点只获得 snapshot-local identity：
 
 ```text
 SnapshotNodeId {
@@ -111,7 +111,7 @@ snapshot.resolve_reference(url)      // RefTarget，reference-ref-target
 snapshot.references_in(module_id)    // 正向引用，client-interface-protocol
 ```
 
-查询结果携带 snapshot revision，优先返回 FileId、ModuleId、显式 scope id 与 TextRange；Path、ModulePath、标题与 snippet 是展示与序列化信息，不取代核心 identity。查询不修改 Analyzer 输入、不推进 revision；completion 或 search 的 memoization cache 可丢弃，只影响性能。
+查询结果携带 snapshot revision，优先返回 FileId、ModuleId、显式 ItemName 与 TextRange；Path、ModulePath、标题与 snippet 是展示与序列化信息，不取代核心 identity。查询不修改 Analyzer 输入、不推进 revision；completion 或 search 的 memoization cache 可丢弃，只影响性能。
 
 **满足 #<vault::designs::host::query-contract/Core Query Contract> 的契约**：SnapshotStamp 的 `source_set_fingerprint` 由 source set 的 identity 与内容确定性派生；source-order 查询的稳定 key（ModulePath、relative path、range、record kind）与 ranked 查询的量化 score key 由 snapshot 内的 identity 保证——Analyzer 是这些稳定性的实现者，cursor 的 `cursor_stale`/`invalid_cursor` 判定建立在它的 fingerprint 上。
 

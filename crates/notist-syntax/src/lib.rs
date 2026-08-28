@@ -1,4 +1,4 @@
-use notist_model::{ModuleReference, TableAlignment, TextRange, WikiReference};
+use notist_model::{ModuleReference, TableAlignment, Target, TextRange};
 
 mod argument;
 mod parser;
@@ -430,10 +430,12 @@ pub fn parse(source: &str) -> Parse {
 }
 
 /// Parses the body of a Target literal (`<...>`, with escapes already
-/// resolved by the lexer). The body is `ModulePath[/label]`: everything up
-/// to the first `/` is the module path, the remainder is the module-local
-/// selector. External urls are rejected: they must be written as `String`.
-pub fn parse_target_body(source: &str) -> Result<WikiReference, String> {
+/// resolved by the lexer). The body is `ModulePath[/ItemName]`: everything
+/// up to the first `/` is the module path, the remainder is the ItemName.
+/// The first `/` switches into the module's flat ItemName space; any later
+/// `/` is part of the literal name. External urls are rejected: they must
+/// be written as `String`.
+pub fn parse_target_body(source: &str) -> Result<Target, String> {
     let source = source.trim();
     if source.is_empty() {
         return Err("target literal cannot be empty".into());
@@ -445,13 +447,13 @@ pub fn parse_target_body(source: &str) -> Result<WikiReference, String> {
         );
     }
 
-    let (module_part, label) = match source.split_once('/') {
-        Some((module, label)) => {
-            let label = label.trim();
-            if label.is_empty() {
-                return Err("target label after `/` cannot be empty".into());
+    let (module_part, name) = match source.split_once('/') {
+        Some((module, name)) => {
+            let name = name.trim();
+            if name.is_empty() {
+                return Err("item name after `/` cannot be empty".into());
             }
-            (module.trim(), Some(label.to_owned()))
+            (module.trim(), Some(name.to_owned()))
         }
         None => (source, None),
     };
@@ -459,7 +461,7 @@ pub fn parse_target_body(source: &str) -> Result<WikiReference, String> {
         return Err("target module path cannot be empty".into());
     }
     let module = parse_target_module_path(module_part)?;
-    Ok(WikiReference { module, label })
+    Ok(Target { module, name })
 }
 
 fn parse_target_module_path(source: &str) -> Result<ModuleReference, String> {
@@ -546,11 +548,13 @@ fn is_target_segment(source: &str) -> bool {
     !source.chars().any(char::is_control)
 }
 
-/// Parses a wiki reference body without the surrounding `[[` and `]]`.
-pub fn parse_wiki_reference(source: &str) -> Result<WikiReference, String> {
+/// Parses an internal reference url (`ModulePath[#ItemName]`, `#`-separated)
+/// back into a Target. This is the round-trip spelling of `ResolvedReference
+/// .url`, not the authored `#<ModulePath/ItemName>` syntax.
+pub fn parse_reference_url(source: &str) -> Result<Target, String> {
     let source = source.trim();
     if source.is_empty() {
-        return Err("wiki reference cannot be empty".into());
+        return Err("reference url cannot be empty".into());
     }
 
     let mut parts = source.split('#');
@@ -558,21 +562,21 @@ pub fn parse_wiki_reference(source: &str) -> Result<WikiReference, String> {
     if looks_like_external(module_part) {
         // External targets are deferred (D0004) but syntactically legal (R10):
         // the literal url string parses and the resolver classifies it External.
-        return Ok(WikiReference {
+        return Ok(Target {
             module: ModuleReference::External(source.to_owned()),
-            label: None,
+            name: None,
         });
     }
-    let label = parts.next().map(str::trim).map(str::to_owned);
+    let name = parts.next().map(str::trim).map(str::to_owned);
     if parts.next().is_some() {
-        return Err("wiki reference contains more than one `#`".into());
+        return Err("reference url contains more than one `#`".into());
     }
-    if label.as_deref() == Some("") {
-        return Err("wiki reference label cannot be empty".into());
+    if name.as_deref() == Some("") {
+        return Err("reference url name cannot be empty".into());
     }
 
-    let module = parse_module_reference(module_part.trim(), label.is_some())?;
-    Ok(WikiReference { module, label })
+    let module = parse_module_reference(module_part.trim(), name.is_some())?;
+    Ok(Target { module, name })
 }
 
 fn parse_module_reference(source: &str, has_label: bool) -> Result<ModuleReference, String> {
@@ -737,12 +741,12 @@ mod tests {
             panic!("expected target literal");
         };
         assert_eq!(first.module, ModuleReference::Absolute(vec!["wiki link".into()]));
-        assert_eq!(first.label.as_deref(), Some("install"));
+        assert_eq!(first.name.as_deref(), Some("install"));
         let ExpressionKind::Target(second) = &targets[1].kind else {
             panic!("expected target literal");
         };
         assert_eq!(second.module, ModuleReference::Absolute(vec!["a>b".into()]));
-        assert!(second.label.is_none());
+        assert!(second.name.is_none());
     }
 
     #[test]

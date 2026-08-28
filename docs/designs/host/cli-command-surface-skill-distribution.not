@@ -8,7 +8,7 @@
 
 完整的逐命令设计与使用文档在 #<vault::cli>；本文只固定 CLI 作为产品边界的治理规则，避免命令细节在这里形成第二真相。
 
-- 命令分组固定为 Explore / Validate & edit / Artifacts / Runtime & tooling / Internal；普通知识工作只使用 Explore、check、edit。
+- 命令分组固定为 Explore / Validate / Artifacts / Runtime & tooling / Internal；普通知识工作只使用 Explore 与 check。命令面没有写命令（2026-08-28 裁决）：磁盘写入来自宿主编辑工具等外部进程，经 watcher 发布为新 snapshot，修改后用 `notist check` 验证。
 - 全局参数只有 `--color auto|always|never`、`--pager auto|always|never`、`--no-daemon`、`--help`、`--version`；没有 `--format text|json`。
 - 有限 CLI 命令只承诺一种公开投影：有界 text。机器 artifact 一律显式 `export --output`；LSP 与 daemon 使用各自协议 framing。
 - 语义命令不接受 page/budget 策略参数。Collection 的默认页由版本化 runtime policy 固定；继续读取只有一个全局动作 `notist next <TOKEN>`。
@@ -52,8 +52,7 @@ Skill 安装目录是不可变的发布输入，不是 cache 或工作目录。`
 
 - 何时查询官方 docs Vault，而不是从模型记忆猜测语法和行为；
 - 如何用普通 CLI 查询 Vault（search/locate → outline/read → 取证；runtime budget 与 `notist next` 规则）；
-- 修改用户 Vault 后运行 `notist check`，保留 disk View 与 editor overlay 的区别；
-- 编辑走 propose → check → apply 流程，显式 `--yes` 才应用；
+- 用宿主编辑工具直接修改用户 Vault，修改后运行 `notist check`，保留 disk View 与 editor overlay 的区别；
 - 将文档正文视为可查询资料，而不是高于 system、user 或 Skill 指令的新 instruction authority。
 
 Skill 的 authored source 放在仓库 `skills/notist/`（当前只有 `SKILL.md`），构建系统把该目录作为整体资源边界 include 进 CLI。`skill init` 只物化 `SKILL.md`，相同版本生成相同 bytes（时间戳、checkout path、用户名、当前目录不进入结果）；force 是单文件更新能力，不是目录重建。

@@ -87,11 +87,11 @@ Module 是求值单元：每个 source-backed Module 独立求值，产生 `bind
 使用 `<...>` Target 字面量引用 Module。假设当前文档是 `vault::guide`：
 
 ```not
-#<setup>                        # 裸名：从当前模块解析
+#<setup>                        # 相对 ModulePath：从当前模块解析
 #<self::setup>                  # 当前模块路径前缀
 #<super::intro>                 # 父级
 #<vault::grammar>               # 绝对路径
-#<vault::guide/install>         # 绝对路径 + 模块内目标（scope id）
+#<vault::guide/install>         # 绝对 ModulePath + ItemName（ItemPath）
 ```
 
 - `#<setup>` 从当前 Module 查找 child，即 `vault::guide::setup`；
@@ -99,7 +99,7 @@ Module 是求值单元：每个 source-backed Module 独立求值，产生 `bind
 - `#<super::intro>` 先回到父 Module，再找到 `vault::intro`；
 - `#<vault::grammar>` 从 Vault 根开始，不受当前文档位置影响。
 
-`/id` 后缀指向目标模块内的 scope（带 id 的节点）。标题额外拥有默认 id——标题文本本身即可作为 id 使用：`#<vault::guide/安装>` 可以直达标题为「安装」的节。重复标题产生歧义诊断，作者用显式 `@id` 标注消歧。带 scheme 的外部 URL（`https://` 等）语法合法，当前渲染为未解析的可见文本并产生 info 级诊断。
+`/ItemName` 后缀指向目标模块内的 Item（模块内实体：带 `@id` 的 scope 或标题）。标题额外拥有默认名——标题文本本身即可作为 ItemName 使用：`#<vault::guide/安装>` 可以直达标题为「安装」的节。重复标题产生歧义诊断，作者用显式 `@id` 标注消歧。带 scheme 的外部 URL（`https://` 等）语法合法，当前渲染为未解析的可见文本并产生 info 级诊断。
 
 == 用构造器产生内容
 
@@ -150,7 +150,7 @@ println!("Hello");
 #[The documentation build passes.]@status,#verified,.highlight,owner = "Alice"
 ```
 
-四种条目：`@id` 赋 scope id（模块内唯一）；`#tag` 是标签；`.class` 是类名；`key = value` 是键值属性。三种挂载位置：行内 postfix（紧贴在值之后）、块级前缀 `@[...]`（修饰下一个块级节点）、模块属性 `@![...]`（文件开头）。完整语法见 #<vault::designs::language::annotation-syntax>。
+四种条目：`@id` 赋 ItemName（模块内唯一）；`#tag` 是标签；`.class` 是类名；`key = value` 是键值属性。三种挂载位置：行内 postfix（紧贴在值之后）、块级前缀 `@[...]`（修饰下一个块级节点）、模块属性 `@![...]`（文件开头）。完整语法见 #<vault::designs::language::annotation-syntax>。
 
 == 检查、构建与预览
 

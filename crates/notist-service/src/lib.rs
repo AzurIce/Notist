@@ -29,9 +29,6 @@ pub struct NotistService {
     vault_root: Option<PathBuf>,
     vaults: Mutex<BTreeMap<PathBuf, Arc<VaultHost>>>,
     views: Mutex<HashMap<ServiceViewId, ViewEntry>>,
-    edit_plans: Mutex<HashMap<String, request::StoredEditPlan>>,
-    applied_edits: Mutex<HashMap<String, request::ApplyEditRecord>>,
-    renamed_sources: Mutex<HashMap<String, request::RenameSourceRecord>>,
     search_indexes: Arc<Mutex<HashMap<String, Arc<query::SearchIndex>>>>,
     search_index_builds: Arc<Mutex<HashMap<String, Arc<SearchIndexBuild>>>>,
     runtime_mode: &'static str,
@@ -79,7 +76,6 @@ struct VaultHost {
     disk: Arc<Mutex<AnalyzerView>>,
     sessions: Arc<Mutex<Vec<Weak<Mutex<AnalyzerView>>>>>,
     _watcher: Mutex<PassiveDebouncedWatcher>,
-    write_lock: Mutex<()>,
 }
 
 struct ViewEntry {
@@ -114,9 +110,6 @@ impl NotistService {
             vault_root,
             vaults: Mutex::new(BTreeMap::new()),
             views: Mutex::new(HashMap::new()),
-            edit_plans: Mutex::new(HashMap::new()),
-            applied_edits: Mutex::new(HashMap::new()),
-            renamed_sources: Mutex::new(HashMap::new()),
             search_indexes: Arc::new(Mutex::new(HashMap::new())),
             search_index_builds: Arc::new(Mutex::new(HashMap::new())),
             runtime_mode,
@@ -323,7 +316,6 @@ impl NotistService {
             disk,
             sessions,
             _watcher: Mutex::new(watcher),
-            write_lock: Mutex::new(()),
         });
         let mut vaults = self.vaults.lock().unwrap();
         Ok(vaults
