@@ -16,6 +16,6 @@
 重新构建组件：
 
 ```sh
-nix develop ~/Files/notist -c cargo build --target wasm32-unknown-unknown --release
-cp target/wasm32-unknown-unknown/release/*.wasm semantic.wasm
+cd semantic && nix develop ~/Files/notist -c cargo build --target wasm32-unknown-unknown --release && cd ..
+cp semantic/target/wasm32-unknown-unknown/release/*.wasm semantic.wasm
 ```

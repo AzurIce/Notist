@@ -11,7 +11,7 @@ docs/designs/plugin-system/abi.not。
 - `notist-plugin-host` 按 wasm 二进制版本字节自动分派：`0x01` = core module，
   `0x0d` = 组件。core 路径走 `wasmtime::Module`，无 WASI linker、无 canonical
   ABI，fuel 与内存 limiter 照常生效。
-- `plugins/shader-wasm` 加 `core-abi` feature：
+- `plugins/shader/semantic`（`export_plugin!`）构建：
   `cargo build --release --features core-abi --target wasm32-unknown-unknown`。
 
 ## 内存 ABI（`notist_plugin_sdk` 模块文档有完整约定）
@@ -61,7 +61,7 @@ core module 路径改由 wasmi 1.1 解释执行（组件路径仍在 wasmtime）
 
 ```sh
 # core module 构建（shader/mermaid 同法）
-cd plugins/mermaid-wasm
+cd plugins/mermaid/semantic
 nix develop ~/Files/notist -c cargo build --release --features core-abi --target wasm32-unknown-unknown
 # 把产物覆盖 plugins/<name>/semantic.wasm 后跑 notist check/build
 
@@ -69,6 +69,6 @@ cd experiments/core-wasm-plugin/gen-fixtures
 cargo run -q --bin gen-shader -- ../fixtures
 cargo run -q --bin gen-mermaid -- ../fixtures
 
-node ../verify.mjs ../../plugins/shader-wasm/target/wasm32-unknown-unknown/release/notist_plugin_shader_wasm.wasm ../fixtures/shader
-node ../verify.mjs ../../plugins/mermaid-wasm/target/wasm32-unknown-unknown/release/notist_plugin_mermaid_wasm.wasm ../fixtures/mermaid
+node ../verify.mjs ../../plugins/shader/semantic/target/wasm32-unknown-unknown/release/notist_plugin_shader_wasm.wasm ../fixtures/shader
+node ../verify.mjs ../../plugins/mermaid/semantic/target/wasm32-unknown-unknown/release/notist_plugin_mermaid_wasm.wasm ../fixtures/mermaid
 ```

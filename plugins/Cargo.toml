@@ -1,0 +1,12 @@
+[workspace]
+resolver = "2"
+members = [
+    "component-echo/semantic",
+    "shader/semantic",
+    "mermaid/semantic",
+]
+
+[profile.release]
+opt-level = "s"
+lto = true
+panic = "abort"

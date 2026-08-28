@@ -1,4 +1,5 @@
 /target
+plugins/target/
 dist
 .direnv
 result

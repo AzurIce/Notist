@@ -22,6 +22,6 @@ path = "../plugins/shader"
 
 ```sh
 cd plugins/shader-wasm
-nix develop ~/Files/notist -c cargo build --target wasm32-unknown-unknown --release
-cp target/wasm32-unknown-unknown/release/notist_plugin_shader_wasm.wasm ../shader/semantic.wasm
+cd semantic && nix develop ~/Files/notist -c cargo build --target wasm32-unknown-unknown --release && cd ..
+cp semantic/target/wasm32-unknown-unknown/release/notist_plugin_shader_wasm.wasm ../shader/semantic.wasm
 ```
