@@ -1,6 +1,17 @@
 [workspace]
 resolver = "2"
-members = ["crates/*", "plugins/core"]
+members = [
+    "crates/*",
+    "plugins/core",
+    "plugins/*/semantic",
+]
+
+# wasm 插件专用：与宿主 release 构建隔离（opt-level s + panic abort）
+[profile.plugin-release]
+inherits = "release"
+opt-level = "s"
+lto = true
+panic = "abort"
 default-members = ["crates/notist-cli"]
 
 [workspace.package]
