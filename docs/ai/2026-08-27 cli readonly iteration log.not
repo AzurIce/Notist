@@ -168,3 +168,16 @@ enforced 系统提示前置缺席判定协议：1–2 次带 --exclude-scope vau
 - 若三轮中位 tokens > 100k **且** ≥2/3 轮超出分档线（26k×2=52k）→ 判定该任务形态在强制条件下需要专用原语，立项 `notist verify-absent`（结构化缺席判定命令：内置排除层、直接输出 verdict、返回最小 token 面积）；
 - 若中位 ≤ 52k，或仅个别轮次越线（纯方差）→ 保持现有 affordance（exclude-scope + conclusion + 分档预算×2），在规范里把该格预算权重固定为 ×2 并注明方差性质；
 - 中间态（中位 52k–100k）→ 先把缺席协议提示收进 SKILL 正文（enforced 也读提示行以外的 skill 注入仅在 skill 条件生效，enforced 不注入——故实际动作是把协议三句话并入 runner 的 ENFORCED_RULE 已有文本），复测一轮再定。
+
+
+== Phase 3 迭代 6（2026-08-28）：verify-absent 效果验证
+
+TC1 单格四条件快测（p3tc1）：**正确性 4/4——TC1 诞生以来首次在任何条件通过**（此前 12 格 0/12）；四条件成本坍缩至紧密带 md 49k / bash 54k / enforced 51k / skill 48k（历史 enforced 中位 145k，−65%，且首次落进 52k 分档线内）。模型回答引用 verify-absent 的判决与 scope 桶分作为依据。预注册规则分支一的决策（专用原语）据此判定为正确且已兑现。
+
+n=3 重锚的其余统计结论（p3run6a/b/c，36 格 ×3）：
+- TD1：md 组中位 502k tokens、0/3 通过，vs notist 各条件 13–27k——20 倍成本差在 n=3 下稳定成立，接口独有 affordance 的量化证据最终成型。
+- skill 组有效通过 10/27 全场最低：SKILL 注入的上下文开销被预算层惩罚（如 skill/TB1 中位 48k 超其 26k 线）——记分卡协议欠一次"skill 因素"分档（拟 ×1.5），下轮落地。
+- T4（标注语法）在 bash/bash-enforced 两条件 0/3–1/3 但 token 正常：疑似回答表述与判据锚不齐，需答案取证后修判据（判分同步纪律）。
+- enforced/T2/T5/TD1/TB1 四格 3/3 满通过且 CV≤0.29：强制条件在"纯 notist 原语任务"上与 bash 等价甚至更稳，接口充分性主张成立。
+
+遗留队列：全网格 n=3 重锚（新二进制）；T4 判据取证；skill 预算分档。
