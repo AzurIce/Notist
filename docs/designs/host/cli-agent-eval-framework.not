@@ -90,3 +90,7 @@ edit 守卫指纹双实现冲突已于 2026-08-27 裁决修复（分支提交 ed
 - Phase 3a：转换器按上表重写（build HTML 投影为源）；notist 语料标注增强；双料重新冻结。
 - Phase 3b：五类任务集落地 + 记分卡实现 + 审计式执法进 runner；四条件扩为六条件。
 - Phase 3c：全条件 n≥3 重锚并出主基线报告；此后恢复"改进→评测"循环，read-only 之外的范围另行立项。
+
+== verify-absent 原语（2026-08-28 追加）
+
+n=3 重锚（p3run6a/b/c）按预注册规则裁决：enforced/TC1 中位 144,951 tokens、3/3 超分档线（52k）、CV=0.04——缺席协议提示把方差压稳但压不低平台，触发专用原语分支。`notist verify-absent <QUERY> [--exclude-scope]...` 复用 search 双扫（any 广谱 + all 严格），输出三值判决 ABSENT / ABSENT-STRICT（严格层零匹配但广谱有部分命中）/ PRESENT 与 scope 桶分；输出面积 ~300B，替代模型 145k 级的自助探索。Skill 与本规范同步记录；效果验证见迭代日志迭代 6。
