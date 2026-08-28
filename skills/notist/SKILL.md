@@ -26,6 +26,10 @@ notist refs vault::designs::host::daemon-process-views <DOCS_ROOT>
 
 Use `status` or bounded `modules` for discovery, then `search` or one-Module `outline`, and finally `read` for authored evidence.
 
+To settle existence in ONE command use `notist verify-absent "<terms>"
+--exclude-scope vault::ai`: it sweeps broad(any) and strict(all), then
+prints a quotable `verdict:` line (ABSENT / ABSENT-STRICT / PRESENT) with
+per-scope buckets - prefer it over chained searches for absence questions.
 Search answers "does this exist at all" directly: when coverage is
 complete, `coverage.conclusion` is the quotable verdict
 (`absent-in-snapshot` or `present`; text mode prints `verdict: ABSENT ...`)

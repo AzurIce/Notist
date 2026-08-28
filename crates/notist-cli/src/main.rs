@@ -57,6 +57,19 @@ enum Command {
         #[arg(long, hide = true)]
         background_child: bool,
     },
+    /// One-shot absence verdict: sweeps a query and answers ABSENT/PRESENT.
+    #[command(
+        after_help = "Examples:\n  notist verify-absent \"vector retrieval\" docs --exclude-scope vault::ai\n\nSweeps the query with operator=any (broad) and operator=all (strict).\nABSENT is authoritative only when coverage is complete."
+    )]
+    VerifyAbsent {
+        /// Terms whose absence (or presence) should be settled in one shot.
+        query: String,
+        #[arg(default_value = ".")]
+        root: PathBuf,
+        /// Drop matches under an exact ModulePath prefix; may be repeated.
+        #[arg(long = "exclude-scope")]
+        exclude_scopes: Vec<String>,
+    },
     /// Run the Notist language server over standard input and output.
     Lsp,
     /// Create resources that teach an Agent how to use Notist.
@@ -259,6 +272,7 @@ impl Command {
             Self::Modules { .. } => "modules",
             Self::Check { .. } => "check",
             Self::Search { .. } => "search",
+            Self::VerifyAbsent { .. } => "verify-absent",
             Self::Outline { .. } => "outline",
             Self::Read { .. } => "read",
             Self::References { .. } => "references",
@@ -870,6 +884,138 @@ fn run(cli: Cli) -> Result<ExitCode, Box<dyn std::error::Error>> {
             background_child,
             ..
         } => service::run_daemon(resolve_vault_root(&root)?, background_child, cli.format),
+        Command::VerifyAbsent {
+            query,
+            root,
+            exclude_scopes,
+        } => {
+            let root = resolve_vault_root(&root)?;
+            let mut client =
+                service::LocalNotistClient::connect(cli.no_daemon, ClientKind::Cli, root.clone())?;
+            let view_id = open_disk_view(&mut client, root.clone())?;
+            let mut sweep = |operator: notist_service::SearchOperator|
+             -> Result<notist_service::QueryPage<notist_service::SearchHit>, String> {
+                let reply = client
+                    .request(CoreRequest::SearchPage {
+                        view_id,
+                        query: notist_service::SearchQuery {
+                            query: query.clone(),
+                            mode: notist_service::SearchMode::Lexical,
+                            scopes: Vec::new(),
+                            exclude_scopes: exclude_scopes.clone(),
+                            fields: notist_service::SearchField::defaults(),
+                            operator,
+                            group_by: Some(notist_service::SearchGroup::Source),
+                            ignore_case: false,
+                            fuzzy_distance: 1,
+                            wait_index_ms: 2000,
+                            snippet_bytes: 192,
+                            page: notist_service::PageRequest::default(),
+                        },
+                    })
+                    .map_err(|error| error.to_string())?;
+                match reply.response {
+                    CoreResponse::SearchPage(page) => Ok(page),
+                    other => Err(format!("unexpected reply: {other:?}")),
+                }
+            };
+            let broad = sweep(notist_service::SearchOperator::Any)?;
+            let strict = if broad.coverage.complete
+                && broad.coverage.matched_modules == Some(0)
+            {
+                None
+            } else {
+                Some(sweep(notist_service::SearchOperator::All)?)
+            };
+            let pick = |page: &Option<notist_service::QueryPage<notist_service::SearchHit>>, key: &str| {
+                page.as_ref()
+                    .and_then(|p| {
+                        if key == "modules" {
+                            p.coverage.matched_modules
+                        } else {
+                            p.coverage.matched_units
+                        }
+                    })
+                    .unwrap_or(0)
+            };
+            let (verdict, detail) = match (&broad, &strict) {
+                (b, _) if b.coverage.complete && b.coverage.matched_modules == Some(0) => (
+                    "ABSENT",
+                    "no module matches any term (complete coverage)",
+                ),
+                (_, Some(all))
+                    if all.coverage.complete && all.coverage.matched_modules == Some(0) =>
+                (
+                    "ABSENT-STRICT",
+                    "no module matches all terms; partial matches exist (see scopes)",
+                ),
+                _ => ("PRESENT", "matching modules exist (see scopes)"),
+            };
+            let breakdown = strict
+                .as_ref()
+                .and_then(|p| p.coverage.scopes_breakdown.clone())
+                .or_else(|| broad.coverage.scopes_breakdown.clone())
+                .unwrap_or_default();
+            let top_modules: Vec<String> = strict
+                .as_ref()
+                .map(|p| {
+                    p.items
+                        .iter()
+                        .map(|h| h.location.module.clone())
+                        .take(8)
+                        .collect()
+                })
+                .unwrap_or_default();
+            let bucket_line = breakdown
+                .iter()
+                .map(|(scope, count)| format!("{scope}={count}"))
+                .collect::<Vec<_>>()
+                .join(" ");
+            if cli.format.is_json() {
+                let payload = serde_json::json!({
+                    "verdict": verdict,
+                    "detail": detail,
+                    "query": query,
+                    "exclude_scopes": exclude_scopes,
+                    "broad": {
+                        "matched_modules": pick(&Some(broad.clone()), "modules"),
+                        "matched_units": pick(&Some(broad.clone()), "units"),
+                        "complete": broad.coverage.complete,
+                        "scopes_breakdown": broad.coverage.scopes_breakdown,
+                    },
+                    "strict": strict.as_ref().map(|p| serde_json::json!({
+                        "matched_modules": p.coverage.matched_modules,
+                        "matched_units": p.coverage.matched_units,
+                        "complete": p.coverage.complete,
+                        "scopes_breakdown": p.coverage.scopes_breakdown,
+                    })),
+                    "top_modules": top_modules,
+                });
+                output::emit_result("verify-absent", true, &payload)?;
+                return Ok(ExitCode::SUCCESS);
+            }
+            println!("verdict: {verdict} - {detail}");
+            println!(
+                "broad(any): {} modules / {} units | strict(all): {} modules / {} units",
+                pick(&Some(broad.clone()), "modules"),
+                pick(&Some(broad.clone()), "units"),
+                strict
+                    .as_ref()
+                    .and_then(|p| p.coverage.matched_modules)
+                    .map_or("-".into(), |n| n.to_string()),
+                strict
+                    .as_ref()
+                    .and_then(|p| p.coverage.matched_units)
+                    .map_or("-".into(), |n| n.to_string()),
+            );
+            if !bucket_line.is_empty() {
+                println!("by scope: {bucket_line}");
+            }
+            for module in top_modules.iter().take(8) {
+                println!("  module: {}", quote_module(module));
+            }
+            Ok(ExitCode::SUCCESS)
+        }
         Command::Lsp => {
             require_protocol_format(cli.format, "lsp")?;
             lsp::run(cli.no_daemon)

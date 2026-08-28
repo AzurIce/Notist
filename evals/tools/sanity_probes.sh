@@ -87,4 +87,12 @@ ok = cov.get("conclusion")=="present"
 print(" conclusion:",cov.get("conclusion"))
 raise SystemExit(0 if ok else 1)' || fail=1
 $B search "不存在的词组zzz" "$C" --no-daemon | grep -q "verdict: ABSENT" && echo " text verdict ok" || fail=1
+echo "P10 verify-absent one-shot verdict"
+$B verify-absent "不存在的词组zzz" "$C" --no-daemon | grep -q "^verdict: ABSENT" && echo " absent ok" || fail=1
+$B verify-absent "向量 嵌入" "$C" --no-daemon --exclude-scope "vault::ai" | grep -q "^verdict: PRESENT" && echo " present ok" || fail=1
+$B verify-absent "向量 嵌入" "$C" --no-daemon --exclude-scope "vault::ai" --format json | python3 -c '
+import json,sys
+d=json.load(sys.stdin)["result"]
+ok = d["verdict"]=="PRESENT" and d["strict"]["matched_modules"]==1
+raise SystemExit(0 if ok else 1)' && echo " json ok" || fail=1
 exit $fail
