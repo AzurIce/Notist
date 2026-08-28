@@ -5,6 +5,7 @@ edition = "2024"
 publish = false
 
 [workspace]
+# 独立 workspace：钉版 wasm-bindgen 与专属 profile（z + strip）不与根 workspace 共享。
 
 [lib]
 crate-type = ["cdylib"]

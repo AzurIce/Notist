@@ -1,0 +1,1 @@
+{"rustc":6764077981071790541,"features":"","declared_features":"","target":0,"profile":0,"path":0,"deps":[[6557439603276904804,"build_script_build",false,17320302662837504047]],"local":[{"RerunIfChanged":{"output":"wasm32-unknown-unknown/release/build/serde-f51dbe2b412f86fd/output","paths":["build.rs"]}}],"rustflags":[],"config":0,"compile_kind":0}

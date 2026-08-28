@@ -1,0 +1,14 @@
+/home/azurice/Files/notist/plugins/target/wasm32-unknown-unknown/release/deps/serde-b1ca874b674c0fea.d: /home/azurice/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/serde-1.0.229/src/lib.rs /home/azurice/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/serde-1.0.229/src/integer128.rs /home/azurice/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/serde-1.0.229/src/private/mod.rs /home/azurice/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/serde-1.0.229/src/private/de.rs /home/azurice/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/serde-1.0.229/src/private/ser.rs /home/azurice/Files/notist/plugins/target/wasm32-unknown-unknown/release/build/serde-f51dbe2b412f86fd/out/private.rs
+
+/home/azurice/Files/notist/plugins/target/wasm32-unknown-unknown/release/deps/libserde-b1ca874b674c0fea.rlib: /home/azurice/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/serde-1.0.229/src/lib.rs /home/azurice/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/serde-1.0.229/src/integer128.rs /home/azurice/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/serde-1.0.229/src/private/mod.rs /home/azurice/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/serde-1.0.229/src/private/de.rs /home/azurice/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/serde-1.0.229/src/private/ser.rs /home/azurice/Files/notist/plugins/target/wasm32-unknown-unknown/release/build/serde-f51dbe2b412f86fd/out/private.rs
+
+/home/azurice/Files/notist/plugins/target/wasm32-unknown-unknown/release/deps/libserde-b1ca874b674c0fea.rmeta: /home/azurice/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/serde-1.0.229/src/lib.rs /home/azurice/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/serde-1.0.229/src/integer128.rs /home/azurice/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/serde-1.0.229/src/private/mod.rs /home/azurice/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/serde-1.0.229/src/private/de.rs /home/azurice/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/serde-1.0.229/src/private/ser.rs /home/azurice/Files/notist/plugins/target/wasm32-unknown-unknown/release/build/serde-f51dbe2b412f86fd/out/private.rs
+
+/home/azurice/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/serde-1.0.229/src/lib.rs:
+/home/azurice/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/serde-1.0.229/src/integer128.rs:
+/home/azurice/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/serde-1.0.229/src/private/mod.rs:
+/home/azurice/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/serde-1.0.229/src/private/de.rs:
+/home/azurice/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/serde-1.0.229/src/private/ser.rs:
+/home/azurice/Files/notist/plugins/target/wasm32-unknown-unknown/release/build/serde-f51dbe2b412f86fd/out/private.rs:
+
+# env-dep:OUT_DIR=/home/azurice/Files/notist/plugins/target/wasm32-unknown-unknown/release/build/serde-f51dbe2b412f86fd/out
