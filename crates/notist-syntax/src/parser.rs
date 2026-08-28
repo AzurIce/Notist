@@ -1225,7 +1225,10 @@ impl Parser<'_> {
     }
 
     /// Parses a Target literal `<path[/label]>`. Backslash escapes
-    /// `\<`, `\>`, and `\\`; any other escape is a syntax error.
+    /// `\<`, `\>`, and `\\`; any other escape is a syntax error, but the
+    /// escaped character itself is kept (matching String literals). A
+    /// Target never spans lines: an unterminated literal ends at the next
+    /// line break instead of swallowing the rest of the file.
     fn parse_target_literal(&mut self, start: usize) -> Expression {
         let mut cursor = start + 1;
         let mut body = String::new();
@@ -1235,24 +1238,19 @@ impl Parser<'_> {
             match rest.as_bytes()[0] {
                 b'\\' => {
                     let Some(next) = rest[1..].chars().next() else {
-                        self.errors.push(SyntaxError {
-                            message: "unclosed target literal".into(),
-                            range: TextRange::new(start, self.end),
-                        });
-                        self.cursor = self.end;
-                        return Expression {
-                            kind: ExpressionKind::Error,
-                            range: TextRange::new(start, self.end),
-                        };
+                        break;
                     };
                     if matches!(next, '<' | '>' | '\\') {
                         body.push(next);
                         cursor += 1 + next.len_utf8();
+                    } else if next.is_control() {
+                        break;
                     } else {
                         self.errors.push(SyntaxError {
                             message: format!("unknown escape `\\{next}` in target literal"),
                             range: TextRange::new(cursor, cursor + 1 + next.len_utf8()),
                         });
+                        body.push(next);
                         cursor += 1 + next.len_utf8();
                     }
                 }
@@ -1263,6 +1261,9 @@ impl Parser<'_> {
                 }
                 _ => {
                     let character = rest.chars().next().expect("cursor inside source");
+                    if character.is_control() {
+                        break;
+                    }
                     body.push(character);
                     cursor += character.len_utf8();
                 }
@@ -1271,12 +1272,12 @@ impl Parser<'_> {
         if !closed {
             self.errors.push(SyntaxError {
                 message: "unclosed target literal".into(),
-                range: TextRange::new(start, self.end),
+                range: TextRange::new(start, cursor),
             });
-            self.cursor = self.end;
+            self.cursor = cursor;
             return Expression {
                 kind: ExpressionKind::Error,
-                range: TextRange::new(start, self.end),
+                range: TextRange::new(start, cursor),
             };
         }
         self.cursor = cursor;
@@ -1359,11 +1360,19 @@ impl Parser<'_> {
             };
         }
         self.cursor += 1;
+        let list_open = self.cursor - 1;
         let mut selectors = Vec::new();
         loop {
             self.skip_trivia();
             if self.byte() == Some(b'}') {
                 self.cursor += 1;
+                break;
+            }
+            if self.byte().is_none() {
+                self.errors.push(SyntaxError {
+                    message: "unclosed import selector list".into(),
+                    range: TextRange::new(list_open, self.cursor),
+                });
                 break;
             }
             let selector_start = self.cursor;
@@ -1417,10 +1426,12 @@ impl Parser<'_> {
                     break;
                 }
                 _ => {
-                    self.errors.push(SyntaxError {
-                        message: "expected `,` or `}` in import selector list".into(),
-                        range: TextRange::new(self.cursor, self.next_char_end(self.cursor)),
-                    });
+                    if self.byte().is_some() {
+                        self.errors.push(SyntaxError {
+                            message: "expected `,` or `}` in import selector list".into(),
+                            range: TextRange::new(self.cursor, self.next_char_end(self.cursor)),
+                        });
+                    }
                     self.recover_argument();
                     if self.byte() == Some(b',') {
                         self.cursor += 1;

@@ -14,7 +14,7 @@ fn initialize_advertises_the_documented_capabilities_and_clean_shutdown_exits_su
     assert_eq!(capabilities["textDocumentSync"], 1);
     assert_eq!(
         capabilities["completionProvider"]["triggerCharacters"],
-        json!(["[", ":", "#", "(", ","])
+        json!(["[", ":", "#", "(", ",", "<", "/"])
     );
     assert_eq!(capabilities["completionProvider"]["resolveProvider"], false);
     assert_eq!(capabilities["hoverProvider"], true);

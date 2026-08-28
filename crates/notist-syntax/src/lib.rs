@@ -754,6 +754,48 @@ mod tests {
     }
 
     #[test]
+    fn unclosed_target_literal_ends_at_line_break() {
+        let source = "#<vault::x\nfollow-up";
+        let parse = crate::parse(source);
+        assert_eq!(parse.errors.len(), 1, "{:?}", parse.errors);
+        assert_eq!(
+            parse.errors[0].range,
+            TextRange::new(1, "#<vault::x".len())
+        );
+        // Parsing resumes on the next line instead of consuming the file.
+        let MarkupItem::Text(trailer) = &parse.root.items[1] else {
+            panic!("expected trailing text, got {:?}", parse.root.items[1]);
+        };
+        assert_eq!(trailer.value, "\nfollow-up");
+    }
+
+    #[test]
+    fn unknown_target_escape_reports_but_keeps_character() {
+        let parse = crate::parse(r#"#<a\nb>"#);
+        assert_eq!(parse.errors.len(), 1, "{:?}", parse.errors);
+        let targets = parse.targets();
+        assert_eq!(targets.len(), 1);
+        let ExpressionKind::Target(target) = &targets[0].kind else {
+            panic!("expected target literal");
+        };
+        assert_eq!(
+            target.module,
+            ModuleReference::Relative(vec!["anb".into()])
+        );
+    }
+
+    #[test]
+    fn empty_target_literal_reports_empty_body() {
+        let parse = crate::parse("#<>");
+        assert_eq!(parse.errors.len(), 1, "{:?}", parse.errors);
+        assert!(
+            parse.errors[0].message.contains("cannot be empty"),
+            "{:?}",
+            parse.errors
+        );
+    }
+
+    #[test]
     fn parses_union_type_annotations() {
         let parse = parse(r#"#let x: Target | String = "a""#);
         assert!(parse.errors.is_empty(), "{:?}", parse.errors);
@@ -767,6 +809,34 @@ mod tests {
             annotation.as_ref(),
             Some(&Type::union([Type::Target, Type::String]))
         );
+    }
+
+    #[test]
+    fn unclosed_import_selector_terminates_parse() {
+        // Regression: an unterminated `::{...}` selector used to spin the
+        // parser forever, allocating a diagnostic per turn (unbounded memory
+        // in every analyzer that synced a half-typed import).
+        for (source, expected_selectors) in [
+            ("#import <self::tools>::{accent", 1),
+            ("#import <self::tools>::{", 0),
+            ("#import <self::tools>::{accent,", 1),
+            ("#import <self::tools>::{accent as a", 1),
+        ] {
+            let parsed = crate::parse(source);
+            assert_eq!(parsed.errors.len(), 1, "{source:?}: {:?}", parsed.errors);
+            assert!(
+                parsed.errors[0].message.contains("unclosed import selector"),
+                "{source:?}: {:?}",
+                parsed.errors
+            );
+            let MarkupItem::Embedded(embedded) = &parsed.root.items[0] else {
+                panic!("{source:?}: expected embedded import");
+            };
+            let ExpressionKind::Import { selectors, .. } = &embedded.expression.kind else {
+                panic!("{source:?}: expected import expression");
+            };
+            assert_eq!(selectors.len(), expected_selectors, "{source:?}");
+        }
     }
 
     #[test]

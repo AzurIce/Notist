@@ -53,11 +53,22 @@ const URI_PATH_ENCODE_SET: &AsciiSet = &CONTROLS
 
 pub fn run(no_daemon: bool) -> Result<ExitCode, Box<dyn Error>> {
     let (connection, io_threads) = Connection::stdio();
-    let capabilities = serde_json::to_value(server_capabilities())?;
-    let initialization = connection.initialize(capabilities)?;
-    let initialization: InitializeParams = serde_json::from_value(initialization)?;
+    // Two-phase handshake: the client's offered encodings must be known
+    // before the result is sent, so `Connection::initialize` (which builds
+    // the response up front) cannot be used here.
+    let (initialize_id, initialize_params) = connection.initialize_start()?;
+    let initialization: InitializeParams = serde_json::from_value(initialize_params)?;
+    let encoding = negotiated_position_encoding(&initialization);
+    let initialize_result = serde_json::json!({
+        "capabilities": server_capabilities(encoding),
+        "serverInfo": {
+            "name": "notist",
+            "version": env!("CARGO_PKG_VERSION"),
+        },
+    });
+    connection.initialize_finish(initialize_id, initialize_result)?;
     let root = workspace_root(&initialization)?;
-    let session = LspSession::new(root, no_daemon)?;
+    let session = LspSession::with_encoding(root, no_daemon, encoding)?;
     let runtime = Runtime::spawn(&connection);
     let workspace_events = runtime.injection_sender();
     let mut watcher = PassiveDebouncedWatcher::new(Duration::from_millis(250), move |paths| {
@@ -73,9 +84,50 @@ pub fn run(no_daemon: bool) -> Result<ExitCode, Box<dyn Error>> {
     Ok(ExitCode::SUCCESS)
 }
 
-fn server_capabilities() -> ServerCapabilities {
+/// Position encodings this server can answer with. UTF-16 is the LSP
+/// default and the historical behaviour; UTF-8 is offered for clients that
+/// cannot do UTF-16 (columns become byte offsets).
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum PositionEncoding {
+    Utf8,
+    Utf16,
+}
+
+impl PositionEncoding {
+    fn kind(self) -> PositionEncodingKind {
+        match self {
+            PositionEncoding::Utf8 => PositionEncodingKind::UTF8,
+            PositionEncoding::Utf16 => PositionEncodingKind::UTF16,
+        }
+    }
+}
+
+/// Picks the encoding from the client's `general.positionEncodings` offer.
+/// UTF-16 wins when offered (or when the client stays silent, per spec
+/// default); otherwise UTF-8 if offered. An offer without either falls back
+/// to the UTF-16 default.
+fn negotiated_position_encoding(params: &InitializeParams) -> PositionEncoding {
+    let offered = params
+        .capabilities
+        .general
+        .as_ref()
+        .and_then(|general| general.position_encodings.as_ref());
+    let offers = |kind: &PositionEncodingKind| {
+        offered
+            .is_none_or(|list| list.iter().any(|candidate| candidate == kind))
+    };
+    if offers(&PositionEncodingKind::UTF16) {
+        PositionEncoding::Utf16
+    } else if offers(&PositionEncodingKind::UTF8) {
+        PositionEncoding::Utf8
+    } else {
+        PositionEncoding::Utf16
+    }
+}
+
+fn server_capabilities(encoding: PositionEncoding) -> ServerCapabilities {
     ServerCapabilities {
-        position_encoding: Some(PositionEncodingKind::UTF16),
+        position_encoding: Some(encoding.kind()),
         text_document_sync: Some(TextDocumentSyncCapability::Kind(TextDocumentSyncKind::FULL)),
         completion_provider: Some(CompletionOptions {
             resolve_provider: Some(false),
@@ -85,6 +137,10 @@ fn server_capabilities() -> ServerCapabilities {
                 "#".into(),
                 "(".into(),
                 ",".into(),
+                // ModulePath flow: `<` starts a target literal, `/` moves a
+                // target into its label part and keeps import paths going.
+                "<".into(),
+                "/".into(),
             ]),
             ..CompletionOptions::default()
         }),
@@ -509,14 +565,16 @@ struct OpenDocument {
 struct ClientSource {
     text: Arc<str>,
     line_index: LineIndex,
+    encoding: PositionEncoding,
 }
 
 impl ClientSource {
-    fn new(text: String) -> Self {
+    fn new(text: String, encoding: PositionEncoding) -> Self {
         let text: Arc<str> = Arc::from(text);
         Self {
             line_index: LineIndex::new(&text),
             text,
+            encoding,
         }
     }
 }
@@ -529,6 +587,7 @@ type VaultClient = RequestHandle;
 struct LspSession {
     root: PathBuf,
     no_daemon: bool,
+    encoding: PositionEncoding,
     documents: BTreeMap<PathBuf, OpenDocument>,
     vaults: BTreeMap<PathBuf, VaultSession>,
     published_paths: BTreeSet<PathBuf>,
@@ -575,6 +634,7 @@ impl QueryVault {
 
 #[derive(Clone)]
 struct RequestContext {
+    encoding: PositionEncoding,
     vaults: BTreeMap<PathBuf, QueryVault>,
 }
 
@@ -583,6 +643,7 @@ struct RequestContext {
 struct BuildJob {
     workspace_root: PathBuf,
     no_daemon: bool,
+    encoding: PositionEncoding,
     documents: BTreeMap<PathBuf, OpenDocument>,
     live_vaults: Vec<(PathBuf, ServiceViewId, VaultClient)>,
     generation: u64,
@@ -678,7 +739,7 @@ fn compute_build_inner(job: &BuildJob) -> Result<Vec<BuiltVault>, Box<dyn Error>
             sources: Arc::new(
                 sources
                     .into_iter()
-                    .map(|source| (source.path, ClientSource::new(source.text)))
+                    .map(|source| (source.path, ClientSource::new(source.text, job.encoding)))
                     .collect(),
             ),
         });
@@ -696,9 +757,20 @@ fn compute_build_inner(job: &BuildJob) -> Result<Vec<BuiltVault>, Box<dyn Error>
 
 impl LspSession {
     fn new(root: PathBuf, no_daemon: bool) -> Result<Self, Box<dyn Error>> {
+        Self::with_encoding(root, no_daemon, PositionEncoding::Utf16)
+    }
+
+    /// The encoding must be fixed before the first rebuild: captured
+    /// `ClientSource`s inherit it for every position conversion.
+    fn with_encoding(
+        root: PathBuf,
+        no_daemon: bool,
+        encoding: PositionEncoding,
+    ) -> Result<Self, Box<dyn Error>> {
         let mut session = Self {
             root,
             no_daemon,
+            encoding,
             documents: BTreeMap::new(),
             vaults: BTreeMap::new(),
             published_paths: BTreeSet::new(),
@@ -734,6 +806,7 @@ impl LspSession {
         BuildJob {
             workspace_root: self.root.clone(),
             no_daemon: self.no_daemon,
+            encoding: self.encoding,
             documents: self.documents.clone(),
             live_vaults: self
                 .vaults
@@ -792,6 +865,7 @@ impl LspSession {
 
     fn request_context(&self) -> RequestContext {
         RequestContext {
+            encoding: self.encoding,
             vaults: self
                 .vaults
                 .iter()
@@ -1226,7 +1300,7 @@ fn publish_diagnostics(
             diagnostics_by_path
                 .entry(path)
                 .or_default()
-                .push(lsp_diagnostic(source, record));
+                .push(lsp_diagnostic(source, session.encoding, record));
         }
     }
 
@@ -1270,8 +1344,15 @@ fn lsp_severity(severity: &str) -> DiagnosticSeverity {
     }
 }
 
-fn lsp_diagnostic(source: Option<&ClientSource>, diagnostic: DiagnosticRecord) -> Diagnostic {
-    let captured_source = diagnostic.source.clone().map(ClientSource::new);
+fn lsp_diagnostic(
+    source: Option<&ClientSource>,
+    encoding: PositionEncoding,
+    diagnostic: DiagnosticRecord,
+) -> Diagnostic {
+    let captured_source = diagnostic
+        .source
+        .clone()
+        .map(|text| ClientSource::new(text, encoding));
     let source = captured_source.as_ref().or(source);
     let range = diagnostic
         .range
@@ -1315,7 +1396,7 @@ fn definition(
     let Some(definition) = definition else {
         return Ok(None);
     };
-    let target_source = ClientSource::new(definition.source);
+    let target_source = ClientSource::new(definition.source, context.encoding);
     let uri = file_path_to_uri(&definition.path)?;
     Ok(Some(GotoDefinitionResponse::Scalar(Location::new(
         uri,
@@ -1348,7 +1429,7 @@ fn references(
     };
     let mut locations = Vec::new();
     for result in results {
-        let source = ClientSource::new(result.source);
+        let source = ClientSource::new(result.source, context.encoding);
         let uri = file_path_to_uri(&result.path)?;
         locations.push(Location::new(uri, lsp_range(&source, result.range.into())));
     }
@@ -1440,19 +1521,27 @@ fn source_position<'a>(
     let path = normalize_uri_path(&params.text_document.uri).ok()?;
     let workspace = workspace_for_source(context, &path)?;
     let source = workspace.sources.get(&path)?;
-    let offset = source.line_index.offset_utf16(
-        &source.text,
-        params.position.line,
-        params.position.character,
-    )?;
+    let offset = match source.encoding {
+        PositionEncoding::Utf16 => source.line_index.offset_utf16(
+            &source.text,
+            params.position.line,
+            params.position.character,
+        )?,
+        PositionEncoding::Utf8 => source.line_index.offset_utf8(
+            &source.text,
+            params.position.line,
+            params.position.character,
+        )?,
+    };
     Some((path, workspace, source, offset))
 }
 
 fn lsp_position(source: &ClientSource, offset: usize) -> Position {
-    let (line, character) = source
-        .line_index
-        .utf16_position(&source.text, offset)
-        .unwrap_or((0, 0));
+    let position = match source.encoding {
+        PositionEncoding::Utf16 => source.line_index.utf16_position(&source.text, offset),
+        PositionEncoding::Utf8 => source.line_index.utf8_position(&source.text, offset),
+    };
+    let (line, character) = position.unwrap_or((0, 0));
     Position::new(line, character)
 }
 
@@ -1488,6 +1577,45 @@ mod tests {
         );
         assert_eq!(index.offset_utf16(source, 0, 3), Some("a😀".len()));
         assert_eq!(index.offset_utf16(source, 1, 2), Some("a😀中\r\nne".len()));
+
+        // UTF-8 columns are plain byte offsets within the line.
+        assert_eq!(index.utf8_position(source, "a😀中".len()), Some((0, 8)));
+        assert_eq!(index.utf8_position(source, "a😀中\r\n".len()), Some((1, 0)));
+        assert_eq!(index.utf8_position(source, source.len()), Some((1, 4)));
+        assert_eq!(index.offset_utf8(source, 0, 8), Some("a😀中".len()));
+        assert_eq!(index.offset_utf8(source, 1, 2), Some("a😀中\r\nne".len()));
+        // Column lands inside a character, or past the line end.
+        assert_eq!(index.offset_utf8(source, 0, 2), None);
+        assert_eq!(index.offset_utf8(source, 1, 5), None);
+    }
+
+    #[test]
+    fn negotiates_position_encoding_from_client_offer() {
+        fn params(encodings: serde_json::Value) -> InitializeParams {
+            serde_json::from_value(serde_json::json!({
+                "process_id": null,
+                "root_uri": null,
+                "capabilities": { "general": { "positionEncodings": encodings } },
+            }))
+            .unwrap()
+        }
+        assert_eq!(
+            negotiated_position_encoding(&params(serde_json::json!(["utf-8", "utf-16"]))),
+            PositionEncoding::Utf16
+        );
+        assert_eq!(
+            negotiated_position_encoding(&params(serde_json::json!(["utf-8"]))),
+            PositionEncoding::Utf8
+        );
+        // No offer, or an offer without a supported encoding: LSP default.
+        assert_eq!(
+            negotiated_position_encoding(&params(serde_json::json!([]))),
+            PositionEncoding::Utf16
+        );
+        assert_eq!(
+            negotiated_position_encoding(&params(serde_json::json!(null))),
+            PositionEncoding::Utf16
+        );
     }
 
     #[test]
@@ -1687,19 +1815,19 @@ mod tests {
             message: "m".into(),
         };
         assert_eq!(
-            lsp_diagnostic(None, record("error")).severity,
+            lsp_diagnostic(None, PositionEncoding::Utf16, record("error")).severity,
             Some(DiagnosticSeverity::ERROR)
         );
         assert_eq!(
-            lsp_diagnostic(None, record("warning")).severity,
+            lsp_diagnostic(None, PositionEncoding::Utf16, record("warning")).severity,
             Some(DiagnosticSeverity::WARNING)
         );
         assert_eq!(
-            lsp_diagnostic(None, record("info")).severity,
+            lsp_diagnostic(None, PositionEncoding::Utf16, record("info")).severity,
             Some(DiagnosticSeverity::INFORMATION)
         );
         assert_eq!(
-            lsp_diagnostic(None, record("mystery")).severity,
+            lsp_diagnostic(None, PositionEncoding::Utf16, record("mystery")).severity,
             Some(DiagnosticSeverity::ERROR)
         );
     }

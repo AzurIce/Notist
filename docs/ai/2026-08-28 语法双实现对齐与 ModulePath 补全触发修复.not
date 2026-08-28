@@ -1,0 +1,33 @@
+= 语法双实现对齐与 ModulePath 补全触发修复
+
+本文记录 2026-08-28 对 notist（权威解析器/LSP）、tree-sitter-notist、zed-notist、obsidian-notist 四仓库的跨项目审查结论与落地修复。规范基准是 #<vault::grammar>（docs/grammar.not），任何编辑器侧语法与之冲突时以规范为准。
+
+== 三条裁决
+
+- **`$…$` 行内数学出清出 tree-sitter 语法**：规范通篇没有数学语法，notist-model/analysis/html 亦无任何 Math 节点（仅 build.rs 残留一个 `.notist-math` CSS 类），tree-sitter-notist 的 inline_math + scanner MATH 分支属于超前实现——已整体移除，裸 `$` 回归 text_chunk 普通字符。
+- **Target literal 语义以规范为准：单行 + 三转义**。`grammar.not` 明确 `\<` `\>` `\\` 白名单转义、段不得含 control character（换行属于 control）。据此 Rust 解析器修正：扫描遇 control char 终止并报 `unclosed target literal`（错误范围止于行内，不再吞掉整个文件尾，后续行可继续解析出诊断）；未知转义改为「报错但保留转义后的字符」，与字符串字面量行为对齐。tree-sitter 侧 `target_content` 同步为 `(\\[<>\\]|[^>\\\x00-\x1f\x7f])+`。
+- **`<>` 自动配对不是 tree-sitter 的事**：解析层面 `<path/label>` 在 grammar 里有 target_literal 节点；自动补另一半/配对高亮是编辑器侧（Zed `config.toml brackets` 数组、Obsidian CM closeBrackets），两边都没配 `<`。不配对是有意的：`<` 在 code 上下文同时是比较运算符，盲目插对会在比较表达式里落单 `>`。
+
+== tree-sitter-notist 的 target_open 前瞻
+
+target_literal 成为唯一的「开环」成对定界符的问题已修：新增外部 token `target_open`，scanner 只在**同行存在未转义 `>` 且 body 至少一字符**时发射（`has_target_close` 前瞻，模式对齐 `has_inline_close`），否则 `<` 降级文本/局部错误。未闭合 `#<foo` 的恢复是**一个字符宽的 ERROR 节点**（其余保持 text），已用 corpus 钉死。实现坑：`mark_end` 必须在消费 `<` 后立即调用、前瞻函数只能探测推进——放在前瞻之后会把 `>` 一起吞进 token（首个 corpus 失败的根因）。
+
+== 高优先修复清单（全部落地）
+
+- **解析器死循环（analyzer 内存暴涨根因）**：`parse_import` 选择器循环在 EOF 处 `recover_argument` 不推进 → 每轮无限推 SyntaxError（String 分配），全量同步场景下编辑未闭合的 `#import <path>::{` 即数秒吃掉数 GB。修复：循环顶部补 `byte().is_none()` 守卫报 `unclosed import selector list`，EOF 处静默其余分支。回归测试 `unclosed_import_selector_terminates_parse`。
+- **ModulePath 补全触发**：LSP `trigger_characters` 从 `[ [ : # ( ,` 扩为再含 `<`（开 target 即出候选）与 `/`（target 的 label 段、import 路径续段）。
+- **import 路径补全上下文**：`#import <path>` 进行中从未有任何补全（`targets()` 按设计不含 import，且 `rfind("#<")` 兜底匹配不到 `#import <`）。新增纯词法识别 `import_target_path_start` + `import_path_context`（未闭合路径、已闭合 `>::{` 且光标在路径内均有效；`>` 后必须紧跟 `::`；选择器位置不给路径候选）。注意既有怪癖：输入 `self::t` 只匹配以 self 形式可达的目标，兄弟模块给出 `super::` 风格不匹配即空——与 wiki target 行为一致，非本次引入。
+- **LSP 编码协商**：改用 `initialize_start`/`initialize_finish` 两段握手（lsp-server 的 `initialize` 不支持先读参数再回结果），按 `capabilities.general.positionEncodings` 协商 UTF-16（默认/优先）或 UTF-8，编码进 `ClientSource`/`RequestContext`/`BuildJob` 穿线；`LineIndex` 新增 `utf8_position`/`offset_utf8`。
+- **serverInfo** 补齐（name `notist`，version 取 CARGO_PKG_VERSION）。
+- highlights.scm 双重捕获去重（保留 `@module`，弃 `@link_uri`），target 定界符补 `@punctuation.bracket`；Rust binding 导出 folds/indents/outline/brackets 四个 query；README 记录 wasm 构建命令。
+
+== 下游同步
+
+- zed-notist：rev 从 8684303f（历史重写后不可达）改钉 a2d8f13，`grammars/notist` 缓存同步，`languages/notist/highlights.scm` 重拷。**a2d8f13 尚未 push 到 GitHub**，新机器 install 前需先 push 上游。
+- obsidian-notist：`assets/highlights.scm` 与 `assets/notist.wasm` 以新 grammar 重出，UPSTREAM.txt 记录新 rev；`src/lsp/session.ts` 契约头 rev 待刷新（服务端同步契约本身未变：FULL sync、push 诊断、UTF-16、documentReferences；新增 encoding 协商对现客户端无感）。
+
+== 复用价值教训
+
+- web-tree-sitter/wasm 重出后要与 `assets/UPSTREAM.txt` 的 rev 严格同步，zed 侧缓存 clone（gitignored）是独立第二真相源，upgrade 必须三处齐动。
+- 「坏输入长什么样」此前零 corpus 覆盖；本次补了 unclosed/empty/转义/裸尖括号/裸 `$` 五类 ERROR/降级用例，编辑器体验分歧大多出在这类场景。
+- cargo test OOM 不一定是测试并行问题：先怀疑被测代码里有无界循环（本次是解析器死循环），用 `--test-threads=1` + RSS 采样一分钟定位到具体测试。

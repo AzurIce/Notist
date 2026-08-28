@@ -143,6 +143,27 @@ impl LineIndex {
         }
         (units == column).then_some(end)
     }
+
+    /// UTF-8 code-unit (byte) column within the line.
+    pub fn utf8_position(&self, source: &str, offset: usize) -> Option<(u32, u32)> {
+        if offset > source.len() || !source.is_char_boundary(offset) {
+            return None;
+        }
+        let line = self.line_starts.partition_point(|start| *start <= offset) - 1;
+        let start = self.line_starts[line];
+        Some((u32::try_from(line).ok()?, u32::try_from(offset - start).ok()?))
+    }
+
+    pub fn offset_utf8(&self, source: &str, line: u32, column: u32) -> Option<usize> {
+        let start = *self.line_starts.get(usize::try_from(line).ok()?)?;
+        let end = self
+            .line_starts
+            .get(usize::try_from(line).ok()?.saturating_add(1))
+            .copied()
+            .unwrap_or(source.len());
+        let target = start.checked_add(usize::try_from(column).ok()?)?;
+        (target <= end && source.is_char_boundary(target)).then_some(target)
+    }
 }
 
 /// One source captured before analysis begins.
@@ -3193,6 +3214,9 @@ fn target_completion_context(
         }
     }
     let before = source.get(..offset)?;
+    if let Some(start) = import_target_path_start(before) {
+        return import_path_context(source, start, offset);
+    }
     let start = before.rfind("#<")? + 2;
     if before[start..].contains('>') || before[start..].contains('\n') {
         return None;
@@ -3205,6 +3229,60 @@ fn target_completion_context(
             kind: CompletionContextKind::Label,
             label_target: Some(source[start..slash].to_owned()),
         });
+    }
+    Some(CompletionContext {
+        prefix: source[start..offset].to_owned(),
+        replace: TextRange::new(start, offset),
+        kind: CompletionContextKind::Module,
+        label_target: None,
+    })
+}
+
+/// Offset just past the `<` of an in-progress `#import <path>::{...}` whose
+/// path is still unterminated at `offset`. Import targets never reach the
+/// parse tree as Target expressions while being typed (and are excluded from
+/// `targets()` by design), so this is purely lexical. Glued identifier
+/// characters (`#imports`) and anything but spaces between keyword and `<`
+/// mean this is not the import spelling.
+fn import_target_path_start(before: &str) -> Option<usize> {
+    let marker = before.rfind("#import")?;
+    let mut cursor = marker + "#import".len();
+    if before[cursor..]
+        .chars()
+        .next()
+        .is_some_and(|c| c.is_alphanumeric() || matches!(c, '_' | '-' | ':'))
+    {
+        return None;
+    }
+    loop {
+        match before[cursor..].chars().next()? {
+            ' ' | '\t' => cursor += 1,
+            '<' => return Some(cursor + 1),
+            _ => return None,
+        }
+    }
+}
+
+/// Module-path completion for a detected import target start. Labels are not
+/// valid inside an import path, so the whole region up to `>` is one Module
+/// context. Valid while the path is still unterminated on its line, and for
+/// an already-closed `>::{...}` import while the cursor stays inside the
+/// path (the next `>` on the line must be the path closer).
+fn import_path_context(
+    source: &str,
+    start: usize,
+    offset: usize,
+) -> Option<CompletionContext> {
+    if source[start..offset].contains(['>', '\n', '\r']) {
+        return None;
+    }
+    let rest = &source[offset..];
+    let line_end = rest.find('\n').map_or(rest.len(), |idx| idx);
+    let rest_line = &rest[..line_end.min(rest.len())];
+    if let Some(close) = rest_line.find('>') {
+        if !rest_line[close + 1..].starts_with("::") {
+            return None;
+        }
     }
     Some(CompletionContext {
         prefix: source[start..offset].to_owned(),
@@ -5049,6 +5127,86 @@ mod tests {
         let string = WorkspaceSnapshot::load_with_overlays(root.path(), overlays).unwrap();
         let string_file_id = string.file_id(&today_path).unwrap();
         assert!(string.completions_at(string_file_id, 19).is_empty());
+    }
+
+    #[test]
+    fn snapshot_completion_covers_import_module_paths() {
+        let root = TempDir::new().unwrap();
+        fs::create_dir(root.path().join("notes")).unwrap();
+        fs::write(root.path().join("notes/today.not"), "#<self::d").unwrap();
+        let theme_path = root.path().join("notes/theme.not");
+        fs::write(&theme_path, "theme").unwrap();
+        let tools_path = root.path().join("notes/today/tools.not");
+        fs::create_dir(root.path().join("notes/today")).unwrap();
+        fs::write(&tools_path, "tools").unwrap();
+        let snapshot = WorkspaceSnapshot::load(root.path()).unwrap();
+        let today_path = dunce::canonicalize(root.path().join("notes/today.not")).unwrap();
+        let file_id = snapshot.file_id(&today_path).unwrap();
+
+        // Typing inside an `#import <path>`: module candidates, no label or
+        // function leakage, and the same relative-path style the
+        // wiki-reference completion uses. `(source, cursor offset)` pairs:
+        // the last one has the path already closed by `>::{`, cursor still
+        // inside the path; a selector position must NOT yield path
+        // completions.
+        for (source, offset) in [
+            ("#import <", None),
+            ("#import <s", None),
+            ("#import <self::t", None),
+            ("#import  <self::tools", None),
+            (
+                "#import <self::tools>::{accent}",
+                Some("#import <self::tool".len()),
+            ),
+        ] {
+            let offset = offset.unwrap_or(source.len());
+            let mut overlays = SourceOverlays::new();
+            overlays.insert(today_path.clone(), Arc::from(source.to_owned()));
+            let overlaid =
+                WorkspaceSnapshot::load_with_overlays(root.path(), overlays).unwrap();
+            let overlaid_id = overlaid.file_id(&today_path).unwrap();
+            let candidates = overlaid.completions_at(overlaid_id, offset);
+            assert!(
+                !candidates.is_empty(),
+                "expected import-path completions for {source:?}"
+            );
+            assert!(
+                candidates
+                    .iter()
+                    .any(|candidate| candidate.kind == CompletionKind::Module),
+                "expected a Module candidate for {source:?}"
+            );
+            assert!(
+                !candidates
+                    .iter()
+                    .any(|candidate| candidate.kind == CompletionKind::Function),
+                "functions must not leak into import paths: {source:?}"
+            );
+        }
+
+        // Inside the selector list the path is no longer being typed: no
+        // module-path candidates.
+        let mut overlays = SourceOverlays::new();
+        overlays.insert(today_path.clone(), Arc::from("#import <self::tools>::{acc"));
+        let selector = WorkspaceSnapshot::load_with_overlays(root.path(), overlays).unwrap();
+        let selector_id = selector.file_id(&today_path).unwrap();
+        assert!(
+            selector
+                .completions_at(selector_id, "#import <self::tools>::{acc".len())
+                .iter()
+                .all(|candidate| candidate.kind != CompletionKind::Module)
+        );
+
+        // Not an import spelling: glued identifier chars opt out.
+        let mut overlays = SourceOverlays::new();
+        overlays.insert(today_path.clone(), Arc::from("#imports <x"));
+        let overlaid = WorkspaceSnapshot::load_with_overlays(root.path(), overlays).unwrap();
+        let overlaid_id = overlaid.file_id(&today_path).unwrap();
+        assert!(
+            overlaid
+                .completions_at(overlaid_id, "#imports <x".len())
+                .is_empty()
+        );
     }
 
     #[test]
