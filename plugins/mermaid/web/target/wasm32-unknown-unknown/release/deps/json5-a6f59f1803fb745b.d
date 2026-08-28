@@ -1,0 +1,12 @@
+/home/azurice/Files/notist/plugins/mermaid-web/target/wasm32-unknown-unknown/release/deps/json5-a6f59f1803fb745b.d: /home/azurice/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/json5-1.3.1/src/lib.rs /home/azurice/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/json5-1.3.1/src/de.rs /home/azurice/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/json5-1.3.1/src/char.rs /home/azurice/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/json5-1.3.1/src/error.rs /home/azurice/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/json5-1.3.1/src/ser.rs /home/azurice/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/json5-1.3.1/src/unicode.rs
+
+/home/azurice/Files/notist/plugins/mermaid-web/target/wasm32-unknown-unknown/release/deps/libjson5-a6f59f1803fb745b.rlib: /home/azurice/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/json5-1.3.1/src/lib.rs /home/azurice/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/json5-1.3.1/src/de.rs /home/azurice/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/json5-1.3.1/src/char.rs /home/azurice/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/json5-1.3.1/src/error.rs /home/azurice/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/json5-1.3.1/src/ser.rs /home/azurice/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/json5-1.3.1/src/unicode.rs
+
+/home/azurice/Files/notist/plugins/mermaid-web/target/wasm32-unknown-unknown/release/deps/libjson5-a6f59f1803fb745b.rmeta: /home/azurice/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/json5-1.3.1/src/lib.rs /home/azurice/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/json5-1.3.1/src/de.rs /home/azurice/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/json5-1.3.1/src/char.rs /home/azurice/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/json5-1.3.1/src/error.rs /home/azurice/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/json5-1.3.1/src/ser.rs /home/azurice/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/json5-1.3.1/src/unicode.rs
+
+/home/azurice/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/json5-1.3.1/src/lib.rs:
+/home/azurice/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/json5-1.3.1/src/de.rs:
+/home/azurice/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/json5-1.3.1/src/char.rs:
+/home/azurice/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/json5-1.3.1/src/error.rs:
+/home/azurice/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/json5-1.3.1/src/ser.rs:
+/home/azurice/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/json5-1.3.1/src/unicode.rs:

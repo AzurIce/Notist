@@ -64,8 +64,8 @@ Merman 使用自身 vendored text measurement，两个阶段不要混用各自�
 ```sh
 # 求值期校验模块
 cd plugins/mermaid-wasm
-nix develop ~/Files/notist -c cargo build --target wasm32-unknown-unknown --release
-cp target/wasm32-unknown-unknown/release/notist_plugin_mermaid_wasm.wasm ../mermaid/semantic.wasm
+cd semantic && nix develop ~/Files/notist -c cargo build --target wasm32-unknown-unknown --release && cd ..
+cp semantic/target/wasm32-unknown-unknown/release/notist_plugin_mermaid_wasm.wasm ../mermaid/semantic.wasm
 
 # 浏览器端使用固定版本的 @mermanjs/web-render，更新时同步其 dist/、
 # artifacts/wasm/ 与 THIRD_PARTY_* 文件，并保留包内相对目录结构。

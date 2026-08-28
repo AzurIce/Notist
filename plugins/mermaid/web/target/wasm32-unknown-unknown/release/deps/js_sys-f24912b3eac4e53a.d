@@ -1,0 +1,10 @@
+/home/azurice/Files/notist/plugins/mermaid-web/target/wasm32-unknown-unknown/release/deps/js_sys-f24912b3eac4e53a.d: /home/azurice/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/js-sys-0.3.98/src/lib.rs /home/azurice/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/js-sys-0.3.98/src/futures/mod.rs /home/azurice/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/js-sys-0.3.98/src/futures/queue.rs /home/azurice/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/js-sys-0.3.98/src/futures/task/singlethread.rs
+
+/home/azurice/Files/notist/plugins/mermaid-web/target/wasm32-unknown-unknown/release/deps/libjs_sys-f24912b3eac4e53a.rlib: /home/azurice/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/js-sys-0.3.98/src/lib.rs /home/azurice/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/js-sys-0.3.98/src/futures/mod.rs /home/azurice/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/js-sys-0.3.98/src/futures/queue.rs /home/azurice/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/js-sys-0.3.98/src/futures/task/singlethread.rs
+
+/home/azurice/Files/notist/plugins/mermaid-web/target/wasm32-unknown-unknown/release/deps/libjs_sys-f24912b3eac4e53a.rmeta: /home/azurice/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/js-sys-0.3.98/src/lib.rs /home/azurice/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/js-sys-0.3.98/src/futures/mod.rs /home/azurice/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/js-sys-0.3.98/src/futures/queue.rs /home/azurice/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/js-sys-0.3.98/src/futures/task/singlethread.rs
+
+/home/azurice/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/js-sys-0.3.98/src/lib.rs:
+/home/azurice/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/js-sys-0.3.98/src/futures/mod.rs:
+/home/azurice/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/js-sys-0.3.98/src/futures/queue.rs:
+/home/azurice/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/js-sys-0.3.98/src/futures/task/singlethread.rs:

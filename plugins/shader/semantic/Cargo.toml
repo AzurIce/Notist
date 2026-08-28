@@ -1,0 +1,17 @@
+[package]
+name = "notist-plugin-shader-wasm"
+version = "0.1.0"
+edition = "2024"
+publish = false
+
+[lib]
+crate-type = ["cdylib", "rlib"]
+
+[dependencies]
+notist-plugin-sdk = { path = "../../../crates/notist-plugin-sdk" }
+notist-model = { path = "../../../crates/notist-model" }
+
+[profile.release]
+opt-level = "s"
+lto = true
+panic = "abort"

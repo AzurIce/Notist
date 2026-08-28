@@ -79,3 +79,5 @@ Zed 的基础 theme 变量是编辑器主题的投影，此外还把 player colo
 - Zed renderer adapter：`crates/mermaid_render/src/render.rs`
 - Zed postprocess：`crates/mermaid_render/src/postprocess.rs`
 - Zed theme construction：`crates/markdown/src/mermaid.rs` 的 `build_mermaid_theme`
+
+补记（2026-08-28）：core wasm 迁移后插件目录重组，`plugins/mermaid-wasm` 已移入 `plugins/mermaid/semantic/`，web 渲染 crate 移入 `plugins/mermaid/web/`；本文出现的旧路径按下述对应关系换算。
