@@ -1,10 +1,10 @@
 = shader plugin package
 
-该目录是可分发的 Notist Wasm component 插件包：
+该目录是可分发的 Notist core wasm 插件包：
 
 - `plugin.json` 只声明 package envelope：identity、`wasm.module` 与顶层
   `render` contribution；
-- `semantic.wasm` 是由 `plugins/shader-wasm` 构建的 wasip2 component；其
+- `semantic.wasm` 是由 `plugins/shader-wasm` 构建的零导入 core module；其
   `init` 通过 version byte + postcard 返回共享 `notist-model` declarations；
 - computed `shader` handler 将调用规约为 data-only `shader::canvas` 节点，
   保留 `source`、`width`、`height`、trailing body 与根 source range；
@@ -18,10 +18,10 @@
 path = "../plugins/shader"
 ```
 
-重建 component fixture：
+重建 semantic.wasm：
 
 ```sh
 cd plugins/shader-wasm
-cargo build --target wasm32-wasip2 --release -j4
-cp target/wasm32-wasip2/release/notist_plugin_shader_wasm.wasm ../shader/semantic.wasm
+nix develop ~/Files/notist -c cargo build --target wasm32-unknown-unknown --release
+cp target/wasm32-unknown-unknown/release/notist_plugin_shader_wasm.wasm ../shader/semantic.wasm
 ```

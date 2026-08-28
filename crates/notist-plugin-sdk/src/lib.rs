@@ -237,7 +237,7 @@ pub fn leaf(name: &str, block: bool) -> Node {
 // The component world above rides on the canonical ABI; the exports below
 // speak raw linear memory instead so the same plugin logic can be compiled
 // as a zero-import core wasm module and instantiated by any embedder —
-// wasmtime `Module` natively, or the browser's own WebAssembly engine.
+// wasmi natively, or the browser's own WebAssembly engine.
 //
 // Convention (little-endian, all pointers into guest linear memory):
 // - `notist_alloc(len: u32) -> u32`  guest allocates `len` writable bytes;
