@@ -11,7 +11,7 @@
 ```shell
 notist search "annotation table" docs
 notist outline vault::designs::language::type-system docs
-notist read vault::designs::language::property-table#属性表 docs
+notist read vault::designs::language::property-table/属性表 docs
 ```
 
 第一条命令返回少量有排序的候选和短 excerpt，第二条只展开一个 Module，第三条才读取被选中的原文（按标题默认 id 定位到节）。当前公开投影是同一份有界 text：人、脚本与 Agent 看到相同的 ModulePath、相对路径、续读提示和 citation；需要完整机器 artifact 时走 export。
@@ -92,7 +92,7 @@ in_scope(module) =
 - scope 进入 query fingerprint 与 cursor binding；翻页只能改 page 窗口，不能改 scope。
 - scope 必须在 candidate generation 前下推，不能先物化全 Vault 结果再过滤。
 
-CLI 投影见 #<vault::cli/Selector、Scope 与 Citation>。`check` 不接受 scope：它的 exit status 是完整 Vault 的健康结论。
+CLI 投影见 #<vault::cli::inspect/Selector、Scope 与 Citation>。`check` 不接受 scope：它的 exit status 是完整 Vault 的健康结论。
 
 === Snapshot Stamp 与可恢复 Cursor
 
@@ -118,15 +118,15 @@ Source-order query 的稳定 key 是 ModulePath、Vault-relative path、match ra
 
 Scope 与 selector 是两种不同的 ModulePath 用法：scope 表达「可能命中哪些 Module」的集合过滤；selector 表达「就是这一个 Module/Path/节」的精确身份。两者不互相替代——模糊发现属于 search 的 scope+query，不属于 selector resolution。
 
-CLI selector 只接受三类精确身份：
+selector 是 ModulePath 或 ItemPath 的规范输入（词汇见 #<vault::designs::world::reference-ref-target>），三类精确身份：
 
 ```text
 ModuleSelector  { module: "vault::designs::language::type-system" }
 PathSelector    { path: "designs/language/type-system.not" }
-SectionSelector { module: "vault::designs::language::property-table", id: "属性表" }
+ItemSelector    { module: "vault::designs::language::property-table", name: "属性表" }
 ```
 
-规范输入是等价字符串：`vault::designs::language::type-system`、`designs/language/type-system.not` 或 `vault::designs::language::property-table/属性表`。`/id` 的匹配顺序与引用寻址一致（#<vault::designs::world::reference-ref-target/scope id>）：先按显式 scope id，再按标题默认 id（标题文本）精确匹配。短 basename、模糊路径与"最接近的 Module"不能静默解析；零匹配返回 `not_found`，多匹配返回 `ambiguous_selector` 和有界候选。模糊发现属于 search，不属于 selector resolution。
+规范输入是等价字符串：`vault::designs::language::type-system`、`designs/language/type-system.not` 或 `vault::designs::language::property-table/属性表`（Module 风格用 `/` 携带 ItemName，Path 风格因 `/` 是文件系统分隔符而用 `#`）。ItemName 的匹配顺序与引用寻址一致（#<vault::designs::world::reference-ref-target/ItemName>）：先按显式 `@id`，再按标题默认名（标题文本）精确匹配。短 basename、模糊路径与"最接近的 Module"不能静默解析；零匹配返回 `not_found`，多匹配返回 `ambiguous_selector` 和有界候选。模糊发现属于 search，不属于 selector resolution。
 
 所有可作为证据或编辑位置的 record 使用统一 location：
 
@@ -143,4 +143,4 @@ Location {
 
 snapshot 由所在 QueryPage 统一携带，Location 不再重复。普通 text 输出默认不显示 canonical absolute path，也不为每个 location 重复整篇 source。excerpt 是候选选择信息，不是独立事实来源；search 与 references 的结果必须引导调用者在形成事实性回答前使用 `read`。
 
-由于普通 CLI 不输出 JSON envelope，`read` 的 text 投影必须把 citation 所需的机器句柄显式打印出来：ModulePath、relative path、实际 UTF-8 byte range、line range 与 source fingerprint。读取结果保留这些精确值，使引用、后续 query 与 edit precondition 能指向同一 authored source。
+由于普通 CLI 不输出 JSON envelope，`read` 的 text 投影必须把 citation 所需的机器句柄显式打印出来：ModulePath、relative path、实际 UTF-8 byte range、line range 与 source fingerprint。读取结果保留这些精确值，使引用、后续 query 与外部写入方的前置校验能指向同一 authored source。

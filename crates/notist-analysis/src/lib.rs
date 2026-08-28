@@ -10,11 +10,11 @@ use notist_eval::{
     FunctionRegistry, ShapingRegistry,
 };
 use notist_model::{
-    DefaultValue, FunctionSignature, ModulePath, ModuleReference, Node, NodeValue, TextRange, Type,
-    WikiReference,
+    DefaultValue, FunctionSignature, ModulePath, ModuleReference, Node, NodeValue, Target,
+    TextRange, Type,
 };
 use notist_plugin_core as core_plugin;
-use notist_syntax::{Call, ExpressionKind, Parse, parse, parse_wiki_reference};
+use notist_syntax::{Call, ExpressionKind, Parse, parse, parse_reference_url};
 
 mod check;
 
@@ -311,9 +311,9 @@ fn placeholder_value(ty: &Type, name: &str) -> Value {
             implementation: notist_eval::FunctionImplementation::Builtin(name.to_owned()),
             captured: std::collections::HashMap::new(),
         })),
-        Type::Target => Value::Target(notist_model::WikiReference {
+        Type::Target => Value::Target(notist_model::Target {
             module: notist_model::ModuleReference::Relative(Vec::new()),
-            label: None,
+            name: None,
         }),
         Type::Union(members) => members
             .first()
@@ -481,7 +481,7 @@ pub struct ResolvedReference {
     pub url: String,
     pub target_module_id: ModuleId,
     pub target_module: ModulePath,
-    pub target_label: Option<String>,
+    pub target_name: Option<String>,
     pub target_range: Option<TextRange>,
 }
 
@@ -525,19 +525,24 @@ pub struct ImportEdge {
     pub selectors: Vec<(String, Option<String>)>,
 }
 
+/// The kind of an Item: a named scope region inside a document module, or a
+/// resource file inside a module's name space (D0004).
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum ItemKind {
+    Scope,
+    Resource(ResourceKind),
+}
+
 /// Discriminated target produced by resolving a reference url (D0004): the
-/// target kind is a resolution product, not an element field.
+/// target kind is a resolution product, not an element field. A reference
+/// addresses a Module, or an Item (scope region or resource file) inside one.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum RefTarget {
     Module(ModuleId),
-    Scope {
-        module: ModuleId,
-        id: String,
-    },
-    Resource {
+    Item {
         module: ModuleId,
         name: String,
-        kind: ResourceKind,
+        kind: ItemKind,
     },
     External(String),
     Missing(MissingReason),
@@ -1038,7 +1043,7 @@ impl WorkspaceSnapshot {
     /// and classify as `External`; everything unresolved surfaces as `Missing`
     /// with a reason instead of being swallowed.
     pub fn resolve_reference(&self, source_module: &ModulePath, url: &str) -> RefTarget {
-        let Ok(reference) = parse_wiki_reference(url) else {
+        let Ok(reference) = parse_reference_url(url) else {
             return RefTarget::Missing(MissingReason::Unsupported);
         };
         if let ModuleReference::External(external) = reference.module {
@@ -1050,27 +1055,28 @@ impl WorkspaceSnapshot {
         let Some(module) = self.modules.get(&target) else {
             return RefTarget::Missing(MissingReason::Nonexistent);
         };
-        match reference.label {
+        match reference.name {
             None => RefTarget::Module(module.id),
-            Some(label) => self.resolve_module_label(&target, &label),
+            Some(name) => self.resolve_item_name(&target, &name),
         }
     }
 
-    /// Resolves a `module#label` selector's label part against one module:
-    /// explicit scope ids first, then heading default ids (exact heading text),
-    /// then resource file names (D0004). Duplicate heading texts are ambiguous.
-    pub fn resolve_module_label(&self, module_path: &ModulePath, label: &str) -> RefTarget {
+    /// Resolves an ItemName against one module: explicit `@id` definitions
+    /// first, then heading default names (exact heading text), then resource
+    /// file names (D0004). Duplicate heading texts are ambiguous.
+    pub fn resolve_item_name(&self, module_path: &ModulePath, name: &str) -> RefTarget {
         let Some(module) = self.modules.get(module_path) else {
             return RefTarget::Missing(MissingReason::Nonexistent);
         };
         if let Some(definition) = self
             .labels
             .iter()
-            .find(|definition| definition.module == *module_path && definition.name == label)
+            .find(|definition| definition.module == *module_path && definition.name == name)
         {
-            return RefTarget::Scope {
+            return RefTarget::Item {
                 module: module.id,
-                id: definition.name.clone(),
+                name: definition.name.clone(),
+                kind: ItemKind::Scope,
             };
         }
         let seeds = self
@@ -1079,21 +1085,22 @@ impl WorkspaceSnapshot {
             .cloned()
             .unwrap_or_default();
         let headings = heading_default_ids(module, &seeds);
-        let matches: Vec<_> = headings.iter().filter(|(text, _)| text == label).collect();
+        let matches: Vec<_> = headings.iter().filter(|(text, _)| text == name).collect();
         match matches.len() {
-            1 => RefTarget::Scope {
+            1 => RefTarget::Item {
                 module: module.id,
-                id: label.to_owned(),
+                name: name.to_owned(),
+                kind: ItemKind::Scope,
             },
             0 => match module
                 .resources
                 .iter()
-                .find(|resource| resource.name == label)
+                .find(|resource| resource.name == name)
             {
-                Some(resource) => RefTarget::Resource {
+                Some(resource) => RefTarget::Item {
                     module: module.id,
                     name: resource.name.clone(),
-                    kind: resource.kind,
+                    kind: ItemKind::Resource(resource.kind),
                 },
                 None => RefTarget::Missing(MissingReason::Nonexistent),
             },
@@ -1115,10 +1122,10 @@ impl WorkspaceSnapshot {
         heading_default_ids(module, &seeds)
     }
 
-    /// Returns the source range covering a resolved scope label: the explicit
+    /// Returns the source range covering a resolved ItemName: the explicit
     /// label's scope range, or the first heading default-id match range.
-    pub fn label_scope_range(&self, module: &ModulePath, label: &str) -> Option<TextRange> {
-        if let Some(definition) = self.label(module, label) {
+    pub fn item_name_range(&self, module: &ModulePath, name: &str) -> Option<TextRange> {
+        if let Some(definition) = self.label(module, name) {
             return Some(definition.scope_range);
         }
         let module = self.module(module)?;
@@ -1130,7 +1137,7 @@ impl WorkspaceSnapshot {
         let headings = heading_default_ids(module, &seeds);
         headings
             .iter()
-            .find(|(text, _)| text == label)
+            .find(|(text, _)| text == name)
             .map(|(_, range)| *range)
     }
 
@@ -1175,7 +1182,7 @@ impl WorkspaceSnapshot {
             return Some(ReferenceTarget {
                 revision: self.revision,
                 module_id: reference.target_module_id,
-                annotation: reference.target_label.as_ref().map(|name| AnnotationId {
+                annotation: reference.target_name.as_ref().map(|name| AnnotationId {
                     module_id: reference.target_module_id,
                     name: name.clone(),
                 }),
@@ -1299,7 +1306,7 @@ impl WorkspaceSnapshot {
                 }
                 locations.extend(
                     self.references_to(*module_id)
-                        .filter(|reference| reference.target_label.is_none())
+                        .filter(|reference| reference.target_name.is_none())
                         .map(|reference| SymbolLocation {
                             revision: self.revision,
                             symbol: symbol.clone(),
@@ -1329,7 +1336,7 @@ impl WorkspaceSnapshot {
                         .iter()
                         .filter(|reference| {
                             reference.target_module_id == annotation.module_id
-                                && reference.target_label.as_deref()
+                                && reference.target_name.as_deref()
                                     == Some(annotation.name.as_str())
                         })
                         .map(|reference| SymbolLocation {
@@ -1357,7 +1364,7 @@ impl WorkspaceSnapshot {
             .iter()
             .filter(move |reference| {
                 reference.target_module_id == target.module_id
-                    && reference.target_label.as_deref() == annotation_name
+                    && reference.target_name.as_deref() == annotation_name
             })
             .map(|reference| SnapshotResult {
                 revision: self.revision,
@@ -1596,7 +1603,7 @@ impl WorkspaceSnapshot {
         let reference = self.references_at(file_id, offset).next()?;
         let module = self.module_by_id(reference.target_module_id)?;
         let label = reference
-            .target_label
+            .target_name
             .as_deref()
             .and_then(|name| self.label(&module.logical_path, name));
         Some(DefinitionTarget {
@@ -1832,7 +1839,7 @@ impl WorkspaceSnapshot {
     pub fn hover_at(&self, file_id: FileId, offset: usize) -> Option<HoverInfo> {
         if let Some(reference) = self.references_at(file_id, offset).next() {
             let mut contents = reference.target_module.to_string();
-            if let Some(label) = &reference.target_label {
+            if let Some(label) = &reference.target_name {
                 contents.push('/');
                 contents.push_str(label);
             }
@@ -1989,7 +1996,7 @@ impl WorkspaceSnapshot {
                 let target = context
                     .label_target
                     .as_deref()
-                    .and_then(|part| parse_wiki_reference(part).ok())
+                    .and_then(|part| parse_reference_url(part).ok())
                     .and_then(|reference| reference.module.resolve_from(&current.logical_path));
                 let Some(target) = target else {
                     return Vec::new();
@@ -2528,12 +2535,12 @@ impl WorkspaceSnapshot {
 
                 let mut target_range = None;
                 let mut unresolved = false;
-                if let Some(label) = &reference.label {
+                if let Some(name) = &reference.name {
                     if let Some(definition) = label_indexes
-                        .get(&(target.clone(), label.clone()))
+                        .get(&(target.clone(), name.clone()))
                         .map(|index| &labels[*index])
                     {
-                        // Explicit scope ids always win over heading default ids.
+                        // Explicit `@id` ItemNames always win over heading default names.
                         target_range = Some(definition.range);
                     } else {
                         let headings =
@@ -2545,20 +2552,20 @@ impl WorkspaceSnapshot {
                                     .unwrap_or_default();
                                 heading_default_ids(target_module, &seeds)
                             });
-                        if let Some(position) = headings.iter().position(|(text, _)| text == label)
+                        if let Some(position) = headings.iter().position(|(text, _)| text == name)
                         {
-                            // Heading default id: exact match on the evaluated
+                            // Heading default name: exact match on the evaluated
                             // heading plain text; the first occurrence wins.
                             target_range = Some(headings[position].1);
-                            if reported_ambiguous.insert((target_module.id, label.clone())) {
+                            if reported_ambiguous.insert((target_module.id, name.clone())) {
                                 for (_, duplicate_range) in headings[position + 1..]
                                     .iter()
-                                    .filter(|(text, _)| text == label)
+                                    .filter(|(text, _)| text == name)
                                 {
                                     diagnostics.push(Diagnostic {
                                         kind: DiagnosticKind::AmbiguousLabel,
                                         message: format!(
-                                            "ambiguous label `{label}` in module `{target}`: multiple headings share this text; add an explicit `@id` to disambiguate"
+                                            "ambiguous item name `{name}` in module `{target}`: multiple headings share this text; add an explicit `@id` to disambiguate"
                                         ),
                                         source_path: target_module.source_path.clone(),
                                         range: Some(*duplicate_range),
@@ -2568,7 +2575,7 @@ impl WorkspaceSnapshot {
                         } else if target_module
                             .resources
                             .iter()
-                            .any(|resource| &resource.name == label)
+                            .any(|resource| &resource.name == name)
                         {
                             // Resource files resolve by exact file name and carry
                             // no source range.
@@ -2578,22 +2585,22 @@ impl WorkspaceSnapshot {
                     }
                 }
                 if unresolved {
-                    let label = reference
-                        .label
+                    let name = reference
+                        .name
                         .as_ref()
-                        .expect("only labeled references can be unresolved");
+                        .expect("only item references can be unresolved");
                     diagnostics.push(Diagnostic {
                         kind: DiagnosticKind::UnresolvedLabel,
-                        message: format!("unresolved label `{label}` in module `{target}`"),
+                        message: format!("unresolved item name `{name}` in module `{target}`"),
                         source_path: Some(source_path.clone()),
                         range: Some(range),
                     });
                     continue;
                 }
 
-                let url = reference.label.as_ref().map_or_else(
+                let url = reference.name.as_ref().map_or_else(
                     || reference.module.to_string(),
-                    |label| format!("{}#{label}", reference.module),
+                    |name| format!("{}#{name}", reference.module),
                 );
                 references.push(ResolvedReference {
                     source_file_id: file_id,
@@ -2604,7 +2611,7 @@ impl WorkspaceSnapshot {
                     url,
                     target_module_id: target_module.id,
                     target_module: target,
-                    target_label: reference.label,
+                    target_name: reference.name,
                     target_range,
                 });
             }
@@ -2819,31 +2826,6 @@ impl VaultEngine {
             configuration,
             function_environment,
         )
-    }
-
-    /// Preserves a stable FileId when an upper layer reports an explicit rename.
-    pub fn rename_source(&self, from: &Path, to: &Path) -> io::Result<()> {
-        let from = normalize_source_path(self.root(), from)?;
-        let to = normalize_source_path(self.root(), to)?;
-        if !from.starts_with(self.root()) || !to.starts_with(self.root()) {
-            return Err(io::Error::new(
-                io::ErrorKind::InvalidInput,
-                "source rename crosses the vault boundary",
-            ));
-        }
-        let mut state = self.state.lock().expect("vault engine state poisoned");
-        let Some(file_id) = state.file_ids.remove(&from) else {
-            return Ok(());
-        };
-        if state.file_ids.contains_key(&to) {
-            state.file_ids.insert(from, file_id);
-            return Err(io::Error::new(
-                io::ErrorKind::AlreadyExists,
-                "rename target already has a FileId",
-            ));
-        }
-        state.file_ids.insert(to, file_id);
-        Ok(())
     }
 
     fn file_id(&self, path: &Path) -> FileId {
@@ -3627,7 +3609,7 @@ fn changed_diagnostic_files(
 /// Extracts a static reference from a `link` call: a Target literal, or a
 /// String literal that parses as an external url. Internal target strings are
 /// rejected with a migration diagnostic; dynamic arguments stay unindexed.
-fn link_call_target(call: &Call) -> Option<Result<WikiReference, String>> {
+fn link_call_target(call: &Call) -> Option<Result<Target, String>> {
     if call.name.value != "link" || !call.trailing.is_empty() || call.arguments.len() != 1 {
         return None;
     }
@@ -3651,8 +3633,8 @@ fn link_call_target(call: &Call) -> Option<Result<WikiReference, String>> {
     }
 }
 
-fn parse_link_url(url: &str) -> Result<WikiReference, String> {
-    match parse_wiki_reference(url) {
+fn parse_link_url(url: &str) -> Result<Target, String> {
+    match parse_reference_url(url) {
         Ok(reference) if matches!(reference.module, ModuleReference::External(_)) => {
             Ok(reference)
         }
@@ -4171,13 +4153,13 @@ mod tests {
             workspace
                 .references()
                 .iter()
-                .any(|reference| reference.target_label.as_deref() == Some("here"))
+                .any(|reference| reference.target_name.as_deref() == Some("here"))
         );
         assert!(
             workspace
                 .references()
                 .iter()
-                .any(|reference| reference.target_label.as_deref() == Some("intro"))
+                .any(|reference| reference.target_name.as_deref() == Some("intro"))
         );
         assert!(
             workspace
@@ -4309,7 +4291,7 @@ mod tests {
         let resource = workspace
             .references()
             .iter()
-            .find(|reference| reference.target_label.as_deref() == Some("logo.png"))
+            .find(|reference| reference.target_name.as_deref() == Some("logo.png"))
             .expect("resource reference resolves");
         assert_eq!(
             resource.target_module,
@@ -4337,7 +4319,7 @@ mod tests {
         let heading = workspace
             .references()
             .iter()
-            .find(|reference| reference.target_label.as_deref() == Some("简介"))
+            .find(|reference| reference.target_name.as_deref() == Some("简介"))
             .expect("heading text label resolves");
         assert!(heading.target_range.is_some());
         let ambiguous: Vec<_> = workspace
@@ -4352,7 +4334,7 @@ mod tests {
         let first = workspace
             .references()
             .iter()
-            .find(|reference| reference.target_label.as_deref() == Some("安装"))
+            .find(|reference| reference.target_name.as_deref() == Some("安装"))
             .expect("ambiguous reference resolves");
         assert!(
             first.target_range.expect("heading range").start
@@ -4791,25 +4773,6 @@ mod tests {
 
         assert_eq!(error.kind(), io::ErrorKind::InvalidInput);
         assert!(error.to_string().contains("outside the vault"));
-    }
-
-    #[test]
-    fn explicit_rename_events_preserve_file_identity() {
-        let root = TempDir::new().unwrap();
-        let old_path = root.path().join("old.not");
-        let new_path = root.path().join("new.not");
-        fs::write(&old_path, "old").unwrap();
-        let engine = VaultEngine::open(root.path()).unwrap();
-        let old_snapshot = engine.disk_view().unwrap().snapshot();
-        let old_path = dunce::canonicalize(&old_path).unwrap();
-        let old_id = old_snapshot.file_id(&old_path).unwrap();
-
-        fs::rename(&old_path, &new_path).unwrap();
-        engine.rename_source(&old_path, &new_path).unwrap();
-        let new_snapshot = engine.disk_view().unwrap().snapshot();
-        let new_path = dunce::canonicalize(&new_path).unwrap();
-
-        assert_eq!(new_snapshot.file_id(&new_path), Some(old_id));
     }
 
     #[test]
@@ -5397,6 +5360,8 @@ mod tests {
             .find(|module| module.logical_path.segments() == ["guide"])
             .unwrap();
         let target = snapshot.resolve_reference(&guide.logical_path, "vault::guide#install");
-        assert!(matches!(target, RefTarget::Scope { id, .. } if id == "install"));
+        assert!(
+            matches!(target, RefTarget::Item { name, kind: ItemKind::Scope, .. } if name == "install")
+        );
     }
 }

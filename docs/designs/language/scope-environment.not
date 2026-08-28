@@ -54,7 +54,7 @@ scope 节点只存在于值层。进入成型视野前：
 | heading / item / Content literal 内 `#let` | 绑定不逃逸到文档 scope，外部引用产生 unresolved name | `element_and_content_scopes_are_lexical_boundaries` |
 | 文档级 `let` 被元素 body 读取 | 元素 scope 沿节点链看见外层 binding | `element_and_content_scopes_are_lexical_boundaries` |
 | `#let x = { 1 + 2 }` | Code block 是局部作用域，join 值绑定到外层 | `code_block_joins_statement_values_and_scopes_lets` |
-| `#[安装指南]@install` + `#<vault::guide/install>` | 手动 scope id 解析为模块内 Scope 目标 | `manual_scope_ids_resolve_as_module_labels` |
+| `#[安装指南]@install` + `#<vault::guide/install>` | 手动 scope 的 `@id` 解析为模块内 Item（Scope）目标 | `manual_scope_ids_resolve_as_module_labels` |
 
 == 已裁定 / 待定
 

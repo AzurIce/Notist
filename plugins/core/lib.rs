@@ -305,7 +305,7 @@ impl Function for LinkFunction {
             .arg("target", NodeValue::Target(reference.clone()))])),
             Value::String(url) => {
                 // The String branch is exclusively for external urls.
-                match notist_syntax::parse_wiki_reference(url) {
+                match notist_syntax::parse_reference_url(url) {
                     Ok(reference)
                         if matches!(
                             reference.module,

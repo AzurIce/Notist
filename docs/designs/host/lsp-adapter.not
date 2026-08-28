@@ -36,7 +36,7 @@ stdio transport；stdout 专用于 LSP JSON-RPC（不输出日志、进度或诊
 
 **Diagnostics**：syntax errors、duplicate module、unresolved module reference、引用目标不存在/歧义（Missing，#<vault::designs::world::reference-ref-target/解析产物：RefTarget>）、import cycle 与 unresolved module binding、名称解析与类型诊断、只依赖 snapshot input 的确定性求值诊断。`textDocument/publishDiagnostics` 在每次 snapshot 更新后为受影响文件发布完整集合，错误消失必须发布空数组清除。Diagnostic 带稳定的 `source = "notist"`、可机器识别的 code、准确 range 与简洁 message；跨文件冲突用 related information 指向另一处定义。
 
-**Go to Definition**：引用路径跳到目标 Module 文件开头（virtual Module 无 `README.not` 时不伪造源码位置）；scope id 与标题默认 id 跳到对应节；函数、变量等符号统一走 `definition_at(file, offset)`，handler 不针对每种符号复制逻辑。
+**Go to Definition**：引用路径跳到目标 Module 文件开头（virtual Module 无 `README.not` 时不伪造源码位置）；`@id` 与标题默认名跳到对应节；函数、变量等符号统一走 `definition_at(file, offset)`，handler 不针对每种符号复制逻辑。
 
 **Find References**：基于 workspace 引用图——指向当前 Module 的引用、同一目标的其他引用、可选包含定义位置；符号统一用 SymbolId，不按显示文本搜索。
 

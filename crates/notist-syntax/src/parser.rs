@@ -1307,7 +1307,7 @@ impl Parser<'_> {
         let module = if self.byte() == Some(b'<') {
             let target = self.parse_target_literal(self.cursor);
             let module = match &target.kind {
-                ExpressionKind::Target(reference) if reference.label.is_none() => {
+                ExpressionKind::Target(reference) if reference.name.is_none() => {
                     reference.module.clone()
                 }
                 ExpressionKind::Target(_) => {

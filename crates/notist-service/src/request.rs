@@ -61,10 +61,6 @@ pub enum CoreRequest {
         view_id: ServiceViewId,
         query: crate::query::DiagnosticsQuery,
     },
-    FingerprintSource {
-        view_id: ServiceViewId,
-        path: PathBuf,
-    },
     Inspect {
         view_id: ServiceViewId,
     },
@@ -153,24 +149,6 @@ pub enum CoreRequest {
     RenderWorkspace {
         view_id: ServiceViewId,
     },
-    ProposeEdit {
-        view_id: ServiceViewId,
-        base_revision: u64,
-        operations: Vec<EditOperation>,
-    },
-    ApplyEdit {
-        view_id: ServiceViewId,
-        plan_hash: String,
-        expected_fingerprints: Vec<SourceFingerprint>,
-        idempotency_key: String,
-    },
-    RenameSource {
-        view_id: ServiceViewId,
-        from: PathBuf,
-        to: PathBuf,
-        expected_fingerprint: String,
-        idempotency_key: String,
-    },
     ResolveReference {
         view_id: ServiceViewId,
         source_module: String,
@@ -192,7 +170,6 @@ impl CoreRequest {
             | Self::Diagnostics { view_id }
             | Self::DiagnosticsPage { view_id, .. }
             | Self::ResolveReference { view_id, .. }
-            | Self::FingerprintSource { view_id, .. }
             | Self::Inspect { view_id }
             | Self::DebugInspect { view_id, .. }
             | Self::Definition { view_id, .. }
@@ -212,10 +189,7 @@ impl CoreRequest {
             | Self::SearchPage { view_id, .. }
             | Self::IndexStatus { view_id }
             | Self::IndexRebuild { view_id, .. }
-            | Self::RenderWorkspace { view_id }
-            | Self::ProposeEdit { view_id, .. }
-            | Self::ApplyEdit { view_id, .. }
-            | Self::RenameSource { view_id, .. } => Some(*view_id),
+            | Self::RenderWorkspace { view_id } => Some(*view_id),
         }
     }
 }
@@ -356,14 +330,13 @@ pub enum CoreResponse {
     Updated,
     SnapshotSummary(SnapshotSummary),
     Status(crate::query::StatusRecord),
-    Modules(crate::query::QueryPage<crate::query::ModuleItem>),
+    Modules(crate::query::QueryPage<crate::query::ModuleRecord>),
     Sources(Vec<SourceRecord>),
     Reloaded,
     Diagnostics(Vec<DiagnosticRecord>),
     DiagnosticsPage(crate::query::DiagnosticsResult),
-    SourceFingerprint(Option<SourceFingerprint>),
     Inspect(InspectRecord),
-    DebugPage(crate::query::QueryPage<crate::query::DebugItem>),
+    DebugPage(crate::query::QueryPage<crate::query::DebugRecord>),
     Definition(Option<LocationRecord>),
     DefinitionLocation(Option<crate::query::Location>),
     References(Vec<LocationRecord>),
@@ -372,9 +345,9 @@ pub enum CoreResponse {
     Hover(Option<HoverRecord>),
     DocumentSymbols(Vec<DocumentSymbolRecord>),
     Outline(Vec<OutlineRecord>),
-    OutlinePage(crate::query::QueryPage<crate::query::OutlineItem>),
+    OutlinePage(crate::query::QueryPage<crate::query::OutlineHeading>),
     SourcePage(crate::query::QueryPage<crate::query::SourceChunk>),
-    ReferencesPage(crate::query::QueryPage<crate::query::ReferenceItem>),
+    ReferencesPage(crate::query::QueryPage<crate::query::ReferenceRecord>),
     WorkspaceSymbols(Vec<WorkspaceSymbolRecord>),
     ResolvedReference(RefTargetRecord),
     Search(Vec<SearchRecord>),
@@ -382,9 +355,6 @@ pub enum CoreResponse {
     IndexStatus(crate::query::IndexStatusRecord),
     QueryError(crate::query::ToolError),
     RenderedWorkspace(RenderedWorkspaceRecord),
-    EditPlan(EditPlanRecord),
-    EditApplied(ApplyEditRecord),
-    SourceRenamed(RenameSourceRecord),
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -463,11 +433,11 @@ pub struct DiagnosticRecord {
 pub struct InspectRecord {
     pub modules: Vec<ModuleRecord>,
     pub references: Vec<ReferenceRecord>,
-    pub semantic_items: Vec<SemanticItemRecord>,
+    pub semantic_records: Vec<SemanticRecord>,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
-pub struct SemanticItemRecord {
+pub struct SemanticRecord {
     pub module: String,
     pub range: ByteRange,
     pub kind: String,
@@ -504,7 +474,7 @@ pub struct ReferenceRecord {
     pub source_module: String,
     pub range: ByteRange,
     pub target_module: String,
-    pub target_label: Option<String>,
+    pub target_name: Option<String>,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -528,7 +498,7 @@ pub struct DocumentReferenceItem {
     pub direction: String,
     pub source_module: String,
     pub target_module: String,
-    pub target_label: Option<String>,
+    pub target_name: Option<String>,
     /// Outgoing only: "module" | "scope" | "resource".
     pub target_kind: Option<String>,
     pub url: Option<String>,
@@ -641,61 +611,6 @@ pub struct RenderedHeadingRecord {
     pub level: u8,
     pub id: String,
     pub text: String,
-}
-
-#[derive(Clone, Debug, Serialize, Deserialize)]
-pub struct EditOperation {
-    pub path: PathBuf,
-    pub range: ByteRange,
-    pub replacement: String,
-}
-
-#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
-pub struct SourceFingerprint {
-    pub path: PathBuf,
-    pub fingerprint: String,
-}
-
-#[derive(Clone, Debug, Serialize, Deserialize)]
-pub struct EditPlanRecord {
-    pub plan_hash: String,
-    pub base_revision: u64,
-    pub affected_sources: Vec<SourceFingerprint>,
-    pub diagnostics: Vec<String>,
-    pub preview: Vec<EditPreviewRecord>,
-    pub preview_truncated: bool,
-}
-
-#[derive(Clone, Debug, Serialize, Deserialize)]
-pub struct EditPreviewRecord {
-    pub path: PathBuf,
-    pub range: ByteRange,
-    pub before: String,
-    pub replacement: String,
-    pub truncated: bool,
-}
-
-#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
-pub struct ApplyEditRecord {
-    pub plan_hash: String,
-    pub idempotency_key: String,
-    pub resulting_fingerprints: Vec<SourceFingerprint>,
-}
-
-#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
-pub struct RenameSourceRecord {
-    pub from: PathBuf,
-    pub to: PathBuf,
-    pub idempotency_key: String,
-}
-
-#[derive(Clone)]
-pub(crate) struct StoredEditPlan {
-    pub view_id: ServiceViewId,
-    pub vault: VaultIdentity,
-    pub operations: Vec<EditOperation>,
-    pub fingerprints: Vec<SourceFingerprint>,
-    pub diagnostics: Vec<String>,
 }
 
 enum IndexBuildWait {
@@ -1057,17 +972,6 @@ impl NotistService {
                     },
                 })
             }
-            CoreRequest::FingerprintSource { view_id, path } => {
-                let (snapshot, fingerprint) = self.with_snapshot(view_id, |workspace| {
-                    let file_id = workspace.file_id(&path)?;
-                    let source = workspace.source(file_id)?;
-                    Some(source_fingerprint(path, &source.text))
-                })?;
-                Ok(CoreReply {
-                    snapshot,
-                    response: CoreResponse::SourceFingerprint(fingerprint),
-                })
-            }
             CoreRequest::Inspect { view_id } => {
                 let (snapshot, inspect) =
                     self.with_snapshot(view_id, |workspace| InspectRecord {
@@ -1097,18 +1001,18 @@ impl NotistService {
                                 source_module: reference.source_module.to_string(),
                                 range: reference.range.into(),
                                 target_module: reference.target_module.to_string(),
-                                target_label: reference.target_label.clone(),
+                                target_name: reference.target_name.clone(),
                             })
                             .collect(),
-                        semantic_items: workspace
+                        semantic_records: workspace
                             .modules()
                             .flat_map(|module| {
                                 let module_name = module.logical_path.to_string();
-                                let mut items = Vec::new();
+                                let mut records = Vec::new();
                                 if let Some(parse) = &module.parse {
-                                    items.extend(parse.annotations().into_iter().map(
+                                    records.extend(parse.annotations().into_iter().map(
                                         |annotation| {
-                                            SemanticItemRecord {
+                                            SemanticRecord {
                                                 module: module_name.clone(),
                                                 range: annotation.scope_range.into(),
                                                 kind: "embedded".into(),
@@ -1120,24 +1024,24 @@ impl NotistService {
                                             }
                                         },
                                     ));
-                                    items.extend(parse.calls().into_iter().map(|call| {
+                                    records.extend(parse.calls().into_iter().map(|call| {
                                         let (range, kind) = match call.trailing.first() {
                                             Some(body) => (body.payload_range, "content call"),
                                             None => (call.range, "call"),
                                         };
-                                        SemanticItemRecord {
+                                        SemanticRecord {
                                             module: module_name.clone(),
                                             range: range.into(),
                                             kind: kind.into(),
                                             name: Some(call.name.value.clone()),
                                         }
                                     }));
-                                    items.extend(parse.raw_literals().into_iter().map(|raw| {
+                                    records.extend(parse.raw_literals().into_iter().map(|raw| {
                                         let kind = match raw.form {
                                             notist_syntax::RawLiteralForm::Inline => "inline raw",
                                             notist_syntax::RawLiteralForm::Fenced => "fenced raw",
                                         };
-                                        SemanticItemRecord {
+                                        SemanticRecord {
                                             module: module_name.clone(),
                                             range: raw.payload_range.into(),
                                             kind: kind.into(),
@@ -1145,7 +1049,7 @@ impl NotistService {
                                         }
                                     }));
                                 }
-                                items
+                                records
                             })
                             .collect(),
                     })?;
@@ -1270,7 +1174,7 @@ impl NotistService {
                                 direction: "incoming".into(),
                                 source_module: module.logical_path.to_string(),
                                 target_module: module.logical_path.to_string(),
-                                target_label: None,
+                                target_name: None,
                                 target_kind: None,
                                 url: None,
                                 is_definition: true,
@@ -1292,7 +1196,7 @@ impl NotistService {
                                     direction: "incoming".into(),
                                     source_module: reference.source_module.to_string(),
                                     target_module: reference.target_module.to_string(),
-                                    target_label: reference.target_label.clone(),
+                                    target_name: reference.target_name.clone(),
                                     target_kind: None,
                                     url: Some(reference.url.clone()),
                                     is_definition: false,
@@ -1312,13 +1216,14 @@ impl NotistService {
                                     continue;
                                 };
                                 let target_kind =
-                                    reference.target_label.as_deref().map_or("module", |label| {
+                                    reference.target_name.as_deref().map_or("module", |name| {
                                         match workspace
-                                            .resolve_module_label(&reference.target_module, label)
+                                            .resolve_item_name(&reference.target_module, name)
                                         {
-                                            notist_analysis::RefTarget::Resource { .. } => {
-                                                "resource"
-                                            }
+                                            notist_analysis::RefTarget::Item {
+                                                kind: notist_analysis::ItemKind::Resource(_),
+                                                ..
+                                            } => "resource",
                                             _ => "scope",
                                         }
                                     });
@@ -1328,7 +1233,7 @@ impl NotistService {
                                     direction: "outgoing".into(),
                                     source_module: module.logical_path.to_string(),
                                     target_module: reference.target_module.to_string(),
-                                    target_label: reference.target_label.clone(),
+                                    target_name: reference.target_name.clone(),
                                     target_kind: Some(target_kind.into()),
                                     url: Some(reference.url.clone()),
                                     is_definition: false,
@@ -1686,378 +1591,8 @@ impl NotistService {
                     response: CoreResponse::RenderedWorkspace(rendered?),
                 })
             }
-            CoreRequest::ProposeEdit {
-                view_id,
-                base_revision,
-                operations,
-            } => {
-                let (snapshot, proposed) = self.with_snapshot(view_id, |workspace| {
-                    if workspace.revision().raw() != base_revision {
-                        return Err(io::Error::new(
-                            io::ErrorKind::InvalidInput,
-                            format!(
-                                "base revision {base_revision} does not match current revision {}",
-                                workspace.revision().raw()
-                            ),
-                        ));
-                    }
-                    if operations.is_empty() || operations.len() > 100 {
-                        return Err(io::Error::new(
-                            io::ErrorKind::InvalidInput,
-                            "edit proposal must contain 1 to 100 operations",
-                        ));
-                    }
-                    let mut fingerprints = Vec::new();
-                    let mut diagnostics = Vec::new();
-                    let mut preview = Vec::new();
-                    let mut preview_remaining = 24 * 1024usize;
-                    let mut preview_truncated = false;
-                    for operation in &operations {
-                        let Some(file_id) = workspace.file_id(&operation.path) else {
-                            diagnostics.push(format!(
-                                "source `{}` is not part of the captured view",
-                                operation.path.display()
-                            ));
-                            continue;
-                        };
-                        let source = workspace.source(file_id).unwrap();
-                        let valid_range = operation.range.start <= operation.range.end
-                            && operation.range.end <= source.text.len()
-                            && source.text.is_char_boundary(operation.range.start)
-                            && source.text.is_char_boundary(operation.range.end);
-                        if !valid_range {
-                            diagnostics.push(format!(
-                                "edit range {}..{} is invalid for `{}`",
-                                operation.range.start,
-                                operation.range.end,
-                                operation.path.display()
-                            ));
-                        }
-                        if operation.replacement.len() > 64 * 1024 {
-                            diagnostics.push(format!(
-                                "replacement for `{}` exceeds 64 KiB",
-                                operation.path.display()
-                            ));
-                        }
-                        if valid_range && preview_remaining >= 128 {
-                            let cap = (preview_remaining / 2).min(2048);
-                            let (before, before_truncated) = bounded_utf8(
-                                &source.text[operation.range.start..operation.range.end],
-                                cap,
-                            );
-                            let (replacement, replacement_truncated) =
-                                bounded_utf8(&operation.replacement, cap);
-                            preview_remaining = preview_remaining
-                                .saturating_sub(before.len() + replacement.len() + 128);
-                            preview.push(EditPreviewRecord {
-                                path: operation
-                                    .path
-                                    .strip_prefix(workspace.root())
-                                    .unwrap_or(&operation.path)
-                                    .to_path_buf(),
-                                range: operation.range,
-                                before,
-                                replacement,
-                                truncated: before_truncated || replacement_truncated,
-                            });
-                        } else if valid_range {
-                            preview_truncated = true;
-                        }
-                        if !fingerprints
-                            .iter()
-                            .any(|item: &SourceFingerprint| item.path == operation.path)
-                        {
-                            fingerprints
-                                .push(source_fingerprint(operation.path.clone(), &source.text));
-                        }
-                    }
-                    Ok((fingerprints, diagnostics, preview, preview_truncated))
-                })?;
-                let (fingerprints, diagnostics, preview, preview_truncated) = proposed?;
-                let plan_hash = edit_plan_hash(
-                    view_id,
-                    base_revision,
-                    &snapshot.vault,
-                    &operations,
-                    &fingerprints,
-                )?;
-                self.edit_plans.lock().unwrap().insert(
-                    plan_hash.clone(),
-                    StoredEditPlan {
-                        view_id,
-                        vault: snapshot.vault.clone(),
-                        operations,
-                        fingerprints: fingerprints.clone(),
-                        diagnostics: diagnostics.clone(),
-                    },
-                );
-                Ok(CoreReply {
-                    snapshot,
-                    response: CoreResponse::EditPlan(EditPlanRecord {
-                        plan_hash,
-                        base_revision,
-                        affected_sources: fingerprints,
-                        diagnostics,
-                        preview,
-                        preview_truncated,
-                    }),
-                })
-            }
-            CoreRequest::ApplyEdit {
-                view_id,
-                plan_hash,
-                expected_fingerprints,
-                idempotency_key,
-            } => self.apply_edit(view_id, plan_hash, expected_fingerprints, idempotency_key),
-            CoreRequest::RenameSource {
-                view_id,
-                from,
-                to,
-                expected_fingerprint,
-                idempotency_key,
-            } => self.rename_source(view_id, from, to, expected_fingerprint, idempotency_key),
         }
     }
-}
-
-impl NotistService {
-    fn apply_edit(
-        &self,
-        view_id: ServiceViewId,
-        plan_hash: String,
-        expected_fingerprints: Vec<SourceFingerprint>,
-        idempotency_key: String,
-    ) -> io::Result<CoreReply> {
-        if idempotency_key.is_empty() {
-            return Err(io::Error::new(
-                io::ErrorKind::InvalidInput,
-                "idempotency key must not be empty",
-            ));
-        }
-        if let Some(applied) = self
-            .applied_edits
-            .lock()
-            .unwrap()
-            .get(&idempotency_key)
-            .cloned()
-        {
-            if applied.plan_hash != plan_hash {
-                return Err(io::Error::new(
-                    io::ErrorKind::AlreadyExists,
-                    "idempotency key was already used for another edit plan",
-                ));
-            }
-            let (snapshot, ()) = self.with_snapshot(view_id, |_| ())?;
-            return Ok(CoreReply {
-                snapshot,
-                response: CoreResponse::EditApplied(applied),
-            });
-        }
-        let plan = self
-            .edit_plans
-            .lock()
-            .unwrap()
-            .get(&plan_hash)
-            .cloned()
-            .ok_or_else(|| io::Error::new(io::ErrorKind::NotFound, "unknown edit plan"))?;
-        if plan.view_id != view_id || plan.fingerprints != expected_fingerprints {
-            return Err(io::Error::new(
-                io::ErrorKind::InvalidInput,
-                "edit plan view or expected fingerprints do not match",
-            ));
-        }
-        if !plan.diagnostics.is_empty() {
-            return Err(io::Error::new(
-                io::ErrorKind::InvalidInput,
-                "edit plan contains validation diagnostics",
-            ));
-        }
-        let (host, _, kind) = self.view(view_id)?;
-        if kind != ViewKind::Disk {
-            return Err(io::Error::new(
-                io::ErrorKind::InvalidInput,
-                "disk writes require a disk view",
-            ));
-        }
-        if host.identity != plan.vault {
-            return Err(io::Error::new(
-                io::ErrorKind::InvalidInput,
-                "edit plan belongs to another vault",
-            ));
-        }
-        let _write = host.write_lock.lock().unwrap();
-        let mut texts = BTreeMap::new();
-        for expected in &expected_fingerprints {
-            let text = std::fs::read_to_string(&expected.path)?;
-            if source_fingerprint(expected.path.clone(), &text) != *expected {
-                return Err(io::Error::new(
-                    io::ErrorKind::InvalidData,
-                    format!(
-                        "source `{}` changed after edit proposal",
-                        expected.path.display()
-                    ),
-                ));
-            }
-            texts.insert(expected.path.clone(), text);
-        }
-        for (path, text) in &mut texts {
-            let mut operations = plan
-                .operations
-                .iter()
-                .filter(|operation| &operation.path == path)
-                .collect::<Vec<_>>();
-            operations.sort_by_key(|operation| std::cmp::Reverse(operation.range.start));
-            let mut previous_start = text.len();
-            for operation in operations {
-                if operation.range.end > previous_start {
-                    return Err(io::Error::new(
-                        io::ErrorKind::InvalidInput,
-                        format!("overlapping edits for `{}`", path.display()),
-                    ));
-                }
-                text.replace_range(
-                    operation.range.start..operation.range.end,
-                    &operation.replacement,
-                );
-                previous_start = operation.range.start;
-            }
-        }
-        for (path, text) in &texts {
-            replace_file(path, text.as_bytes(), &plan_hash)?;
-        }
-        let snapshot = host.disk.lock().unwrap().reload()?;
-        let snapshot = self.snapshot_identity(view_id, &host, &snapshot);
-        let resulting_fingerprints = texts
-            .iter()
-            .map(|(path, text)| source_fingerprint(path.clone(), text))
-            .collect();
-        let applied = ApplyEditRecord {
-            plan_hash,
-            idempotency_key: idempotency_key.clone(),
-            resulting_fingerprints,
-        };
-        self.applied_edits
-            .lock()
-            .unwrap()
-            .insert(idempotency_key, applied.clone());
-        Ok(CoreReply {
-            snapshot,
-            response: CoreResponse::EditApplied(applied),
-        })
-    }
-
-    fn rename_source(
-        &self,
-        view_id: ServiceViewId,
-        from: PathBuf,
-        to: PathBuf,
-        expected_fingerprint: String,
-        idempotency_key: String,
-    ) -> io::Result<CoreReply> {
-        if idempotency_key.is_empty() {
-            return Err(io::Error::new(
-                io::ErrorKind::InvalidInput,
-                "idempotency key must not be empty",
-            ));
-        }
-        if let Some(renamed) = self
-            .renamed_sources
-            .lock()
-            .unwrap()
-            .get(&idempotency_key)
-            .cloned()
-        {
-            if renamed.from != from || renamed.to != to {
-                return Err(io::Error::new(
-                    io::ErrorKind::AlreadyExists,
-                    "idempotency key was already used for another rename",
-                ));
-            }
-            let (snapshot, ()) = self.with_snapshot(view_id, |_| ())?;
-            return Ok(CoreReply {
-                snapshot,
-                response: CoreResponse::SourceRenamed(renamed),
-            });
-        }
-        let (host, _, kind) = self.view(view_id)?;
-        if kind != ViewKind::Disk {
-            return Err(io::Error::new(
-                io::ErrorKind::InvalidInput,
-                "source rename requires a disk view",
-            ));
-        }
-        let from = dunce::canonicalize(from)?;
-        let to_parent = dunce::canonicalize(
-            to.parent()
-                .ok_or_else(|| io::Error::other("rename target has no parent"))?,
-        )?;
-        let to = to_parent.join(
-            to.file_name()
-                .ok_or_else(|| io::Error::other("rename target has no file name"))?,
-        );
-        if !from.starts_with(&host.identity.canonical_root)
-            || !to.starts_with(&host.identity.canonical_root)
-        {
-            return Err(io::Error::new(
-                io::ErrorKind::PermissionDenied,
-                "rename source and target must remain inside the vault",
-            ));
-        }
-        if to.exists() {
-            return Err(io::Error::new(
-                io::ErrorKind::AlreadyExists,
-                "rename target already exists",
-            ));
-        }
-        let _write = host.write_lock.lock().unwrap();
-        let source = std::fs::read_to_string(&from)?;
-        if source_fingerprint(from.clone(), &source).fingerprint != expected_fingerprint {
-            return Err(io::Error::new(
-                io::ErrorKind::InvalidData,
-                "rename source changed after it was selected",
-            ));
-        }
-        std::fs::rename(&from, &to)?;
-        host.engine.rename_source(&from, &to)?;
-        let snapshot = host.disk.lock().unwrap().reload()?;
-        let snapshot = self.snapshot_identity(view_id, &host, &snapshot);
-        let renamed = RenameSourceRecord {
-            from,
-            to,
-            idempotency_key: idempotency_key.clone(),
-        };
-        self.renamed_sources
-            .lock()
-            .unwrap()
-            .insert(idempotency_key, renamed.clone());
-        Ok(CoreReply {
-            snapshot,
-            response: CoreResponse::SourceRenamed(renamed),
-        })
-    }
-}
-
-fn source_fingerprint(path: PathBuf, text: &str) -> SourceFingerprint {
-    SourceFingerprint {
-        path,
-        fingerprint: format!("{:016x}", super::fingerprint(text.as_bytes())),
-    }
-}
-
-fn edit_plan_hash(
-    view_id: ServiceViewId,
-    revision: u64,
-    vault: &VaultIdentity,
-    operations: &[EditOperation],
-    fingerprints: &[SourceFingerprint],
-) -> io::Result<String> {
-    let payload = serde_json::to_vec(&(view_id, revision, vault, operations, fingerprints))
-        .map_err(io::Error::other)?;
-    Ok(format!("{:016x}", super::fingerprint(&payload)))
-}
-
-fn replace_file(path: &Path, contents: &[u8], plan_hash: &str) -> io::Result<()> {
-    write_artifact_atomic(path, contents, plan_hash)
 }
 
 pub fn write_artifact_atomic(path: &Path, contents: &[u8], operation_id: &str) -> io::Result<()> {
@@ -2075,17 +1610,6 @@ pub fn write_artifact_atomic(path: &Path, contents: &[u8], operation_id: &str) -
     } else {
         std::fs::rename(temporary, path)
     }
-}
-
-fn bounded_utf8(value: &str, max_bytes: usize) -> (String, bool) {
-    if value.len() <= max_bytes {
-        return (value.to_owned(), false);
-    }
-    let mut end = max_bytes.min(value.len());
-    while !value.is_char_boundary(end) {
-        end -= 1;
-    }
-    (value[..end].to_owned(), true)
 }
 
 #[cfg(not(windows))]
@@ -2414,9 +1938,9 @@ fn binding_detail(value: &Value) -> String {
         Value::Function(function) => format_signature(&function.signature),
         Value::Target(reference) => {
             let mut detail = reference.module.to_string();
-            if let Some(label) = &reference.label {
+            if let Some(name) = &reference.name {
                 detail.push('/');
-                detail.push_str(label);
+                detail.push_str(name);
             }
             format!("Target = {detail}")
         }
@@ -2692,146 +2216,6 @@ mod tests {
         assert_eq!(symbols[0].kind, "annotation");
         assert!(encoded.contains("daemon_instance"));
         assert!(encoded.contains("revision"));
-    }
-
-    #[test]
-    fn edit_plans_enforce_fingerprints_and_idempotency() {
-        let root = tempfile::TempDir::new_in(std::env::current_dir().unwrap()).unwrap();
-        let path = root.path().join("README.not");
-        fs::write(&path, "one").unwrap();
-        let path = dunce::canonicalize(path).unwrap();
-        let service = NotistService::new();
-        let opened = service
-            .execute(CoreRequest::OpenView {
-                root: root.path().to_path_buf(),
-                kind: ProtocolViewKind::Disk,
-            })
-            .unwrap();
-        let revision = opened.snapshot.revision;
-        let CoreResponse::Opened { view_id, .. } = opened.response else {
-            panic!("expected opened view")
-        };
-        let plan = service
-            .execute(CoreRequest::ProposeEdit {
-                view_id,
-                base_revision: revision,
-                operations: vec![EditOperation {
-                    path: path.clone(),
-                    range: ByteRange { start: 0, end: 3 },
-                    replacement: "two".into(),
-                }],
-            })
-            .unwrap();
-        let CoreResponse::EditPlan(plan) = plan.response else {
-            panic!("expected edit plan")
-        };
-        assert!(plan.diagnostics.is_empty());
-        let request = CoreRequest::ApplyEdit {
-            view_id,
-            plan_hash: plan.plan_hash.clone(),
-            expected_fingerprints: plan.affected_sources.clone(),
-            idempotency_key: "test-edit".into(),
-        };
-        let first = service.execute(request.clone()).unwrap();
-        let second = service.execute(request).unwrap();
-        assert_eq!(fs::read_to_string(&path).unwrap(), "two");
-        let CoreResponse::EditApplied(first) = first.response else {
-            panic!("expected applied edit")
-        };
-        let CoreResponse::EditApplied(second) = second.response else {
-            panic!("expected idempotent applied edit")
-        };
-        assert_eq!(first, second);
-    }
-
-    #[test]
-    fn edit_apply_rejects_sources_changed_after_proposal() {
-        let root = tempfile::TempDir::new_in(std::env::current_dir().unwrap()).unwrap();
-        let path = root.path().join("README.not");
-        fs::write(&path, "one").unwrap();
-        let path = dunce::canonicalize(path).unwrap();
-        let service = NotistService::new();
-        let opened = service
-            .execute(CoreRequest::OpenView {
-                root: root.path().to_path_buf(),
-                kind: ProtocolViewKind::Disk,
-            })
-            .unwrap();
-        let CoreResponse::Opened { view_id, .. } = opened.response else {
-            panic!("expected opened view")
-        };
-        let plan = service
-            .execute(CoreRequest::ProposeEdit {
-                view_id,
-                base_revision: opened.snapshot.revision,
-                operations: vec![EditOperation {
-                    path: path.clone(),
-                    range: ByteRange { start: 0, end: 3 },
-                    replacement: "two".into(),
-                }],
-            })
-            .unwrap();
-        let CoreResponse::EditPlan(plan) = plan.response else {
-            panic!("expected edit plan")
-        };
-        fs::write(&path, "changed").unwrap();
-        let error = service
-            .execute(CoreRequest::ApplyEdit {
-                view_id,
-                plan_hash: plan.plan_hash,
-                expected_fingerprints: plan.affected_sources,
-                idempotency_key: "stale-edit".into(),
-            })
-            .unwrap_err();
-        assert_eq!(error.kind(), io::ErrorKind::InvalidData);
-        assert_eq!(fs::read_to_string(path).unwrap(), "changed");
-    }
-
-    #[test]
-    fn daemon_serializes_preconditioned_source_renames() {
-        let root = tempfile::TempDir::new_in(std::env::current_dir().unwrap()).unwrap();
-        let from = root.path().join("old.not");
-        let to = root.path().join("new.not");
-        fs::write(&from, "content").unwrap();
-        let from = dunce::canonicalize(from).unwrap();
-        let service = NotistService::new();
-        let opened = service
-            .execute(CoreRequest::OpenView {
-                root: root.path().to_path_buf(),
-                kind: ProtocolViewKind::Disk,
-            })
-            .unwrap();
-        let CoreResponse::Opened { view_id, .. } = opened.response else {
-            panic!("expected open view")
-        };
-        let fingerprint = service
-            .execute(CoreRequest::FingerprintSource {
-                view_id,
-                path: from.clone(),
-            })
-            .unwrap();
-        let CoreResponse::SourceFingerprint(Some(fingerprint)) = fingerprint.response else {
-            panic!("expected source fingerprint")
-        };
-        let request = CoreRequest::RenameSource {
-            view_id,
-            from: from.clone(),
-            to: to.clone(),
-            expected_fingerprint: fingerprint.fingerprint,
-            idempotency_key: "rename-test".into(),
-        };
-        let first = service.execute(request.clone()).unwrap();
-        let second = service.execute(request).unwrap();
-
-        assert!(!from.exists());
-        assert_eq!(fs::read_to_string(&to).unwrap(), "content");
-        let CoreResponse::SourceRenamed(first) = first.response else {
-            panic!("expected source rename")
-        };
-        let CoreResponse::SourceRenamed(second) = second.response else {
-            panic!("expected idempotent source rename")
-        };
-        assert_eq!(first, second);
     }
 
     #[test]
@@ -3277,11 +2661,11 @@ mod tests {
         let CoreResponse::SearchPage(first) = first.response else {
             panic!("expected search page")
         };
-        assert_eq!(first.items.len(), 1);
+        assert_eq!(first.records.len(), 1);
         assert!(first.page.has_more);
-        assert!(first.items[0].score.is_some());
-        assert!(first.items[0].match_range.is_some());
-        assert!(first.items[0].excerpt.to_lowercase().contains("workspace"));
+        assert!(first.records[0].score.is_some());
+        assert!(first.records[0].match_range.is_some());
+        assert!(first.records[0].excerpt.to_lowercase().contains("workspace"));
         assert!(serde_json::to_vec(&first).unwrap().len() < 4096);
 
         let mut next_query = query.clone();
@@ -3295,10 +2679,10 @@ mod tests {
         let CoreResponse::SearchPage(second) = second.response else {
             panic!("expected second search page")
         };
-        assert_eq!(second.items.len(), 1);
+        assert_eq!(second.records.len(), 1);
         assert_ne!(
-            first.items[0].unit_range.start,
-            second.items[0].unit_range.start
+            first.records[0].unit_range.start,
+            second.records[0].unit_range.start
         );
 
         let mut grouped_query = query.clone();
@@ -3314,7 +2698,7 @@ mod tests {
         let CoreResponse::SearchPage(grouped) = grouped.response else {
             panic!("expected grouped search page")
         };
-        assert_eq!(grouped.items.len(), 1);
+        assert_eq!(grouped.records.len(), 1);
         let metadata = grouped.search.as_ref().unwrap();
         assert_eq!(metadata.group_by, crate::query::SearchGroup::Source);
         assert_eq!(metadata.ordering, "relevance");
@@ -3341,7 +2725,7 @@ mod tests {
         let CoreResponse::SearchPage(fuzzy) = fuzzy.response else {
             panic!("expected fuzzy page")
         };
-        assert!(!fuzzy.items.is_empty());
+        assert!(!fuzzy.records.is_empty());
 
         for (field, expected) in [
             (crate::query::SearchField::Comment, true),
@@ -3368,7 +2752,7 @@ mod tests {
             let CoreResponse::SearchPage(result) = result.response else {
                 panic!("expected field search page")
             };
-            assert_eq!(!result.items.is_empty(), expected);
+            assert_eq!(!result.records.is_empty(), expected);
         }
 
         let read = service
@@ -3377,7 +2761,7 @@ mod tests {
                 query: crate::query::ReadQuery {
                     selector: crate::query::Selector::Module {
                         module: "vault::long".into(),
-                        label: None,
+                        name: None,
                     },
                     window: Default::default(),
                     page: crate::query::PageRequest {
@@ -3392,7 +2776,7 @@ mod tests {
             panic!("expected source page")
         };
         assert_eq!(
-            read.items[0].source.lines().count(),
+            read.records[0].source.lines().count(),
             crate::query::READ_DEFAULT_LINES
         );
         assert!(read.page.has_more);
@@ -3427,7 +2811,7 @@ mod tests {
             let CoreResponse::SearchPage(result) = result.response else {
                 panic!("expected incremental search page")
             };
-            assert_eq!(!result.items.is_empty(), expected);
+            assert_eq!(!result.records.is_empty(), expected);
         }
     }
 }

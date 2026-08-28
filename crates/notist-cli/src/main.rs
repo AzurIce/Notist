@@ -190,11 +190,6 @@ enum Command {
         #[command(subcommand)]
         query: QueryCommand,
     },
-    /// Apply preconditioned source edits through the shared service.
-    Edit {
-        #[command(subcommand)]
-        edit: EditCommand,
-    },
     /// Inspect or rebuild the derived lexical search index.
     Index {
         #[command(subcommand)]
@@ -257,12 +252,6 @@ impl Command {
             Self::Read { .. } => "read",
             Self::References { .. } => "references",
             Self::Query { .. } => "query definition",
-            Self::Edit {
-                edit: EditCommand::Replace { .. },
-            } => "edit replace",
-            Self::Edit {
-                edit: EditCommand::Rename { .. },
-            } => "edit rename",
             Self::Index { .. } => "index",
             Self::Debug { .. } => "debug inspect",
             Self::Export { .. } => "export",
@@ -292,34 +281,6 @@ enum QueryCommand {
         root: PathBuf,
         #[arg(long)]
         expected_fingerprint: Option<String>,
-    },
-}
-
-#[derive(Debug, Subcommand)]
-enum EditCommand {
-    /// Replace one byte range after proposing and validating an edit plan.
-    Replace {
-        path: PathBuf,
-        start: usize,
-        end: usize,
-        replacement: String,
-        #[arg(long)]
-        idempotency_key: String,
-        #[arg(long)]
-        expected_fingerprint: String,
-        #[arg(long)]
-        yes: bool,
-    },
-    /// Rename a source while preserving its stable file identity.
-    Rename {
-        from: PathBuf,
-        to: PathBuf,
-        #[arg(long)]
-        idempotency_key: String,
-        #[arg(long)]
-        expected_fingerprint: String,
-        #[arg(long)]
-        yes: bool,
     },
 }
 
@@ -834,9 +795,6 @@ fn classify_error(error: &(dyn std::error::Error + 'static)) -> (&'static str, u
                 | std::io::ErrorKind::BrokenPipe
                 | std::io::ErrorKind::NotConnected
                 | std::io::ErrorKind::TimedOut => ("service_unavailable", 4),
-                std::io::ErrorKind::InvalidData | std::io::ErrorKind::AlreadyExists => {
-                    ("edit_conflict", 5)
-                }
                 std::io::ErrorKind::InvalidInput | std::io::ErrorKind::NotFound => {
                     ("invalid_argument", 3)
                 }
@@ -941,7 +899,7 @@ fn run(cli: Cli) -> Result<ExitCode, Box<dyn std::error::Error>> {
             if cli.format.is_json() {
                 output::emit_result("modules", true, &page)?;
             } else {
-                for item in &page.items {
+                for item in &page.records {
                     let path = item
                         .relative_path
                         .as_ref()
@@ -1074,11 +1032,11 @@ fn run(cli: Cli) -> Result<ExitCode, Box<dyn std::error::Error>> {
                 })
                 .unwrap_or("matches");
             if results.coverage.complete {
-                println!("{} {group}", results.items.len());
+                println!("{} {group}", results.records.len());
             } else {
-                println!("showing {} {group}; more available", results.items.len());
+                println!("showing {} {group}; more available", results.records.len());
             }
-            for (index, result) in results.items.iter().enumerate() {
+            for (index, result) in results.records.iter().enumerate() {
                 let score = result.score.map_or(String::new(), |score| {
                     format!(" score={:.3}", score as f64 / 1_000_000.0)
                 });
@@ -1143,7 +1101,7 @@ fn run(cli: Cli) -> Result<ExitCode, Box<dyn std::error::Error>> {
                 output::emit_result("outline", true, &outline)?;
                 return Ok(ExitCode::SUCCESS);
             }
-            for symbol in &outline.items {
+            for symbol in &outline.records {
                 println!(
                     "{}{}  {}:{}",
                     "  ".repeat(symbol.level.saturating_sub(1) as usize),
@@ -1182,7 +1140,7 @@ fn run(cli: Cli) -> Result<ExitCode, Box<dyn std::error::Error>> {
             };
             if cli.format.is_json() {
                 output::emit_result("read", true, &result)?;
-            } else if let Some(chunk) = result.items.first() {
+            } else if let Some(chunk) = result.records.first() {
                 let start = chunk.location.line_range.map_or(1, |range| range.start);
                 for (offset, line) in chunk.source.lines().enumerate() {
                     println!("{:>5} | {}", start + offset, line);
@@ -1220,7 +1178,7 @@ fn run(cli: Cli) -> Result<ExitCode, Box<dyn std::error::Error>> {
                 output::emit_result("references", true, &locations)?;
                 return Ok(ExitCode::SUCCESS);
             }
-            for item in &locations.items {
+            for item in &locations.records {
                 let position = item.location.line_range.map_or_else(
                     || {
                         format!(
@@ -1288,174 +1246,6 @@ fn run(cli: Cli) -> Result<ExitCode, Box<dyn std::error::Error>> {
                     definition.relative_path.display(),
                     definition.byte_range.start,
                     definition.byte_range.end
-                );
-            }
-            Ok(ExitCode::SUCCESS)
-        }
-        Command::Edit {
-            edit:
-                EditCommand::Replace {
-                    path,
-                    start,
-                    end,
-                    replacement,
-                    idempotency_key,
-                    expected_fingerprint,
-                    yes,
-                },
-        } => {
-            let path = dunce::canonicalize(path)?;
-            let root = resolve_vault_root(&path)?;
-            let mut client =
-                service::LocalNotistClient::connect(cli.no_daemon, ClientKind::Cli, root.clone())?;
-            let view_id = open_disk_view(&mut client, root.clone())?;
-            let summary = client.request(CoreRequest::SnapshotSummary { view_id })?;
-            let plan = client.request(CoreRequest::ProposeEdit {
-                view_id,
-                base_revision: summary.snapshot.revision,
-                operations: vec![notist_service::EditOperation {
-                    path,
-                    range: notist_service::ByteRange { start, end },
-                    replacement,
-                }],
-            })?;
-            let CoreResponse::EditPlan(plan) = plan.response else {
-                return Err("daemon returned an unexpected edit-plan response".into());
-            };
-            if plan
-                .affected_sources
-                .first()
-                .is_none_or(|source| source.fingerprint != expected_fingerprint)
-            {
-                return Err(std::io::Error::new(
-                    std::io::ErrorKind::InvalidData,
-                    "expected fingerprint does not match the captured source",
-                )
-                .into());
-            }
-            if !plan.diagnostics.is_empty() {
-                if cli.format.is_json() {
-                    output::emit_result(
-                        "edit replace",
-                        false,
-                        serde_json::json!({"root": root, "plan": plan}),
-                    )?;
-                } else {
-                    for diagnostic in plan.diagnostics {
-                        eprintln!("notist edit: {diagnostic}");
-                    }
-                }
-                return Ok(ExitCode::FAILURE);
-            }
-            if !yes {
-                if cli.format.is_json() {
-                    output::emit_result(
-                        "edit replace",
-                        false,
-                        serde_json::json!({"root": root, "proposal": plan, "applied": false}),
-                    )?;
-                } else {
-                    println!("proposed edit {}; pass --yes to apply", plan.plan_hash);
-                    for preview in &plan.preview {
-                        println!(
-                            "\n--- {}:{}..{}\n- {}\n+ {}{}",
-                            preview.path.display(),
-                            preview.range.start,
-                            preview.range.end,
-                            preview.before.replace('\n', "\\n"),
-                            preview.replacement.replace('\n', "\\n"),
-                            if preview.truncated {
-                                " (preview truncated)"
-                            } else {
-                                ""
-                            }
-                        );
-                    }
-                }
-                return Ok(ExitCode::FAILURE);
-            }
-            let applied = client.request(CoreRequest::ApplyEdit {
-                view_id,
-                plan_hash: plan.plan_hash,
-                expected_fingerprints: plan.affected_sources,
-                idempotency_key,
-            })?;
-            let CoreResponse::EditApplied(applied) = applied.response else {
-                return Err("daemon returned an unexpected edit response".into());
-            };
-            if cli.format.is_json() {
-                output::emit_result(
-                    "edit replace",
-                    true,
-                    serde_json::json!({"root": root, "applied": applied}),
-                )?;
-            } else {
-                println!("applied edit {}", applied.plan_hash);
-            }
-            Ok(ExitCode::SUCCESS)
-        }
-        Command::Edit {
-            edit:
-                EditCommand::Rename {
-                    from,
-                    to,
-                    idempotency_key,
-                    expected_fingerprint,
-                    yes,
-                },
-        } => {
-            let from = dunce::canonicalize(from)?;
-            let root = resolve_vault_root(&from)?;
-            let mut client =
-                service::LocalNotistClient::connect(cli.no_daemon, ClientKind::Cli, root.clone())?;
-            let view_id = open_disk_view(&mut client, root.clone())?;
-            let fingerprint = client.request(CoreRequest::FingerprintSource {
-                view_id,
-                path: from.clone(),
-            })?;
-            let CoreResponse::SourceFingerprint(Some(fingerprint)) = fingerprint.response else {
-                return Err("source is not part of the selected vault".into());
-            };
-            if expected_fingerprint != fingerprint.fingerprint {
-                return Err("expected fingerprint does not match the captured source".into());
-            }
-            if !yes {
-                if cli.format.is_json() {
-                    output::emit_result(
-                        "edit rename",
-                        false,
-                        serde_json::json!({"root": root, "from": from, "to": to, "fingerprint": fingerprint, "applied": false}),
-                    )?;
-                } else {
-                    println!(
-                        "proposed rename {} -> {}; pass --yes to apply",
-                        from.display(),
-                        to.display()
-                    );
-                }
-                return Ok(ExitCode::FAILURE);
-            }
-            let renamed = client.request(CoreRequest::RenameSource {
-                view_id,
-                from,
-                to,
-                expected_fingerprint: fingerprint.fingerprint,
-                idempotency_key,
-            })?;
-            let CoreResponse::SourceRenamed(renamed) = renamed.response else {
-                return Err("daemon returned an unexpected rename response".into());
-            };
-            if cli.format.is_json() {
-                output::emit_result(
-                    "edit rename",
-                    true,
-                    serde_json::json!({"root": root, "renamed": renamed}),
-                )?;
-            } else {
-                println!(
-                    "renamed {} -> {}",
-                    renamed.from.display(),
-                    renamed.to.display()
                 );
             }
             Ok(ExitCode::SUCCESS)
@@ -1562,7 +1352,7 @@ fn run(cli: Cli) -> Result<ExitCode, Box<dyn std::error::Error>> {
             if cli.format.is_json() {
                 output::emit_result("debug inspect", true, &result)?;
             } else {
-                for item in &result.items {
+                for item in &result.records {
                     println!(
                         "{} {} {}",
                         item.module,
@@ -1682,7 +1472,7 @@ fn emit_continuation(
 fn emit_diagnostic_page(result: &notist_service::DiagnosticsResult, color: clap::ColorChoice) {
     let color = matches!(color, clap::ColorChoice::Always)
         || matches!(color, clap::ColorChoice::Auto) && std::io::stderr().is_terminal();
-    for diagnostic in &result.diagnostics.items {
+    for diagnostic in &result.diagnostics.records {
         if color {
             eprintln!(
                 "\x1b[1;31merror[{}]\x1b[0m: {}",
@@ -1777,7 +1567,7 @@ fn export_command(
     let records = match &reply.response {
         CoreResponse::Diagnostics(items) => items.len(),
         CoreResponse::Inspect(value) => {
-            value.modules.len() + value.references.len() + value.semantic_items.len()
+            value.modules.len() + value.references.len() + value.semantic_records.len()
         }
         CoreResponse::Outline(documents) => documents
             .iter()

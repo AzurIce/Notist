@@ -82,7 +82,7 @@ kind: String? =   可省略且可为 None
 == 标注速查
 
 ```text
-@id                        赋 scope id（模块内唯一，可被 #<.../id> 引用）
+@id                        赋 ItemName（模块内唯一，可被 #<.../名称> 引用）
 #tag                       标签（任意多个）
 .class                     类名（任意多个）
 key = value                键值属性（String / Int / Bool 字面量）
@@ -131,11 +131,11 @@ String 四种形态：`"转义"`、`"""多行"""`（opening 后立即换行）�
 == 引用与模块速查
 
 ```not
-#<setup>                   # 裸名（当前模块解析）
+#<setup>                   # 相对 ModulePath（当前模块解析）
 #<self::setup>             # 当前模块
 #<super::intro>            # 父级
 #<vault::grammar>          # 绝对路径
-#<vault::guide/install>    # 绝对路径 + scope id
+#<vault::guide/install>    # 绝对路径 + ItemName
 ```
 
 `README.not` 表示所在目录；目录只要有 `.not` 后代或资源文件后代就形成 virtual module；外部 URL 语法合法但当前渲染为未解析文本并产生 info 级诊断。

@@ -24,7 +24,7 @@ pub enum Value {
     /// A structured reference target: a module reference plus an optional
     /// module-local selector. Inserting a Target into Markup produces a
     /// `core::reference` element.
-    Target(notist_model::WikiReference),
+    Target(notist_model::Target),
 }
 
 /// A first-class function value (D0002): a closure carrying its callable

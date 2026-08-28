@@ -1,62 +1,74 @@
 @![implementation = "aligned"]
 = Reference and RefTarget
 
-本文是引用寻址与 RefTarget 的独立成篇，从归档的历史混合文档中独立成篇。Reference 元素的值层定义见 #<vault::designs::plugin-system::core/link>；scope 是值层节点见 #<vault::designs::language::scope-environment/scope 是值层节点>。
+本文是引用寻址与 RefTarget 的独立成篇，从归档的历史混合文档中独立成篇。Reference 元素的值层定义见 #<vault::designs::plugin-system::core/link>；scope 是值层节点见 #<vault::designs::language::scope-environment/scope 是值层节点>。词汇裁决（2026-08-28）：`ModulePath[/ItemName]` 统一称为 **ItemPath**；`/` 后的扁平名称为 **ItemName**；ItemName 命名的模块内实体（scope 区域、资源文件）称为 **Item**。
 
 == 引用与寻址
 
-Reference 连接知识：`#<target>` 产生 Reference 元素（见 #<vault::designs::language::syntax-sugar/link>）。解析针对 ModulePath 与可选的 scope id，不针对磁盘路径；它不执行目标 Module、不读取其 bindings、不内联其 content。
+Reference 连接知识：`#<target>` 产生 Reference 元素（见 #<vault::designs::language::syntax-sugar/link>）。解析针对 ModulePath 与可选的 ItemName，不针对磁盘路径；它不执行目标 Module、不读取其 bindings、不内联其 content。
 
 === 目标书写形式
 
 ```not
-#<setup>                        # 裸名：从当前模块解析
+#<setup>                        # 相对 ModulePath（单段）：从当前模块解析
 #<self::setup>                  # 当前模块路径前缀
 #<super::intro>                 # 父级
-#<vault::guide/install>         # 绝对路径 + scope id
+#<vault::guide/install>         # 绝对 ModulePath + ItemName（ItemPath）
 #<vault::docs::images/logo.png> # 资源文件（完整文件名）
 ```
 
-- 裸名与相对前缀在补全时插入相对路径，保持源码可读与可移动；
-- `#scope-id` 后缀是"模块内目标"：文档模块中是带 id 的 scope/元素，资源目录中是完整文件名。
+- 相对 ModulePath（裸单段与 `self::`/`super::` 前缀）在补全时插入相对路径，保持源码可读与可移动；
+- 路径必须自我锚定：不存在"裸 ItemName"形式——单段字符串已被相对 ModulePath 占用，回退解析（先试模块再试 ItemName）被裁决排除（与 Rust 2018 移除 uniform paths 同理）；
+- `/` 后缀进入模块内的扁平 ItemName 空间：第一个 `/` 是结构符，其后字符皆为字面（ItemName 可再含 `/` 与 `#`）。
 
-=== scope id
+=== ItemName
 
-scope 是值层节点（#<vault::designs::language::scope-environment/scope 是值层节点>：节点即环境）。带 id 的 scope 承担模块内身份（module-local identity）：
+每个 Module 拥有一个扁平的 ItemName 空间：一袋"名字 → 模块内实体"的映射，正是 POSIX directory entry 的结构。ItemName 命名的实体称为 **Item**；Item 携带解析给出的 kind（Scope | Resource）。ItemName 的两个来源：
 
-- id 在模块内唯一；
-- `#<vault::guide/install>` 解析到该 scope 在模块内的位置；
-- 匿名 scope 不可寻址——想被引用或查询，就创建带 id 的节点（这正是手动 scope 的意义之一）。
+- 显式 `@id` 标注（机制名保持 `id`）；
+- heading 的**默认名**：标题 body 提取的纯文本（见 #<vault::designs::plugin-system::core/heading>）。
 
-heading 额外拥有**默认 id**：标题 body 提取的纯文本（见 #<vault::designs::plugin-system::core/heading>）。引用 `/` 后缀的匹配顺序：先按显式 id 精确匹配，再按标题默认 id（标题文本）精确匹配——标题文本不需要符合标识符语法（`<...>` 的 label 是字面字符串，可再含 `/` 与 `#`）。重复标题产生歧义诊断，作者用显式 `@id` 消歧；显式 id 总是覆盖默认 id。
+ItemName 在模块内唯一；`#<vault::guide/install>` 解析到该 Item 在模块内的位置。引用 `/` 后缀的匹配顺序：先按显式 `@id` 精确匹配，再按标题默认名（标题文本）精确匹配——ItemName 是字面字符串，不需要符合标识符语法。重复标题产生歧义诊断，作者用显式 `@id` 消歧；显式 `@id` 总是覆盖默认名。匿名 scope 不可寻址——想被引用或查询，就创建带 `@id` 的节点（这正是手动 scope 的意义之一）：可引用性由作者显式授予，这与 Rust 给匿名条目合成 `{{closure}}` 类地址的做法相反。
 
 === 资源文件解析
 
-`vault::docs::images#logo.png` 的解析：
+`vault::docs::images/logo.png` 的解析：
 
 - `vault::docs::images` 是资源目录虚拟模块；
-- `#logo.png` 是完整文件名，在目标目录中精确匹配；
+- `/logo.png` 是完整文件名，在目标目录中精确匹配；
 - 目标不存在 → 存在性诊断（编辑器可提示）。完整文件名消除了扩展名歧义——文件名即身份，不依赖目录扫描猜测。
 
-资源的 kind（Image | File）由解析给出，不属于值层。
+资源文件是模块名空间中的一等 Item（kind: Resource）；它的 ResourceKind（Image | File）由解析给出，不属于值层。
 
 === 解析产物：RefTarget
 
-Reference 元素的值层携带 `target: Target | String`（见 #<vault::designs::language::syntax-sugar/link>）：`Target` 是 ModulePath 加可选 label 的结构化拼写，`String` 只表示外部 url；目标指向什么由分析层解析，解析产物：
+Reference 元素的值层携带 `target: Target | String`（见 #<vault::designs::language::syntax-sugar/link>）：`Target` 是 ModulePath 加可选 ItemName 的结构化拼写（ModulePath 或 ItemPath），`String` 只表示外部 url；目标指向什么由分析层解析，解析产物：
 
 ```text
 RefTarget
 ├─ Module(path)                 # 文档模块
-├─ Scope(module, id)            # 模块内带 id 的 scope/元素；解析到节头部时，查询返回整棵节子树与节属性
-├─ Resource(module, name, kind) # 资源文件；kind: Image | File
+├─ Item(name, kind)             # 模块内 Item；kind: Scope | Resource
+│                               #   Resource 再携带 ResourceKind: Image | File
+│                               # 解析到节头部时，查询返回整棵节子树与节属性
 ├─ External(url)                # 外部目标（暂缓）
 └─ Missing(...)                 # 不存在/歧义/不支持——不吞掉，进入诊断
 ```
 
 两条关键原则：
 
-- 目标类型是解析产物，不是元素字段：`path#id` 是资源还是 scope，只有解析才知道；值层的 Reference 元素不携带目标类型；
+- 目标类型是解析产物，不是元素字段：ItemPath 后缀命名的是 scope 还是资源文件，只有解析才知道；值层的 Reference 元素不携带目标类型；
 - "是什么目标"（分析层）与"以什么关系引用"（元素层）正交：relation 是引用元素自己的属性——当前只有 Reference（导航），Preview（嵌入预览）预留分支，`!<...>` 糖暂缓。
+
+=== 两个寻址世界：结构地址与词法绑定
+
+语言里存在两个世界，切分线是**唯一性**：
+
+```text
+结构世界（Markup 寻址）      Item / ItemName / ModulePath —— 模块内唯一，可被 #<> 引用
+词法世界（Code 寻址）        Binding（let/fn/参数）—— 允许遮蔽，只按位置导航
+```
+
+ItemName 要求模块内唯一；绑定名允许遮蔽（最近绑定者胜出），因此没有稳定的模块内身份，不能成为地址。引用解析不读取绑定环境（见上），与 Rust 路径不解析局部变量同构。LSP 是两个世界之间唯一的桥：`definition/hover/references/completion` 按位置分派——在 `#<...>` 上走结构解析，在代码标识符上走词法解析。若未来需要文档引用 code 实体（如 API 文档链接函数），唯一入口是把绑定升格进名空间（挂 `@id` 并接受唯一性约束），而不是让引用读取绑定环境。
 
 === 外部 URL（暂缓）
 

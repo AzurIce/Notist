@@ -51,7 +51,7 @@ link(target: Target | String) -> Content
 #<vault::guide/install>
 ```
 
-- 目标空间：文档模块（`vault::path::to::file`）、模块内目标（`... #id`，标题默认 id 亦匹配）、资源文件（`vault::path::to::assets#logo.png`，完整文件名精确匹配）；
+- 目标空间：文档模块（`vault::path::to::file`）、模块内目标（`... #id`，标题默认 id 亦匹配）、资源文件（`vault::path::to::assets/logo.png`，完整文件名精确匹配）；
 - 带 scheme（`https://` 等）的外部 URL 语法合法：解析为 External 目标，当前渲染为未解析的可见文本并产生 info 级 `external-reference-unsupported` 诊断；
 - 目标解析产物与引用图见 #<vault::designs::world::reference-ref-target>。
 
@@ -70,7 +70,7 @@ heading(level: Int = 1, trailing body: Content) -> Content
 
 - 语法边界：行首 `=` 连续出现一个或多个，其后必须跟空白（或行尾），再后是标题 body；`=foo` 是普通文本；
 - 错误恢复：行首 `=` 后无内容 → 空 body 的 Heading；
-- 标题拥有默认 id：body 提取的纯文本（Text 元素按顺序拼接，含嵌套）——`= 安装指南` 默认即可被 `#<.../安装指南>` 引用；显式 `@id` 覆盖默认 id；无效文本回退为 `loc-<起始字节偏移>` 锚点；
+- 标题拥有默认名：body 提取的纯文本（Text 元素按顺序拼接，含嵌套）——`= 安装指南` 默认即可被 `#<.../安装指南>` 引用；显式 `@id` 覆盖默认 id；无效文本回退为 `loc-<起始字节偏移>` 锚点；
 - 同级标题与其后内容归组为嵌套的 Section 节点（见 #<vault::designs::pipeline::structure> 与 #<vault::designs::host::html-renderer>）。
 
 == raw

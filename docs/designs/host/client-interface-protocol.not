@@ -17,7 +17,6 @@ references_in    refs --outgoing —
 document_symbols outline      textDocument/documentSymbol
 search           search/locate workspace/symbol
 diagnostics      check        publishDiagnostics
-propose_edit     edit propose code action / edit
 resolve_reference —      —
 references_in    references --direction outgoing —
 ```
@@ -67,23 +66,13 @@ Handshake {
 
 一次 request 开始时，daemon 为它捕获一个不可变 WorkspaceSnapshot（`Arc<WorkspaceSnapshot>`）。即使文件 watcher 随后发布新 revision，当前 response 中的 source、range、引用与诊断仍来自被捕获的 snapshot。
 
-跨多次 CLI invocation 的工作流不能仅相信旧 revision——daemon 可能重启，disk View 也可能已经推进。读取结果应同时提供可验证的 source fingerprint；写入采用显式前置条件：
-
-```text
-propose_edit(view_id, base_revision, operations)
-  -> plan + affected source fingerprints + diagnostics
-
-apply_edit(plan_hash, expected_fingerprints, idempotency_key)
-  -> serialize disk writes
-  -> reject changed sources
-  -> publish new disk snapshot
-```
+Daemon 不提供写路径（2026-08-28 裁决）：磁盘写入一律来自宿主编辑工具或其他外部进程，daemon 通过 watcher 观察变化并发布新 disk snapshot。读取结果提供可验证的 source fingerprint，供外部写入方在变更前后自行校验（如 `definition --expected-fingerprint` 防止旧 offset 查询新文本），daemon 不做中介写入授权。
 
 Editor View 上的未保存 overlay 不会因为 disk write 自动消失。LSP adapter 通过 watcher 或 file notification 观察磁盘变化；editor buffer 与磁盘的偏离由编辑器的正常冲突流程决定，daemon 不覆盖 overlay。
 
 == 失败与重启
 
-一个 Vault daemon 崩溃不会终止其他 Vault 的服务，也不会损坏 authored source。重启后，VaultEngine 从磁盘与有效派生索引恢复，失效缓存重建；所有 View、overlay、in-flight request 与未应用的 edit plan 都是进程会话状态，不能在没有明确持久化语义的情况下假装恢复。LSP adapter 失去连接时应终止或重建 session，不能把新 daemon instance 的 revision 与旧 instance 混用。
+一个 Vault daemon 崩溃不会终止其他 Vault 的服务，也不会损坏 authored source。重启后，VaultEngine 从磁盘与有效派生索引恢复，失效缓存重建；所有 View、overlay 与 in-flight request 都是进程会话状态，不能在没有明确持久化语义的情况下假装恢复。LSP adapter 失去连接时应终止或重建 session，不能把新 daemon instance 的 revision 与旧 instance 混用。
 
 Daemon 不应成为所有命令的单点强制依赖。Core library 保持可嵌入：CI、受限容器或显式 `--no-daemon` 的命令在进程内创建临时 VaultEngine 与 disk View，执行相同的 core request。Embedded mode 不是第二套实现——它只是把同一 service object 放在 client 进程中，输出语义不因是否连接 daemon 而改变。
 
