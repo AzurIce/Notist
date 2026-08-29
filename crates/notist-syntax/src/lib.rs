@@ -1067,6 +1067,55 @@ mod tests {
     }
 
     #[test]
+    fn attribute_values_share_the_code_string_grammar() {
+        // Attribute strings are Code string literals: escapes decode,
+        // `"""` spans lines, and raw `r#"..."#` forms are accepted.
+        let value_of = |source: &str| {
+            let parsed = parse(source);
+            assert!(parsed.errors.is_empty(), "{:?}", parsed.errors);
+            let MarkupItem::ModuleAnnotation(annotation) = &parsed.root.items[0] else {
+                panic!()
+            };
+            let Some(Attribute::KeyValue { value, .. }) = annotation.attributes.items.first()
+            else {
+                panic!()
+            };
+            value.clone()
+        };
+
+        // Escape sequences decode; `raw` keeps the source text.
+        let value = value_of("@![desc = \"line1\\nline2\"]\n\n= Title");
+        assert_eq!(value.text(), "line1\nline2");
+        assert_eq!(value.raw, "\"line1\\nline2\"");
+
+        // Multiline requires `"""`; framing newlines are trimmed.
+        let value = value_of("@![desc=\"\"\"\nline1\nline2\n\"\"\"]\n\n= Title");
+        assert_eq!(value.text(), "line1\nline2");
+
+        // Raw strings keep quotes without escapes.
+        let value = value_of("@![desc = r#\"a \"quoted\" bit\"#]\n\n= Title");
+        assert_eq!(value.text(), "a \"quoted\" bit");
+
+        // Bare identifiers keep their source text.
+        let value = value_of("@![desc = draft]\n\n= Title");
+        assert_eq!(value.text(), "draft");
+        assert!(value.string.is_none());
+    }
+
+    #[test]
+    fn inline_attribute_strings_end_at_line_breaks() {
+        // An inline attribute string cannot span a line break: the scan and
+        // the unclosed diagnostic stop at the end of the opening line.
+        let parsed = parse("@![desc=\"first\nsecond\"]\n\n= Title");
+        let error = parsed
+            .errors
+            .iter()
+            .find(|error| error.message == "unclosed escaped string literal")
+            .expect("unclosed string diagnostic");
+        assert_eq!(error.range, TextRange::new(8, 14));
+    }
+
+    #[test]
     fn rejects_misplaced_module_annotations_and_dangling_at() {
         let parsed = parse("正文\n@![x]");
         assert!(

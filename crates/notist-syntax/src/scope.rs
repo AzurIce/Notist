@@ -1,5 +1,6 @@
 use notist_model::TextRange;
 
+use crate::argument::{ExpressionKind, StringLiteral, parse_string_at};
 use crate::SyntaxError;
 
 /// The source form of a Content block.
@@ -37,10 +38,28 @@ impl Attribute {
     }
 }
 
+/// A `key = value` attribute value: a bare identifier, or a string literal
+/// sharing the Code string grammar (inline `"..."` cannot span a line break;
+/// multiline uses `"""`; raw forms use `r#"..."#`).
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct AttributeValue {
+    /// The value source text, including string delimiters when quoted.
     pub raw: String,
+    /// The decoded literal when the value is a string; `None` for bare
+    /// identifiers and for retained-but-invalid literals.
+    pub string: Option<StringLiteral>,
     pub range: TextRange,
+}
+
+impl AttributeValue {
+    /// The user-facing value: decoded string content for quoted literals,
+    /// the bare token source text otherwise.
+    pub fn text(&self) -> &str {
+        match &self.string {
+            Some(literal) => literal.value.as_str(),
+            None => &self.raw,
+        }
+    }
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -84,7 +103,7 @@ pub(crate) fn parse_annotation_block(
         let parsed = match source.as_bytes().get(cursor) {
             Some(b'#') => parse_prefixed_name(source, cursor, AttributeKind::Tag),
             Some(b'.') => parse_prefixed_name(source, cursor, AttributeKind::Class),
-            Some(_) => parse_bare_attribute(source, cursor, first),
+            Some(_) => parse_bare_attribute(source, cursor, first, errors),
             None => None,
         };
         match parsed {
@@ -159,7 +178,7 @@ pub(crate) fn parse_attributes(
         let parsed = match source.as_bytes().get(cursor) {
             Some(b'#') => parse_prefixed_name(source, cursor, AttributeKind::Tag),
             Some(b'.') => parse_prefixed_name(source, cursor, AttributeKind::Class),
-            Some(_) => parse_bare_attribute(source, cursor, first),
+            Some(_) => parse_bare_attribute(source, cursor, first, errors),
             None => None,
         };
 
@@ -220,7 +239,12 @@ fn parse_prefixed_name(source: &str, start: usize, kind: AttributeKind) -> Optio
     Some(ParsedAttribute::Item(item, end))
 }
 
-fn parse_bare_attribute(source: &str, start: usize, first: bool) -> Option<ParsedAttribute> {
+fn parse_bare_attribute(
+    source: &str,
+    start: usize,
+    first: bool,
+    errors: &mut Vec<SyntaxError>,
+) -> Option<ParsedAttribute> {
     let (value, name_end) = parse_identifier(source, start)?;
     let name = SpannedName {
         value,
@@ -243,7 +267,7 @@ fn parse_bare_attribute(source: &str, start: usize, first: bool) -> Option<Parse
         ) {
             value_start += 1;
         }
-        let (value, end) = parse_attribute_value(source, value_start)?;
+        let (value, end) = parse_attribute_value(source, value_start, errors)?;
         let range = TextRange::new(start, end);
         return Some(ParsedAttribute::Item(
             Attribute::KeyValue {
@@ -258,34 +282,28 @@ fn parse_bare_attribute(source: &str, start: usize, first: bool) -> Option<Parse
     first.then_some(ParsedAttribute::Id(name, name_end))
 }
 
-fn parse_attribute_value(source: &str, start: usize) -> Option<(AttributeValue, usize)> {
-    if source.as_bytes().get(start) == Some(&b'"') {
-        let mut cursor = start + 1;
-        let mut escaped = false;
-        while let Some(&byte) = source.as_bytes().get(cursor) {
-            if escaped {
-                escaped = false;
-            } else if byte == b'\\' {
-                escaped = true;
-            } else if byte == b'"' {
-                let end = cursor + 1;
-                return Some((
-                    AttributeValue {
-                        raw: source[start..end].to_owned(),
-                        range: TextRange::new(start, end),
-                    },
-                    end,
-                ));
-            }
-            cursor += 1;
-        }
-        return None;
+fn parse_attribute_value(
+    source: &str,
+    start: usize,
+    errors: &mut Vec<SyntaxError>,
+) -> Option<(AttributeValue, usize)> {
+    if let Some((expression, end)) = parse_string_at(source, start, source.len(), errors) {
+        let string = match expression.kind {
+            ExpressionKind::String(literal) => Some(literal),
+            // Unclosed literal: the shared lexer already reported the error
+            // and the value is retained as recoverable source text.
+            _ => None,
+        };
+        let range = TextRange::new(start, end);
+        let raw = source[start..end].to_owned();
+        return Some((AttributeValue { raw, string, range }, end));
     }
 
     let (_, end) = parse_identifier(source, start)?;
     Some((
         AttributeValue {
             raw: source[start..end].to_owned(),
+            string: None,
             range: TextRange::new(start, end),
         },
         end,

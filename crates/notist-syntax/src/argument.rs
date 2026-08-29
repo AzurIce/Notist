@@ -159,7 +159,13 @@ pub(crate) fn parse_string_at(
     errors: &mut Vec<SyntaxError>,
 ) -> Option<(Expression, usize)> {
     let delimiter = string_delimiter_at(source, start, end)?;
-    let Some((payload_end, literal_end)) = find_string_close(source, delimiter, end) else {
+    // An inline string cannot span a line break, so both the scan and the
+    // unclosed diagnostic stop at the end of the opening line.
+    let scan_end = match delimiter.form {
+        StringLiteralForm::Inline => inline_scan_end(source, delimiter.opening_end, end),
+        StringLiteralForm::Multiline => end,
+    };
+    let Some((payload_end, literal_end)) = find_string_close(source, delimiter, scan_end) else {
         errors.push(SyntaxError {
             message: format!(
                 "unclosed {} string literal",
@@ -174,7 +180,7 @@ pub(crate) fn parse_string_at(
                     }
                 }
             ),
-            range: TextRange::new(start, end),
+            range: TextRange::new(start, scan_end),
         });
         return Some((
             Expression {
@@ -264,6 +270,18 @@ fn string_delimiter_at(source: &str, start: usize, end: usize) -> Option<StringD
 fn line_break_at(bytes: &[u8], cursor: usize, end: usize) -> bool {
     (cursor < end && bytes.get(cursor) == Some(&b'\n'))
         || (cursor + 2 <= end && bytes.get(cursor..cursor + 2) == Some(b"\r\n"))
+}
+
+fn inline_scan_end(source: &str, from: usize, end: usize) -> usize {
+    let bytes = source.as_bytes();
+    let mut cursor = from;
+    while cursor < end {
+        match bytes[cursor] {
+            b'\r' | b'\n' => return cursor,
+            _ => cursor += 1,
+        }
+    }
+    end
 }
 
 fn find_string_close(

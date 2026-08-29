@@ -85,7 +85,7 @@ kind: String? =   可省略且可为 None
 @id                        赋 ItemName（模块内唯一，可被 #<.../名称> 引用）
 #tag                       标签（任意多个）
 .class                     类名（任意多个）
-key = value                键值属性（String / Int / Bool 字面量）
+key = value                键值属性（String / Int / Bool 字面量，String 与 Code 同文法：跨行需三引号）
 ```
 
 ```not
