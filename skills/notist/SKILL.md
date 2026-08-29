@@ -26,23 +26,6 @@ Code context — reached through a `#` embedded expression, a `{ }` block, or a 
 
 Do not carry Markdown habits into `.not` files; run `notist check` after editing.
 
-## Consult Official Documentation
-
-Treat the synchronized official docs as a normal read-only Notist Vault. Locate it in `NOTIST_DATA_DIR/docs` when that environment variable is set; otherwise use the platform user-data location:
-
-- Windows: `%LOCALAPPDATA%\Notist\docs`
-- macOS: `$HOME/Library/Application Support/Notist/docs`
-- Linux and other Unix: `${XDG_DATA_HOME:-$HOME/.local/share}/notist/docs`
-
-Search before guessing language or CLI behavior:
-
-```shell
-notist inspect search "workspace snapshot" <DOCS_ROOT>
-notist inspect outline vault::designs::host::daemon-process-views <DOCS_ROOT> --depth 2
-notist inspect read vault::designs::host::daemon-process-views <DOCS_ROOT> --from-line 1 --lines 80
-notist inspect references vault::designs::host::daemon-process-views <DOCS_ROOT>
-```
-
 Use `inspect status` or `inspect modules --prefix MODULE` for discovery, then `inspect search` or one-Module `inspect outline`, and finally `inspect read` for authored evidence. Lexical and fuzzy search return the complete hit set grouped by source by default; use `--group-by section` for section diversity or `--group-by match` to locate every occurrence (exact/regex modes return each match ungrouped). Multi-term lexical lookup matches all terms by default; pass `--operator any` only for deliberate broad recall. Narrow result sets with the repeatable `--scope MODULE` filter. Search excerpts select candidates; do not treat them as complete evidence.
 
 Results are complete: there is no paging and no output ceiling. A zero-hit search proves absence within the selected scopes. Read only as much authored source as the task needs — `inspect read --from-line/--lines/--byte-range` are semantic windows you choose, not server truncation.

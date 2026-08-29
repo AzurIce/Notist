@@ -274,6 +274,7 @@ fn spawn_daemon(root: &Path) -> io::Result<()> {
     let mut command = Command::new(executable);
     command
         .arg("daemon")
+        .arg("--vault")
         .arg(root)
         .arg("--background-child")
         .stdin(Stdio::null())

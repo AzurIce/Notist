@@ -49,7 +49,7 @@ scope:
 用途：轻量入口，回答“这是哪个 Vault、快照是否可信、index 是否 ready”。
 
 ```shell
-notist inspect status [ROOT]
+notist inspect status [--vault DIR]
 ```
 
 输出：
@@ -77,7 +77,7 @@ Daemon       pid 12345
 用途：列出稳定逻辑地址，是 `ls` 的语义版。发现 ModulePath，而不是发现文件。
 
 ```shell
-notist inspect modules [ROOT]
+notist inspect modules [--vault DIR]
   [--prefix MODULE]
   [--kind any|source|virtual]
 ```
@@ -97,7 +97,7 @@ vault::cli::inspect  cli/inspect.not — CLI Inspect: Agent Query and Navigation
 用途：按概念或字面量检索候选。候选不是证据。
 
 ```shell
-notist inspect search <QUERY> [ROOT]
+notist inspect search <QUERY> [--vault DIR]
   [--mode lexical|exact|fuzzy|regex]
   [--exact | --fuzzy | --regex]
   [--scope MODULE]...
@@ -137,7 +137,7 @@ score 只能在同 query、index stamp、ranking version 内比较，不是概�
 用途：只看一个 Module 的 Heading 结构，不读正文。结构是求值后的 Heading，不是源码正则猜测。
 
 ```shell
-notist inspect outline <MODULE|PATH> [ROOT] [--depth 1..6]
+notist inspect outline <MODULE|PATH> [--depth 1..6] [--vault DIR]
 ```
 
 - `--depth` 默认 6，范围 1..=6。
@@ -145,7 +145,7 @@ notist inspect outline <MODULE|PATH> [ROOT] [--depth 1..6]
 - 全 Vault 结构发现用 modules/search，不用 outline 遍历全库。
 
 ```shell
-notist inspect outline vault::designs::host::query-contract docs --depth 2
+notist inspect outline vault::designs::host::query-contract --vault docs --depth 2
 ```
 
 == read
@@ -153,7 +153,7 @@ notist inspect outline vault::designs::host::query-contract docs --depth 2
 用途：按稳定地址读 authored source，是形成事实结论的唯一证据入口。
 
 ```shell
-notist inspect read <MODULE|PATH|MODULE/NAME> [ROOT]
+notist inspect read <MODULE|PATH|MODULE/NAME> [--vault DIR]
   [--from-line N [--lines N] | --byte-range START..END]
 ```
 
@@ -172,7 +172,7 @@ text 输出 = 带行号 gutter 的 authored source；location（module、path、
 用途：遍历已经解析的 Reference graph。默认 incoming，回答“谁引用这个目标”。
 
 ```shell
-notist inspect references <MODULE|MODULE/NAME> [ROOT]
+notist inspect references <MODULE|MODULE/NAME> [--vault DIR]
   [--direction incoming|outgoing|both]
   [--include-definition]
   [--snippet-bytes <n>]
@@ -184,7 +184,7 @@ notist inspect references <MODULE|MODULE/NAME> [ROOT]
 - 每条 item 包含 source/target Module、方向、location 与最多 256 bytes excerpt；不重复整篇 source。
 
 ```shell
-notist inspect references vault::designs::host::query-contract docs
+notist inspect references vault::designs::host::query-contract --vault docs
 ```
 
 == definition
@@ -192,7 +192,7 @@ notist inspect references vault::designs::host::query-contract docs
 用途：由精确 source offset 找定义，是 LSP definition 的 CLI 投影。
 
 ```shell
-notist inspect definition <PATH> <UTF8_BYTE_OFFSET> [ROOT]
+notist inspect definition <PATH> <UTF8_BYTE_OFFSET> [--vault DIR]
   [--expected-fingerprint HASH]
 ```
 

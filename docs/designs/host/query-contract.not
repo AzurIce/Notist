@@ -9,9 +9,9 @@
 一个 Agent 为了回答"属性表为什么是旁置的"而探索文档时，正常路径应当是：
 
 ```shell
-notist inspect search "annotation table" docs
-notist inspect outline vault::designs::language::type-system docs
-notist inspect read vault::designs::language::property-table/属性表 docs
+notist inspect search "annotation table" --vault docs
+notist inspect outline vault::designs::language::type-system --vault docs
+notist inspect read vault::designs::language::property-table/属性表 --vault docs
 ```
 
 第一条命令返回全部有排序的候选和短 excerpt，第二条只展开一个 Module，第三条才读取被选中的原文（按标题默认 id 定位到节）。当前公开投影是同一份完整 text：人、脚本与 Agent 看到相同的 ModulePath、相对路径和 citation。

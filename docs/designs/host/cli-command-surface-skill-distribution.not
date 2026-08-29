@@ -36,9 +36,9 @@ Notist 管理的用户数据
 `SKILL.md` 是很小、可复制、可由 Agent host 管理的只读说明入口；`docs/` 是当前 `notist` 可执行文件携带并在运行时同步的完整官方文档 Vault。同步完成后，它与其他 Vault 没有另一套访问语义：CLI inspect 组、check 与 root-bound daemon 都使用既有接口。
 
 ```shell
-notist inspect search "WorkspaceSnapshot" ~/.notist/docs
-notist inspect references vault::designs::host::daemon-process-views ~/.notist/docs
-notist check ~/.notist/docs
+notist inspect search "WorkspaceSnapshot" --vault ~/.notist/docs
+notist inspect references vault::designs::host::daemon-process-views --vault ~/.notist/docs
+notist check --vault ~/.notist/docs
 ```
 
 `~/.notist/docs` 表示各平台约定的 user-data 位置。Skill 说明如何找到该 Vault，但不拥有、复制或修改它。

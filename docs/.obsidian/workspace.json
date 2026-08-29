@@ -11,12 +11,10 @@
             "id": "cbdcb79808a84052",
             "type": "leaf",
             "state": {
-              "type": "notist-view",
-              "state": {
-                "file": "cli/inspect.not"
-              },
-              "icon": "file-text",
-              "title": "inspect"
+              "type": "empty",
+              "state": {},
+              "icon": "lucide-file",
+              "title": "新标签页"
             }
           }
         ]
@@ -152,17 +150,17 @@
   },
   "active": "cbdcb79808a84052",
   "lastOpenFiles": [
+    "cli/README.not.tmp.285429.5d890c93d4d1",
+    "designs/host/cli-command-surface-skill-distribution.not.tmp.285429.1e36cd5e3f3a",
+    "designs/host/cli-command-surface-skill-distribution.not.tmp.285429.b19b6317dcd6",
     "cli/inspect.not",
+    "cli/README.not",
     "designs/host/cli-command-surface-skill-distribution.not.tmp.285429.4e725fb48e20",
     "designs/host/cli-command-surface-skill-distribution.not.tmp.285429.52927f55c55e",
     "designs/host/cli-command-surface-skill-distribution.not.tmp.285429.8ee98ab60d83",
     "cli/README.not.tmp.285429.3cf6a5d12294",
     "cli/inspect.not.tmp.285429.0a872bf67a86",
     "cli/README.not.tmp.285429.20ce64c9687c",
-    "cli/README.not.tmp.285429.3fda027165e8",
-    "cli/README.not.tmp.285429.113b50122b41",
-    "cli/README.not.tmp.285429.33ada917533a",
-    "cli/README.not.tmp.285429.af7ae148f30d",
     "fx2.md",
     "notist-highlight-fixture.md",
     "AGENTS.md"
