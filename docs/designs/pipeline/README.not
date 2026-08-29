@@ -30,11 +30,11 @@ source
 
 == 阶段边界
 
-- **P1 只向前**：任一阶段不得反向调用前一阶段，尤其不允许 project 阶段重新 parse source。
-- **P2 单一语义真相**：值层是 call 森林与属性表；成型后的结构是它们的可重建投影（#<vault::designs::pipeline::structure/不变量>）。
-- **P3 Range 稳定**：所有阶段保持 byte range 语义，诊断与属性表可以在 source、节点、target 之间互相定位。
-- **P4 错误可恢复**：parse/check/evaluate 产生诊断后继续，后续阶段仍能消费部分结果；错误不伪装成合法值。
-- **P5 确定性**：parse、check、evaluate、structure 是纯函数；project 允许读取 target 上下文，但不改变语义树。
+- *P1 只向前*：任一阶段不得反向调用前一阶段，尤其不允许 project 阶段重新 parse source。
+- *P2 单一语义真相*：值层是 call 森林与属性表；成型后的结构是它们的可重建投影（#<vault::designs::pipeline::structure/不变量>）。
+- *P3 Range 稳定*：所有阶段保持 byte range 语义，诊断与属性表可以在 source、节点、target 之间互相定位。
+- *P4 错误可恢复*：parse/check/evaluate 产生诊断后继续，后续阶段仍能消费部分结果；错误不伪装成合法值。
+- *P5 确定性*：parse、check、evaluate、structure 是纯函数；project 允许读取 target 上下文，但不改变语义树。
 
 == Parse
 

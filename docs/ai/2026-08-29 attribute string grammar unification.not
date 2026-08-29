@@ -1,0 +1,23 @@
+@![implementation = "aligned"]
+= 属性字符串字面量与 Code 文法统一
+
+起因是「`@![desc="..."]` 的值能否跨行」的提问：实测发现属性注解的字符串值走的是一个宽容的 ad-hoc 扫描器（`parse_attribute_value` 允许裸换行、`\"` 只是不闭合而不解码），与 Code 表达式的字符串字面量文法（行内禁换行、多行需 `"""`、转义白名单解码、raw `r#` 形态）三轴不一致。宽容跨行的实际代价是漏闭合引号会一路吞到文档里下一个 `"`，诊断系统性偏移。裁决（2026-08-29）：*属性字符串与 Code 字符串字面量是同一文法，实现共用同一词法器*；四形态权威定义在 #<vault::grammar> 字面量一节，注解侧规约补在 #<vault::designs::language::annotation-syntax>。
+
+== 核心（notist）落地
+
+- `parse_string_at`（notist-syntax argument.rs）本身增强：行内形态的扫描与「未闭合字符串」诊断都止于行尾（`inline_scan_end`，与既有 `unclosed_target_literal_ends_at_line_break` 的哲学一致），Code 侧同样受益；
+- `parse_attribute_value` 改为委托 `parse_string_at`；`AttributeValue` 新增 `string: Option<StringLiteral>`（解码值），`raw` 保留含引号源文本语义不变（既有断言零改动），新增 `text()` 访问器（quoted → 解码内容，bare → 原文）；
+- 消费点清理两处隐性依赖 raw 的代码：service `attribute_records`/`rendered_annotations` 的 properties 从 `raw`（带引号）改为 `text()`——顺带修掉一个真实渲染瑕疵（HTML `data-notist-{key}` 之前会拿到带引号的值）；notist-cli build.rs 的 `order` 解析去掉 `trim_matches('"')`；
+- 回归：语法新增 `attribute_values_share_the_code_string_grammar`（转义解码/`"""` 多行框架换行裁剪/raw 形态/bare 标识符）与 `inline_attribute_strings_end_at_line_breaks`（诊断精确到行尾 range）两测；求值新增 `module_annotation_strings_decode_like_code_strings` 钉住端到端解码值。cargo test 全绿，check docs 0 错误（既有 9 条 external-reference-unsupported 与本次无关）。
+
+== 姊妹项目同步（并行三审查后落地）
+
+- *tree-sitter-notist*（a2d8f13 → 24b1fe4，已 push）：`attribute_value` 直接引用共享的 `$.string` 规则，删除 `attribute_string`/`attribute_string_content` 两个规则与 highlights.scm 的 `(attribute_string) @string` 捕获（`(string) @string` 自动覆盖）；external scanner 零改动——其 mode 状态机行为与新规格逐条一致（inline 遇换行停、`"""` 须后跟换行、五种转义白名单）。corpus 更新唯一受影响的 "Block and module attributes" 期望树，并新增多行值与行内换行 ERROR 两用例。注意该仓在干净 a2d8f13 上本来就有 2 个 target literal corpus 失败（"Unclosed target literal is a local error"、"Empty target literal"），与本次无关，未处理。
+- *zed-notist*（52bb55f）：extension.toml 钉扎 rev 升到 24b1fe4，`languages/notist/highlights.scm` 从上游拷贝（净效果是删一行）；其余 5 个 .scm diff 一致零改动。审查确认扩展对诊断文本/属性值零逻辑依赖；`grammars/` 缓存按规约留给 Zed 的 Install Dev Extension 自管（未手动触碰）。config.toml 的引号自动闭合依赖 `@string` 作用域——attribute 值仍走 `(string) @string`，不受影响。
+- *obsidian-notist*（1d5c6b6）：`tree-sitter build --wasm` 重出产物，assets 三件（notist.wasm / highlights.scm / UPSTREAM.txt）同一 revision 重建；`bun run build` + `sync ~/Files/notist/docs` 部署。实机回归：obsidian CLI `plugin:reload` + `dev:errors` + debugger console capture 全部无错误（query 与 wasm 节点名配对失效时的失败模式是 init 抛错、高亮整体关闭，已排除）。审查确认插件源码无字符串节点名硬编码、LSP 客户端不解析诊断文本、不消费属性值。
+
+== 复用价值
+
+- 全语言「引号形式决定换行行为」一条规则：`"..."` 永不跨行、`"""` 跨行、`r#` 原文——属性侧从此与 Code 侧共享心智模型与词法器；
+- 属性值是「解码后内容」而非源文本：后续一切属性消费（索引/hover/查询）都应走 `text()`，不要再碰 `raw`；
+- 姊妹项目影响面结论：语法高亮层的语法规则改名，真实成本只在「重生成产物 + 同 revision 配对部署」，编辑器扩展代码通常零改动。

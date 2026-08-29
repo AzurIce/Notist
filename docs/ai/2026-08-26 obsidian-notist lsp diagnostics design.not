@@ -46,7 +46,7 @@ server 崩溃进入 `onLspState("error")` 时，当前代码会立即置空 sess
 
 === 1. 未打开文件的可见性
 
-**决策：全局诊断面板为主，状态栏计数为入口，暂不做文件浏览器徽标。**（2026-08-27 更新：徽标已落地，见文末补充；本节其余决策仍然有效。）
+*决策：全局诊断面板为主，状态栏计数为入口，暂不做文件浏览器徽标。*（2026-08-27 更新：徽标已落地，见文末补充；本节其余决策仍然有效。）
 
 全局 Problems 读取已经存在的 `lspDiags`，按 vault-relative path 分组，显示每条诊断的 severity、消息、code 和行列；点击行打开对应 `.not` 文件并 reveal range。它天然覆盖 server 的全 vault 分组推送，也能显示未打开文件，不需要重复请求或改变 server 协议。空集合、文件删除和重命名都会刷新 Map 与面板，避免幽灵条目。
 
@@ -68,7 +68,7 @@ Problems 不能使用 `ItemView`。Obsidian 公共 API 只有普通 workspace sp
 
 === 2. version 与陈旧诊断
 
-**决策：按版本丢弃明显陈旧的推送；不因每次编辑清空 lint，也不把夹取当作一致性修复。**
+*决策：按版本丢弃明显陈旧的推送；不因每次编辑清空 lint，也不把夹取当作一致性修复。*
 
 session 为每个打开 path 记录 `latestSentVersion`、`latestSentTextHash`、`acceptedDiagnosticVersion`。收到带整数 version 的诊断时：
 
@@ -83,7 +83,7 @@ server 对未打开文件发送 `version = null` 是正常情况；server 对已
 
 === 3. 诊断导航 UX
 
-**决策：当前 leaf 使用 CM 原生导航，全局面板承担跨文件汇总。**
+*决策：当前 leaf 使用 CM 原生导航，全局面板承担跨文件汇总。*
 
 `@codemirror/lint` 提供 `nextDiagnostic`、`previousDiagnostic`、`openLintPanel`、`diagnosticCount`、`forEachDiagnostic` 和 `lintKeymap`。当前 `notistLsp` 扩展已经加入 `lintKeymap`，并显式添加 `Shift-F8 -> previousDiagnostic`；原生 `lintKeymap` 提供 F8 与 `Mod-Shift-M`（`@codemirror/lint` 6.9.7 API）。F8/Shift-F8 使用 CM 当前 state 的已映射位置，避免壳层自己维护 offset。
 
@@ -93,7 +93,7 @@ server 对未打开文件发送 `version = null` 是正常情况；server 对已
 
 === 4. 会话重启、崩溃与一致性
 
-**决策：每个 session 使用代数 token；错误和 stop 都先失效旧代数，再清理 Map 与所有 view。**
+*决策：每个 session 使用代数 token；错误和 stop 都先失效旧代数，再清理 Map 与所有 view。*
 
 `stopLsp` 的清理顺序应成为不变量：先把当前 session 引用和 `sessionGeneration` 失效，再取消重启计时器，清空 session/plugin 两层 diagnostics，向所有 view dispatch 空集合，最后等待 transport shutdown。`onDiagnostics` 闭包携带创建它的 generation；不是当前 generation 的通知直接丢弃。这覆盖 shutdown、崩溃回调和 reload 竞态。
 
@@ -103,7 +103,7 @@ session.stop 也应清理自己的 `diagnostics` 和挂起 timer；不能只依�
 
 === 5. FULL sync 静默拒绝的开发期自检
 
-**决策：先做客户端可观测性和自动重同步；跨进程 hash 回读作为服务端协议扩展。**
+*决策：先做客户端可观测性和自动重同步；跨进程 hash 回读作为服务端协议扩展。*
 
 客户端已经保证每条 `didChange` 恰好一个无 range change，版本在 `docChanged` 时单调增加并在 200ms trailing timer 发送（`src/lsp/session.ts:197-210`、`271-281`）。在此基础上增加开发期计数器：发送版本/文本 hash、收到 `window/logMessage` 或 stderr 中 `rejected didChange` 的次数、最近一次拒绝 path/version。首次拒绝将状态栏健康子状态标为“同步可疑”，记录 console error，并对该 path 执行单调版本的 `didClose` + `didOpen` 重同步；不把拒绝静默吞成“无错误”。生产 UI 不显示每次计数，但可从诊断面板的状态菜单查看。
 
@@ -111,7 +111,7 @@ session.stop 也应清理自己的 `diagnostics` 和挂起 timer；不能只依�
 
 === 6. 多 leaf 同文件并发编辑
 
-**决策：path 级单一 server 文档，leaf 级文本代数；last-writer-wins 明确化，并按文本匹配后渲染。**
+*决策：path 级单一 server 文档，leaf 级文本代数；last-writer-wins 明确化，并按文本匹配后渲染。*
 
 session 已用 view refcount 保证一个 path 只有一个 server document，但现在任何 leaf 的全文都可能成为最后一次发送内容。保留这一模型，与 Obsidian `setViewData` 保存回声收敛规则一致；把“最后进入主线程的非回声变更”定义为 canonical text，而不是假设两个 leaf 永远同步。
 
@@ -121,7 +121,7 @@ session 已用 view refcount 保证一个 path 只有一个 server document，�
 
 === 7. code action / quick fix
 
-**结论：当前无 capability，客户端不实现；记为 notist 侧未来工作。**
+*结论：当前无 capability，客户端不实现；记为 notist 侧未来工作。*
 
 `server_capabilities()` 未声明 `codeActionProvider`（`crates/notist-cli/src/lsp.rs:76-97`），请求分派也没有 `textDocument/codeAction` 分支（`crates/notist-cli/src/lsp.rs:334-416`）。因此客户端现在添加 quick-fix UI 只会制造不可兑现的 affordance。
 
@@ -129,7 +129,7 @@ session 已用 view refcount 保证一个 path 只有一个 server document，�
 
 === 8. 降级路径与“无错误”区分
 
-**决策：健康状态与诊断计数分开建模，移动端/关闭/启动失败均静默不产生诊断，但 UI 明确原因。**
+*决策：健康状态与诊断计数分开建模，移动端/关闭/启动失败均静默不产生诊断，但 UI 明确原因。*
 
 当前 LSP 是 opt-in，移动端或无 filesystem vault 时 `startLspInner` 直接 Notice 并返回（`src/main.ts:280-289`）；关闭时 stop 清空扩展和诊断（`src/main.ts:316-335`）。这些行为保留，不能为了显示空面板而在移动端引入 Node 依赖。
 

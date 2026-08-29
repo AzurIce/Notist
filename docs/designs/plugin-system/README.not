@@ -41,9 +41,9 @@ ElementSchema / ShapingRegistry → structure
 
 三条原则：
 
-1. **统一 contribution**：core、第三方 native plugin 与 Wasm plugin 共享同一 call 森林表示（`Node`）、注册契约与 registry。
-2. **backend 与语义分离**：native/Wasm 只描述实现、装载和信任边界；package identity 才决定 namespace 与环境身份。core 是默认 App 预装的标准 package，不是 eval engine 的特权对象。
-3. **宿主执规约与成型**：插件贡献规则与实现，宿主执行 dispatch、shaping 与终止/资源检查。
+1. *统一 contribution*：core、第三方 native plugin 与 Wasm plugin 共享同一 call 森林表示（`Node`）、注册契约与 registry。
+2. *backend 与语义分离*：native/Wasm 只描述实现、装载和信任边界；package identity 才决定 namespace 与环境身份。core 是默认 App 预装的标准 package，不是 eval engine 的特权对象。
+3. *宿主执规约与成型*：插件贡献规则与实现，宿主执行 dispatch、shaping 与终止/资源检查。
 
 == 模块内容
 

@@ -26,12 +26,12 @@ A–Z  a–z  0–9  .  _  -
 | - | - | - | - |
 | FAT12/16/32 (SFN) | 0x00–0x1F、0x7F、0xFF 与 `" * / : < > ? \ \| + , . ; = [ ]`（SFN 中 `+ , . ; = [ ]`、DOS 1/2 还禁 0xE5 作首字符） | `CON/PRN/AUX/NUL/COM1-9/LPT1-9`、各 DOS 多任务版额外的 `$IDLE$ KEYBD$ SCREEN$ CONFIG$`、CP/M 时代还禁 `LST` | base ≤ 8、ext ≤ 3（共 11）；不区分大小写 |
 | VFAT / FAT32 (LFN) | 0x00–0x1F 与 `" * / : < > ? \ \|` | 同上（设备名仍禁） | 单段 ≤ 255 UCS-2 字符、路径总长 ≤ 32 760（Win32 默认 `MAX_PATH` 260） |
-| NTFS (Win32) | 0x00–0x1F 与 `" * / : < > ? \ \|` | 同上 | 单段 ≤ 255 字符；Win32 还会**自动剥除**末位 `.` 与首尾空格（UNC 例外） |
+| NTFS (Win32) | 0x00–0x1F 与 `" * / : < > ? \ \|` | 同上 | 单段 ≤ 255 字符；Win32 还会*自动剥除*末位 `.` 与首尾空格（UNC 例外） |
 | NTFS (POSIX 命名空间) | 仅 `/` 与 0x00 | — | 大小写敏感；POSIX 客户端（Git for Windows 的 Cygwin/MSYS 后端）能写 Win32 不让的字符 |
 | exFAT | 0x0000–0x001F 与 `" * / : < > ? \ \|` | — | 单段 ≤ 255 UTF-16 码元；规范中 255 长度是 UCS-2 限制（与 UTF-16 surrogate pair 行为不同） |
 | ReFS | 0x0000–0x001F 与 `" * / : < > ? \ \|` | 同 NTFS | 单段 ≤ 255；Windows Server 2012+ |
 
-* Win32 `MoveFile`/`CreateFile` 在 `\\?\` 前缀（NT 内核直接路径）下，会**绕过**自动剥除空格/点的处理，行为接近 POSIX 命名空间。这是 NTFS "POSIX 命名空间"在用户态能被利用的途径。
+* Win32 `MoveFile`/`CreateFile` 在 `\\?\` 前缀（NT 内核直接路径）下，会*绕过*自动剥除空格/点的处理，行为接近 POSIX 命名空间。这是 NTFS "POSIX 命名空间"在用户态能被利用的途径。
 * Windows 95/98/ME 还把 `...` `....` 等多点的段名当 `..` `../..` 处理（VMS 风格的祖辈引用）；NT 内核不再支持。
 * NTFS 系统内部元数据 `$Mft $MftMirr $LogFile $Volume $AttrDef $Bitmap $Boot $BadClus $Secure $Upcase $Extend $Quota $ObjId $Reparse` 不能被普通 API 创建。
 
@@ -39,8 +39,8 @@ A–Z  a–z  0–9  .  _  -
 
 来源：POSIX.1-2017 §3.282 *Portable Filename Character Set*（pubs.opengroup.org/onlinepubs/9699919799/basedefs/V1_chap03.html）、维基百科 Comparison of file systems。
 
-* **真禁止**：`/`（路径分隔符）与 `0x00`（C 字符串终止符）。除此之外文件系统层**几乎不限制**——ext2/3/4、XFS、Btrfs、JFS、ReiserFS、Reiser4、ZFS/OpenZFS、F2FS、bcachefs、HAMMER、HAMMER2、CephFS/BlueStore、tmpfs 等均接受「任意字节（除 `/` 与 `0x00`）」作为文件名片段。
-* 长度限制几乎都按**字节**计：ext2/3/4、XFS、ReiserFS、Reiser4、JFS、ZFS、Btrfs、tmpfs 等都是单段 ≤ 255 字节（多字节编码下能装的字符更少）；bcachefs 单段 ≤ 512 字节；HAMMER/HAMMER2 单段 ≤ 1023 字节。
+* *真禁止*：`/`（路径分隔符）与 `0x00`（C 字符串终止符）。除此之外文件系统层*几乎不限制*——ext2/3/4、XFS、Btrfs、JFS、ReiserFS、Reiser4、ZFS/OpenZFS、F2FS、bcachefs、HAMMER、HAMMER2、CephFS/BlueStore、tmpfs 等均接受「任意字节（除 `/` 与 `0x00`）」作为文件名片段。
+* 长度限制几乎都按*字节*计：ext2/3/4、XFS、ReiserFS、Reiser4、JFS、ZFS、Btrfs、tmpfs 等都是单段 ≤ 255 字节（多字节编码下能装的字符更少）；bcachefs 单段 ≤ 512 字节；HAMMER/HAMMER2 单段 ≤ 1023 字节。
 * 早期 Unix 14 字符限制（V7/S3/S5）早就过时。
 * FAT32/VFAT 通过 Linux 的 `vfat` 驱动挂载时，Windows 禁的字符被映射到 0xF000–0xFFFF 区的私有 Unicode 区（reverse mapping 表）；不同挂载选项（`shortname=`、`utf8=`）进一步影响映射行为。
 * ZFS 在传统意义上禁止 `null` 字节与 `/`；OpenZFS 2008 后无额外字符限制，但项目历史上收到过"未来会校验"的"将来时"承诺。
@@ -51,17 +51,17 @@ A–Z  a–z  0–9  .  _  -
 
 来源：Wikipedia "Filename"、"Comparison of file systems"、Apple Support 文档。
 
-* classic Mac OS（1990 年代，HFS）：以 `:` 当路径分隔符，因此**`:` 在文件名里被禁止**；HFS 文件名（cstring/255）基本接受任意 8-bit 字节，文件名长度 ≤ 255 字节。
-* HFS+（macOS 默认直到 2019）：`:` 仍禁；其余接受「任意 UTF-16 码元」（不含 `0x0000`），单段 ≤ 255 UTF-16 code units。HFS+ 写入时**强制 NFD**（参见 Unicode UAX #15）—— `é`（U+00E9 预组合）会被存成 `e` + U+0301（组合用尖音符），导致 Git 跨平台同步时常见「文件名看起来一样但 hash 不同」的问题。
-* APFS（macOS 2017+ 起的默认）：明确禁止 `/` 与 `0x00`（Unicode 9.0 起），其余任意 Unicode 9.0 字符允许；`:` 在 APFS 卷上**仍**被 macOS 用户态自动映射为 `/`（这是 macOS 应用层对 classic Mac OS 的兼容语义）。
+* classic Mac OS（1990 年代，HFS）：以 `:` 当路径分隔符，因此*`:` 在文件名里被禁止*；HFS 文件名（cstring/255）基本接受任意 8-bit 字节，文件名长度 ≤ 255 字节。
+* HFS+（macOS 默认直到 2019）：`:` 仍禁；其余接受「任意 UTF-16 码元」（不含 `0x0000`），单段 ≤ 255 UTF-16 code units。HFS+ 写入时*强制 NFD*（参见 Unicode UAX #15）—— `é`（U+00E9 预组合）会被存成 `e` + U+0301（组合用尖音符），导致 Git 跨平台同步时常见「文件名看起来一样但 hash 不同」的问题。
+* APFS（macOS 2017+ 起的默认）：明确禁止 `/` 与 `0x00`（Unicode 9.0 起），其余任意 Unicode 9.0 字符允许；`:` 在 APFS 卷上*仍*被 macOS 用户态自动映射为 `/`（这是 macOS 应用层对 classic Mac OS 的兼容语义）。
 * Finder 对长度还有 31 字符的旧时代限制（OS X 10.0 之前）；现代 Finder 取消此限制。
 
 == 操作系统/工具层（写在文件系统之上的过滤）
 
 == Win32 API / Windows Explorer
 
-* Win32 层的过滤在 CreateFile/MoveFile 等 API 里**显式拒绝** `< > : " / \ | ? *` 与 0x00–0x1F。
-* 文件名**不能**只由 `.` 构成（避免与 `.` `..` 冲突），也不能以 `.` 结尾（自动剥除）；不能以 ` ` 结尾（自动剥除）。
+* Win32 层的过滤在 CreateFile/MoveFile 等 API 里*显式拒绝* `< > : " / \ | ? *` 与 0x00–0x1F。
+* 文件名*不能*只由 `.` 构成（避免与 `.` `..` 冲突），也不能以 `.` 结尾（自动剥除）；不能以 ` ` 结尾（自动剥除）。
 * 设备名（不分大小写，带/不带扩展都禁）：`CON PRN AUX NUL COM1-9 LPT1-9`（Win10 之前还禁 `CLOCK$`）。带扩展的 `CON.txt`、`NUL.log` 等一律被 `CreateFile` 当设备打开。
 * `\\?\` 前缀（NT 内核直接路径，绕过 Win32 子系统）能写入「自动剥除」之外的内容，但仍受底层 NTFS 元数据规则限制。
 
@@ -110,7 +110,7 @@ NFKC  Compatibility Decomposition, then Canonical Composition
 * HFS+ 强制 NFD；NTFS 不归一化但查找走大小写不敏感；APFS 可选 case-sensitive（默认不敏感）；Linux 文件系统层不做归一化。
 * 实际后果：`café.txt` 在 macOS 上 git add 进去，文件实际是 `cafe\u0301.txt`（5 字节 + U+0301），到 Linux 上变 `café`（NFC 形式），git tree 里就出现"两个看起来一样的文件名"。
 * 2018 年的 Unicode 安全问题（U+202E RIGHT-TO-LEFT OVERRIDE、`fsync`/`conflg` 等 Trojan Source 攻击）依赖跨平台工具对控制字符的容忍度——多数主流工具（`git diff`、编辑器、浏览器）在 2014 后都主动剥除或高亮这些字符。
-* Unicode 标准明确建议：做"文件名/标识符"的应用不要把归一化当作唯一比较手段；比较时**先 NFC**，再**字节级比较**（同时按需 casefold）。
+* Unicode 标准明确建议：做"文件名/标识符"的应用不要把归一化当作唯一比较手段；比较时*先 NFC*，再*字节级比较*（同时按需 casefold）。
 
 == 跨平台"安全文件名"实操
 
@@ -161,11 +161,11 @@ fn filesystem_mapping_escapes_windows_reserved_names_and_characters() {
 
 未显式覆盖、可能成为后续 bug 报告源的有：
 
-* **Unicode 归一化**：未做 NFD↔NFC 转换。若 vault 里既有 NFC 又有 NFD 形式的同名片段（来自 macOS 编辑或跨平台同步），路径解析与缓存键会分裂；建议至少在 `notist-service` 的路径归一化入口做 NFC 化，并在文档中说明 vault 内容的归一化预期。
-* **`\\?\` NT 路径前缀**：与 notist 自身无关，但产物如需在 Windows 上被 PowerShell/CMD 直接调用，需注意末位 `.` / 空格在 Win32 下的自动剥除会让 round-trip 失败。
-* **FAT/exFAT 大小写不敏感 + Unicode 折叠**：产物部署到 U 盘 / SD 卡（FAT/exFAT 常见）时，大小写差异会丢失；HTML 里的链接若是相对路径并区分大小写，可能变成死链。建议 build 时给一份"产物在 case-insensitive 卷上的健壮性"建议。
-* **Win 设备名 + 扩展**：`CON.txt` / `NUL.log` 这类形式当前 `is_windows_reserved_name` 不会触发（因为它只比较整段名）。建议补一条 strip-trailing-extension 的预检查。
-* **零宽度字符（U+200B、U+FEFF、U+2060 等）** 与 **Bidi 控制符（U+202E 等 Trojan Source 风险）**：`char::is_control()` 不会覆盖这些非控制符类但会引发安全/视觉混淆的字符。如果未来 notist 要把用户输入直接落到文件名 / URL，不排除需要按 Unicode Security Mechanisms（UAX #39）做一次过滤。
+* *Unicode 归一化*：未做 NFD↔NFC 转换。若 vault 里既有 NFC 又有 NFD 形式的同名片段（来自 macOS 编辑或跨平台同步），路径解析与缓存键会分裂；建议至少在 `notist-service` 的路径归一化入口做 NFC 化，并在文档中说明 vault 内容的归一化预期。
+* *`\\?\` NT 路径前缀*：与 notist 自身无关，但产物如需在 Windows 上被 PowerShell/CMD 直接调用，需注意末位 `.` / 空格在 Win32 下的自动剥除会让 round-trip 失败。
+* *FAT/exFAT 大小写不敏感 + Unicode 折叠*：产物部署到 U 盘 / SD 卡（FAT/exFAT 常见）时，大小写差异会丢失；HTML 里的链接若是相对路径并区分大小写，可能变成死链。建议 build 时给一份"产物在 case-insensitive 卷上的健壮性"建议。
+* *Win 设备名 + 扩展*：`CON.txt` / `NUL.log` 这类形式当前 `is_windows_reserved_name` 不会触发（因为它只比较整段名）。建议补一条 strip-trailing-extension 的预检查。
+* *零宽度字符（U+200B、U+FEFF、U+2060 等）* 与 *Bidi 控制符（U+202E 等 Trojan Source 风险）*：`char::is_control()` 不会覆盖这些非控制符类但会引发安全/视觉混淆的字符。如果未来 notist 要把用户输入直接落到文件名 / URL，不排除需要按 Unicode Security Mechanisms（UAX #39）做一次过滤。
 
 == 关键事实清单
 

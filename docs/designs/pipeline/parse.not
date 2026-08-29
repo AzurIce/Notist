@@ -82,10 +82,10 @@ parser 是总函数：错误记录到 `Parse.errors`，当前节点以 `Error` �
 
 == 不变量
 
-- **S1 顺序**：`Markup.items` 与表达式子节点保持 source order。
-- **S2 Range**：每个节点携带半开 byte range；parser 不改变 source 文本。
-- **S3 无语义猜测**：parse 不 resolve 名字、不查 registry、不猜 trailing Content 属于哪个形参。
-- **S4 糖保留身份**：语法糖以专用节点保留，直到 lowering 才替换为 `core::*` intrinsic 调用。
+- *S1 顺序*：`Markup.items` 与表达式子节点保持 source order。
+- *S2 Range*：每个节点携带半开 byte range；parser 不改变 source 文本。
+- *S3 无语义猜测*：parse 不 resolve 名字、不查 registry、不猜 trailing Content 属于哪个形参。
+- *S4 糖保留身份*：语法糖以专用节点保留，直到 lowering 才替换为 `core::*` intrinsic 调用。
 
 == Conformance
 

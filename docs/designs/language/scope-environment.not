@@ -14,11 +14,11 @@
 
 == 名称解析
 
-- **N1 节点链**：名称解析沿节点链自内向外进行；求值器消费静态检查给出的 resolved name，不重新猜测名字指向（#<vault::designs::language::type-system/静态检查> 静态检查）。
-- **N2 遮蔽**：最近绑定者胜出（shadowing）；同名 `let` 允许在后续声明处建立新绑定并遮蔽外层或先前的同名绑定。
-- **N3 let 可见性**：`let` 绑定从声明处开始对同一 scope 的后续节点可见，声明之前的节点不可见。
-- **N4 递归暂缓**：`let` 的右侧看不到正在声明的名字；递归绑定待 `let rec` 引入。
-- **N5 根 bindings**：求值结束后，根 scope 自有的 binding 进入求值结果 `bindings`（#<vault::designs::pipeline::evaluate/求值结果>）；其他节点上的 binding 只是求值期的环境事实，成型后的结构树消费者不依赖它们。
+- *N1 节点链*：名称解析沿节点链自内向外进行；求值器消费静态检查给出的 resolved name，不重新猜测名字指向（#<vault::designs::language::type-system/静态检查> 静态检查）。
+- *N2 遮蔽*：最近绑定者胜出（shadowing）；同名 `let` 允许在后续声明处建立新绑定并遮蔽外层或先前的同名绑定。
+- *N3 let 可见性*：`let` 绑定从声明处开始对同一 scope 的后续节点可见，声明之前的节点不可见。
+- *N4 递归暂缓*：`let` 的右侧看不到正在声明的名字；递归绑定待 `let rec` 引入。
+- *N5 根 bindings*：求值结束后，根 scope 自有的 binding 进入求值结果 `bindings`（#<vault::designs::pipeline::evaluate/求值结果>）；其他节点上的 binding 只是求值期的环境事实，成型后的结构树消费者不依赖它们。
 
 == scope 形态
 

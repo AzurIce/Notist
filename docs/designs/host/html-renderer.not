@@ -51,7 +51,7 @@ Quote 不进入当前语言（#<vault::designs::language::syntax-sugar/暂缓与
 
 - 单元素区间的属性投影到该元素节点：`.class` → HTML `class`；`id` → 锚点；`#tag` 与 `key = value` → `data-notist-*` 属性（查询与样式钩子，不改变可见语义）；
 - 节级属性（节条目）投影到 Section 节点；
-- **跨元素/跨段的区间属性**不能直接映射为合法嵌套的 DOM 节点：通过 range events 把区间内的内容切分为 `<span class="notist-annotated" ...>` 包裹的片段，保持正确嵌套（旧设计同此处理）。
+- *跨元素/跨段的区间属性*不能直接映射为合法嵌套的 DOM 节点：通过 range events 把区间内的内容切分为 `<span class="notist-annotated" ...>` 包裹的片段，保持正确嵌套（旧设计同此处理）。
 
 === Source Range 与安全
 

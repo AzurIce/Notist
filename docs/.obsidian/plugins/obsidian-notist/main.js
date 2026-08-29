@@ -12650,6 +12650,33 @@ var _NotistTextView = class _NotistTextView extends import_obsidian2.TextFileVie
     });
     img.src = this.app.vault.getResourcePath(file);
     this.imagePopover = popover;
+    void this.addImagePopoverCaption(popover, hover);
+  }
+  /** Fetches the LSP hover text for the reference and shows it above the
+   * image (server off: falls back to the resolved vault path). No-op if
+   * the popover was replaced or hidden before the response arrives. */
+  async addImagePopoverCaption(popover, hover) {
+    const doc = this.editorView?.state.doc;
+    let text = null;
+    if (doc) {
+      const info2 = await this.plugin.lspHover(
+        this,
+        posFromOffset(doc, hover.from)
+      );
+      if (info2) {
+        text = typeof info2.contents === "string" ? info2.contents : info2.contents.value;
+      }
+    }
+    if (!text) {
+      text = this.resolveResourceReference(hover.target)?.path ?? hover.target;
+    }
+    if (this.imagePopover !== popover)
+      return;
+    const caption = popover.hoverEl.createDiv("notist-image-hover-caption");
+    caption.setText(text);
+    const img = popover.hoverEl.querySelector("img.notist-image-hover");
+    if (img)
+      popover.hoverEl.insertBefore(caption, img);
   }
   /** Ctrl/Cmd-click on a `#<...>` reference: resource files (images,
    * attachments) open directly; everything else goes through the LSP
@@ -16003,6 +16030,14 @@ var NotistPlugin = class extends import_obsidian7.Plugin {
     if (!session || session.state !== "ready" || !view.lspPath)
       return null;
     return session.definition(this.lspAbsPath(view.lspPath), position);
+  }
+  /** Hover text for a position in one view's document; null when the
+   * server is off/down. */
+  async lspHover(view, position) {
+    const session = this.lspSession;
+    if (!session || session.state !== "ready" || !view.lspPath)
+      return null;
+    return session.hover(this.lspAbsPath(view.lspPath), position);
   }
   /** Register a view with the session once its file content is in. */
   lspViewSync(view) {

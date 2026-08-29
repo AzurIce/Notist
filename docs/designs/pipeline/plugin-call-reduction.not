@@ -21,9 +21,9 @@
 
 三条推论：
 
-1. **统一表示**：一个 call 的"已规约 / 未规约"是同一节点的两个阶段。数据型元素（`declare`，无运行时 handler）不注册 handler，它的 call 天然就是最终结果，投影按 name + 参数直接出标签；
-2. **生产性契约**：注册了 handler 的名字意味着"这个 call 需要计算"。handler 返回与输入完全相同的 call 表示 identity，本轮停止；若持续产生新的自返 call，则是作者 bug，由深度与调用预算兜底。需要组合时返回其它名字的 call，规约继续；
-3. **诊断分层**：名字拼错归 check 层报告（对照 SignatureSet）；规约层对未知名字保持 total——未注册名字留在森林里，不阻塞整篇。
+1. *统一表示*：一个 call 的"已规约 / 未规约"是同一节点的两个阶段。数据型元素（`declare`，无运行时 handler）不注册 handler，它的 call 天然就是最终结果，投影按 name + 参数直接出标签；
+2. *生产性契约*：注册了 handler 的名字意味着"这个 call 需要计算"。handler 返回与输入完全相同的 call 表示 identity，本轮停止；若持续产生新的自返 call，则是作者 bug，由深度与调用预算兜底。需要组合时返回其它名字的 call，规约继续；
+3. *诊断分层*：名字拼错归 check 层报告（对照 SignatureSet）；规约层对未知名字保持 total——未注册名字留在森林里，不阻塞整篇。
 
 写作文档时，作者写的就是一个流：
 
@@ -46,10 +46,10 @@ text("world")
 
 由此推出：
 
-- **遍历策略无关**。规则是 confluent 的：先规约父还是先规约子只影响诊断出现的顺序，不影响最终森林。（实现按 descend-first：先规约参数与 body 子流，再 dispatch 当前 call。）
-- **预算只记在 handler 调用上**。每次 dispatch 计一次 depth 与一次 call；没有 handler 的 call 不参与规约，不消耗预算。限额见 #<vault::designs::plugin-system::safety>。
-- **输入函数式、输出宏式**。handler 收到的参数与 body 总是规约完成的；返回的森林是未规约的，重新进入不动点。规约纯且 total（无副作用、未知名字不报错），输入侧先规约永远安全——模型因此不需要 quote。
-- **诊断**。类型错误、向不接受 body 的函数传 body 产生诊断；未知名字不产生规约诊断。单个 call 的失败只收集诊断并跳过它，兄弟节点继续（sibling recovery）；诊断不伪装成成功。
+- *遍历策略无关*。规则是 confluent 的：先规约父还是先规约子只影响诊断出现的顺序，不影响最终森林。（实现按 descend-first：先规约参数与 body 子流，再 dispatch 当前 call。）
+- *预算只记在 handler 调用上*。每次 dispatch 计一次 depth 与一次 call；没有 handler 的 call 不参与规约，不消耗预算。限额见 #<vault::designs::plugin-system::safety>。
+- *输入函数式、输出宏式*。handler 收到的参数与 body 总是规约完成的；返回的森林是未规约的，重新进入不动点。规约纯且 total（无副作用、未知名字不报错），输入侧先规约永远安全——模型因此不需要 quote。
+- *诊断*。类型错误、向不接受 body 的函数传 body 产生诊断；未知名字不产生规约诊断。单个 call 的失败只收集诊断并跳过它，兄弟节点继续（sibling recovery）；诊断不伪装成成功。
 
 == 值域：Content 即 call 森林
 
@@ -75,7 +75,7 @@ core::*            宿主注册的内置构造器与基础操作
 {package}::*       插件注册的元素
 ```
 
-名字的所有权只体现在**注册**侧：`init` 注册时元素名必须落在自己 package 的 namespace 内，`core::*` 永远由宿主注册、不可覆盖。**提及完全自由**：任何 handler 都可以在输出森林里写任何名字——写 `core::paragraph` 与写 `other-package::foo` 没有任何区别。提及不是伪造：名字的语义永远由注册方决定，没有 handler 的名字只是数据。
+名字的所有权只体现在*注册*侧：`init` 注册时元素名必须落在自己 package 的 namespace 内，`core::*` 永远由宿主注册、不可覆盖。*提及完全自由*：任何 handler 都可以在输出森林里写任何名字——写 `core::paragraph` 与写 `other-package::foo` 没有任何区别。提及不是伪造：名字的语义永远由注册方决定，没有 handler 的名字只是数据。
 
 == Pipeline
 
@@ -101,7 +101,7 @@ source
 
 成型按容器模式递归：每个 body 按其 schema 的 body-mode（flow / inline / table-cells 等）执行同一套成型，而不是只处理文档顶层。插件元素通过 shaping schema 参与成型，见 #<vault::designs::plugin-system::shaping>。
 
-成型是 **total 的构造器**。由于提及自由（任何 handler 都能写任何名字），成型输出森林的性质——无 parbreak、`core::item` 只作为 `core::list` 的直接子级、每个 body 已按容器模式归组——由成型的构造本身保证，不依赖输入来源。
+成型是 *total 的构造器*。由于提及自由（任何 handler 都能写任何名字），成型输出森林的性质——无 parbreak、`core::item` 只作为 `core::list` 的直接子级、每个 body 已按容器模式归组——由成型的构造本身保证，不依赖输入来源。
 
 == 投影
 

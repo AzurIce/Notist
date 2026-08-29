@@ -7,8 +7,8 @@
 
 内容组合不需要 Principal/grant 模型：
 
-1. **没有安全增量**——插件输出森林本就完全由插件控制；它可以直接写 `Call(core::x,…)`，最终语义由宿主 registry 与统一 fixpoint 决定。内容组合不因 call 的来源而获得不同权限；需要隔离时依赖 Wasm backend 的沙箱，native backend 则依赖宿主对该进程的信任。
-2. **归因不可行**——透传类插件把文档正文原样带回时，朴素 fixpoint 若按来源切换 principal 会误伤透传；放宽归因又会让来源判定失去意义。
+1. *没有安全增量*——插件输出森林本就完全由插件控制；它可以直接写 `Call(core::x,…)`，最终语义由宿主 registry 与统一 fixpoint 决定。内容组合不因 call 的来源而获得不同权限；需要隔离时依赖 Wasm backend 的沙箱，native backend 则依赖宿主对该进程的信任。
+2. *归因不可行*——透传类插件把文档正文原样带回时，朴素 fixpoint 若按来源切换 principal 会误伤透传；放宽归因又会让来源判定失去意义。
 
 因此：引擎不做 per-call 能力检查；`Notist.toml` 不再有 capabilities 键；清单不再声明 `capabilities.request`。插件通过返回 call 森林表达跨包组合，宿主统一继续规约。若未来出现 IO 级能力需求（文件、网络），作为独立 capability 面另行设计，与内容组合正交。
 

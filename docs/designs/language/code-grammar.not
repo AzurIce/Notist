@@ -64,9 +64,9 @@ primary：字面量、名字、括号表达式、调用、Content literal、Code
 
 === 表达式
 
-**调用**：`callee(实参)` 加可选 trailing block `[...]`——绑定、默认值、coercion 与调用点检查见 #<vault::designs::language::call-model>。
+*调用*：`callee(实参)` 加可选 trailing block `[...]`——绑定、默认值、coercion 与调用点检查见 #<vault::designs::language::call-model>。
 
-**if**：表达式，typst 风格：
+*if*：表达式，typst 风格：
 
 ```not
 #if 条件 { ... } else { ... }
@@ -74,10 +74,10 @@ primary：字面量、名字、括号表达式、调用、Content literal、Code
 ```
 
 - 分支是 Code block（求值为值）或 Content block（求值为内容），复用既有块语法；
-- `else` 可省略：两个分支都存在时，类型为两分支类型的 join；**无 `else` 时**，条件为假产生 `None`——Code block 分支的类型 `T` 提升为 `T?`（Content 分支无 else 时类型仍是 `Content`，空内容合法）；
+- `else` 可省略：两个分支都存在时，类型为两分支类型的 join；*无 `else` 时*，条件为假产生 `None`——Code block 分支的类型 `T` 提升为 `T?`（Content 分支无 else 时类型仍是 `Content`，空内容合法）；
 - 条件必须是 `Bool`。
 
-**lambda**：`(形参表) => 表达式`：
+*lambda*：`(形参表) => 表达式`：
 
 ```not
 #let double = (x: Int) => x * 2
@@ -91,13 +91,13 @@ primary：字面量、名字、括号表达式、调用、Content literal、Code
 
 === 声明
 
-**let**：`let name = 表达式` 或 `let name: T = 表达式`——右侧先在旧环境中求值，绑定对后续可见；类型标注可选（未标注时由右侧推断）。同名遮蔽允许（最近绑定者胜出，见 #<vault::designs::language::scope-environment/名称解析> 名称解析）。
+*let*：`let name = 表达式` 或 `let name: T = 表达式`——右侧先在旧环境中求值，绑定对后续可见；类型标注可选（未标注时由右侧推断）。同名遮蔽允许（最近绑定者胜出，见 #<vault::designs::language::scope-environment/名称解析> 名称解析）。
 
-**函数定义糖**：`let name(形参表) -> R = body`（≡ lambda 绑定，见上）。形参语法与 #<vault::designs::language::call-model> 一致：带 `=` 的形参是 named 可省略，不带的是 positional 必填。
+*函数定义糖*：`let name(形参表) -> R = body`（≡ lambda 绑定，见上）。形参语法与 #<vault::designs::language::call-model> 一致：带 `=` 的形参是 named 可省略，不带的是 positional 必填。
 
-**import**：见 #<vault::designs::world::import>。
+*import*：见 #<vault::designs::world::import>。
 
-**模块属性**：`@![...]` 见 #<vault::designs::language::annotation-syntax/三种挂载位置>。
+*模块属性*：`@![...]` 见 #<vault::designs::language::annotation-syntax/三种挂载位置>。
 
 （递归绑定暂缓：`let` 的右侧看不到正在声明的名字，递归函数待引入 `let rec` 时再设计——见 #<vault::designs::language::type-system/静态检查> 静态检查。）
 

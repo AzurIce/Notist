@@ -138,8 +138,8 @@ parse / check 后，lower 产出：
 
 Content 值的规约状态分两侧：
 
-- **输入侧恒为规约完成**：函数收到的 Content 实参与 trailing body 总是规约完的（输入函数式）；`let` 绑定与 content literal `[...]` 持有的也是规约完成的森林；
-- **输出侧可以是未规约森林**：函数返回的 Content 可以仍含有 handler 的 call（输出宏式），由不动点继续规约——函数没有"规约完再返回"的义务。
+- *输入侧恒为规约完成*：函数收到的 Content 实参与 trailing body 总是规约完的（输入函数式）；`let` 绑定与 content literal `[...]` 持有的也是规约完成的森林；
+- *输出侧可以是未规约森林*：函数返回的 Content 可以仍含有 handler 的 call（输出宏式），由不动点继续规约——函数没有"规约完再返回"的义务。
 
 需要延迟计算的地方使用 `fn() -> Content`。
 
@@ -192,10 +192,10 @@ Markup insertion 边界上，嵌入表达式的结果按规则插入外层 Conte
 
 == 求值规则
 
-- **E1 顺序**：声明与正文按源码顺序求值；`let` 绑定扩展后续节点的环境（#<vault::designs::language::scope-environment/名称解析>），可展示的 Markup 与嵌入表达式通过 Content insertion 追加节点。
-- **E2 函数应用顺序**：求值 callee 表达式 → 按源码顺序求值显式实参与 trailing Content → 按形参声明顺序建立绑定（应用解析结果中的 coercion，或代入缺省形参的默认值）→ 调用函数值 → 校验返回值满足声明的结果类型。签名不表达返回森林的规约状态：`-> Content` 的函数可以返回含有 handler 的 call，规约由不动点继续。
-- **E3 单次求值**：每个表达式只求值一次；默认值表达式在定义时求值，捕获定义处环境，不随调用环境变化（#<vault::designs::language::call-model> 函数类型）。
-- **E4 错误恢复**：错误实参不使用默认值，错误 callee 不伪装成返回 `None` 的成功函数（#<vault::designs::language::type-system/静态检查>）。
+- *E1 顺序*：声明与正文按源码顺序求值；`let` 绑定扩展后续节点的环境（#<vault::designs::language::scope-environment/名称解析>），可展示的 Markup 与嵌入表达式通过 Content insertion 追加节点。
+- *E2 函数应用顺序*：求值 callee 表达式 → 按源码顺序求值显式实参与 trailing Content → 按形参声明顺序建立绑定（应用解析结果中的 coercion，或代入缺省形参的默认值）→ 调用函数值 → 校验返回值满足声明的结果类型。签名不表达返回森林的规约状态：`-> Content` 的函数可以返回含有 handler 的 call，规约由不动点继续。
+- *E3 单次求值*：每个表达式只求值一次；默认值表达式在定义时求值，捕获定义处环境，不随调用环境变化（#<vault::designs::language::call-model> 函数类型）。
+- *E4 错误恢复*：错误实参不使用默认值，错误 callee 不伪装成返回 `None` 的成功函数（#<vault::designs::language::type-system/静态检查>）。
 
 == 求值结果
 

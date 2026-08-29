@@ -12,7 +12,7 @@
 
 == 编辑器内核选型
 
-核心分野是两种范式：**源码+装饰**（文本字节即真相，渲染是视图层装饰）与**文档模型**（JSON 文档即真相，Markdown 只是序列化格式）。Obsidian 的 Live Preview 属于前者，且 Obsidian 官方插件文档明确其定制路径就是 CM6 的 ViewPlugin + Decoration。
+核心分野是两种范式：*源码+装饰*（文本字节即真相，渲染是视图层装饰）与*文档模型*（JSON 文档即真相，Markdown 只是序列化格式）。Obsidian 的 Live Preview 属于前者，且 Obsidian 官方插件文档明确其定制路径就是 CM6 的 ViewPlugin + Decoration。
 
 === CodeMirror 6（MIT）—— Obsidian 同款，推荐
 

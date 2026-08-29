@@ -1274,3 +1274,13 @@ input.notist-title:focus {
 	text-underline-offset: 2px;
 	cursor: pointer;
 }
+
+/* Caption above the image in the hover preview popover (LSP hover text). */
+.notist-image-hover-caption {
+	padding: 2px 0 4px;
+	max-width: 460px;
+	font-size: var(--font-ui-smaller);
+	color: var(--text-muted);
+	word-break: break-all;
+	white-space: pre-line;
+}

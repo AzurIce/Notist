@@ -17,12 +17,12 @@ Code   —— 产生 Value（Markup 中的 # 进入这里；{...} Code block）
 
 == Markup 最小骨架
 
-- **文本流**：连续文本成为 `Text` 元素——表达式嵌入、标注、元素构造与段间分隔处切开；
-- **段落分隔**：空行产生 `Parbreak`；单个换行仍属于同一段；
-- **`#` 嵌入式表达式**：边界规则见下；
-- **块构造**：`{...}` Code block 与 `#[...]` 手动 scope（Markup 中 Content literal 的书写形式），见 #<vault::designs::language::annotation-syntax>；裸 `[` 与 `]` 是普通文本；
-- **转义**：`\` 转义 `#`、`[`、`]`、`@` 与 `\` 本身；转义不产生额外输出（`\#` 输出一个 `#`）；
-- **注释**：Markup 文本流中 `//` 与 `/*` 是普通文本——注释是 Code 上下文的词法 trivia（见下）。
+- *文本流*：连续文本成为 `Text` 元素——表达式嵌入、标注、元素构造与段间分隔处切开；
+- *段落分隔*：空行产生 `Parbreak`；单个换行仍属于同一段；
+- *`#` 嵌入式表达式*：边界规则见下；
+- *块构造*：`{...}` Code block 与 `#[...]` 手动 scope（Markup 中 Content literal 的书写形式），见 #<vault::designs::language::annotation-syntax>；裸 `[` 与 `]` 是普通文本；
+- *转义*：`\` 转义 `#`、`[`、`]`、`@` 与 `\` 本身；转义不产生额外输出（`\#` 输出一个 `#`）；
+- *注释*：Markup 文本流中 `//` 与 `/*` 是普通文本——注释是 Code 上下文的词法 trivia（见下）。
 
 === `#` 嵌入的边界
 
@@ -125,24 +125,24 @@ r#"""..."""#   raw 多行（同样要求 opening 后立即换行）
 
 === 声明
 
-**let**：`let name = 表达式` 或 `let name: T = 表达式`——右侧先在旧环境中求值，绑定对后续可见；类型标注可选（未标注时由右侧推断）。同名遮蔽允许（最近绑定者胜出）；没有全局 hoist——名字按声明顺序可见，前向引用产生诊断。
+*let*：`let name = 表达式` 或 `let name: T = 表达式`——右侧先在旧环境中求值，绑定对后续可见；类型标注可选（未标注时由右侧推断）。同名遮蔽允许（最近绑定者胜出）；没有全局 hoist——名字按声明顺序可见，前向引用产生诊断。
 
-**函数定义糖**：`let name(形参表) -> R = body`，与 `let name = (形参表) => body` 等价。形参带 `=` 的是 named 可省略，不带的是 positional 必填。
+*函数定义糖*：`let name(形参表) -> R = body`，与 `let name = (形参表) => body` 等价。形参带 `=` 的是 named 可省略，不带的是 positional 必填。
 
 ```not
 #let double(x: Int) -> Int = x * 2
 #let double = (x: Int) => x * 2   // 与上一行等价
 ```
 
-**代码块**：`{...}` 是多语句的 Code 表达式——语句以 `;` 或换行分隔（同一行多个语句必须用 `;`，尾随 `;` 合法）。块的值采用 join 语义：块内各表达式的值按插入规则组合，`let` 产生 `None`、不参与组合。块内绑定挂在块节点上，不出块。
+*代码块*：`{...}` 是多语句的 Code 表达式——语句以 `;` 或换行分隔（同一行多个语句必须用 `;`，尾随 `;` 合法）。块的值采用 join 语义：块内各表达式的值按插入规则组合，`let` 产生 `None`、不参与组合。块内绑定挂在块节点上，不出块。
 
-**import**：`#import <path>::{name, name as alias}`——显式选择器，无 wildcard；花括号左侧是 ModulePath，`as` 把名字映射为合法 Code 标识符。import 扩展当前根 scope 后续节点的环境，产生空 Content；依赖边在求值前进入 import graph，import 环一律是诊断。见 #<vault::designs::world::import>。
+*import*：`#import <path>::{name, name as alias}`——显式选择器，无 wildcard；花括号左侧是 ModulePath，`as` 把名字映射为合法 Code 标识符。import 扩展当前根 scope 后续节点的环境，产生空 Content；依赖边在求值前进入 import graph，import 环一律是诊断。见 #<vault::designs::world::import>。
 
 ```not
 #import <self::theme>::{warning, accent as highlight}
 ```
 
-**模块属性**：`@![...]` 见 #<vault::designs::language::annotation-syntax>。
+*模块属性*：`@![...]` 见 #<vault::designs::language::annotation-syntax>。
 
 === 类型语法
 
