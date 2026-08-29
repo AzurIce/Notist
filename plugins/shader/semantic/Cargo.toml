@@ -10,8 +10,3 @@ crate-type = ["cdylib", "rlib"]
 [dependencies]
 notist-plugin-sdk = { path = "../../../crates/notist-plugin-sdk" }
 notist-model = { path = "../../../crates/notist-model" }
-
-[profile.release]
-opt-level = "s"
-lto = true
-panic = "abort"

@@ -756,6 +756,9 @@ fn compute_build_inner(job: &BuildJob) -> Result<Vec<BuiltVault>, Box<dyn Error>
 }
 
 impl LspSession {
+    /// Test-only default-encoding constructor; production entry points go
+    /// through `with_encoding` after handshake negotiation.
+    #[cfg(test)]
     fn new(root: PathBuf, no_daemon: bool) -> Result<Self, Box<dyn Error>> {
         Self::with_encoding(root, no_daemon, PositionEncoding::Utf16)
     }

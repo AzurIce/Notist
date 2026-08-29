@@ -12,7 +12,6 @@ inherits = "release"
 opt-level = "s"
 lto = true
 panic = "abort"
-default-members = ["crates/notist-cli"]
 
 [workspace.package]
 version = "0.1.0"
