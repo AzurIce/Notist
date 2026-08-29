@@ -1440,6 +1440,28 @@ mod tests {
     }
 
     #[test]
+    fn module_annotation_strings_decode_like_code_strings() {
+        // Attribute strings share the Code string grammar: `"""` multiline
+        // values decode with their framing newlines trimmed.
+        let evaluation =
+            Evaluator::default().evaluate("@![desc=\"\"\"\nline1\nline2\n\"\"\"]\n\n= Title");
+        assert!(
+            evaluation.diagnostics.is_empty(),
+            "{:?}",
+            evaluation.diagnostics
+        );
+        assert_eq!(evaluation.module_attributes.len(), 1);
+        let attributes = &evaluation.module_attributes[0];
+        assert!(attributes.items.iter().any(|attribute| {
+            matches!(
+                attribute,
+                notist_syntax::Attribute::KeyValue { key, value, .. }
+                    if key.value == "desc" && value.text() == "line1\nline2"
+            )
+        }));
+    }
+
+    #[test]
     fn dangling_block_annotations_produce_diagnostics() {
         let evaluation = Evaluator::default().evaluate("@[wip]");
         assert!(evaluation.annotations.is_empty());
