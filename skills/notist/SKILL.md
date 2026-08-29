@@ -5,7 +5,9 @@ description: Use Notist to create, edit, validate, search, and navigate `.not` k
 
 # Notist
 
-Use the installed `notist` executable as the authority for its supported command surface. The binary is still a transitional surface, so the official docs may spell commands differently: docs write `refs` / `definition` / `next` / `locate`, while the installed binary currently spells them `references` / `query definition`, continues pages with a `--cursor` flag, and has no `locate`. When a documented command is rejected, check `notist --help` or the subcommand's `--help` before retrying. The target command surface is specified in the `cli` docs of the official docs Vault (`cli/README.not`; query and navigation commands in `cli/inspect.not`).
+Use the installed `notist` executable as the authority for its supported command surface. Investigation commands live under `notist inspect`; `notist inspect --help` is the single discovery entry. The official docs Vault describes the same surface in `cli/README.not` (governance, global parameters, errors) and `cli/inspect.not` (per-command specs).
+
+Notist markup is not Markdown: bold is `*text*` (single asterisk), italic is `_text_`, underline is `__text__`, strike is `~~text~~`. `**bold**` is not markup — the asterisks render literally. Do not carry Markdown emphasis habits into `.not` files; run `notist check` after editing.
 
 ## Consult Official Documentation
 
@@ -18,17 +20,17 @@ Treat the synchronized official docs as a normal read-only Notist Vault. Locate 
 Search before guessing language or CLI behavior:
 
 ```shell
-notist search "workspace snapshot" <DOCS_ROOT>
-notist outline vault::designs::host::daemon-process-views <DOCS_ROOT> --depth 2
-notist read vault::designs::host::daemon-process-views <DOCS_ROOT> --from-line 1 --lines 80
-notist references vault::designs::host::daemon-process-views <DOCS_ROOT>
+notist inspect search "workspace snapshot" <DOCS_ROOT>
+notist inspect outline vault::designs::host::daemon-process-views <DOCS_ROOT> --depth 2
+notist inspect read vault::designs::host::daemon-process-views <DOCS_ROOT> --from-line 1 --lines 80
+notist inspect references vault::designs::host::daemon-process-views <DOCS_ROOT>
 ```
 
-Use `status` or bounded `modules --prefix MODULE` for discovery, then `search` or one-Module `outline`, and finally `read` for authored evidence. Lexical and fuzzy search return a small page grouped by source by default; use `--group-by section` for section diversity or `--group-by match` to locate every occurrence (exact/regex modes return each match ungrouped). Multi-term lexical lookup matches all terms by default; pass `--operator any` only for deliberate broad recall. Narrow result sets with the repeatable `--scope MODULE` filter. Search excerpts select candidates; do not treat them as complete evidence.
+Use `inspect status` or `inspect modules --prefix MODULE` for discovery, then `inspect search` or one-Module `inspect outline`, and finally `inspect read` for authored evidence. Lexical and fuzzy search return the complete hit set grouped by source by default; use `--group-by section` for section diversity or `--group-by match` to locate every occurrence (exact/regex modes return each match ungrouped). Multi-term lexical lookup matches all terms by default; pass `--operator any` only for deliberate broad recall. Narrow result sets with the repeatable `--scope MODULE` filter. Search excerpts select candidates; do not treat them as complete evidence.
 
-For a positive fact lookup, stop paging once `read` provides sufficient authored evidence. Collection output ends with `complete` or the hint `continue the same query with --cursor TOKEN`; continue by re-issuing the same command with only `--cursor TOKEN` added. If a cursor is rejected (for example `invalid_cursor`), follow the error hint instead of repeating the same call. Ordinary queries run under fixed page budgets; do not use `debug` or `export` for routine discovery.
+Results are complete: there is no paging and no output ceiling. A zero-hit search proves absence within the selected scopes. Read only as much authored source as the task needs — `inspect read --from-line/--lines/--byte-range` are semantic windows you choose, not server truncation.
 
-Finite commands publish bounded human-readable text by default. A legacy global `--format json` still exists in the installed binary but is excluded from the documented command face; do not build on it. When a full machine-readable artifact is required, write it explicitly with `notist export ... --output FILE` (`json` by default, `jsonl` for long streams). LSP uses its own JSON-RPC framing; `preview` stdout is a startup status plus revision event stream, not a finite query result.
+Finite commands publish complete human-readable text; there is no global JSON output flag. LSP uses its own JSON-RPC framing; `preview` stdout is a startup status plus revision event stream, not a finite query result.
 
 Prefer current public documentation such as `grammar.not`, `functions.not`, `types.not`, and `cli/`. Current `designs/` describe governing architecture. Treat `docs/ai/` as dated research.
 

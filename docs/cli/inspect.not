@@ -1,4 +1,4 @@
-@![implementation = "partial"]
+@![implementation = "aligned"]
 = CLI Inspect: Agent Query and Navigation
 
 #[
@@ -9,10 +9,10 @@ CLI 中有一系列用于检查库内容的命令，它们被统称为 Inspect �
 @[todo="需要改进并根据实际情况修改，或许后续挪到 README 然后一个命令一个文档"]
 ```
 status / modules     发现：这是哪个 Vault、有哪些逻辑地址
-  → search / locate  检索：找候选（候选不是证据）
+  → search           检索：找候选（候选不是证据）
   → outline          结构：一个 Module 的求值后 Heading 树
   → read             取证：唯一的事实入口，产出 citation
-  → refs / definition 导航：沿已解析的引用图移动
+  → references / definition 导航：沿已解析的引用图移动
   → check            验证：完整 Vault 健康结论（不接受 scope）
 ```
 
@@ -21,9 +21,9 @@ status / modules     发现：这是哪个 Vault、有哪些逻辑地址
 ]@type=user,.user
 
 
-本文是 Agent 查询与导航命令（Explore 组）的逐命令规范，2026-08-28 从 #<vault::cli> 独立成篇：status、modules、search、locate、outline、read、refs、definition、next 与 Selector/Scope/Citation 寻址契约。命令面治理、全局参数、runtime 预算、错误与退出状态见 #<vault::cli>；查询契约与检索语义见 #<vault::designs::host::query-contract> 与 #<vault::designs::host::search-retrieval-index>。
+本文是 `notist inspect` 调查组的逐命令规范：status、modules、search、outline、read、references、definition 与 Selector/Scope/Citation 寻址契约。`inspect --help` 是这些命令的唯一发现入口。命令面治理、全局参数、错误与退出状态见 #<vault::cli>；查询契约与检索语义见 #<vault::designs::host::query-contract> 与 #<vault::designs::host::search-retrieval-index>。
 
-普通知识工作的默认 discovery 只包含本文命令与 `check`；`debug`、`export` 之外的 Artifacts/Runtime 命令是显式维护或运行时能力。
+2026-08-29 裁决：collection 命令返回完整结果，没有分页与预算；`inspect --help` 之外不需要记忆其他入口。普通知识工作只使用本文命令与 `check`。
 
 
 == Selector、Scope 与 Citation
@@ -38,19 +38,18 @@ selector:
 
 scope:
   --scope vault::designs                       include，段边界匹配，可重复
-  --exclude-scope vault::designs::archive      exclude，段边界匹配，可重复
 ```
 
-`vault::foo` 命中自身与 `vault::foo::*`，不命中 `vault::foobar`。Scope 进入 query identity；翻页不能改变。短 basename、模糊路径不能静默解析；`not_found` 与 `ambiguous_selector` 是 typed error。
+`vault::foo` 命中自身与 `vault::foo::*`，不命中 `vault::foobar`。Scope 属于查询语义本身：改变 scope 即是另一个查询。短 basename、模糊路径不能静默解析；`not_found` 与 `ambiguous_selector` 是 typed error。
 
-所有可作为证据的位置统一为 `module + relative path + byte range + line range + id + source fingerprint`。普通 text 输出默认显示 `path:line`；只有 `read` 必须打印完整 citation footer，使引用、后续 query 与 `definition --expected-fingerprint` 指向同一 authored source。
+所有可作为证据的位置统一为 `module + relative path + byte range + line range + id + source fingerprint`。普通 text 输出默认显示 `path:line`；excerpt 是候选选择信息，不是独立事实来源——search 与 references 的结果必须引导调用者在形成事实性回答前使用 `read`。
 
 == status
 
 用途：轻量入口，回答“这是哪个 Vault、快照是否可信、index 是否 ready”。
 
 ```shell
-notist status [ROOT]
+notist inspect status [ROOT]
 ```
 
 输出：
@@ -70,7 +69,7 @@ Daemon       pid 12345
 
 - Vault identity、disk snapshot stamp、runtime mode、source/module/diagnostic counts。
 - Index health：`ready`、`building`、`stale`、`error`、`not_built`。
-- 不返回正文、Heading 或 semantic item；固定 8 KiB 逻辑上限。
+- 不返回正文、Heading 或 semantic item。
 - exit 恒为 0，除非 Vault 无法打开或服务不可用。
 
 == modules
@@ -78,117 +77,75 @@ Daemon       pid 12345
 用途：列出稳定逻辑地址，是 `ls` 的语义版。发现 ModulePath，而不是发现文件。
 
 ```shell
-notist modules [ROOT]
-  [--scope MODULE]...
-  [--exclude-scope MODULE]...
+notist inspect modules [ROOT]
+  [--prefix MODULE]
   [--kind any|source|virtual]
 ```
 
 - `--kind`：`any` 默认，`source` 只列有 `.not` source 的 Module，`virtual` 只列目录/资源命名空间 Module。
-- `--prefix MODULE` 是迁移期 alias，语义等同单个 `--scope`；新脚本使用 `--scope`。
-- 排序固定为 ModulePath 字典序；分页只改窗口不改排序。
-- 每条逻辑 record 包含 ModulePath、relative path、kind、可选 semantic title、source fingerprint；text 投影显示 ModulePath、path、kind 与 title。
-- 完整清单需要 `export snapshot` 或沿 `next` 到 complete；不建议把 modules 整库读入上下文。
+- `--prefix MODULE`：按 ModulePath 前缀（段边界）过滤。
+- 排序固定为 ModulePath 字典序。
+- 每条逻辑 record 包含 ModulePath、relative path、kind、可选 semantic title、source fingerprint；text 投影显示 ModulePath、path 与 title。
 
 ```text
-vault::cli  cli/README.not  source  Notist CLI: Command Design and Reference
-vault::cli::inspect  cli/inspect.not  source  CLI Inspect: Agent Query and Navigation
+vault::cli  cli/README.not — Notist CLI: Command Design and Reference
+vault::cli::inspect  cli/inspect.not — CLI Inspect: Agent Query and Navigation
 ```
 
 == search
 
-用途：ranked recall。按概念找候选，不做逐字定位。候选不是证据。
+用途：按概念或字面量检索候选。候选不是证据。
 
 ```shell
-notist search <QUERY> [ROOT]
-  [--fuzzy]
+notist inspect search <QUERY> [ROOT]
+  [--mode lexical|exact|fuzzy|regex]
+  [--exact | --fuzzy | --regex]
   [--scope MODULE]...
-  [--exclude-scope MODULE]...
-  [--field title|heading|id|module|path|tag|body|raw|comment]...
-  [--any]
-  [--group source|section|match]
-```
-
-设计规则：
-
-- 默认 lexical：fielded token match + BM25，`operator=all`。
-- `--fuzzy`：bounded typo expansion；edit distance 固定 1，不提供 CLI 调节。
-- `--any`：把默认 all 改为 any，用于宽召回；多词事实查找不要默认打开。
-- `--field`：可重复或逗号分隔；默认除 `comment` 外全部字段；未知字段 usage error；只影响匹配，不影响输出结构。
-- `--group source` 默认：每 Module 保留最佳 hit；`section` 每最近 Heading 保留最佳 hit；`match` 返回每个独立 region。
-- scope/exclude-scope 在 candidate generation 前下推。
-- index 未 ready 时内部等待 2s；超时返回 `index_not_ready`，hint 建议改用 locate 或收窄 scope。
-- excerpt 固定最多 256 bytes，优先围绕命中 term；截断会显式标出。
-- 零结果是成功；hint 只建议改 query，不自动放宽。
-
-```text
-8 sources; more available.
-1. vault::designs::host::query-contract  host/query-contract.not:42 field=body
-   consumer captures one immutable snapshot ...
-2. vault::designs::host::search-retrieval-index  host/search-retrieval-index.not:12 field=title
-   = Search Modes and Retrieval Index
-hint: use --any only for deliberate broad recall
-continue: notist next eyJ...
-```
-
-输出 item 的完整语义记录包含 Location、matched field、match/unit/excerpt range、excerpt 与固定精度 score；text 只显示其中与选择候选直接相关的部分。score 只能在同 query、index stamp、ranking version 内比较，不是概率。
-
-== locate
-
-用途：precision。按字面量或正则逐处定位，不参与 BM25 排序。
-
-```shell
-notist locate <PATTERN> [ROOT]
-  [--regex]
+  [--fields title,heading,id,module,path,tag,body,raw,comment]
+  [--operator all|any]
+  [--group-by source|section|match]
   [--ignore-case]
-  [--scope MODULE]...
-  [--exclude-scope MODULE]...
-  [--field ...]...
-  [--group source|section|match]
+  [--fuzzy-distance 1|2]
+  [--wait-index <ms>]
+  [--snippet-bytes <n>]
 ```
 
 设计规则：
 
-- 默认 literal substring，大小写敏感，source order，默认 `--group match`。
-- `--regex`：Rust regex 语义，无 backreference/look-around；编译大小与 2s scan deadline 是内部上限。
-- `--ignore-case`：只对 literal/regex 有效。
-- 不依赖全文索引；index 重建或 stale 时仍可用。
-- 候选排序：ModulePath、relative path、range；scope 与 field 仍在扫描前下推。
-- 超时返回 `query_timeout`，hint 建议收窄 scope、缩短 pattern 或改用 search。
-
-```shell
-notist locate "WorkspaceSnapshot" docs
-notist locate --regex "D00[0-9]+" docs --scope vault::designs
-```
+- 默认 lexical：fielded token match + BM25，`operator=all`；`--exact`（字面子串）、`--fuzzy`（有界 typo expansion）、`--regex`（Rust regex）是 `--mode` 的速记。
+- `--operator any` 把默认 all 改为 any，用于宽召回；多词事实查找不要默认打开。
+- `--fields`：可重复或逗号分隔；默认除 `comment` 外全部字段；未知字段 usage error；只影响匹配，不影响输出结构。
+- `--group-by source` 默认（lexical/fuzzy）：每 Module 保留最佳 hit；`section` 每最近 Heading 保留最佳 hit；`match` 返回每个独立 region；exact/regex 默认 `match`。
+- scope 在 candidate generation 前下推。
+- index 未 ready 时内部等待 2s（`--wait-index` 可调，上限 10s）；超时返回 `index_not_ready`。
+- excerpt 默认最多 256 bytes（`--snippet-bytes` 可调，上限 2048），优先围绕命中 term；截断会显式标出。
+- 结果完整：零命中即证明所选 scope 内不存在匹配；空结果带 actionable hint。
 
 ```text
-8 matches; more available.
-1. vault::ai  ai/README.not:12
-   ... immutable WorkspaceSnapshot ...
-continue: notist next eyJ...
+2 sources
+
+1. vault::designs::host::query-contract  host/query-contract.not:42 field=body score=5.109
+   查询契约与候选生成 ...
+2. vault::designs::host::search-retrieval-index  host/search-retrieval-index.not:12 field=title score=7.115
+   == Search 不是一种模式 ...
 ```
+
+score 只能在同 query、index stamp、ranking version 内比较，不是概率。
 
 == outline
 
 用途：只看一个 Module 的 Heading 结构，不读正文。结构是求值后的 Heading，不是源码正则猜测。
 
 ```shell
-notist outline <MODULE|PATH> [ROOT] [--depth 1..6]
+notist inspect outline <MODULE|PATH> [ROOT] [--depth 1..6]
 ```
 
 - `--depth` 默认 6，范围 1..=6。
 - 每条 heading record 包含 name、level、id（显式 id 或标题默认 id）、location、parent range 与 subtree range；text 投影显示缩进、id 与 `path:line`。
-- 全 Vault outline 不是普通 query；discovery 用 modules/search，完整 artifact 用 `export outline`。
-- 同一 Module 超过一页时用 `next`；不能一次把全库 Heading 倒进上下文。
+- 全 Vault 结构发现用 modules/search，不用 outline 遍历全库。
 
 ```shell
-notist outline vault::designs::host::query-contract docs --depth 2
-```
-
-```text
-= Query Contract  host/query-contract.not:1  #Query Contract
-  == 查询产品形态  host/query-contract.not:7  #查询产品形态
-  == Core Query Contract  host/query-contract.not:23  #Core Query Contract
+notist inspect outline vault::designs::host::query-contract docs --depth 2
 ```
 
 == read
@@ -196,61 +153,38 @@ notist outline vault::designs::host::query-contract docs --depth 2
 用途：按稳定地址读 authored source，是形成事实结论的唯一证据入口。
 
 ```shell
-notist read <MODULE|PATH|MODULE/NAME> [ROOT]
-  [--from-line N --lines N | --byte-range START..END]
+notist inspect read <MODULE|PATH|MODULE/NAME> [ROOT]
+  [--from-line N [--lines N] | --byte-range START..END]
 ```
 
-窗口规则：
+窗口规则（语义窗口，不是截断）：
 
-- 默认：从 selector 起点读 120 行，受 16 KiB 逻辑预算约束。
-- `--from-line N`：1-based 行号，单独使用读 120 行；`--lines` 必须与 `--from-line` 同用，范围 1..=1000。
+- 默认：读取 selector 选中的完整内容——Module 风格 selector 读整篇，ItemPath 读整节 subtree。
+- `--from-line N`：1-based 行号；单独使用读从该行到末尾。
+- `--lines N`：必须与 `--from-line` 同用，限制读取行数。
 - `--byte-range START..END`：半开 UTF-8 byte range；与 line 窗口互斥。
 - `MODULE/NAME`（ItemPath）：NAME 先按显式 `@id`、后按标题默认名（标题文本）精确匹配；读取整个节 subtree（从节标题到下一个同级或更高级 heading 前），不是只读标题行。
-- 长 source 自动返回 `next`；不需要调用者猜 shell offset。
 
-text 输出 = 带行号 gutter 的 authored source + citation footer：
+text 输出 = 带行号 gutter 的 authored source；location（module、path、byte/line range、fingerprint）由服务端 record 携带，JSON 场景（LSP、未来 artifact 投影）可直接消费。
 
-```text
-  1 | = Query Contract
-  2 |
-  3 | 本文是 ...
-...
-module: vault::designs::host::query-contract
-path: designs/host/query-contract.not
-range: 0..2048 bytes
-lines: 1..38
-fingerprint: 8f1e...
-complete: false
-continue: notist next eyJ...
-```
-
-citation footer 使 byte range 与 fingerprint 可直接复制进后续 query（如 `definition --expected-fingerprint`）或外部工具的变更校验。
-
-== refs
+== references
 
 用途：遍历已经解析的 Reference graph。默认 incoming，回答“谁引用这个目标”。
 
 ```shell
-notist refs <MODULE|MODULE/NAME> [ROOT]
-  [--outgoing | --both]
-  [--definitions]
+notist inspect references <MODULE|MODULE/NAME> [ROOT]
+  [--direction incoming|outgoing|both]
+  [--include-definition]
+  [--snippet-bytes <n>]
 ```
 
 - 默认 incoming（backlinks）。
-- `--outgoing`：正向列出该 Module 或节引用了什么；使用 captured reference graph，不重新扫描文本。
-- `--both`：同时返回两个方向；`--definitions`：附上目标自身定义位置。
+- `--direction outgoing`：正向列出该 Module 或节引用了什么；使用 captured reference graph，不重新扫描文本。
+- `--direction both`：同时返回两个方向；`--include-definition`：附上目标自身定义位置。
 - 每条 item 包含 source/target Module、方向、location 与最多 256 bytes excerpt；不重复整篇 source。
-- `references` 是迁移期 alias；新脚本使用 `refs`。
 
 ```shell
-notist refs vault::designs::host::query-contract docs
-notist refs 'vault::designs::host::query-contract/Core Query Contract' docs --outgoing
-```
-
-```text
-7 incoming references; complete.
-vault::designs::host::cli-command-surface-skill-distribution -> vault::designs::host::query-contract  host/cli-command-surface-skill-distribution.not:12
-  ... query contract ...
+notist inspect references vault::designs::host::query-contract docs
 ```
 
 == definition
@@ -258,43 +192,22 @@ vault::designs::host::cli-command-surface-skill-distribution -> vault::designs::
 用途：由精确 source offset 找定义，是 LSP definition 的 CLI 投影。
 
 ```shell
-notist definition <PATH> <UTF8_BYTE_OFFSET> [ROOT]
+notist inspect definition <PATH> <UTF8_BYTE_OFFSET> [ROOT]
   [--expected-fingerprint HASH]
 ```
 
 - offset 是 UTF-8 byte offset，不是字符下标；line/column 转换由调用方 LineIndex 完成。
 - `--expected-fingerprint` 不匹配返回 `snapshot_changed`；防止旧 offset 查询新文本。
-- 返回零或一个 location，不分页；text 只打印 `module path:line`，没有结果时打印 `no definition`。
-- `query definition` 是迁移期 alias。
-
-== next
-
-用途：继续上一个未完成 collection 页面。这是翻页在 CLI 上的唯一入口；翻页窗口由 runtime policy 固定，语义命令不暴露 page/budget 参数。
-
-```shell
-notist next <TOKEN>
-```
-
-- Collection 命令返回 `continue: notist next <TOKEN>` 或 `complete`；token 自包含恢复原 query/selector/scope/filter/grouping/ordering 所需信息与 offset，不需要重复原命令参数，也不需要 daemon 保存 page session。
-- 输出格式与原始命令相同，只显示下一页。
-- token 是 opaque、base64url、带完整性校验；不透明不等于可忽略错误。
-- source set 变化返回 `cursor_stale`，token schema 过期返回 `cursor_expired`，token 损坏或不属于该 Vault/View 返回 `invalid_cursor`。
-- token 不是权限凭证；文档正文不能借 token 越过 Vault 访问控制。
-
-```shell
-notist search "workspace snapshot" docs
-# ... more available
-notist next eyJ...
-```
+- 返回零或一个 location；text 打印 `path:start..end`。
 
 == Agent 工作流
 
 ```text
-status / modules
-  -> search 或 locate 发现候选
-  -> outline 看结构
-  -> read 读取 authored evidence
-  -> refs / definition 沿语义边导航
+inspect status / inspect modules
+  -> inspect search 发现候选
+  -> inspect outline 看结构
+  -> inspect read 读取 authored evidence
+  -> inspect references / definition 沿语义边导航
   -> check 验证状态
   -> 用宿主编辑工具直接修改 .not，修改后再次 check
 ```
@@ -302,6 +215,5 @@ status / modules
 停止规则：
 
 - 正向事实：read 取得充分证据后停止。
-- 当前页不足：`notist next`。
-- 否定或“列出全部”：必须读到 complete，或使用 export。
-- search/locate excerpt 不是最终证据；refs 不是正文替代品。
+- 否定或“列出全部”：search 结果本身完整，零命中即不存在；需要穷举的按 scope 分次查询。
+- search excerpt 不是最终证据；references 不是正文替代品。

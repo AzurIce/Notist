@@ -1,38 +1,34 @@
-use std::ffi::OsString;
 use std::io::IsTerminal;
 use std::net::IpAddr;
 use std::path::PathBuf;
-use std::process::{ExitCode, Stdio};
+use std::process::ExitCode;
 
-use clap::{Args, Parser, Subcommand, ValueEnum};
+use clap::{Parser, Subcommand, ValueEnum};
 use notist_analysis::resolve_vault_root;
 use notist_service::protocol::ClientKind;
 use notist_service::{CoreRequest, CoreResponse, ProtocolViewKind};
-use sha2::{Digest, Sha256};
 
 mod build;
 mod logging;
 mod lsp;
 mod official_docs;
-mod output;
 mod preview;
 mod resources;
 mod service;
 mod skill;
 
-use output::OutputFormat;
-
-/// Grouped command map mirroring the 2026-08-15 ruling on the agent-facing
-/// command surface: discovery is the default read path, the rest is explicit.
+/// Grouped command map mirroring the 2026-08-29 ruling on the command surface:
+/// `inspect` is the investigation entry point, the rest is explicit.
 const COMMAND_GROUPS: &str = "\
 Command groups:
-  discovery:   status, modules, search, outline, read, references, query, check
+  inspect:     status, modules, search, outline, read, references, definition
+  validate:    check
+  maintenance: index
   runtime:     daemon, lsp
-  maintenance: index, debug
-  publishing:  export, build, preview
+  publishing:  build, preview
   meta:        skill
 
-`discovery` is the default read path; the other groups are explicit runtime, maintenance, or publishing actions.";
+`inspect --help` lists the investigation commands; check validates the whole Vault; the other groups are explicit runtime, maintenance, or publishing actions.";
 
 #[derive(Debug, Parser)]
 #[command(
@@ -51,60 +47,20 @@ struct Cli {
     #[arg(long, global = true)]
     no_daemon: bool,
 
-    /// Select human-readable text or versioned JSON output.
-    #[arg(long, value_enum, default_value_t, global = true)]
-    format: OutputFormat,
-
-    /// Page the current bounded human-readable result.
-    #[arg(long, value_enum, default_value_t, global = true)]
-    pager: PagerChoice,
-
     #[command(subcommand)]
     command: Command,
 }
 
 #[derive(Debug, Subcommand)]
 enum Command {
-    /// Run the shared local Notist daemon for one vault, or stop the running one.
-    #[command(display_order = 9)]
-    Daemon {
-        #[command(subcommand)]
-        action: Option<DaemonAction>,
-        /// Root directory of the vault this daemon serves.
-        #[arg(default_value = ".")]
-        root: PathBuf,
-        #[arg(long, hide = true)]
-        background_child: bool,
-    },
-    /// Run the Notist language server over standard input and output.
-    #[command(display_order = 10)]
-    Lsp,
-    /// Create resources that teach an Agent how to use Notist.
-    #[command(display_order = 16)]
-    Skill {
-        #[command(subcommand)]
-        command: SkillCommand,
-    },
-    /// Show a compact Vault, snapshot, diagnostics, and index summary.
+    /// Investigate a Vault: status, modules, search, outline, read, references, definition.
     #[command(display_order = 1)]
-    Status {
-        #[arg(default_value = ".")]
-        root: PathBuf,
-    },
-    /// List modules with bounded, resumable output.
-    #[command(display_order = 2)]
-    Modules {
-        #[arg(default_value = ".")]
-        root: PathBuf,
-        #[arg(long)]
-        prefix: Option<String>,
-        #[arg(long, value_enum, default_value_t)]
-        kind: ModuleKindArg,
-        #[command(flatten)]
-        page: PageArgs,
+    Inspect {
+        #[command(subcommand)]
+        command: InspectCommand,
     },
     /// Check module paths and references in a Notist workspace.
-    #[command(display_order = 8)]
+    #[command(display_order = 2)]
     Check {
         /// Root directory of the Notist workspace.
         #[arg(default_value = ".")]
@@ -115,13 +71,83 @@ enum Command {
         summary: bool,
         #[arg(long, value_enum, default_value_t)]
         severity: DiagnosticSeverityArg,
-        #[command(flatten)]
-        page: PageArgs,
+    },
+    /// Inspect or rebuild the derived lexical search index.
+    #[command(display_order = 3)]
+    Index {
+        #[command(subcommand)]
+        command: IndexCommand,
+    },
+    /// Run the shared local Notist daemon for one vault, or stop the running one.
+    #[command(display_order = 4)]
+    Daemon {
+        #[command(subcommand)]
+        action: Option<DaemonAction>,
+        /// Root directory of the vault this daemon serves.
+        #[arg(default_value = ".")]
+        root: PathBuf,
+        #[arg(long, hide = true)]
+        background_child: bool,
+    },
+    /// Run the Notist language server over standard input and output.
+    #[command(display_order = 5)]
+    Lsp,
+    /// Create resources that teach an Agent how to use Notist.
+    #[command(display_order = 6)]
+    Skill {
+        #[command(subcommand)]
+        command: SkillCommand,
+    },
+    /// Build a Notist workspace as a multi-page static HTML site.
+    #[command(display_order = 7)]
+    Build {
+        /// Root directory of the Notist workspace.
+        #[arg(default_value = ".")]
+        root: PathBuf,
+        /// Directory to write the generated site.
+        #[arg(short, long, default_value = "dist")]
+        output: PathBuf,
+        /// Remove the selected output directory before writing this build.
+        #[arg(long)]
+        clean: bool,
+    },
+    /// Preview a Notist workspace in a local browser with live reload.
+    #[command(display_order = 8)]
+    Preview {
+        /// Root directory of the Notist workspace.
+        #[arg(default_value = ".")]
+        root: PathBuf,
+        /// Network interface on which the preview server listens.
+        #[arg(long, default_value = "127.0.0.1")]
+        host: IpAddr,
+        /// TCP port. Zero asks the operating system for an available port.
+        #[arg(long, default_value_t = 3250)]
+        port: u16,
+        /// Open the preview URL in the default browser.
+        #[arg(long)]
+        open: bool,
+    },
+}
+
+#[derive(Debug, Subcommand)]
+enum InspectCommand {
+    /// Show a compact Vault, snapshot, diagnostics, and index summary.
+    Status {
+        #[arg(default_value = ".")]
+        root: PathBuf,
+    },
+    /// List modules in the vault.
+    Modules {
+        #[arg(default_value = ".")]
+        root: PathBuf,
+        #[arg(long)]
+        prefix: Option<String>,
+        #[arg(long, value_enum, default_value_t)]
+        kind: ModuleKindArg,
     },
     /// Search captured source context in a vault.
     #[command(
-        display_order = 3,
-        after_help = "Examples:\n  notist search \"workspace snapshot\" docs\n  notist search --exact \"WorkspaceSnapshot\" docs --group-by match\n  notist search --fuzzy \"WorkspaceSnaphot\" docs\n\nLexical/fuzzy search groups by source by default; exact/regex returns each match.\nAn incomplete page is enough to select a positive candidate, but not to prove absence or completeness."
+        after_help = "Examples:\n  notist inspect search \"workspace snapshot\" docs\n  notist inspect search --exact \"WorkspaceSnapshot\" docs --group-by match\n  notist inspect search --fuzzy \"WorkspaceSnaphot\" docs\n\nLexical/fuzzy search groups by source by default; exact/regex returns each match.\nResults are complete; a zero-hit output proves absence for the selected scope."
     )]
     Search {
         /// Natural-language terms, an identifier, or a literal/regex pattern selected by mode.
@@ -165,11 +191,8 @@ enum Command {
         /// Maximum UTF-8 bytes in each discovery excerpt.
         #[arg(long, default_value_t = 256, value_parser = parse_snippet_bytes)]
         snippet_bytes: usize,
-        #[command(flatten)]
-        page: SearchPageArgs,
     },
     /// Print the evaluated heading outline for one module.
-    #[command(display_order = 4)]
     Outline {
         /// Exact ModulePath or Vault-relative `.not` path.
         selector: String,
@@ -177,11 +200,8 @@ enum Command {
         root: PathBuf,
         #[arg(long, default_value_t = 6, value_parser = clap::value_parser!(u8).range(1..=6))]
         depth: u8,
-        #[command(flatten)]
-        page: OutlinePageArgs,
     },
-    /// Read bounded authored source by module, path, id, line, or byte range.
-    #[command(display_order = 5)]
+    /// Read authored source by module, path, id, line, or byte range.
     Read {
         /// Exact ModulePath, path, `module/id`, or `path#id` selector.
         selector: String,
@@ -193,11 +213,8 @@ enum Command {
         lines: Option<usize>,
         #[arg(long, conflicts_with_all = ["from_line", "lines"], value_parser = parse_byte_range)]
         byte_range: Option<notist_service::ByteRange>,
-        #[command(flatten)]
-        page: ReadPageArgs,
     },
     /// Find references to a logical module.
-    #[command(display_order = 6)]
     References {
         /// Exact ModulePath or `module/id` selector.
         selector: String,
@@ -210,89 +227,16 @@ enum Command {
         /// Maximum UTF-8 bytes in each reference excerpt.
         #[arg(long, default_value_t = 256, value_parser = parse_snippet_bytes)]
         snippet_bytes: usize,
-        #[command(flatten)]
-        page: PageArgs,
     },
-    /// Run a protocol-independent semantic query.
-    #[command(display_order = 7)]
-    Query {
-        #[command(subcommand)]
-        query: QueryCommand,
-    },
-    /// Inspect or rebuild the derived lexical search index.
-    #[command(display_order = 11)]
-    Index {
-        #[command(subcommand)]
-        command: IndexCommand,
-    },
-    /// Access bounded implementation-oriented diagnostics.
-    #[command(display_order = 12)]
-    Debug {
-        #[command(subcommand)]
-        command: DebugCommand,
-    },
-    /// Write complete snapshot artifacts to an explicit file.
-    #[command(display_order = 13)]
-    Export {
-        #[command(subcommand)]
-        command: ExportCommand,
-    },
-    /// Build a Notist workspace as a multi-page static HTML site.
-    #[command(display_order = 14)]
-    Build {
-        /// Root directory of the Notist workspace.
+    /// Find the definition at a source byte offset.
+    Definition {
+        path: PathBuf,
+        offset: usize,
         #[arg(default_value = ".")]
         root: PathBuf,
-        /// Directory to write the generated site.
-        #[arg(short, long, default_value = "dist")]
-        output: PathBuf,
-        /// Remove the selected output directory before writing this build.
         #[arg(long)]
-        clean: bool,
+        expected_fingerprint: Option<String>,
     },
-    /// Preview a Notist workspace in a local browser with live reload.
-    #[command(display_order = 15)]
-    Preview {
-        /// Root directory of the Notist workspace.
-        #[arg(default_value = ".")]
-        root: PathBuf,
-        /// Network interface on which the preview server listens.
-        #[arg(long, default_value = "127.0.0.1")]
-        host: IpAddr,
-        /// TCP port. Zero asks the operating system for an available port.
-        #[arg(long, default_value_t = 3250)]
-        port: u16,
-        /// Open the preview URL in the default browser.
-        #[arg(long)]
-        open: bool,
-    },
-}
-
-impl Command {
-    fn name(&self) -> &'static str {
-        match self {
-            Self::Daemon {
-                action: Some(DaemonAction::Stop { .. }),
-                ..
-            } => "daemon stop",
-            Self::Daemon { .. } => "daemon",
-            Self::Lsp => "lsp",
-            Self::Skill { .. } => "skill init",
-            Self::Status { .. } => "status",
-            Self::Modules { .. } => "modules",
-            Self::Check { .. } => "check",
-            Self::Search { .. } => "search",
-            Self::Outline { .. } => "outline",
-            Self::Read { .. } => "read",
-            Self::References { .. } => "references",
-            Self::Query { .. } => "query definition",
-            Self::Index { .. } => "index",
-            Self::Debug { .. } => "debug inspect",
-            Self::Export { .. } => "export",
-            Self::Build { .. } => "build",
-            Self::Preview { .. } => "preview",
-        }
-    }
 }
 
 #[derive(Debug, Subcommand)]
@@ -306,19 +250,6 @@ enum DaemonAction {
 }
 
 #[derive(Debug, Subcommand)]
-enum QueryCommand {
-    /// Find the definition at a source byte offset.
-    Definition {
-        path: PathBuf,
-        offset: usize,
-        #[arg(default_value = ".")]
-        root: PathBuf,
-        #[arg(long)]
-        expected_fingerprint: Option<String>,
-    },
-}
-
-#[derive(Debug, Subcommand)]
 enum SkillCommand {
     /// Initialize the official Notist Skill in a directory.
     Init {
@@ -327,112 +258,6 @@ enum SkillCommand {
         #[arg(long)]
         force: bool,
     },
-}
-
-#[derive(Clone, Debug, Default, Args)]
-struct PageArgs {
-    #[arg(
-        short = 'n',
-        long,
-        help = "Page item limit (default: 20, maximum: 100)"
-    )]
-    limit: Option<usize>,
-    #[arg(
-        long,
-        help = "Logical result budget in bytes (default: 16384, maximum: 65536)"
-    )]
-    max_bytes: Option<usize>,
-    #[arg(long, help = "Stable continuation cursor (maximum: 4096 bytes)")]
-    cursor: Option<String>,
-}
-
-#[derive(Clone, Debug, Default, Args)]
-struct SearchPageArgs {
-    #[arg(short = 'n', long, help = "Page item limit (default: 8, maximum: 100)")]
-    limit: Option<usize>,
-    #[arg(
-        long,
-        help = "Logical result budget in bytes (default: 16384, maximum: 65536)"
-    )]
-    max_bytes: Option<usize>,
-    #[arg(long, help = "Stable continuation cursor (maximum: 4096 bytes)")]
-    cursor: Option<String>,
-}
-
-#[derive(Clone, Debug, Default, Args)]
-struct OutlinePageArgs {
-    #[arg(
-        short = 'n',
-        long,
-        help = "Page item limit (default: 100, maximum: 100)"
-    )]
-    limit: Option<usize>,
-    #[arg(
-        long,
-        help = "Logical result budget in bytes (default: 16384, maximum: 65536)"
-    )]
-    max_bytes: Option<usize>,
-    #[arg(long, help = "Stable continuation cursor (maximum: 4096 bytes)")]
-    cursor: Option<String>,
-}
-
-#[derive(Clone, Debug, Default, Args)]
-struct ReadPageArgs {
-    #[arg(
-        long,
-        help = "Logical result budget in bytes (default: 16384, maximum: 65536)"
-    )]
-    max_bytes: Option<usize>,
-    #[arg(long, help = "Stable continuation cursor (maximum: 4096 bytes)")]
-    cursor: Option<String>,
-}
-
-#[derive(Clone, Copy, Debug, Default, Eq, PartialEq, ValueEnum)]
-enum PagerChoice {
-    #[default]
-    Auto,
-    Always,
-    Never,
-}
-
-impl From<PageArgs> for notist_service::PageRequest {
-    fn from(value: PageArgs) -> Self {
-        Self {
-            limit: value.limit,
-            max_bytes: value.max_bytes,
-            cursor: value.cursor,
-        }
-    }
-}
-
-impl From<SearchPageArgs> for notist_service::PageRequest {
-    fn from(value: SearchPageArgs) -> Self {
-        Self {
-            limit: value.limit,
-            max_bytes: value.max_bytes,
-            cursor: value.cursor,
-        }
-    }
-}
-
-impl From<OutlinePageArgs> for notist_service::PageRequest {
-    fn from(value: OutlinePageArgs) -> Self {
-        Self {
-            limit: value.limit,
-            max_bytes: value.max_bytes,
-            cursor: value.cursor,
-        }
-    }
-}
-
-impl From<ReadPageArgs> for notist_service::PageRequest {
-    fn from(value: ReadPageArgs) -> Self {
-        Self {
-            limit: None,
-            max_bytes: value.max_bytes,
-            cursor: value.cursor,
-        }
-    }
 }
 
 #[derive(Clone, Copy, Debug, Default, ValueEnum)]
@@ -587,67 +412,6 @@ enum IndexCommand {
     },
 }
 
-#[derive(Debug, Subcommand)]
-enum DebugCommand {
-    /// Inspect one bounded internal projection.
-    Inspect {
-        #[arg(default_value = ".")]
-        root: PathBuf,
-        #[arg(long, value_enum, default_value_t)]
-        section: DebugSection,
-        #[arg(long)]
-        module: Option<String>,
-        #[command(flatten)]
-        page: PageArgs,
-    },
-}
-
-#[derive(Clone, Copy, Debug, Default, ValueEnum)]
-enum DebugSection {
-    #[default]
-    Modules,
-    References,
-    Semantic,
-}
-
-#[derive(Debug, Subcommand)]
-enum ExportCommand {
-    /// Export the complete diagnostic artifact.
-    Diagnostics {
-        #[arg(default_value = ".")]
-        root: PathBuf,
-        #[arg(short, long)]
-        output: PathBuf,
-        #[arg(long = "export-format", value_enum, default_value_t)]
-        export_format: ExportFormatArg,
-    },
-    /// Export the complete snapshot projection.
-    Snapshot {
-        #[arg(default_value = ".")]
-        root: PathBuf,
-        #[arg(short, long)]
-        output: PathBuf,
-        #[arg(long = "export-format", value_enum, default_value_t)]
-        export_format: ExportFormatArg,
-    },
-    /// Export the complete Vault outline.
-    Outline {
-        #[arg(default_value = ".")]
-        root: PathBuf,
-        #[arg(short, long)]
-        output: PathBuf,
-        #[arg(long = "export-format", value_enum, default_value_t)]
-        export_format: ExportFormatArg,
-    },
-}
-
-#[derive(Clone, Copy, Debug, Default, ValueEnum)]
-enum ExportFormatArg {
-    #[default]
-    Json,
-    Jsonl,
-}
-
 fn parse_byte_range(value: &str) -> Result<notist_service::ByteRange, String> {
     let (start, end) = value.split_once("..").ok_or("expected START..END")?;
     let start = start.parse().map_err(|_| "invalid byte-range start")?;
@@ -687,122 +451,22 @@ fn parse_snippet_bytes(value: &str) -> Result<usize, String> {
 
 fn main() -> ExitCode {
     logging::init_from_env();
-    if let Some(code) = maybe_run_with_pager() {
-        return code;
-    }
     let cli = match Cli::try_parse() {
         Ok(cli) => cli,
         Err(error) => {
             let exit = error.exit_code().clamp(0, 255) as u8;
-            let arguments = std::env::args_os().skip(1).collect::<Vec<_>>();
-            if exit != 0 && requests_json(&arguments) {
-                let _ = output::emit_typed_error(
-                    "cli",
-                    "invalid_argument",
-                    &error.to_string(),
-                    false,
-                    Some("run the command with --help to inspect its accepted parameters"),
-                    &[],
-                );
-            } else {
-                let _ = error.print();
-            }
+            let _ = error.print();
             return ExitCode::from(exit);
         }
     };
-    let format = cli.format;
-    let command = cli.command.name();
     match run(cli) {
         Ok(code) => code,
         Err(error) => {
             let (error_code, exit) = classify_error(error.as_ref());
-            if format.is_json() {
-                let _ = output::emit_typed_error(
-                    command,
-                    error_code,
-                    &error.to_string(),
-                    exit == 4,
-                    None,
-                    &[],
-                );
-            } else {
-                eprintln!("error[{error_code}]: {error}");
-            }
+            eprintln!("error[{error_code}]: {error}");
             ExitCode::from(exit)
         }
     }
-}
-
-fn maybe_run_with_pager() -> Option<ExitCode> {
-    let mut arguments = std::env::args_os().skip(1).collect::<Vec<_>>();
-    let mut choice = PagerChoice::Auto;
-    let mut index = 0usize;
-    while index < arguments.len() {
-        let argument = arguments[index].to_string_lossy();
-        if let Some(value) = argument.strip_prefix("--pager=") {
-            choice = match value {
-                "always" => PagerChoice::Always,
-                "never" => PagerChoice::Never,
-                _ => PagerChoice::Auto,
-            };
-            arguments.remove(index);
-            continue;
-        }
-        if argument == "--pager" && index + 1 < arguments.len() {
-            choice = match arguments[index + 1].to_string_lossy().as_ref() {
-                "always" => PagerChoice::Always,
-                "never" => PagerChoice::Never,
-                _ => PagerChoice::Auto,
-            };
-            arguments.drain(index..=index + 1);
-            continue;
-        }
-        index += 1;
-    }
-    if choice == PagerChoice::Never
-        || choice == PagerChoice::Auto && !std::io::stdout().is_terminal()
-        || requests_json(&arguments)
-        || arguments.iter().any(|argument| {
-            matches!(
-                argument.to_string_lossy().as_ref(),
-                "daemon" | "lsp" | "preview"
-            )
-        })
-    {
-        return None;
-    }
-    arguments.extend([OsString::from("--pager"), OsString::from("never")]);
-    let mut pager = if cfg!(windows) {
-        std::process::Command::new("more.com")
-    } else {
-        let executable = std::env::var_os("PAGER").unwrap_or_else(|| OsString::from("less"));
-        let mut command = std::process::Command::new(executable);
-        command.args(["-F", "-R", "-X"]);
-        command
-    };
-    let mut pager = pager.stdin(Stdio::piped()).spawn().ok()?;
-    let mut child = std::process::Command::new(std::env::current_exe().ok()?)
-        .args(arguments)
-        .stdout(Stdio::piped())
-        .stderr(Stdio::inherit())
-        .spawn()
-        .ok()?;
-    let mut output = child.stdout.take()?;
-    let mut pager_input = pager.stdin.take()?;
-    let _ = std::io::copy(&mut output, &mut pager_input);
-    drop(pager_input);
-    let status = child.wait().ok()?;
-    let _ = pager.wait();
-    Some(ExitCode::from(
-        status.code().unwrap_or(70).clamp(0, 255) as u8
-    ))
-}
-
-fn requests_json(arguments: &[OsString]) -> bool {
-    arguments
-        .windows(2)
-        .any(|pair| pair[0] == "--format" && pair[1] == "json")
-        || arguments.iter().any(|argument| argument == "--format=json")
 }
 
 #[derive(Debug)]
@@ -841,119 +505,14 @@ fn classify_error(error: &(dyn std::error::Error + 'static)) -> (&'static str, u
 }
 
 fn run(cli: Cli) -> Result<ExitCode, Box<dyn std::error::Error>> {
-    let _ = cli.pager;
     official_docs::ensure_synced()?;
     match cli.command {
-        Command::Daemon {
-            action: Some(DaemonAction::Stop { root }),
-            ..
-        } => {
-            service::stop_daemon(resolve_vault_root(&root)?, cli.format)?;
-            Ok(ExitCode::SUCCESS)
-        }
-        Command::Daemon {
-            root,
-            background_child,
-            ..
-        } => service::run_daemon(resolve_vault_root(&root)?, background_child, cli.format),
-        Command::Lsp => {
-            require_protocol_format(cli.format, "lsp")?;
-            lsp::run(cli.no_daemon)
-        }
-        Command::Skill {
-            command: SkillCommand::Init { output, force },
-        } => {
-            let output = skill::init(output, force)?;
-            if cli.format.is_json() {
-                output::emit_result(
-                    "skill init",
-                    true,
-                    serde_json::json!({"output": output, "files": ["SKILL.md"]}),
-                )?;
-            } else {
-                println!("initialized Notist Skill at {}", output.display());
-            }
-            Ok(ExitCode::SUCCESS)
-        }
-        Command::Status { root } => {
-            let (root, mut client, view_id) = connect_cli(root, cli.no_daemon)?;
-            let reply = client.request(CoreRequest::Status { view_id })?;
-            let CoreResponse::Status(status) = reply.response else {
-                return query_response_error("status", reply.response, cli.format);
-            };
-            if cli.format.is_json() {
-                output::emit_result("status", true, &status)?;
-            } else {
-                println!("Vault        {}", status.snapshot.vault.fingerprint);
-                println!(
-                    "Snapshot     {} revision {}",
-                    status.view_kind, status.snapshot.revision
-                );
-                println!("Runtime      {}", status.runtime_mode);
-                println!("Sources      {}", status.source_count);
-                println!("Modules      {}", status.module_count);
-                println!("Diagnostics  {}", status.diagnostic_count);
-                println!(
-                    "Index        {} ({} units)",
-                    status.index.health, status.index.unit_count
-                );
-                let generation = crate::official_docs::generation_for_root(&root)
-                    .ok()
-                    .flatten();
-                if let Ok(pid_path) =
-                    notist_service::transport::daemon_pid_path(&root, generation.as_deref())
-                {
-                    match std::fs::read_to_string(pid_path) {
-                        Ok(pid) => println!("Daemon       pid {}", pid.trim()),
-                        Err(_) => println!("Daemon       not running"),
-                    }
-                }
-            }
-            let _ = root;
-            Ok(ExitCode::SUCCESS)
-        }
-        Command::Modules {
-            root,
-            prefix,
-            kind,
-            page,
-        } => {
-            let (_, mut client, view_id) = connect_cli(root, cli.no_daemon)?;
-            let reply = client.request(CoreRequest::ListModules {
-                view_id,
-                query: notist_service::ModulesQuery {
-                    prefix,
-                    kind: kind.into(),
-                    page: page.into(),
-                },
-            })?;
-            let CoreResponse::Modules(page) = reply.response else {
-                return query_response_error("modules", reply.response, cli.format);
-            };
-            if cli.format.is_json() {
-                output::emit_result("modules", true, &page)?;
-            } else {
-                for item in &page.records {
-                    let path = item
-                        .relative_path
-                        .as_ref()
-                        .map_or("<virtual>".into(), |path| path.display().to_string());
-                    let title = item
-                        .title
-                        .as_ref()
-                        .map_or(String::new(), |title| format!(" — {title}"));
-                    println!("{}  {}{}", item.module, path, title);
-                }
-                emit_continuation("modules", &page.page, &page.coverage);
-            }
-            Ok(ExitCode::SUCCESS)
-        }
+        Command::Inspect { command } => run_inspect(command, cli.no_daemon),
         Command::Check {
             root,
             scope,
             summary,
             severity,
-            page,
         } => {
             let root = resolve_vault_root(&root)?;
             let mut client =
@@ -965,28 +524,195 @@ fn run(cli: Cli) -> Result<ExitCode, Box<dyn std::error::Error>> {
                     scope,
                     summary_only: summary,
                     severity: severity.into(),
-                    page: page.into(),
                 },
             })?;
             let CoreResponse::DiagnosticsPage(result) = reply.response else {
-                return query_response_error("check", reply.response, cli.format);
+                return query_response_error("check", reply.response);
             };
             let ok = result.summary.error_count == 0;
-            if cli.format.is_json() {
-                output::emit_result("check", ok, &result)?;
-            } else {
-                emit_diagnostic_page(&result, cli.color);
-            }
+            emit_diagnostic_page(&result, cli.color);
             if ok {
-                if !cli.format.is_json() {
-                    println!("checked {} sources", result.summary.checked_sources);
-                }
+                println!("checked {} sources", result.summary.checked_sources);
                 Ok(ExitCode::SUCCESS)
             } else {
                 Ok(ExitCode::FAILURE)
             }
         }
-        Command::Search {
+        Command::Index { command } => {
+            let (root, rebuild, wait) = match command {
+                IndexCommand::Status { root } => (root, false, false),
+                IndexCommand::Rebuild { root, wait } => (root, true, wait),
+            };
+            let (_, mut client, view_id) = connect_cli(root, cli.no_daemon)?;
+            let effective_wait = rebuild && (wait || cli.no_daemon);
+            let reply = client.request(if rebuild {
+                CoreRequest::IndexRebuild {
+                    view_id,
+                    wait: false,
+                }
+            } else {
+                CoreRequest::IndexStatus { view_id }
+            })?;
+            let CoreResponse::IndexStatus(mut status) = reply.response else {
+                return query_response_error("index", reply.response);
+            };
+            let submitted_operation = status.operation_handle.clone();
+            if effective_wait && status.health == "building" {
+                if let Some(operation) = &status.operation_handle {
+                    eprintln!("waiting for {operation}");
+                }
+                loop {
+                    std::thread::sleep(std::time::Duration::from_millis(50));
+                    let polled = client.request(CoreRequest::IndexStatus { view_id })?;
+                    let CoreResponse::IndexStatus(next) = polled.response else {
+                        return query_response_error("index", polled.response);
+                    };
+                    status = next;
+                    if status.health != "building" {
+                        break;
+                    }
+                }
+                status.operation_handle = submitted_operation;
+            }
+            if status.health == "error" {
+                let error = notist_service::ToolError::new(
+                    "index_not_ready",
+                    status
+                        .message
+                        .clone()
+                        .unwrap_or_else(|| "index build failed".into()),
+                )
+                .retryable("run `notist index rebuild --wait` after correcting the index error");
+                return query_response_error("index", CoreResponse::QueryError(error));
+            }
+            println!("Index  {}", status.health);
+            println!("Units  {}", status.unit_count);
+            if let Some(stamp) = status.stamp {
+                println!(
+                    "Stamp  {} / {} / {}",
+                    stamp.schema_version, stamp.tokenizer_version, stamp.ranking_version
+                );
+            }
+            if let Some(operation) = status.operation_handle {
+                println!("Task   {operation}");
+            }
+            if let Some(message) = status.message {
+                println!("Note   {message}");
+            }
+            Ok(ExitCode::SUCCESS)
+        }
+        Command::Daemon {
+            action: Some(DaemonAction::Stop { root }),
+            ..
+        } => {
+            service::stop_daemon(resolve_vault_root(&root)?)?;
+            Ok(ExitCode::SUCCESS)
+        }
+        Command::Daemon {
+            root,
+            background_child,
+            ..
+        } => service::run_daemon(resolve_vault_root(&root)?, background_child),
+        Command::Lsp => lsp::run(cli.no_daemon),
+        Command::Skill {
+            command: SkillCommand::Init { output, force },
+        } => {
+            let output = skill::init(output, force)?;
+            println!("initialized Notist Skill at {}", output.display());
+            Ok(ExitCode::SUCCESS)
+        }
+        Command::Build {
+            root,
+            output,
+            clean,
+        } => build::run(
+            resolve_vault_root(&root)?,
+            output,
+            cli.color,
+            cli.no_daemon,
+            clean,
+        ),
+        Command::Preview {
+            root,
+            host,
+            port,
+            open,
+        } => preview::run(
+            resolve_vault_root(&root)?,
+            host,
+            port,
+            open,
+            cli.color,
+            cli.no_daemon,
+        ),
+    }
+}
+
+fn run_inspect(
+    command: InspectCommand,
+    no_daemon: bool,
+) -> Result<ExitCode, Box<dyn std::error::Error>> {
+    match command {
+        InspectCommand::Status { root } => {
+            let (root, mut client, view_id) = connect_cli(root, no_daemon)?;
+            let reply = client.request(CoreRequest::Status { view_id })?;
+            let CoreResponse::Status(status) = reply.response else {
+                return query_response_error("status", reply.response);
+            };
+            println!("Vault        {}", status.snapshot.vault.fingerprint);
+            println!(
+                "Snapshot     {} revision {}",
+                status.view_kind, status.snapshot.revision
+            );
+            println!("Runtime      {}", status.runtime_mode);
+            println!("Sources      {}", status.source_count);
+            println!("Modules      {}", status.module_count);
+            println!("Diagnostics  {}", status.diagnostic_count);
+            println!(
+                "Index        {} ({} units)",
+                status.index.health, status.index.unit_count
+            );
+            let generation =
+                crate::official_docs::generation_for_root(&root)
+                    .ok()
+                    .flatten();
+            if let Ok(pid_path) =
+                notist_service::transport::daemon_pid_path(&root, generation.as_deref())
+            {
+                match std::fs::read_to_string(pid_path) {
+                    Ok(pid) => println!("Daemon       pid {}", pid.trim()),
+                    Err(_) => println!("Daemon       not running"),
+                }
+            }
+            let _ = root;
+            Ok(ExitCode::SUCCESS)
+        }
+        InspectCommand::Modules { root, prefix, kind } => {
+            let (_, mut client, view_id) = connect_cli(root, no_daemon)?;
+            let reply = client.request(CoreRequest::ListModules {
+                view_id,
+                query: notist_service::ModulesQuery {
+                    prefix,
+                    kind: kind.into(),
+                },
+            })?;
+            let CoreResponse::Modules(page) = reply.response else {
+                return query_response_error("modules", reply.response);
+            };
+            for item in &page.records {
+                let path = item
+                    .relative_path
+                    .as_ref()
+                    .map_or("<virtual>".into(), |path| path.display().to_string());
+                let title = item
+                    .title
+                    .as_ref()
+                    .map_or(String::new(), |title| format!(" — {title}"));
+                println!("{}  {}{}", item.module, path, title);
+            }
+            Ok(ExitCode::SUCCESS)
+        }
+        InspectCommand::Search {
             query,
             root,
             mode,
@@ -1001,7 +727,6 @@ fn run(cli: Cli) -> Result<ExitCode, Box<dyn std::error::Error>> {
             fuzzy_distance,
             wait_index,
             snippet_bytes,
-            page,
         } => {
             let mode = if exact {
                 notist_service::SearchMode::Exact
@@ -1027,7 +752,7 @@ fn run(cli: Cli) -> Result<ExitCode, Box<dyn std::error::Error>> {
             }
             let root = resolve_vault_root(&root)?;
             let mut client =
-                service::LocalNotistClient::connect(cli.no_daemon, ClientKind::Cli, root.clone())?;
+                service::LocalNotistClient::connect(no_daemon, ClientKind::Cli, root.clone())?;
             let view_id = open_disk_view(&mut client, root.clone())?;
             let reply = client.request(CoreRequest::SearchPage {
                 view_id,
@@ -1046,16 +771,11 @@ fn run(cli: Cli) -> Result<ExitCode, Box<dyn std::error::Error>> {
                     fuzzy_distance: fuzzy_distance.unwrap_or(1),
                     wait_index_ms: wait_index.unwrap_or(2000),
                     snippet_bytes,
-                    page: page.into(),
                 },
             })?;
             let CoreResponse::SearchPage(results) = reply.response else {
-                return query_response_error("search", reply.response, cli.format);
+                return query_response_error("search", reply.response);
             };
-            if cli.format.is_json() {
-                output::emit_result("search", true, &results)?;
-                return Ok(ExitCode::SUCCESS);
-            }
             let group = results
                 .search
                 .as_ref()
@@ -1065,11 +785,7 @@ fn run(cli: Cli) -> Result<ExitCode, Box<dyn std::error::Error>> {
                     notist_service::SearchGroup::Match => "matches",
                 })
                 .unwrap_or("matches");
-            if results.coverage.complete {
-                println!("{} {group}", results.records.len());
-            } else {
-                println!("showing {} {group}; more available", results.records.len());
-            }
+            println!("{} {group}", results.records.len());
             for (index, result) in results.records.iter().enumerate() {
                 let score = result.score.map_or(String::new(), |score| {
                     format!(" score={:.3}", score as f64 / 1_000_000.0)
@@ -1092,7 +808,8 @@ fn run(cli: Cli) -> Result<ExitCode, Box<dyn std::error::Error>> {
                     },
                 );
                 println!(
-                    "\n{}. {}  {} field={}{}",
+                    "
+{}. {}  {} field={}{}",
                     index + 1,
                     result.location.module,
                     position,
@@ -1102,39 +819,26 @@ fn run(cli: Cli) -> Result<ExitCode, Box<dyn std::error::Error>> {
                 println!("   {}", result.excerpt.replace('\n', " "));
             }
             for hint in &results.hints {
-                if !hint.starts_with("more results:") {
-                    println!("hint: {hint}");
-                }
+                println!("hint: {hint}");
             }
-            emit_continuation("search", &results.page, &results.coverage);
             let _ = root;
             Ok(ExitCode::SUCCESS)
         }
-        Command::Outline {
-            selector,
-            root,
-            depth,
-            page,
-        } => {
+        InspectCommand::Outline { selector, root, depth } => {
             let root = resolve_vault_root(&root)?;
             let mut client =
-                service::LocalNotistClient::connect(cli.no_daemon, ClientKind::Cli, root.clone())?;
+                service::LocalNotistClient::connect(no_daemon, ClientKind::Cli, root.clone())?;
             let view_id = open_disk_view(&mut client, root.clone())?;
             let reply = client.request(CoreRequest::OutlineModule {
                 view_id,
                 query: notist_service::OutlineQuery {
                     selector: notist_service::Selector::parse(&selector),
                     depth,
-                    page: page.into(),
                 },
             })?;
             let CoreResponse::OutlinePage(outline) = reply.response else {
-                return query_response_error("outline", reply.response, cli.format);
+                return query_response_error("outline", reply.response);
             };
-            if cli.format.is_json() {
-                output::emit_result("outline", true, &outline)?;
-                return Ok(ExitCode::SUCCESS);
-            }
             for symbol in &outline.records {
                 println!(
                     "{}{}  {}:{}",
@@ -1144,19 +848,17 @@ fn run(cli: Cli) -> Result<ExitCode, Box<dyn std::error::Error>> {
                     symbol.location.line_range.map_or(0, |range| range.start)
                 );
             }
-            emit_continuation("outline", &outline.page, &outline.coverage);
             let _ = root;
             Ok(ExitCode::SUCCESS)
         }
-        Command::Read {
+        InspectCommand::Read {
             selector,
             root,
             from_line,
             lines,
             byte_range,
-            page,
         } => {
-            let (_, mut client, view_id) = connect_cli(root, cli.no_daemon)?;
+            let (_, mut client, view_id) = connect_cli(root, no_daemon)?;
             let reply = client.request(CoreRequest::ReadSource {
                 view_id,
                 query: notist_service::ReadQuery {
@@ -1166,34 +868,29 @@ fn run(cli: Cli) -> Result<ExitCode, Box<dyn std::error::Error>> {
                         lines,
                         byte_range,
                     },
-                    page: page.into(),
                 },
             })?;
             let CoreResponse::SourcePage(result) = reply.response else {
-                return query_response_error("read", reply.response, cli.format);
+                return query_response_error("read", reply.response);
             };
-            if cli.format.is_json() {
-                output::emit_result("read", true, &result)?;
-            } else if let Some(chunk) = result.records.first() {
+            if let Some(chunk) = result.records.first() {
                 let start = chunk.location.line_range.map_or(1, |range| range.start);
                 for (offset, line) in chunk.source.lines().enumerate() {
                     println!("{:>5} | {}", start + offset, line);
                 }
-                emit_continuation("read", &result.page, &result.coverage);
             }
             Ok(ExitCode::SUCCESS)
         }
-        Command::References {
+        InspectCommand::References {
             selector,
             root,
             include_definition,
             direction,
             snippet_bytes,
-            page,
         } => {
             let root = resolve_vault_root(&root)?;
             let mut client =
-                service::LocalNotistClient::connect(cli.no_daemon, ClientKind::Cli, root.clone())?;
+                service::LocalNotistClient::connect(no_daemon, ClientKind::Cli, root.clone())?;
             let view_id = open_disk_view(&mut client, root.clone())?;
             let reply = client.request(CoreRequest::ReferencesPage {
                 view_id,
@@ -1202,16 +899,11 @@ fn run(cli: Cli) -> Result<ExitCode, Box<dyn std::error::Error>> {
                     direction: direction.into(),
                     include_definition,
                     snippet_bytes,
-                    page: page.into(),
                 },
             })?;
             let CoreResponse::ReferencesPage(locations) = reply.response else {
-                return query_response_error("references", reply.response, cli.format);
+                return query_response_error("references", reply.response);
             };
-            if cli.format.is_json() {
-                output::emit_result("references", true, &locations)?;
-                return Ok(ExitCode::SUCCESS);
-            }
             for item in &locations.records {
                 let position = item.location.line_range.map_or_else(
                     || {
@@ -1226,18 +918,14 @@ fn run(cli: Cli) -> Result<ExitCode, Box<dyn std::error::Error>> {
                 );
                 println!("{} -> {}  {}", item.source, item.target, position);
             }
-            emit_continuation("references", &locations.page, &locations.coverage);
             let _ = root;
             Ok(ExitCode::SUCCESS)
         }
-        Command::Query {
-            query:
-                QueryCommand::Definition {
-                    path,
-                    offset,
-                    root,
-                    expected_fingerprint,
-                },
+        InspectCommand::Definition {
+            path,
+            offset,
+            root,
+            expected_fingerprint,
         } => {
             let root = resolve_vault_root(&root)?;
             let path = dunce::canonicalize(if path.is_absolute() {
@@ -1246,7 +934,7 @@ fn run(cli: Cli) -> Result<ExitCode, Box<dyn std::error::Error>> {
                 root.join(path)
             })?;
             let mut client =
-                service::LocalNotistClient::connect(cli.no_daemon, ClientKind::Cli, root.clone())?;
+                service::LocalNotistClient::connect(no_daemon, ClientKind::Cli, root.clone())?;
             let view_id = open_disk_view(&mut client, root.clone())?;
             let reply = client.request(CoreRequest::DefinitionLocation {
                 view_id,
@@ -1256,24 +944,9 @@ fn run(cli: Cli) -> Result<ExitCode, Box<dyn std::error::Error>> {
                     expected_fingerprint,
                 },
             })?;
-            let snapshot = reply.snapshot.clone();
             let CoreResponse::DefinitionLocation(definition) = reply.response else {
-                return query_response_error("query definition", reply.response, cli.format);
+                return query_response_error("inspect definition", reply.response);
             };
-            if cli.format.is_json() {
-                output::emit_result(
-                    "query definition",
-                    true,
-                    serde_json::json!({
-                        "root": root,
-                        "snapshot": snapshot,
-                        "path": path,
-                        "offset": offset,
-                        "definition": definition,
-                    }),
-                )?;
-                return Ok(ExitCode::SUCCESS);
-            }
             if let Some(definition) = definition {
                 println!(
                     "{}:{}..{}",
@@ -1284,150 +957,6 @@ fn run(cli: Cli) -> Result<ExitCode, Box<dyn std::error::Error>> {
             }
             Ok(ExitCode::SUCCESS)
         }
-        Command::Index { command } => {
-            let (root, rebuild, wait) = match command {
-                IndexCommand::Status { root } => (root, false, false),
-                IndexCommand::Rebuild { root, wait } => (root, true, wait),
-            };
-            let (_, mut client, view_id) = connect_cli(root, cli.no_daemon)?;
-            let effective_wait = rebuild && (wait || cli.no_daemon);
-            let reply = client.request(if rebuild {
-                CoreRequest::IndexRebuild {
-                    view_id,
-                    wait: false,
-                }
-            } else {
-                CoreRequest::IndexStatus { view_id }
-            })?;
-            let CoreResponse::IndexStatus(mut status) = reply.response else {
-                return query_response_error("index", reply.response, cli.format);
-            };
-            let submitted_operation = status.operation_handle.clone();
-            if effective_wait && status.health == "building" {
-                if cli.format.is_json() {
-                    output::emit_event(
-                        "index rebuild",
-                        "waiting",
-                        serde_json::json!({"operation_handle": status.operation_handle.clone()}),
-                    )?;
-                } else if let Some(operation) = &status.operation_handle {
-                    eprintln!("waiting for {operation}");
-                }
-                loop {
-                    std::thread::sleep(std::time::Duration::from_millis(50));
-                    let polled = client.request(CoreRequest::IndexStatus { view_id })?;
-                    let CoreResponse::IndexStatus(next) = polled.response else {
-                        return query_response_error("index", polled.response, cli.format);
-                    };
-                    status = next;
-                    if status.health != "building" {
-                        break;
-                    }
-                }
-                status.operation_handle = submitted_operation;
-            }
-            if status.health == "error" {
-                let error = notist_service::ToolError::new(
-                    "index_not_ready",
-                    status
-                        .message
-                        .clone()
-                        .unwrap_or_else(|| "index build failed".into()),
-                )
-                .retryable("run `notist index rebuild --wait` after correcting the index error");
-                return query_response_error("index", CoreResponse::QueryError(error), cli.format);
-            }
-            if cli.format.is_json() {
-                output::emit_result("index", true, &status)?;
-            } else {
-                println!("Index  {}", status.health);
-                println!("Units  {}", status.unit_count);
-                if let Some(stamp) = status.stamp {
-                    println!(
-                        "Stamp  {} / {} / {}",
-                        stamp.schema_version, stamp.tokenizer_version, stamp.ranking_version
-                    );
-                }
-                if let Some(operation) = status.operation_handle {
-                    println!("Task   {operation}");
-                }
-                if let Some(message) = status.message {
-                    println!("Note   {message}");
-                }
-            }
-            Ok(ExitCode::SUCCESS)
-        }
-        Command::Debug {
-            command:
-                DebugCommand::Inspect {
-                    root,
-                    section,
-                    module,
-                    page,
-                },
-        } => {
-            let (_, mut client, view_id) = connect_cli(root, cli.no_daemon)?;
-            let section = match section {
-                DebugSection::Modules => notist_service::DebugSection::Modules,
-                DebugSection::References => notist_service::DebugSection::References,
-                DebugSection::Semantic => notist_service::DebugSection::Semantic,
-            };
-            let reply = client.request(CoreRequest::DebugInspect {
-                view_id,
-                query: notist_service::DebugQuery {
-                    section,
-                    module,
-                    page: page.into(),
-                },
-            })?;
-            let CoreResponse::DebugPage(result) = reply.response else {
-                return query_response_error("debug inspect", reply.response, cli.format);
-            };
-            if cli.format.is_json() {
-                output::emit_result("debug inspect", true, &result)?;
-            } else {
-                for item in &result.records {
-                    println!(
-                        "{} {} {}",
-                        item.module,
-                        item.kind,
-                        item.name
-                            .as_deref()
-                            .or(item.target.as_deref())
-                            .unwrap_or("")
-                    );
-                }
-                emit_continuation("debug inspect", &result.page, &result.coverage);
-            }
-            Ok(ExitCode::SUCCESS)
-        }
-        Command::Export { command } => export_command(command, cli.no_daemon, cli.format),
-        Command::Build {
-            root,
-            output,
-            clean,
-        } => build::run(
-            resolve_vault_root(&root)?,
-            output,
-            cli.color,
-            cli.no_daemon,
-            clean,
-            cli.format,
-        ),
-        Command::Preview {
-            root,
-            host,
-            port,
-            open,
-        } => preview::run(
-            resolve_vault_root(&root)?,
-            host,
-            port,
-            open,
-            cli.color,
-            cli.no_daemon,
-            cli.format,
-        ),
     }
 }
 
@@ -1465,41 +994,18 @@ fn connect_cli(
 fn query_response_error(
     command: &str,
     response: CoreResponse,
-    format: OutputFormat,
 ) -> Result<ExitCode, Box<dyn std::error::Error>> {
     if let CoreResponse::QueryError(error) = response {
-        if format.is_json() {
-            output::emit_typed_error(
-                command,
-                &error.code,
-                &error.message,
-                error.retryable,
-                error.hint.as_deref(),
-                &error.candidates,
-            )?;
-        } else {
-            eprintln!("error[{}]: {}", error.code, error.message);
-            if let Some(hint) = error.hint {
-                eprintln!("hint: {hint}");
-            }
-            for candidate in error.candidates {
-                eprintln!("  {candidate}");
-            }
+        eprintln!("error[{}]: {}", error.code, error.message);
+        if let Some(hint) = error.hint {
+            eprintln!("hint: {hint}");
+        }
+        for candidate in error.candidates {
+            eprintln!("  {candidate}");
         }
         Ok(ExitCode::from(3))
     } else {
         Err(format!("service returned an unexpected {command} response").into())
-    }
-}
-
-fn emit_continuation(
-    _command: &str,
-    page: &notist_service::PageInfo,
-    coverage: &notist_service::CoverageInfo,
-) {
-    if let Some(cursor) = &page.next_cursor {
-        println!("\nmore results available ({}).", coverage.stop_reason);
-        println!("continue the same query with --cursor {cursor}");
     }
 }
 
@@ -1557,170 +1063,10 @@ fn emit_diagnostic_page(result: &notist_service::DiagnosticsResult, color: clap:
         eprintln!();
     }
     eprintln!(
-        "{} diagnostics in {} sources; showing {}",
+        "{} diagnostics in {} sources",
         result.summary.total_diagnostics,
-        result.summary.checked_sources,
-        result.diagnostics.page.returned
+        result.summary.checked_sources
     );
-    emit_continuation(
-        "check",
-        &result.diagnostics.page,
-        &result.diagnostics.coverage,
-    );
-}
-
-fn export_command(
-    command: ExportCommand,
-    no_daemon: bool,
-    format: OutputFormat,
-) -> Result<ExitCode, Box<dyn std::error::Error>> {
-    let (kind, root, output_path, artifact_format) = match command {
-        ExportCommand::Diagnostics {
-            root,
-            output,
-            export_format,
-        } => ("diagnostics", root, output, export_format),
-        ExportCommand::Snapshot {
-            root,
-            output,
-            export_format,
-        } => ("snapshot", root, output, export_format),
-        ExportCommand::Outline {
-            root,
-            output,
-            export_format,
-        } => ("outline", root, output, export_format),
-    };
-    let (root, mut client, view_id) = connect_cli(root, no_daemon)?;
-    let reply = match kind {
-        "diagnostics" => client.request(CoreRequest::Diagnostics { view_id })?,
-        "snapshot" => client.request(CoreRequest::Inspect { view_id })?,
-        "outline" => client.request(CoreRequest::Outline { view_id })?,
-        _ => unreachable!(),
-    };
-    let records = match &reply.response {
-        CoreResponse::Diagnostics(items) => items.len(),
-        CoreResponse::Inspect(value) => {
-            value.modules.len() + value.references.len() + value.semantic_records.len()
-        }
-        CoreResponse::Outline(documents) => documents
-            .iter()
-            .map(|document| document.symbols.len())
-            .sum(),
-        _ => 0,
-    };
-    let snapshot = reply.snapshot.clone();
-    let value = serde_json::to_value(&reply.response)?;
-    let bytes = match artifact_format {
-        ExportFormatArg::Json => serde_json::to_vec(&serde_json::json!({
-            "schemaVersion": 2,
-            "kind": kind,
-            "snapshot": snapshot.clone(),
-            "result": value,
-        }))?,
-        ExportFormatArg::Jsonl => {
-            let mut lines: Vec<u8> = Vec::new();
-            match &reply.response {
-                CoreResponse::Diagnostics(items) => {
-                    for item in items {
-                        lines.extend_from_slice(&serde_json::to_vec(&serde_json::json!({
-                            "schemaVersion": 2,
-                            "kind": kind,
-                            "snapshot": snapshot.clone(),
-                            "item": item,
-                        }))?);
-                        lines.push(b'\n');
-                    }
-                }
-                CoreResponse::Outline(documents) => {
-                    for document in documents {
-                        let module = document.path.strip_prefix(&root).unwrap_or(&document.path);
-                        for symbol in &document.symbols {
-                            lines.extend_from_slice(&serde_json::to_vec(&serde_json::json!({
-                                "schemaVersion": 2,
-                                "kind": kind,
-                                "snapshot": snapshot.clone(),
-                                "module": module,
-                                "item": symbol,
-                            }))?);
-                            lines.push(b'\n');
-                        }
-                    }
-                }
-                CoreResponse::Inspect(_) => {
-                    lines.extend_from_slice(&serde_json::to_vec(&serde_json::json!({
-                        "schemaVersion": 2,
-                        "kind": kind,
-                        "snapshot": snapshot.clone(),
-                        "result": value,
-                    }))?);
-                    lines.push(b'\n');
-                }
-                _ => {}
-            }
-            lines
-        }
-    };
-    let mut hasher = Sha256::new();
-    hasher.update(&bytes);
-    let checksum = hasher
-        .finalize()
-        .iter()
-        .map(|byte| format!("{byte:02x}"))
-        .collect::<String>();
-    let stdout_artifact = output_path.as_os_str() == "-";
-    if stdout_artifact {
-        println!("{}", String::from_utf8(bytes.clone())?);
-    } else {
-        let parent = output_path
-            .parent()
-            .filter(|path| !path.as_os_str().is_empty())
-            .unwrap_or(PathBuf::from(".").as_path())
-            .to_path_buf();
-        std::fs::create_dir_all(&parent)?;
-        notist_service::write_artifact_atomic(
-            &output_path,
-            &bytes,
-            &format!("export-{}", std::process::id()),
-        )?;
-    }
-    if !stdout_artifact && format.is_json() {
-        output::emit_result(
-            "export",
-            true,
-            serde_json::json!({
-                "kind": kind,
-                "root": root,
-                "output": output_path,
-                "records": records,
-                "bytes": bytes.len(),
-                "checksum": checksum,
-                "snapshot": snapshot,
-            }),
-        )?;
-    } else if !stdout_artifact {
-        println!(
-            "wrote {} records, {} bytes -> {}\nchecksum: {}",
-            records,
-            bytes.len(),
-            output_path.display(),
-            checksum
-        );
-    }
-    Ok(ExitCode::SUCCESS)
-}
-
-fn require_protocol_format(
-    format: OutputFormat,
-    protocol: &str,
-) -> Result<(), Box<dyn std::error::Error>> {
-    if format.is_json() {
-        return Err(format!(
-            "`{protocol}` already uses JSON-RPC on stdout and does not accept `--format json`"
-        )
-        .into());
-    }
-    Ok(())
 }
 
 pub(crate) fn emit_service_diagnostics(diagnostics: &[notist_service::DiagnosticRecord]) {

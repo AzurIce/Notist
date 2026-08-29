@@ -9,8 +9,6 @@ use notist_service::protocol::{ClientKind, Handshake, ProtocolVersion};
 use notist_service::transport::{DaemonClient, ShutdownReply};
 use notist_service::{CoreReply, CoreRequest, NotistService};
 
-use crate::output::OutputFormat;
-
 pub(crate) enum ClientBackend {
     Embedded(Arc<NotistService>),
     Daemon {
@@ -209,22 +207,14 @@ fn wait_for_endpoint_free(runtime: &tokio::runtime::Runtime, root: &Path) -> io:
 
 /// Stop the daemon serving `root`. A missing daemon is not an error, so scripts
 /// can run `notist daemon stop` before a rebuild without failing.
-pub(crate) fn stop_daemon(root: PathBuf, format: OutputFormat) -> io::Result<()> {
+pub(crate) fn stop_daemon(root: PathBuf) -> io::Result<()> {
     let root = dunce::canonicalize(root)?;
     let runtime = tokio::runtime::Runtime::new()?;
     let hs = handshake(ClientKind::Cli, root.clone())?;
     let mut client = match runtime.block_on(DaemonClient::connect(&root, hs)) {
         Ok(client) => client,
         Err(error) if daemon_is_unavailable(&error) => {
-            if format.is_json() {
-                crate::output::emit_event(
-                    "daemon",
-                    "not_running",
-                    serde_json::json!({ "root": root }),
-                )?;
-            } else {
-                println!("no notist daemon is running for {}", root.display());
-            }
+            println!("no notist daemon is running for {}", root.display());
             return Ok(());
         }
         Err(error) => return Err(error),
@@ -232,13 +222,7 @@ pub(crate) fn stop_daemon(root: PathBuf, format: OutputFormat) -> io::Result<()>
     match runtime.block_on(client.shutdown(true))? {
         ShutdownReply::Accepted { pid } => {
             wait_for_endpoint_free(&runtime, &root)?;
-            if format.is_json() {
-                crate::output::emit_event(
-                    "daemon",
-                    "stopped",
-                    serde_json::json!({ "root": root, "pid": pid }),
-                )?;
-            } else if let Some(pid) = pid {
+            if let Some(pid) = pid {
                 println!("stopped notist daemon (pid {pid})");
             } else {
                 println!("stopped notist daemon");
@@ -309,25 +293,12 @@ fn spawn_daemon(root: &Path) -> io::Result<()> {
 pub(crate) fn run_daemon(
     root: PathBuf,
     background_child: bool,
-    format: OutputFormat,
 ) -> Result<std::process::ExitCode, Box<dyn std::error::Error>> {
     let runtime = tokio::runtime::Runtime::new()?;
     let service = Arc::new(NotistService::for_daemon_root(&root)?);
     let vault_generation = crate::official_docs::generation_for_root(&root)?;
     if !background_child {
-        if format.is_json() {
-            crate::output::emit_event(
-                "daemon",
-                "started",
-                serde_json::json!({
-                    "root": root,
-                    "instance_id": service.instance_id().0,
-                    "vault_generation": vault_generation,
-                }),
-            )?;
-        } else {
-            eprintln!("notist daemon {}", service.instance_id().0);
-        }
+        eprintln!("notist daemon {}", service.instance_id().0);
     }
     let idle_timeout = background_child.then_some(Duration::from_secs(5 * 60));
     runtime.block_on(notist_service::transport::serve(

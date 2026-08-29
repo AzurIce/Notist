@@ -4,17 +4,15 @@ use std::path::PathBuf;
 
 use serde::{Deserialize, Serialize};
 
-pub const PROTOCOL_MAJOR: u16 = 3;
-pub const PROTOCOL_MINOR: u16 = 2;
+pub const PROTOCOL_MAJOR: u16 = 4;
+pub const PROTOCOL_MINOR: u16 = 0;
 pub const CAPABILITIES: &[&str] = &[
     "completion",
     "definition",
     "diagnostics",
-    "edit",
     "hover",
     "references",
     "search",
-    "bounded_query",
     "read_source",
     "symbols",
 ];

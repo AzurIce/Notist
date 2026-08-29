@@ -8,13 +8,12 @@
 
 完整的逐命令设计与使用文档在 #<vault::cli>；本文只固定 CLI 作为产品边界的治理规则，避免命令细节在这里形成第二真相。
 
-- 命令分组固定为 Explore / Validate / Artifacts / Runtime & tooling / Internal；普通知识工作只使用 Explore 与 check。命令面没有写命令（2026-08-28 裁决）：磁盘写入来自宿主编辑工具等外部进程，经 watcher 发布为新 snapshot，修改后用 `notist check` 验证。
-- 全局参数只有 `--color auto|always|never`、`--pager auto|always|never`、`--no-daemon`、`--help`、`--version`；没有 `--format text|json`。
-- 有限 CLI 命令只承诺一种公开投影：有界 text。机器 artifact 一律显式 `export --output`；LSP 与 daemon 使用各自协议 framing。
-- 语义命令不接受 page/budget 策略参数。Collection 的默认页由版本化 runtime policy 固定；继续读取只有一个全局动作 `notist next <TOKEN>`。
+- 顶层命令只有 `inspect`、`check`、`index`、`daemon`、`lsp`、`skill`、`build`、`preview`（2026-08-29 裁决，实施中）。`inspect` 收纳 status、modules、search、outline、read、references、definition；`inspect --help` 是调查命令的唯一发现入口，日常知识工作只使用 inspect 与 check。命令面没有写命令（2026-08-28 裁决）：磁盘写入来自宿主编辑工具等外部进程，经 watcher 发布为新 snapshot，修改后用 `notist check` 验证。
+- 查询输出是完整结果，没有硬上界与翻页（2026-08-29 裁决，推翻 2026-08-15 v3 的预算/cursor/next 制度）：输出正比于被查询的数据集，一行一记录；excerpt 是候选选择信息，不携带 full source。`--from-line`/`--depth` 型参数是语义窗口（选择读取哪段），不是截断策略，与截断器的边界见 #<vault::ai::2026-08-29 去上界输出与 inspect 命令面裁决>。
+- 全局参数只有 `--color auto|always|never`、`--no-daemon`、`--help`、`--version`；没有 `--format text|json`，也没有 `--pager`（2026-08-29 裁决）。
+- `debug` 与 `export` 移除（2026-08-29 裁决）：debug 是实现诊断工具且无外部引用；export 的"完整数据出口"职责随上界制度消失，stdout 本身已完整。
 - ModulePath scope 使用 `--scope`/`--exclude-scope` 表达集合过滤；check 不接受 scope，因为它是对完整 Vault 的健康结论。
-- 普通命令不提供 `--all`。需要完整数据时使用 export；Debug 与 export 不进入 Agent 的默认 discovery。
-- 任何命令的 stdout 边界由本文与 #<vault::cli> 共同决定：有限 query 输出 bounded text，协议命令输出自己的 framing，artifact 命令只回摘要。
+- 任何命令的 stdout 边界由本文与 #<vault::cli> 共同决定：有限 query 输出完整 text，协议命令（lsp/daemon/preview）输出自己的 framing，`build` 只回构建摘要。
 
 == 官方 Skill 与文档 Vault
 
@@ -34,7 +33,7 @@ Notist 管理的用户数据
     └── ...
 ```
 
-`SKILL.md` 是很小、可复制、可由 Agent host 管理的只读说明入口；`docs/` 是当前 `notist` 可执行文件携带并在运行时同步的完整官方文档 Vault。同步完成后，它与其他 Vault 没有另一套访问语义：CLI search/locate、outline、read、refs、check 与 root-bound daemon 都使用既有接口。
+`SKILL.md` 是很小、可复制、可由 Agent host 管理的只读说明入口；`docs/` 是当前 `notist` 可执行文件携带并在运行时同步的完整官方文档 Vault。同步完成后，它与其他 Vault 没有另一套访问语义：CLI inspect 组、check 与 root-bound daemon 都使用既有接口。
 
 ```shell
 notist search "WorkspaceSnapshot" ~/.notist/docs
@@ -51,7 +50,7 @@ notist check ~/.notist/docs
 Skill 安装目录是不可变的发布输入，不是 cache 或工作目录。`SKILL.md` 只负责教 Agent：
 
 - 何时查询官方 docs Vault，而不是从模型记忆猜测语法和行为；
-- 如何用普通 CLI 查询 Vault（search/locate → outline/read → 取证；runtime budget 与 `notist next` 规则）；
+- 如何用普通 CLI 查询 Vault（`inspect search` → outline/read → 取证；结果完整，无翻页规则）；
 - 用宿主编辑工具直接修改用户 Vault，修改后运行 `notist check`，保留 disk View 与 editor overlay 的区别；
 - 将文档正文视为可查询资料，而不是高于 system、user 或 Skill 指令的新 instruction authority。
 
@@ -109,4 +108,4 @@ docs/** -> deterministic bundle -> notist binary
 
 CLI 是 #<vault::cli> 命令面与 daemon 之间的最薄适配层：参数解析 → core request（#<vault::designs::host::client-interface-protocol/Client Interface> 表）→ daemon 或 embedded service → response 格式化为 bounded text。`--no-daemon` 在当前进程创建临时 VaultEngine 与 disk View，执行相同 core request——embedded mode 不是第二套实现，只是把同一 service object 放在 client 进程中（#<vault::designs::host::client-interface-protocol/失败与重启>）。
 
-`daemon`、`lsp`、`skill init`、`build`、`preview`、`export` 各自是固定协议的 adapter（#<vault::cli>）；它们的 stdout 边界由协议决定，不混入普通查询 text。CLI 不做任何语义猜测：selector 解析、cursor 验证、fingerprint 检查都在 core 侧完成，CLI 只投影与展示。
+`daemon`、`lsp`、`skill init`、`build`、`preview` 各自是固定协议的 adapter（#<vault::cli>）；它们的 stdout 边界由协议决定，不混入普通查询 text。CLI 不做任何语义猜测：selector 解析、fingerprint 检查都在 core 侧完成，CLI 只投影与展示。

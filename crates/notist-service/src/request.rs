@@ -64,10 +64,6 @@ pub enum CoreRequest {
     Inspect {
         view_id: ServiceViewId,
     },
-    DebugInspect {
-        view_id: ServiceViewId,
-        query: crate::query::DebugQuery,
-    },
     Definition {
         view_id: ServiceViewId,
         path: PathBuf,
@@ -171,7 +167,6 @@ impl CoreRequest {
             | Self::DiagnosticsPage { view_id, .. }
             | Self::ResolveReference { view_id, .. }
             | Self::Inspect { view_id }
-            | Self::DebugInspect { view_id, .. }
             | Self::Definition { view_id, .. }
             | Self::DefinitionLocation { view_id, .. }
             | Self::References { view_id, .. }
@@ -330,13 +325,12 @@ pub enum CoreResponse {
     Updated,
     SnapshotSummary(SnapshotSummary),
     Status(crate::query::StatusRecord),
-    Modules(crate::query::QueryPage<crate::query::ModuleRecord>),
+    Modules(crate::query::QueryResult<crate::query::ModuleRecord>),
     Sources(Vec<SourceRecord>),
     Reloaded,
     Diagnostics(Vec<DiagnosticRecord>),
     DiagnosticsPage(crate::query::DiagnosticsResult),
     Inspect(InspectRecord),
-    DebugPage(crate::query::QueryPage<crate::query::DebugRecord>),
     Definition(Option<LocationRecord>),
     DefinitionLocation(Option<crate::query::Location>),
     References(Vec<LocationRecord>),
@@ -345,13 +339,13 @@ pub enum CoreResponse {
     Hover(Option<HoverRecord>),
     DocumentSymbols(Vec<DocumentSymbolRecord>),
     Outline(Vec<OutlineRecord>),
-    OutlinePage(crate::query::QueryPage<crate::query::OutlineHeading>),
-    SourcePage(crate::query::QueryPage<crate::query::SourceChunk>),
-    ReferencesPage(crate::query::QueryPage<crate::query::ReferenceRecord>),
+    OutlinePage(crate::query::QueryResult<crate::query::OutlineHeading>),
+    SourcePage(crate::query::QueryResult<crate::query::SourceChunk>),
+    ReferencesPage(crate::query::QueryResult<crate::query::ReferenceRecord>),
     WorkspaceSymbols(Vec<WorkspaceSymbolRecord>),
     ResolvedReference(RefTargetRecord),
     Search(Vec<SearchRecord>),
-    SearchPage(crate::query::QueryPage<crate::query::SearchHit>),
+    SearchPage(crate::query::QueryResult<crate::query::SearchHit>),
     IndexStatus(crate::query::IndexStatusRecord),
     QueryError(crate::query::ToolError),
     RenderedWorkspace(RenderedWorkspaceRecord),
@@ -1340,19 +1334,6 @@ impl NotistService {
                     response: CoreResponse::Outline(outline),
                 })
             }
-            CoreRequest::DebugInspect { view_id, query } => {
-                let (snapshot, result) = self
-                    .with_snapshot_identity(view_id, |workspace, identity| {
-                        crate::query::debug_inspect(workspace, identity, &query)
-                    })?;
-                Ok(CoreReply {
-                    snapshot,
-                    response: match result {
-                        Ok(page) => CoreResponse::DebugPage(page),
-                        Err(error) => CoreResponse::QueryError(error),
-                    },
-                })
-            }
             CoreRequest::DefinitionLocation { view_id, query } => {
                 let (snapshot, result) = self.with_snapshot(view_id, |workspace| {
                     crate::query::definition(workspace, &query)
@@ -1882,7 +1863,7 @@ fn attribute_records(attributes: &[notist_syntax::Attributes]) -> Vec<AttributeR
                     Attribute::Class(name) => classes.push(name.value.clone()),
                     Attribute::Tag(name) => tags.push(name.value.clone()),
                     Attribute::KeyValue { key, value, .. } => {
-                        properties.push((key.value.clone(), value.raw.clone()));
+                        properties.push((key.value.clone(), value.text().to_owned()));
                     }
                 }
             }
@@ -1910,7 +1891,7 @@ fn rendered_annotations(entries: &[AnnotationEntry]) -> Vec<RenderedAnnotation> 
                     Attribute::Class(name) => classes.push(name.value.clone()),
                     Attribute::Tag(name) => tags.push(name.value.clone()),
                     Attribute::KeyValue { key, value, .. } => {
-                        properties.push((key.value.clone(), value.raw.clone()));
+                        properties.push((key.value.clone(), value.text().to_owned()));
                     }
                 }
             }
@@ -2588,7 +2569,7 @@ mod tests {
     }
 
     #[test]
-    fn v2_queries_are_bounded_ranked_and_resumable() {
+    fn queries_are_complete_ranked_and_grouped() {
         let root = tempfile::TempDir::new_in(std::env::current_dir().unwrap()).unwrap();
         fs::write(root.path().join("Notist.toml"), "").unwrap();
         fs::write(
@@ -2646,11 +2627,6 @@ mod tests {
             fuzzy_distance: 1,
             wait_index_ms: 2000,
             snippet_bytes: 128,
-            page: crate::query::PageRequest {
-                limit: Some(1),
-                max_bytes: Some(4096),
-                cursor: None,
-            },
         };
         let first = service
             .execute(CoreRequest::SearchPage {
@@ -2661,34 +2637,13 @@ mod tests {
         let CoreResponse::SearchPage(first) = first.response else {
             panic!("expected search page")
         };
-        assert_eq!(first.records.len(), 1);
-        assert!(first.page.has_more);
+        assert_eq!(first.records.len(), 2);
         assert!(first.records[0].score.is_some());
         assert!(first.records[0].match_range.is_some());
         assert!(first.records[0].excerpt.to_lowercase().contains("workspace"));
-        assert!(serde_json::to_vec(&first).unwrap().len() < 4096);
-
-        let mut next_query = query.clone();
-        next_query.page.cursor = first.page.next_cursor;
-        let second = service
-            .execute(CoreRequest::SearchPage {
-                view_id,
-                query: next_query,
-            })
-            .unwrap();
-        let CoreResponse::SearchPage(second) = second.response else {
-            panic!("expected second search page")
-        };
-        assert_eq!(second.records.len(), 1);
-        assert_ne!(
-            first.records[0].unit_range.start,
-            second.records[0].unit_range.start
-        );
 
         let mut grouped_query = query.clone();
         grouped_query.group_by = None;
-        grouped_query.page.limit = Some(8);
-        grouped_query.page.cursor = None;
         let grouped = service
             .execute(CoreRequest::SearchPage {
                 view_id,
@@ -2718,7 +2673,6 @@ mod tests {
                     fuzzy_distance: 1,
                     wait_index_ms: 2000,
                     snippet_bytes: 128,
-                    page: Default::default(),
                 },
             })
             .unwrap();
@@ -2745,7 +2699,6 @@ mod tests {
                         fuzzy_distance: 1,
                         wait_index_ms: 2000,
                         snippet_bytes: 128,
-                        page: Default::default(),
                     },
                 })
                 .unwrap();
@@ -2764,22 +2717,14 @@ mod tests {
                         name: None,
                     },
                     window: Default::default(),
-                    page: crate::query::PageRequest {
-                        limit: None,
-                        max_bytes: Some(64 * 1024),
-                        cursor: None,
-                    },
                 },
             })
             .unwrap();
         let CoreResponse::SourcePage(read) = read.response else {
             panic!("expected source page")
         };
-        assert_eq!(
-            read.records[0].source.lines().count(),
-            crate::query::READ_DEFAULT_LINES
-        );
-        assert!(read.page.has_more);
+        assert!(read.records[0].reached_end);
+        assert!(read.records[0].source.lines().count() > 4);
 
         fs::write(
             root.path().join("README.not"),
@@ -2804,7 +2749,6 @@ mod tests {
                         fuzzy_distance: 1,
                         wait_index_ms: 2000,
                         snippet_bytes: 128,
-                        page: Default::default(),
                     },
                 })
                 .unwrap();

@@ -9,67 +9,41 @@
 一个 Agent 为了回答"属性表为什么是旁置的"而探索文档时，正常路径应当是：
 
 ```shell
-notist search "annotation table" docs
-notist outline vault::designs::language::type-system docs
-notist read vault::designs::language::property-table/属性表 docs
+notist inspect search "annotation table" docs
+notist inspect outline vault::designs::language::type-system docs
+notist inspect read vault::designs::language::property-table/属性表 docs
 ```
 
-第一条命令返回少量有排序的候选和短 excerpt，第二条只展开一个 Module，第三条才读取被选中的原文（按标题默认 id 定位到节）。当前公开投影是同一份有界 text：人、脚本与 Agent 看到相同的 ModulePath、相对路径、续读提示和 citation；需要完整机器 artifact 时走 export。
+第一条命令返回全部有排序的候选和短 excerpt，第二条只展开一个 Module，第三条才读取被选中的原文（按标题默认 id 定位到节）。当前公开投影是同一份完整 text：人、脚本与 Agent 看到相同的 ModulePath、相对路径和 citation。
 
-查询产品分为三种形态：
+查询产品分为两种形态：
 
 ```text
 ordinary query
-  bounded, composable, resumable
+  complete, line-per-record, composable
 
 text projection
   readable, same logical result, current public stdout
-
-full export
-  explicit file or artifact, never an accidental tool result
 ```
 
-普通查询始终由服务端 runtime policy 应用默认预算与硬上界；CLI 语义命令不暴露 page/budget 参数，需要完整数据时必须显式进入 export。这个规则同时避免终端被大结果淹没、脚本意外缓存整库正文，以及 Agent 把大段正文反复回放进对话上下文。
+完整结果契约（2026-08-29 裁决，推翻 2026-08-15 v3 的预算/cursor/next 制度）：collection 查询返回全部匹配，没有 item/byte 预算，没有翻页。契约护栏是输出形状而非截断器——输出正比于被查询的数据集，一行一记录，excerpt 不携带 full source；`--from-line`/`--depth` 型参数是语义窗口（调用者选择读取哪段），不是截断策略。无 scope 的宽查询灌入大量命中时，对策是收窄 `--scope` 与查询本身，如同 `rg` 的使用者。
 
 == Core Query Contract
 
 CLI 与未来 adapter 都把输入投影到协议无关的 core operation（#<vault::designs::host::client-interface-protocol/Client Interface>）：core operation 接受一个已经捕获的 WorkspaceSnapshot 和结构化 request，返回 typed result；CLI 只负责参数拼写与展示。
 
-颜色、pager 与 TTY 不能改变匹配集合、排序、source range 或错误分类。当前有限 CLI 命令不提供公开 JSON envelope；`QueryPage` 是 core 内部契约，text renderer 消费它，但它本身不是输出格式。
+颜色、TTY 不能改变匹配集合、排序、source range 或错误分类。当前有限 CLI 命令不提供公开 JSON envelope；`QueryResult` 是 core 内部契约，text renderer 消费它，但它本身不是输出格式。
 
 Collection query 的概念模型：
 
 ```text
-PageRequest {
-  limit
-  max_bytes
-  cursor?
-}
-
-QueryPage<T> {
+QueryResult<T> {
   snapshot
   items: [T]
-  page { requested_limit, applied_limit, returned, has_more, next_cursor? }
-  budget { requested_bytes, applied_bytes, logical_bytes, exhausted }
-  coverage { complete, stop_reason }
-  hints? [String]
 }
 ```
 
-`limit` 限制 item 数，`max_bytes` 限制规范化 logical result 的 UTF-8 bytes。两者同时生效；服务端在加入 item 前计算最终序列化大小，绝不截断已经投影的 text 或 UTF-8 scalar。实现可以继续用 compact 序列化作为内部计量代理，但该序列化不构成公开输出契约。
-
-`coverage.complete=false` 只表示当前页面没有覆盖完整匹配集合，不表示"未找到"。一旦 `read` 已经给出足够 authored evidence，调用者可以停止；只有当前页不足、任务要求穷举，或者结论依赖证明"不存在"时，才需要沿 cursor 读到 complete。CLI 的续读动作统一为 `notist next <TOKEN>`。`stop_reason` 区分 `item_limit`、`byte_budget` 与 query-specific 上限，是 core 内部观测字段，不进入普通 text 输出。
-
-普通 collection 的默认与硬上限（可版本化的产品 policy，不是语言常量）：
-
-| Operation | Default | Maximum |
-| --- | ---: | ---: |
-| modules | 20 items / 16 KiB | 100 / 64 KiB |
-| search | 8 items / 16 KiB | 100 / 64 KiB |
-| outline | 100 items / 16 KiB | 100 / 64 KiB |
-| references | 20 items / 16 KiB | 100 / 64 KiB |
-| diagnostics detail | 20 items / 16 KiB | 100 / 64 KiB |
-| read | 120 lines / 16 KiB | 1,000 lines / 64 KiB |
+`snapshot` 是查询开始时捕获的 SnapshotStamp；`items` 是完整匹配集合，没有 page、budget 或 coverage 元数据——一次性完整输出零命中即是 absence 证明，不需要沿翻页走到穷尽。确定性排序（见下）保证同一 snapshot 上同一查询的 items 顺序稳定。
 
 === ModulePath Scope
 
@@ -89,12 +63,11 @@ in_scope(module) =
 - ModulePath 必须是绝对路径（`vault::a::b`）。
 - 段边界匹配：`vault::foo` 匹配自身与 `vault::foo::*`，不匹配 `vault::foobar`。
 - include 可重复取并集；exclude 可重复，并在 include 之后生效。
-- scope 进入 query fingerprint 与 cursor binding；翻页只能改 page 窗口，不能改 scope。
-- scope 必须在 candidate generation 前下推，不能先物化全 Vault 结果再过滤。
+- scope 属于查询语义本身：对同一查询改变 scope 即是另一个查询。scope 必须在 candidate generation 前下推，不能先物化全 Vault 结果再过滤。
 
 CLI 投影见 #<vault::cli::inspect/Selector、Scope 与 Citation>。`check` 不接受 scope：它的 exit status 是完整 Vault 的健康结论。
 
-=== Snapshot Stamp 与可恢复 Cursor
+=== Snapshot Stamp
 
 一次 query 在开始时捕获一个 snapshot，所有 item、excerpt、range、source fingerprint 与计数都来自它：
 
@@ -110,9 +83,7 @@ SnapshotStamp {
 
 `daemon_instance` 必填：daemon 模式为实例 id，embedded 模式为本次调用合成的实例 id。Revision 只在所属 View 与 daemon instance 内有意义；`source_set_fingerprint` 覆盖参与该 snapshot 的 source identity、内容 fingerprint 与影响查询的配置 identity，使 `--no-daemon` 的独立进程也能判断当前 source set 是否仍是同一个语义世界。
 
-Cursor 是 opaque、self-contained、带 schema version 和完整性校验的 token（紧凑 binary + base64url）。它绑定 Vault/View identity（含 daemon instance 与 View identity）、source-set fingerprint、operation/selector/query/filter/mode 与排序 fingerprint、tokenizer/ranking/index schema version，以及上一 item 的稳定排序位置——token 内可自由选择表示（如预排序结果中的恢复偏移），跨页稳定性契约不变。翻页窗口由 runtime policy 决定；任何改变匹配集合或排序的参数必须与 cursor 一致。source set 变化返回 `cursor_stale`，schema 或 query fingerprint 不匹配返回 `invalid_cursor`。服务不能在新 snapshot 中猜测相近 byte offset 继续，也不能把 cursor 当成权限凭证。
-
-Source-order query 的稳定 key 是 ModulePath、Vault-relative path、match range 与 record kind；ranked query 的 key 是固定精度 score 的降序值、ModulePath、range 与 search-unit identity——浮点 backend score 必须先按 ranking version 量化再参与排序，使 tie 不依赖 hash 顺序或线程调度。
+Source-order query 的稳定 key 是 ModulePath、Vault-relative path、match range 与 record kind；ranked query 的 key 是固定精度 score 的降序值、ModulePath、range 与 search-unit identity——浮点 backend score 必须先按 ranking version 量化再参与排序，使 tie 不依赖 hash 顺序或线程调度。完整结果契约下这份确定性直接对调用者可见：同一 snapshot 上重复同一查询得到逐字节相同的输出。
 
 == Selector 与 Citation
 
@@ -141,6 +112,6 @@ Location {
 }
 ```
 
-snapshot 由所在 QueryPage 统一携带，Location 不再重复。普通 text 输出默认不显示 canonical absolute path，也不为每个 location 重复整篇 source。excerpt 是候选选择信息，不是独立事实来源；search 与 references 的结果必须引导调用者在形成事实性回答前使用 `read`。
+snapshot 由所在 QueryResult 统一携带，Location 不再重复。普通 text 输出默认不显示 canonical absolute path，也不为每个 location 重复整篇 source。excerpt 是候选选择信息，不是独立事实来源；search 与 references 的结果必须引导调用者在形成事实性回答前使用 `read`。
 
 由于普通 CLI 不输出 JSON envelope，`read` 的 text 投影必须把 citation 所需的机器句柄显式打印出来：ModulePath、relative path、实际 UTF-8 byte range、line range 与 source fingerprint。读取结果保留这些精确值，使引用、后续 query 与外部写入方的前置校验能指向同一 authored source。

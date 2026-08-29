@@ -27,7 +27,6 @@ use tokio_stream::{StreamExt, once};
 use crate::build::{
     SiteOptions, merge_diagnostics, render_workspace, write_rendered_site_with_plugins,
 };
-use crate::output::OutputFormat;
 use crate::service::LocalNotistClient;
 
 /// One event on the live-reload channel: a published site revision, or the
@@ -45,7 +44,6 @@ pub fn run(
     open: bool,
     color: ColorChoice,
     no_daemon: bool,
-    format: OutputFormat,
 ) -> Result<ExitCode, Box<dyn Error>> {
     let root = dunce::canonicalize(root)?;
     let temporary = tempfile::tempdir()?;
@@ -63,7 +61,7 @@ pub fn run(
     };
     let initial_snapshot_revision = opened.snapshot.revision;
     let diagnostics = rebuild_preview_site(&mut client, view_id, &site, &root, color)?;
-    print_rebuild_status(format, 1, &diagnostics)?;
+    print_rebuild_status(1, &diagnostics)?;
 
     let rebuild_site = site.clone();
     let rebuild_root = root.clone();
@@ -83,11 +81,7 @@ pub fn run(
                 let summary = match client.request(CoreRequest::SnapshotSummary { view_id }) {
                     Ok(summary) => summary,
                     Err(error) => {
-                        emit_preview_error(
-                            format,
-                            "snapshot_observation_failed",
-                            &error.to_string(),
-                        );
+                        emit_preview_error(&error.to_string());
                         continue;
                     }
                 };
@@ -101,11 +95,11 @@ pub fn run(
                     Ok(diagnostics) => {
                         let revision = rebuild_revision.fetch_add(1, Ordering::SeqCst) + 1;
                         let _ = rebuild_updates.send(PreviewEvent::Revision(revision));
-                        if let Err(error) = print_rebuild_status(format, revision, &diagnostics) {
-                            emit_preview_error(format, "output_failed", &error.to_string());
+                        if let Err(error) = print_rebuild_status(revision, &diagnostics) {
+                            emit_preview_error(&error.to_string());
                         }
                     }
-                    Err(error) => emit_preview_error(format, "rebuild_failed", &error.to_string()),
+                    Err(error) => emit_preview_error(&error.to_string()),
                 }
             }
             rebuild_site.delete_retired();
@@ -122,16 +116,11 @@ pub fn run(
         revision,
         updates,
         rebuild_stop.clone(),
-        format,
     ));
 
     rebuild_stop.store(true, Ordering::Release);
     if rebuild_thread.join().is_err() {
-        emit_preview_error(
-            format,
-            "worker_stopped",
-            "rebuild worker stopped unexpectedly",
-        );
+        emit_preview_error("rebuild worker stopped unexpectedly");
     }
     server_result?;
     Ok(ExitCode::SUCCESS)
@@ -175,17 +164,9 @@ fn rebuild_preview_site(
 }
 
 fn print_rebuild_status(
-    format: OutputFormat,
     revision: u64,
     diagnostics: &[notist_service::DiagnosticRecord],
 ) -> io::Result<()> {
-    if format.is_json() {
-        return crate::output::emit_event(
-            "preview",
-            "rebuilt",
-            serde_json::json!({"revision": revision, "diagnostics": diagnostics}),
-        );
-    }
     crate::emit_service_diagnostics(diagnostics);
     if diagnostics.is_empty() {
         println!("preview revision {revision} built");
@@ -198,13 +179,8 @@ fn print_rebuild_status(
     Ok(())
 }
 
-fn emit_preview_error(format: OutputFormat, event: &str, message: &str) {
-    if format.is_json() {
-        let _ =
-            crate::output::emit_event("preview", event, serde_json::json!({"message": message}));
-    } else {
-        eprintln!("notist preview: {message}");
-    }
+fn emit_preview_error(message: &str) {
+    eprintln!("notist preview: {message}");
 }
 
 #[derive(Clone)]
@@ -301,23 +277,11 @@ async fn serve(
     revision: Arc<AtomicU64>,
     updates: broadcast::Sender<PreviewEvent>,
     rebuild_stop: Arc<AtomicBool>,
-    format: OutputFormat,
 ) -> Result<(), Box<dyn Error>> {
     if !host.is_loopback() {
-        if format.is_json() {
-            crate::output::emit_event(
-                "preview",
-                "warning",
-                serde_json::json!({
-                    "code": "non_loopback",
-                    "message": format!("serving document content on non-loopback address {host}"),
-                }),
-            )?;
-        } else {
-            eprintln!(
-                "notist preview: warning: serving document content on non-loopback address {host}"
-            );
-        }
+        eprintln!(
+            "notist preview: warning: serving document content on non-loopback address {host}"
+        );
     }
 
     // Try the requested port first; if it is taken, fall back to letting the
@@ -331,22 +295,9 @@ async fn serve(
                     io::ErrorKind::AddrInUse | io::ErrorKind::AddrNotAvailable
                 ) =>
         {
-            if format.is_json() {
-                crate::output::emit_event(
-                    "preview",
-                    "warning",
-                    serde_json::json!({
-                        "code": "port_in_use",
-                        "message": format!(
-                            "port {port} is unavailable, falling back to an ephemeral port"
-                        ),
-                    }),
-                )?;
-            } else {
-                eprintln!(
-                    "notist preview: warning: port {port} is unavailable, falling back to an ephemeral port"
-                );
-            }
+            eprintln!(
+                "notist preview: warning: port {port} is unavailable, falling back to an ephemeral port"
+            );
             tokio::net::TcpListener::bind(SocketAddr::new(host, 0)).await?
         }
         Err(error) => return Err(error.into()),
@@ -367,22 +318,14 @@ async fn serve(
         address
     };
     let url = format!("http://{browser_address}/");
-    if format.is_json() {
-        crate::output::emit_event(
-            "preview",
-            "listening",
-            serde_json::json!({"url": url, "address": address}),
-        )?;
-    } else {
-        println!("preview server listening on {url}");
-    }
+    println!("preview server listening on {url}");
 
     if open && let Err(error) = open::that_detached(&url) {
-        emit_preview_error(format, "browser_open_failed", &error.to_string());
+        emit_preview_error(&error.to_string());
     }
 
     axum::serve(listener, app)
-        .with_graceful_shutdown(shutdown_signal(format, updates, rebuild_stop))
+        .with_graceful_shutdown(shutdown_signal(updates, rebuild_stop))
         .await?;
     Ok(())
 }
@@ -462,12 +405,11 @@ fn revision_stream(
 }
 
 async fn shutdown_signal(
-    format: OutputFormat,
     updates: broadcast::Sender<PreviewEvent>,
     rebuild_stop: Arc<AtomicBool>,
 ) {
     if let Err(error) = tokio::signal::ctrl_c().await {
-        emit_preview_error(format, "shutdown_signal_failed", &error.to_string());
+        emit_preview_error(&error.to_string());
     }
     // Stop the rebuild worker immediately (no more error spam against a
     // possibly dead service) and end every live-reload stream so the server
