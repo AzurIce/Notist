@@ -7,7 +7,24 @@ description: Use Notist to create, edit, validate, search, and navigate `.not` k
 
 Use the installed `notist` executable as the authority for its supported command surface. Investigation commands live under `notist inspect`; `notist inspect --help` is the single discovery entry. The official docs Vault describes the same surface in `cli/README.not` (governance, global parameters, errors) and `cli/inspect.not` (per-command specs).
 
-Notist markup is not Markdown: bold is `*text*` (single asterisk), italic is `_text_`, underline is `__text__`, strike is `~~text~~`. `**bold**` is not markup — the asterisks render literally. Do not carry Markdown emphasis habits into `.not` files; run `notist check` after editing.
+Notist markup is not Markdown, and `.not` source has two contexts: markup (prose) and code (expressions). `#` embeds a code expression into markup. The floor below keeps edits safe; for anything beyond it, search the Vault — the authoritative quick reference is `notist inspect read vault::cheatsheet <DOCS_ROOT>`.
+
+Markup context:
+
+- `= Title` — heading; levels are `=`, `==`, `===`, ...
+- A blank line starts a new paragraph; a single newline is a soft break and stays inside the same paragraph.
+- `*strong*`, `_emph_`, `__underline__`, `~~strike~~` — emphasis is not Markdown: `**bold**` is not markup and the asterisks render literally.
+- `@id`, `#tag`, `.class`, `key=value` — annotations, postfix on an item; `@![... ]` at the top of a file is a module attribute.
+- `#<vault::module/target>` — resolved link (not `[[wikilinks]]`).
+- `\#` and `\@` — a literal `#` or `@` where notist would read it as syntax takes a `\` prefix; bare `[` and `]` are plain text and need no escape.
+
+Code context — reached through a `#` embedded expression, a `{ }` block, or a `#[ ]` scope; their content follows code rules, not markup rules:
+
+- `{ ... }` — code block whose value joins into the document; `#[ ... ]` — manual scope.
+- `#import <dir>::{name}` — import.
+- `//` and `/* */` are comments here; in markup they are plain text.
+
+Do not carry Markdown habits into `.not` files; run `notist check` after editing.
 
 ## Consult Official Documentation
 

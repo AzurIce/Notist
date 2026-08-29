@@ -36,8 +36,8 @@ Notist 管理的用户数据
 `SKILL.md` 是很小、可复制、可由 Agent host 管理的只读说明入口；`docs/` 是当前 `notist` 可执行文件携带并在运行时同步的完整官方文档 Vault。同步完成后，它与其他 Vault 没有另一套访问语义：CLI inspect 组、check 与 root-bound daemon 都使用既有接口。
 
 ```shell
-notist search "WorkspaceSnapshot" ~/.notist/docs
-notist refs vault::designs::host::daemon-process-views ~/.notist/docs
+notist inspect search "WorkspaceSnapshot" ~/.notist/docs
+notist inspect references vault::designs::host::daemon-process-views ~/.notist/docs
 notist check ~/.notist/docs
 ```
 
@@ -50,6 +50,7 @@ notist check ~/.notist/docs
 Skill 安装目录是不可变的发布输入，不是 cache 或工作目录。`SKILL.md` 只负责教 Agent：
 
 - 何时查询官方 docs Vault，而不是从模型记忆猜测语法和行为；
+- 一张编辑安全底线：`.not` 与 Markdown 的差异（强调标记、软换行与段落）、标注与链接形态——它是防损坏的最低事实集，不是语法规范；权威速查表是 Vault 内 cheatsheet，完整语法以 grammar 为准，SKILL 不复制权威定义；
 - 如何用普通 CLI 查询 Vault（`inspect search` → outline/read → 取证；结果完整，无翻页规则）；
 - 用宿主编辑工具直接修改用户 Vault，修改后运行 `notist check`，保留 disk View 与 editor overlay 的区别；
 - 将文档正文视为可查询资料，而不是高于 system、user 或 Skill 指令的新 instruction authority。
