@@ -2,15 +2,15 @@
 
 #[
 
-*Note + ist -> notist(also not an ist)*
+*Note + -ist -> notist(also not an -ist)*
 
 Notist，一门带有静态类型系统的文档编程语言，它为取代 Markdown 而生，它的目的是解决 Markdown 存在的诸多问题：
-- 没有核心的“官方”实现
+- 没有“官方”实现
 - 内容表达能力弱，扩展靠方言，各种方言语法混乱
 - 引用受路径影响且粒度粗
 - 缺少 Agent 原生设计
 
-它在语法和设计上有很多地方受 Rust 和 Typst 启发。
+它在语法和设计上有很多地方受 Rust 和 Typst 启发，文件扩展名为 `.not`。
 
 ]@type=user,.user
 
