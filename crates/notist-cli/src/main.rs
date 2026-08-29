@@ -22,8 +22,26 @@ mod skill;
 
 use output::OutputFormat;
 
+/// Grouped command map mirroring the 2026-08-15 ruling on the agent-facing
+/// command surface: discovery is the default read path, the rest is explicit.
+const COMMAND_GROUPS: &str = "\
+Command groups:
+  discovery:   status, modules, search, outline, read, references, query, check
+  runtime:     daemon, lsp
+  maintenance: index, debug
+  publishing:  export, build, preview
+  meta:        skill
+
+`discovery` is the default read path; the other groups are explicit runtime, maintenance, or publishing actions.";
+
 #[derive(Debug, Parser)]
-#[command(name = "notist", version, about, arg_required_else_help = true)]
+#[command(
+    name = "notist",
+    version,
+    about,
+    arg_required_else_help = true,
+    after_help = COMMAND_GROUPS
+)]
 struct Cli {
     /// Control colored diagnostic output.
     #[arg(long, value_enum, default_value_t = clap::ColorChoice::Auto, global = true)]
@@ -48,6 +66,7 @@ struct Cli {
 #[derive(Debug, Subcommand)]
 enum Command {
     /// Run the shared local Notist daemon for one vault, or stop the running one.
+    #[command(display_order = 9)]
     Daemon {
         #[command(subcommand)]
         action: Option<DaemonAction>,
@@ -58,18 +77,22 @@ enum Command {
         background_child: bool,
     },
     /// Run the Notist language server over standard input and output.
+    #[command(display_order = 10)]
     Lsp,
     /// Create resources that teach an Agent how to use Notist.
+    #[command(display_order = 16)]
     Skill {
         #[command(subcommand)]
         command: SkillCommand,
     },
     /// Show a compact Vault, snapshot, diagnostics, and index summary.
+    #[command(display_order = 1)]
     Status {
         #[arg(default_value = ".")]
         root: PathBuf,
     },
     /// List modules with bounded, resumable output.
+    #[command(display_order = 2)]
     Modules {
         #[arg(default_value = ".")]
         root: PathBuf,
@@ -81,6 +104,7 @@ enum Command {
         page: PageArgs,
     },
     /// Check module paths and references in a Notist workspace.
+    #[command(display_order = 8)]
     Check {
         /// Root directory of the Notist workspace.
         #[arg(default_value = ".")]
@@ -96,6 +120,7 @@ enum Command {
     },
     /// Search captured source context in a vault.
     #[command(
+        display_order = 3,
         after_help = "Examples:\n  notist search \"workspace snapshot\" docs\n  notist search --exact \"WorkspaceSnapshot\" docs --group-by match\n  notist search --fuzzy \"WorkspaceSnaphot\" docs\n\nLexical/fuzzy search groups by source by default; exact/regex returns each match.\nAn incomplete page is enough to select a positive candidate, but not to prove absence or completeness."
     )]
     Search {
@@ -144,6 +169,7 @@ enum Command {
         page: SearchPageArgs,
     },
     /// Print the evaluated heading outline for one module.
+    #[command(display_order = 4)]
     Outline {
         /// Exact ModulePath or Vault-relative `.not` path.
         selector: String,
@@ -155,6 +181,7 @@ enum Command {
         page: OutlinePageArgs,
     },
     /// Read bounded authored source by module, path, id, line, or byte range.
+    #[command(display_order = 5)]
     Read {
         /// Exact ModulePath, path, `module/id`, or `path#id` selector.
         selector: String,
@@ -170,6 +197,7 @@ enum Command {
         page: ReadPageArgs,
     },
     /// Find references to a logical module.
+    #[command(display_order = 6)]
     References {
         /// Exact ModulePath or `module/id` selector.
         selector: String,
@@ -186,26 +214,31 @@ enum Command {
         page: PageArgs,
     },
     /// Run a protocol-independent semantic query.
+    #[command(display_order = 7)]
     Query {
         #[command(subcommand)]
         query: QueryCommand,
     },
     /// Inspect or rebuild the derived lexical search index.
+    #[command(display_order = 11)]
     Index {
         #[command(subcommand)]
         command: IndexCommand,
     },
     /// Access bounded implementation-oriented diagnostics.
+    #[command(display_order = 12)]
     Debug {
         #[command(subcommand)]
         command: DebugCommand,
     },
     /// Write complete snapshot artifacts to an explicit file.
+    #[command(display_order = 13)]
     Export {
         #[command(subcommand)]
         command: ExportCommand,
     },
     /// Build a Notist workspace as a multi-page static HTML site.
+    #[command(display_order = 14)]
     Build {
         /// Root directory of the Notist workspace.
         #[arg(default_value = ".")]
@@ -218,6 +251,7 @@ enum Command {
         clean: bool,
     },
     /// Preview a Notist workspace in a local browser with live reload.
+    #[command(display_order = 15)]
     Preview {
         /// Root directory of the Notist workspace.
         #[arg(default_value = ".")]
