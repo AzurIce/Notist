@@ -14,7 +14,6 @@ use notist_service::{
 };
 use percent_encoding::{AsciiSet, CONTROLS, NON_ALPHANUMERIC, utf8_percent_encode};
 
-use crate::output::OutputFormat;
 use crate::service::LocalNotistClient;
 
 const URL_PATH_SEGMENT_ENCODE_SET: &AsciiSet = &CONTROLS
@@ -46,7 +45,7 @@ fn module_attributes_order(attributes: &[AttributeRecord]) -> Option<i64> {
     attributes.iter().find_map(|attribute| {
         attribute.properties.iter().find_map(|(key, value)| {
             if key == NAV_ORDER_KEY {
-                value.trim_matches('"').parse::<i64>().ok()
+                value.parse::<i64>().ok()
             } else {
                 None
             }
@@ -94,7 +93,6 @@ pub fn run(
     _color: ColorChoice,
     no_daemon: bool,
     clean: bool,
-    format: OutputFormat,
 ) -> Result<ExitCode, Box<dyn Error>> {
     let mut client = LocalNotistClient::connect(no_daemon, ClientKind::Cli, root.clone())?;
     let opened = client.request(CoreRequest::OpenView {
@@ -130,29 +128,7 @@ pub fn run(
     copy_plugin_assets(&root, &output)?;
     let mut diagnostics = rendered.analysis_diagnostics.clone();
     merge_diagnostics(&mut diagnostics, rendered.evaluation_diagnostics.clone());
-    let error_count = diagnostics
-        .iter()
-        .filter(|diagnostic| diagnostic.severity == "error")
-        .count();
     let diagnostic_count = diagnostics.len();
-    let ok = error_count == 0;
-    if format.is_json() {
-        crate::output::emit_result(
-            "build",
-            ok,
-            serde_json::json!({
-                "root": root,
-                "output": output,
-                "page_count": result.page_count,
-                "diagnostics": diagnostics,
-            }),
-        )?;
-        return Ok(if ok {
-            ExitCode::SUCCESS
-        } else {
-            ExitCode::FAILURE
-        });
-    }
     crate::emit_service_diagnostics(&diagnostics);
 
     if diagnostic_count == 0 {

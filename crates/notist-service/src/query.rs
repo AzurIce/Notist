@@ -3,15 +3,12 @@ use std::io;
 use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
 
-use base64::Engine as _;
-use base64::engine::general_purpose::URL_SAFE_NO_PAD;
 use notist_analysis::{
     DiagnosticKind, DiagnosticSeverity as AnalysisSeverity, MissingReason, RefTarget,
     WorkspaceSnapshot,
 };
 use notist_model::{ModulePath, TextRange};
 use regex::RegexBuilder;
-use serde::de::DeserializeOwned;
 use serde::{Deserialize, Serialize};
 use serde_json::Value as JsonValue;
 use sha2::{Digest, Sha256};
@@ -25,71 +22,28 @@ use unicode_normalization::UnicodeNormalization;
 
 use crate::{SnapshotIdentity, ViewKind};
 
-pub const DEFAULT_MAX_BYTES: usize = 16 * 1024;
-pub const HARD_MAX_BYTES: usize = 64 * 1024;
-pub const MIN_MAX_BYTES: usize = 4 * 1024;
-pub const CURSOR_MAX_BYTES: usize = 4096;
-pub const SEARCH_DEFAULT_LIMIT: usize = 8;
-pub const DEFAULT_LIMIT: usize = 20;
-pub const HARD_LIMIT: usize = 100;
 pub const DEFAULT_SNIPPET_BYTES: usize = 256;
 pub const MAX_SNIPPET_BYTES: usize = 2048;
-pub const READ_DEFAULT_LINES: usize = 120;
 const MAX_SEARCH_CANDIDATES: usize = 10_000;
 const REGEX_SCAN_DEADLINE: Duration = Duration::from_secs(2);
 pub const RANKING_VERSION: &str = "bm25-v3";
 pub const TOKENIZER_VERSION: &str = "notist-unicode-v1";
 pub const INDEX_SCHEMA_VERSION: u32 = 4;
 
-#[derive(Clone, Debug, Serialize, Deserialize, Default)]
-pub struct PageRequest {
-    #[serde(default)]
-    pub limit: Option<usize>,
-    #[serde(default)]
-    pub max_bytes: Option<usize>,
-    #[serde(default)]
-    pub cursor: Option<String>,
-}
-
+/// Complete query result: every matching record against the captured
+/// snapshot, with no paging or budget truncation (2026-08-29 ruling).
 #[derive(Clone, Debug, Serialize, Deserialize)]
-pub struct PageInfo {
-    pub requested_limit: usize,
-    pub applied_limit: usize,
-    pub returned: usize,
-    pub has_more: bool,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub next_cursor: Option<String>,
-}
-
-#[derive(Clone, Debug, Serialize, Deserialize)]
-pub struct BudgetInfo {
-    pub requested_bytes: usize,
-    pub applied_bytes: usize,
-    pub logical_bytes: usize,
-    pub exhausted: bool,
-}
-
-#[derive(Clone, Debug, Serialize, Deserialize)]
-pub struct CoverageInfo {
-    pub complete: bool,
-    pub stop_reason: String,
-}
-
-#[derive(Clone, Debug, Serialize, Deserialize)]
-pub struct QueryPage<T> {
+pub struct QueryResult<T> {
     pub snapshot: SnapshotIdentity,
     pub records: Vec<T>,
-    pub page: PageInfo,
-    pub budget: BudgetInfo,
-    pub coverage: CoverageInfo,
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub search: Option<SearchPageMetadata>,
+    pub search: Option<SearchMetadata>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub hints: Vec<String>,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
-pub struct SearchPageMetadata {
+pub struct SearchMetadata {
     pub group_by: SearchGroup,
     pub ordering: String,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -177,9 +131,6 @@ impl Selector {
         }
     }
 
-    fn fingerprint(&self) -> String {
-        serde_json::to_string(self).unwrap_or_default()
-    }
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -226,8 +177,6 @@ pub struct ModulesQuery {
     pub prefix: Option<String>,
     #[serde(default)]
     pub kind: ModuleKind,
-    #[serde(default)]
-    pub page: PageRequest,
 }
 
 #[derive(Clone, Copy, Debug, Default, Serialize, Deserialize)]
@@ -244,8 +193,6 @@ pub struct OutlineQuery {
     pub selector: Selector,
     #[serde(default = "default_outline_depth")]
     pub depth: u8,
-    #[serde(default)]
-    pub page: PageRequest,
 }
 
 fn default_outline_depth() -> u8 {
@@ -279,8 +226,6 @@ pub struct ReadQuery {
     pub selector: Selector,
     #[serde(default)]
     pub window: ReadWindow,
-    #[serde(default)]
-    pub page: PageRequest,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -308,8 +253,6 @@ pub struct ReferencesQuery {
     pub include_definition: bool,
     #[serde(default = "default_snippet_bytes")]
     pub snippet_bytes: usize,
-    #[serde(default)]
-    pub page: PageRequest,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -405,8 +348,6 @@ pub struct SearchQuery {
     pub wait_index_ms: u64,
     #[serde(default = "default_snippet_bytes")]
     pub snippet_bytes: usize,
-    #[serde(default)]
-    pub page: PageRequest,
 }
 
 impl SearchQuery {
@@ -488,8 +429,6 @@ pub struct DiagnosticsQuery {
     pub summary_only: bool,
     #[serde(default)]
     pub severity: DiagnosticSeverity,
-    #[serde(default)]
-    pub page: PageRequest,
 }
 
 #[derive(Clone, Copy, Debug, Default, Serialize, Deserialize)]
@@ -529,53 +468,7 @@ pub struct DiagnosticItem {
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct DiagnosticsResult {
     pub summary: DiagnosticSummary,
-    pub diagnostics: QueryPage<DiagnosticItem>,
-}
-
-#[derive(Clone, Copy, Debug, Default, Serialize, Deserialize)]
-#[serde(rename_all = "snake_case")]
-pub enum DebugSection {
-    #[default]
-    Modules,
-    References,
-    Semantic,
-}
-
-#[derive(Clone, Debug, Default, Serialize, Deserialize)]
-pub struct DebugQuery {
-    #[serde(default)]
-    pub section: DebugSection,
-    #[serde(default)]
-    pub module: Option<String>,
-    #[serde(default)]
-    pub page: PageRequest,
-}
-
-#[derive(Clone, Debug, Serialize, Deserialize)]
-pub struct DebugRecord {
-    pub module: String,
-    pub kind: String,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub name: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub target: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub range: Option<super::request::ByteRange>,
-}
-
-#[derive(Clone, Debug, Serialize, Deserialize)]
-struct CursorPayload {
-    version: u32,
-    operation: String,
-    vault_fingerprint: String,
-    view_kind: String,
-    #[serde(default)]
-    daemon_instance: String,
-    #[serde(default)]
-    view_id: u64,
-    source_fingerprint: String,
-    query_fingerprint: String,
-    offset: usize,
+    pub diagnostics: QueryResult<DiagnosticItem>,
 }
 
 #[derive(Clone, Debug)]
@@ -590,7 +483,7 @@ pub fn list_modules(
     workspace: &WorkspaceSnapshot,
     snapshot: &SnapshotIdentity,
     query: &ModulesQuery,
-) -> Result<QueryPage<ModuleRecord>, ToolError> {
+) -> Result<QueryResult<ModuleRecord>, ToolError> {
     let prefix = query.prefix.as_deref();
     let mut records = workspace
         .modules()
@@ -631,21 +524,19 @@ pub fn list_modules(
         })
         .collect::<Vec<_>>();
     records.sort_by(|left, right| left.module.cmp(&right.module));
-    page(
-        snapshot,
-        "modules",
-        &serde_json::to_string(&(query.prefix.clone(), query.kind)).unwrap(),
-        &query.page,
-        DEFAULT_LIMIT,
+    Ok(QueryResult {
+        snapshot: snapshot.clone(),
         records,
-    )
+        search: None,
+        hints: Vec::new(),
+    })
 }
 
 pub fn outline(
     workspace: &WorkspaceSnapshot,
     snapshot: &SnapshotIdentity,
     query: &OutlineQuery,
-) -> Result<QueryPage<OutlineHeading>, ToolError> {
+) -> Result<QueryResult<OutlineHeading>, ToolError> {
     if !(1..=6).contains(&query.depth) {
         return Err(ToolError::new(
             "invalid_argument",
@@ -694,21 +585,19 @@ pub fn outline(
         });
     }
     records.sort_by_key(|item| item.location.byte_range.start);
-    page(
-        snapshot,
-        "outline",
-        &format!("{}:{}", query.selector.fingerprint(), query.depth),
-        &query.page,
-        HARD_LIMIT,
+    Ok(QueryResult {
+        snapshot: snapshot.clone(),
         records,
-    )
+        search: None,
+        hints: Vec::new(),
+    })
 }
 
 pub fn read_source(
     workspace: &WorkspaceSnapshot,
     snapshot: &SnapshotIdentity,
     query: &ReadQuery,
-) -> Result<QueryPage<SourceChunk>, ToolError> {
+) -> Result<QueryResult<SourceChunk>, ToolError> {
     let resolved = resolve_source(workspace, &query.selector)?;
     if query.window.byte_range.is_some()
         && (query.window.from_line.is_some() || query.window.lines.is_some())
@@ -724,14 +613,10 @@ pub fn read_source(
             "lines requires from-line",
         ));
     }
-    if query
-        .window
-        .lines
-        .is_some_and(|lines| lines == 0 || lines > 1000)
-    {
+    if query.window.lines.is_some_and(|lines| lines == 0) {
         return Err(ToolError::new(
             "invalid_argument",
-            "lines must be between 1 and 1000",
+            "lines must be at least 1",
         ));
     }
     let source = &resolved.source.text;
@@ -753,92 +638,29 @@ pub fn read_source(
                 "from-line is outside the selected source",
             ));
         };
-        let count = query.window.lines.unwrap_or(READ_DEFAULT_LINES);
+        let count = query.window.lines.unwrap_or(usize::MAX);
         let end = starts
             .get(start_index.saturating_add(count))
             .copied()
             .unwrap_or(source.len());
         selection = TextRange::new(start.max(selection.start), end.min(selection.end));
     }
-    let query_fp = format!("{}:{:?}", query.selector.fingerprint(), query.window);
-    let start = cursor_offset(snapshot, "read", &query_fp, &query.page)?.unwrap_or(selection.start);
-    if start < selection.start || start > selection.end {
-        return Err(ToolError::new(
-            "invalid_cursor",
-            "read cursor is outside the selected range",
-        )
-        .with_hint(
-            "resend the original selector and read window unchanged with cursor, or omit cursor to restart",
-        ));
-    }
-    let max_bytes = applied_max_bytes(&query.page)?;
-    let source_budget = max_bytes.saturating_sub(2048).max(256);
-    let page_end = if query.window.from_line.is_none() && query.window.byte_range.is_none() {
-        let starts = line_starts(source);
-        let current_line = starts
-            .partition_point(|line_start| *line_start <= start)
-            .saturating_sub(1);
-        starts
-            .get(current_line.saturating_add(READ_DEFAULT_LINES))
-            .copied()
-            .unwrap_or(selection.end)
-            .min(selection.end)
-    } else {
-        selection.end
-    };
-    let end = floor_char_boundary(source, (start + source_budget).min(page_end));
-    let end = if end == start && start < selection.end {
-        source[start..]
-            .char_indices()
-            .nth(1)
-            .map_or(selection.end, |(offset, _)| start + offset)
-    } else {
-        end
-    };
-    let reached_end = end >= selection.end;
     let chunk = SourceChunk {
         location: location(
             workspace,
             resolved.module,
             resolved.source,
-            TextRange::new(start, end),
+            selection,
             resolved.name.clone(),
         ),
-        source: source[start..end].to_owned(),
-        reached_end,
+        source: source[selection.start..selection.end].to_owned(),
+        reached_end: true,
     };
-    let next_cursor = (!reached_end).then(|| encode_cursor("read", snapshot, &query_fp, end));
-    let records = vec![chunk];
-    let logical_bytes = serde_json::to_vec(&records)
-        .map(|value| value.len())
-        .unwrap_or(0);
-    Ok(QueryPage {
+    Ok(QueryResult {
         snapshot: snapshot.clone(),
-        records,
-        page: PageInfo {
-            requested_limit: 1,
-            applied_limit: 1,
-            returned: 1,
-            has_more: !reached_end,
-            next_cursor,
-        },
-        budget: BudgetInfo {
-            requested_bytes: query.page.max_bytes.unwrap_or(DEFAULT_MAX_BYTES),
-            applied_bytes: max_bytes,
-            logical_bytes,
-            exhausted: !reached_end,
-        },
-        coverage: CoverageInfo {
-            complete: reached_end,
-            stop_reason: if reached_end {
-                "complete"
-            } else {
-                "byte_budget"
-            }
-            .into(),
-        },
+        records: vec![chunk],
         search: None,
-        hints: continuation_hints(!reached_end),
+        hints: Vec::new(),
     })
 }
 
@@ -903,7 +725,7 @@ pub fn references(
     workspace: &WorkspaceSnapshot,
     snapshot: &SnapshotIdentity,
     query: &ReferencesQuery,
-) -> Result<QueryPage<ReferenceRecord>, ToolError> {
+) -> Result<QueryResult<ReferenceRecord>, ToolError> {
     validate_snippet(query.snippet_bytes)?;
     let resolved = resolve_source(workspace, &query.selector)?;
     let target_name = resolved.name.as_deref();
@@ -1007,19 +829,12 @@ pub fn references(
                 .cmp(&right.location.byte_range.start),
         )
     });
-    page(
-        snapshot,
-        "references",
-        &format!(
-            "{}:{:?}:{}",
-            query.selector.fingerprint(),
-            query.direction,
-            query.include_definition
-        ),
-        &query.page,
-        DEFAULT_LIMIT,
+    Ok(QueryResult {
+        snapshot: snapshot.clone(),
         records,
-    )
+        search: None,
+        hints: Vec::new(),
+    })
 }
 
 pub fn definition(
@@ -1180,146 +995,25 @@ pub fn diagnostics(
         total_diagnostics: counts.values().sum(),
         counts_by_code: counts,
     };
-    let diagnostics = page(
-        snapshot,
-        "diagnostics",
-        &format!("{:?}:{:?}", query.scope, query.severity),
-        &query.page,
-        DEFAULT_LIMIT,
+    let diagnostics = QueryResult {
+        snapshot: snapshot.clone(),
         records,
-    )?;
+        search: None,
+        hints: Vec::new(),
+    };
     Ok(DiagnosticsResult {
         summary,
         diagnostics,
     })
 }
 
-pub fn debug_inspect(
-    workspace: &WorkspaceSnapshot,
-    snapshot: &SnapshotIdentity,
-    query: &DebugQuery,
-) -> Result<QueryPage<DebugRecord>, ToolError> {
-    let accepts = |module: &str| {
-        query
-            .module
-            .as_deref()
-            .is_none_or(|filter| module == filter)
-    };
-    let mut records = Vec::new();
-    match query.section {
-        DebugSection::Modules => {
-            for module in workspace.modules() {
-                let name = module.logical_path.to_string();
-                if accepts(&name) {
-                    records.push(DebugRecord {
-                        module: name,
-                        kind: if module.file_id.is_some() {
-                            "source"
-                        } else {
-                            "virtual"
-                        }
-                        .into(),
-                        name: None,
-                        target: None,
-                        range: None,
-                    });
-                }
-            }
-        }
-        DebugSection::References => {
-            for reference in workspace.references() {
-                let module = reference.source_module.to_string();
-                if accepts(&module) {
-                    records.push(DebugRecord {
-                        module,
-                        kind: "reference".into(),
-                        name: reference.target_name.clone(),
-                        target: Some(reference.target_module.to_string()),
-                        range: Some(reference.range.into()),
-                    });
-                }
-            }
-        }
-        DebugSection::Semantic => {
-            for module in workspace
-                .modules()
-                .filter(|module| module.file_id.is_some())
-            {
-                let module_name = module.logical_path.to_string();
-                if !accepts(&module_name) {
-                    continue;
-                }
-                for symbol in workspace.document_symbols(module.file_id.unwrap()) {
-                    records.push(DebugRecord {
-                        module: module_name.clone(),
-                        kind: "heading".into(),
-                        name: Some(symbol.name),
-                        target: None,
-                        range: Some(symbol.range.into()),
-                    });
-                }
-                for label in workspace
-                    .labels()
-                    .iter()
-                    .filter(|label| label.module == module.logical_path)
-                {
-                    records.push(DebugRecord {
-                        module: module_name.clone(),
-                        kind: "annotation".into(),
-                        name: Some(label.name.clone()),
-                        target: None,
-                        range: Some(label.range.into()),
-                    });
-                }
-            }
-        }
-    }
-    records.sort_by(|left, right| {
-        left.module.cmp(&right.module).then(
-            left.range
-                .as_ref()
-                .map(|range| range.start)
-                .cmp(&right.range.as_ref().map(|range| range.start)),
-        )
-    });
-    page(
-        snapshot,
-        "debug_inspect",
-        &format!("{:?}:{:?}", query.section, query.module),
-        &query.page,
-        DEFAULT_LIMIT,
-        records,
-    )
-}
-
 pub fn exact_or_regex_search(
     workspace: &WorkspaceSnapshot,
     snapshot: &SnapshotIdentity,
     query: &SearchQuery,
-) -> Result<QueryPage<SearchHit>, ToolError> {
+) -> Result<QueryResult<SearchHit>, ToolError> {
     validate_search(query)?;
     let group_by = query.applied_group_by();
-    let requested_limit = query.page.limit.unwrap_or(SEARCH_DEFAULT_LIMIT);
-    if requested_limit == 0 || requested_limit > HARD_LIMIT {
-        return Err(ToolError::new(
-            "budget_too_large",
-            format!("limit must be between 1 and {HARD_LIMIT}"),
-        ));
-    }
-    applied_max_bytes(&query.page)?;
-    let offset =
-        cursor_offset(snapshot, "search", &search_fingerprint(query), &query.page)?.unwrap_or(0);
-    if offset >= MAX_SEARCH_CANDIDATES {
-        return Err(ToolError::new(
-            "query_limit",
-            format!("search is limited to the first {MAX_SEARCH_CANDIDATES} candidates"),
-        )
-        .retryable("narrow --scope or --fields, or use a more selective query"));
-    }
-    let candidate_target = offset
-        .saturating_add(requested_limit)
-        .saturating_add(1)
-        .min(MAX_SEARCH_CANDIDATES + 1);
     let deadline = (query.mode == SearchMode::Regex).then(|| Instant::now() + REGEX_SCAN_DEADLINE);
     let regex = match query.mode {
         SearchMode::Exact => RegexBuilder::new(&regex::escape(&query.query))
@@ -1395,31 +1089,30 @@ pub fn exact_or_regex_search(
                     excerpt_truncated: truncated,
                     score: None,
                 });
-                if hits.len() >= candidate_target {
+                if hits.len() >= MAX_SEARCH_CANDIDATES {
                     scan_complete = false;
                     break 'modules;
                 }
             }
         }
     }
-    let mut result = page(
-        snapshot,
-        "search",
-        &search_fingerprint(query),
-        &query.page,
-        SEARCH_DEFAULT_LIMIT,
-        hits,
-    )?;
-    result.search = Some(SearchPageMetadata {
-        group_by,
-        ordering: "source".into(),
-        ranking_version: None,
-        index_stamp: None,
-        expansion_limited: false,
-    });
-    if !scan_complete && !result.page.has_more {
-        result.coverage.complete = false;
-        result.coverage.stop_reason = "query_limit".into();
+    let mut result = QueryResult {
+        snapshot: snapshot.clone(),
+        records: hits,
+        search: Some(SearchMetadata {
+            group_by,
+            ordering: "source".into(),
+            ranking_version: None,
+            index_stamp: None,
+            expansion_limited: false,
+        }),
+        hints: Vec::new(),
+    };
+    if !scan_complete {
+        result.hints.push(
+            "candidate scan stopped at the internal candidate ceiling; narrow --scope for complete recall"
+                .into(),
+        );
     }
     add_empty_search_hint(&mut result, query);
     Ok(result)
@@ -1839,7 +1532,7 @@ impl SearchIndex {
         workspace: &WorkspaceSnapshot,
         snapshot: &SnapshotIdentity,
         request: &SearchQuery,
-    ) -> Result<QueryPage<SearchHit>, ToolError> {
+    ) -> Result<QueryResult<SearchHit>, ToolError> {
         validate_search(request)?;
         if self.stamp.source_fingerprint != snapshot.source_fingerprint {
             return Err(ToolError::new(
@@ -1995,24 +1688,23 @@ impl SearchIndex {
         });
         let group_by = request.applied_group_by();
         let hits = group_ranked_hits(workspace, hits, group_by);
-        let mut page = page(
-            snapshot,
-            "search",
-            &search_fingerprint(request),
-            &request.page,
-            SEARCH_DEFAULT_LIMIT,
-            hits,
-        )?;
-        page.search = Some(SearchPageMetadata {
-            group_by,
-            ordering: "relevance".into(),
-            ranking_version: Some(RANKING_VERSION.into()),
-            index_stamp: Some(self.stamp.clone()),
-            expansion_limited,
-        });
-        if !page.page.has_more && total > 10_000 {
-            page.coverage.complete = false;
-            page.coverage.stop_reason = "query_limit".into();
+        let mut page = QueryResult {
+            snapshot: snapshot.clone(),
+            records: hits,
+            search: Some(SearchMetadata {
+                group_by,
+                ordering: "relevance".into(),
+                ranking_version: Some(RANKING_VERSION.into()),
+                index_stamp: Some(self.stamp.clone()),
+                expansion_limited,
+            }),
+            hints: Vec::new(),
+        };
+        if total > 10_000 {
+            page.hints.push(
+                "lexical index truncated candidates at 10_000; narrow --scope for complete recall"
+                    .into(),
+            );
         }
         add_empty_search_hint(&mut page, request);
         Ok(page)
@@ -2581,347 +2273,6 @@ fn validate_snippet(bytes: usize) -> Result<(), ToolError> {
     Ok(())
 }
 
-fn page<T: Clone + Serialize + DeserializeOwned>(
-    snapshot: &SnapshotIdentity,
-    operation: &str,
-    query_fingerprint: &str,
-    request: &PageRequest,
-    default_limit: usize,
-    all_items: Vec<T>,
-) -> Result<QueryPage<T>, ToolError> {
-    let requested_limit = request.limit.unwrap_or(default_limit);
-    if requested_limit == 0 || requested_limit > HARD_LIMIT {
-        return Err(ToolError::new(
-            "budget_too_large",
-            format!("limit must be between 1 and {HARD_LIMIT}"),
-        ));
-    }
-    let max_bytes = applied_max_bytes(request)?;
-    let offset = cursor_offset(snapshot, operation, query_fingerprint, request)?.unwrap_or(0);
-    if offset > all_items.len() {
-        return Err(
-            ToolError::new("invalid_cursor", "cursor offset is outside the result set")
-                .with_hint("omit cursor to restart the query from the first page"),
-        );
-    }
-    let mut records = Vec::new();
-    let mut exhausted = false;
-    for item in all_items.iter().skip(offset).take(requested_limit) {
-        let mut candidate = records.clone();
-        candidate.push(item.clone());
-        if serde_json::to_vec(&candidate)
-            .map(|value| value.len() + 2048)
-            .unwrap_or(max_bytes + 1)
-            > max_bytes
-        {
-            exhausted = true;
-            break;
-        }
-        records.push(item.clone());
-    }
-    let next_offset = offset + records.len();
-    let has_more = next_offset < all_items.len();
-    let next_cursor =
-        has_more.then(|| encode_cursor(operation, snapshot, query_fingerprint, next_offset));
-    let logical_bytes = serde_json::to_vec(&records)
-        .map(|value| value.len() + 1024)
-        .unwrap_or(0);
-    let stop_reason = if !has_more {
-        "complete"
-    } else if exhausted {
-        "byte_budget"
-    } else {
-        "item_limit"
-    };
-    Ok(QueryPage {
-        snapshot: snapshot.clone(),
-        page: PageInfo {
-            requested_limit,
-            applied_limit: requested_limit,
-            returned: records.len(),
-            has_more,
-            next_cursor,
-        },
-        budget: BudgetInfo {
-            requested_bytes: request.max_bytes.unwrap_or(DEFAULT_MAX_BYTES),
-            applied_bytes: max_bytes,
-            logical_bytes,
-            exhausted,
-        },
-        coverage: CoverageInfo {
-            complete: !has_more,
-            stop_reason: stop_reason.into(),
-        },
-        search: None,
-        hints: continuation_hints(has_more),
-        records,
-    })
-}
-
-fn continuation_hints(has_more: bool) -> Vec<String> {
-    has_more
-        .then(|| {
-            "more results: repeat the same query with next_cursor; only page limits may change"
-                .into()
-        })
-        .into_iter()
-        .collect()
-}
-
-fn applied_max_bytes(request: &PageRequest) -> Result<usize, ToolError> {
-    let requested = request.max_bytes.unwrap_or(DEFAULT_MAX_BYTES);
-    if !(MIN_MAX_BYTES..=HARD_MAX_BYTES).contains(&requested) {
-        return Err(ToolError::new(
-            "budget_too_large",
-            format!("max-bytes must be between {MIN_MAX_BYTES} and {HARD_MAX_BYTES}"),
-        ));
-    }
-    if request
-        .cursor
-        .as_ref()
-        .is_some_and(|cursor| cursor.len() > CURSOR_MAX_BYTES)
-    {
-        return Err(
-            ToolError::new("invalid_cursor", "cursor exceeds 4096 bytes")
-                .with_hint("omit cursor and restart the query"),
-        );
-    }
-    Ok(requested)
-}
-
-fn cursor_offset(
-    snapshot: &SnapshotIdentity,
-    operation: &str,
-    query_fingerprint: &str,
-    request: &PageRequest,
-) -> Result<Option<usize>, ToolError> {
-    let Some(cursor) = &request.cursor else {
-        return Ok(None);
-    };
-    let payload = decode_cursor(cursor)?;
-    if payload.operation != operation
-        || payload.query_fingerprint != digest(query_fingerprint.as_bytes())
-    {
-        return Err(ToolError::new(
-            "invalid_cursor",
-            "cursor does not belong to this query",
-        )
-        .with_hint(
-            "cursor is bound to the original selector, query, filters, mode, grouping, and ordering; resend those parameters unchanged with cursor, or omit cursor to restart",
-        ));
-    }
-    if payload.vault_fingerprint != snapshot.vault.fingerprint
-        || payload.view_kind != snapshot.view_kind
-        || (!payload.daemon_instance.is_empty()
-            && payload.daemon_instance != snapshot.daemon_instance.0)
-        || (payload.view_id != 0 && payload.view_id != snapshot.view_id.0)
-    {
-        return Err(ToolError::new(
-            "invalid_cursor",
-            "cursor belongs to another Vault, daemon instance, or view",
-        )
-        .with_hint(
-            "use the cursor only with the Vault and view that issued it, or omit cursor to restart",
-        ));
-    }
-    if payload.source_fingerprint != snapshot.source_fingerprint {
-        return Err(ToolError::new(
-            "cursor_stale",
-            "Vault sources changed after the cursor was issued",
-        )
-        .retryable("restart the query without a cursor"));
-    }
-    Ok(Some(payload.offset))
-}
-
-fn encode_cursor(
-    operation: &str,
-    snapshot: &SnapshotIdentity,
-    query: &str,
-    offset: usize,
-) -> String {
-    let Some(vault_fingerprint) = decode_hex_fixed::<8>(&snapshot.vault.fingerprint) else {
-        return encode_legacy_cursor(operation, snapshot, query, offset);
-    };
-    let Some(source_fingerprint) = decode_hex_fixed::<8>(&snapshot.source_fingerprint) else {
-        return encode_legacy_cursor(operation, snapshot, query, offset);
-    };
-    let query_fingerprint = digest(query.as_bytes());
-    let Some(query_fingerprint) = decode_hex_fixed::<32>(&query_fingerprint) else {
-        return encode_legacy_cursor(operation, snapshot, query, offset);
-    };
-    let Ok(operation_length) = u8::try_from(operation.len()) else {
-        return encode_legacy_cursor(operation, snapshot, query, offset);
-    };
-    let Ok(view_length) = u8::try_from(snapshot.view_kind.len()) else {
-        return encode_legacy_cursor(operation, snapshot, query, offset);
-    };
-    let Ok(instance_length) = u8::try_from(snapshot.daemon_instance.0.len()) else {
-        return encode_legacy_cursor(operation, snapshot, query, offset);
-    };
-    let mut bytes = Vec::with_capacity(
-        84 + operation.len() + snapshot.view_kind.len() + snapshot.daemon_instance.0.len(),
-    );
-    bytes.extend([3, operation_length]);
-    bytes.extend(operation.as_bytes());
-    bytes.push(view_length);
-    bytes.extend(snapshot.view_kind.as_bytes());
-    bytes.push(instance_length);
-    bytes.extend(snapshot.daemon_instance.0.as_bytes());
-    bytes.extend(snapshot.view_id.0.to_le_bytes());
-    bytes.extend(vault_fingerprint);
-    bytes.extend(source_fingerprint);
-    bytes.extend(query_fingerprint);
-    bytes.extend((offset as u64).to_le_bytes());
-    let checksum = Sha256::digest(&bytes);
-    bytes.extend(&checksum[..8]);
-    URL_SAFE_NO_PAD.encode(bytes)
-}
-
-fn encode_legacy_cursor(
-    operation: &str,
-    snapshot: &SnapshotIdentity,
-    query: &str,
-    offset: usize,
-) -> String {
-    let payload = CursorPayload {
-        version: 1,
-        operation: operation.into(),
-        vault_fingerprint: snapshot.vault.fingerprint.clone(),
-        view_kind: snapshot.view_kind.clone(),
-        daemon_instance: snapshot.daemon_instance.0.clone(),
-        view_id: snapshot.view_id.0,
-        source_fingerprint: snapshot.source_fingerprint.clone(),
-        query_fingerprint: digest(query.as_bytes()),
-        offset,
-    };
-    let bytes = serde_json::to_vec(&payload).unwrap();
-    let checksum = digest(&bytes);
-    format!("{}.{}", URL_SAFE_NO_PAD.encode(bytes), &checksum[..16])
-}
-
-fn decode_cursor(cursor: &str) -> Result<CursorPayload, ToolError> {
-    if !cursor.contains('.') {
-        return decode_packed_cursor(cursor);
-    }
-    decode_legacy_cursor(cursor)
-}
-
-fn decode_packed_cursor(cursor: &str) -> Result<CursorPayload, ToolError> {
-    let bytes = URL_SAFE_NO_PAD
-        .decode(cursor)
-        .map_err(|_| invalid_cursor("cursor is not valid base64url"))?;
-    if bytes.len() < 1 + 1 + 1 + 1 + 8 + 8 + 8 + 32 + 8 + 8 {
-        return Err(invalid_cursor("cursor payload is too short"));
-    }
-    let (payload, checksum) = bytes.split_at(bytes.len() - 8);
-    if Sha256::digest(payload)[..8] != checksum[..] {
-        return Err(invalid_cursor("cursor checksum does not match"));
-    }
-    let mut index = 0usize;
-    let version = take_byte(payload, &mut index)?;
-    if version != 3 {
-        return Err(invalid_cursor("cursor schema is unsupported"));
-    }
-    let operation = take_string(payload, &mut index)?;
-    let view_kind = take_string(payload, &mut index)?;
-    let daemon_instance = take_string(payload, &mut index)?;
-    let view_id_bytes: [u8; 8] = take_bytes(payload, &mut index, 8)?
-        .try_into()
-        .map_err(|_| invalid_cursor("cursor view id is malformed"))?;
-    let view_id = u64::from_le_bytes(view_id_bytes);
-    let vault_fingerprint = encode_hex(take_bytes(payload, &mut index, 8)?);
-    let source_fingerprint = encode_hex(take_bytes(payload, &mut index, 8)?);
-    let query_fingerprint = encode_hex(take_bytes(payload, &mut index, 32)?);
-    let offset_bytes: [u8; 8] = take_bytes(payload, &mut index, 8)?
-        .try_into()
-        .map_err(|_| invalid_cursor("cursor offset is malformed"))?;
-    if index != payload.len() {
-        return Err(invalid_cursor("cursor payload has trailing data"));
-    }
-    let offset = usize::try_from(u64::from_le_bytes(offset_bytes))
-        .map_err(|_| invalid_cursor("cursor offset is too large"))?;
-    Ok(CursorPayload {
-        version: 3,
-        operation,
-        vault_fingerprint,
-        view_kind,
-        daemon_instance,
-        view_id,
-        source_fingerprint,
-        query_fingerprint,
-        offset,
-    })
-}
-
-fn decode_legacy_cursor(cursor: &str) -> Result<CursorPayload, ToolError> {
-    let (payload, checksum) = cursor
-        .split_once('.')
-        .ok_or_else(|| invalid_cursor("cursor is malformed"))?;
-    let bytes = URL_SAFE_NO_PAD
-        .decode(payload)
-        .map_err(|_| invalid_cursor("cursor is not valid base64url"))?;
-    if !digest(&bytes).starts_with(checksum) {
-        return Err(invalid_cursor("cursor checksum does not match"));
-    }
-    let payload: CursorPayload =
-        serde_json::from_slice(&bytes).map_err(|_| invalid_cursor("cursor payload is invalid"))?;
-    if payload.version != 1 {
-        return Err(invalid_cursor("cursor schema is unsupported"));
-    }
-    Ok(payload)
-}
-
-fn take_byte(bytes: &[u8], index: &mut usize) -> Result<u8, ToolError> {
-    let value = *bytes
-        .get(*index)
-        .ok_or_else(|| invalid_cursor("cursor payload ended unexpectedly"))?;
-    *index += 1;
-    Ok(value)
-}
-
-fn take_bytes<'a>(
-    bytes: &'a [u8],
-    index: &mut usize,
-    length: usize,
-) -> Result<&'a [u8], ToolError> {
-    let end = index
-        .checked_add(length)
-        .ok_or_else(|| invalid_cursor("cursor field length overflowed"))?;
-    let value = bytes
-        .get(*index..end)
-        .ok_or_else(|| invalid_cursor("cursor payload ended unexpectedly"))?;
-    *index = end;
-    Ok(value)
-}
-
-fn take_string(bytes: &[u8], index: &mut usize) -> Result<String, ToolError> {
-    let length = take_byte(bytes, index)? as usize;
-    let value = take_bytes(bytes, index, length)?;
-    String::from_utf8(value.to_vec()).map_err(|_| invalid_cursor("cursor text is not valid UTF-8"))
-}
-
-fn decode_hex_fixed<const N: usize>(value: &str) -> Option<[u8; N]> {
-    if value.len() != N * 2 {
-        return None;
-    }
-    let mut output = [0; N];
-    for (index, slot) in output.iter_mut().enumerate() {
-        let start = index * 2;
-        *slot = u8::from_str_radix(&value[start..start + 2], 16).ok()?;
-    }
-    Some(output)
-}
-
-fn encode_hex(bytes: &[u8]) -> String {
-    bytes.iter().map(|byte| format!("{byte:02x}")).collect()
-}
-
-fn invalid_cursor(message: impl Into<String>) -> ToolError {
-    ToolError::new("invalid_cursor", message)
-        .with_hint("omit cursor to restart the query from the first page")
-}
-
 fn resolve_source<'a>(
     workspace: &'a WorkspaceSnapshot,
     selector: &Selector,
@@ -3113,8 +2464,8 @@ fn lexical_match_range(source: &str, unit: TextRange, query: &str) -> Option<Tex
     None
 }
 
-fn add_empty_search_hint(page: &mut QueryPage<SearchHit>, query: &SearchQuery) {
-    if !page.records.is_empty() || !page.coverage.complete {
+fn add_empty_search_hint(result: &mut QueryResult<SearchHit>, query: &SearchQuery) {
+    if !result.records.is_empty() {
         return;
     }
     let hint = match query.mode {
@@ -3131,7 +2482,7 @@ fn add_empty_search_hint(page: &mut QueryPage<SearchHit>, query: &SearchQuery) {
             "no matches; simplify the pattern or use exact mode for a literal substring"
         }
     };
-    page.hints.push(hint.into());
+    result.hints.push(hint.into());
 }
 
 fn floor_char_boundary(text: &str, mut offset: usize) -> usize {
@@ -3382,23 +2733,6 @@ fn in_scope(module: &str, scopes: &[String]) -> bool {
         })
 }
 
-fn search_fingerprint(query: &SearchQuery) -> String {
-    serde_json::to_string(&(
-        &query.query,
-        query.mode,
-        &query.scopes,
-        &query.fields,
-        query.operator,
-        query.applied_group_by(),
-        query.ignore_case,
-        query.fuzzy_distance,
-        query.wait_index_ms,
-        RANKING_VERSION,
-        TOKENIZER_VERSION,
-        INDEX_SCHEMA_VERSION,
-    ))
-    .unwrap()
-}
 
 fn relative_path(root: &Path, path: &Path) -> PathBuf {
     path.strip_prefix(root).unwrap_or(path).to_path_buf()
@@ -3494,19 +2828,6 @@ mod tests {
     }
 
     #[test]
-    fn cursor_detects_query_changes() {
-        let cursor = encode_cursor("search", &snapshot("source"), "query-a", 12);
-        assert!(!cursor.contains('.'));
-        assert!(cursor.len() < 128);
-        let decoded = decode_cursor(&cursor).unwrap();
-        assert_eq!(decoded.offset, 12);
-        assert_eq!(decoded.query_fingerprint, digest(b"query-a"));
-
-        let legacy = encode_legacy_cursor("search", &snapshot("source"), "query-a", 12);
-        assert_eq!(decode_cursor(&legacy).unwrap().offset, 12);
-    }
-
-    #[test]
     fn search_grouping_defaults_follow_discovery_semantics() {
         let mut query = SearchQuery {
             query: "needle".into(),
@@ -3519,7 +2840,6 @@ mod tests {
             fuzzy_distance: 1,
             wait_index_ms: 2000,
             snippet_bytes: DEFAULT_SNIPPET_BYTES,
-            page: PageRequest::default(),
         };
         assert_eq!(query.applied_group_by(), SearchGroup::Source);
         query.mode = SearchMode::Exact;
@@ -3544,69 +2864,6 @@ mod tests {
     }
 
     #[test]
-    fn page_honors_byte_budget_and_stale_cursor() {
-        let first = page(
-            &snapshot("one"),
-            "test",
-            "query",
-            &PageRequest {
-                limit: Some(100),
-                max_bytes: Some(4096),
-                cursor: None,
-            },
-            20,
-            vec!["x".repeat(1800), "y".repeat(1800), "z".repeat(1800)],
-        )
-        .unwrap();
-        assert!(serde_json::to_vec(&first).unwrap().len() <= 4096);
-        assert!(first.page.has_more);
-        assert!(first.hints[0].contains("repeat the same query"));
-        let error = page(
-            &snapshot("two"),
-            "test",
-            "query",
-            &PageRequest {
-                limit: Some(1),
-                max_bytes: Some(4096),
-                cursor: first.page.next_cursor,
-            },
-            20,
-            vec![String::from("x")],
-        )
-        .unwrap_err();
-        assert_eq!(error.code, "cursor_stale");
-
-        let first = page(
-            &snapshot("one"),
-            "test",
-            "query-a",
-            &PageRequest {
-                limit: Some(1),
-                max_bytes: Some(4096),
-                cursor: None,
-            },
-            20,
-            vec![String::from("x"), String::from("y")],
-        )
-        .unwrap();
-        let error = page(
-            &snapshot("one"),
-            "test",
-            "query-b",
-            &PageRequest {
-                limit: Some(1),
-                max_bytes: Some(4096),
-                cursor: first.page.next_cursor,
-            },
-            20,
-            vec![String::from("x"), String::from("y")],
-        )
-        .unwrap_err();
-        assert_eq!(error.code, "invalid_cursor");
-        assert!(error.hint.unwrap().contains("original selector"));
-    }
-
-    #[test]
     fn excerpts_never_exceed_requested_bytes() {
         let source = "a".repeat(10_000);
         let (excerpt, _, truncated) = excerpt(&source, TextRange::new(5000, 5010), 512);
@@ -3627,15 +2884,12 @@ mod tests {
 
     #[test]
     fn empty_search_page_carries_actionable_hint() {
-        let mut result = page::<SearchHit>(
-            &snapshot("one"),
-            "search",
-            "query",
-            &PageRequest::default(),
-            SEARCH_DEFAULT_LIMIT,
-            Vec::new(),
-        )
-        .unwrap();
+        let mut result = QueryResult::<SearchHit> {
+            snapshot: snapshot("one"),
+            records: Vec::new(),
+            search: None,
+            hints: Vec::new(),
+        };
         add_empty_search_hint(
             &mut result,
             &SearchQuery {
@@ -3649,7 +2903,6 @@ mod tests {
                 fuzzy_distance: 1,
                 wait_index_ms: 2000,
                 snippet_bytes: 512,
-                page: PageRequest::default(),
             },
         );
         assert!(result.hints[0].contains("operator=any"));

@@ -1,0 +1,47 @@
+= 去上界输出与 inspect 命令面裁决
+
+本文推翻 #<vault::ai::2026-08-15 cli v3 clean interface redesign> 确立的输出上界制度及其分页机器，确立完整结果契约，并同步重组 CLI 命令面。2026-08-29 裁决；同日更早的改动已先行移除 `--pager` 与 legacy `--format json`（后者是 v3 时代遗留的未实施面）。治理文档 #<vault::designs::host::cli-command-surface-skill-distribution>、#<vault::designs::host::query-contract> 与 #<vault::cli> 已随本文修订，代码实施同日完成。
+
+== 对成本事故的再归因
+
+#<vault::ai::2026-07-26 agent-friendly CLI output and Notist improvements> 的 720 次 Agent run 取证把灾难根因定为"把调试视图当检索接口"与"每条命中携带 full source"——这是*输出形状*错误：结果体积正比于正文大小，而不是正比于命中数。随后的修复把两件事捆在了一起：形状纪律（excerpt 化、一行一记录）和截断执行器（默认预算 + 硬上界 + cursor 续读）。本裁决把这两件事拆开：形状纪律是契约本体，保留并成文；截断执行器只是执行手段，撤除。
+
+`ls`、`rg`、`cat` 的 Unix 契约从来不是"无界"，而是：*输出正比于被查询的数据集，且是一行一记录的紧凑形状*。rg 对命中一万行的仓库输出一万行，这不是设计缺陷而是数据本身；使用者的对策是收窄查询，不是等工具替他截断。Agent 面对同样的结构：无 scope 的宽查询灌入大量命中，对策是 `--scope` 与查询质量，宿主侧截断作为最后防线客观存在。
+
+== 裁决（2026-08-29）
+
+R1 *完整结果契约*：collection 查询返回全部匹配，无 item/byte 预算，无翻页。一次性完整输出零命中即是 absence 证明——compare v3 之下"证明不存在"需要沿 cursor 走到穷尽，完整结果使 absence 语义更简单更强。
+
+R2 *形状纪律成文*（v3 的有效遗产，脱离预算制度独立成立）：excerpt 是候选选择信息，不携带 full source；collection 输出一行一记录；文本投影不重复整篇正文、不为每个 location 重复 canonical absolute path。撤除截断器后，违反形状纪律即违反本裁决。
+
+R3 *语义窗口与截断策略的边界*：`read --from-line/--lines/--byte-range`、`outline --depth`、`--module` 过滤是*语义窗口*——调用者选择读取哪段数据，保留；`--limit/--max-bytes/--cursor` 是*截断策略*——服务端砍调用者的结果，随 PageRequest 一并删除。这条边界防止截断器将来以"窗口"的名义混回。
+
+R4 *分页机器删除清单*：`PageRequest`/`PageInfo`/`CoverageInfo` 与 `QueryPage` 的 budget/coverage 字段；cursor/`next` 续读及其 daemon page-session；daemon 侧版本化 runtime policy 预算表；SKILL.md 的 `invalid_cursor` 恢复教学。v3 规划的 `notist next <TOKEN>` 尚未实施，随之作废。cursor 曾是全 surface 最脆弱的部分（绑定 daemon instance + View + source fingerprint + query fingerprint），删除是纯收益。
+
+R5 *命令面重组*：顶层收敛为 `inspect`、`check`、`index`、`daemon`、`lsp`、`skill`、`build`、`preview`。
+
+- `inspect` 收纳 `status`、`modules`、`search`、`outline`、`read`、`references`、`definition`；`inspect --help` 是调查命令的唯一发现入口。`query` 组解散（它只有一个成员 definition，直属 inspect 后顺带变短）。status 折入 inspect：它是每次会话一次的定位命令，多一个 token 不构成负担，但"我在哪个 Vault、快照与索引新不新"的一瞥不可替代。
+- `check` 留在顶层：完整 Vault 的健康结论是独立动作，不属于调查。
+- `debug` 移除：实现诊断工具，三个 section 中 modules/references 与普通命令完全重叠，semantic 原始投影仅开发 notist 本身时需要；skills/tests/姊妹项目零引用，git 历史可恢复。
+- `export` 移除：其"唯一完整数据出口"的设计支柱地位随上界制度消失（stdout 本身已完整），降级为文件写入便利工具后不再值得独立命令面；未来若需要 schema 化文件 artifact，以独立命令重建。
+
+R6 *不变项*：LSP 与 daemon 协议 framing 不变（CoreRequest 载荷形状变化随 protocol_version 提升表达）；`--color`/`--no-daemon` 全局参数不变；有界 text 作为唯一公开投影不变；Vault 修改走外部编辑器 + watcher（2026-08-28 裁决）。
+
+== 与 2026-08-15 v3 的关系
+
+- *推翻*：默认预算与硬上界、cursor/`next`、runtime policy 预算表；"ordinary query = bounded, composable, resumable" 中的 resumable。
+- *继承*：形状纪律；三层分离的精神（语义命令只表达意图）——只是策略层从"服务端预算"变成"没有截断"；有界 text 唯一公开投影；scope 下推到 candidate generation 之前。
+- *修正认知*：v3 把旧的全库 `inspect` 拆散成 bounded 命令族，是上界制度的产物（"无界 dump 不复存在"）。上界撤除后，按数据域重组为 inspect 组不构成对拆分的翻案——拆分的理由本身已随制度退场。新的 inspect 是*命名空间*（调查类命令的发现入口），不是旧的无界 dump 复活。
+
+== 风险与缓解
+
+无 scope 的 `search` 撞上大 Vault 会把数千命中行灌入调用者上下文，v3 之下被 16 KiB 封顶，现在没有护栏。缓解按层：一行一记录形状（本裁决 R2）、`--scope` 语义过滤、宿主侧截断的客观存在。07-26 的成本观测方法论保留为回归哨兵：若实测再出现单调用 MB 级输出，第一修正对象是形状与调用习惯，而不是恢复截断器。
+
+== 实施清单
+
+1. notist-service：protocol.rs 删除 `PageRequest`/`PageInfo`/`CoverageInfo`，`QueryPage<T>` → `QueryResult<T> { snapshot, items }`；query.rs 分页与预算机制删除；runtime policy 预算表删除；`protocol_version` 提升。
+2. LSP 核对：LSP 请求是否引用分页类型（实现时核实）；按 AGENTS.md 对 obsidian-notist `src/lsp/session.ts` 契约头注释做跨项目核对（预期不受影响：LSP 不走 CLI 分页）。
+3. notist-cli：inspect 组落地、四处 flatten 的 PageArgs 删除、`--cursor` 参数与 continuation 输出删除、debug/export 命令删除、help 的 COMMAND_GROUPS 更新。
+4. SKILL.md：工作流改写（`inspect status`/`inspect search` 等；cursor 段替换为完整结果语义；debug/export 句删除）。
+5. docs：#<vault::cli> 逐命令节随实施重写；query-contract.not 与 cli-command-surface 治理文档已随本裁决更新。
+6. notist-eval 等内部消费者的分页类型引用核对。
