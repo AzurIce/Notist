@@ -17,10 +17,14 @@
                 "id": "b0a7cf1a18255891",
                 "type": "leaf",
                 "state": {
-                  "type": "empty",
-                  "state": {},
+                  "type": "markdown",
+                  "state": {
+                    "file": "AGENTS.md",
+                    "mode": "source",
+                    "source": false
+                  },
                   "icon": "lucide-file",
-                  "title": "新标签页"
+                  "title": "AGENTS"
                 }
               }
             ]
@@ -178,6 +182,7 @@
       },
       "left-ribbon": {
         "hiddenItems": {
+          "obsidian-notist:Open Notist explorer": false,
           "obsidian-notist:Toggle world (Markdown / Notist)": false,
           "switcher:打开快速切换": false,
           "graph:查看关系图谱": false,
@@ -205,7 +210,7 @@
                 "state": {
                   "type": "notist-view",
                   "state": {
-                    "file": "ai/README.not"
+                    "file": "designs/README.not"
                   },
                   "icon": "file-text",
                   "title": "README"
@@ -224,6 +229,22 @@
             "id": "503e4dba14e5ce74",
             "type": "tabs",
             "children": [
+              {
+                "id": "38c7b13218340e95",
+                "type": "leaf",
+                "state": {
+                  "type": "notist-explorer",
+                  "state": {
+                    "expanded": [
+                      "designs",
+                      "designs/world"
+                    ],
+                    "dimNonNot": false
+                  },
+                  "icon": "folder-tree",
+                  "title": "Notist explorer"
+                }
+              },
               {
                 "id": "4f953964d9da6e42",
                 "type": "leaf",
@@ -295,25 +316,12 @@
           "bases:新建数据库": false
         }
       },
-      "active": "b0a7cf1a18255891"
+      "active": "38c7b13218340e95"
     }
   },
   "vimMode": true,
   "lspEnabled": true,
-  "lspBinaryPath": "nix",
-  "lspBinaryArgs": [
-    "develop",
-    "/home/azurice/Files/notist",
-    "-c",
-    "cargo",
-    "run",
-    "--manifest-path",
-    "/home/azurice/Files/notist/Cargo.toml",
-    "-p",
-    "notist-cli",
-    "--",
-    "lsp",
-    "--no-daemon"
-  ],
+  "notistCommand": "nix develop /home/azurice/Files/notist -c cargo run --manifest-path /home/azurice/Files/notist/Cargo.toml -p notist-cli",
+  "notistExtraArgs": "--no-daemon",
   "problemsExpanded": false
 }

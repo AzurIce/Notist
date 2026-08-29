@@ -13,7 +13,7 @@
             "state": {
               "type": "notist-view",
               "state": {
-                "file": "ai/README.not"
+                "file": "designs/README.not"
               },
               "icon": "file-text",
               "title": "README"
@@ -32,6 +32,22 @@
         "id": "503e4dba14e5ce74",
         "type": "tabs",
         "children": [
+          {
+            "id": "38c7b13218340e95",
+            "type": "leaf",
+            "state": {
+              "type": "notist-explorer",
+              "state": {
+                "expanded": [
+                  "designs",
+                  "designs/world"
+                ],
+                "dimNonNot": false
+              },
+              "icon": "folder-tree",
+              "title": "Notist explorer"
+            }
+          },
           {
             "id": "4f953964d9da6e42",
             "type": "leaf",
@@ -103,11 +119,19 @@
       "bases:新建数据库": false
     }
   },
-  "active": "b0a7cf1a18255891",
+  "active": "38c7b13218340e95",
   "lastOpenFiles": [
-    "README.not",
+    "ai/README.not.tmp.285429.581491368c8d",
+    "ai/2026-08-28 core wasm 插件后端统一与 wasmi 落地.not.tmp.285429.af8dd8e738cf",
+    "designs/overview.not",
+    "designs/README.not",
     "plugins.not",
-    "types.not",
-    "todo.not"
+    "README.not",
+    "ai/README.not.tmp.710444.59c3b3ea8825",
+    "ai/2026-08-28 structure aware embedding and link expanded retrieval research.not",
+    "intro.not",
+    "designs/world/reference-ref-target.not",
+    "AGENTS.md",
+    "designs/host/query-contract.not.tmp.710444.a368846bf259"
   ]
 }
