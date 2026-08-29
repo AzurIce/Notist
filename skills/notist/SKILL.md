@@ -7,24 +7,7 @@ description: Use Notist to create, edit, validate, search, and navigate `.not` k
 
 Use the installed `notist` executable as the authority for its supported command surface. Investigation commands live under `notist inspect`; `notist inspect --help` is the single discovery entry. The official docs Vault describes the same surface in `cli/README.not` (governance, global parameters, errors) and `cli/inspect.not` (per-command specs).
 
-Notist markup is not Markdown, and `.not` source has two contexts: markup (prose) and code (expressions). `#` embeds a code expression into markup. The floor below keeps edits safe; for anything beyond it, search the Vault — the authoritative quick reference is `notist inspect read vault::cheatsheet <DOCS_ROOT>`.
-
-Markup context:
-
-- `= Title` — heading; levels are `=`, `==`, `===`, ...
-- A blank line starts a new paragraph; a single newline is a soft break and stays inside the same paragraph.
-- `*strong*`, `_emph_`, `__underline__`, `~~strike~~` — emphasis is not Markdown: `**bold**` is not markup and the asterisks render literally.
-- `@id`, `#tag`, `.class`, `key=value` — annotations, postfix on an item; `@![... ]` at the top of a file is a module attribute.
-- `#<vault::module/target>` — resolved link (not `[[wikilinks]]`).
-- `\#` and `\@` — a literal `#` or `@` where notist would read it as syntax takes a `\` prefix; bare `[` and `]` are plain text and need no escape.
-
-Code context — reached through a `#` embedded expression, a `{ }` block, or a `#[ ]` scope; their content follows code rules, not markup rules:
-
-- `{ ... }` — code block whose value joins into the document; `#[ ... ]` — manual scope.
-- `#import <dir>::{name}` — import.
-- `//` and `/* */` are comments here; in markup they are plain text.
-
-Do not carry Markdown habits into `.not` files; run `notist check` after editing.
+`.not` is not Markdown, and its markup/code contexts differ in ways that matter (emphasis marks, soft line breaks vs paragraph breaks, annotations, links). Before writing or editing `.not` files, read the authoritative quick reference first: `notist inspect read vault::cheatsheet --vault <DOCS_ROOT>` — then run `notist check --vault <DOCS_ROOT>` after editing. Every command takes a global `--vault DIR` (default: current directory); it walks up to the nearest `Notist.toml`, so any path inside the Vault works.
 
 Use `inspect status` or `inspect modules --prefix MODULE` for discovery, then `inspect search` or one-Module `inspect outline`, and finally `inspect read` for authored evidence. Lexical and fuzzy search return the complete hit set grouped by source by default; use `--group-by section` for section diversity or `--group-by match` to locate every occurrence (exact/regex modes return each match ungrouped). Multi-term lexical lookup matches all terms by default; pass `--operator any` only for deliberate broad recall. Narrow result sets with the repeatable `--scope MODULE` filter. Search excerpts select candidates; do not treat them as complete evidence.
 
