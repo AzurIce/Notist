@@ -208,12 +208,10 @@
                 "id": "cbdcb79808a84052",
                 "type": "leaf",
                 "state": {
-                  "type": "notist-view",
-                  "state": {
-                    "file": "cli/inspect.not"
-                  },
-                  "icon": "file-text",
-                  "title": "inspect"
+                  "type": "empty",
+                  "state": {},
+                  "icon": "lucide-file",
+                  "title": "新标签页"
                 }
               }
             ]

@@ -38,14 +38,14 @@ Publishing
 
 命令面没有写命令（2026-08-28 裁决）：磁盘写入来自宿主编辑工具或其他外部进程，daemon 通过 watcher 观察并发布新 snapshot；修改 Vault 后运行 `notist check` 验证。
 
-=== Vault 发现与 ROOT
+=== Vault 发现与 --vault
 
-需要 Vault 的命令把 `[ROOT]` 放在最后一个 positional，默认 `.`。ROOT 可以是 Vault 内文件或目录；Notist 按 #<vault::designs::world::boundary-discovery/发现规则> 向上查找最近的 `Notist.toml`，canonicalize 后连接该 root 对应的 daemon。Nested Vault 不进入外层扫描。
+需要 Vault 的命令通过全局 `--vault DIR` 选择 Vault，默认 `.`（当前目录）。DIR 可以是 Vault 内文件或目录；Notist 按 #<vault::designs::world::boundary-discovery/发现规则> 向上查找最近的 `Notist.toml`，canonicalize 后连接该 root 对应的 daemon。Nested Vault 不进入外层扫描。命令的其他 positional 全部是语义参数（query、selector、path、offset），不再包含 root。
 
 ```shell
-notist inspect status .
-notist inspect search "type system" docs
-notist check docs/designs/host/query-contract.not
+notist inspect status
+notist inspect search "type system" --vault docs
+notist check --vault docs/designs/host/query-contract.not
 ```
 
 === Selector 与 Scope
@@ -55,11 +55,12 @@ Selector 是精确身份，Scope 是集合过滤，两者不互相替代；完�
 === 全局参数
 
 ```text
-notist [--color auto|always|never] [--no-daemon] <COMMAND>
+notist [--color auto|always|never] [--no-daemon] [--vault DIR] <COMMAND>
 ```
 
 - `--color`：只影响 human diagnostic 与 source frame。
-- `--no-daemon`：在当前进程创建临时 VaultEngine 与 disk View，执行同一 core operation；不关闭 analysis、snapshot、预算与校验。
+- `--no-daemon`：在当前进程创建临时 VaultEngine 与 disk View，执行同一 core operation；不关闭 analysis、snapshot 与校验。
+- `--vault DIR`：选择目标 Vault，默认 `.`；规则见「Vault 发现与 --vault」。
 - `--help`、`--version` 各自打印当前安装版本信息。
 
 全局参数可放 subcommand 前后，但脚本建议放在命令前。子命令 help 不重复展示这些全局参数。
@@ -105,7 +106,7 @@ Inspect 组是 Agent 的查询与导航原语：status、modules、search、outl
 用途：对完整 Vault 下健康结论，不提供 module scope。跨模块 import/reference 的语义世界不能靠局部 scope 变成“检查通过”。
 
 ```shell
-notist check [ROOT]
+notist check [--vault DIR]
   [--summary]
   [--severity error|warning|info]
 ```
@@ -136,7 +137,7 @@ hint: create the module or correct the reference
 用途：从一个 captured snapshot 生成多页静态 HTML artifact。
 
 ```shell
-notist build [ROOT] --output DIR [--clean]
+notist build [--vault DIR] --output DIR [--clean]
 ```
 
 - `--output` 默认 `dist`。
@@ -149,7 +150,7 @@ notist build [ROOT] --output DIR [--clean]
 用途：本地预览与 live reload；是长时间 runtime，不是有限 query。
 
 ```shell
-notist preview [ROOT] [--host IP] [--port N] [--open]
+notist preview [--host IP] [--port N] [--open] [--vault DIR]
 ```
 
 - 默认 host `127.0.0.1`，port `3250`；端口被占用时自动回退到系统分配端口。
@@ -165,8 +166,8 @@ notist preview [ROOT] [--host IP] [--port N] [--open]
 用途：检查或重建派生检索索引；不修改 authored Vault。
 
 ```shell
-notist index status [ROOT]
-notist index rebuild [ROOT] [--wait]
+notist index status [--vault DIR]
+notist index rebuild [--wait] [--vault DIR]
 ```
 
 - `status`：health `ready|building|stale|error|not_built`、schema/tokenizer/ranking version、indexed source fingerprint、unit count、最近错误。
@@ -177,8 +178,8 @@ notist index rebuild [ROOT] [--wait]
 === daemon
 
 ```shell
-notist daemon [ROOT]
-notist daemon stop [ROOT]
+notist daemon [--vault DIR]
+notist daemon stop [--vault DIR]
 ```
 
 - `daemon`：为一个 canonical Vault root 持有长期 Engine、watcher、cache 与 disk View；前台运行，stdout 只允许 daemon framing。

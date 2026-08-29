@@ -47,6 +47,10 @@ struct Cli {
     #[arg(long, global = true)]
     no_daemon: bool,
 
+    /// Root directory (or any path inside) of the Vault to operate on.
+    #[arg(long, value_name = "DIR", default_value = ".", global = true)]
+    vault: PathBuf,
+
     #[command(subcommand)]
     command: Command,
 }
@@ -62,9 +66,6 @@ enum Command {
     /// Check module paths and references in a Notist workspace.
     #[command(display_order = 2)]
     Check {
-        /// Root directory of the Notist workspace.
-        #[arg(default_value = ".")]
-        root: PathBuf,
         #[arg(long)]
         scope: Option<String>,
         #[arg(long)]
@@ -83,9 +84,6 @@ enum Command {
     Daemon {
         #[command(subcommand)]
         action: Option<DaemonAction>,
-        /// Root directory of the vault this daemon serves.
-        #[arg(default_value = ".")]
-        root: PathBuf,
         #[arg(long, hide = true)]
         background_child: bool,
     },
@@ -101,9 +99,6 @@ enum Command {
     /// Build a Notist workspace as a multi-page static HTML site.
     #[command(display_order = 7)]
     Build {
-        /// Root directory of the Notist workspace.
-        #[arg(default_value = ".")]
-        root: PathBuf,
         /// Directory to write the generated site.
         #[arg(short, long, default_value = "dist")]
         output: PathBuf,
@@ -114,9 +109,6 @@ enum Command {
     /// Preview a Notist workspace in a local browser with live reload.
     #[command(display_order = 8)]
     Preview {
-        /// Root directory of the Notist workspace.
-        #[arg(default_value = ".")]
-        root: PathBuf,
         /// Network interface on which the preview server listens.
         #[arg(long, default_value = "127.0.0.1")]
         host: IpAddr,
@@ -132,14 +124,9 @@ enum Command {
 #[derive(Debug, Subcommand)]
 enum InspectCommand {
     /// Show a compact Vault, snapshot, diagnostics, and index summary.
-    Status {
-        #[arg(default_value = ".")]
-        root: PathBuf,
-    },
+    Status,
     /// List modules in the vault.
     Modules {
-        #[arg(default_value = ".")]
-        root: PathBuf,
         #[arg(long)]
         prefix: Option<String>,
         #[arg(long, value_enum, default_value_t)]
@@ -152,8 +139,6 @@ enum InspectCommand {
     Search {
         /// Natural-language terms, an identifier, or a literal/regex pattern selected by mode.
         query: String,
-        #[arg(default_value = ".")]
-        root: PathBuf,
         /// Choose ranked lexical search, literal matching, typo-tolerant search, or regex.
         #[arg(long, value_enum, default_value_t)]
         mode: SearchModeArg,
@@ -196,8 +181,6 @@ enum InspectCommand {
     Outline {
         /// Exact ModulePath or Vault-relative `.not` path.
         selector: String,
-        #[arg(default_value = ".")]
-        root: PathBuf,
         #[arg(long, default_value_t = 6, value_parser = clap::value_parser!(u8).range(1..=6))]
         depth: u8,
     },
@@ -205,8 +188,6 @@ enum InspectCommand {
     Read {
         /// Exact ModulePath, path, `module/id`, or `path#id` selector.
         selector: String,
-        #[arg(default_value = ".")]
-        root: PathBuf,
         #[arg(long)]
         from_line: Option<usize>,
         #[arg(long, requires = "from_line")]
@@ -218,8 +199,6 @@ enum InspectCommand {
     References {
         /// Exact ModulePath or `module/id` selector.
         selector: String,
-        #[arg(default_value = ".")]
-        root: PathBuf,
         #[arg(long)]
         include_definition: bool,
         #[arg(long, value_enum, default_value_t)]
@@ -232,8 +211,6 @@ enum InspectCommand {
     Definition {
         path: PathBuf,
         offset: usize,
-        #[arg(default_value = ".")]
-        root: PathBuf,
         #[arg(long)]
         expected_fingerprint: Option<String>,
     },
@@ -242,11 +219,7 @@ enum InspectCommand {
 #[derive(Debug, Subcommand)]
 enum DaemonAction {
     /// Stop the daemon currently serving a vault.
-    Stop {
-        /// Root directory of the vault whose daemon should stop.
-        #[arg(default_value = ".")]
-        root: PathBuf,
-    },
+    Stop,
 }
 
 #[derive(Debug, Subcommand)]
@@ -399,14 +372,9 @@ impl From<ReferenceDirectionArg> for notist_service::ReferenceDirection {
 #[derive(Debug, Subcommand)]
 enum IndexCommand {
     /// Show the index generation and health.
-    Status {
-        #[arg(default_value = ".")]
-        root: PathBuf,
-    },
+    Status,
     /// Rebuild the current snapshot's derived index.
     Rebuild {
-        #[arg(default_value = ".")]
-        root: PathBuf,
         #[arg(long)]
         wait: bool,
     },
@@ -507,14 +475,13 @@ fn classify_error(error: &(dyn std::error::Error + 'static)) -> (&'static str, u
 fn run(cli: Cli) -> Result<ExitCode, Box<dyn std::error::Error>> {
     official_docs::ensure_synced()?;
     match cli.command {
-        Command::Inspect { command } => run_inspect(command, cli.no_daemon),
+        Command::Inspect { command } => run_inspect(command, cli.vault.clone(), cli.no_daemon),
         Command::Check {
-            root,
             scope,
             summary,
             severity,
         } => {
-            let root = resolve_vault_root(&root)?;
+            let root = resolve_vault_root(&cli.vault)?;
             let mut client =
                 service::LocalNotistClient::connect(cli.no_daemon, ClientKind::Cli, root.clone())?;
             let view_id = open_disk_view(&mut client, root.clone())?;
@@ -539,11 +506,11 @@ fn run(cli: Cli) -> Result<ExitCode, Box<dyn std::error::Error>> {
             }
         }
         Command::Index { command } => {
-            let (root, rebuild, wait) = match command {
-                IndexCommand::Status { root } => (root, false, false),
-                IndexCommand::Rebuild { root, wait } => (root, true, wait),
+            let (rebuild, wait) = match command {
+                IndexCommand::Status => (false, false),
+                IndexCommand::Rebuild { wait } => (true, wait),
             };
-            let (_, mut client, view_id) = connect_cli(root, cli.no_daemon)?;
+            let (_, mut client, view_id) = connect_cli(cli.vault.clone(), cli.no_daemon)?;
             let effective_wait = rebuild && (wait || cli.no_daemon);
             let reply = client.request(if rebuild {
                 CoreRequest::IndexRebuild {
@@ -602,17 +569,16 @@ fn run(cli: Cli) -> Result<ExitCode, Box<dyn std::error::Error>> {
             Ok(ExitCode::SUCCESS)
         }
         Command::Daemon {
-            action: Some(DaemonAction::Stop { root }),
+            action: Some(DaemonAction::Stop),
             ..
         } => {
-            service::stop_daemon(resolve_vault_root(&root)?)?;
+            service::stop_daemon(resolve_vault_root(&cli.vault)?)?;
             Ok(ExitCode::SUCCESS)
         }
         Command::Daemon {
-            root,
             background_child,
             ..
-        } => service::run_daemon(resolve_vault_root(&root)?, background_child),
+        } => service::run_daemon(resolve_vault_root(&cli.vault)?, background_child),
         Command::Lsp => lsp::run(cli.no_daemon),
         Command::Skill {
             command: SkillCommand::Init { output, force },
@@ -622,23 +588,21 @@ fn run(cli: Cli) -> Result<ExitCode, Box<dyn std::error::Error>> {
             Ok(ExitCode::SUCCESS)
         }
         Command::Build {
-            root,
             output,
             clean,
         } => build::run(
-            resolve_vault_root(&root)?,
+            resolve_vault_root(&cli.vault)?,
             output,
             cli.color,
             cli.no_daemon,
             clean,
         ),
         Command::Preview {
-            root,
             host,
             port,
             open,
         } => preview::run(
-            resolve_vault_root(&root)?,
+            resolve_vault_root(&cli.vault)?,
             host,
             port,
             open,
@@ -650,11 +614,12 @@ fn run(cli: Cli) -> Result<ExitCode, Box<dyn std::error::Error>> {
 
 fn run_inspect(
     command: InspectCommand,
+    vault: PathBuf,
     no_daemon: bool,
 ) -> Result<ExitCode, Box<dyn std::error::Error>> {
     match command {
-        InspectCommand::Status { root } => {
-            let (root, mut client, view_id) = connect_cli(root, no_daemon)?;
+        InspectCommand::Status => {
+            let (root, mut client, view_id) = connect_cli(vault.clone(), no_daemon)?;
             let reply = client.request(CoreRequest::Status { view_id })?;
             let CoreResponse::Status(status) = reply.response else {
                 return query_response_error("status", reply.response);
@@ -684,11 +649,10 @@ fn run_inspect(
                     Err(_) => println!("Daemon       not running"),
                 }
             }
-            let _ = root;
             Ok(ExitCode::SUCCESS)
         }
-        InspectCommand::Modules { root, prefix, kind } => {
-            let (_, mut client, view_id) = connect_cli(root, no_daemon)?;
+        InspectCommand::Modules { prefix, kind } => {
+            let (_, mut client, view_id) = connect_cli(vault.clone(), no_daemon)?;
             let reply = client.request(CoreRequest::ListModules {
                 view_id,
                 query: notist_service::ModulesQuery {
@@ -714,7 +678,6 @@ fn run_inspect(
         }
         InspectCommand::Search {
             query,
-            root,
             mode,
             exact,
             fuzzy,
@@ -750,7 +713,7 @@ fn run_inspect(
                 ))
                 .into());
             }
-            let root = resolve_vault_root(&root)?;
+            let root = resolve_vault_root(&vault)?;
             let mut client =
                 service::LocalNotistClient::connect(no_daemon, ClientKind::Cli, root.clone())?;
             let view_id = open_disk_view(&mut client, root.clone())?;
@@ -821,11 +784,10 @@ fn run_inspect(
             for hint in &results.hints {
                 println!("hint: {hint}");
             }
-            let _ = root;
             Ok(ExitCode::SUCCESS)
         }
-        InspectCommand::Outline { selector, root, depth } => {
-            let root = resolve_vault_root(&root)?;
+        InspectCommand::Outline { selector, depth } => {
+            let root = resolve_vault_root(&vault)?;
             let mut client =
                 service::LocalNotistClient::connect(no_daemon, ClientKind::Cli, root.clone())?;
             let view_id = open_disk_view(&mut client, root.clone())?;
@@ -848,17 +810,15 @@ fn run_inspect(
                     symbol.location.line_range.map_or(0, |range| range.start)
                 );
             }
-            let _ = root;
             Ok(ExitCode::SUCCESS)
         }
         InspectCommand::Read {
             selector,
-            root,
             from_line,
             lines,
             byte_range,
         } => {
-            let (_, mut client, view_id) = connect_cli(root, no_daemon)?;
+            let (_, mut client, view_id) = connect_cli(vault.clone(), no_daemon)?;
             let reply = client.request(CoreRequest::ReadSource {
                 view_id,
                 query: notist_service::ReadQuery {
@@ -883,12 +843,11 @@ fn run_inspect(
         }
         InspectCommand::References {
             selector,
-            root,
             include_definition,
             direction,
             snippet_bytes,
         } => {
-            let root = resolve_vault_root(&root)?;
+            let root = resolve_vault_root(&vault)?;
             let mut client =
                 service::LocalNotistClient::connect(no_daemon, ClientKind::Cli, root.clone())?;
             let view_id = open_disk_view(&mut client, root.clone())?;
@@ -918,20 +877,18 @@ fn run_inspect(
                 );
                 println!("{} -> {}  {}", item.source, item.target, position);
             }
-            let _ = root;
             Ok(ExitCode::SUCCESS)
         }
         InspectCommand::Definition {
             path,
             offset,
-            root,
             expected_fingerprint,
         } => {
-            let root = resolve_vault_root(&root)?;
+            let root = resolve_vault_root(&vault)?;
             let path = dunce::canonicalize(if path.is_absolute() {
                 path
             } else {
-                root.join(path)
+                vault.join(path)
             })?;
             let mut client =
                 service::LocalNotistClient::connect(no_daemon, ClientKind::Cli, root.clone())?;
