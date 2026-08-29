@@ -36,13 +36,10 @@
         inherit (pkgs) lib;
         devCraneLib = (crane.mkLib pkgs).overrideToolchain (
           p:
-          p.rust-bin.selectLatestNightlyWith (
-            toolchain:
-            toolchain.default.override {
-              targets = [ "wasm32-unknown-unknown" "wasm32-wasip2" ];
-              extensions = [ "rust-src" ];
-            }
-          )
+          p.rust-bin.stable.latest.default.override {
+            targets = [ "wasm32-unknown-unknown" ];
+            extensions = [ "rust-src" ];
+          }
         );
 
         # 打包用 stable 工具链即可（CI 也是 stable）
@@ -109,7 +106,8 @@
               # cargo-release
               cargo-edit
               samply
-              cargo-udeps
+              # cargo-udeps 依赖 nightly，stable 工具链下不可用
+              # cargo-udeps
               miniserve
               # 与 plugins/mermaid-web 的 wasm-bindgen crate 版本严格一致，
               # 否则生成的胶水与运行时 ABI 不匹配。
