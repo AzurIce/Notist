@@ -10,13 +10,13 @@
 
 == 一句话总结
 
-Typst 把 import 拆成**两个正交的 trait** + **一个组合层**：
+Typst 把 import 拆成*两个正交的 trait* + *一个组合层*：
 
-- `FileLoader` —— 给定 `FileId` 返回字节。**任何来源**（本地文件、HTTP、S3、虚拟树）都通过这一个方法接入。
-- `Downloader` —— 给定 URL 返回 `Read`。**所有网络请求**（Universe 注册表、字体下载、未来其他资源）都通过这一个 trait 接入。
+- `FileLoader` —— 给定 `FileId` 返回字节。*任何来源*（本地文件、HTTP、S3、虚拟树）都通过这一个方法接入。
+- `Downloader` —— 给定 URL 返回 `Read`。*所有网络请求*（Universe 注册表、字体下载、未来其他资源）都通过这一个 trait 接入。
 - `FileStore<FileLoader>` 与 `SystemPackages { data, cache, universe }` —— 标准的、特征化的、可装饰的组合容器，把"什么 + 从哪来 + 怎么来"分成正交维度。
 
-Notist 可以直接抄这一拆分思想——它的 plugin 形态与 typst 不同（你走 SDK 编译 wasm 通道），但**资源层**（字体、文件、主题、扩展）早晚要面对同样的"分层 + 缓存 + 锁"问题。
+Notist 可以直接抄这一拆分思想——它的 plugin 形态与 typst 不同（你走 SDK 编译 wasm 通道），但*资源层*（字体、文件、主题、扩展）早晚要面对同样的"分层 + 缓存 + 锁"问题。
 
 == 仓库结构与定位
 
@@ -24,7 +24,7 @@ Typst 0.14 把这套基础设施抽成独立 crate `typst-kit`，明确写进 `k
 
 Typst Kit contains useful building blocks for Typst integrations. It is intended as a single source of truth for things like font searching, package loading and more. In particular, it contains various implementations of functionality used in `typst-cli`.
 
-并**全 feature-flag**：
+并*全 feature-flag*：
 
 ```text
 [features]
@@ -39,7 +39,7 @@ http-server       = Live reload HTTP 服务
 watcher / timer   = 独立模块
 ```
 
-这意味着 Tinymist、zed-typst、各家 web 前端、CI runner 都共用同一套"包/字体/文件"实现，**不重复造轮子**。Notist 的 `obsidian-notist`、`zed-notist`、`LSP` 三套消费端如果将来要支持"跨 vault 引用 / 远程 bundle / 资源缓存"，同样应该把基础设施抽到独立 crate（参考 `AGENTS.md` 关于跨项目审查的提示）。
+这意味着 Tinymist、zed-typst、各家 web 前端、CI runner 都共用同一套"包/字体/文件"实现，*不重复造轮子*。Notist 的 `obsidian-notist`、`zed-notist`、`LSP` 三套消费端如果将来要支持"跨 vault 引用 / 远程 bundle / 资源缓存"，同样应该把基础设施抽到独立 crate（参考 `AGENTS.md` 关于跨项目审查的提示）。
 
 == 抽象分层
 
@@ -66,13 +66,13 @@ watcher / timer   = 独立模块
 
 === `FileId` / `VirtualPath` / `VirtualRoot`
 
-import path 在 typst 里**类型化**，分三层：
+import path 在 typst 里*类型化*，分三层：
 
-- `FileId` —— 唯一文件标识 = `(VirtualRoot, VirtualPath)`，**intern 后是 `u128`** 句柄
+- `FileId` —— 唯一文件标识 = `(VirtualRoot, VirtualPath)`，*intern 后是 `u128`* 句柄
 - `VirtualRoot` —— 二选一：
   - `Project` —— 项目根（CLI 默认是 main 文件的父目录，`--root` 可改）
   - `Package(PackageSpec)` —— 包根
-- `VirtualPath` —— 路径本体，**自带 Escapes 检测**（不允许 `..` 跳出所在根）
+- `VirtualPath` —— 路径本体，*自带 Escapes 检测*（不允许 `..` 跳出所在根）
 
 核心代码（`crates/typst/src/syntax/path.rs`）：
 
@@ -87,11 +87,11 @@ pub enum VirtualRoot {
 }
 ```
 
-**Notist 映射**：
+*Notist 映射*：
 
 - Notist `D0021-import` 的 `ModulePath`（`vault::theme::warning`）在结构上与 `VirtualRoot + VirtualPath` 同构。
 - D0021 显式说明「无 wildcard」「显式 selector」——这比 typst 还严格（typst 支持 `import "*.typ"` 与 `import "utils.typ": *`），意味着分析器天然能枚举所有依赖边。
-- **可借鉴面**：把 `ModulePath` 拆为 `Root` + `Path` 两层，并在 `Root` 枚举里区分"vault 内 / vault 外 / 共享 / 包"。**根的隔离是文件系统层强制的**——目前 D0029 应该有 boundary 设计但未在此文档中详述，建议审查 D0029 是否处理了"跨 vault 引用"的越权。
+- *可借鉴面*：把 `ModulePath` 拆为 `Root` + `Path` 两层，并在 `Root` 枚举里区分"vault 内 / vault 外 / 共享 / 包"。*根的隔离是文件系统层强制的*——目前 D0029 应该有 boundary 设计但未在此文档中详述，建议审查 D0029 是否处理了"跨 vault 引用"的越权。
 
 === `PackageSpec` / `VersionlessPackageSpec`
 
@@ -106,13 +106,13 @@ pub struct PackageSpec { namespace: EcoString, name: EcoString, version: Package
 pub struct VersionlessPackageSpec { namespace: EcoString, name: EcoString }
 ```
 
-**几个不变量**：
+*几个不变量*：
 
-- `UniversePackages` 的 `NAMESPACE` 写死为 `"preview"`（`packages.rs:285`），**只有这个 namespace 走 Universe 下载**
+- `UniversePackages` 的 `NAMESPACE` 写死为 `"preview"`（`packages.rs:285`），*只有这个 namespace 走 Universe 下载*
 - 其他 namespace 视为本地包（只能从 data dir 查）
 - Universe 协议：URL = `{base}/{namespace}/{name}-{version}.tar.gz`，index = `{base}/{namespace}/index.json`
 
-**Notist 映射**：Notist 的 import 完全走静态 `ModulePath`，**没有运行时包解析**。如果将来要支持"远程 spec"（如 `@notist/preset-foo:0.1` 风格），可以参考这一拆分——先 spec 解析、再 by-namespace 选后端。但**当前不必要**——8-23 路线已明确"core wasm 通道"是终态。
+*Notist 映射*：Notist 的 import 完全走静态 `ModulePath`，*没有运行时包解析*。如果将来要支持"远程 spec"（如 `@notist/preset-foo:0.1` 风格），可以参考这一拆分——先 spec 解析、再 by-namespace 选后端。但*当前不必要*——8-23 路线已明确"core wasm 通道"是终态。
 
 == 核心 Trait
 
@@ -130,17 +130,17 @@ pub trait Downloader: Send + Sync + 'static {
 }
 ```
 
-**关键设计点**：
+*关键设计点*：
 
-- `key: &dyn Any` —— 标识**这次下载的语义**。`UniversePackages::package()` 传 `&PackageSpec`；`UniversePackages::index()` 传字符串 `"package index"`。下游的 `ProgressDownloader` 用 key 决定**是否要展示进度条**（包下载要、index 不要）。
-- `Box<dyn Read>` 返回流式 reader，**`download` 是默认实现**——用户实现 `stream` 即可获得完整下载。
-- `Box<T>` 与 `Arc<T>` 自动实现，**装饰器友好**。
+- `key: &dyn Any` —— 标识*这次下载的语义*。`UniversePackages::package()` 传 `&PackageSpec`；`UniversePackages::index()` 传字符串 `"package index"`。下游的 `ProgressDownloader` 用 key 决定*是否要展示进度条*（包下载要、index 不要）。
+- `Box<dyn Read>` 返回流式 reader，*`download` 是默认实现*——用户实现 `stream` 即可获得完整下载。
+- `Box<T>` 与 `Arc<T>` 自动实现，*装饰器友好*。
 - 内置 `SystemDownloader` 用 `ureq` + `native-tls` + `env_proxy`，支持环境变量代理、用户自定义 CA 证书。
 - 提供 `ProgressDownloader<Inner, Factory, Progress>` 装饰器——包一层即得进度回调，不污染原 Downloader。
 
-**Notist 映射**：
+*Notist 映射*：
 
-- 你 D0029 / 8-23 的 plugin 模型**明确删除**了 capability/permission 体系，信任模型收敛为「wasm 沙箱 = 唯一边界」。这套 Downloader trait 中的"装饰器模式包装"和"key 分类"思想是**与 capability 模型正交的**——它解决的是「如何接入外部 HTTP 客户端并显示进度」，不是「能不能访问网络」。
+- 你 D0029 / 8-23 的 plugin 模型*明确删除*了 capability/permission 体系，信任模型收敛为「wasm 沙箱 = 唯一边界」。这套 Downloader trait 中的"装饰器模式包装"和"key 分类"思想是*与 capability 模型正交的*——它解决的是「如何接入外部 HTTP 客户端并显示进度」，不是「能不能访问网络」。
 - 如果将来允许某些 plugin 走 `network:<origin>` 能力（目前 8-18 是 `network:<origin> 默认永不授予`，8-22 路线已删除），这个 trait 是一个清晰的接入点。
 - 当前不实现，仅备忘。
 
@@ -152,7 +152,7 @@ pub trait FileLoader {
 }
 ```
 
-**只有 1 个方法**。所有"项目文件 + 包内文件 + 远程文件"通过这个 trait 接入。
+*只有 1 个方法*。所有"项目文件 + 包内文件 + 远程文件"通过这个 trait 接入。
 
 标准实现 `SystemFiles`（`files.rs:319`）：
 
@@ -178,11 +178,11 @@ impl SystemFiles {
 }
 ```
 
-**核心模式**：trait 极小，实现把"什么 ID 走什么 root"显式枚举出来。Tinymist、CLI、web app 用同一 trait 但不同实现。
+*核心模式*：trait 极小，实现把"什么 ID 走什么 root"显式枚举出来。Tinymist、CLI、web app 用同一 trait 但不同实现。
 
-**Notist 映射（高优）**：
+*Notist 映射（高优）*：
 
-Notist 当前的 `AnalyzerConfiguration` 只有静态签名，没有 runtime file loader（8-18 §"当前差距"）。如果将来 LSP / Daemon / HTML renderer / 远程 build 需要**按模块路径解析文件**（不只是静态 import graph 解析），这个 trait 是非常合适的接入点。建议的最小接口：
+Notist 当前的 `AnalyzerConfiguration` 只有静态签名，没有 runtime file loader（8-18 §"当前差距"）。如果将来 LSP / Daemon / HTML renderer / 远程 build 需要*按模块路径解析文件*（不只是静态 import graph 解析），这个 trait 是非常合适的接入点。建议的最小接口：
 
 ```rust
 pub trait NotistFileLoader: Send + Sync + 'static {
@@ -190,10 +190,10 @@ pub trait NotistFileLoader: Send + Sync + 'static {
 }
 ```
 
-**讨论**：
+*讨论*：
 
 - `FileId` 的「项目 vs 共享 vs 包」三类，对应 Notist 的「`vault::` vs `super::` vs 未来 plugin」——可以现在就分好。
-- 字节共享（`Bytes` 而不是 `Vec<u8>`）减少拷贝，typst 的 FileSlot 状态机（`Empty → Loaded → Parsed`）避免重复解析（`files.rs:91-200`）——**Notist 的 LSP/daemon 长生命周期进程**会需要这个。
+- 字节共享（`Bytes` 而不是 `Vec<u8>`）减少拷贝，typst 的 FileSlot 状态机（`Empty → Loaded → Parsed`）避免重复解析（`files.rs:91-200`）——*Notist 的 LSP/daemon 长生命周期进程*会需要这个。
 
 == 包存储：`SystemPackages`（`crates/typst-kit/src/packages.rs:24`）
 
@@ -231,8 +231,8 @@ pub fn obtain(&self, spec: &PackageSpec) -> PackageResult<FsRoot> {
 
 === 三个目录的角色
 
-- `data` —— `~/.local/share/typst/packages/{ns}/{name}/{version}/`。**用户管理**，CLI 不会自动写入。
-- `cache` —— `~/.cache/typst/packages/{ns}/{name}/{version}/`。**远程下载落点**，可被清空重建。
+- `data` —— `~/.local/share/typst/packages/{ns}/{name}/{version}/`。*用户管理*，CLI 不会自动写入。
+- `cache` —— `~/.cache/typst/packages/{ns}/{name}/{version}/`。*远程下载落点*，可被清空重建。
 - `universe` —— 远程协议，不落盘到 `data`，只写 `cache`。
 
 === `FsPackages::store` 的原子写入（`packages.rs:213-265`）
@@ -257,22 +257,22 @@ pub fn store(&self, spec: &PackageSpec, write: impl FnOnce(&Path) -> PackageResu
 }
 ```
 
-**这是这一份最值得抄的具体技术**。要点：
+*这是这一份最值得抄的具体技术*。要点：
 
-- **同 mount point 上建临时目录**——保证 `rename` 真的是 atomic（不同 mount point 上 rename 会拷贝）。注释里写明这是为了规避 `std::fs::rename` 的「如果新名在不同 mount point 上则不工作」的限制。
-- **写临时目录后 rename**——读到的永远要么是旧版本、要么是新版本，**不会读到半截**。
-- **目录存在时**（其他实例已写入）`DirectoryNotEmpty` 直接返回 `Ok(())` —— 不二次下载、不覆盖、不校验。
-- **临时目录的 `Drop` 自动清理**——不需要 explicit `defer`。
+- *同 mount point 上建临时目录*——保证 `rename` 真的是 atomic（不同 mount point 上 rename 会拷贝）。注释里写明这是为了规避 `std::fs::rename` 的「如果新名在不同 mount point 上则不工作」的限制。
+- *写临时目录后 rename*——读到的永远要么是旧版本、要么是新版本，*不会读到半截*。
+- *目录存在时*（其他实例已写入）`DirectoryNotEmpty` 直接返回 `Ok(())` —— 不二次下载、不覆盖、不校验。
+- *临时目录的 `Drop` 自动清理*——不需要 explicit `defer`。
 
-**Notist 映射（高优）**：
+*Notist 映射（高优）*：
 
-- Notist 现在的 `daemon`（D0035 应该是 daemon 设计）+ 未来的资源缓存（如字体、模板快照、wasm 编译产物），都**强烈建议**采用这个 `Tempdir + rename` 模式。
-- 8-22 路线 Step 2 提到「core 以 wasm 通道运行时加载实验 (`include_bytes!` 嵌入 + 进程级 Engine 缓存)」——**「进程级 Engine 缓存」落地时**就用这套原子写入。
-- 8-26 `2026-08-26 build wasm plugin reload regression` 已经在做 wasm 插件重载，**重载就是缓存失效的同构问题**——同一实例的 reload 不会出现目录半截问题，但**多实例协作**（daemon + 多个 LSP client）会出现，建议直接用 `FsPackages::store` 范式。
+- Notist 现在的 `daemon`（D0035 应该是 daemon 设计）+ 未来的资源缓存（如字体、模板快照、wasm 编译产物），都*强烈建议*采用这个 `Tempdir + rename` 模式。
+- 8-22 路线 Step 2 提到「core 以 wasm 通道运行时加载实验 (`include_bytes!` 嵌入 + 进程级 Engine 缓存)」——*「进程级 Engine 缓存」落地时*就用这套原子写入。
+- 8-26 `2026-08-26 build wasm plugin reload regression` 已经在做 wasm 插件重载，*重载就是缓存失效的同构问题*——同一实例的 reload 不会出现目录半截问题，但*多实例协作*（daemon + 多个 LSP client）会出现，建议直接用 `FsPackages::store` 范式。
 
 == `FileStore` 与 `FileSlot` 状态机（`crates/typst-kit/src/files.rs:42-200`）
 
-`FileStore<L>` = `{ loader: L, slots: Mutex<FxHashMap<FileId, FileSlot>> }`。是**唯一负责缓存**的层。
+`FileStore<L>` = `{ loader: L, slots: Mutex<FxHashMap<FileId, FileSlot>> }`。是*唯一负责缓存*的层。
 
 ```rust
 enum FileSlot {
@@ -282,17 +282,17 @@ enum FileSlot {
 }
 ```
 
-**关键技巧**：
+*关键技巧*：
 
-- **状态机驱动**——`file()` 调用会 `Empty → Loaded`；`source()` 调用会 `Empty → Parsed`（一次性 load + parse + 复用 Bytes 字符串）
-- **BOM 处理**——`UTF-8 BOM` 头会被剥离给 Source，但保留在 Bytes 里（`files.rs:170-195`）
-- **`Bytes::from_string(source)` 反向共享**——如果 Bytes 来自 `String`，可以**直接以 Source 的 String 为底**，file() 和 source() 共用同一份字符串（不重新分配），`files.rs:185-193`。**测试断言指针相等**（`files.rs:418`）。
-- **`reset()` + `dependencies()`**——reset 标 stale（清空 slot 状态但**保留 stale Source**用于增量重解析），`dependencies()` 返回「自上次 reset 后被访问过的 FileId 集合」——**这就是依赖图**。
+- *状态机驱动*——`file()` 调用会 `Empty → Loaded`；`source()` 调用会 `Empty → Parsed`（一次性 load + parse + 复用 Bytes 字符串）
+- *BOM 处理*——`UTF-8 BOM` 头会被剥离给 Source，但保留在 Bytes 里（`files.rs:170-195`）
+- *`Bytes::from_string(source)` 反向共享*——如果 Bytes 来自 `String`，可以*直接以 Source 的 String 为底*，file() 和 source() 共用同一份字符串（不重新分配），`files.rs:185-193`。*测试断言指针相等*（`files.rs:418`）。
+- *`reset()` + `dependencies()`*——reset 标 stale（清空 slot 状态但 *保留 stale Source* 用于增量重解析），`dependencies()` 返回「自上次 reset 后被访问过的 FileId 集合」——*这就是依赖图*。
 
-**Notist 映射（高优）**：
+*Notist 映射（高优）*：
 
-- 你 `#<vault::designs::D0025-analyzer-and-workspace-snapshot>` 的 `WorkspaceSnapshot::structured_module()` 当前「写死 `Evaluator::default()`」（8-18 §当前差距），意味着**没有按 file 维度的增量**。引入 `FileStore` 是把「按 FileId 缓存 + reset 触发重算」的下沉。
-- 8-18 `#<vault::designs::plugin-system::runtime-composition>` 提到 `FunctionEnvironmentId` 绑定插件集指纹，**变更分配新 ID**。如果加上 `FileStore`，就可以在 plugin 重载时**只 reset 受影响的 file**（按 plugin_id 过滤）——而不是整个 snapshot。
+- 你 `#<vault::designs::D0025-analyzer-and-workspace-snapshot>` 的 `WorkspaceSnapshot::structured_module()` 当前「写死 `Evaluator::default()`」（8-18 §当前差距），意味着*没有按 file 维度的增量*。引入 `FileStore` 是把「按 FileId 缓存 + reset 触发重算」的下沉。
+- 8-18 `#<vault::designs::plugin-system::runtime-composition>` 提到 `FunctionEnvironmentId` 绑定插件集指纹，*变更分配新 ID*。如果加上 `FileStore`，就可以在 plugin 重载时*只 reset 受影响的 file*（按 plugin_id 过滤）——而不是整个 snapshot。
 - 8-22 已经实现的 `Evaluator::evaluate_nodes`（fixpoint 引擎）天然适合这个模式：`reset()` → 改 plugin 集 → `evaluate_nodes` 自动只走 pending。
 
 == 模块共享：`Module` 是 `Arc<ModuleInner>`（`crates/typst/src/foundations/module.rs`）
@@ -310,7 +310,7 @@ struct ModuleInner {
 }
 ```
 
-**多文件 import 同一模块时零拷贝**——`Arc<ModuleInner>` + `Arc::make_mut`（`module.rs:75`）实现 COW。
+*多文件 import 同一模块时零拷贝*——`Arc<ModuleInner>` + `Arc::make_mut`（`module.rs:75`）实现 COW。
 
 文档注释明确说模块可以来自 4 种来源：
 
@@ -320,13 +320,13 @@ A module can
 - stem from a @reference:scripting:packages[package import] (and thus indirectly its entrypoint file)
 - result from a call to the @plugin[plugin] function
 
-**所有来源**都收敛到同一个 `Module` 类型——上层不需要知道是文件 / 包 / wasm / builtin。
+*所有来源*都收敛到同一个 `Module` 类型——上层不需要知道是文件 / 包 / wasm / builtin。
 
-**Notist 映射**：
+*Notist 映射*：
 
 - 你的 `D0029-core-namespace-plugin-boundary` 实际上和这个完全同构——core 内置函数 = builtin module，第三方 plugin（wasm 或 native rlib 双通道）= dynamic module，vault 内 import = file module。
-- 8-22 收敛的「**init 注册自描述、core 走 native 通道、第三方走 wasm 通道、共享同一契约**」正是这一思想。但你目前**没有 Module 这个值类型作为统一返回**——PluginSet 直接吐出 Node 树。是否需要补一个 `Module` 值类型，取决于 LSP 等消费者要不要"按 module 拉定义"——参考 `#<vault::designs::D0020-module-and-module-result>`。
-- 关键点：**"4 种后端 → 1 个类型"**——别在 type system 里留"builtin module 走 A 路径、wasm module 走 B 路径"这种分支。
+- 8-22 收敛的「*init 注册自描述、core 走 native 通道、第三方走 wasm 通道、共享同一契约*」正是这一思想。但你目前*没有 Module 这个值类型作为统一返回*——PluginSet 直接吐出 Node 树。是否需要补一个 `Module` 值类型，取决于 LSP 等消费者要不要"按 module 拉定义"——参考 `#<vault::designs::D0020-module-and-module-result>`。
+- 关键点：*"4 种后端 → 1 个类型"*——别在 type system 里留"builtin module 走 A 路径、wasm module 走 B 路径"这种分支。
 
 == Path 类型与跨根保护（`crates/typst/src/foundations/path.rs`）
 
@@ -365,14 +365,14 @@ match err {
 }
 ```
 
-**诊断是分 root 类型的**——用户能立刻知道是项目根还是包根出问题，并且能通过 `--root` 调整项目根（包根不能改）。
+*诊断是分 root 类型的*——用户能立刻知道是项目根还是包根出问题，并且能通过 `--root` 调整项目根（包根不能改）。
 
-**Notist 映射**：
+*Notist 映射*：
 
 - 你的 `D0021` 显式说「vault / self / super 是 Module 引用前缀，不是普通变量」——类型上已经区分了。D0029 应该有 boundary 描述。
-- **可借鉴面**：
+- *可借鉴面*：
   - 给 import path 错误加一个"kind"维度：vault boundary / scope boundary / version conflict / 找不到。诊断能告诉用户到底是"无权访问"还是"真的不存在"。
-  - 8-14 已有「实现-设计一致性审查与裁决」`#<2026-08-14 implementation design audit and rulings>`，看一下 boundary 设计是不是已经覆盖了"跨 vault 逃逸"的检测——typst 是**在 `VirtualPath::realize` 这一层强制**的，编译期 + 解析期双拦截，Notist 需要对应实现。
+  - 8-14 已有「实现-设计一致性审查与裁决」`#<2026-08-14 implementation design audit and rulings>`，看一下 boundary 设计是不是已经覆盖了"跨 vault 逃逸"的检测——typst 是*在 `VirtualPath::realize` 这一层强制*的，编译期 + 解析期双拦截，Notist 需要对应实现。
 
 == URL 协议（`UniversePackages::package`，`packages.rs:307-330`）
 
@@ -387,15 +387,15 @@ let url = format!(
 let data = self.downloader.download(spec, &url)?;
 ```
 
-**协议未标准化**——typst 自己的注释里写明「There is no standardized registry protocol. This is merely designed to work with the official Typst Universe package registry.」
+*协议未标准化*——typst 自己的注释里写明「There is no standardized registry protocol. This is merely designed to work with the official Typst Universe package registry.」
 
-也就是说：typst 把"URL 格式"和"tarball 格式"都**没**标准化——服务端可以随便改，客户端跟着改。**这是 typst 的一个有意识选择**——快速迭代优先。
+也就是说：typst 把"URL 格式"和"tarball 格式"都*没*标准化——服务端可以随便改，客户端跟着改。*这是 typst 的一个有意识选择*——快速迭代优先。
 
-`UniversePackages::with_url(downloader, "https://your-mirror.com")` 支持私有 mirror，**但不保证协议兼容**。
+`UniversePackages::with_url(downloader, "https://your-mirror.com")` 支持私有 mirror，*但不保证协议兼容*。
 
-**Notist 映射**：
+*Notist 映射*：
 
-- 8-18 设计里 plugin 走 `plugin.json` + `extension.wasm`（或 ZIP）——这是**私有协议**而非公开 spec，**与 typst 的"未标准化"选择一致**。
+- 8-18 设计里 plugin 走 `plugin.json` + `extension.wasm`（或 ZIP）——这是*私有协议*而非公开 spec，*与 typst 的"未标准化"选择一致*。
 - 如果未来需要"跨 vault 共享资源"或"远程 theme"，可以参考「基础 URL 可替换、协议不承诺稳定」这一权衡。
 
 == 与 Notist plugin 现状的具体差异
@@ -418,21 +418,21 @@ let data = self.downloader.download(spec, &url)?;
 
 === P0：基础设施 crate 化
 
-把 `import` / `资源加载` / `Module` 拆为独立 crate（建议名 `notist-kit`），**全 feature-flag**。这样 `obsidian-notist`、`zed-notist`、`LSP`、`daemon`、`CLI`、`HTML renderer` 共享同一套实现，与 typst-kit 的角色同构。
+把 `import` / `资源加载` / `Module` 拆为独立 crate（建议名 `notist-kit`），*全 feature-flag*。这样 `obsidian-notist`、`zed-notist`、`LSP`、`daemon`、`CLI`、`HTML renderer` 共享同一套实现，与 typst-kit 的角色同构。
 
 理由：
 
 - 当前 `notist-eval` / `notist-html` / `notist-analysis` 各自实现 import graph（`#<vault::designs::D0025-analyzer-and-workspace-snapshot>` 提到的 `WorkspaceSnapshot::structured_module()`），但缺统一的"按 FileId 加载 + 缓存 + reset"机制。
-- 8-26 `#<2026-08-26 build wasm plugin reload regression>` 已经在做 plugin reload，**reload 的 cache 失效**是同构问题。
+- 8-26 `#<2026-08-26 build wasm plugin reload regression>` 已经在做 plugin reload，*reload 的 cache 失效*是同构问题。
 
 === P1：cache 写入用 Tempdir + rename
 
-如果将来需要"运行时下载"（哪怕只是字体/资源，不是 plugin），`FsPackages::store` 的 `Tempdir + rename + DirectoryNotEmpty tolerate` 模式直接抄——**最关键的细节是「同 mount point 建临时目录」**这一行注释。
+如果将来需要"运行时下载"（哪怕只是字体/资源，不是 plugin），`FsPackages::store` 的 `Tempdir + rename + DirectoryNotEmpty tolerate` 模式直接抄——*最关键的细节是「同 mount point 建临时目录」*这一行注释。
 
 适用面：
 
-- 8-22 路线 Step 2 的「**进程级 Engine 缓存**」（wasm 编译产物按 hash 缓存，8-18 §重载）——这就是 cache。
-- `obsidian-notist` 启动时的「**预解析 vault**」缓存（`#<2026-08-24 obsidian-notist plugin mvp implementation>` 提到的 `Vault` 索引）。
+- 8-22 路线 Step 2 的「*进程级 Engine 缓存*」（wasm 编译产物按 hash 缓存，8-18 §重载）——这就是 cache。
+- `obsidian-notist` 启动时的「*预解析 vault*」缓存（`#<2026-08-24 obsidian-notist plugin mvp implementation>` 提到的 `Vault` 索引）。
 
 === P1：FileStore 状态机下沉到 analysis 层
 
@@ -446,7 +446,7 @@ let data = self.downloader.download(spec, &url)?;
 
 === P2：Path 错误按 root 分类
 
-`format_resolve_error` 把 `PathError::Escapes` 按 `VirtualRoot::Project` vs `Package(_)` 区分（`path.rs:177-188`），并给项目根加一个「`--root` 调整」hint，包根不给 hint（**因为包根不可调整**）。
+`format_resolve_error` 把 `PathError::Escapes` 按 `VirtualRoot::Project` vs `Package(_)` 区分（`path.rs:177-188`），并给项目根加一个「`--root` 调整」hint，包根不给 hint（*因为包根不可调整*）。
 
 Notist 的 D0029 boundary 错误可以采纳这种"按 kind 给 hint"的形式——例如：
 
@@ -456,24 +456,24 @@ Notist 的 D0029 boundary 错误可以采纳这种"按 kind 给 hint"的形式�
 
 === P2：Downloader 装饰器模式备查
 
-如果将来真的有"运行时下载字体/资源"需求（不是 plugin，是 asset），`Downloader` trait + `ProgressDownloader` 装饰器是干净的接入点。**但当前 8-22 路线没有这个需求**——8-23 §3 删除了 capability 体系，`network:<origin>` 默认永不授予。
+如果将来真的有"运行时下载字体/资源"需求（不是 plugin，是 asset），`Downloader` trait + `ProgressDownloader` 装饰器是干净的接入点。*但当前 8-22 路线没有这个需求*——8-23 §3 删除了 capability 体系，`network:<origin>` 默认永不授予。
 
 如果未来要恢复，可以直接抄这一 trait 设计（带 `key: &dyn Any` 分类），不需从零开始。
 
 === P3：URL 协议不标准化策略
 
-typst 在 `UniversePackages::index()` 注释里写明「**The index format of the official package registry is not specified or stabilized and may be changed at any time.**」并在测试里用「故意构造一个不可解析的 dev 版本号来验证 tolerant deserialization」（`packages.rs:454-484`）。
+typst 在 `UniversePackages::index()` 注释里写明「*The index format of the official package registry is not specified or stabilized and may be changed at any time.*」并在测试里用「故意构造一个不可解析的 dev 版本号来验证 tolerant deserialization」（`packages.rs:454-484`）。
 
-Notist 的 `plugin.json`（8-18 §包格式）目前看起来是有意把 `api-version` 写入 manifest，但**协议本身**（字段语义、WIT 接口）实际上也是"SDK 版本即 ABI 版本"（8-23 §5）——这与 typst 的"不承诺稳定"立场一致。建议在 plugin manifest 文档里也明确写一句「**plugin.json schema 未承诺稳定，跨 SDK 版本需用 `api-version` 协商**」。
+Notist 的 `plugin.json`（8-18 §包格式）目前看起来是有意把 `api-version` 写入 manifest，但*协议本身*（字段语义、WIT 接口）实际上也是"SDK 版本即 ABI 版本"（8-23 §5）——这与 typst 的"不承诺稳定"立场一致。建议在 plugin manifest 文档里也明确写一句「*plugin.json schema 未承诺稳定，跨 SDK 版本需用 `api-version` 协商*」。
 
 == 姊妹项目审查备忘
 
 按 `AGENTS.md` 提示，本调查涉及 LSP 协议契约、parser 语义：
 
-- **语法/文法变更** —— 无关（仅做调查，未动 grammar）
-- **LSP 协议契约变更** —— 无关
-- **资源加载/缓存** —— 与 LSP 的 `WorkspaceSnapshot` 强耦合，**未来若落地 P1 建议，需审查 `obsidian-notist/src/lsp/session.ts` 的契约是否需要扩展**（增量 reset、dependencies 推送）
-- **Plugin 形态变更** —— 无关（仅建议，未动 plugin 设计）
+- *语法/文法变更* —— 无关（仅做调查，未动 grammar）
+- *LSP 协议契约变更* —— 无关
+- *资源加载/缓存* —— 与 LSP 的 `WorkspaceSnapshot` 强耦合，*未来若落地 P1 建议，需审查 `obsidian-notist/src/lsp/session.ts` 的契约是否需要扩展*（增量 reset、dependencies 推送）
+- *Plugin 形态变更* —— 无关（仅建议，未动 plugin 设计）
 
 == 参考代码定位
 

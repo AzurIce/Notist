@@ -41,8 +41,8 @@ vault::designs::type-system  -> designs/type-system/index.html
 
 URL 中的路径 segment 单独 percent encode；页面之间使用相对链接，使构建结果可直接从任意静态文件服务器或子路径部署。
 
-- **资源复制**：资源目录虚拟模块（#<vault::designs::world::module-result/资源目录>）中的文件按引用复制到输出（`vault::docs::images/logo.png` → 输出下对应路径），Reference 指向复制后的相对路径；未被引用的资源文件也可以整体复制（站点资源），由 CLI 决定——值层只有 Reference，资源解析属于构建层。当前 CLI 决策：默认整体复制所有模块资源（无额外旗标）；
-- **虚拟目录模块**生成索引页（列出子模块与资源）；
+- *资源复制*：资源目录虚拟模块（#<vault::designs::world::module-result/资源目录>）中的文件按引用复制到输出（`vault::docs::images/logo.png` → 输出下对应路径），Reference 指向复制后的相对路径；未被引用的资源文件也可以整体复制（站点资源），由 CLI 决定——值层只有 Reference，资源解析属于构建层。当前 CLI 决策：默认整体复制所有模块资源（无额外旗标）；
+- *虚拟目录模块*生成索引页（列出子模块与资源）；
 - 引用在构建时解析：目标存在输出链接，不存在保留可见文本与 unresolved 样式；
 - syntax/analysis/evaluation diagnostics 不阻止生成其他可用页面，但 `notist build` 输出 diagnostics 并返回非零退出码；
 - 默认不清空整个输出目录（只创建或覆盖本次 Vault 对应的页面与 `_notist` 资源），删除旧产物必须显式 `--clean`；`--clean` 只允许清理已解析、验证位于目标 output root 内的 artifact（#<vault::cli/build>）。

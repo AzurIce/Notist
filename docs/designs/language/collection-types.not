@@ -100,11 +100,11 @@ Array literal 从左到右求值每个元素；Dict literal 从左到右求值�
 
 == 实现切片
 
-1. **Type/Value/字面量**：`Type::Array` / `Type::Dict` / `Type::Union` / `Type::Never`；parser literal、checker 与 evaluator；
-2. **Rest 与调用模型**：按 #<vault::designs::language::call-model> 实施，并在迁移 table/table-header 时使用集合类型；
-3. **Dict 与序列化**：Dict 构造、key 检查、协议 TypeRecord；
-4. **观察与转换操作**：以内部多态签名提供 `len` / `at` / `contains` / `append` / `concat` / `keys` / `values` / `pairs` 等核心 builtin；用户可写 generic 仍不进入 Type grammar；
-5. **后续独立设计**：`for`、method syntax、spread（`..xs` at call site）与可变集合。
+1. *Type/Value/字面量*：`Type::Array` / `Type::Dict` / `Type::Union` / `Type::Never`；parser literal、checker 与 evaluator；
+2. *Rest 与调用模型*：按 #<vault::designs::language::call-model> 实施，并在迁移 table/table-header 时使用集合类型；
+3. *Dict 与序列化*：Dict 构造、key 检查、协议 TypeRecord；
+4. *观察与转换操作*：以内部多态签名提供 `len` / `at` / `contains` / `append` / `concat` / `keys` / `values` / `pairs` 等核心 builtin；用户可写 generic 仍不进入 Type grammar；
+5. *后续独立设计*：`for`、method syntax、spread（`..xs` at call site）与可变集合。
 
 == 诊断
 

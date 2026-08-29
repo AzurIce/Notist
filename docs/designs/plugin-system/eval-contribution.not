@@ -25,8 +25,8 @@ PluginElementDecl {
 
 registry 中的 Function 实现按 backend 区分，而不是按语义 package 区分：
 
-1. **Native function**：任何 package 都可以由 Rust native 实现，直接提供 `Function` 并注册 contribution；core 只是其中的默认 package。
-2. **Core-module function**：零导入 core wasm module；装载时 `init` 返回 version byte + postcard declarations，`evaluate` 以相同 frame 承载共享 `Node` 森林，按 dispatcher 名字分发一次规约后由宿主统一继续 fixpoint。所有声明、默认值与调用载荷都来自共享 `notist-model` 类型，不经过 JSON 转换。
+1. *Native function*：任何 package 都可以由 Rust native 实现，直接提供 `Function` 并注册 contribution；core 只是其中的默认 package。
+2. *Core-module function*：零导入 core wasm module；装载时 `init` 返回 version byte + postcard declarations，`evaluate` 以相同 frame 承载共享 `Node` 森林，按 dispatcher 名字分发一次规约后由宿主统一继续 fixpoint。所有声明、默认值与调用载荷都来自共享 `notist-model` 类型，不经过 JSON 转换。
 
 所有实现都实现同一 `Function` trait 并进入同一 `FunctionRegistry`；registry 的 owner 是 package identity，native/Wasm 不改变 call 的语义。Wasm backend 只有 component 实现，不再按 artifact 格式分流。
 

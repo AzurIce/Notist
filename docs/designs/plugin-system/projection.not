@@ -16,10 +16,10 @@
 
 由此推出：
 
-- **两个独立的 registry**。语义规约不认识 `html::*`——target 词表不在语义阶段注册，作者在文档里写 `html::` 名字会被 check 层报 unknown。内容编写永远与投影端无关：想要某种呈现，作者在投影无关的 call 上写内容，由插件在投影端实现呈现逻辑。
-- **target package 注册两类东西**：投影 handler（插件 call → `html::*`）与 `html::*` 数据名字的 serializer 规则；core 的原生节点由同一 target 的内置分支处理。
-- **core 与插件共享 target 边界**：原生标签与 Web Component 都由 HTML target 负责，区别只在 target 侧的映射实现与是否携带资产；语义层不因此引入 HTML 名字。
-- **多 target 同构**：native target 是另一个 target package，把同一森林规约到自己的节点词表。"原生"是 per-target 概念。
+- *两个独立的 registry*。语义规约不认识 `html::*`——target 词表不在语义阶段注册，作者在文档里写 `html::` 名字会被 check 层报 unknown。内容编写永远与投影端无关：想要某种呈现，作者在投影无关的 call 上写内容，由插件在投影端实现呈现逻辑。
+- *target package 注册两类东西*：投影 handler（插件 call → `html::*`）与 `html::*` 数据名字的 serializer 规则；core 的原生节点由同一 target 的内置分支处理。
+- *core 与插件共享 target 边界*：原生标签与 Web Component 都由 HTML target 负责，区别只在 target 侧的映射实现与是否携带资产；语义层不因此引入 HTML 名字。
+- *多 target 同构*：native target 是另一个 target package，把同一森林规约到自己的节点词表。"原生"是 per-target 概念。
 
 == Render Contribution
 

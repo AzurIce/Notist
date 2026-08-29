@@ -4,19 +4,19 @@
     "type": "split",
     "children": [
       {
-        "id": "b891c828a5bc00b7",
+        "id": "d3fd567bc818dfd8",
         "type": "tabs",
         "children": [
           {
-            "id": "b0a7cf1a18255891",
+            "id": "cbdcb79808a84052",
             "type": "leaf",
             "state": {
               "type": "notist-view",
               "state": {
-                "file": "designs/README.not"
+                "file": "cli/inspect.not"
               },
               "icon": "file-text",
-              "title": "README"
+              "title": "inspect"
             }
           }
         ]
@@ -44,8 +44,8 @@
                 ],
                 "dimNonNot": false
               },
-              "icon": "folder-tree",
-              "title": "Notist explorer"
+              "icon": "lucide-ghost",
+              "title": "notist-explorer"
             }
           },
           {
@@ -92,8 +92,39 @@
               "icon": "lucide-bookmark",
               "title": "书签"
             }
+          },
+          {
+            "id": "948875e3b4c1f790",
+            "type": "leaf",
+            "state": {
+              "type": "notist-explorer",
+              "state": {
+                "expanded": [
+                  "cli"
+                ],
+                "dimNonNot": false
+              },
+              "icon": "folder-tree",
+              "title": "Notist explorer"
+            }
+          },
+          {
+            "id": "51cd9e44640a43eb",
+            "type": "leaf",
+            "state": {
+              "type": "notist-explorer",
+              "state": {
+                "expanded": [
+                  "cli"
+                ],
+                "dimNonNot": false
+              },
+              "icon": "folder-tree",
+              "title": "Notist explorer"
+            }
           }
-        ]
+        ],
+        "currentTab": 5
       }
     ],
     "direction": "horizontal",
@@ -119,19 +150,21 @@
       "bases:新建数据库": false
     }
   },
-  "active": "38c7b13218340e95",
+  "active": "cbdcb79808a84052",
   "lastOpenFiles": [
-    "ai/README.not.tmp.285429.581491368c8d",
-    "ai/2026-08-28 core wasm 插件后端统一与 wasmi 落地.not.tmp.285429.af8dd8e738cf",
-    "designs/overview.not",
-    "designs/README.not",
-    "plugins.not",
-    "README.not",
-    "ai/README.not.tmp.710444.59c3b3ea8825",
-    "ai/2026-08-28 structure aware embedding and link expanded retrieval research.not",
-    "intro.not",
-    "designs/world/reference-ref-target.not",
-    "AGENTS.md",
-    "designs/host/query-contract.not.tmp.710444.a368846bf259"
+    "cli/inspect.not",
+    "designs/host/cli-command-surface-skill-distribution.not.tmp.285429.4e725fb48e20",
+    "designs/host/cli-command-surface-skill-distribution.not.tmp.285429.52927f55c55e",
+    "designs/host/cli-command-surface-skill-distribution.not.tmp.285429.8ee98ab60d83",
+    "cli/README.not.tmp.285429.3cf6a5d12294",
+    "cli/inspect.not.tmp.285429.0a872bf67a86",
+    "cli/README.not.tmp.285429.20ce64c9687c",
+    "cli/README.not.tmp.285429.3fda027165e8",
+    "cli/README.not.tmp.285429.113b50122b41",
+    "cli/README.not.tmp.285429.33ada917533a",
+    "cli/README.not.tmp.285429.af7ae148f30d",
+    "fx2.md",
+    "notist-highlight-fixture.md",
+    "AGENTS.md"
   ]
 }

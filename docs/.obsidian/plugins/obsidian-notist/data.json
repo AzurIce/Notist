@@ -201,19 +201,19 @@
         "type": "split",
         "children": [
           {
-            "id": "b891c828a5bc00b7",
+            "id": "d3fd567bc818dfd8",
             "type": "tabs",
             "children": [
               {
-                "id": "b0a7cf1a18255891",
+                "id": "cbdcb79808a84052",
                 "type": "leaf",
                 "state": {
                   "type": "notist-view",
                   "state": {
-                    "file": "designs/README.not"
+                    "file": "cli/inspect.not"
                   },
                   "icon": "file-text",
-                  "title": "README"
+                  "title": "inspect"
                 }
               }
             ]
@@ -241,8 +241,8 @@
                     ],
                     "dimNonNot": false
                   },
-                  "icon": "folder-tree",
-                  "title": "Notist explorer"
+                  "icon": "lucide-ghost",
+                  "title": "notist-explorer"
                 }
               },
               {
@@ -289,8 +289,39 @@
                   "icon": "lucide-bookmark",
                   "title": "书签"
                 }
+              },
+              {
+                "id": "948875e3b4c1f790",
+                "type": "leaf",
+                "state": {
+                  "type": "notist-explorer",
+                  "state": {
+                    "expanded": [
+                      "cli"
+                    ],
+                    "dimNonNot": false
+                  },
+                  "icon": "folder-tree",
+                  "title": "Notist explorer"
+                }
+              },
+              {
+                "id": "51cd9e44640a43eb",
+                "type": "leaf",
+                "state": {
+                  "type": "notist-explorer",
+                  "state": {
+                    "expanded": [
+                      "cli"
+                    ],
+                    "dimNonNot": false
+                  },
+                  "icon": "folder-tree",
+                  "title": "Notist explorer"
+                }
               }
-            ]
+            ],
+            "currentTab": 5
           }
         ],
         "direction": "horizontal",
@@ -316,7 +347,7 @@
           "bases:新建数据库": false
         }
       },
-      "active": "38c7b13218340e95"
+      "active": "cbdcb79808a84052"
     }
   },
   "vimMode": true,

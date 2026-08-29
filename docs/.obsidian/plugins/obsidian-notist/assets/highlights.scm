@@ -113,5 +113,3 @@
 
 (property_attribute
   key: (identifier) @property)
-
-(attribute_string) @string

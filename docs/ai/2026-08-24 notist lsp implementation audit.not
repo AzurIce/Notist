@@ -12,8 +12,8 @@
 
 == 性能问题（按影响排序）
 
-- *P0 · 诊断请求的 O（路径数） 重复往返*：`publish_diagnostics` 对每个已知 path 调 `diagnostics_for_path`，而后者每次都向 daemon 请求**整个 vault 的完整 Diagnostics** 再客户端 filter（`lsp.rs:649-681`）。N 个文件 = 每次变更后 N 次相同的全 vault 往返。修为：每 vault 请求一次、按 path 分组。
-- *P0 · 每个 notification 全量 rebuild*：open/change/save/close 与 watcher 事件全部走 `state.rebuild()`（`lsp.rs:230-261, 375-442`），每次 rebuild 做：文件系统 vault 发现（`discover_vault_roots` 走目录树）+ 每 vault 重发全部打开文档 overlay + `CoreRequest::Sources` 拉回**全部** source 文本 + 上面的 O(N) 诊断。无 debounce、无 coalesce。lsp-adapter 的「并发」节承诺的是 latest-wins 的 revision 调度（「仅在 N 仍是最新时」发布），实现是同步串行全量——这是设计与实现最大的差距。当前只能依赖客户端防抖兜底，契约脆弱。
+- *P0 · 诊断请求的 O（路径数） 重复往返*：`publish_diagnostics` 对每个已知 path 调 `diagnostics_for_path`，而后者每次都向 daemon 请求*整个 vault 的完整 Diagnostics* 再客户端 filter（`lsp.rs:649-681`）。N 个文件 = 每次变更后 N 次相同的全 vault 往返。修为：每 vault 请求一次、按 path 分组。
+- *P0 · 每个 notification 全量 rebuild*：open/change/save/close 与 watcher 事件全部走 `state.rebuild()`（`lsp.rs:230-261, 375-442`），每次 rebuild 做：文件系统 vault 发现（`discover_vault_roots` 走目录树）+ 每 vault 重发全部打开文档 overlay + `CoreRequest::Sources` 拉回*全部* source 文本 + 上面的 O(N) 诊断。无 debounce、无 coalesce。lsp-adapter 的「并发」节承诺的是 latest-wins 的 revision 调度（「仅在 N 仍是最新时」发布），实现是同步串行全量——这是设计与实现最大的差距。当前只能依赖客户端防抖兜底，契约脆弱。
 - *P1 · rebuild 全程持全局写锁*：notification 处理在 `state.write()` 内完成 rebuild + publish 全程（`lsp.rs:172-175`），请求线程取读锁被堵——键入期间 hover/completion 延迟跟着 rebuild 走。
 - *P1 · daemon 请求被 Mutex 串行化*：每 vault 一个 `Arc<Mutex<LocalNotistClient>>`，所有 CoreRequest 持锁 + `block_on`（`lsp.rs:285-289, 411-419`）。「每请求一个 OS 线程」的并发模型被这个 mutex 完全消解：一个慢 daemon 请求堵住该 vault 全部请求。需确认 transport 层是否支持并发请求；若支持应去锁或换连接池。
 - *P2 · Sources 全量载入 LSP 进程*：`CoreRequest::Sources` 把 vault 全部文本 + LineIndex 复制进 LSP 进程，只为 position 换算（`lsp.rs:416-433`）。替代：让 service 直接返回 LSP position（service 侧本就有 source 与 LineIndex），LSP 层不持有全文；或至少按 revision 缓存、按需拉取。

@@ -5,7 +5,7 @@
 
 == wasm 间的数据传输
 
-边界两侧是两套隔离的线性内存，指针互不可见。跨界传数据的唯一方式是把字节拷进对方内存；而目标内存归对方分配器管理——宿主不能在 guest 的堆上分配，guest 也不能在宿主的堆上分配。所以**每一方都必须向对方暴露 alloc / free**。这是跨 wasm 内存传字节的最小必要集，组件形态同样存在，只是被 canonical ABI 藏成了 `cabi_realloc`。
+边界两侧是两套隔离的线性内存，指针互不可见。跨界传数据的唯一方式是把字节拷进对方内存；而目标内存归对方分配器管理——宿主不能在 guest 的堆上分配，guest 也不能在宿主的堆上分配。所以*每一方都必须向对方暴露 alloc / free*。这是跨 wasm 内存传字节的最小必要集，组件形态同样存在，只是被 canonical ABI 藏成了 `cabi_realloc`。
 
 另一条裁定：只有宿主调插件（导出），插件零导入、从不调宿主。规约不动点、终止性与资源预算都在宿主手里。"插件 import 宿主接口"的反向方案被否决：它把实例化绑死在实现了这些导入的宿主上，并把执行权交给插件（#<vault::designs::plugin-system::capability>）。
 
@@ -31,8 +31,8 @@ host 与 plugin 之间只传两种字节，均为 wire version byte + postcard�
 
 === 两条约束
 
-- **零导入不得破坏**：任何 import 都把可实例化面缩小到实现了它的 embedder；宿主能力（时钟、随机、IO）需求走独立 capability 设计，不进本 ABI。
-- **两层版本各自演进**：`notist_abi` 门调用约定，wire version byte 门载荷编码；解码严格，无 fallback。
+- *零导入不得破坏*：任何 import 都把可实例化面缩小到实现了它的 embedder；宿主能力（时钟、随机、IO）需求走独立 capability 设计，不进本 ABI。
+- *两层版本各自演进*：`notist_abi` 门调用约定，wire version byte 门载荷编码；解码严格，无 fallback。
 
 === 为什么不是 canonical ABI
 

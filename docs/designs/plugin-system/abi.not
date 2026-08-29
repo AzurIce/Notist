@@ -12,7 +12,7 @@
 - 宿主与 guest 共享 `notist_model::wire` 的 declarations / forest encode/decode API；解码严格检查 wire version byte，不提供 JSON 或旧编码 fallback；
 - 参数默认值直接使用共享 `DefaultValue`，不经过 JSON 字符串；
 - `range` 随共享 `Node` 传输，使插件透传的子树保留诊断位置；它只是可被 guest 伪造的定位元数据，不参与 call identity、规约或权限判定；
-- **响应森林继续参与 fixpoint**：handler 返回 call 森林后，宿主统一把它重新送入不动点；其中指向已注册名字的 call 会再次派发。handler 返回与输入完全相同的 call 表示 identity；持续产生新的自返 call 才是作者错误，由 depth/fuel 兜底并给出诊断；纯数据元素不注册运行时 handler。
+- *响应森林继续参与 fixpoint*：handler 返回 call 森林后，宿主统一把它重新送入不动点；其中指向已注册名字的 call 会再次派发。handler 返回与输入完全相同的 call 表示 identity；持续产生新的自返 call 才是作者错误，由 depth/fuel 兜底并给出诊断；纯数据元素不注册运行时 handler。
 
 == init 注册语义
 

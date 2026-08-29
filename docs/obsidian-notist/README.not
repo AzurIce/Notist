@@ -24,7 +24,7 @@
 
 *以下为 AI 生成内容。*
 
-把 notist 以 Obsidian 插件形态接入：**只借 Obsidian 的 GUI 外壳，语义层完全架空**。一个 Vault 里 markdown 是一个 world、notist 是一个 world；graph、backlinks、搜索等一切语义能力由 notist 自己重造。
+把 notist 以 Obsidian 插件形态接入：*只借 Obsidian 的 GUI 外壳，语义层完全架空*。一个 Vault 里 markdown 是一个 world、notist 是一个 world；graph、backlinks、搜索等一切语义能力由 notist 自己重造。
 
 == 定位
 

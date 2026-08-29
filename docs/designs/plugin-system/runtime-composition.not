@@ -5,7 +5,7 @@
 
 == 先区分 package、backend 与 App
 
-Notist 中的 plugin 首先是一个**语义 package**，而不是一种编译产物：
+Notist 中的 plugin 首先是一个*语义 package*，而不是一种编译产物：
 
 ```text
 package
@@ -27,7 +27,7 @@ native backend                       Wasm backend
                          → 同一个 evaluator
 ```
 
-因此 `core`、第三方 native plugin 和 Wasm plugin 在**语义层**没有不同的 plugin 类别。backend 只影响代码如何装载、如何执行以及信任边界，不影响 call 的名字、参数、handler 不动点、成型或投影规则。
+因此 `core`、第三方 native plugin 和 Wasm plugin 在*语义层*没有不同的 plugin 类别。backend 只影响代码如何装载、如何执行以及信任边界，不影响 call 的名字、参数、handler 不动点、成型或投影规则。
 
 == 引擎不是 App
 

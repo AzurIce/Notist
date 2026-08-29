@@ -1,7 +1,7 @@
 @![implementation = "aligned"]
 = Reference and RefTarget
 
-本文是引用寻址与 RefTarget 的独立成篇，从归档的历史混合文档中独立成篇。Reference 元素的值层定义见 #<vault::designs::plugin-system::core/link>；scope 是值层节点见 #<vault::designs::language::scope-environment/scope 是值层节点>。词汇裁决（2026-08-28）：`ModulePath[/ItemName]` 统一称为 **ItemPath**；`/` 后的扁平名称为 **ItemName**；ItemName 命名的模块内实体（scope 区域、资源文件）称为 **Item**。
+本文是引用寻址与 RefTarget 的独立成篇，从归档的历史混合文档中独立成篇。Reference 元素的值层定义见 #<vault::designs::plugin-system::core/link>；scope 是值层节点见 #<vault::designs::language::scope-environment/scope 是值层节点>。词汇裁决（2026-08-28）：`ModulePath[/ItemName]` 统一称为 *ItemPath*；`/` 后的扁平名称为 *ItemName*；ItemName 命名的模块内实体（scope 区域、资源文件）称为 *Item*。
 
 == 引用与寻址
 
@@ -23,10 +23,10 @@ Reference 连接知识：`#<target>` 产生 Reference 元素（见 #<vault::desi
 
 === ItemName
 
-每个 Module 拥有一个扁平的 ItemName 空间：一袋"名字 → 模块内实体"的映射，正是 POSIX directory entry 的结构。ItemName 命名的实体称为 **Item**；Item 携带解析给出的 kind（Scope | Resource）。ItemName 的两个来源：
+每个 Module 拥有一个扁平的 ItemName 空间：一袋"名字 → 模块内实体"的映射，正是 POSIX directory entry 的结构。ItemName 命名的实体称为 *Item*；Item 携带解析给出的 kind（Scope | Resource）。ItemName 的两个来源：
 
 - 显式 `@id` 标注（机制名保持 `id`）；
-- heading 的**默认名**：标题 body 提取的纯文本（见 #<vault::designs::plugin-system::core/heading>）。
+- heading 的*默认名*：标题 body 提取的纯文本（见 #<vault::designs::plugin-system::core/heading>）。
 
 ItemName 在模块内唯一；`#<vault::guide/install>` 解析到该 Item 在模块内的位置。引用 `/` 后缀的匹配顺序：先按显式 `@id` 精确匹配，再按标题默认名（标题文本）精确匹配——ItemName 是字面字符串，不需要符合标识符语法。重复标题产生歧义诊断，作者用显式 `@id` 消歧；显式 `@id` 总是覆盖默认名。匿名 scope 不可寻址——想被引用或查询，就创建带 `@id` 的节点（这正是手动 scope 的意义之一）：可引用性由作者显式授予，这与 Rust 给匿名条目合成 `{{closure}}` 类地址的做法相反。
 
@@ -61,7 +61,7 @@ RefTarget
 
 === 两个寻址世界：结构地址与词法绑定
 
-语言里存在两个世界，切分线是**唯一性**：
+语言里存在两个世界，切分线是*唯一性*：
 
 ```text
 结构世界（Markup 寻址）      Item / ItemName / ModulePath —— 模块内唯一，可被 #<> 引用
