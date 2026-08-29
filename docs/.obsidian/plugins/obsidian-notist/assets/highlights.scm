@@ -47,7 +47,10 @@
     (qualified_name) @type))
 
 (target_literal
-  target: (_) @module)
+  target: (_) @module
+  ">" @punctuation.bracket)
+
+(target_open) @punctuation.bracket
 
 (import_item
   alias: (identifier) @variable)
@@ -60,20 +63,15 @@
  (enum_item marker: (enum_marker) @punctuation.list_marker.markup)
  (task_item marker: (task_marker) @punctuation.list_marker.markup)]
 
-(target_literal
-  target: (_) @link_uri)
-
 [(strong_marker)
  (emphasis_marker)
  (underline_marker)
- (strike_marker)
- (math_marker)] @punctuation.special
+ (strike_marker)] @punctuation.special
 
 (strong) @emphasis.strong
 (emphasis) @emphasis
 (underline) @emphasis
 (strike) @emphasis.strikethrough
-(inline_math) @string.special
 (escaped_punctuation) @string.escape
 
 [(line_comment)

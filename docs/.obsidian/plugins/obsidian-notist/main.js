@@ -42,8 +42,8 @@ var import_obsidian7 = require("obsidian");
 
 // src/notist-view.ts
 var import_obsidian2 = require("obsidian");
-var import_state4 = require("@codemirror/state");
-var import_view5 = require("@codemirror/view");
+var import_state5 = require("@codemirror/state");
+var import_view7 = require("@codemirror/view");
 var import_commands3 = require("@codemirror/commands");
 
 // node_modules/@replit/codemirror-vim-core/vim.js
@@ -11881,6 +11881,24 @@ function deinitNotistHighlight() {
   query = null;
   parser = null;
 }
+function targetLiteralAt(state, pos) {
+  const tree = state.field(highlightField, false)?.tree;
+  if (!tree)
+    return null;
+  let node = tree.rootNode.descendantForIndex(pos, pos);
+  while (node && node.type !== "target_literal")
+    node = node.parent;
+  if (!node || pos < node.startIndex || pos >= node.endIndex)
+    return null;
+  const body2 = node.childForFieldName("target");
+  if (!body2)
+    return null;
+  return {
+    from: node.startIndex,
+    to: node.endIndex,
+    target: state.doc.sliceString(body2.startIndex, body2.endIndex).replace(/\\([<>\\])/g, "$1")
+  };
+}
 function notistHighlight() {
   if (!parser || !query)
     return [];
@@ -12017,8 +12035,139 @@ function buildDecorations(tree) {
   return builder.finish();
 }
 
-// src/lsp/cm.ts
+// src/image-hover.ts
 var import_view3 = require("@codemirror/view");
+var IMAGE_EXTENSIONS = /* @__PURE__ */ new Set([
+  "png",
+  "apng",
+  "gif",
+  "jpg",
+  "jpeg",
+  "webp",
+  "svg",
+  "avif",
+  "ico",
+  "bmp"
+]);
+function isImageExtension(extension) {
+  return IMAGE_EXTENSIONS.has(extension.toLowerCase());
+}
+function isImageTargetRef(target) {
+  const slash = target.indexOf("/");
+  if (slash < 0)
+    return false;
+  const ext = target.slice(slash + 1).match(/\.([a-zA-Z0-9]+)$/)?.[1];
+  return ext !== void 0 && isImageExtension(ext);
+}
+function notistImageHover(hooks) {
+  let lastFrom = -1;
+  return import_view3.EditorView.domEventHandlers({
+    mousemove(event, view) {
+      const pos = view.posAtCoords({ x: event.clientX, y: event.clientY });
+      if (pos === null) {
+        lastFrom = -1;
+        return false;
+      }
+      const hit = targetLiteralAt(view.state, pos);
+      if (!hit || !isImageTargetRef(hit.target)) {
+        lastFrom = -1;
+        return false;
+      }
+      if (lastFrom === hit.from)
+        return false;
+      lastFrom = hit.from;
+      const targetEl = event.target instanceof HTMLElement ? event.target : view.contentDOM;
+      hooks.show({ targetEl, from: hit.from, to: hit.to, target: hit.target });
+      return false;
+    }
+  });
+}
+
+// src/ref-jump.ts
+var import_state3 = require("@codemirror/state");
+var import_view4 = require("@codemirror/view");
+var setCtrlHoverRef = import_state3.StateEffect.define();
+var ctrlHoverField = import_state3.StateField.define({
+  create: () => import_view4.Decoration.none,
+  update(value, tr) {
+    for (const effect of tr.effects) {
+      if (effect.value === null)
+        return import_view4.Decoration.none;
+      const { from, to } = effect.value;
+      return import_view4.Decoration.set(
+        [import_view4.Decoration.mark({ class: "cm-notist-ref-jump" }).range(from, to)],
+        true
+      );
+    }
+    if (tr.docChanged)
+      return import_view4.Decoration.none;
+    return value.map(tr.changes);
+  },
+  provide: (f) => import_view4.EditorView.decorations.from(f)
+});
+function notistRefJump(hooks) {
+  let lastCoords = null;
+  let lastKey = "";
+  const update = (view, coords, held) => {
+    lastCoords = coords;
+    const pos = coords ? view.posAtCoords(coords) : null;
+    const hit = pos === null ? null : targetLiteralAt(view.state, pos);
+    const active = held && hit !== null;
+    const key = active ? `${hit.from}:${hit.to}:1` : "";
+    if (key === lastKey)
+      return;
+    lastKey = key;
+    view.dispatch({
+      effects: setCtrlHoverRef.of(active ? { from: hit.from, to: hit.to } : null)
+    });
+  };
+  return [
+    ctrlHoverField,
+    import_view4.EditorView.domEventHandlers({
+      mousedown(event, view) {
+        if (!(event.ctrlKey || event.metaKey))
+          return false;
+        const pos = view.posAtCoords({ x: event.clientX, y: event.clientY });
+        if (pos === null)
+          return false;
+        const hit = targetLiteralAt(view.state, pos);
+        if (!hit)
+          return false;
+        event.preventDefault();
+        hooks.follow(hit.target, pos);
+        return true;
+      },
+      mousemove(event, view) {
+        update(view, { x: event.clientX, y: event.clientY }, event.ctrlKey || event.metaKey);
+        return false;
+      },
+      // Re-evaluate when the modifier toggles without pointer movement.
+      keydown(event, view) {
+        if (event.key !== "Control" && event.key !== "Meta")
+          return false;
+        update(view, lastCoords, event.ctrlKey || event.metaKey);
+        return false;
+      },
+      keyup(event, view) {
+        if (event.key !== "Control" && event.key !== "Meta")
+          return false;
+        update(view, lastCoords, event.ctrlKey || event.metaKey);
+        return false;
+      },
+      mouseleave(_event, view) {
+        update(view, null, false);
+        return false;
+      },
+      blur(_event, view) {
+        update(view, lastCoords, false);
+        return false;
+      }
+    })
+  ];
+}
+
+// src/lsp/cm.ts
+var import_view5 = require("@codemirror/view");
 var import_lint = require("@codemirror/lint");
 var import_autocomplete = require("@codemirror/autocomplete");
 function posFromOffset(doc, offset) {
@@ -12102,7 +12251,10 @@ function notistLsp(hooks) {
     }, ctx.pos);
     return { from, options, validFor: /^[\w-]*$/ };
   };
-  const hover = (0, import_view3.hoverTooltip)(async (view, pos) => {
+  const hover = (0, import_view5.hoverTooltip)(async (view, pos) => {
+    const literal = targetLiteralAt(view.state, pos);
+    if (literal && isImageTargetRef(literal.target))
+      return null;
     const session = hooks.session();
     const path = hooks.path();
     if (!session || session.state !== "ready" || !path)
@@ -12125,7 +12277,7 @@ function notistLsp(hooks) {
       }
     };
   });
-  const definitionKeymap = import_view3.keymap.of([
+  const definitionKeymap = import_view5.keymap.of([
     {
       key: "F12",
       run: (view) => {
@@ -12142,7 +12294,7 @@ function notistLsp(hooks) {
       }
     }
   ]);
-  const diagnosticsKeymap = import_view3.keymap.of([
+  const diagnosticsKeymap = import_view5.keymap.of([
     ...import_lint.lintKeymap,
     { key: "Shift-F8", run: import_lint.previousDiagnostic }
   ]);
@@ -12160,9 +12312,9 @@ function notistLsp(hooks) {
 
 // src/editor-adapter.ts
 var import_obsidian = require("obsidian");
-var import_state3 = require("@codemirror/state");
+var import_state4 = require("@codemirror/state");
 var import_commands2 = require("@codemirror/commands");
-var import_view4 = require("@codemirror/view");
+var import_view6 = require("@codemirror/view");
 var NotistEditorAdapter = class extends import_obsidian.Editor {
   constructor(view) {
     super();
@@ -12231,9 +12383,9 @@ var NotistEditorAdapter = class extends import_obsidian.Editor {
   }
   setSelections(ranges, main = 0) {
     this.view.dispatch({
-      selection: import_state3.EditorSelection.create(
+      selection: import_state4.EditorSelection.create(
         ranges.map(
-          (range) => import_state3.EditorSelection.range(
+          (range) => import_state4.EditorSelection.range(
             this.posToOffset(range.anchor),
             this.posToOffset(range.head ?? range.anchor)
           )
@@ -12267,12 +12419,12 @@ var NotistEditorAdapter = class extends import_obsidian.Editor {
     });
   }
   scrollIntoView(range, center = false) {
-    const selection = import_state3.EditorSelection.range(
+    const selection = import_state4.EditorSelection.range(
       this.posToOffset(range.from),
       this.posToOffset(range.to)
     );
     this.view.dispatch({
-      effects: import_view4.EditorView.scrollIntoView(selection, {
+      effects: import_view6.EditorView.scrollIntoView(selection, {
         y: center ? "center" : "nearest"
       })
     });
@@ -12315,7 +12467,7 @@ var NotistEditorAdapter = class extends import_obsidian.Editor {
     const selections = tx.selections ?? (tx.selection ? [tx.selection] : void 0);
     this.view.dispatch({
       changes,
-      selection: selections ? import_state3.EditorSelection.create(
+      selection: selections ? import_state4.EditorSelection.create(
         selections.map((range) => this.cmRange(range))
       ) : void 0
     });
@@ -12344,7 +12496,7 @@ var NotistEditorAdapter = class extends import_obsidian.Editor {
     return { line: line.number - 1, ch: clamped - line.from };
   }
   cmRange(range) {
-    return import_state3.EditorSelection.range(
+    return import_state4.EditorSelection.range(
       this.posToOffset(range.from),
       this.posToOffset(range.to ?? range.from)
     );
@@ -12360,14 +12512,22 @@ var _NotistTextView = class _NotistTextView extends import_obsidian2.TextFileVie
   constructor(leaf, plugin) {
     super(leaf);
     this.plugin = plugin;
+    /** HoverParent contract: the popover itself assigns this in onShow and
+     * clears it in onHide — never write it from the view side, or onShow's
+     * "hide the previous popover" step will hide our own popover at show
+     * time (observed: constructed, img inside, never attached to the DOM). */
+    this.hoverPopover = null;
+    /** Our own bookkeeping for the image preview, safe to replace/hide
+     * freely (may still be in its pre-show wait when the pointer moves on). */
+    this.imagePopover = null;
     this.titleInputEl = null;
     this.editorView = null;
     this.editorAdapter = null;
     /** Suppresses requestSave and LSP forwarding while setViewData replaces the doc. */
     this.settingData = false;
-    this.vimCompartment = new import_state4.Compartment();
-    this.editableCompartment = new import_state4.Compartment();
-    this.lspCompartment = new import_state4.Compartment();
+    this.vimCompartment = new import_state5.Compartment();
+    this.editableCompartment = new import_state5.Compartment();
+    this.lspCompartment = new import_state5.Compartment();
     /** Vault-relative path this view is registered under in the LSP session. */
     this.lspPath = null;
     /** The CM5-shim instance our vim-mode-change listener is attached to. */
@@ -12399,9 +12559,9 @@ var _NotistTextView = class _NotistTextView extends import_obsidian2.TextFileVie
     this.titleInputEl.addEventListener("blur", () => void this.commitTitle());
     const editorWrapEl = this.contentEl.createDiv("notist-editor");
     const vimMode = this.plugin.data.vimMode;
-    this.editorView = new import_view5.EditorView({
+    this.editorView = new import_view7.EditorView({
       parent: editorWrapEl,
-      state: import_state4.EditorState.create({
+      state: import_state5.EditorState.create({
         extensions: [
           // vim() must precede the other keymaps so its bindings win.
           this.vimCompartment.of(vimMode ? vim() : []),
@@ -12412,30 +12572,38 @@ var _NotistTextView = class _NotistTextView extends import_obsidian2.TextFileVie
           // Visual-block mode (C-v) and vim multi-cursor need CM
           // multi-selection; CM defaults to a single range and
           // would silently clip per-line block selections.
-          import_state4.EditorState.allowMultipleSelections.of(true),
-          (0, import_view5.lineNumbers)(),
-          (0, import_view5.highlightActiveLineGutter)(),
-          (0, import_view5.highlightActiveLine)(),
+          import_state5.EditorState.allowMultipleSelections.of(true),
+          (0, import_view7.lineNumbers)(),
+          (0, import_view7.highlightActiveLineGutter)(),
+          (0, import_view7.highlightActiveLine)(),
           // CM-drawn caret/selection: the vim extension is built for
           // drawSelection (it hides CM's cursor layer in normal mode);
           // without it insert mode depends on the flaky native caret.
-          (0, import_view5.drawSelection)(),
+          (0, import_view7.drawSelection)(),
           (0, import_commands3.history)(),
-          import_view5.keymap.of([...import_commands3.defaultKeymap, ...import_commands3.historyKeymap]),
+          import_view7.keymap.of([...import_commands3.defaultKeymap, ...import_commands3.historyKeymap]),
           // tree-sitter highlighting; [] when wasm init failed.
           notistHighlight(),
+          // Image-reference hover previews (shell glue below).
+          notistImageHover({
+            show: (hover) => this.showImageHover(hover)
+          }),
+          // Ctrl/Cmd-click to follow any #<...> reference.
+          notistRefJump({
+            follow: (target, pos) => this.followRef(target, pos)
+          }),
           // LSP (diagnostics/completion/hover/definition); [] when
           // the server is disabled or failed to start.
           this.lspCompartment.of(this.plugin.lspExtension(this)),
-          import_view5.EditorView.lineWrapping,
-          import_view5.EditorView.contentAttributes.of({
+          import_view7.EditorView.lineWrapping,
+          import_view7.EditorView.contentAttributes.of({
             spellcheck: "false",
             tabindex: "0"
           }),
-          import_view5.EditorView.domEventHandlers({
+          import_view7.EditorView.domEventHandlers({
             paste: (event) => this.handlePaste(event)
           }),
-          import_view5.EditorView.updateListener.of((update) => {
+          import_view7.EditorView.updateListener.of((update) => {
             if (update.docChanged && !this.settingData) {
               this.requestSave();
               this.plugin.lspDocChanged(this);
@@ -12459,11 +12627,143 @@ var _NotistTextView = class _NotistTextView extends import_obsidian2.TextFileVie
   }
   async onClose() {
     this.plugin.lspViewClosed(this);
+    this.hideImagePopover();
     this.editorView?.destroy();
     this.editorView = null;
     this.editorAdapter = null;
     this.contentEl.empty();
     this.titleInputEl = null;
+  }
+  /** Hover preview for image resource references (`#<…>.png`): resolve the
+   * target to a vault image and show it in a native HoverPopover. The
+   * default waitTime (300ms) matters — it is also the native hide grace,
+   * so the popover survives pointer jitter instead of vanishing instantly. */
+  showImageHover(hover) {
+    const file = this.resolveResourceReference(hover.target);
+    if (!file || !isImageExtension(file.extension))
+      return;
+    this.hideImagePopover();
+    const popover = new import_obsidian2.HoverPopover(this, hover.targetEl);
+    const img = popover.hoverEl.createEl("img", {
+      cls: "notist-image-hover",
+      attr: { alt: file.name }
+    });
+    img.src = this.app.vault.getResourcePath(file);
+    this.imagePopover = popover;
+  }
+  /** Ctrl/Cmd-click on a `#<...>` reference: resource files (images,
+   * attachments) open directly; everything else goes through the LSP
+   * definition (module files, headings with range reveal), falling back
+   * to client-side module-file resolution while the server is off. */
+  followRef(target, pos) {
+    const resource = this.resolveResourceReference(target);
+    if (resource) {
+      void this.app.workspace.getLeaf(false).openFile(resource);
+      return;
+    }
+    void this.followDefinitionRef(target, pos);
+  }
+  async followDefinitionRef(target, pos) {
+    const doc = this.editorView?.state.doc;
+    if (doc) {
+      const loc = await this.plugin.lspDefinition(
+        this,
+        posFromOffset(doc, pos)
+      );
+      if (loc) {
+        await this.plugin.openLspLocation(loc);
+        return;
+      }
+    }
+    this.openModuleFallback(target);
+  }
+  /** LSP-off fallback for module refs: resolve the module path by the
+   * D0004 directory layout and open its source file (`dir/stem.not` or
+   * `dir/README.not`). */
+  openModuleFallback(target) {
+    const body2 = target.trim();
+    const slash = body2.indexOf("/");
+    const reference = (slash < 0 ? body2 : body2.slice(0, slash)).trim();
+    const segments = this.resolveModuleSegments(reference);
+    if (!segments) {
+      new import_obsidian2.Notice("Notist: cannot resolve reference target");
+      return;
+    }
+    const dir = segments.filter(Boolean).join("/");
+    const candidates = dir ? [`${dir}.not`, `${dir}/README.not`] : ["README.not"];
+    for (const candidate of candidates) {
+      const found = this.app.vault.getAbstractFileByPath(candidate);
+      if (found instanceof import_obsidian2.TFile) {
+        void this.app.workspace.getLeaf(false).openFile(found);
+        return;
+      }
+    }
+    new import_obsidian2.Notice("Notist: cannot resolve reference target");
+  }
+  /** Take down the current preview popover. HoverPopover.hide is
+   * runtime-only (absent from obsidian.d.ts); unload() is the typed
+   * teardown fallback. Safe on a popover that never showed. */
+  hideImagePopover() {
+    const popover = this.imagePopover;
+    this.imagePopover = null;
+    if (!popover)
+      return;
+    const hide = popover.hide;
+    if (typeof hide === "function")
+      hide.call(popover);
+    else
+      popover.unload();
+  }
+  /** Resolves a module reference (the `ModulePath` part of a target, `::`-
+   * separated, with `vault::`/`self::`/`super::` prefixes) into the
+   * vault-relative directory segments of the target module, mirroring
+   * notist's `ModuleReference::resolve_from` against this document's
+   * module path. Null when the reference cannot resolve. */
+  resolveModuleSegments(reference) {
+    const segments = reference.split("::").map((segment) => segment.trim());
+    if (segments.some((segment) => !segment))
+      return null;
+    const docDir = this.file?.parent?.path ?? "";
+    const dirSegments = docDir && docDir !== "/" ? docDir.split("/") : [];
+    const stem = this.file?.basename ?? "";
+    const current = stem.toLowerCase() === "readme" ? dirSegments : [...dirSegments, stem];
+    if (segments[0] === "vault")
+      return segments.slice(1);
+    if (segments[0] === "self")
+      return [...current, ...segments.slice(1)];
+    if (segments[0] === "super") {
+      let levels = 0;
+      while (segments[levels] === "super")
+        levels++;
+      if (levels > current.length)
+        return null;
+      return [
+        ...current.slice(0, current.length - levels),
+        ...segments.slice(levels)
+      ];
+    }
+    return [...current, ...segments];
+  }
+  /**
+   * Mirrors notist's authored target grammar (`ModulePath[/ItemName]`; the
+   * first `/` switches into the flat ItemName space). Resources live in
+   * the target module's directory, and a module path maps 1:1 onto a
+   * vault directory, so resolution is a vault path lookup. Returns null
+   * for non-resource or unresolvable targets.
+   */
+  resolveResourceReference(target) {
+    const body2 = target.trim();
+    const slash = body2.indexOf("/");
+    if (slash < 0)
+      return null;
+    const name2 = body2.slice(slash + 1).trim();
+    const segments = this.resolveModuleSegments(body2.slice(0, slash).trim());
+    if (!name2 || !segments)
+      return null;
+    const dirPath = segments.filter(Boolean).join("/");
+    const path = dirPath ? `${dirPath}/${name2}` : name2;
+    const found = this.app.vault.getAbstractFileByPath(path);
+    return found instanceof import_obsidian2.TFile ? found : null;
   }
   /** Route paste through the same extension event used by Markdown views, then
    * use Obsidian's attachment path/link APIs for unhandled clipboard images.
@@ -12632,7 +12932,7 @@ var _NotistTextView = class _NotistTextView extends import_obsidian2.TextFileVie
     const to = offsetFromPos(view.state.doc, range.end);
     view.dispatch({
       selection: { anchor: from, head: to },
-      effects: import_view5.EditorView.scrollIntoView(from, { y: "center" })
+      effects: import_view7.EditorView.scrollIntoView(from, { y: "center" })
     });
     view.focus();
   }
@@ -12647,7 +12947,7 @@ var _NotistTextView = class _NotistTextView extends import_obsidian2.TextFileVie
  * kept on permanently below (also: removing tabindex from a focused
  * element blurs it in Chrome).
  */
-_NotistTextView.vimNonEditable = import_view5.EditorView.editable.of(false);
+_NotistTextView.vimNonEditable = import_view7.EditorView.editable.of(false);
 var NotistTextView = _NotistTextView;
 
 // src/explorer-view.ts
@@ -14746,24 +15046,21 @@ var NotistSettingTab = class extends import_obsidian6.PluginSettingTab {
         await this.plugin.setLspEnabled(value);
       })
     );
-    new import_obsidian6.Setting(containerEl).setName("notist binary path").setDesc(
-      "Command or absolute path used to start the language server (default: `notist` from PATH)."
+    new import_obsidian6.Setting(containerEl).setName("notist command").setDesc(
+      "Command used to invoke the notist CLI \u2014 the plugin appends the subcommand itself (`lsp` for the language server; the same command will back future `build` etc. calls). Whitespace-separated, quote parts that contain spaces; not a shell (`~`, $VAR and globs stay literal). Default: `notist`. The server runs with the vault as its working directory; launchers that need their own cwd say so in the command \u2014 e.g. dev build: `nix develop /path/to/notist -c cargo run --manifest-path /path/to/notist/Cargo.toml`. A `--` before the subcommand is inserted automatically for wrapper launchers (`nix`, `cargo`, `npm`, \u2026) unless the command already contains one."
     ).addText(
-      (text) => text.setValue(this.plugin.data.lspBinaryPath).onChange(
+      (text) => text.setValue(this.plugin.data.notistCommand).onChange(
         debounce(async (value) => {
-          await this.plugin.setLspBinaryPath(value.trim() || "notist");
+          await this.plugin.setNotistCommand(value.trim() || "notist");
         }, 800)
       )
     );
-    new import_obsidian6.Setting(containerEl).setName("notist binary arguments").setDesc(
-      "Full argv after the binary, space-separated (Zed-style: this replaces the whole argument list, so it must include the `lsp` subcommand). Default: `lsp`. The server runs with the vault as its working directory; launchers that need their own cwd must say so in argv \u2014 e.g. dev build: path `nix`, arguments `develop /path/to/notist -c cargo run --manifest-path /path/to/notist/Cargo.toml -- lsp`."
+    new import_obsidian6.Setting(containerEl).setName("notist extra arguments").setDesc(
+      "Appended after the subcommand on every invocation (the language server runs `\u2026 lsp`). Example: `--no-daemon` embeds the service in the server process instead of the shared per-vault daemon. Default: empty."
     ).addText(
-      (text) => text.setValue(this.plugin.data.lspBinaryArgs.join(" ")).onChange(
+      (text) => text.setValue(this.plugin.data.notistExtraArgs).onChange(
         debounce(async (value) => {
-          const args2 = value.trim().split(/\s+/).filter(Boolean);
-          await this.plugin.setLspBinaryArgs(
-            args2.length ? args2 : ["lsp"]
-          );
+          await this.plugin.setNotistExtraArgs(value.trim());
         }, 800)
       )
     );
@@ -14969,9 +15266,8 @@ function lspUriToPath(uri) {
   return fileURLToPath(uri);
 }
 var NotistLspSession = class {
-  constructor(binaryPath, binaryArgs, vaultRoot, handlers) {
-    this.binaryPath = binaryPath;
-    this.binaryArgs = binaryArgs;
+  constructor(argv, vaultRoot, handlers) {
+    this.argv = argv;
     this.vaultRoot = vaultRoot;
     this.handlers = handlers;
     this.state = "off";
@@ -15001,9 +15297,10 @@ var NotistLspSession = class {
     this.stopping = false;
     this.stderrTail = "";
     this.setState("starting");
+    const [command = "notist", ...args2] = this.argv;
     const transport = new LspTransport(
-      this.binaryPath,
-      this.binaryArgs,
+      command,
+      args2,
       {
         onNotification: (method, params) => this.onNotification(method, params),
         onExit: (code, signal2) => {
@@ -15381,11 +15678,59 @@ var DEFAULT_DATA = {
   layouts: {},
   vimMode: false,
   lspEnabled: false,
-  lspBinaryPath: "notist",
-  lspBinaryArgs: ["lsp"],
+  notistCommand: "notist",
+  notistExtraArgs: "",
   problemsExpanded: false
 };
 var LSP_MAX_RESTARTS = 3;
+function tokenizeCommand(input) {
+  const argv = [];
+  let token = "";
+  let started = false;
+  let quote = null;
+  for (const ch of input) {
+    if (quote) {
+      if (ch === quote)
+        quote = null;
+      else
+        token += ch;
+    } else if (ch === '"' || ch === "'") {
+      quote = ch;
+      started = true;
+    } else if (/\s/.test(ch)) {
+      if (started) {
+        argv.push(token);
+        token = "";
+        started = false;
+      }
+    } else {
+      token += ch;
+      started = true;
+    }
+  }
+  if (started)
+    argv.push(token);
+  return argv;
+}
+function quoteArg(arg) {
+  if (!/\s/.test(arg))
+    return arg;
+  return arg.includes('"') ? `'${arg}'` : `"${arg}"`;
+}
+var WRAPPER_LAUNCHERS = /* @__PURE__ */ new Set([
+  "nix",
+  "nix-shell",
+  "cargo",
+  "npm",
+  "pnpm",
+  "yarn",
+  "bun",
+  "deno",
+  "mise",
+  "devbox",
+  "devenv",
+  "asdf"
+]);
 var NOTIST_FOREIGN_VIEW_TYPES = [
   "backlink",
   "outgoing-link",
@@ -15520,6 +15865,8 @@ var NotistPlugin = class extends import_obsidian7.Plugin {
       this.purgeLegacyLeaves();
       this.explorerBadges?.sync();
       this.purgeForeignLeaves(this.world);
+      if (this.world === "notist")
+        void this.ensureExplorer();
       const ribbon = document.querySelector(".workspace-ribbon");
       if (ribbon) {
         this.ribbonObserver = new MutationObserver(() => this.tagRibbon());
@@ -15649,6 +15996,14 @@ var NotistPlugin = class extends import_obsidian7.Plugin {
       openLocation: (loc) => void this.openLspLocation(loc)
     });
   }
+  /** Definition location for a position in one view's document; null when
+   * the server is off/down or nothing resolves there (callers fall back). */
+  async lspDefinition(view, position) {
+    const session = this.lspSession;
+    if (!session || session.state !== "ready" || !view.lspPath)
+      return null;
+    return session.definition(this.lspAbsPath(view.lspPath), position);
+  }
   /** Register a view with the session once its file content is in. */
   lspViewSync(view) {
     const session = this.lspSession;
@@ -15752,6 +16107,20 @@ var NotistPlugin = class extends import_obsidian7.Plugin {
     for (const listener of this.cursorListeners)
       listener(cursor);
   }
+  /** Full argv for a notist CLI subcommand — `lsp` today, `build` etc.
+   * later — reusing the user-configured launcher command and extra
+   * flags. */
+  notistArgv(subcommand, ...rest) {
+    const base = tokenizeCommand(this.data.notistCommand);
+    const needsSeparator = !base.includes("--") && WRAPPER_LAUNCHERS.has(base[0] ?? "");
+    return [
+      ...base,
+      ...needsSeparator ? ["--"] : [],
+      subcommand,
+      ...tokenizeCommand(this.data.notistExtraArgs),
+      ...rest
+    ];
+  }
   async startLsp() {
     if (this.lspSession || this.lspStarting)
       return;
@@ -15774,8 +16143,7 @@ var NotistPlugin = class extends import_obsidian7.Plugin {
     }
     this.vaultBasePath = adapter.getBasePath();
     const session = new NotistLspSession(
-      this.data.lspBinaryPath,
-      this.data.lspBinaryArgs.length ? this.data.lspBinaryArgs : ["lsp"],
+      this.notistArgv("lsp"),
       this.vaultBasePath,
       {
         onDiagnostics: (path, diags) => this.onLspDiagnostics(path, diags),
@@ -15852,7 +16220,7 @@ var NotistPlugin = class extends import_obsidian7.Plugin {
     );
     const lines = [
       `State: ${state}`,
-      `Command: ${this.data.lspBinaryPath} ${this.data.lspBinaryArgs.join(" ")}`,
+      `Command: ${this.notistArgv("lsp").join(" ")}`,
       `Working directory: ${this.vaultBasePath ?? "vault root"}`
     ];
     if (detail)
@@ -16089,13 +16457,13 @@ var NotistPlugin = class extends import_obsidian7.Plugin {
       void this.stopLsp();
     }
   }
-  async setLspBinaryPath(path) {
-    this.data.lspBinaryPath = path;
+  async setNotistCommand(command) {
+    this.data.notistCommand = command;
     await this.savePluginData();
     await this.restartLsp();
   }
-  async setLspBinaryArgs(args2) {
-    this.data.lspBinaryArgs = args2;
+  async setNotistExtraArgs(args2) {
+    this.data.notistExtraArgs = args2;
     await this.savePluginData();
     await this.restartLsp();
   }
@@ -16164,6 +16532,8 @@ var NotistPlugin = class extends import_obsidian7.Plugin {
         await this.app.workspace.changeLayout(layout);
       }
       this.purgeForeignLeaves(to);
+      if (to === "notist")
+        await this.ensureExplorer();
       this.data.layouts[to] = this.app.workspace.getLayout();
       await this.savePluginData();
     } finally {
@@ -16205,6 +16575,16 @@ var NotistPlugin = class extends import_obsidian7.Plugin {
       await rightLeaf.setViewState({ type, active: true });
     }
     this.app.workspace.revealLeaf(leaf);
+  }
+  /** Keep the explorer present as the Notist world's default sidebar
+   * tab — open it on load and after every world switch if missing. */
+  async ensureExplorer() {
+    if (this.world !== "notist")
+      return;
+    if (this.app.workspace.getLeavesOfType(VIEW_TYPE_NOTIST_EXPLORER).length) {
+      return;
+    }
+    await this.activateExplorer();
   }
   /** Open the .not file tree in the left sidebar (single reused leaf). */
   async activateExplorer() {
@@ -16334,6 +16714,20 @@ var NotistPlugin = class extends import_obsidian7.Plugin {
     );
   }
   async loadPluginData() {
-    this.data = Object.assign({}, DEFAULT_DATA, await this.loadData());
+    const loaded = await this.loadData();
+    const legacyPath = loaded.lspBinaryPath;
+    const legacyArgs = loaded.lspBinaryArgs;
+    delete loaded.lspBinaryPath;
+    delete loaded.lspBinaryArgs;
+    this.data = Object.assign({}, DEFAULT_DATA, loaded);
+    if (legacyPath !== void 0 || legacyArgs !== void 0) {
+      const args2 = [...legacyArgs ?? []];
+      const sub = args2.indexOf("lsp");
+      if (sub !== -1)
+        args2.splice(sub, 1);
+      const path = legacyPath?.trim() || DEFAULT_DATA.notistCommand;
+      this.data.notistCommand = [quoteArg(path), ...args2].join(" ") || DEFAULT_DATA.notistCommand;
+      await this.savePluginData();
+    }
   }
 };

@@ -1,2 +1,2 @@
-tree-sitter-notist 8684303f35a5f133bd5eb2236acb9c8f44c50c97 (2026-08-26)
+tree-sitter-notist a2d8f135a509bf2c11eef332bc965b59fbf3e768 (2026-08-28)
 built with: tree-sitter build --wasm (CLI-downloaded wasi-sdk)
