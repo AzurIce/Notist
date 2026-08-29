@@ -530,15 +530,6 @@ const WASM_FUEL_PER_CALL: u64 = 50_000_000;
 /// Maximum linear memory a plugin may allocate.
 const WASM_MAX_MEMORY_BYTES: usize = 16 * 1024 * 1024;
 
-/// Maximum table elements a plugin may allocate.
-const WASM_MAX_TABLE_ELEMENTS: usize = 64 * 1024;
-
-#[derive(Clone, Copy, Debug)]
-struct WasmStoreState {
-    max_memory: usize,
-    max_table_elements: usize,
-}
-
 /// Returns the qualified call-site and element name for a manifest element.
 ///
 /// All plugin elements are namespaced by their package (`shader::shader`,
@@ -660,10 +651,9 @@ fn parse_type(ty: &str) -> Result<Type, String> {
 }
 
 /// Store state for a core-module plugin: resource limits only — the module
-/// has no imports, so there is no WASI context or resource table.
-struct ModuleStoreState {
-    limits: WasmStoreState,
-}
+/// has no imports, so there is no WASI context or resource table. The
+/// memory cap is enforced by a post-call check, not the store.
+struct ModuleStoreState;
 
 /// One instantiated core-module plugin.
 ///
@@ -683,15 +673,7 @@ impl ModuleRuntime {
     fn load(wasm_path: &Path, wasm_bytes: &[u8]) -> Result<Self, String> {
         let module = wasmi::Module::new(&wasmi_engine(), wasm_bytes)
             .map_err(|error| format!("invalid wasm module {}: {error}", wasm_path.display()))?;
-        let mut store = wasmi::Store::new(
-            module.engine(),
-            ModuleStoreState {
-                limits: WasmStoreState {
-                    max_memory: WASM_MAX_MEMORY_BYTES,
-                    max_table_elements: WASM_MAX_TABLE_ELEMENTS,
-                },
-            },
-        );
+        let mut store = wasmi::Store::new(module.engine(), ModuleStoreState);
         let instance = wasmi::Instance::new(&mut store, &module, &[])
             .map_err(|error| format!("cannot instantiate module {}: {error}", wasm_path.display()))?;
         let export = |name: &str| format!("plugin `{}` module is missing export `{name}`", wasm_path.display());

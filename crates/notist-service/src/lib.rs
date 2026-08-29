@@ -20,6 +20,10 @@ pub mod transport;
 pub mod watcher;
 
 pub use query::*;
+// `query` and `request` each define `ModuleRecord`/`ReferenceRecord` for
+// different wire shapes; the root facade resolves them to the query-side
+// records, and inspect callers use the `request::` path explicitly.
+pub use query::{ModuleRecord, ReferenceRecord};
 pub use request::*;
 pub use watcher::PassiveDebouncedWatcher;
 
