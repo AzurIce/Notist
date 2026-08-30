@@ -70,10 +70,11 @@ pub struct SpannedName {
 
 /// Parses a bracket-delimited attribute list starting at the opening `[`
 /// (`@[...]` block-prefix and `@![...]` module annotations, D0006). The
-/// attribute list is the same grammar as the postfix form: an optional id,
-/// `#tag`, `.class`, and `key = value` entries separated by `,`; whitespace
-/// around entries is allowed. Returns the attributes, the cursor after the
-/// closing `]`, and whether the list closed.
+/// attribute list is the same grammar as the postfix form — an optional id,
+/// `#tag`, `.class`, and `key = value` entries separated by `,` — except
+/// that whitespace around entries (including around `=`) may span lines,
+/// which the line-bound postfix form cannot. Returns the attributes, the
+/// cursor after the closing `]`, and whether the list closed.
 pub(crate) fn parse_annotation_block(
     source: &str,
     start: usize,
@@ -103,7 +104,7 @@ pub(crate) fn parse_annotation_block(
         let parsed = match source.as_bytes().get(cursor) {
             Some(b'#') => parse_prefixed_name(source, cursor, AttributeKind::Tag),
             Some(b'.') => parse_prefixed_name(source, cursor, AttributeKind::Class),
-            Some(_) => parse_bare_attribute(source, cursor, first, errors),
+            Some(_) => parse_bare_attribute(source, cursor, first, errors, true),
             None => None,
         };
         match parsed {
@@ -178,7 +179,10 @@ pub(crate) fn parse_attributes(
         let parsed = match source.as_bytes().get(cursor) {
             Some(b'#') => parse_prefixed_name(source, cursor, AttributeKind::Tag),
             Some(b'.') => parse_prefixed_name(source, cursor, AttributeKind::Class),
-            Some(_) => parse_bare_attribute(source, cursor, first, errors),
+            // The postfix form is line-bound: reaching across a line end
+            // would read the next line's heading `=` as a key-value
+            // separator (e.g. `#[x]@anchor` above `== 标题`).
+            Some(_) => parse_bare_attribute(source, cursor, first, errors, false),
             None => None,
         };
 
@@ -239,11 +243,16 @@ fn parse_prefixed_name(source: &str, start: usize, kind: AttributeKind) -> Optio
     Some(ParsedAttribute::Item(item, end))
 }
 
+/// Parses one bare attribute entry: a leading id or `key = value`. Inside
+/// `]`-delimited annotation blocks whitespace around `=` may span lines
+/// (D0006); the postfix form passes `allow_line_break = false` so the scan
+/// can never reach past the line end.
 fn parse_bare_attribute(
     source: &str,
     start: usize,
     first: bool,
     errors: &mut Vec<SyntaxError>,
+    allow_line_break: bool,
 ) -> Option<ParsedAttribute> {
     let (value, name_end) = parse_identifier(source, start)?;
     let name = SpannedName {
@@ -252,21 +261,9 @@ fn parse_bare_attribute(
     };
 
     // `key = value`: whitespace is allowed around the `=` (D0006).
-    let mut cursor = name_end;
-    while matches!(
-        source.as_bytes().get(cursor),
-        Some(b' ' | b'\t' | b'\r' | b'\n')
-    ) {
-        cursor += 1;
-    }
+    let mut cursor = skip_attribute_whitespace(source, name_end, allow_line_break);
     if source.as_bytes().get(cursor) == Some(&b'=') {
-        let mut value_start = cursor + 1;
-        while matches!(
-            source.as_bytes().get(value_start),
-            Some(b' ' | b'\t' | b'\r' | b'\n')
-        ) {
-            value_start += 1;
-        }
+        let value_start = skip_attribute_whitespace(source, cursor + 1, allow_line_break);
         let (value, end) = parse_attribute_value(source, value_start, errors)?;
         let range = TextRange::new(start, end);
         return Some(ParsedAttribute::Item(
@@ -280,6 +277,17 @@ fn parse_bare_attribute(
     }
 
     first.then_some(ParsedAttribute::Id(name, name_end))
+}
+
+/// Skips whitespace around `=` in an attribute entry; line breaks only when
+/// the enclosing form allows them (see `parse_bare_attribute`).
+fn skip_attribute_whitespace(source: &str, mut cursor: usize, allow_line_break: bool) -> usize {
+    while matches!(source.as_bytes().get(cursor), Some(b' ' | b'\t'))
+        || (allow_line_break && matches!(source.as_bytes().get(cursor), Some(b'\r' | b'\n')))
+    {
+        cursor += 1;
+    }
+    cursor
 }
 
 fn parse_attribute_value(
