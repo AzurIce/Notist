@@ -69,9 +69,17 @@
           // {
             inherit cargoArtifacts;
             cargoExtraArgs = "--locked --package notist-cli";
-            # 搜索索引缓存写入 $XDG_CACHE_HOME（见 notist-service 的 search_cache_path），
-            # 沙箱中 HOME 不可写会导致测试失败，这里指到构建目录内。
-            XDG_CACHE_HOME = "/build/xdg-cache";
+            # 测试需要两处可写目录，沙箱里 HOME（/homeless-shelter）不可写：
+            # - XDG_CACHE_HOME：搜索索引缓存（见 notist-service 的 search_cache_path）
+            # - NOTIST_DATA_DIR：内嵌官方文档的同步根（见 notist-cli 的 notist_data_root，
+            #   每个命令入口都会 ensure_synced），这是 #1 里 checkPhase 真正的失败点，
+            #   macOS 上表现为 Read-only file system，Linux 上是 Permission denied。
+            # 不用字面量 /build：那是 Linux 沙箱的构建目录，macOS 上不存在；
+            # $TMPDIR 在两个平台的沙箱里都指向可写的构建目录。
+            preCheck = ''
+              export XDG_CACHE_HOME="$TMPDIR/xdg-cache"
+              export NOTIST_DATA_DIR="$TMPDIR/notist-data"
+            '';
             meta = {
               description = "Notist CLI";
               mainProgram = "notist";
