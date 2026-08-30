@@ -1116,6 +1116,33 @@ mod tests {
     }
 
     #[test]
+    fn postfix_annotations_are_line_bound() {
+        // A postfix entry must not reach across the line end: `anchor` below
+        // is an id, and the next line's `=` is heading sugar, never a
+        // key-value separator.
+        let parsed = parse("#[正文]@anchor\n== 标题\n");
+        assert!(parsed.errors.is_empty(), "{:?}", parsed.errors);
+
+        // Same for the single-`=` heading: without the line bound the marker
+        // would be swallowed as `anchor`'s value.
+        let parsed = parse("#[正文]@anchor\n= 标题\n");
+        assert!(parsed.errors.is_empty(), "{:?}", parsed.errors);
+        assert!(parsed.root.items.iter().any(|item| matches!(
+            item,
+            MarkupItem::Heading(sugar) if sugar.level == 1
+        )));
+
+        // Same-line key=value in the postfix form still works.
+        let parsed = parse("#[x]@k = \"v\"\n= 标题\n");
+        assert!(parsed.errors.is_empty(), "{:?}", parsed.errors);
+
+        // Inside `]`-delimited blocks the key and value may sit on separate
+        // lines (D0006).
+        let parsed = parse("@[k =\n\"v\"]\n= 标题\n");
+        assert!(parsed.errors.is_empty(), "{:?}", parsed.errors);
+    }
+
+    #[test]
     fn parses_stacked_module_annotations() {
         // Leading `@![...]` may stack: an earlier module annotation is
         // metadata, not content, so the next one still precedes the first
