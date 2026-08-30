@@ -68,6 +68,7 @@ id 至多一个；tag、class 与 key=value 任意多个。示例：
    ```
 
    - 必须出现在文件开头（第一个有意义的 token 之前）——模块元数据可被索引器快速扫描，不依赖求值；
+   - 多条前导 `@![...]` 可以堆叠（2026-08-30 裁决：先前一条模块注解不是"有意义 token"），全部按序绑定为模块属性；
    - `!` 表示"作用于所在模块"（对应 Rust inner attribute 的语义）；
    - 与行内/块级标注同一模型：等价于把属性列表绑定为模块属性；
    - 属性列表中不使用 id——模块本身已是可寻址目标（Module target，见 #<vault::designs::world::reference-ref-target/ItemName>），id 无意义。

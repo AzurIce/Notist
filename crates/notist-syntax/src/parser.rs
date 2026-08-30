@@ -21,6 +21,7 @@ pub(crate) fn parse(source: &str) -> Parse {
         cursor: 0,
         end: source.len(),
         errors: Vec::new(),
+        module_preamble_end: 0,
     };
     let root = parser.parse_markup(false, false, false, true).0;
     Parse {
@@ -34,6 +35,10 @@ struct Parser<'a> {
     cursor: usize,
     end: usize,
     errors: Vec<SyntaxError>,
+    /// Source end of the last `@![...]` that still led the file's content;
+    /// later placement checks only scan whitespace from here, so stacked
+    /// module annotations stay legal (D0006).
+    module_preamble_end: usize,
 }
 
 /// The raw cells and delimiters of one pipe-table row.
@@ -191,9 +196,13 @@ impl Parser<'_> {
                     self.push_text(&mut items, text_start, self.cursor);
                     let annotation_start = self.cursor;
                     let module = self.source.as_bytes().get(self.cursor + 1) == Some(&b'!');
+                    // Only earlier leading `@![...]` may precede a module
+                    // annotation besides whitespace; anything else is content.
+                    let mut leads_content = false;
                     if module {
                         self.cursor += 2;
-                        if !self.only_whitespace_before(annotation_start) {
+                        leads_content = self.only_preamble_before(annotation_start);
+                        if !leads_content {
                             self.errors.push(SyntaxError {
                                 message:
                                     "module annotation `@![...]` must appear before any content"
@@ -220,6 +229,9 @@ impl Parser<'_> {
                         };
                         if module {
                             items.push(MarkupItem::ModuleAnnotation(annotation));
+                            if leads_content {
+                                self.module_preamble_end = self.cursor;
+                            }
                         } else {
                             items.push(MarkupItem::BlockAnnotation(annotation));
                         }
@@ -292,6 +304,7 @@ impl Parser<'_> {
             cursor: start,
             end: end.min(self.end),
             errors: Vec::new(),
+            module_preamble_end: self.module_preamble_end,
         };
         let (markup, _) = nested.parse_markup(stop_at_bracket, stop_at_pipe, false, false);
         self.errors.append(&mut nested.errors);
@@ -313,6 +326,7 @@ impl Parser<'_> {
             cursor: start,
             end: self.end,
             errors: Vec::new(),
+            module_preamble_end: self.module_preamble_end,
         };
         let (markup, stopped) = nested.parse_markup(stop_at_bracket, false, true, at_line_start);
         self.errors.append(&mut nested.errors);
@@ -524,6 +538,7 @@ impl Parser<'_> {
             cursor: start,
             end: end.min(self.end),
             errors: Vec::new(),
+            module_preamble_end: self.module_preamble_end,
         };
         let (_, stopped) = nested.parse_markup(stop_at_bracket, true, false, false);
         if nested.cursor > end {
@@ -1948,10 +1963,11 @@ impl Parser<'_> {
         }
     }
 
-    /// Returns whether everything before `position` is whitespace (the
-    /// `@![...]` module annotation must precede the first meaningful token).
-    fn only_whitespace_before(&self, position: usize) -> bool {
-        self.source[..position]
+    /// Returns whether everything before `position` past earlier leading
+    /// module annotations is whitespace — a `@![...]` there still precedes
+    /// the first meaningful token (D0006).
+    fn only_preamble_before(&self, position: usize) -> bool {
+        self.source[self.module_preamble_end..position]
             .bytes()
             .all(|byte| byte.is_ascii_whitespace())
     }
