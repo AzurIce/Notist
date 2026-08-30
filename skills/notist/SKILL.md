@@ -25,7 +25,8 @@ After editing, validate with `notist check --vault <DOCS_ROOT>`. The full gramma
 notist inspect status --vault <DOCS_ROOT>                                     # which Vault, snapshot, index health
 notist inspect modules --vault <DOCS_ROOT> --prefix vault::designs            # discover ModulePaths
 notist inspect search "query terms" --vault <DOCS_ROOT>                       # ranked candidates — candidates, not evidence
-notist inspect outline vault::designs::host::query-contract --vault <DOCS_ROOT> --depth 2   # heading structure
+notist inspect items vault::designs::host::query-contract --vault <DOCS_ROOT>     # addressable items: @id nodes, headings, resources
+notist inspect ancestors vault::designs::host::query-contract/属性表 --vault <DOCS_ROOT>     # ancestor chain with attribute annotations
 notist inspect read vault::designs::host::query-contract --vault <DOCS_ROOT>  # authored evidence
 notist inspect references vault::designs::host::query-contract --vault <DOCS_ROOT>          # who links here
 ```
@@ -33,6 +34,7 @@ notist inspect references vault::designs::host::query-contract --vault <DOCS_ROO
 - Results are complete: no paging, no output ceiling. A zero-hit search proves absence within the selected scopes.
 - Lexical/fuzzy search groups by source by default; `--group-by section|match`, `--operator any`, and the repeatable `--scope MODULE` adjust recall. Excerpts select candidates — `inspect read` is the only evidence entry.
 - `inspect read --from-line/--lines/--byte-range` are semantic windows you choose, not truncation.
+- `inspect ancestors` accepts a selector, `--offset N`, or `--byte-range START..END` and returns the subtree of scopes overlapping that region, each with its attribute annotations — use it to learn which `@` annotations govern a position or region (including sibling scopes a range grazes) before editing it.
 - `notist check` is the whole-Vault health verdict (exit 1 on any error); it does not take a module scope.
 
 ## Working with Vaults

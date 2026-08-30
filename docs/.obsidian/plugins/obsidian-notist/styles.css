@@ -959,6 +959,36 @@ input.notist-title:focus {
 	min-height: 0;
 }
 
+/* ---- Preview mode (rendered document view) ---- */
+
+/* Mode classes ride the view root; the editor stays mounted (state, LSP
+   overlay) and is merely hidden while the preview is up. */
+.notist-preview {
+	display: none;
+	flex: 1 1 auto;
+	min-height: 0;
+}
+
+.notist-view-root.notist-mode-preview .notist-preview {
+	display: block;
+}
+
+.notist-view-root.notist-mode-preview .notist-editor {
+	display: none;
+}
+
+.notist-preview .notist-preview-frame {
+	width: 100%;
+	height: 100%;
+	border: none;
+	background: var(--background-primary);
+}
+
+.notist-preview .notist-preview-notice {
+	padding: var(--size-4-4);
+	color: var(--text-muted);
+}
+
 .notist-editor .cm-editor {
 	height: 100%;
 	background: transparent;

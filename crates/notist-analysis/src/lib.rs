@@ -504,6 +504,10 @@ pub struct DefinitionTarget {
     pub file_id: Option<FileId>,
     pub range: Option<TextRange>,
     pub annotation: Option<AnnotationId>,
+    /// Logical module of the definition target, for identity projection.
+    pub target_module: Option<ModulePath>,
+    /// ItemName of the definition target, when it resolved to one.
+    pub target_name: Option<String>,
 }
 
 /// Semantic reference target resolved at one snapshot position.
@@ -1596,6 +1600,10 @@ impl WorkspaceSnapshot {
                     file_id: module.file_id,
                     range: Some(definition.range),
                     annotation: None,
+                    // Lexical definitions (let 绑定) live in the naming world
+                    // and carry no structural Item identity.
+                    target_module: None,
+                    target_name: None,
                 });
             }
         }
@@ -1616,6 +1624,8 @@ impl WorkspaceSnapshot {
             // jumps to the heading instead of only to the containing file.
             range: label.map(|label| label.range).or(reference.target_range),
             annotation: label.map(|label| label.id.clone()),
+            target_module: Some(reference.target_module.clone()),
+            target_name: reference.target_name.clone(),
         })
     }
 
@@ -3534,7 +3544,7 @@ fn collect_document_symbols(
 
 /// The concatenated text of an inline node forest: `core::text` payloads plus
 /// the text of any nested containers, in document order.
-fn node_text(nodes: &[Node]) -> String {
+pub fn node_text(nodes: &[Node]) -> String {
     let mut text = String::new();
     for node in nodes {
         if node.is_core("text")

@@ -1,0 +1,3 @@
+0.1.0
+from vault: /home/azurice/Files/notist/docs
+fetched: 2026-08-29T17:13:43.899Z

@@ -1,4 +1,4 @@
-@![implementation = "aligned"]
+@![implementation = "partial"]
 = CLI Inspect: Agent Query and Navigation
 
 #[
@@ -8,41 +8,56 @@ CLI 中有一系列用于检查库内容的命令，它们被统称为 Inspect �
 
 @[todo="需要改进并根据实际情况修改，或许后续挪到 README 然后一个命令一个文档"]
 ```
-status / modules     发现：这是哪个 Vault、有哪些逻辑地址
-  → search           检索：找候选（候选不是证据）
-  → outline          结构：一个 Module 的求值后 Heading 树
-  → read             取证：唯一的事实入口，产出 citation
+发现     status / modules / search     这是哪个 Vault、有哪些逻辑地址、哪里有候选
+  → locate           桥：OS path + 行号 → ModulePath[/ItemName]
+  → items            身份：一个 Target 内部的可寻址 Item 表
+  → ancestors         结构：区域重叠的 scope 子树
+  → attrs             环境：Target 自身与祖先链的属性注解
+  → read             内容：唯一的事实入口，产出 citation
   → references / definition 导航：沿已解析的引用图移动
   → check            验证：完整 Vault 健康结论（不接受 scope）
 ```
 
-一个核心思想是利用 Notist 的 ModulePath 以及 ScopeId
+一个核心思想是身份与坐标分离：寻址只认 ModulePath[/ItemName]，
+OS path 只在 locate 出现一次。
 
 ]@type=user,.user
 
 
-本文是 `notist inspect` 调查组的逐命令规范：status、modules、search、outline、read、references、definition 与 Selector/Scope/Citation 寻址契约。`inspect --help` 是这些命令的唯一发现入口。命令面治理、全局参数、错误与退出状态见 #<vault::cli>；查询契约与检索语义见 #<vault::designs::host::query-contract> 与 #<vault::designs::host::search-retrieval-index>。
+本文是 `notist inspect` 调查组的逐命令规范，描述 2026-08-30 统合裁决（#<vault::ai::2026-08-30 inspect 命令面统合设计>）确立的*目标命令面*。实现状态 `partial`：items、ancestors、read 已按早期形态落地，locate、attrs、`--line` 坐标与 `@![...]` 继承在实施清单中推进；迁移完成前，已安装二进制的 `inspect --help` 是实际可执行面的最终依据。命令面治理、全局参数、错误与退出状态见 #<vault::cli>；查询契约与检索语义见 #<vault::designs::host::query-contract> 与 #<vault::designs::host::search-retrieval-index>。
 
-2026-08-29 裁决：collection 命令返回完整结果，没有分页与预算；`inspect --help` 之外不需要记忆其他入口。普通知识工作只使用本文命令与 `check`。
+collection 命令返回完整结果，没有分页与预算（2026-08-29 裁决）；`inspect --help` 之外不需要记忆其他入口。普通知识工作只使用本文命令与 `check`。
 
-
-== Selector、Scope 与 Citation
-
-Selector 是精确身份，Scope 是集合过滤：
+本文的输出示例统一来自同一个示例 Vault 的实测，便于对照各命令视角：
 
 ```text
-selector:
-  vault::designs::host::query-contract          ModulePath
-  designs/host/query-contract.not               Vault-relative path
-  vault::designs::language::property-table/属性表  ItemName（ItemPath）
-
-scope:
-  --scope vault::designs                       include，段边界匹配，可重复
+guide.not        模块头 @![status = "draft"]；@[wip] 绑定 = 安装；
+                 正文含引用 #<vault::troubleshoot/日志>；
+                 节结构 = 安装 / == 故障排除 / = 后记
+troubleshoot.not 模块头 @![severity = "high"]；@[#urgent] 绑定 = 日志；
+                 正文含后缀注解 #heading[手册]@#urgent
+mixed.not        #heading[原标题]@renamed 与另一节 = 原标题（@id 覆盖与重名演示）
+assets/          资源目录：logo.png、notes.txt
 ```
 
-`vault::foo` 命中自身与 `vault::foo::*`，不命中 `vault::foobar`。Scope 属于查询语义本身：改变 scope 即是另一个查询。短 basename、模糊路径不能静默解析；`not_found` 与 `ambiguous_selector` 是 typed error。
 
-所有可作为证据的位置统一为 `module + relative path + byte range + line range + id + source fingerprint`。普通 text 输出默认显示 `path:line`；excerpt 是候选选择信息，不是独立事实来源——search 与 references 的结果必须引导调用者在形成事实性回答前使用 `read`。
+== 身份与坐标
+
+寻址只有两个世界：
+
+```text
+身份    ModulePath | ModulePath/ItemName      稳定逻辑地址（D0004），唯一 selector 文法
+坐标    ModulePath ( --line N | --offset BYTE | --byte-range S..E )
+桥      locate PATH ( --line N | --offset BYTE | --byte-range S..E )
+```
+
+- 文档模块的 source 与文件 1:1，坐标挂在 ModulePath 上即无歧义。OS path 从输入文法除名，只出现在 locate：grep/Read 给 Agent 的外部坐标（`path:line`）由 locate 换成身份，此后全部工作在 ModulePath 空间内完成。
+- `--line` 是面向 Agent 的一等坐标（行号是 grep/Read 的原生产出）；`--offset`/`--byte-range` 是协议流通坐标（UTF-8 半开区间），由 notist 的 citation 发放——Agent 不自造字节偏移。
+- 最小访问单位是 Item：可寻址的只有 Module 与 Item（显式 `@id` 节点或 heading 默认名）。匿名 scope 不可寻址，但 attrs/ancestors 的坐标问法能看到它们承载的属性。
+- 短 basename、模糊路径不能静默解析；`not_found` 与 `ambiguous_selector` 是 typed error。身份位置出现 OS path 时报 `invalid_selector`，hint 指向 `inspect locate`。
+- citation 契约不变：所有可作为证据的位置统一为 `module + relative path + byte range + line range + id + source fingerprint`。输出中的 `path:line` 是给编辑器跳转与 grep 往返用的坐标回声，与输入文法的除名不冲突。
+
+Scope 是集合过滤，属于查询语义本身：改变 scope 即是另一个查询。
 
 == status
 
@@ -55,20 +70,22 @@ notist inspect status [--vault DIR]
 输出：
 
 ```text
-Vault        cfc3d18da3049056
-Snapshot     disk revision 42
-Runtime      daemon
-Sources      31
-Modules      31
+Vault        e077ce3258ab9d36
+Snapshot     disk revision 0
+Runtime      embedded
+Sources      3
+Modules      5
 Diagnostics  0
-Index        ready (712 units)
-Daemon       pid 12345
+Index        not_built (0 units)
+Daemon       not running
 ```
 
 字段：
 
 - Vault identity、disk snapshot stamp、runtime mode、source/module/diagnostic counts。
-- Index health：`ready`、`building`、`stale`、`error`、`not_built`。
+- `Runtime` 为 `daemon` 或 `embedded`（`--no-daemon`）。
+- Modules 计数含虚拟模块。
+- Index health：`ready`、`building`、`stale`、`error`、`not_built`；status 不惰性建索引，首次 search 才触发构建。
 - 不返回正文、Heading 或 semantic item。
 - exit 恒为 0，除非 Vault 无法打开或服务不可用。
 
@@ -85,11 +102,19 @@ notist inspect modules [--vault DIR]
 - `--kind`：`any` 默认，`source` 只列有 `.not` source 的 Module，`virtual` 只列目录/资源命名空间 Module。
 - `--prefix MODULE`：按 ModulePath 前缀（段边界）过滤。
 - 排序固定为 ModulePath 字典序。
-- 每条逻辑 record 包含 ModulePath、relative path、kind、可选 semantic title、source fingerprint；text 投影显示 ModulePath、path 与 title。
+- 每条逻辑 record 包含 ModulePath、relative path、kind、可选 semantic title、source fingerprint。
+- 输出：首行计数头 `N modules`；此后一行一模块——`ModulePath`、vault 相对路径（虚拟模块显示 `<virtual>`）、` — ` 语义标题。语义标题 = 文档序第一个 heading 的纯文本（不经 ItemName 解析，`@id` 覆盖不影响显示），无 heading 时整段省略。
+
+```shell
+notist inspect modules
+```
 
 ```text
-vault::cli  cli/README.not — Notist CLI: Command Design and Reference
-vault::cli::inspect  cli/inspect.not — CLI Inspect: Agent Query and Navigation
+4 modules
+vault  <virtual>
+vault::assets  <virtual>
+vault::guide  guide.not — 安装
+vault::troubleshoot  troubleshoot.not — 日志
 ```
 
 == search
@@ -118,34 +143,125 @@ notist inspect search <QUERY> [--vault DIR]
 - `--group-by source` 默认（lexical/fuzzy）：每 Module 保留最佳 hit；`section` 每最近 Heading 保留最佳 hit；`match` 返回每个独立 region；exact/regex 默认 `match`。
 - scope 在 candidate generation 前下推。
 - index 未 ready 时内部等待 2s（`--wait-index` 可调，上限 10s）；超时返回 `index_not_ready`。
-- excerpt 默认最多 256 bytes（`--snippet-bytes` 可调，上限 2048），优先围绕命中 term；截断会显式标出。
+- excerpt 默认最多 256 bytes（`--snippet-bytes` 可调，上限 2048），优先围绕命中 term；截断会显式标出。excerpt 取自 raw 源文上下文，注解文本会一并出现在片段中。
+- `tag` 字段当前只来自后缀注解（`#heading[x]@tag` 形态）；块级 `@[#tag]` 的 tag 不进 tag 字段，待统合实施清单 #5 修复。
 - 结果完整：零命中即证明所选 scope 内不存在匹配；空结果带 actionable hint。
+- 输出：首行计数头 `N source|section|match`（随 `--group-by`）；每条命中两行——`序号. ModulePath  path:line field=<命中字段>[ score=...]` 与缩进的 excerpt。
+
+```shell
+notist inspect search 概述
+```
 
 ```text
-2 sources
+1 source
 
-1. vault::designs::host::query-contract  host/query-contract.not:42 field=body score=5.109
-   查询契约与候选生成 ...
-2. vault::designs::host::search-retrieval-index  host/search-retrieval-index.not:12 field=title score=7.115
-   == Search 不是一种模式 ...
+1. vault::guide  guide.not:6 field=body score=0.749
+   @![status = "draft"]  @[wip] = 安装  先读概述，出问题时看 #<vault::troubleshoot/日志> 。  == 故障排除  对照下述步骤排查。  = 后记  完。
+```
+
+```shell
+notist inspect search urgent --fields tag
+```
+
+```text
+1 source
+
+1. vault::troubleshoot  troubleshoot.not:6 field=tag score=0.837
+   @![severity = "high"]  @[#urgent] = 日志  看日志输出，详见 #heading[手册]@#urgent 。
 ```
 
 score 只能在同 query、index stamp、ranking version 内比较，不是概率。
 
-== outline
+== locate
 
-用途：只看一个 Module 的 Heading 结构，不读正文。结构是求值后的 Heading，不是源码正则猜测。
+用途：桥。把外部坐标（grep/LSP 给的 `path:line`）换成身份，此后全部命令工作在 ModulePath 空间内。唯一接受 OS path 的命令。
 
 ```shell
-notist inspect outline <MODULE|PATH> [--depth 1..6] [--vault DIR]
+notist inspect locate <PATH> [--line N | --offset BYTE | --byte-range S..E] [--vault DIR]
 ```
 
-- `--depth` 默认 6，范围 1..=6。
-- 每条 heading record 包含 name、level、id（显式 id 或标题默认 id）、location、parent range 与 subtree range；text 投影显示缩进、id 与 `path:line`。
-- 全 Vault 结构发现用 modules/search，不用 outline 遍历全库。
+- 输出 ModulePath 与可寻址链（面包屑，按结构顺序）；坐标落在匿名 scope 时向上取最近的可寻址祖先（D0004：匿名 scope 不可寻址）。
+- 无坐标时整个文件 → 模块身份。
+- 输出附带命中点的 `path:line` 与 source fingerprint，供编辑器跳转与 grep 往返。
 
 ```shell
-notist inspect outline vault::designs::host::query-contract --vault docs --depth 2
+notist inspect locate guide.not --line 45
+```
+
+```text
+vault::guide  安装 > 故障排除  guide.not:45
+```
+
+实现状态：未实现（统合实施清单 #3）。
+
+== items
+
+用途：列出一个 Target 内部全部可寻址 Item（D0004）：显式 `@id` 标注的节点、heading 默认名、模块命名空间下的资源文件。ItemName 是模块内扁平唯一命名空间；items 是身份表，不展示嵌套结构——包含关系用 ancestors。
+
+```shell
+notist inspect items <MODULE[/ITEMNAME]> [--vault DIR]
+```
+
+- 每条 item record：name（ItemName）、kind（`scope` | `resource:image` | `resource:file`）、origin（`id` | `heading` | `resource`）、heading 的 level、location，以及该 Item 承载的属性注解（完整落入 Item range 的注解条目）。
+- ItemName target：列出该 scope 内部的 Item（实施清单 #2，未实现；当前仅接受 ModulePath 与路径退化形态）。
+- 名字解析与 `Module/name` selector 完全一致：`@id` 覆盖所在 heading 的默认名；heading 默认名重名时无法用名字单独寻址，行尾标 `(ambiguous)`，作者用 `@id` 消歧。
+- 虚拟目录模块（资源命名空间）只列资源 Item；资源 Item 没有源内 range，location 指向资源文件本身。
+- 全 Vault 结构发现用 modules/search，不用 items 遍历全库。
+- 输出：首行计数头 `N items`；此后一行一 Item——`name  kind[ Llevel]  path:line  注解`。`@id` 命名的 Item 其 kind 显示为 `scope@id`（名字是作者授予的身份，不是标题文本）；重名行尾标 `(ambiguous)`。
+
+```shell
+notist inspect items vault::guide
+```
+
+```text
+3 items
+安装  scope L1  guide.not:4  @[wip]
+故障排除  scope L2  guide.not:8
+后记  scope L1  guide.not:12
+```
+
+```shell
+notist inspect items vault::mixed
+```
+
+```text
+2 items
+renamed  scope@id L1  mixed.not:1  @[renamed]
+原标题  scope L1  mixed.not:5    (ambiguous)
+```
+
+```shell
+notist inspect items vault::assets
+```
+
+```text
+2 items
+logo.png  resource:image  assets/logo.png
+notes.txt  resource:file  assets/notes.txt
+```
+
+== attrs
+
+用途：给定 Target（身份或坐标），返回它自身以及全部祖先节点附给它的属性注解——该位置的有效属性环境。属性表（D0006）的权威查询入口。
+
+```shell
+notist inspect attrs <TARGET> [--kind id|tag|class|property] [--vault DIR]
+```
+
+- 两栖：身份 target 给出该 scope 的环境；坐标 target 给出该位置的环境。匿名 scope 上的属性（如无 `@id` 的 `#callout[...]@danger`）只有坐标问法能看见。
+- 无合并：环境是链上各层条目的有序并集（内层在前），每层带出处；同 key 多层并存合法且常见（各层级标题的 `desc = "..."` 都要保留）。“生效值”由使用方取最内层，未来可加 `--resolve` 视图。
+- 模块层：`@![...]` 沿 Module 树继承，模块链行逐级列出继承来源；文档局部属性挂首个一级标题的 scope。
+- `--kind` 过滤条目类型。
+- 实现状态：未实现（统合实施清单 #1）；以下为目标形状。
+
+```text
+故障排除  guide.not:8
+    desc = "故障排查"
+安装  guide.not:4
+    desc = "安装章节"
+    wip
+vault::guide  guide.not:1
+    status = "draft"
 ```
 
 == read
@@ -153,26 +269,78 @@ notist inspect outline vault::designs::host::query-contract --vault docs --depth
 用途：按稳定地址读 authored source，是形成事实结论的唯一证据入口。
 
 ```shell
-notist inspect read <MODULE|PATH|MODULE/NAME> [--vault DIR]
+notist inspect read <MODULE[/ITEMNAME]> [--vault DIR]
   [--from-line N [--lines N] | --byte-range START..END]
 ```
 
 窗口规则（语义窗口，不是截断）：
 
-- 默认：读取 selector 选中的完整内容——Module 风格 selector 读整篇，ItemPath 读整节 subtree。
+- 默认：读取 selector 选中的完整内容——Module 风格 selector 读整篇。
 - `--from-line N`：1-based 行号；单独使用读从该行到末尾。
 - `--lines N`：必须与 `--from-line` 同用，限制读取行数。
 - `--byte-range START..END`：半开 UTF-8 byte range；与 line 窗口互斥。
-- `MODULE/NAME`（ItemPath）：NAME 先按显式 `@id`、后按标题默认名（标题文本）精确匹配；读取整个节 subtree（从节标题到下一个同级或更高级 heading 前），不是只读标题行。
+- `MODULE/NAME`（ItemPath）：NAME 先按显式 `@id`、后按标题默认名（标题文本）精确匹配；当前返回该标题自身的 range。
 
-text 输出 = 带行号 gutter 的 authored source；location（module、path、byte/line range、fingerprint）由服务端 record 携带，JSON 场景（LSP、未来 artifact 投影）可直接消费。
+text 输出 = 带行号 gutter 的 authored source，之后一行 citation footer：`-- Module  path  bytes S..E[  lines A..B]  fingerprint`。footer 是编辑前置条件的直接来源——比对指纹、取字节区间都在这里，不由调用者自造；location 同时由服务端 record 携带，JSON 场景（LSP、未来 artifact 投影）可直接消费。
+
+```shell
+notist inspect read vault::guide
+```
+
+```text
+    1 | @![status = "draft"]
+    2 | 
+    3 | @[wip]
+    4 | = 安装
+    5 | 
+    6 | 先读概述，出问题时看 #<vault::troubleshoot/日志> 。
+    ...
+   14 | 完。
+-- vault::guide  guide.not  bytes 0..168  lines 1..14  fingerprint 392c4fa45a30d3fc
+```
+
+@[todo="ItemPath 读取当前只返回标题自身 range（read vault::guide/故障排除 仅得 == 故障排除 一行）；既有「读取整个节 subtree」的承诺未实现。按实现收敛文档还是按文档补实现，待裁决后更新本节"]
+
+```shell
+notist inspect read "vault::guide/故障排除"
+```
+
+```text
+    8 | == 故障排除
+-- vault::guide  guide.not  bytes 105..120  lines 8..8  fingerprint 392c4fa45a30d3fc
+```
+
+== ancestors
+
+用途：给定 Target（身份或坐标），返回 scope 树中与该区域**重叠**的全部节点所构成的子树（重叠节点连同各自到模块根的路径），以及每个节点承载的属性注解（D0006）。区域擦到两个甚至三个 sibling scope 的边缘时，每个被擦到的 scope 都会带着自己的根路径出现。
+
+```shell
+notist inspect ancestors <TARGET> [--vault DIR]
+  [--line N | --offset UTF8_BYTE_OFFSET | --byte-range START..END]
+```
+
+- 身份 target：该 scope（及其内部节点）与模块根的包含链；坐标 target：与区域重叠的子树。重叠语义：节点与区域共享至少一个 byte 即重叠；点按半开包含。节点的 range 包含其子孙的 range，因此重叠集合对祖先天然封闭，结果恰是一棵以模块根为顶的子树。
+- 属性归属（认领规则）：每条注解由子树中完整包含它的最深节点上报，至多出现一次。绑在节标题上的 `@[...]` 在标题节点不在子树内时上报到对应的 `core::section` 祖先（property-table 的 section 上卷语义）；模块头 `@![...]` 在模块根上报。
+- 输出：首行是 `module`、relative path 与 source fingerprint 摘要；此后按文档序深度优先打印子树，模块根在最前。每行包含节点 kind、可选标题与 level、`path:line`，以及注解面拼写（`@[...]`；模块根用 `@![...]`）。
+
+```text
+module vault::guide  guide.not  fingerprint 392c4fa45a30d3fc
+module  guide.not:1  @![status = draft]
+  core::section "安装" L1  guide.not:4  @[wip]
+    core::paragraph  guide.not:6
+      core::text  guide.not:6
+```
+
+错误：selector 与 ItemName 遵循统一寻址契约（`not_found`、`ambiguous_selector`）；坐标越界或不在 UTF-8 边界返回 `invalid_argument`。
+
+结构发现用 items；ancestors 不替代 items——它回答“区域与 scope 的重叠关系、以及作用中的属性注解”，不是“Module 有哪些可寻址 Item”。
 
 == references
 
 用途：遍历已经解析的 Reference graph。默认 incoming，回答“谁引用这个目标”。
 
 ```shell
-notist inspect references <MODULE|MODULE/NAME> [--vault DIR]
+notist inspect references <MODULE[/ITEMNAME]> [--vault DIR]
   [--direction incoming|outgoing|both]
   [--include-definition]
   [--snippet-bytes <n>]
@@ -182,30 +350,52 @@ notist inspect references <MODULE|MODULE/NAME> [--vault DIR]
 - `--direction outgoing`：正向列出该 Module 或节引用了什么；使用 captured reference graph，不重新扫描文本。
 - `--direction both`：同时返回两个方向；`--include-definition`：附上目标自身定义位置。
 - 每条 item 包含 source/target Module、方向、location 与最多 256 bytes excerpt；不重复整篇 source。
+- selector 的粒度决定匹配面：模块级 selector 只匹配模块级目标，scope 级目标（`module/name`）的引用要用 ItemPath selector 查询。
+- 输出：首行 `N references (incoming|outgoing|both)`；每条引用一行 `source -> target  path:line`，其后缩进一行 excerpt，截断以 ` …` 结尾；`--include-definition` 附带的目标自身定义行尾标 `(definition)`，该行无 excerpt。
 
 ```shell
-notist inspect references vault::designs::host::query-contract --vault docs
+notist inspect references "vault::troubleshoot/日志" --include-definition
 ```
+
+```text
+2 references (incoming)
+vault::guide -> vault::troubleshoot  guide.not:6
+    @![status = "draft"]  @[wip] = 安装  先读概述，出问题时看 #<vault::troubleshoot/日志> 。  == 故障排除  对照下述步骤排查。  = 后记  完。
+vault::troubleshoot -> vault::troubleshoot  troubleshoot.not:4  (definition)
+```
+
+@[todo="模块级 selector 当前不匹配 scope 级目标的引用（references vault::troubleshoot 查不到指向 vault::troubleshoot/日志 的引用）。该语义是否有意待裁决；裁决前本文如实记录现状"]
 
 == definition
 
-用途：由精确 source offset 找定义，是 LSP definition 的 CLI 投影。
+用途：由精确字节位置找引用的定义目标，是 LSP definition 的 CLI 投影。
 
 ```shell
-notist inspect definition <PATH> <UTF8_BYTE_OFFSET> [--vault DIR]
+notist inspect definition <MODULE> <UTF8_BYTE_OFFSET> [--vault DIR]
   [--expected-fingerprint HASH]
 ```
 
-- offset 是 UTF-8 byte offset，不是字符下标；line/column 转换由调用方 LineIndex 完成。
+- offset 相对 Module source（UTF-8 byte offset，不是字符下标），须落在引用 range 之内；line/column 与 UTF-16 的换算由 LSP 客户端侧 LineIndex 完成。
 - `--expected-fingerprint` 不匹配返回 `snapshot_changed`；防止旧 offset 查询新文本。
-- 返回零或一个 location；text 打印 `path:start..end`。
+- 返回零或一个目标；输出首列为目标身份（`ModulePath[/ItemName]`，heading 默认名亦解析），其后是 `path:start..end`，使坐标世界闭环回身份世界。
+
+```shell
+notist inspect definition vault::guide 79
+```
+
+```text
+vault::troubleshoot/日志  troubleshoot.not:34..42
+```
 
 == Agent 工作流
 
 ```text
-inspect status / inspect modules
-  -> inspect search 发现候选
-  -> inspect outline 看结构
+grep / Read 的产出（path:line）
+  -> inspect locate 换取身份
+  -> inspect status / modules / search 发现
+  -> inspect items 看 Item 表
+  -> inspect ancestors 看结构上下文
+  -> inspect attrs 查有效属性环境
   -> inspect read 读取 authored evidence
   -> inspect references / definition 沿语义边导航
   -> check 验证状态

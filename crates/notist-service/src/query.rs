@@ -5,9 +5,9 @@ use std::time::{Duration, Instant};
 
 use notist_analysis::{
     DiagnosticKind, DiagnosticSeverity as AnalysisSeverity, MissingReason, RefTarget,
-    WorkspaceSnapshot,
+    WorkspaceSnapshot, node_text,
 };
-use notist_model::{ModulePath, TextRange};
+use notist_model::{ModulePath, Node, NodeValue, TextRange};
 use regex::RegexBuilder;
 use serde::{Deserialize, Serialize};
 use serde_json::Value as JsonValue;
@@ -20,7 +20,7 @@ use tantivy::schema::{Field, IndexRecordOption, STORED, STRING, Schema, TEXT, Va
 use tantivy::{Index, IndexReader, ReloadPolicy, TantivyDocument, Term, doc};
 use unicode_normalization::UnicodeNormalization;
 
-use crate::{SnapshotIdentity, ViewKind};
+use crate::{SnapshotIdentity, ViewKind, request::attribute_records};
 
 pub const DEFAULT_SNIPPET_BYTES: usize = 256;
 pub const MAX_SNIPPET_BYTES: usize = 2048;
@@ -189,26 +189,59 @@ pub enum ModuleKind {
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
-pub struct OutlineQuery {
+pub struct ItemsQuery {
     pub selector: Selector,
-    #[serde(default = "default_outline_depth")]
-    pub depth: u8,
 }
 
-fn default_outline_depth() -> u8 {
-    6
-}
-
+/// One addressable Item of a module (D0004): an explicitly `@id`-annotated
+/// node, a heading default name, or a resource file in the module namespace.
 #[derive(Clone, Debug, Serialize, Deserialize)]
-pub struct OutlineHeading {
+pub struct ItemRecord {
     pub name: String,
-    pub level: u8,
+    /// `"scope"`, `"resource:image"`, or `"resource:file"`.
+    pub kind: String,
+    /// `"id"`, `"heading"`, or `"resource"`.
+    pub origin: String,
+    /// Heading level, for heading-derived Items.
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub id: Option<String>,
+    pub level: Option<u8>,
+    /// The default name collides with another heading, so the Item cannot be
+    /// addressed by this name alone; authors disambiguate with `@id`.
+    pub ambiguous: bool,
     pub location: Location,
+    /// Attribute annotations fully contained in the Item's range (D0006).
+    pub attributes: Vec<super::request::AttributeRecord>,
+}
+
+/// Selects the region whose ancestor chain a query returns: the selector
+/// resolves the module and an optional item, and `offset`/`byte_range` then
+/// override the selection with a precise point or region (mutually exclusive).
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct AncestorsQuery {
+    pub selector: Selector,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub offset: Option<usize>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub byte_range: Option<super::request::ByteRange>,
+}
+
+/// One node of the overlapping subtree, with the attribute annotations it
+/// carries (D0006). The subtree is rooted at the module root and spans every
+/// node whose range overlaps the selected region.
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct AncestorRecord {
+    /// Constructor identity of the node (`core::section`, `core::heading`, …),
+    /// or `module` for the root scope.
+    pub kind: String,
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub parent_range: Option<super::request::ByteRange>,
-    pub subtree_range: super::request::ByteRange,
+    pub name: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub level: Option<u8>,
+    pub location: Location,
+    pub attributes: Vec<super::request::AttributeRecord>,
+    /// Nodes below this one that also overlap the selected region.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub children: Vec<AncestorRecord>,
 }
 
 #[derive(Clone, Debug, Default, Serialize, Deserialize)]
@@ -532,65 +565,441 @@ pub fn list_modules(
     })
 }
 
-pub fn outline(
+/// One candidate row of the items table before wire projection.
+struct ItemRow {
+    name: String,
+    origin: &'static str,
+    level: Option<u8>,
+    range: TextRange,
+}
+
+/// Walks the evaluated tree collecting heading levels keyed by range start.
+fn collect_heading_levels(nodes: &[Node], levels: &mut HashMap<usize, u8>) {
+    for node in nodes {
+        if node.is_core("heading")
+            && let Some(NodeValue::Int(level)) = node.get("level")
+        {
+            levels.insert(node.range.start, u8::try_from(*level).unwrap_or(1));
+        }
+        collect_heading_levels(&node.children, levels);
+        for (_, value) in &node.args {
+            if let NodeValue::Stream(stream) = value {
+                collect_heading_levels(stream, levels);
+            }
+        }
+    }
+}
+
+/// Lists every addressable Item of one module (D0004): explicit `@id` nodes,
+/// heading default names, and resource files. Names come from the same
+/// resolution path as `resolve_item_name`, so every listed heading name is
+/// addressable; duplicate default names are marked ambiguous. Each Item
+/// carries the attribute annotations fully contained in its range.
+pub fn items(
     workspace: &WorkspaceSnapshot,
     snapshot: &SnapshotIdentity,
-    query: &OutlineQuery,
-) -> Result<QueryResult<OutlineHeading>, ToolError> {
-    if !(1..=6).contains(&query.depth) {
-        return Err(ToolError::new(
-            "invalid_argument",
-            "outline depth must be between 1 and 6",
-        ));
+    query: &ItemsQuery,
+) -> Result<QueryResult<ItemRecord>, ToolError> {
+    let module = match &query.selector {
+        Selector::Module { module, name } => {
+            if name.is_some() {
+                return Err(ToolError::new(
+                    "invalid_argument",
+                    "items takes a module or path selector without an item name",
+                ));
+            }
+            let path = parse_absolute_module_path(module).ok_or_else(|| {
+                ToolError::new(
+                    "invalid_selector",
+                    "module selector must be an absolute ModulePath",
+                )
+            })?;
+            workspace.module(&path).ok_or_else(|| {
+                ToolError::new("not_found", format!("module `{module}` was not found"))
+            })?
+        }
+        Selector::Path { path, name } => {
+            if name.is_some() {
+                return Err(ToolError::new(
+                    "invalid_argument",
+                    "items takes a module or path selector without an item name",
+                ));
+            }
+            let absolute = if path.is_absolute() {
+                path.clone()
+            } else {
+                workspace.root().join(path)
+            };
+            let absolute = dunce::canonicalize(&absolute).map_err(|_| {
+                ToolError::new(
+                    "not_found",
+                    format!("source `{}` was not found", path.display()),
+                )
+            })?;
+            if !absolute.starts_with(workspace.root()) {
+                return Err(ToolError::new(
+                    "invalid_selector",
+                    "source path escapes the Vault",
+                ));
+            }
+            workspace.module_for_source(&absolute).ok_or_else(|| {
+                ToolError::new(
+                    "not_found",
+                    format!("source `{}` is not a Notist module", path.display()),
+                )
+            })?
+        }
+    };
+    let source = module.file_id.and_then(|file_id| workspace.source(file_id));
+    let structured = module
+        .file_id
+        .and_then(|_| workspace.structured_module(module.id));
+
+    // Canonical heading default names: identical to what resolve_item_name
+    // matches, so every listed heading name is addressable. Virtual directory
+    // modules carry resource Items only.
+    let defaults = if structured.is_some() {
+        workspace.module_heading_default_ids(&module.logical_path)
+    } else {
+        Vec::new()
+    };
+    let mut levels = HashMap::new();
+    if let Some(structured) = &structured {
+        collect_heading_levels(&structured.tree.roots, &mut levels);
     }
-    let resolved = resolve_source(workspace, &query.selector)?;
-    let symbols = workspace
-        .document_symbols(resolved.source.file_id)
-        .into_iter()
-        .filter(|symbol| symbol.level <= query.depth)
+
+    // An explicit `@id` bound to a heading overrides its default name. A
+    // label only overrides when its scope encloses exactly this one heading;
+    // labels enclosing several headings address an outer container and leave
+    // the headings untouched, and labels enclosing none are Items themselves.
+    let labels = workspace
+        .labels()
+        .iter()
+        .filter(|label| label.module == module.logical_path)
         .collect::<Vec<_>>();
-    let mut records = Vec::new();
-    for (index, symbol) in symbols.iter().enumerate() {
-        let parent_range = symbols[..index]
+    let mut rows = Vec::new();
+    let mut covered_labels = vec![false; labels.len()];
+    for (name, range) in &defaults {
+        let level = levels.get(&range.start).copied();
+        let covering = labels
             .iter()
-            .rev()
-            .find(|candidate| candidate.level < symbol.level)
-            .map(|candidate| candidate.range.into());
-        let subtree_end = symbols[index + 1..]
-            .iter()
-            .find(|candidate| candidate.level <= symbol.level)
-            .map_or(resolved.selection.end, |candidate| candidate.range.start);
-        records.push(OutlineHeading {
-            id: workspace
-                .labels()
-                .iter()
-                .find(|label| {
-                    label.file_id == resolved.source.file_id
-                        && label.scope_range.start <= symbol.range.start
-                        && symbol.range.end <= label.scope_range.end
-                })
-                .map(|label| label.name.clone())
-                .or_else(|| Some(symbol.name.clone())),
-            location: location(
-                workspace,
-                resolved.module,
-                resolved.source,
-                symbol.range,
-                None,
-            ),
-            name: symbol.name.clone(),
-            level: symbol.level,
-            parent_range,
-            subtree_range: TextRange::new(symbol.range.start, subtree_end).into(),
+            .enumerate()
+            .filter(|(index, label)| {
+                // A label's scope_range may exclude trailing postfix
+                // attributes of the very node it names, so overlap is judged
+                // by the heading's start falling inside the scope.
+                !covered_labels[*index]
+                    && label.scope_range.start <= range.start
+                    && range.start < label.scope_range.end
+                    && defaults
+                        .iter()
+                        .filter(|(_, other)| other != range)
+                        .all(|(_, other)| {
+                            other.start < label.scope_range.start
+                                || other.start >= label.scope_range.end
+                        })
+            })
+            .min_by_key(|(_, label)| label.scope_range.end - label.scope_range.start)
+            .map(|(index, label)| (index, label.name.clone()));
+        match covering {
+            Some((index, name)) => {
+                covered_labels[index] = true;
+                rows.push(ItemRow {
+                    name,
+                    origin: "id",
+                    level,
+                    range: *range,
+                });
+            }
+            None => rows.push(ItemRow {
+                name: name.clone(),
+                origin: "heading",
+                level,
+                range: *range,
+            }),
+        }
+    }
+    for (index, label) in labels.iter().enumerate() {
+        if !covered_labels[index] {
+            rows.push(ItemRow {
+                name: label.name.clone(),
+                origin: "id",
+                level: None,
+                range: label.scope_range,
+            });
+        }
+    }
+    rows.sort_by_key(|row| row.range.start);
+    // Ambiguity follows resolve_item_name: a default name is ambiguous when
+    // several headings carry it, even if one of them is covered by an `@id`
+    // (the covered row then displays the id, but the plain name still fails).
+    let mut default_name_counts: HashMap<&str, usize> = HashMap::new();
+    for (name, _) in &defaults {
+        *default_name_counts.entry(name.as_str()).or_default() += 1;
+    }
+
+    // Claim annotations innermost first so a row only reports annotations no
+    // smaller row fully contains.
+    let annotations = structured
+        .as_ref()
+        .map(|structured| structured.annotations.iter().collect::<Vec<_>>())
+        .unwrap_or_default();
+    let mut claims = vec![Vec::new(); rows.len()];
+    let mut unclaimed = annotations;
+    let mut claim_order = (0..rows.len()).collect::<Vec<_>>();
+    claim_order.sort_by_key(|&index| rows[index].range.end - rows[index].range.start);
+    for index in claim_order {
+        let row = &rows[index];
+        let mut remaining = Vec::new();
+        for entry in unclaimed.drain(..) {
+            if fully_contains(row.range, entry.range) {
+                claims[index].push(entry.attributes.clone());
+            } else {
+                remaining.push(entry);
+            }
+        }
+        unclaimed = remaining;
+    }
+
+    let mut records = Vec::with_capacity(rows.len() + module.resources.len());
+    if let Some(source) = source {
+        for (index, row) in rows.iter().enumerate() {
+            records.push(ItemRecord {
+                name: row.name.clone(),
+                kind: "scope".into(),
+                origin: row.origin.into(),
+                level: row.level,
+                ambiguous: row.origin == "heading"
+                    && default_name_counts
+                        .get(row.name.as_str())
+                        .copied()
+                        .is_some_and(|count| count > 1),
+                location: location(workspace, module, source, row.range, None),
+                attributes: attribute_records(&claims[index]),
+            });
+        }
+    }
+    for resource in &module.resources {
+        let kind = match resource.kind {
+            notist_analysis::ResourceKind::Image => "resource:image",
+            notist_analysis::ResourceKind::File => "resource:file",
+        };
+        records.push(ItemRecord {
+            name: resource.name.clone(),
+            kind: kind.into(),
+            origin: "resource".into(),
+            level: None,
+            ambiguous: false,
+            location: Location {
+                module: module.logical_path.to_string(),
+                relative_path: relative_path(workspace.root(), &resource.path),
+                byte_range: super::request::ByteRange { start: 0, end: 0 },
+                line_range: None,
+                id: None,
+                source_fingerprint: String::new(),
+            },
+            attributes: Vec::new(),
         });
     }
-    records.sort_by_key(|item| item.location.byte_range.start);
     Ok(QueryResult {
         snapshot: snapshot.clone(),
         records,
         search: None,
         hints: Vec::new(),
     })
+}
+
+/// The selected region an ancestor query overlaps: a byte point under the
+/// half-open containment convention, or a byte region that must share at
+/// least one byte with a node (zero-width regions use the point rule).
+#[derive(Clone, Copy, Debug)]
+enum AncestorSelection {
+    Point(usize),
+    Region(TextRange),
+}
+
+impl AncestorSelection {
+    fn overlaps(self, range: TextRange) -> bool {
+        match self {
+            Self::Point(offset) => range.start <= offset && offset < range.end,
+            Self::Region(selected) => {
+                range.start < selected.end && selected.start < range.end
+            }
+        }
+    }
+
+    fn from_parts(start: usize, end: usize) -> Self {
+        if start == end {
+            Self::Point(start)
+        } else {
+            Self::Region(TextRange::new(start, end))
+        }
+    }
+}
+
+fn fully_contains(outer: TextRange, inner: TextRange) -> bool {
+    outer.start <= inner.start && inner.end <= outer.end
+}
+
+/// Builds the overlapping subtree below `nodes`. Each record claims the
+/// annotation entries fully contained in its range that no deeper subtree
+/// node claimed, so an entry is reported on at most one ancestor: a
+/// heading-bound `@[...]` surfaces on the enclosing section when the heading
+/// itself is outside the subtree (property-table section roll-up).
+fn build_overlapping_subtree(
+    workspace: &WorkspaceSnapshot,
+    module: &notist_analysis::Module,
+    source: &notist_analysis::SourceInput,
+    nodes: &[Node],
+    selection: AncestorSelection,
+    unclaimed: &mut Vec<&notist_analysis::AnnotationEntry>,
+) -> Vec<AncestorRecord> {
+    let mut records = Vec::new();
+    for node in nodes {
+        if !selection.overlaps(node.range) {
+            // Descendant ranges are contained in this node's range, so no
+            // child can overlap either.
+            continue;
+        }
+        let children = build_overlapping_subtree(
+            workspace,
+            module,
+            source,
+            &node.children,
+            selection,
+            unclaimed,
+        );
+        let mut contained = Vec::new();
+        let mut remaining = Vec::new();
+        for entry in unclaimed.drain(..) {
+            if fully_contains(node.range, entry.range) {
+                contained.push(entry.attributes.clone());
+            } else {
+                remaining.push(entry);
+            }
+        }
+        *unclaimed = remaining;
+        records.push(AncestorRecord {
+            children,
+            ..ancestor_record(workspace, module, source, node, &contained)
+        });
+    }
+    records
+}
+
+/// Returns the subtree of evaluated nodes overlapping the selected region,
+/// rooted at the module root. For a point it degenerates to the containing
+/// chain; a region that grazes the edges of several sibling scopes reports
+/// every grazed scope with its own path to the root. The root carries the
+/// module `@![...]` attributes.
+pub fn ancestors(
+    workspace: &WorkspaceSnapshot,
+    snapshot: &SnapshotIdentity,
+    query: &AncestorsQuery,
+) -> Result<QueryResult<AncestorRecord>, ToolError> {
+    if query.offset.is_some() && query.byte_range.is_some() {
+        return Err(ToolError::new(
+            "invalid_argument",
+            "offset and byte-range select the same region; pass only one",
+        ));
+    }
+    let resolved = resolve_source(workspace, &query.selector)?;
+    let selection = if let Some(offset) = query.offset {
+        if offset > resolved.source.text.len() || !resolved.source.text.is_char_boundary(offset) {
+            return Err(ToolError::new(
+                "invalid_argument",
+                "offset is not a UTF-8 boundary in the selected source",
+            ));
+        }
+        AncestorSelection::Point(offset)
+    } else if let Some(range) = query.byte_range {
+        if range.end > resolved.source.text.len()
+            || !resolved.source.text.is_char_boundary(range.start)
+            || !resolved.source.text.is_char_boundary(range.end)
+        {
+            return Err(ToolError::new(
+                "invalid_argument",
+                "byte range exceeds the source or is not on UTF-8 boundaries",
+            ));
+        }
+        AncestorSelection::from_parts(range.start, range.end)
+    } else {
+        AncestorSelection::from_parts(resolved.selection.start, resolved.selection.end)
+    };
+    let structured = workspace.structured_module(resolved.module.id).ok_or_else(|| {
+        ToolError::new(
+            "not_found",
+            format!(
+                "module `{}` has no evaluated source",
+                resolved.module.logical_path
+            ),
+        )
+    })?;
+
+    let mut unclaimed = structured.annotations.iter().collect::<Vec<_>>();
+    let children = build_overlapping_subtree(
+        workspace,
+        resolved.module,
+        resolved.source,
+        &structured.tree.roots,
+        selection,
+        &mut unclaimed,
+    );
+    let records = vec![AncestorRecord {
+        kind: "module".into(),
+        name: None,
+        level: None,
+        location: location(
+            workspace,
+            resolved.module,
+            resolved.source,
+            TextRange::new(0, resolved.source.text.len()),
+            None,
+        ),
+        attributes: attribute_records(workspace.module_attributes(resolved.module.id)),
+        children,
+    }];
+    Ok(QueryResult {
+        snapshot: snapshot.clone(),
+        records,
+        search: None,
+        hints: Vec::new(),
+    })
+}
+
+fn ancestor_record(
+    workspace: &WorkspaceSnapshot,
+    module: &notist_analysis::Module,
+    source: &notist_analysis::SourceInput,
+    node: &Node,
+    attributes: &[notist_syntax::Attributes],
+) -> AncestorRecord {
+    let heading = if node.is_core("heading") {
+        Some(node)
+    } else {
+        node.children.first().filter(|child| child.is_core("heading"))
+    };
+    let id = workspace
+        .labels()
+        .iter()
+        .filter(|label| label.file_id == source.file_id)
+        .filter(|label| {
+            label.scope_range.start <= node.range.start
+                && node.range.end <= label.scope_range.end
+        })
+        .min_by_key(|label| label.scope_range.end - label.scope_range.start)
+        .map(|label| label.name.clone());
+    AncestorRecord {
+        kind: node.name.clone(),
+        name: heading.map(|heading| node_text(&heading.children)),
+        level: match node.get("level") {
+            Some(NodeValue::Int(level)) => u8::try_from(*level).ok(),
+            _ => None,
+        },
+        location: location(workspace, module, source, node.range, id),
+        attributes: attribute_records(attributes),
+        children: Vec::new(),
+    }
 }
 
 pub fn read_source(
@@ -895,7 +1304,20 @@ pub fn definition(
         target_module,
         target_source,
         target.range.unwrap_or(TextRange::new(0, 0)),
-        target.annotation.map(|annotation| annotation.name),
+        // Explicit `@id` targets carry their ItemName directly; heading
+        // default names resolve through the same walk the item table uses,
+        // so the identity projection covers every addressable target.
+        target
+            .annotation
+            .map(|annotation| annotation.name)
+            .or_else(|| {
+                let range = target.range?;
+                workspace
+                    .module_heading_default_ids(&target_module.logical_path)
+                    .into_iter()
+                    .find(|(_, default_range)| *default_range == range)
+                    .map(|(name, _)| name)
+            }),
     )))
 }
 

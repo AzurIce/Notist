@@ -156,7 +156,8 @@ fn server_capabilities(encoding: PositionEncoding) -> ServerCapabilities {
             "notist": {
                 "documentReferences": {
                     "directions": ["incoming", "outgoing", "both"]
-                }
+                },
+                "renderDocument": {}
             }
         })),
         ..ServerCapabilities::default()
@@ -471,6 +472,16 @@ fn handle_request(context: &RequestContext, request: Request, cancelled: &Atomic
             .map_err(|message| (ErrorCode::InvalidParams, message))
             .and_then(|params: DocumentReferencesParams| {
                 document_references(context, params, cancelled)
+                    .map_err(|message| (ErrorCode::InternalError, message))
+                    .and_then(|value| {
+                        to_json(value)
+                            .map_err(|error| (ErrorCode::InternalError, error.to_string()))
+                    })
+            }),
+        RENDER_DOCUMENT_METHOD => parse_params(request.params)
+            .map_err(|message| (ErrorCode::InvalidParams, message))
+            .and_then(|params: RenderDocumentParams| {
+                render_document(context, params, cancelled)
                     .map_err(|message| (ErrorCode::InternalError, message))
                     .and_then(|value| {
                         to_json(value)
@@ -1126,6 +1137,28 @@ struct LspDocumentReferencesResult {
     items: Vec<LspDocumentReferenceItem>,
 }
 
+/// Experimental method name for the single-document render consumed by the
+/// obsidian-notist preview view; declared under
+/// `capabilities.experimental.notist.renderDocument`.
+const RENDER_DOCUMENT_METHOD: &str = "notist/renderDocument";
+
+#[derive(serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct RenderDocumentParams {
+    text_document: TextDocumentIdentifier,
+}
+
+/// The service's page record verbatim (snake_case fields on the wire, same
+/// shapes RenderWorkspace produces) plus the snapshot revision and the
+/// module's resource table for fragment URL rewriting.
+#[derive(serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+struct LspRenderDocumentResult {
+    revision: u64,
+    page: notist_service::RenderedPageRecord,
+    resources: Vec<notist_service::RenderedResourceRecord>,
+}
+
 /// Module-level references by document identity — no position selector, so a
 /// document that opens with a heading resolves to its owning module, not to
 /// the heading symbol (the `textDocument/references` ambiguity).
@@ -1178,6 +1211,40 @@ fn document_references(
     Ok(Some(LspDocumentReferencesResult {
         revision: result.revision,
         items,
+    }))
+}
+
+/// Rendered HTML fragment for the document's owning module, from the same
+/// evaluated pipeline the preview site uses. Null when the file belongs to
+/// no assigned vault or is not a `.not` source (resources have no module).
+fn render_document(
+    context: &RequestContext,
+    params: RenderDocumentParams,
+    cancelled: &AtomicBool,
+) -> Result<Option<LspRenderDocumentResult>, String> {
+    let path = normalize_uri_path(&params.text_document.uri).map_err(|error| error.to_string())?;
+    if !path.extension().is_some_and(|extension| extension == "not") {
+        return Ok(None);
+    }
+    let Some(workspace) = workspace_for_source(context, &path) else {
+        return Ok(None);
+    };
+    let reply = workspace
+        .cancellable(
+            CoreRequest::RenderDocument {
+                view_id: workspace.view_id,
+                path: path.clone(),
+            },
+            cancelled,
+        )
+        .map_err(|error| error.to_string())?;
+    let CoreResponse::RenderedDocument(record) = reply.response else {
+        return Err("service returned an unexpected render-document response".into());
+    };
+    Ok(Some(LspRenderDocumentResult {
+        revision: reply.snapshot.revision,
+        page: record.page,
+        resources: record.resources,
     }))
 }
 

@@ -14,7 +14,7 @@ Core request     CLI          LSP
 definition_at    definition   textDocument/definition
 references_to    refs         textDocument/references
 references_in    refs --outgoing —
-document_symbols outline      textDocument/documentSymbol
+document_symbols items        textDocument/documentSymbol
 search           search/locate workspace/symbol
 diagnostics      check        publishDiagnostics
 resolve_reference —      —
