@@ -97,7 +97,7 @@ Analyzer 负责 orchestration，不成为新的语言语义层：Parser、checke
 
 === 查询属于 Snapshot
 
-definition、references、completion、hover、outline、diagnostics、渲染与 search 都表现为 snapshot query：
+definition、references、completion、hover、items、diagnostics、渲染与 search 都表现为 snapshot query：
 
 ```text
 snapshot.module_at(file_id)

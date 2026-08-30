@@ -21,7 +21,7 @@ mod skill;
 /// `inspect` is the investigation entry point, the rest is explicit.
 const COMMAND_GROUPS: &str = "\
 Command groups:
-  inspect:     status, modules, search, outline, read, references, definition
+  inspect:     status, modules, search, items, read, references, definition, ancestors
   validate:    check
   maintenance: index
   runtime:     daemon, lsp
@@ -57,7 +57,7 @@ struct Cli {
 
 #[derive(Debug, Subcommand)]
 enum Command {
-    /// Investigate a Vault: status, modules, search, outline, read, references, definition.
+    /// Investigate a Vault: status, modules, search, items, read, references, definition, ancestors.
     #[command(display_order = 1)]
     Inspect {
         #[command(subcommand)]
@@ -177,12 +177,11 @@ enum InspectCommand {
         #[arg(long, default_value_t = 256, value_parser = parse_snippet_bytes)]
         snippet_bytes: usize,
     },
-    /// Print the evaluated heading outline for one module.
-    Outline {
+    /// List the addressable Items of one module: @id nodes, heading default
+    /// names, and resource files, each with its attribute annotations.
+    Items {
         /// Exact ModulePath or Vault-relative `.not` path.
         selector: String,
-        #[arg(long, default_value_t = 6, value_parser = clap::value_parser!(u8).range(1..=6))]
-        depth: u8,
     },
     /// Read authored source by module, path, id, line, or byte range.
     Read {
@@ -213,6 +212,18 @@ enum InspectCommand {
         offset: usize,
         #[arg(long)]
         expected_fingerprint: Option<String>,
+    },
+    /// Print the ancestor chain of a region with its attribute annotations,
+    /// innermost first, ending at the module root.
+    Ancestors {
+        /// Exact ModulePath, path, `module/id`, or `path#id` selector.
+        selector: String,
+        /// Select one byte offset instead of the whole selector target.
+        #[arg(long, conflicts_with = "byte_range")]
+        offset: Option<usize>,
+        /// Select a START..END byte region instead of the whole selector target.
+        #[arg(long, conflicts_with = "offset", value_parser = parse_byte_range)]
+        byte_range: Option<notist_service::ByteRange>,
     },
 }
 
@@ -663,6 +674,7 @@ fn run_inspect(
             let CoreResponse::Modules(page) = reply.response else {
                 return query_response_error("modules", reply.response);
             };
+            println!("{}", plural(page.records.len(), "module"));
             for item in &page.records {
                 let path = item
                     .relative_path
@@ -675,8 +687,7 @@ fn run_inspect(
                 println!("{}  {}{}", item.module, path, title);
             }
             Ok(ExitCode::SUCCESS)
-        }
-        InspectCommand::Search {
+        }        InspectCommand::Search {
             query,
             mode,
             exact,
@@ -743,12 +754,12 @@ fn run_inspect(
                 .search
                 .as_ref()
                 .map(|metadata| match metadata.group_by {
-                    notist_service::SearchGroup::Source => "sources",
-                    notist_service::SearchGroup::Section => "sections",
-                    notist_service::SearchGroup::Match => "matches",
+                    notist_service::SearchGroup::Source => "source",
+                    notist_service::SearchGroup::Section => "section",
+                    notist_service::SearchGroup::Match => "match",
                 })
-                .unwrap_or("matches");
-            println!("{} {group}", results.records.len());
+                .unwrap_or("match");
+            println!("{}", plural(results.records.len(), group));
             for (index, result) in results.records.iter().enumerate() {
                 let score = result.score.map_or(String::new(), |score| {
                     format!(" score={:.3}", score as f64 / 1_000_000.0)
@@ -786,29 +797,55 @@ fn run_inspect(
             }
             Ok(ExitCode::SUCCESS)
         }
-        InspectCommand::Outline { selector, depth } => {
+        InspectCommand::Items { selector } => {
             let root = resolve_vault_root(&vault)?;
             let mut client =
                 service::LocalNotistClient::connect(no_daemon, ClientKind::Cli, root.clone())?;
             let view_id = open_disk_view(&mut client, root.clone())?;
-            let reply = client.request(CoreRequest::OutlineModule {
+            let reply = client.request(CoreRequest::Items {
                 view_id,
-                query: notist_service::OutlineQuery {
+                query: notist_service::ItemsQuery {
                     selector: notist_service::Selector::parse(&selector),
-                    depth,
                 },
             })?;
-            let CoreResponse::OutlinePage(outline) = reply.response else {
-                return query_response_error("outline", reply.response);
+            let CoreResponse::Items(items) = reply.response else {
+                return query_response_error("items", reply.response);
             };
-            for symbol in &outline.records {
-                println!(
-                    "{}{}  {}:{}",
-                    "  ".repeat(symbol.level.saturating_sub(1) as usize),
-                    symbol.name,
-                    symbol.location.relative_path.display(),
-                    symbol.location.line_range.map_or(0, |range| range.start)
+            println!("{}", plural(items.records.len(), "item"));
+            for item in &items.records {
+                let position = item.location.line_range.map_or_else(
+                    || item.location.relative_path.display().to_string(),
+                    |range| {
+                        format!(
+                            "{}:{}",
+                            item.location.relative_path.display(),
+                            range.start
+                        )
+                    },
                 );
+                let annotations = item
+                    .attributes
+                    .iter()
+                    .map(|annotation| format_annotation(annotation, "@[", "]"))
+                    .collect::<Vec<_>>()
+                    .join(" ");
+                // `@id`-named Items are spelled differently from heading
+                // defaults: the name is an author-granted identity, not text.
+                let kind = if item.origin == "id" {
+                    format!("{}@id", item.kind)
+                } else {
+                    item.kind.clone()
+                };
+                let line = format!(
+                    "{}  {}{}  {}  {}{}",
+                    item.name,
+                    kind,
+                    item.level.map_or(String::new(), |level| format!(" L{level}")),
+                    position,
+                    annotations,
+                    if item.ambiguous { "  (ambiguous)" } else { "" },
+                );
+                println!("{}", line.trim_end());
             }
             Ok(ExitCode::SUCCESS)
         }
@@ -838,6 +875,21 @@ fn run_inspect(
                 for (offset, line) in chunk.source.lines().enumerate() {
                     println!("{:>5} | {}", start + offset, line);
                 }
+                // Citation footer: the edit precondition — identity, window,
+                // and fingerprint come from here, never from invented bytes.
+                let location = &chunk.location;
+                let mut footer = format!(
+                    "-- {}  {}  bytes {}..{}",
+                    location.module,
+                    location.relative_path.display(),
+                    location.byte_range.start,
+                    location.byte_range.end
+                );
+                if let Some(range) = location.line_range {
+                    footer.push_str(&format!("  lines {}..{}", range.start, range.end));
+                }
+                footer.push_str(&format!("  fingerprint {}", location.source_fingerprint));
+                println!("{footer}");
             }
             Ok(ExitCode::SUCCESS)
         }
@@ -847,6 +899,12 @@ fn run_inspect(
             direction,
             snippet_bytes,
         } => {
+            let direction_value = notist_service::ReferenceDirection::from(direction);
+            let direction_label = match direction_value {
+                notist_service::ReferenceDirection::Incoming => "incoming",
+                notist_service::ReferenceDirection::Outgoing => "outgoing",
+                notist_service::ReferenceDirection::Both => "both",
+            };
             let root = resolve_vault_root(&vault)?;
             let mut client =
                 service::LocalNotistClient::connect(no_daemon, ClientKind::Cli, root.clone())?;
@@ -855,7 +913,7 @@ fn run_inspect(
                 view_id,
                 query: notist_service::ReferencesQuery {
                     selector: notist_service::Selector::parse(&selector),
-                    direction: direction.into(),
+                    direction: direction_value,
                     include_definition,
                     snippet_bytes,
                 },
@@ -863,6 +921,11 @@ fn run_inspect(
             let CoreResponse::ReferencesPage(locations) = reply.response else {
                 return query_response_error("references", reply.response);
             };
+            println!(
+                "{} ({})",
+                plural(locations.records.len(), "reference"),
+                direction_label
+            );
             for item in &locations.records {
                 let position = item.location.line_range.map_or_else(
                     || {
@@ -875,7 +938,16 @@ fn run_inspect(
                     },
                     |range| format!("{}:{}", item.location.relative_path.display(), range.start),
                 );
-                println!("{} -> {}  {}", item.source, item.target, position);
+                let definition_mark = if item.is_definition {
+                    "  (definition)"
+                } else {
+                    ""
+                };
+                println!("{} -> {}  {}{}", item.source, item.target, position, definition_mark);
+                if !item.excerpt.is_empty() {
+                    let ellipsis = if item.excerpt_truncated { " …" } else { "" };
+                    println!("    {}{}", item.excerpt.replace('\n', " "), ellipsis);
+                }
             }
             Ok(ExitCode::SUCCESS)
         }
@@ -905,8 +977,13 @@ fn run_inspect(
                 return query_response_error("inspect definition", reply.response);
             };
             if let Some(definition) = definition {
+                let identity = match &definition.id {
+                    Some(name) => format!("{}/{}", definition.module, name),
+                    None => definition.module.clone(),
+                };
                 println!(
-                    "{}:{}..{}",
+                    "{}  {}:{}..{}",
+                    identity,
                     definition.relative_path.display(),
                     definition.byte_range.start,
                     definition.byte_range.end
@@ -914,6 +991,80 @@ fn run_inspect(
             }
             Ok(ExitCode::SUCCESS)
         }
+        InspectCommand::Ancestors {
+            selector,
+            offset,
+            byte_range,
+        } => {
+            let (_, mut client, view_id) = connect_cli(vault.clone(), no_daemon)?;
+            let reply = client.request(CoreRequest::Ancestors {
+                view_id,
+                query: notist_service::AncestorsQuery {
+                    selector: notist_service::Selector::parse(&selector),
+                    offset,
+                    byte_range,
+                },
+            })?;
+            let CoreResponse::Ancestors(ancestors) = reply.response else {
+                return query_response_error("ancestors", reply.response);
+            };
+            for root in &ancestors.records {
+                println!(
+                    "module {}  {}  fingerprint {}",
+                    root.location.module,
+                    root.location.relative_path.display(),
+                    root.location.source_fingerprint,
+                );
+                print_ancestor_tree(root, 0);
+            }
+            Ok(ExitCode::SUCCESS)
+        }
+    }
+}
+
+/// Prints one ancestor subtree in document order, root first, indenting each
+/// level; each line reads like the annotation surface it came from.
+fn print_ancestor_tree(record: &notist_service::AncestorRecord, depth: usize) {
+    let position = record.location.line_range.map_or_else(
+        || {
+            format!(
+                "{}@{}..{}",
+                record.location.relative_path.display(),
+                record.location.byte_range.start,
+                record.location.byte_range.end
+            )
+        },
+        |range| format!("{}:{}", record.location.relative_path.display(), range.start),
+    );
+    let annotations = record
+        .attributes
+        .iter()
+        .map(|annotation| {
+            if record.kind == "module" {
+                format_annotation(annotation, "@![", "]")
+            } else {
+                format_annotation(annotation, "@[", "]")
+            }
+        })
+        .collect::<Vec<_>>()
+        .join(" ");
+    let line = format!(
+        "{}{}{}{}  {}  {}",
+        "  ".repeat(depth),
+        record.kind,
+        record
+            .name
+            .as_ref()
+            .map_or(String::new(), |name| format!(" {name:?}")),
+        record
+            .level
+            .map_or(String::new(), |level| format!(" L{level}")),
+        position,
+        annotations,
+    );
+    println!("{}", line.trim_end());
+    for child in &record.children {
+        print_ancestor_tree(child, depth + 1);
     }
 }
 
@@ -964,6 +1115,41 @@ fn query_response_error(
     } else {
         Err(format!("service returned an unexpected {command} response").into())
     }
+}
+
+/// Formats a count header with correct plurality ("1 source", "2 sources").
+fn plural(count: usize, noun: &str) -> String {
+    if count == 1 {
+        format!("1 {noun}")
+    } else {
+        format!("{count} {noun}s")
+    }
+}
+
+/// Renders one attribute set in its annotation surface spelling, so a chain
+/// line reads like the source it came from.
+fn format_annotation(
+    annotation: &notist_service::AttributeRecord,
+    open: &str,
+    close: &str,
+) -> String {
+    let mut items = Vec::new();
+    if let Some(id) = &annotation.id {
+        items.push(id.clone());
+    }
+    for tag in &annotation.tags {
+        items.push(format!("#{tag}"));
+    }
+    for class in &annotation.classes {
+        items.push(format!(".{class}"));
+    }
+    for (key, value) in &annotation.properties {
+        items.push(format!("{key} = {value}"));
+    }
+    if items.is_empty() {
+        return String::new();
+    }
+    format!("{open}{}{close}", items.join(", "))
 }
 
 fn emit_diagnostic_page(result: &notist_service::DiagnosticsResult, color: clap::ColorChoice) {

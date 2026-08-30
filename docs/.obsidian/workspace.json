@@ -4,17 +4,20 @@
     "type": "split",
     "children": [
       {
-        "id": "d3fd567bc818dfd8",
+        "id": "da053cab572f8d0e",
         "type": "tabs",
         "children": [
           {
-            "id": "cbdcb79808a84052",
+            "id": "f974eff16b7578c5",
             "type": "leaf",
             "state": {
-              "type": "empty",
-              "state": {},
-              "icon": "lucide-file",
-              "title": "新标签页"
+              "type": "notist-view",
+              "state": {
+                "file": "cli/README.not",
+                "mode": "source"
+              },
+              "icon": "file-text",
+              "title": "README"
             }
           }
         ]
@@ -113,7 +116,9 @@
               "type": "notist-explorer",
               "state": {
                 "expanded": [
-                  "cli"
+                  "cli",
+                  "",
+                  "designs"
                 ],
                 "dimNonNot": false
               },
@@ -126,7 +131,7 @@
       }
     ],
     "direction": "horizontal",
-    "width": 304.51074600219727
+    "width": 260.51074600219727
   },
   "right": {
     "id": "f8d03a7322595300",
@@ -148,19 +153,19 @@
       "bases:新建数据库": false
     }
   },
-  "active": "cbdcb79808a84052",
+  "active": "51cd9e44640a43eb",
   "lastOpenFiles": [
-    "cli/README.not.tmp.285429.5d890c93d4d1",
-    "designs/host/cli-command-surface-skill-distribution.not.tmp.285429.1e36cd5e3f3a",
-    "designs/host/cli-command-surface-skill-distribution.not.tmp.285429.b19b6317dcd6",
-    "cli/inspect.not",
+    "designs/language/annotation-syntax.not.tmp.285429.e3356e3ba708",
+    "ai/README.not.tmp.285429.d957c7377e1a",
+    "ai/2026-08-30 LSP 请求支持对照.not",
+    "ai/2026-08-30 LSP 请求支持对照.not.tmp.285429.b8a6518e5783",
+    "designs/README.not",
     "cli/README.not",
-    "designs/host/cli-command-surface-skill-distribution.not.tmp.285429.4e725fb48e20",
-    "designs/host/cli-command-surface-skill-distribution.not.tmp.285429.52927f55c55e",
-    "designs/host/cli-command-surface-skill-distribution.not.tmp.285429.8ee98ab60d83",
-    "cli/README.not.tmp.285429.3cf6a5d12294",
-    "cli/inspect.not.tmp.285429.0a872bf67a86",
-    "cli/README.not.tmp.285429.20ce64c9687c",
+    "cli/inspect.not",
+    "ai/2026-08-30 obsidian-notist preview mode design.not.tmp.1175605.c549d87525df",
+    "cli/inspect.not.tmp.285429.6aea3e5b012e",
+    "cli/inspect.not.tmp.285429.3319b126e1e7",
+    "cli/inspect.not.tmp.285429.97a895a984b3",
     "fx2.md",
     "notist-highlight-fixture.md",
     "AGENTS.md"

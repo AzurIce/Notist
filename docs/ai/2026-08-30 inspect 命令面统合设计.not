@@ -1,0 +1,71 @@
+= inspect 命令面统合裁决
+
+本文确立 inspect 调查组的统合命令面：身份与坐标分离、四视角（items/ancestors/attrs/read）加 locate 桥、`@![...]` 沿 Module 树继承、属性无合并。2026-08-30 裁决。演进路径：ancestors（点/区域 → 祖先链属性）落地 → outline 改造为 items（可寻址 Item 表）落地 → 属性可见性系统审查 → 本统合构思。前序裁决为 #<vault::ai::2026-08-29 去上界输出与 inspect 命令面裁决>；本文落笔时 items/ancestors 已按早期形态实现，其余按文末实施清单推进，迁移完成前已安装二进制的 `--help` 是实际可执行面的最终依据。治理文档 #<vault::cli> 与逐命令文档 #<vault::cli::inspect> 已随本文修订为*目标命令面*。
+
+== 底层模型：四份数据、四个投影
+
+统合的依据是底层本就存在四份权威数据，每份一个投影，对任意 Target 的描述即告完备：
+
+```text
+命名空间（ItemName 扁平表，D0004）  → items      这里有哪些可寻址身份
+元素树（scope 嵌套，求值/shaping）  → ancestors  这个位置处在什么结构里
+属性表（区间条目，D0006）           → attrs      这个位置受哪些注解约束
+源文本                              → read       这里写的到底是什么
+```
+
+ItemName 是扁平命名空间，但 scope 结构是嵌套的——所以 items（身份）与 ancestors（结构）必然是两个命令。四个视角合起来回答关于一个 Target 的四件事：身份、结构、环境、内容。
+
+== 裁决（2026-08-30）
+
+R1 *身份与坐标分离*：selector 只认 `ModulePath[/ItemName]`（D0004 结构世界的唯一身份文法）；OS path 从输入文法除名，只以坐标形式存在于 locate。理由：身份系统本来就只有一套（引用解析、ItemName 解析全部围绕 ModulePath）；path 不是稳定身份；`/` 与 `#` 双分隔符方言已被实证混淆。最小访问单位是 Item（Module 与 Item 是仅有的两种可寻址身份，匿名 scope 不可寻址）。
+
+R2 *四视角统合*：`items` / `ancestors` / `attrs` / `read` 共享同一 Target 文法，各取一份底层投影。items 接受 ItemName target 时列出该 scope 内部的可寻址 Item。
+
+R3 *locate 桥*：`inspect locate <PATH> [--line|--offset|--byte-range]` 把外部坐标换成身份，是唯一接受 OS path 的命令。输出 ModulePath 与可寻址链（跳过匿名 scope，取最近可寻址祖先的面包屑）；无坐标时整文件 → 模块身份。命名沿用 2026-08-15 v3 曾用过的 `locate`，但语义不同（旧义是模式精确匹配，已随 2026-08-29 裁决移除）。
+
+R4 *坐标形式与挂载*：坐标挂在 ModulePath 上（文档模块 source 与文件 1:1，字节无歧义），形式为 `--line N`（Agent 入口——grep/Read 的原生产出是行号）、`--offset BYTE` 与 `--byte-range S..E`（协议流通，UTF-8 半开区间）。行号→字节换算由服务端 line index 承担，Agent 不自造字节坐标。坐标只精确到行即可满足 scope 级查询；列级精度只有 definition 需要，而它走字节。
+
+R5 *attrs/ancestors 两栖*：两者同时接受身份与坐标。理由：匿名 scope 上的属性（无 `@id` 的 `#callout[...]@danger` 类）只有坐标能看见——locate 只能到最近可寻址祖先；且"任意区域"本就是这一能力的原始需求。原则：身份问身份的事，坐标问坐标的事，这两个命令两种问法都认。
+
+R6 *`@![...]` 沿 Module 树继承*：模块属性向 descendants 传播，有效集合 = 自身 + 各级祖先模块的有序并集。挂载点天然存在——D0004 的 head 规则（README.not 表示所在目录，见 #<vault::designs::world::module-result>）使每个有 README 的层级都能携带 `@![...]`；无 README 的虚拟层级贡献空集。语义统一为一条规则：*属性附着于其 scope，作用于该 scope 的整个子树*——`@[...]` 附着于块级 scope（scope 嵌套内下卷，见 #<vault::designs::language::property-table>），`@![...]` 附着于模块 scope（Module 树内下传）。annotation-syntax 的 `!` 释义随之从"Rust inner attribute"类比修正为"模块 scope 根"。文档局部属性的挂载点是首个一级标题的 scope 注解（注意其覆盖不含首标题之前的序言）。
+
+R7 *属性无合并*：有效环境是链上各层条目的有序并集（内层 → 外层），每层带出处，同 key 多层并存合法且常见（如各层级标题的 `desc = "..."` 都要保留）。拼接与覆盖都是信息毁灭；树形分层展示零损失，"key 的最终生效值"是使用方策略（取最内层），未来可加 `--resolve` 便利视图，但它永远只是视图不是存储语义。此规则与 property-table 的"属性集逐条目、无合并"同构，现延伸到 Module 维度。
+
+R8 *杂项*：`definition` 输出补身份（目标 `ModulePath[/ItemName]` + location），使坐标世界闭环回身份世界；内联坐标 sugar（`vault::guide:45` 类）暂缓——ItemName 是任意字面字符串，分隔符碰撞不可控，坐标用 flag 表达；输出侧保留 `path:line` 坐标回声（编辑器跳转与 grep 往返依赖它），R1 的"除名"只约束输入文法。
+
+== 目标命令面
+
+```text
+身份    ModulePath | ModulePath/ItemName
+坐标    ModulePath ( --line N | --offset BYTE | --byte-range S..E )
+桥      locate PATH ( --line N | --offset BYTE | --byte-range S..E )
+```
+
+```text
+发现     status / modules / search          我在哪个 Vault、有哪些身份、哪里有候选
+导航     read（内容）/ items（内部身份）/ attrs（环境）/ ancestors（结构上下文）
+桥       locate                              坐标 → 身份
+位置     definition                          纯坐标（LSP definition 投影）
+图       references                          纯身份
+验证     check
+```
+
+错误语义：身份 selector 位置出现 OS path → `invalid_selector`，hint 给出可执行的 `inspect locate <path>`；ItemName 解析沿用 `not_found` / `ambiguous_selector`。
+
+== 实施清单
+
+1. `inspect attrs <target> [--kind id|tag|class|property]`：复用 ancestors 包含引擎，属性聚焦投影，含模块链行。
+2. `items` 接受 ItemName target（列出该 scope 内部 Item）。
+3. `locate`（`--line/--offset/--byte-range` → ModulePath + 可寻址链）。
+4. `--line` 坐标接入 attrs/ancestors；文法删除 path 选择器（`Selector::Path{name}` 消亡，Path 退化为 locate 输入）。
+5. `parse.annotations()` 覆盖缺口：块级注解进入注解表与检索索引——同一修复解决 search tag 字段只索引后缀注解、块级 `@[id=...]` 不可寻址两个问题。
+6. `@![...]` 继承：effective module attributes 沿 `ModulePath::ancestor()` 收集；ancestors 模块根行与 attrs 模块链行消费之。
+7. `definition` 输出补身份。
+8. 文档连锁：#<vault::cli>、#<vault::cli::inspect>（本次已随本文修订为目标面）、designs/host 各篇与 SKILL.md 随实施同步。
+
+迁移审计：继承落地后对 docs Vault 跑一遍 attrs，审计既有模块头属性（多为"本模块状态声明"，如 `@![implementation = "..."]`）的意外下传。
+
+== 既有 todo（随实施裁决）
+
+- read ItemPath 当前只返回标题 range，历史承诺是整节 subtree（#<vault::cli::inspect> 内 todo）。
+- references 模块级 selector 不匹配 scope 级目标的引用（同上 todo）。

@@ -104,16 +104,17 @@ pub enum CoreRequest {
         view_id: ServiceViewId,
         path: PathBuf,
     },
-    Outline {
-        view_id: ServiceViewId,
-    },
     DefinitionLocation {
         view_id: ServiceViewId,
         query: crate::query::DefinitionQuery,
     },
-    OutlineModule {
+    Items {
         view_id: ServiceViewId,
-        query: crate::query::OutlineQuery,
+        query: crate::query::ItemsQuery,
+    },
+    Ancestors {
+        view_id: ServiceViewId,
+        query: crate::query::AncestorsQuery,
     },
     ReadSource {
         view_id: ServiceViewId,
@@ -145,6 +146,12 @@ pub enum CoreRequest {
     RenderWorkspace {
         view_id: ServiceViewId,
     },
+    /// Single-document render for the obsidian-notist preview view
+    /// (`notist/renderDocument`): same pipeline as RenderWorkspace, one page.
+    RenderDocument {
+        view_id: ServiceViewId,
+        path: PathBuf,
+    },
     ResolveReference {
         view_id: ServiceViewId,
         source_module: String,
@@ -175,8 +182,8 @@ impl CoreRequest {
             | Self::Completion { view_id, .. }
             | Self::Hover { view_id, .. }
             | Self::DocumentSymbols { view_id, .. }
-            | Self::Outline { view_id }
-            | Self::OutlineModule { view_id, .. }
+            | Self::Items { view_id, .. }
+            | Self::Ancestors { view_id, .. }
             | Self::ReadSource { view_id, .. }
             | Self::ReferencesPage { view_id, .. }
             | Self::WorkspaceSymbols { view_id, .. }
@@ -184,7 +191,8 @@ impl CoreRequest {
             | Self::SearchPage { view_id, .. }
             | Self::IndexStatus { view_id }
             | Self::IndexRebuild { view_id, .. }
-            | Self::RenderWorkspace { view_id } => Some(*view_id),
+            | Self::RenderWorkspace { view_id }
+            | Self::RenderDocument { view_id, .. } => Some(*view_id),
         }
     }
 }
@@ -338,8 +346,8 @@ pub enum CoreResponse {
     Completion(Vec<CompletionRecord>),
     Hover(Option<HoverRecord>),
     DocumentSymbols(Vec<DocumentSymbolRecord>),
-    Outline(Vec<OutlineRecord>),
-    OutlinePage(crate::query::QueryResult<crate::query::OutlineHeading>),
+    Items(crate::query::QueryResult<crate::query::ItemRecord>),
+    Ancestors(crate::query::QueryResult<crate::query::AncestorRecord>),
     SourcePage(crate::query::QueryResult<crate::query::SourceChunk>),
     ReferencesPage(crate::query::QueryResult<crate::query::ReferenceRecord>),
     WorkspaceSymbols(Vec<WorkspaceSymbolRecord>),
@@ -349,6 +357,7 @@ pub enum CoreResponse {
     IndexStatus(crate::query::IndexStatusRecord),
     QueryError(crate::query::ToolError),
     RenderedWorkspace(RenderedWorkspaceRecord),
+    RenderedDocument(RenderedDocumentRecord),
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -530,12 +539,6 @@ pub struct DocumentSymbolRecord {
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
-pub struct OutlineRecord {
-    pub path: PathBuf,
-    pub symbols: Vec<DocumentSymbolRecord>,
-}
-
-#[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct WorkspaceSymbolRecord {
     pub name: String,
     pub kind: String,
@@ -562,6 +565,16 @@ pub struct RenderedWorkspaceRecord {
 }
 
 /// One resource file to copy into the owning module's output directory.
+/// One rendered document plus the module-scoped resource table, consumed by
+/// the obsidian-notist preview view (notist/renderDocument). The snapshot
+/// revision travels on `CoreReply.snapshot`, as with every reply.
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct RenderedDocumentRecord {
+    pub page: RenderedPageRecord,
+    /// Resource files of the rendered module, for fragment URL rewriting.
+    pub resources: Vec<RenderedResourceRecord>,
+}
+
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct RenderedResourceRecord {
     pub module_segments: Vec<String>,
@@ -1310,28 +1323,17 @@ impl NotistService {
                     response: CoreResponse::DocumentSymbols(symbols),
                 })
             }
-            CoreRequest::Outline { view_id } => {
-                let (snapshot, outline) = self.with_snapshot(view_id, |workspace| {
-                    workspace
-                        .sources()
-                        .map(|source| OutlineRecord {
-                            path: source.canonical_path.clone(),
-                            symbols: workspace
-                                .document_symbols(source.file_id)
-                                .into_iter()
-                                .map(|symbol| DocumentSymbolRecord {
-                                    name: symbol.name,
-                                    level: symbol.level,
-                                    range: symbol.range.into(),
-                                })
-                                .collect(),
-                        })
-                        .filter(|outline| !outline.symbols.is_empty())
-                        .collect()
-                })?;
+            CoreRequest::Items { view_id, query } => {
+                let (snapshot, result) = self
+                    .with_snapshot_identity(view_id, |workspace, identity| {
+                        crate::query::items(workspace, identity, &query)
+                    })?;
                 Ok(CoreReply {
                     snapshot,
-                    response: CoreResponse::Outline(outline),
+                    response: match result {
+                        Ok(page) => CoreResponse::Items(page),
+                        Err(error) => CoreResponse::QueryError(error),
+                    },
                 })
             }
             CoreRequest::DefinitionLocation { view_id, query } => {
@@ -1346,15 +1348,15 @@ impl NotistService {
                     },
                 })
             }
-            CoreRequest::OutlineModule { view_id, query } => {
+            CoreRequest::Ancestors { view_id, query } => {
                 let (snapshot, result) = self
                     .with_snapshot_identity(view_id, |workspace, identity| {
-                        crate::query::outline(workspace, identity, &query)
+                        crate::query::ancestors(workspace, identity, &query)
                     })?;
                 Ok(CoreReply {
                     snapshot,
                     response: match result {
-                        Ok(page) => CoreResponse::OutlinePage(page),
+                        Ok(page) => CoreResponse::Ancestors(page),
                         Err(error) => CoreResponse::QueryError(error),
                     },
                 })
@@ -1572,6 +1574,15 @@ impl NotistService {
                     response: CoreResponse::RenderedWorkspace(rendered?),
                 })
             }
+            CoreRequest::RenderDocument { view_id, path } => {
+                let (snapshot, rendered) = self.with_snapshot(view_id, |workspace| {
+                    render_document(workspace, &path, cancelled)
+                })?;
+                Ok(CoreReply {
+                    snapshot,
+                    response: CoreResponse::RenderedDocument(rendered?),
+                })
+            }
         }
     }
 }
@@ -1642,12 +1653,42 @@ const URL_PATH_SEGMENT_ENCODE_SET: &AsciiSet = &CONTROLS
     .add(b'>')
     .add(b'"');
 
-fn render_workspace(
-    workspace: &notist_analysis::WorkspaceSnapshot,
+/// Everything fragment rendering needs that does not depend on which page is
+/// being serialized; shared by whole-workspace renders (build/preview) and
+/// the single-document render (`RenderDocument`).
+struct RenderPrecompute<'a> {
+    site_name: String,
+    modules: Vec<&'a notist_analysis::Module>,
+    known: std::collections::BTreeSet<ModulePath>,
+    renderers: HtmlRendererRegistry,
+    /// Per-source-module structured result, rendered annotations, outline
+    /// headings and root bindings; `None` for virtual (source-less) modules,
+    /// aligned with `modules` by index.
+    prepared: Vec<Option<PreparedModule>>,
+    /// Label → anchor id per module, for cross-module `module#label` links.
+    anchor_maps: BTreeMap<ModulePath, BTreeMap<String, String>>,
+    titles: BTreeMap<ModulePath, String>,
+    resource_names: BTreeMap<&'a ModulePath, BTreeSet<&'a str>>,
+    resources: Vec<RenderedResourceRecord>,
+    evaluation_diagnostics: Vec<DiagnosticRecord>,
+}
+
+struct PreparedModule {
+    structured: notist_analysis::StructuredModule,
+    annotations: Vec<RenderedAnnotation>,
+    headings: Vec<RenderedHeadingRecord>,
+    bindings: Vec<RenderedBindingRecord>,
+}
+
+/// Precomputes the shared render state for one pass. Plugin packages are
+/// composed once per pass and shared by every module; per-module reloading
+/// would re-run the Wasm backend lifecycle N times.
+fn precompute_render<'a>(
+    workspace: &'a notist_analysis::WorkspaceSnapshot,
     cancelled: &AtomicBool,
-) -> io::Result<RenderedWorkspaceRecord> {
+) -> io::Result<RenderPrecompute<'a>> {
     let _span =
-        tracing::debug_span!(target: "notist_service", "render_workspace", revision = workspace.revision().raw())
+        tracing::debug_span!(target: "notist_service", "render_precompute", revision = workspace.revision().raw())
             .entered();
     let modules = workspace.modules().collect::<Vec<_>>();
     let known = modules
@@ -1670,8 +1711,6 @@ fn render_workspace(
 
     // Precompute every module's annotations and label-to-anchor mapping so that
     // reference resolution and fragment rendering share one anchor assignment.
-    // Plugin packages are composed once per pass and shared by every module;
-    // per-module reloading would re-run the Wasm backend lifecycle N times.
     let runtime_plugins = workspace.runtime_plugins()?;
     let mut prepared = Vec::with_capacity(modules.len());
     let mut anchor_maps = BTreeMap::new();
@@ -1728,7 +1767,12 @@ fn render_workspace(
                     message: diagnostic.message.clone(),
                 });
             }
-            module_prepared = Some((structured, annotations, headings, bindings));
+            module_prepared = Some(PreparedModule {
+                structured,
+                annotations,
+                headings,
+                bindings,
+            });
         }
         prepared.push(module_prepared);
     }
@@ -1749,80 +1793,104 @@ fn render_workspace(
                 .map(|resource| resource.name.as_str())
                 .collect(),
         );
-        resources.extend(
-            module
-                .resources
-                .iter()
-                .map(|resource| RenderedResourceRecord {
-                    module_segments: module.logical_path.segments().to_vec(),
-                    name: resource.name.clone(),
-                    kind: resource_kind_name(resource.kind).to_owned(),
-                    source_path: resource.path.clone(),
-                }),
-        );
+        resources.extend(module_resources(module));
     }
 
-    let mut pages = Vec::new();
-    for (module, prepared) in modules.iter().zip(prepared) {
+    Ok(RenderPrecompute {
+        site_name,
+        modules,
+        known,
+        renderers,
+        prepared,
+        anchor_maps,
+        titles,
+        resource_names,
+        resources,
+        evaluation_diagnostics,
+    })
+}
+
+/// Renders one module's page: the evaluated fragment for a source-backed
+/// module, or the virtual-module stub. Cross-module link resolution reads
+/// `precompute`'s anchor and resource tables.
+fn render_module_page(
+    module: &notist_analysis::Module,
+    prepared: Option<&PreparedModule>,
+    precompute: &RenderPrecompute,
+) -> RenderedPageRecord {
+    let Some(prepared) = prepared else {
+        return RenderedPageRecord {
+            module_segments: module.logical_path.segments().to_vec(),
+            fragment: virtual_module_fragment(
+                &module.logical_path,
+                &precompute.modules,
+                &precompute.titles,
+                &module.resources,
+            ),
+            title: None,
+            headings: Vec::new(),
+            bindings: Vec::new(),
+            source: None,
+        };
+    };
+    let current = &module.logical_path;
+    let resolver = |target: &ModulePath, label: Option<&str>| {
+        if !precompute.known.contains(target) {
+            return None;
+        }
+        match label {
+            None => Some(module_href(current, target, None)),
+            Some(label) => precompute
+                .anchor_maps
+                .get(target)
+                .and_then(|anchors| anchors.get(label))
+                .map(|anchor| module_href(current, target, Some(anchor)))
+                .or_else(|| {
+                    precompute
+                        .resource_names
+                        .get(target)
+                        .filter(|names| names.contains(label))
+                        .map(|_| resource_href(current, target, label))
+                }),
+        }
+    };
+    let fragment = render_element_tree_with_renderers(
+        &prepared.structured.tree,
+        &RenderOptions {
+            current_module: Some(current),
+            module_url_prefix: "",
+        },
+        Some(&resolver),
+        &prepared.annotations,
+        &precompute.renderers,
+    );
+    RenderedPageRecord {
+        module_segments: module.logical_path.segments().to_vec(),
+        fragment,
+        title: prepared.headings.first().map(|heading| heading.text.clone()),
+        headings: prepared.headings.clone(),
+        bindings: prepared.bindings.clone(),
+        source: module.source.as_deref().map(str::to_owned),
+    }
+}
+
+fn render_workspace(
+    workspace: &notist_analysis::WorkspaceSnapshot,
+    cancelled: &AtomicBool,
+) -> io::Result<RenderedWorkspaceRecord> {
+    let _span =
+        tracing::debug_span!(target: "notist_service", "render_workspace", revision = workspace.revision().raw())
+            .entered();
+    let precompute = precompute_render(workspace, cancelled)?;
+    let mut pages = Vec::with_capacity(precompute.modules.len());
+    for (module, prepared) in precompute.modules.iter().zip(&precompute.prepared) {
         if cancelled.load(Ordering::Acquire) {
             return Err(io::Error::new(
                 io::ErrorKind::Interrupted,
                 "request cancelled",
             ));
         }
-        let Some((structured, annotations, headings, bindings)) = prepared else {
-            pages.push(RenderedPageRecord {
-                module_segments: module.logical_path.segments().to_vec(),
-                fragment: virtual_module_fragment(
-                    &module.logical_path,
-                    &modules,
-                    &titles,
-                    &module.resources,
-                ),
-                title: None,
-                headings: Vec::new(),
-                bindings: Vec::new(),
-                source: None,
-            });
-            continue;
-        };
-        let current = &module.logical_path;
-        let resolver = |target: &ModulePath, label: Option<&str>| {
-            if !known.contains(target) {
-                return None;
-            }
-            match label {
-                None => Some(module_href(current, target, None)),
-                Some(label) => anchor_maps
-                    .get(target)
-                    .and_then(|anchors| anchors.get(label))
-                    .map(|anchor| module_href(current, target, Some(anchor)))
-                    .or_else(|| {
-                        resource_names
-                            .get(target)
-                            .filter(|names| names.contains(label))
-                            .map(|_| resource_href(current, target, label))
-                    }),
-            }
-        };
-        let fragment = render_element_tree_with_renderers(
-            &structured.tree,
-            &RenderOptions {
-                current_module: Some(current),
-                module_url_prefix: "",
-            },
-            Some(&resolver),
-            &annotations,
-            &renderers,
-        );
-        pages.push(RenderedPageRecord {
-            module_segments: module.logical_path.segments().to_vec(),
-            fragment,
-            title: headings.first().map(|heading| heading.text.clone()),
-            headings,
-            bindings,
-            source: module.source.as_deref().map(str::to_owned),
-        });
+        pages.push(render_module_page(module, prepared.as_ref(), &precompute));
     }
     // Analysis diagnostics are captured from the same snapshot the pages
     // were rendered from, so build/preview never read a newer revision (D0010).
@@ -1842,16 +1910,70 @@ fn render_workspace(
         })
         .collect();
     Ok(RenderedWorkspaceRecord {
-        site_name,
+        site_name: precompute.site_name,
         pages,
         analysis_diagnostics,
-        evaluation_diagnostics,
-        resources,
+        evaluation_diagnostics: precompute.evaluation_diagnostics,
+        resources: precompute.resources,
     })
 }
 
+/// Single-document variant of `render_workspace` (`notist/renderDocument`):
+/// the same cross-module anchor precompute, one serialized page. `path`
+/// selects the module by its source file (same lookup the position requests
+/// use); NotFound means the path backs no module.
+fn render_document(
+    workspace: &notist_analysis::WorkspaceSnapshot,
+    path: &Path,
+    cancelled: &AtomicBool,
+) -> io::Result<RenderedDocumentRecord> {
+    let _span =
+        tracing::debug_span!(target: "notist_service", "render_document", revision = workspace.revision().raw())
+            .entered();
+    let precompute = precompute_render(workspace, cancelled)?;
+    let file_id = workspace.file_id(path);
+    let index = precompute
+        .modules
+        .iter()
+        .position(|module| {
+            module.file_id.is_some() && module.file_id == file_id
+                || module.source_path.as_deref() == Some(path)
+        })
+        .ok_or_else(|| {
+            io::Error::new(
+                io::ErrorKind::NotFound,
+                format!("no module for source `{}`", path.display()),
+            )
+        })?;
+    let module = precompute.modules[index];
+    let page = render_module_page(module, precompute.prepared[index].as_ref(), &precompute);
+    let resources = precompute
+        .resources
+        .iter()
+        .filter(|resource| {
+            resource.module_segments == module.logical_path.segments().to_vec()
+        })
+        .cloned()
+        .collect();
+    Ok(RenderedDocumentRecord { page, resources })
+}
+
+/// Wire projection of one module's resource files.
+fn module_resources(module: &notist_analysis::Module) -> Vec<RenderedResourceRecord> {
+    module
+        .resources
+        .iter()
+        .map(|resource| RenderedResourceRecord {
+            module_segments: module.logical_path.segments().to_vec(),
+            name: resource.name.clone(),
+            kind: resource_kind_name(resource.kind).to_owned(),
+            source_path: resource.path.clone(),
+        })
+        .collect()
+}
+
 /// Projects `@![...]` module attributes onto the wire record (D0006).
-fn attribute_records(attributes: &[notist_syntax::Attributes]) -> Vec<AttributeRecord> {
+pub(crate) fn attribute_records(attributes: &[notist_syntax::Attributes]) -> Vec<AttributeRecord> {
     attributes
         .iter()
         .map(|attributes| {
@@ -2757,5 +2879,320 @@ mod tests {
             };
             assert_eq!(!result.records.is_empty(), expected);
         }
+    }
+
+    const ANCESTORS_SOURCE: &str =
+        "@![status = \"draft\"]\n\n@[wip]\n= 安装\n\n先读概述。\n\n== 故障排除\n\n出问题时看日志。\n\n= 后记\n\n完。\n";
+
+    fn ancestors_fixture(
+        file_name: &str,
+        source: &str,
+    ) -> (NotistService, ServiceViewId, tempfile::TempDir) {
+        let root = tempfile::TempDir::new_in(std::env::current_dir().unwrap()).unwrap();
+        fs::write(root.path().join(file_name), source).unwrap();
+        let service = NotistService::new();
+        let opened = service
+            .execute(CoreRequest::OpenView {
+                root: root.path().to_path_buf(),
+                kind: ProtocolViewKind::Disk,
+            })
+            .unwrap();
+        let CoreResponse::Opened { view_id, .. } = opened.response else {
+            panic!("expected opened view")
+        };
+        (service, view_id, root)
+    }
+
+    fn ancestors_response(
+        service: &NotistService,
+        view_id: ServiceViewId,
+        selector: &str,
+        offset: Option<usize>,
+        byte_range: Option<ByteRange>,
+    ) -> CoreResponse {
+        service
+            .execute(CoreRequest::Ancestors {
+                view_id,
+                query: crate::query::AncestorsQuery {
+                    selector: crate::query::Selector::parse(selector),
+                    offset,
+                    byte_range,
+                },
+            })
+            .unwrap()
+            .response
+    }
+
+    fn expect_ancestors(response: CoreResponse) -> Vec<crate::query::AncestorRecord> {
+        match response {
+            CoreResponse::Ancestors(result) => result.records,
+            other => panic!("expected ancestors response, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn ancestors_module_selector_returns_the_full_tree_with_module_attributes_at_the_root() {
+        let (service, view_id, _root) = ancestors_fixture("guide.not", ANCESTORS_SOURCE);
+        let records = expect_ancestors(ancestors_response(
+            &service, view_id, "vault::guide", None, None,
+        ));
+        assert_eq!(records.len(), 1);
+        assert_eq!(records[0].kind, "module");
+        assert_eq!(records[0].location.module, "vault::guide");
+        assert_eq!(records[0].attributes.len(), 1);
+        assert_eq!(
+            records[0].attributes[0].properties,
+            vec![("status".to_owned(), "draft".to_owned())]
+        );
+        let sections = records[0]
+            .children
+            .iter()
+            .map(|child| child.name.as_deref())
+            .collect::<Vec<_>>();
+        assert_eq!(sections, vec![Some("安装"), Some("后记")]);
+    }
+
+    #[test]
+    fn ancestors_point_in_section_body_claims_heading_annotations_on_the_section() {
+        let (service, view_id, _root) = ancestors_fixture("guide.not", ANCESTORS_SOURCE);
+        let offset = ANCESTORS_SOURCE.find("概述").unwrap();
+        let records = expect_ancestors(ancestors_response(
+            &service,
+            view_id,
+            "vault::guide",
+            Some(offset),
+            None,
+        ));
+        assert_eq!(records.len(), 1);
+        assert_eq!(records[0].kind, "module");
+        assert_eq!(records[0].attributes[0].properties[0].0, "status");
+        assert_eq!(records[0].children.len(), 1);
+        let section = &records[0].children[0];
+        assert_eq!(section.kind, "core::section");
+        assert_eq!(section.level, Some(1));
+        assert_eq!(section.name.as_deref(), Some("安装"));
+        assert_eq!(section.attributes.len(), 1);
+        assert_eq!(section.attributes[0].id.as_deref(), Some("wip"));
+        assert_eq!(section.children.len(), 1);
+        let paragraph = &section.children[0];
+        assert_eq!(paragraph.kind, "core::paragraph");
+        assert!(paragraph.attributes.is_empty());
+        assert_eq!(paragraph.children[0].kind, "core::text");
+    }
+
+    #[test]
+    fn ancestors_point_inside_a_heading_claims_on_the_heading_node() {
+        let (service, view_id, _root) = ancestors_fixture("guide.not", ANCESTORS_SOURCE);
+        let offset = ANCESTORS_SOURCE.find("安装").unwrap();
+        let records = expect_ancestors(ancestors_response(
+            &service,
+            view_id,
+            "vault::guide",
+            Some(offset),
+            None,
+        ));
+        assert_eq!(records.len(), 1);
+        let section = &records[0].children[0];
+        assert!(section.attributes.is_empty());
+        assert_eq!(section.children.len(), 1);
+        let heading = &section.children[0];
+        assert_eq!(heading.kind, "core::heading");
+        assert_eq!(heading.name.as_deref(), Some("安装"));
+        assert_eq!(heading.level, Some(1));
+        assert_eq!(heading.attributes[0].id.as_deref(), Some("wip"));
+        assert_eq!(heading.children[0].kind, "core::text");
+    }
+
+    #[test]
+    fn ancestors_region_inside_a_nested_section_reports_every_ancestor_level() {
+        let (service, view_id, _root) = ancestors_fixture("guide.not", ANCESTORS_SOURCE);
+        let start = ANCESTORS_SOURCE.find("出问题").unwrap();
+        let end = ANCESTORS_SOURCE.find("看日志").unwrap() + "看日志".len();
+        let records = expect_ancestors(ancestors_response(
+            &service,
+            view_id,
+            "vault::guide",
+            None,
+            Some(ByteRange { start, end }),
+        ));
+        assert_eq!(records.len(), 1);
+        let outer = &records[0].children[0];
+        assert_eq!(outer.name.as_deref(), Some("安装"));
+        assert_eq!(outer.attributes[0].id.as_deref(), Some("wip"));
+        assert_eq!(outer.children.len(), 1);
+        let inner = &outer.children[0];
+        assert_eq!(inner.name.as_deref(), Some("故障排除"));
+        assert_eq!(inner.level, Some(2));
+        assert!(inner.attributes.is_empty());
+        assert_eq!(inner.children[0].kind, "core::paragraph");
+        assert_eq!(inner.children[0].children[0].kind, "core::text");
+    }
+
+    #[test]
+    fn ancestors_item_name_selector_starts_at_the_named_heading() {
+        let (service, view_id, _root) = ancestors_fixture("guide.not", ANCESTORS_SOURCE);
+        let records = expect_ancestors(ancestors_response(
+            &service,
+            view_id,
+            "vault::guide/安装",
+            None,
+            None,
+        ));
+        assert_eq!(records.len(), 1);
+        assert_eq!(records[0].kind, "module");
+        let section = &records[0].children[0];
+        assert_eq!(section.kind, "core::section");
+        let heading = &section.children[0];
+        assert_eq!(heading.kind, "core::heading");
+        assert_eq!(heading.name.as_deref(), Some("安装"));
+        assert_eq!(heading.attributes[0].id.as_deref(), Some("wip"));
+    }
+
+    #[test]
+    fn ancestors_region_across_sibling_sections_reports_every_grazed_scope() {
+        let (service, view_id, _root) = ancestors_fixture("guide.not", ANCESTORS_SOURCE);
+        let start = ANCESTORS_SOURCE.find("出问题").unwrap();
+        let end = ANCESTORS_SOURCE.find("完。").unwrap() + "完。".len();
+        let records = expect_ancestors(ancestors_response(
+            &service,
+            view_id,
+            "vault::guide",
+            None,
+            Some(ByteRange { start, end }),
+        ));
+        // The region grazes the tail of the nested 故障排除 scope and the head
+        // of the sibling 后记 scope: three scopes, each with its path to the
+        // module root.
+        let names = records[0]
+            .children
+            .iter()
+            .map(|child| child.name.as_deref())
+            .collect::<Vec<_>>();
+        assert_eq!(names, vec![Some("安装"), Some("后记")]);
+        let nested = &records[0].children[0];
+        assert_eq!(nested.attributes[0].id.as_deref(), Some("wip"));
+        assert_eq!(nested.children.len(), 1);
+        let inner = &nested.children[0];
+        assert_eq!(inner.name.as_deref(), Some("故障排除"));
+        assert_eq!(inner.children[0].kind, "core::paragraph");
+        let sibling = &records[0].children[1];
+        assert!(sibling.attributes.is_empty());
+        assert_eq!(sibling.children[0].name.as_deref(), Some("后记"));
+        assert_eq!(sibling.children[1].kind, "core::paragraph");
+    }
+
+    #[test]
+    fn ancestors_ambiguous_item_names_are_a_typed_error() {
+        let (service, view_id, _root) = ancestors_fixture(
+            "dupe.not",
+            "= 重复\n\n一段。\n\n== 重复\n\n另一段。\n",
+        );
+        let response = ancestors_response(&service, view_id, "vault::dupe/重复", None, None);
+        let CoreResponse::QueryError(error) = response else {
+            panic!("expected a query error")
+        };
+        assert_eq!(error.code, "ambiguous_selector");
+    }
+
+    #[test]
+    fn ancestors_rejects_offsets_that_are_not_utf8_boundaries() {
+        let (service, view_id, _root) = ancestors_fixture("guide.not", ANCESTORS_SOURCE);
+        let offset = ANCESTORS_SOURCE.find("概述").unwrap() + 1;
+        let response = ancestors_response(
+            &service,
+            view_id,
+            "vault::guide",
+            Some(offset),
+            None,
+        );
+        let CoreResponse::QueryError(error) = response else {
+            panic!("expected a query error")
+        };
+        assert_eq!(error.code, "invalid_argument");
+    }
+
+    #[test]
+    fn ancestors_rejects_offset_and_byte_range_together() {
+        let (service, view_id, _root) = ancestors_fixture("guide.not", ANCESTORS_SOURCE);
+        let response = ancestors_response(
+            &service,
+            view_id,
+            "vault::guide",
+            Some(0),
+            Some(ByteRange { start: 0, end: 4 }),
+        );
+        let CoreResponse::QueryError(error) = response else {
+            panic!("expected a query error")
+        };
+        assert_eq!(error.code, "invalid_argument");
+    }
+
+    fn items_records(
+        service: &NotistService,
+        view_id: ServiceViewId,
+        selector: &str,
+    ) -> Result<Vec<crate::query::ItemRecord>, crate::query::ToolError> {
+        match service
+            .execute(CoreRequest::Items {
+                view_id,
+                query: crate::query::ItemsQuery {
+                    selector: crate::query::Selector::parse(selector),
+                },
+            })
+            .unwrap()
+            .response
+        {
+            CoreResponse::Items(result) => Ok(result.records),
+            CoreResponse::QueryError(error) => Err(error),
+            other => panic!("expected items response, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn items_override_ambiguity_and_name_selectors() {
+        let (service, view_id, _root) = ancestors_fixture(
+            "mixed.not",
+            "#heading[原标题]@renamed\n\n正文。\n\n= 原标题\n\n另一节。\n",
+        );
+        let records = items_records(&service, view_id, "vault::mixed").unwrap();
+        assert_eq!(records.len(), 2);
+        assert_eq!(records[0].name, "renamed");
+        assert_eq!(records[0].origin, "id");
+        assert!(!records[0].ambiguous);
+        assert_eq!(records[0].attributes.len(), 1);
+        assert_eq!(records[0].attributes[0].id.as_deref(), Some("renamed"));
+        assert_eq!(records[1].name, "原标题");
+        assert_eq!(records[1].origin, "heading");
+        assert!(records[1].ambiguous);
+
+        let error = items_records(&service, view_id, "vault::mixed/renamed").unwrap_err();
+        assert_eq!(error.code, "invalid_argument");
+    }
+
+    #[test]
+    fn items_lists_resources_for_virtual_modules() {
+        let root = tempfile::TempDir::new_in(std::env::current_dir().unwrap()).unwrap();
+        fs::write(root.path().join("readme.not"), "hello\n").unwrap();
+        fs::create_dir_all(root.path().join("assets")).unwrap();
+        fs::write(root.path().join("assets/logo.png"), "png\n").unwrap();
+        let service = NotistService::new();
+        let opened = service
+            .execute(CoreRequest::OpenView {
+                root: root.path().to_path_buf(),
+                kind: ProtocolViewKind::Disk,
+            })
+            .unwrap();
+        let CoreResponse::Opened { view_id, .. } = opened.response else {
+            panic!("expected opened view")
+        };
+        let records = items_records(&service, view_id, "vault::assets").unwrap();
+        assert_eq!(records.len(), 1);
+        assert_eq!(records[0].name, "logo.png");
+        assert_eq!(records[0].kind, "resource:image");
+        assert_eq!(records[0].origin, "resource");
+        assert_eq!(
+            records[0].location.relative_path,
+            std::path::PathBuf::from("assets/logo.png")
+        );
     }
 }

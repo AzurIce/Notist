@@ -11888,7 +11888,7 @@ function targetLiteralAt(state, pos) {
   let node = tree.rootNode.descendantForIndex(pos, pos);
   while (node && node.type !== "target_literal")
     node = node.parent;
-  if (!node || pos < node.startIndex || pos >= node.endIndex)
+  if (!node || !(pos >= node.startIndex && pos < node.endIndex))
     return null;
   const body2 = node.childForFieldName("target");
   if (!body2)
@@ -12091,6 +12091,8 @@ var ctrlHoverField = import_state3.StateField.define({
   create: () => import_view4.Decoration.none,
   update(value, tr) {
     for (const effect of tr.effects) {
+      if (!effect.is(setCtrlHoverRef))
+        continue;
       if (effect.value === null)
         return import_view4.Decoration.none;
       const { from, to } = effect.value;
@@ -12506,8 +12508,124 @@ var NotistEditorAdapter = class extends import_obsidian.Editor {
   }
 };
 
+// src/preview.ts
+var WEB_COMPONENT_CLASS = "notist-web-component";
+var scriptBlobUrls = /* @__PURE__ */ new Map();
+function scriptBlobUrl(name2, source) {
+  let url = scriptBlobUrls.get(name2);
+  if (!url) {
+    url = URL.createObjectURL(new Blob([source], { type: "text/javascript" }));
+    scriptBlobUrls.set(name2, url);
+  }
+  return url;
+}
+function escapeAttr(value) {
+  return value.replace(/&/g, "&amp;").replace(/"/g, "&quot;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
+}
+function composePreviewDocument(result, assets, theme, pluginAssetsNeeded) {
+  const scripts = pluginAssetsNeeded ? assets.pluginScripts.map((script) => {
+    const url = escapeAttr(scriptBlobUrl(script.name, script.source));
+    return `<script type="module" src="${url}"><\/script>`;
+  }).join("\n") : "";
+  const styles = pluginAssetsNeeded ? assets.pluginStyles.map((style) => `<style>${style.source}</style>`).join("\n") : "";
+  return [
+    "<!DOCTYPE html>",
+    `<html class="${escapeAttr(theme)}">`,
+    "<head>",
+    '<meta charset="utf-8">',
+    `<style>${assets.styleCss}</style>`,
+    // The site reserves a fixed topbar via a narrow-viewport body rule;
+    // the editor preview has no topbar.
+    "<style>body { padding-top: 0; }</style>",
+    styles,
+    "</head>",
+    `<body class="${escapeAttr(theme)}">`,
+    // The site's own layout wrappers: .page-body carries the insets and
+    // centering, .page-main the reading column width (min(100%, 46rem)).
+    '<div class="page-body">',
+    '<main class="page-main" id="page-content">',
+    '<article class="notist-document">',
+    result.page.fragment,
+    "</article>",
+    "</main>",
+    "</div>",
+    scripts,
+    "</body>",
+    "</html>"
+  ].join("\n");
+}
+function needsPluginAssets(result) {
+  return result.page.fragment.includes(WEB_COMPONENT_CLASS);
+}
+function decodeUrl(url) {
+  const withoutHash = url.split("#")[0];
+  if (/^(app|https?|data|blob|mailto|file):/i.test(withoutHash))
+    return null;
+  if (withoutHash === "" || withoutHash === "#")
+    return null;
+  const isModulePage = withoutHash.endsWith("/");
+  const decoded = withoutHash.split("/").filter((segment) => segment !== "");
+  try {
+    return {
+      segments: decoded.map((segment) => decodeURIComponent(segment)),
+      isModulePage
+    };
+  } catch {
+    return null;
+  }
+}
+function rewritePreviewLinks(doc, result, resolveResourcePath, resolveModuleDir) {
+  const resourceIndex = /* @__PURE__ */ new Map();
+  for (const resource of result.resources) {
+    resourceIndex.set([...resource.moduleSegments, resource.name].join("/"), resource);
+  }
+  const rewriteAttribute = (el, attr) => {
+    const url = el.getAttribute(attr);
+    if (!url)
+      return;
+    const decoded = decodeUrl(url);
+    if (!decoded)
+      return;
+    if (decoded.isModulePage) {
+      const dir = resolveModuleDir(decoded.segments);
+      if (dir !== null)
+        el.setAttribute("data-notist-module", dir);
+      return;
+    }
+    const name2 = decoded.segments.pop();
+    if (name2 === void 0)
+      return;
+    const resource = resourceIndex.get([...decoded.segments, name2].join("/"));
+    if (!resource)
+      return;
+    const path = resolveResourcePath(resource);
+    if (path !== null)
+      el.setAttribute(attr, path);
+  };
+  for (const el of Array.from(doc.querySelectorAll("img[src]"))) {
+    rewriteAttribute(el, "src");
+  }
+  for (const el of Array.from(doc.querySelectorAll("video[src], audio[src], source[src], source[srcset], img[srcset]"))) {
+    rewriteAttribute(el, "src");
+  }
+  for (const anchor of Array.from(doc.querySelectorAll("a[href]"))) {
+    const href = anchor.getAttribute("href") ?? "";
+    const decoded = decodeUrl(href);
+    if (!decoded)
+      continue;
+    if (decoded.isModulePage) {
+      const dir = resolveModuleDir(decoded.segments);
+      if (dir !== null)
+        anchor.setAttribute("data-notist-module", dir);
+    } else {
+      rewriteAttribute(anchor, "href");
+    }
+  }
+}
+
 // src/notist-view.ts
 var VIEW_TYPE_NOTIST = "notist-view";
+var PREVIEW_DEBOUNCE_MS = 500;
 var _NotistTextView = class _NotistTextView extends import_obsidian2.TextFileView {
   constructor(leaf, plugin) {
     super(leaf);
@@ -12523,7 +12641,20 @@ var _NotistTextView = class _NotistTextView extends import_obsidian2.TextFileVie
     this.titleInputEl = null;
     this.editorView = null;
     this.editorAdapter = null;
-    /** Suppresses requestSave and LSP forwarding while setViewData replaces the doc. */
+    /** Current view mode; persisted in the leaf state (getState/setState). */
+    this.mode = "source";
+    this.previewEl = null;
+    this.previewFrame = null;
+    this.previewNoticeEl = null;
+    this.previewActionEl = null;
+    this.previewRenderTimer = null;
+    /** Guards superseded renders (mode switches, newer revisions). */
+    this.previewRenderSeq = 0;
+    /** Revision already on screen; skips redundant re-renders. */
+    this.previewRevision = null;
+    /** Whether the live iframe shell was composed with web-component scripts. */
+    this.previewComponentsLoaded = false;
+    /** Suppression for requestSave/LSP forwarding while setViewData replaces the doc. */
     this.settingData = false;
     this.vimCompartment = new import_state5.Compartment();
     this.editableCompartment = new import_state5.Compartment();
@@ -12532,6 +12663,7 @@ var _NotistTextView = class _NotistTextView extends import_obsidian2.TextFileVie
     this.lspPath = null;
     /** The CM5-shim instance our vim-mode-change listener is attached to. */
     this.vimListenerCm = null;
+    this.mode = plugin.data.defaultViewMode;
   }
   getViewType() {
     return VIEW_TYPE_NOTIST;
@@ -12558,6 +12690,13 @@ var _NotistTextView = class _NotistTextView extends import_obsidian2.TextFileVie
     });
     this.titleInputEl.addEventListener("blur", () => void this.commitTitle());
     const editorWrapEl = this.contentEl.createDiv("notist-editor");
+    this.previewEl = this.contentEl.createDiv("notist-preview");
+    this.previewActionEl = this.addAction(
+      this.mode === "source" ? "book-open" : "pencil",
+      this.mode === "source" ? "Show rendered document" : "Show source editor",
+      () => this.setMode(this.mode === "source" ? "preview" : "source")
+    );
+    this.contentEl.toggleClass("notist-mode-preview", this.mode === "preview");
     const vimMode = this.plugin.data.vimMode;
     this.editorView = new import_view7.EditorView({
       parent: editorWrapEl,
@@ -12607,6 +12746,8 @@ var _NotistTextView = class _NotistTextView extends import_obsidian2.TextFileVie
             if (update.docChanged && !this.settingData) {
               this.requestSave();
               this.plugin.lspDocChanged(this);
+              if (this.mode === "preview")
+                this.schedulePreviewRender();
             }
             if (!this.settingData && (update.selectionSet || update.docChanged)) {
               this.plugin.notifyViewCursor(this, update.view);
@@ -12624,15 +12765,28 @@ var _NotistTextView = class _NotistTextView extends import_obsidian2.TextFileVie
           this.syncTitle();
       })
     );
+    this.registerEvent(
+      this.app.workspace.on("css-change", () => {
+        const doc = this.previewFrame?.contentDocument;
+        if (doc)
+          this.applyPreviewTheme(doc);
+      })
+    );
   }
   async onClose() {
     this.plugin.lspViewClosed(this);
     this.hideImagePopover();
+    this.cancelPendingPreviewRender();
+    this.previewRenderSeq++;
     this.editorView?.destroy();
     this.editorView = null;
     this.editorAdapter = null;
     this.contentEl.empty();
     this.titleInputEl = null;
+    this.previewEl = null;
+    this.previewFrame = null;
+    this.previewNoticeEl = null;
+    this.previewActionEl = null;
   }
   /** Hover preview for image resource references (`#<…>.png`): resolve the
    * target to a vault image and show it in a native HoverPopover. The
@@ -12854,6 +13008,194 @@ var _NotistTextView = class _NotistTextView extends import_obsidian2.TextFileVie
     this.titleInputEl?.focus();
     this.titleInputEl?.select();
   }
+  // ---- preview mode --------------------------------------------------------
+  // Mirrors MarkdownView's source/preview logic: one view, two panes, the
+  // active one persisted in the leaf state. The preview pane renders the
+  // module's evaluated fragment from notist/renderDocument inside a
+  // same-origin iframe; nothing is re-interpreted client-side.
+  getMode() {
+    return this.mode;
+  }
+  setMode(mode) {
+    if (mode === this.mode)
+      return;
+    this.mode = mode;
+    this.contentEl.toggleClass("notist-mode-preview", mode === "preview");
+    this.updatePreviewAction();
+    if (mode === "preview") {
+      this.schedulePreviewRender();
+    } else {
+      this.cancelPendingPreviewRender();
+      this.previewRenderSeq++;
+    }
+  }
+  /** Force a re-render even if the revision looks unchanged (LSP restart). */
+  refreshPreview() {
+    this.previewRevision = null;
+    if (this.mode === "preview")
+      this.schedulePreviewRender();
+  }
+  updatePreviewAction() {
+    const el = this.previewActionEl;
+    if (!el)
+      return;
+    (0, import_obsidian2.setIcon)(el, this.mode === "source" ? "book-open" : "pencil");
+    el.setAttribute(
+      "aria-label",
+      this.mode === "source" ? "Show rendered document" : "Show source editor"
+    );
+  }
+  /** The mode rides the leaf state (like MarkdownView's `mode`), so it
+   * survives layout saves, world switches and app restarts. */
+  getState() {
+    return { ...super.getState(), mode: this.mode };
+  }
+  setState(state, result) {
+    const savedMode = state?.mode;
+    return super.setState(state, result).then(() => {
+      if (savedMode === "preview" || savedMode === "source") {
+        this.setMode(savedMode);
+      }
+    });
+  }
+  schedulePreviewRender() {
+    if (this.previewRenderTimer !== null)
+      window.clearTimeout(this.previewRenderTimer);
+    this.previewRenderTimer = window.setTimeout(() => {
+      this.previewRenderTimer = null;
+      void this.renderPreview();
+    }, PREVIEW_DEBOUNCE_MS);
+  }
+  cancelPendingPreviewRender() {
+    if (this.previewRenderTimer !== null) {
+      window.clearTimeout(this.previewRenderTimer);
+      this.previewRenderTimer = null;
+    }
+  }
+  async renderPreview() {
+    if (!this.previewEl || !this.file)
+      return;
+    const token = ++this.previewRenderSeq;
+    const session = this.plugin.getLspSession();
+    if (!session || !session.supportsRenderDocument()) {
+      this.showPreviewNotice(
+        session ? "Notist: the running language server cannot render documents. Update the notist binary and restart the server." : "Notist: preview needs the Notist language server. Enable it in the plugin settings."
+      );
+      return;
+    }
+    const result = await session.renderDocument(this.plugin.lspAbsPath(this.file.path));
+    if (token !== this.previewRenderSeq || this.mode !== "preview")
+      return;
+    if (!result) {
+      this.showPreviewNotice(
+        "Notist: rendering failed (the document may not be registered with the language server). Try restarting the server."
+      );
+      return;
+    }
+    if (result.revision === this.previewRevision)
+      return;
+    const assets = await this.plugin.getSiteAssets();
+    if (!assets) {
+      this.showPreviewNotice(
+        "Notist: site assets are missing (assets/site). Refresh them with `bun run assets:site`."
+      );
+      return;
+    }
+    if (token !== this.previewRenderSeq || this.mode !== "preview")
+      return;
+    this.hidePreviewNotice();
+    this.previewRevision = result.revision;
+    this.writePreviewFrame(result, assets);
+  }
+  /** First render composes the full iframe shell; later ones swap the
+   * article content in place so scroll position survives. A fragment that
+   * newly needs web components forces one recomposition (the module
+   * scripts are baked into the shell). */
+  writePreviewFrame(result, assets) {
+    if (!this.previewEl)
+      return;
+    const needsComponents = needsPluginAssets(result);
+    const doc = this.previewFrame?.contentDocument ?? null;
+    const article = doc?.querySelector("article.notist-document") ?? null;
+    if (doc && article && (this.previewComponentsLoaded || !needsComponents)) {
+      article.innerHTML = result.page.fragment;
+      this.applyPreviewTheme(doc);
+      rewritePreviewLinks(
+        doc,
+        result,
+        (resource) => this.previewResourcePath(resource),
+        (segments) => segments.filter(Boolean).join("/")
+      );
+      return;
+    }
+    const frame = this.previewEl.createEl("iframe", {
+      cls: "notist-preview-frame",
+      attr: { title: "Rendered document" }
+    });
+    this.previewFrame?.remove();
+    this.previewFrame = frame;
+    this.previewComponentsLoaded = needsComponents;
+    frame.srcdoc = composePreviewDocument(
+      result,
+      assets,
+      this.themeClasses(),
+      needsComponents
+    );
+    frame.addEventListener("load", () => {
+      const frameDoc = frame.contentDocument;
+      if (!frameDoc)
+        return;
+      this.applyPreviewTheme(frameDoc);
+      rewritePreviewLinks(
+        frameDoc,
+        result,
+        (resource) => this.previewResourcePath(resource),
+        (segments) => segments.filter(Boolean).join("/")
+      );
+      frameDoc.addEventListener("click", (event) => this.onPreviewClick(event));
+    });
+  }
+  applyPreviewTheme(doc) {
+    const theme = document.body.classList.contains("theme-light") ? "theme-light" : "theme-dark";
+    doc.documentElement?.classList.toggle("theme-light", theme === "theme-light");
+    doc.documentElement?.classList.toggle("theme-dark", theme === "theme-dark");
+    doc.body?.classList.toggle("theme-light", theme === "theme-light");
+    doc.body?.classList.toggle("theme-dark", theme === "theme-dark");
+  }
+  /** Module anchors navigate inside Obsidian; in-document anchors and
+   * rewritten resource links keep their default behavior. */
+  onPreviewClick(event) {
+    const target = event.target;
+    const anchor = target?.closest?.("a[href]");
+    if (!anchor)
+      return;
+    const moduleDir = anchor.getAttribute("data-notist-module");
+    if (moduleDir === null)
+      return;
+    event.preventDefault();
+    this.openModuleFallback(moduleDir);
+  }
+  /** Vault-relative vault path (resource file) for `moduleSegments/name`. */
+  previewResourcePath(resource) {
+    const prefix = resource.moduleSegments.filter(Boolean).join("/");
+    const path = prefix ? `${prefix}/${resource.name}` : resource.name;
+    const file = this.app.vault.getAbstractFileByPath(path);
+    return file instanceof import_obsidian2.TFile ? this.app.vault.getResourcePath(file) : null;
+  }
+  showPreviewNotice(message) {
+    if (!this.previewEl)
+      return;
+    this.hidePreviewNotice();
+    this.previewNoticeEl = this.previewEl.createDiv("notist-preview-notice");
+    this.previewNoticeEl.setText(message);
+  }
+  hidePreviewNotice() {
+    this.previewNoticeEl?.remove();
+    this.previewNoticeEl = null;
+  }
+  themeClasses() {
+    return document.body.classList.contains("theme-light") ? "theme-light" : "theme-dark";
+  }
   /** Toggle vim keybindings live (called from the settings tab). */
   setVimMode(enabled) {
     if (!this.editorView)
@@ -12938,6 +13280,8 @@ var _NotistTextView = class _NotistTextView extends import_obsidian2.TextFileVie
     }
     this.syncTitle();
     this.plugin.lspViewSync(this);
+    if (this.mode === "preview")
+      this.schedulePreviewRender();
   }
   /** Hot-swap the LSP extension (called when the server starts/stops). */
   setLspExtension(extension) {
@@ -15066,6 +15410,16 @@ var NotistSettingTab = class extends import_obsidian6.PluginSettingTab {
         await this.plugin.setVimMode(value);
       })
     );
+    new import_obsidian6.Setting(containerEl).setName("Default view mode").setDesc("Mode used when a .not file opens in a new tab (the per-tab toggle lives in the tab header).").addDropdown(
+      (dropdown) => dropdown.addOptions({
+        source: "Editing view",
+        preview: "Reading view"
+      }).setValue(this.plugin.data.defaultViewMode).onChange(async (value) => {
+        await this.plugin.setDefaultViewMode(
+          value === "preview" ? "preview" : "source"
+        );
+      })
+    );
     new import_obsidian6.Setting(containerEl).setName("Language server (desktop)").setDesc(
       "Spawn `notist lsp` for diagnostics, completion, hover and go-to-definition in the .not editor. Requires the notist binary; off by default."
     ).addToggle(
@@ -15301,6 +15655,7 @@ var NotistLspSession = class {
     /** Raw server capabilities captured at initialize. */
     this.serverCapabilities = null;
     this.supportsDocumentReferencesCache = null;
+    this.supportsRenderDocumentCache = null;
     this.transport = null;
     this.docs = /* @__PURE__ */ new Map();
     this.diagnostics = /* @__PURE__ */ new Map();
@@ -15392,6 +15747,7 @@ ${tail}` : "")
       await transport.shutdown().catch(() => void 0);
     this.serverCapabilities = null;
     this.supportsDocumentReferencesCache = null;
+    this.supportsRenderDocumentCache = null;
     this.setState("off");
   }
   // ---- document registry ------------------------------------------------
@@ -15601,6 +15957,32 @@ ${tail}` : "")
       }
     );
   }
+  /** Whether the experimental single-document render extension is available
+   * (negotiated once from the stored initialize result). The preview mode
+   * degrades to a notice when it is not. */
+  supportsRenderDocument() {
+    if (!this.transport || this.state !== "ready")
+      return false;
+    if (this.supportsRenderDocumentCache === null) {
+      const capabilities = this.serverCapabilities;
+      this.supportsRenderDocumentCache = capabilities?.experimental?.notist?.renderDocument !== void 0;
+    }
+    return this.supportsRenderDocumentCache;
+  }
+  /** Evaluated HTML fragment for the document's owning module. Flushes the
+   * pending didChange first so the fragment reflects the unsaved buffer;
+   * null on transport failure/cancellation (superseded renders drop). */
+  async renderDocument(path) {
+    const entry = this.docs.get(path);
+    if (!this.transport || !entry || this.state !== "ready")
+      return null;
+    this.flush(path);
+    return this.queryRequest(
+      `render-document:${path}`,
+      "notist/renderDocument",
+      { textDocument: { uri: entry.uri } }
+    );
+  }
   async references(path, position, includeDeclaration = false) {
     const entry = this.docs.get(path);
     if (!this.transport || !entry || this.state !== "ready")
@@ -15704,6 +16086,7 @@ var DEFAULT_DATA = {
   ribbonKeep: [TOGGLE_RIBBON_LABEL],
   layouts: {},
   vimMode: false,
+  defaultViewMode: "source",
   lspEnabled: false,
   notistCommand: "notist",
   notistExtraArgs: "",
@@ -15847,6 +16230,19 @@ var NotistPlugin = class extends import_obsidian7.Plugin {
       id: "toggle-notist-problems",
       name: "Toggle Notist Problems",
       callback: () => this.problemsDock?.toggle()
+    });
+    this.addCommand({
+      id: "toggle-notist-preview",
+      name: "Toggle Notist preview",
+      checkCallback: (checking) => {
+        const view = this.app.workspace.activeLeaf?.view;
+        if (!(view instanceof NotistTextView))
+          return false;
+        if (!checking) {
+          view.setMode(view.getMode() === "source" ? "preview" : "source");
+        }
+        return true;
+      }
     });
     this.addCommand({
       id: "open-notist-explorer",
@@ -16002,6 +16398,38 @@ var NotistPlugin = class extends import_obsidian7.Plugin {
   // ---- LSP ----------------------------------------------------------------
   lspAbsPath(vaultRelativePath) {
     return `${this.vaultBasePath ?? ""}/${vaultRelativePath}`;
+  }
+  /** Vendored site assets for the preview iframe (assets/site/, refreshed
+   * by `bun run assets:site`), loaded lazily and cached per app run. Null
+   * when missing — preview mode then degrades to a notice. */
+  async getSiteAssets() {
+    if (this.siteAssetsCache !== void 0)
+      return this.siteAssetsCache;
+    const adapter = this.app.vault.adapter;
+    const dir = `${this.manifest.dir}/assets/site`;
+    try {
+      const styleCss = await adapter.read(`${dir}/style.css`);
+      const pluginScripts = [];
+      const pluginStyles = [];
+      const pluginsRoot = `${dir}/plugins`;
+      if (await adapter.exists(pluginsRoot)) {
+        const listing = await adapter.list(pluginsRoot);
+        for (const folder of listing.folders) {
+          for (const file of (await adapter.list(folder)).files) {
+            if (file.endsWith(".js")) {
+              pluginScripts.push({ name: file, source: await adapter.read(file) });
+            } else if (file.endsWith(".css")) {
+              pluginStyles.push({ name: file, source: await adapter.read(file) });
+            }
+          }
+        }
+      }
+      this.siteAssetsCache = { styleCss, pluginScripts, pluginStyles };
+    } catch (e) {
+      console.error("Notist: preview site assets unavailable", e);
+      this.siteAssetsCache = null;
+    }
+    return this.siteAssetsCache;
   }
   /** Current text of an open .not view for `path`, null when not open. */
   notistViewText(path) {
@@ -16335,8 +16763,10 @@ var NotistPlugin = class extends import_obsidian7.Plugin {
       for (const leaf of this.app.workspace.getLeavesOfType(VIEW_TYPE_NOTIST)) {
         const view = leaf.view;
         if (view instanceof NotistTextView) {
+          view.lspPath = null;
           view.setLspExtension(this.lspExtension(view));
           this.lspViewSync(view);
+          view.refreshPreview();
         }
       }
       this.refreshSemanticViews();
@@ -16351,6 +16781,7 @@ var NotistPlugin = class extends import_obsidian7.Plugin {
         if (view instanceof NotistTextView) {
           view.setLspExtension([]);
           view.applyLspDiagnostics([]);
+          view.refreshPreview();
         }
       }
       this.refreshProblemsDock();
@@ -16537,6 +16968,12 @@ var NotistPlugin = class extends import_obsidian7.Plugin {
       if (leaf.view instanceof NotistTextView)
         leaf.view.setVimMode(enabled);
     }
+  }
+  /** Default mode for .not files opening in a new tab (no live effect on
+   * already-open views — their mode is persisted per leaf, like Markdown). */
+  async setDefaultViewMode(mode) {
+    this.data.defaultViewMode = mode;
+    await this.savePluginData();
   }
   /** Tag allowlisted ribbon icons with .notist-ribbon-keep; CSS hides the rest in Notist world. */
   tagRibbon() {

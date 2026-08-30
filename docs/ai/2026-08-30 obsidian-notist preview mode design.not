@@ -1,0 +1,30 @@
+= obsidian-notist preview mode design
+
+回应「编辑器所见即所得」讨论的第二步：先镜像 Markdown world 的 source/preview 双模式，把渲染权威（notist-html 求值管线）接进 Obsidian，为后续 live preview（CM6 decoration 路线，见 #<super::2026-08-17 web ui obsidian-like editor research> 的阶段 0 spike）定下视觉基线。与 #<vault::obsidian-notist> 的落地顺序一致（view + 渲染先行）。跨 notist 与 obsidian-notist 两仓库。
+
+== 决策
+
+- *镜像对象是 MarkdownView 本身*：同为 TextFileView 子类，单 view 内含 source|preview 两个 pane；mode 进 leaf view state（覆写 getState/setState），随布局快照（双 World 切换）与应用重启保留；头部 addAction 书本/铅笔切换 + `toggle-notist-preview` 命令 + `defaultViewMode` 设置（对应「新标签页默认视图」）。新标签页初始 mode 取设置，恢复的 state 优先。
+- *原生 preview，不 iframe 嵌 `notist preview` server*：LSP Session view 带*未保存缓冲区* overlay（浏览器 preview 读 Disk 做不到）、复用现有 session 与传输、无端口与进程管理。
+- *渲染数据契约走 LSP 实验扩展*（模板是 notist/documentReferences，见 #<super::2026-08-27 obsidian-notist ux polish and document references>）：service 新增 `CoreRequest::RenderDocument { view_id, path }` → `RenderedDocumentRecord { page: RenderedPageRecord, resources }`，revision 经 CoreReply.snapshot 携带；LSP `notist/renderDocument`（capability `experimental.notist.renderDocument`）返回 `{ revision, page, resources }`。实现上把 render_workspace 的预计算（runtime_plugins 一次组合、structured/annotations/anchor maps/titles/bindings）提取为共享 `precompute_render`，render_document 同一预计算只序列化目标模块。跨模块链接解析需要全 vault anchor maps，故成本与整站渲染同级——MVP 靠 500ms 去抖 + revision 去重挡频率，按 revision 缓存预计算留作优化。NotFound（资源文件等不背模块的路径）→ LSP 返回 null。
+- *客户端渲染是「组装」不是「解释」*：fragment 原文置于 srcdoc iframe 的 `<article class="notist-document">`（复刻 page_shell 最小结构），站点 style.css 与插件 web component 资产由 `bun run assets:site` 从 `notist build` 产物 vendored 到插件 `assets/site/`；Obsidian theme-dark/light 桥接进 iframe。资源 URL 按 site href 规则（`../` 前缀 + percent-encode、模块页尾 `/`、`ModulePath::segments()` 无站名前缀故与 vault 目录 1:1）在 DOM load 后重写为 `vault.getResourcePath`；模块锚点打 `data-notist-module` 由点击拦截器经 openModuleFallback 打开。web component 模块脚本按需加载（fragment 含 `notist-web-component` 才注入 blob module script，mermaid.js 太大不预载）。
+- *降级纪律*：无 LSP / 无 capability / 无资产 → preview 区显示说明；不做前端兜底渲染（前端不重新解释 .not）。
+- *重渲染触发*：进 preview、preview 中 docChanged（500ms 去抖）、外部改动（setViewData）、LSP ready/error（refreshPreview 清 revision 缓存）；同 revision 跳过。首渲染组完整 iframe shell，后续原地换 article innerHTML 保滚动位；新出现 web component 时强制重组一次 shell。
+
+== 实现落点
+
+- notist：`request.rs`（RenderDocument / RenderedDocumentRecord / precompute_render / render_document / render_module_page，render_workspace 改为复用预计算）、`lsp.rs`（RENDER_DOCUMENT_METHOD / capability / handler）、`tests/lsp_queries.rs` 线级测试（标题与行内文本渲染、源码标记不泄漏、resources 携带、非模块路径 null）。
+- 插件：`src/preview.ts`（纯组装层：composePreviewDocument / needsPluginAssets / rewritePreviewLinks）、`notist-view.ts`（mode、getState/setState、addAction、渲染管线、主题桥接、点击导航、onClose 清理）、`session.ts`（supportsRenderDocument + renderDocument，请求前 flush 保证渲染的是未保存缓冲区）、`protocol.ts` 类型、`main.ts`（getSiteAssets 懒加载缓存、toggle 命令、设置项、ready/error 刷新）、`settings.ts` defaultViewMode 下拉、`styles.css` `.notist-preview` 作用域。
+
+== 踩坑与边界
+
+- fetch-site-assets 兼容新旧 CLI：新版全局 `--vault <dir>` vs 旧版 `build [ROOT]` 位置参数（探测式回退）；旧 CLI 带诊断时以非零码退出，成败改按产物（`_notist/style.css` 存在）判定；环境注入的 `NOTIST_PATH` 可能带未展开 `~`，envValue 统一 expandTilde。
+- *LSP 重启后已开视图不重注册*（实机首验发现）：重启后 session 对象新建、doc registry 已空，但视图残留的 `lspPath` 使 `lspViewSync` 的 `view.lspPath === path` 守卫误判「已注册」走 externalChange 分支，永远不发 didOpen——该视图上 hover/渲染等一切请求静默返回 null。是 todo 里 session generation 缺口的具体切面；当前修复：onLspState ready 循环先清 `view.lspPath` 再 lspViewSync（强制重注册），并让 renderPreview 对当前渲染的 null 结果显示失败说明（此前完全静默）。
+- iframe 为 same-origin srcdoc，后续 `data-notist-start/end`「点击渲染跳源码」反向桥不需要 postMessage。
+- 已知边界：daemon 路径 RenderDocument 每请求全 vault 预计算（与整站同成本），大 vault 需先做 revision 缓存再谈更高频刷新；iframe 内主题只在 css-change/渲染时同步；纯锚点滚动与 resolved 资源链接保持默认行为。开发流建议维持 `--no-daemon`：daemon 路径仍是 per-vault Mutex 串行 + 假取消（见 #<super::2026-08-25 notist lsp audit follow-up> 的遗留项），重型渲染会堵整个 vault 的请求；待取消多路复用落地后再把 preview 切到 daemon 并在 daemon 侧做 revision 缓存。
+- 手动验证路径：`bun run sync` → 开 LSP → 打开 .not → 头部书本图标或命令切换 → 编辑保存观察刷新 → 关 LSP 观察降级 → 双 World 切换观察 mode 保留。实机验证（docs vault，cli/inspect.not）已通过：渲染、链接、代码块样式、主题桥接、LSP 重启后恢复。
+
+== 参考
+
+- #<super::2026-08-17 web ui obsidian-like editor research>：CM6「源码+装饰」范式、preview 管线与编辑器双轨复用的早期结论。
+- #<super::2026-08-26 obsidian-notist lsp client implementation>：插件 LSP 客户端三层结构与 session 契约（本次扩展的客户端落点）。

@@ -201,17 +201,20 @@
         "type": "split",
         "children": [
           {
-            "id": "d3fd567bc818dfd8",
+            "id": "da053cab572f8d0e",
             "type": "tabs",
             "children": [
               {
-                "id": "cbdcb79808a84052",
+                "id": "f974eff16b7578c5",
                 "type": "leaf",
                 "state": {
-                  "type": "empty",
-                  "state": {},
-                  "icon": "lucide-file",
-                  "title": "新标签页"
+                  "type": "notist-view",
+                  "state": {
+                    "file": "cli/README.not",
+                    "mode": "source"
+                  },
+                  "icon": "file-text",
+                  "title": "README"
                 }
               }
             ]
@@ -310,7 +313,9 @@
                   "type": "notist-explorer",
                   "state": {
                     "expanded": [
-                      "cli"
+                      "cli",
+                      "",
+                      "designs"
                     ],
                     "dimNonNot": false
                   },
@@ -323,7 +328,7 @@
           }
         ],
         "direction": "horizontal",
-        "width": 304.51074600219727
+        "width": 260.51074600219727
       },
       "right": {
         "id": "f8d03a7322595300",
@@ -345,10 +350,11 @@
           "bases:新建数据库": false
         }
       },
-      "active": "cbdcb79808a84052"
+      "active": "51cd9e44640a43eb"
     }
   },
   "vimMode": true,
+  "defaultViewMode": "source",
   "lspEnabled": true,
   "notistCommand": "nix develop /home/azurice/Files/notist -c cargo run --manifest-path /home/azurice/Files/notist/Cargo.toml -p notist-cli",
   "notistExtraArgs": "--no-daemon",

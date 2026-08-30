@@ -10,7 +10,7 @@
 
 ```shell
 notist inspect search "annotation table" --vault docs
-notist inspect outline vault::designs::language::type-system --vault docs
+notist inspect items vault::designs::language::type-system --vault docs
 notist inspect read vault::designs::language::property-table/属性表 --vault docs
 ```
 
@@ -65,7 +65,7 @@ in_scope(module) =
 - include 可重复取并集；exclude 可重复，并在 include 之后生效。
 - scope 属于查询语义本身：对同一查询改变 scope 即是另一个查询。scope 必须在 candidate generation 前下推，不能先物化全 Vault 结果再过滤。
 
-CLI 投影见 #<vault::cli::inspect/Selector、Scope 与 Citation>。`check` 不接受 scope：它的 exit status 是完整 Vault 的健康结论。
+CLI 投影见 #<vault::cli::inspect/身份与坐标>。`check` 不接受 scope：它的 exit status 是完整 Vault 的健康结论。
 
 === Snapshot Stamp
 

@@ -198,3 +198,52 @@ fn document_references_resolves_modules_without_position_ambiguity() {
     let status = client.shutdown_and_exit();
     assert_eq!(status.code(), Some(0));
 }
+
+#[test]
+fn render_document_returns_the_evaluated_fragment_and_module_resources() {
+    // The fragment comes from the same evaluated pipeline as the preview
+    // site: markup renders without source markers, and the module's resource
+    // files travel alongside for the consumer's URL rewriting. A path that
+    // backs no module (a resource file here) renders to null.
+    let vault = Vault::new(&[
+        ("README.not", "= Hello\n*emphasized* text\n"),
+        ("pic.png", "not really a png"),
+    ]);
+    let readme = vault.uri("README.not");
+    let picture = vault.uri("pic.png");
+    let mut client = Client::spawn(&vault);
+    client.initialize(&vault);
+    client.expect_diagnostics(&readme, |_| true, "the baseline push");
+
+    let render_id = client.request(
+        "notist/renderDocument",
+        json!({ "textDocument": {"uri": readme} }),
+    );
+    let rendered = common::ok_result(client.await_response(render_id));
+    assert!(rendered["revision"].is_u64(), "revision is a freshness gate");
+    let page = &rendered["page"];
+    assert_eq!(page["title"], "Hello");
+    let fragment = page["fragment"].as_str().expect("fragment string");
+    assert!(fragment.contains("Hello"), "heading text is rendered");
+    assert!(fragment.contains("emphasized"), "inline markup text survives");
+    assert!(!fragment.contains("= Hello"), "source markers do not leak");
+    let resources = rendered["resources"].as_array().expect("resources array");
+    assert!(
+        resources
+            .iter()
+            .any(|resource| resource["name"] == "pic.png"),
+        "the module's resources travel with the page"
+    );
+
+    let null_id = client.request(
+        "notist/renderDocument",
+        json!({ "textDocument": {"uri": picture} }),
+    );
+    assert!(
+        common::ok_result(client.await_response(null_id)).is_null(),
+        "non-source files have no module to render"
+    );
+
+    let status = client.shutdown_and_exit();
+    assert_eq!(status.code(), Some(0));
+}
