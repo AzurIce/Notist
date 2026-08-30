@@ -1440,6 +1440,28 @@ mod tests {
     }
 
     #[test]
+    fn stacked_module_annotations_all_become_module_attributes() {
+        // Leading `@![...]` may stack; every entry reaches the module
+        // attribute table in source order.
+        let evaluation = Evaluator::default()
+            .evaluate("@![implementation = \"partial\"]\n@![agents = \"cli\"]\n\n= Title");
+        assert!(
+            evaluation.diagnostics.is_empty(),
+            "{:?}",
+            evaluation.diagnostics
+        );
+        assert_eq!(evaluation.module_attributes.len(), 2);
+        assert!(matches!(
+            &evaluation.module_attributes[0].items[0],
+            notist_syntax::Attribute::KeyValue { key, .. } if key.value == "implementation"
+        ));
+        assert!(matches!(
+            &evaluation.module_attributes[1].items[0],
+            notist_syntax::Attribute::KeyValue { key, .. } if key.value == "agents"
+        ));
+    }
+
+    #[test]
     fn module_annotation_strings_decode_like_code_strings() {
         // Attribute strings share the Code string grammar: `"""` multiline
         // values decode with their framing newlines trimmed.

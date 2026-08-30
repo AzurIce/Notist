@@ -1116,6 +1116,24 @@ mod tests {
     }
 
     #[test]
+    fn parses_stacked_module_annotations() {
+        // Leading `@![...]` may stack: an earlier module annotation is
+        // metadata, not content, so the next one still precedes the first
+        // meaningful token (D0006).
+        let parsed = parse("@![a = \"1\"]\n@![#wip]\n\n= Title\n");
+        assert!(parsed.errors.is_empty(), "{:?}", parsed.errors);
+        assert_eq!(
+            parsed
+                .root
+                .items
+                .iter()
+                .filter(|item| matches!(item, MarkupItem::ModuleAnnotation(_)))
+                .count(),
+            2
+        );
+    }
+
+    #[test]
     fn rejects_misplaced_module_annotations_and_dangling_at() {
         let parsed = parse("正文\n@![x]");
         assert!(
@@ -1123,6 +1141,17 @@ mod tests {
                 .errors
                 .iter()
                 .any(|error| error.message.contains("before any content"))
+        );
+        // A module annotation after content is misplaced even when earlier
+        // ones led the file; each offender is diagnosed once.
+        let parsed = parse("@![a = \"1\"]\n正文\n@![b = \"2\"]\n@![c = \"3\"]");
+        assert_eq!(
+            parsed
+                .errors
+                .iter()
+                .filter(|error| error.message.contains("before any content"))
+                .count(),
+            2
         );
         let parsed = parse("@!missing");
         assert!(
