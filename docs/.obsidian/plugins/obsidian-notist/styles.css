@@ -424,7 +424,7 @@ body.md-world .workspace-leaf-content[data-type="notist-explorer"] {
 	padding-left: calc(var(--size-4-1) + var(--notist-depth) * var(--notist-indent));
 	padding-right: var(--size-4-2);
 	border-radius: var(--radius-s);
-	cursor: pointer;
+	cursor: default;
 	user-select: none;
 	transition: background-color 80ms ease;
 }
@@ -437,9 +437,12 @@ body.md-world .workspace-leaf-content[data-type="notist-explorer"] {
 	opacity: 0.45;
 }
 
-/* Drop feedback: thin accent frame + faint wash, folder or root alike. */
-.notist-explorer-row.is-drop-target,
+/* Drop feedback: a thin accent frame + faint wash over the whole landing
+   region — a folder's wrapper box (its row plus its children block), or the
+   bare tree when the drop lands in the vault root. */
+.notist-explorer-node.is-drop-target,
 .notist-explorer-tree.is-root-drop-target {
+	border-radius: var(--radius-s);
 	box-shadow: inset 0 0 0 1px rgba(var(--interactive-accent-rgb, 124, 77, 255), 0.55);
 	background-color: rgba(var(--interactive-accent-rgb, 124, 77, 255), 0.07);
 }

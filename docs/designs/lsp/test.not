@@ -20,7 +20,7 @@ crates/notist-cli/tests/    外面看到的对不对（真实二进制 + stdio �
 1. *LSP 规范*——生命周期顺序、错误码分类（未知方法 `-32601`、坏参数 `-32602`）、消息 shape；
 2. *自我一致*——`server_capabilities()` 广播的每个 provider 必须真实响应且 shape 正确。capabilities 一经广播即是契约：声明了 `referencesProvider` 却从未被测试打过这个方法，等于契约无人验证（这曾是事实：references 在黑箱层出现前零覆盖）。
 
-编辑器客户端依赖的服务端行为约定——FULL sync 严格拒绝违规变更、initialize 后必有 baseline 推送、之后只发增量、didClose 清空——都必须在本层有可执行断言。契约破坏先在这里红灯，而不是在接入侧被感知。
+编辑器客户端依赖的服务端行为约定——INCREMENTAL sync（ranged/整文档混批依序应用、越界钳位、版本不做门控）、未 didOpen 的 didChange 丢弃、initialize 后必有 baseline 推送、之后只发增量、didClose 清空——都必须在本层有可执行断言。契约破坏先在这里红灯，而不是在接入侧被感知。
 
 == Harness 模型
 
@@ -52,16 +52,16 @@ wiki 引用从嵌套模块文件解析为子模块路径（`wide.not` 里的 `#<
 | 类别 | 场景 | 状态 |
 | :--- | --- | --- |
 | 生命周期 | capabilities 逐字段断言；shutdown → exit 进程零退出 | 已覆盖 |
-| 同步契约 | 合法 FULL didChange 接受并推送 delta；增量 range / 多 change / 版本回退三类违规拒绝后会话存活，logMessage 与 stderr 双通道可见 | 已覆盖 |
+| 同步契约 | 整文档 didChange 接受并推送 delta；ranged 增量与混批依序应用（端到端 hover 命中编辑后文本）；越界 range 钳位；不可路由 URI 拒绝后会话存活，logMessage 与 stderr 双通道可见；未打开文档的 didChange 丢弃 | 已覆盖 |
 | 推送语义 | 无文档活动时的自发 baseline；didClose 清空 | 已覆盖 |
 | 编码端到端 | emoji/CJK 行上的 hover/completion 以 UTF-16 发起并以 UTF-16 回读校验 | 已覆盖 |
 | 查询面 | references 跨文件 Location 与 includeDeclaration 两种形态 | 已覆盖 |
 | 错误规范 | 未知方法 `-32601`、坏参数 `-32602` 经真实循环（白盒已覆盖分类，黑箱待补接线） | 待补 |
 | 生命周期 | exit-without-shutdown 按规范非零退出 | 未实现（现返回 0） |
-| 取消 | `$/cancelRequest` 后会话不崩、后续请求 id 不串 | 待补 |
+| 取消 | `$/cancelRequest` 后会话不崩、后续请求 id 不串；daemon 在途请求经 `Cancel` 帧真取消（transport 单测） | 部分覆盖 |
 | 推送语义 | 改文件 A 清除文件 B 的跨文件联动推送 | 待补 |
 | 同步契约 | didSave 行为 | 待补 |
-| 双模式 | daemon 变体（同一 harness 去掉 `--no-daemon`），覆盖 spawn/socket 回收路径 | 二阶段 |
+| 双模式 | daemon 变体（`spawn_daemon`，同一 harness），sync 契约全流程经多路复用连接验证 | 已覆盖 |
 
 == 与生产代码的关系
 

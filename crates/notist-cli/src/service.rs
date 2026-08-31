@@ -1,8 +1,10 @@
 use std::io;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
-use std::sync::atomic::AtomicBool;
-use std::sync::{Arc, Mutex};
+use std::sync::{
+    Arc,
+    atomic::{AtomicBool, Ordering},
+};
 use std::time::{Duration, Instant};
 
 use notist_service::protocol::{ClientKind, Handshake, ProtocolVersion};
@@ -12,31 +14,40 @@ use notist_service::{CoreReply, CoreRequest, NotistService};
 pub(crate) enum ClientBackend {
     Embedded(Arc<NotistService>),
     Daemon {
-        runtime: tokio::runtime::Runtime,
-        client: DaemonClient,
+        runtime: Arc<tokio::runtime::Runtime>,
+        client: Arc<DaemonClient>,
     },
 }
 
 /// A shareable request entry point derived from one connection. Embedded
-/// services execute on `&self`, so same-vault queries run concurrently;
-/// daemon connections stay behind a mutex until protocol multiplexing lands.
+/// services execute on `&self`, so same-vault queries run concurrently; the
+/// daemon client is multiplexed (id-routed replies), so one connection serves
+/// concurrent in-flight requests too. Requests may interleave freely on the
+/// wire — callers that need ordering sequence their own requests, which the
+/// LSP builder already does.
 #[derive(Clone)]
 pub(crate) enum RequestHandle {
     Embedded(Arc<NotistService>),
-    Guarded(Arc<Mutex<LocalNotistClient>>),
+    Daemon {
+        runtime: Arc<tokio::runtime::Runtime>,
+        client: Arc<DaemonClient>,
+    },
 }
 
 impl RequestHandle {
     pub fn request(&self, request: CoreRequest) -> io::Result<CoreReply> {
         match self {
             Self::Embedded(service) => service.execute(request),
-            Self::Guarded(client) => client.lock().unwrap().request(request),
+            Self::Daemon { runtime, client } => {
+                runtime.block_on(async { client.send(request)?.wait().await })
+            }
         }
     }
 
-    /// Issues a request that observes `cancelled`. Embedded execution checks
-    /// the flag at entry and inside long operations; daemon requests cannot
-    /// be interrupted in flight yet and observe it only after completion.
+    /// Issues a request that observes `cancelled`: embedded execution checks
+    /// the flag at entry and inside long operations; daemon requests poll the
+    /// flag and deliver a protocol `Cancel` so the daemon aborts the
+    /// computation and replies "request cancelled".
     pub fn cancellable(
         &self,
         request: CoreRequest,
@@ -44,8 +55,28 @@ impl RequestHandle {
     ) -> io::Result<CoreReply> {
         match self {
             Self::Embedded(service) => service.execute_cancellable(request, cancelled),
-            Self::Guarded(client) => client.lock().unwrap().request(request),
+            Self::Daemon { runtime, client } => runtime.block_on(async {
+                let mut inflight = client.send(request)?;
+                tokio::select! {
+                    reply = inflight.wait() => reply,
+                    _ = cancelled_poll(cancelled) => {
+                        client.cancel(inflight.id()).await?;
+                        // The daemon still answers (with the cancelled error);
+                        // waiting for it keeps the pending table clean.
+                        inflight.wait().await
+                    }
+                }
+            }),
         }
+    }
+}
+
+/// Resolves when the cooperative flag is set. Polled every few milliseconds:
+/// cancellation latency is bounded by the poll, which is fine for the
+/// long operations that need it.
+async fn cancelled_poll(cancelled: &AtomicBool) {
+    while !cancelled.load(Ordering::Acquire) {
+        tokio::time::sleep(Duration::from_millis(2)).await;
     }
 }
 
@@ -61,18 +92,20 @@ impl LocalNotistClient {
                 backend: ClientBackend::Embedded(Arc::new(NotistService::for_root(&root)?)),
             });
         }
-        let runtime = tokio::runtime::Runtime::new()?;
+        let runtime = Arc::new(tokio::runtime::Runtime::new()?);
         let our_stamp = notist_service::transport::binary_stamp();
-        let client = connect_daemon(&runtime, &root, kind, our_stamp)?;
+        let client = Arc::new(connect_daemon(&runtime, &root, kind, our_stamp)?);
         Ok(Self {
             backend: ClientBackend::Daemon { runtime, client },
         })
     }
 
-    pub fn request(&mut self, request: CoreRequest) -> io::Result<CoreReply> {
-        match &mut self.backend {
+    pub fn request(&self, request: CoreRequest) -> io::Result<CoreReply> {
+        match &self.backend {
             ClientBackend::Embedded(service) => service.execute(request),
-            ClientBackend::Daemon { runtime, client } => runtime.block_on(client.request(request)),
+            ClientBackend::Daemon { runtime, client } => {
+                runtime.block_on(async { client.send(request)?.wait().await })
+            }
         }
     }
 
@@ -80,7 +113,7 @@ impl LocalNotistClient {
     pub fn into_request_handle(self) -> RequestHandle {
         match self.backend {
             ClientBackend::Embedded(service) => RequestHandle::Embedded(service),
-            ClientBackend::Daemon { .. } => RequestHandle::Guarded(Arc::new(Mutex::new(self))),
+            ClientBackend::Daemon { runtime, client } => RequestHandle::Daemon { runtime, client },
         }
     }
 }
@@ -147,7 +180,7 @@ fn connect_once(
 fn recycle_stale_daemon(
     runtime: &tokio::runtime::Runtime,
     root: &Path,
-    mut client: DaemonClient,
+    client: DaemonClient,
     our_stamp: Option<u64>,
     restart_exhausted: bool,
 ) -> io::Result<Recycle> {
@@ -211,7 +244,7 @@ pub(crate) fn stop_daemon(root: PathBuf) -> io::Result<()> {
     let root = dunce::canonicalize(root)?;
     let runtime = tokio::runtime::Runtime::new()?;
     let hs = handshake(ClientKind::Cli, root.clone())?;
-    let mut client = match runtime.block_on(DaemonClient::connect(&root, hs)) {
+    let client = match runtime.block_on(DaemonClient::connect(&root, hs)) {
         Ok(client) => client,
         Err(error) if daemon_is_unavailable(&error) => {
             println!("no notist daemon is running for {}", root.display());

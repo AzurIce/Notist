@@ -28,9 +28,9 @@ stdio transport；stdout 专用于 LSP JSON-RPC（不输出日志、进度或诊
 
 === 文本同步与 Position
 
-声明 `TextDocumentSyncKind::FULL`：每次 `didChange` 接收完整文本，document store 始终先形成完整 source 再交给 analysis——parser 的增量能力不必与 LSP edit protocol 同步演进。文件系统 watcher 只负责未打开的文件（客户端能力不足时的补充）。
+声明 `TextDocumentSyncKind::INCREMENTAL`（Options 形式，`openClose` + `save`）：`didChange` 的 contentChanges 依序应用，ranged 增量与 range-less 整文档替换都合法、可混批——整文档 change 取最后一个为基并丢弃其之前的部分 change（与纯顺序语义等价）。版本号不做单调性门控，stdio 单一有序流是唯一顺序权威，到达即应用、仅记录最新 version；未 didOpen 的文档上的 didChange 直接丢弃并记日志。越界 position 按规范钳位（character 超行长按行长、行超文档尾按文档尾、列落在代理对/字符中间取起点），钳位后 start > end 的单条 change 跳过。应用是纯函数（旧文本 + changes → 新文本），行索引按「前缀有效性」惰性重建。文件系统 watcher 只负责未打开的文件（客户端能力不足时的补充）。
 
-内部 `TextRange` 用 UTF-8 byte offset，LSP `Position` 通常用 UTF-16 code unit。analysis source 附带统一 `LineIndex`：byte offset ↔ line + UTF-8 column ↔ LSP line + UTF-16 column。所有 diagnostics、definition、references、hover 与 symbol range 经过同一个转换实现，覆盖 ASCII、中文、emoji、组合字符、CRLF 与文件末尾位置测试；协商到 UTF-8 encoding 时可用，但 UTF-16 必须始终正确支持。
+内部 `TextRange` 用 UTF-8 byte offset，LSP `Position` 通常用 UTF-16 code unit。analysis source 附带统一 `LineIndex`：byte offset ↔ line + UTF-8 column ↔ LSP line + UTF-16 column，并提供 saturating 换算变体（钳位语义，供增量应用使用）。所有 diagnostics、definition、references、hover 与 symbol range 经过同一个转换实现，覆盖 ASCII、中文、emoji、组合字符、CRLF 与文件末尾位置测试；协商到 UTF-8 encoding 时可用，但 UTF-16 必须始终正确支持。
 
 === Capabilities
 

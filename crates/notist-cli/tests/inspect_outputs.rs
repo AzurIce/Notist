@@ -3,7 +3,8 @@
 //! line shapes agents consume. The fixture exercises all three D0006
 //! annotation mount points (module `@![...]`, block `@[...]`, and both the
 //! bare-id and `#tag` entry spellings) so attribute visibility stays
-//! observable per command.
+//! observable per command. Content access (reading files, listing
+//! directories) is the host's job — notist commands are the semantic layer.
 
 #![allow(dead_code)]
 
@@ -41,6 +42,7 @@ fn fixture() -> Fixture {
     std::fs::write(dir.path().join("guide.not"), GUIDE_NOT).unwrap();
     std::fs::write(dir.path().join("troubleshoot.not"), TROUBLESHOOT_NOT).unwrap();
     std::fs::write(dir.path().join("assets/logo.png"), "png\n").unwrap();
+    std::fs::write(dir.path().join("assets/notes.txt"), "txt\n").unwrap();
     Fixture(dir)
 }
 
@@ -95,22 +97,10 @@ fn status_reports_vault_identity_and_counts() {
 }
 
 #[test]
-fn modules_lists_logical_paths_with_relative_files_and_titles() {
-    let vault = fixture();
-    let output = run(&vault, &["inspect", "modules"]);
-    assert!(output.starts_with("4 modules"), "{output}");
-    assert!(output.contains("vault::guide"), "{output}");
-    assert!(output.contains("guide.not"), "{output}");
-    assert!(output.contains("vault::troubleshoot"), "{output}");
-    assert!(output.contains("troubleshoot.not"), "{output}");
-    // The semantic title is the first heading.
-    assert!(output.contains("— 安装"), "{output}");
-}
-
-#[test]
 fn search_lexical_ranks_candidates_with_field_and_score() {
     let vault = fixture();
     let output = run(&vault, &["inspect", "search", "概述"]);
+    assert!(output.starts_with("1 source"), "{output}");
     assert!(output.contains("vault::guide"), "{output}");
     assert!(output.contains("field="), "{output}");
     assert!(output.contains("score="), "{output}");
@@ -128,24 +118,32 @@ fn search_hits_postfix_annotation_tags_through_the_tag_field() {
 fn items_lists_addressable_items_with_attribute_annotations() {
     let vault = fixture();
     let output = run(&vault, &["inspect", "items", "vault::guide"]);
+    assert!(output.starts_with("3 items"), "{output}");
     let installed = output
         .lines()
         .find(|line| line.starts_with("安装"))
         .expect("item line for 安装");
     assert!(installed.contains("scope L1"), "{output}");
-    assert!(installed.contains("guide.not:4"), "{output}");
+    assert!(installed.contains("lines 4..4"), "{output}");
     assert!(installed.contains("@[wip]"), "{output}");
-    assert!(output.contains("故障排除  scope L2"), "{output}");
-    assert!(output.contains("后记  scope L1"), "{output}");
+    assert!(output.contains("故障排除  scope L2  lines 8..8"), "{output}");
+    assert!(output.contains("后记  scope L1  lines 12..12"), "{output}");
     assert!(!output.contains("ambiguous"), "{output}");
+    // Identity commands carry no file paths.
+    assert!(!output.contains(".not"), "{output}");
 }
 
 #[test]
 fn items_lists_resource_files_of_a_module_namespace() {
     let vault = fixture();
     let output = run(&vault, &["inspect", "items", "vault::assets"]);
+    assert!(output.starts_with("2 items"), "{output}");
     assert!(
         output.contains("logo.png  resource:image  assets/logo.png"),
+        "{output}"
+    );
+    assert!(
+        output.contains("notes.txt  resource:file  assets/notes.txt"),
         "{output}"
     );
 }
@@ -154,6 +152,7 @@ fn items_lists_resource_files_of_a_module_namespace() {
 fn items_claims_block_and_postfix_annotations_on_headings() {
     let vault = fixture();
     let output = run(&vault, &["inspect", "items", "vault::troubleshoot"]);
+    assert!(output.starts_with("2 items"), "{output}");
     let log = output
         .lines()
         .find(|line| line.starts_with("日志"))
@@ -165,28 +164,6 @@ fn items_claims_block_and_postfix_annotations_on_headings() {
         .expect("item line for 手册");
     assert!(manual.contains("scope L1"), "{output}");
     assert!(manual.contains("@[#urgent]"), "{output}");
-}
-
-#[test]
-fn read_module_prints_line_numbered_authored_source() {
-    let vault = fixture();
-    let output = run(&vault, &["inspect", "read", "vault::guide"]);
-    assert!(output.contains("@![status = \"draft\"]"), "{output}");
-    assert!(output.contains("= 安装"), "{output}");
-    assert!(output.contains("#<vault::troubleshoot/日志>"), "{output}");
-    // Citation footer carries the edit precondition.
-    assert!(output.contains("-- vault::guide  guide.not  bytes 0.."), "{output}");
-    assert!(output.contains("fingerprint"), "{output}");
-}
-
-#[test]
-fn read_item_path_scopes_to_one_section_subtree() {
-    let vault = fixture();
-    let output = run(&vault, &["inspect", "read", "vault::guide/故障排除"]);
-    assert!(output.contains("== 故障排除"), "{output}");
-    assert!(!output.contains("先读概述"), "{output}");
-    assert!(!output.contains("后记"), "{output}");
-    assert!(!output.contains("对照下述步骤排查"), "{output}");
 }
 
 #[test]
@@ -252,11 +229,20 @@ fn ancestors_point_prints_the_containing_chain() {
     let offset = GUIDE_NOT.find("概述").unwrap();
     let output = run(
         &vault,
-        &["inspect", "ancestors", "guide.not", "--offset", &offset.to_string()],
+        &[
+            "inspect",
+            "ancestors",
+            "guide.not",
+            "--offset",
+            &offset.to_string(),
+        ],
     );
     assert!(output.contains("core::text"), "{output}");
     assert!(output.contains("core::paragraph"), "{output}");
-    assert!(output.contains("core::section \"安装\" L1  guide.not"), "{output}");
+    assert!(
+        output.contains("core::section \"安装\" L1  lines 4..10"),
+        "{output}"
+    );
     assert!(output.contains("@[wip]"), "{output}");
     assert!(!output.contains("后记"), "{output}");
 }

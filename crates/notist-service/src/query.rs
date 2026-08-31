@@ -160,35 +160,6 @@ pub struct LineRange {
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
-pub struct ModuleRecord {
-    pub module: String,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub relative_path: Option<PathBuf>,
-    pub kind: String,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub title: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub source_fingerprint: Option<String>,
-}
-
-#[derive(Clone, Debug, Default, Serialize, Deserialize)]
-pub struct ModulesQuery {
-    #[serde(default)]
-    pub prefix: Option<String>,
-    #[serde(default)]
-    pub kind: ModuleKind,
-}
-
-#[derive(Clone, Copy, Debug, Default, Serialize, Deserialize)]
-#[serde(rename_all = "snake_case")]
-pub enum ModuleKind {
-    #[default]
-    Any,
-    Source,
-    Virtual,
-}
-
-#[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct ItemsQuery {
     pub selector: Selector,
 }
@@ -242,30 +213,6 @@ pub struct AncestorRecord {
     /// Nodes below this one that also overlap the selected region.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub children: Vec<AncestorRecord>,
-}
-
-#[derive(Clone, Debug, Default, Serialize, Deserialize)]
-pub struct ReadWindow {
-    #[serde(default)]
-    pub from_line: Option<usize>,
-    #[serde(default)]
-    pub lines: Option<usize>,
-    #[serde(default)]
-    pub byte_range: Option<super::request::ByteRange>,
-}
-
-#[derive(Clone, Debug, Serialize, Deserialize)]
-pub struct ReadQuery {
-    pub selector: Selector,
-    #[serde(default)]
-    pub window: ReadWindow,
-}
-
-#[derive(Clone, Debug, Serialize, Deserialize)]
-pub struct SourceChunk {
-    pub location: Location,
-    pub source: String,
-    pub reached_end: bool,
 }
 
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq, Serialize, Deserialize)]
@@ -510,59 +457,6 @@ struct ResolvedSource<'a> {
     source: &'a notist_analysis::SourceInput,
     name: Option<String>,
     selection: TextRange,
-}
-
-pub fn list_modules(
-    workspace: &WorkspaceSnapshot,
-    snapshot: &SnapshotIdentity,
-    query: &ModulesQuery,
-) -> Result<QueryResult<ModuleRecord>, ToolError> {
-    let prefix = query.prefix.as_deref();
-    let mut records = workspace
-        .modules()
-        .filter(|module| {
-            prefix.is_none_or(|prefix| {
-                let path = module.logical_path.to_string();
-                path == prefix || path.starts_with(&format!("{prefix}::"))
-            })
-        })
-        .filter(|module| match query.kind {
-            ModuleKind::Any => true,
-            ModuleKind::Source => module.file_id.is_some(),
-            ModuleKind::Virtual => module.file_id.is_none(),
-        })
-        .map(|module| {
-            let title = module
-                .file_id
-                .and_then(|file_id| workspace.document_symbols(file_id).into_iter().next())
-                .map(|symbol| symbol.name);
-            ModuleRecord {
-                module: module.logical_path.to_string(),
-                relative_path: module
-                    .source_path
-                    .as_deref()
-                    .map(|path| relative_path(workspace.root(), path)),
-                kind: if module.file_id.is_some() {
-                    "source"
-                } else {
-                    "virtual"
-                }
-                .into(),
-                title,
-                source_fingerprint: module
-                    .file_id
-                    .and_then(|file_id| workspace.source(file_id))
-                    .map(|source| fingerprint(&source.text)),
-            }
-        })
-        .collect::<Vec<_>>();
-    records.sort_by(|left, right| left.module.cmp(&right.module));
-    Ok(QueryResult {
-        snapshot: snapshot.clone(),
-        records,
-        search: None,
-        hints: Vec::new(),
-    })
 }
 
 /// One candidate row of the items table before wire projection.
@@ -967,6 +861,7 @@ pub fn ancestors(
     })
 }
 
+/// Projects one evaluated node of the overlapping subtree onto the wire.
 fn ancestor_record(
     workspace: &WorkspaceSnapshot,
     module: &notist_analysis::Module,
@@ -1002,78 +897,6 @@ fn ancestor_record(
     }
 }
 
-pub fn read_source(
-    workspace: &WorkspaceSnapshot,
-    snapshot: &SnapshotIdentity,
-    query: &ReadQuery,
-) -> Result<QueryResult<SourceChunk>, ToolError> {
-    let resolved = resolve_source(workspace, &query.selector)?;
-    if query.window.byte_range.is_some()
-        && (query.window.from_line.is_some() || query.window.lines.is_some())
-    {
-        return Err(ToolError::new(
-            "invalid_argument",
-            "line and byte windows are mutually exclusive",
-        ));
-    }
-    if query.window.lines.is_some() && query.window.from_line.is_none() {
-        return Err(ToolError::new(
-            "invalid_argument",
-            "lines requires from-line",
-        ));
-    }
-    if query.window.lines.is_some_and(|lines| lines == 0) {
-        return Err(ToolError::new(
-            "invalid_argument",
-            "lines must be at least 1",
-        ));
-    }
-    let source = &resolved.source.text;
-    let mut selection = resolved.selection;
-    if let Some(range) = query.window.byte_range {
-        if range.start > range.end || range.end > source.len() {
-            return Err(ToolError::new(
-                "invalid_argument",
-                "byte range is outside the selected source",
-            ));
-        }
-        selection = TextRange::new(range.start, range.end);
-    } else if let Some(from_line) = query.window.from_line {
-        let starts = line_starts(source);
-        let start_index = from_line.saturating_sub(1);
-        let Some(&start) = starts.get(start_index) else {
-            return Err(ToolError::new(
-                "invalid_argument",
-                "from-line is outside the selected source",
-            ));
-        };
-        let count = query.window.lines.unwrap_or(usize::MAX);
-        let end = starts
-            .get(start_index.saturating_add(count))
-            .copied()
-            .unwrap_or(source.len());
-        selection = TextRange::new(start.max(selection.start), end.min(selection.end));
-    }
-    let chunk = SourceChunk {
-        location: location(
-            workspace,
-            resolved.module,
-            resolved.source,
-            selection,
-            resolved.name.clone(),
-        ),
-        source: source[selection.start..selection.end].to_owned(),
-        reached_end: true,
-    };
-    Ok(QueryResult {
-        snapshot: snapshot.clone(),
-        records: vec![chunk],
-        search: None,
-        hints: Vec::new(),
-    })
-}
-
-/// Converts a resolved RefTarget into its serialized record shape (D0004).
 pub fn ref_target_record(
     workspace: &WorkspaceSnapshot,
     target: RefTarget,

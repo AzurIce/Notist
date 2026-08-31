@@ -113,37 +113,6 @@ impl LineIndex {
         self.line_starts.len()
     }
 
-    pub fn utf16_position(&self, source: &str, offset: usize) -> Option<(u32, u32)> {
-        if offset > source.len() || !source.is_char_boundary(offset) {
-            return None;
-        }
-        let line = self.line_starts.partition_point(|start| *start <= offset) - 1;
-        let start = self.line_starts[line];
-        let column = source[start..offset].encode_utf16().count();
-        Some((u32::try_from(line).ok()?, u32::try_from(column).ok()?))
-    }
-
-    pub fn offset_utf16(&self, source: &str, line: u32, column: u32) -> Option<usize> {
-        let start = *self.line_starts.get(usize::try_from(line).ok()?)?;
-        let end = self
-            .line_starts
-            .get(usize::try_from(line).ok()?.saturating_add(1))
-            .copied()
-            .unwrap_or(source.len());
-        let line_text = &source[start..end];
-        let mut units = 0u32;
-        for (relative, character) in line_text.char_indices() {
-            if units == column {
-                return Some(start + relative);
-            }
-            units = units.checked_add(character.len_utf16() as u32)?;
-            if units > column {
-                return None;
-            }
-        }
-        (units == column).then_some(end)
-    }
-
     /// UTF-8 code-unit (byte) column within the line.
     pub fn utf8_position(&self, source: &str, offset: usize) -> Option<(u32, u32)> {
         if offset > source.len() || !source.is_char_boundary(offset) {
@@ -151,7 +120,10 @@ impl LineIndex {
         }
         let line = self.line_starts.partition_point(|start| *start <= offset) - 1;
         let start = self.line_starts[line];
-        Some((u32::try_from(line).ok()?, u32::try_from(offset - start).ok()?))
+        Some((
+            u32::try_from(line).ok()?,
+            u32::try_from(offset - start).ok()?,
+        ))
     }
 
     pub fn offset_utf8(&self, source: &str, line: u32, column: u32) -> Option<usize> {
@@ -163,6 +135,118 @@ impl LineIndex {
             .unwrap_or(source.len());
         let target = start.checked_add(usize::try_from(column).ok()?)?;
         (target <= end && source.is_char_boundary(target)).then_some(target)
+    }
+
+    /// Exports the byte-offset line table (see `LineTable`): one start and
+    /// one content end per line, plus the total length.
+    pub fn line_table(&self, source: &str) -> LineTable {
+        let mut content_ends = Vec::with_capacity(self.line_starts.len());
+        for (index, start) in self.line_starts.iter().enumerate() {
+            let start = *start;
+            let end = self
+                .line_starts
+                .get(index + 1)
+                .copied()
+                .unwrap_or(source.len());
+            let bytes = source.as_bytes();
+            let mut content_end = end.min(source.len()).max(start);
+            if content_end > start && bytes[content_end - 1] == b'\n' {
+                content_end -= 1;
+                if content_end > start && bytes[content_end - 1] == b'\r' {
+                    content_end -= 1;
+                }
+            } else if content_end > start && bytes[content_end - 1] == b'\r' {
+                content_end -= 1;
+            }
+            content_ends.push(content_end as u32);
+        }
+        LineTable {
+            starts: self.line_starts.iter().map(|s| *s as u32).collect(),
+            content_ends: content_ends.into(),
+            end: source.len() as u32,
+        }
+    }
+
+    /// Byte offset for a UTF-8 position with out-of-bounds clamping: lines
+    /// past the document clamp to the source end, columns past the line
+    /// content clamp to the end-of-line position, and a byte column landing
+    /// mid-character clamps down to the nearest character boundary.
+    pub fn offset_utf8_saturating(&self, source: &str, line: u32, column: u32) -> usize {
+        let Some((start, content_end)) = self.line_content_bounds(source, line) else {
+            return source.len();
+        };
+        let target = start
+            .saturating_add(usize::try_from(column).unwrap_or(usize::MAX))
+            .min(content_end);
+        let mut target = target.min(source.len());
+        while target > start && !source.is_char_boundary(target) {
+            target -= 1;
+        }
+        target
+    }
+
+    /// (line start, line content end) for `line`, excluding the `\r\n`/`\n`
+    /// terminator; `None` when the line is past the document.
+    fn line_content_bounds(&self, source: &str, line: u32) -> Option<(usize, usize)> {
+        let line = usize::try_from(line).ok()?;
+        let start = *self.line_starts.get(line)?;
+        let end = self
+            .line_starts
+            .get(line.saturating_add(1))
+            .copied()
+            .unwrap_or(source.len());
+        let bytes = source.as_bytes();
+        let mut content_end = end.min(source.len()).max(start);
+        if content_end > start && bytes[content_end - 1] == b'\n' {
+            content_end -= 1;
+            if content_end > start && bytes[content_end - 1] == b'\r' {
+                content_end -= 1;
+            }
+        } else if content_end > start && bytes[content_end - 1] == b'\r' {
+            content_end -= 1;
+        }
+        Some((start, content_end))
+    }
+}
+
+/// Byte-offset line table for UTF-8-negotiated sessions: converts between
+/// byte columns and offsets without holding the source text. Line content
+/// excludes the `\r\n`/`\n` terminator; columns landing mid-character are the
+/// caller's contract (the core validates offsets like it does for CLI ones).
+#[derive(Clone, Debug)]
+pub struct LineTable {
+    pub starts: Arc<[u32]>,
+    pub content_ends: Arc<[u32]>,
+    /// Total source length in bytes: the saturation target for positions
+    /// past the last line.
+    pub end: u32,
+}
+
+impl LineTable {
+    /// Byte offset for a UTF-8 position with out-of-bounds clamping: lines
+    /// past the document clamp to the source end, columns past the line
+    /// content clamp to the end-of-line position.
+    pub fn offset(&self, line: u32, column: u32) -> usize {
+        let Some(index) = usize::try_from(line)
+            .ok()
+            .filter(|line| *line < self.starts.len())
+        else {
+            return self.end as usize;
+        };
+        let start = self.starts[index] as usize;
+        let content_end = self.content_ends[index] as usize;
+        start.saturating_add(column as usize).min(content_end)
+    }
+
+    /// (line, byte column) for a byte offset, clamped into the document.
+    pub fn position(&self, offset: usize) -> (u32, u32) {
+        let offset = offset.min(self.end as usize);
+        let line = self
+            .starts
+            .partition_point(|start| usize::try_from(*start).unwrap_or(usize::MAX) <= offset)
+            .saturating_sub(1);
+        let column = offset - self.starts[line] as usize;
+        (line as u32, column as u32)
     }
 }
 
@@ -2562,8 +2646,7 @@ impl WorkspaceSnapshot {
                                     .unwrap_or_default();
                                 heading_default_ids(target_module, &seeds)
                             });
-                        if let Some(position) = headings.iter().position(|(text, _)| text == name)
-                        {
+                        if let Some(position) = headings.iter().position(|(text, _)| text == name) {
                             // Heading default name: exact match on the evaluated
                             // heading plain text; the first occurrence wins.
                             target_range = Some(headings[position].1);
@@ -3260,11 +3343,7 @@ fn import_target_path_start(before: &str) -> Option<usize> {
 /// context. Valid while the path is still unterminated on its line, and for
 /// an already-closed `>::{...}` import while the cursor stays inside the
 /// path (the next `>` on the line must be the path closer).
-fn import_path_context(
-    source: &str,
-    start: usize,
-    offset: usize,
-) -> Option<CompletionContext> {
+fn import_path_context(source: &str, start: usize, offset: usize) -> Option<CompletionContext> {
     if source[start..offset].contains(['>', '\n', '\r']) {
         return None;
     }
@@ -3645,9 +3724,7 @@ fn link_call_target(call: &Call) -> Option<Result<Target, String>> {
 
 fn parse_link_url(url: &str) -> Result<Target, String> {
     match parse_reference_url(url) {
-        Ok(reference) if matches!(reference.module, ModuleReference::External(_)) => {
-            Ok(reference)
-        }
+        Ok(reference) if matches!(reference.module, ModuleReference::External(_)) => Ok(reference),
         Ok(_) => Err("internal targets must use a `<...>` target literal, not a String".into()),
         Err(message) => Err(message),
     }
@@ -3956,6 +4033,74 @@ fn file_stem(path: &Path) -> io::Result<String> {
 mod tests {
     use super::*;
     use tempfile::TempDir;
+
+    #[test]
+    fn line_table_converts_utf8_positions_without_the_text() {
+        let source = "ab😀中\r\nnext\n";
+        let index = LineIndex::new(source);
+        let table = index.line_table(source);
+
+        // Every valid position round-trips through the table. Offsets inside
+        // a line terminator are not valid LSP positions — the table clamps
+        // them to the end-of-line position by design.
+        for offset in 0..=source.len() {
+            if !source.is_char_boundary(offset) {
+                continue;
+            }
+            if source[offset..].starts_with('\r') || source[offset..].starts_with('\n') {
+                continue;
+            }
+            let (line, column) = table.position(offset);
+            assert_eq!(table.offset(line, column), offset, "at {offset}");
+            assert_eq!(
+                index.offset_utf8(source, line, column),
+                Some(offset),
+                "table position must match the strict conversion at {offset}"
+            );
+        }
+        // Out-of-bounds saturates to the document end.
+        assert_eq!(table.offset(9, 0), source.len());
+        assert_eq!(table.position(source.len() + 5).0, 2);
+    }
+
+    #[test]
+    fn saturating_utf8_offsets_clamp_lines_columns_and_boundaries() {
+        let source = "ab😀中\r\nnext\n";
+        let index = LineIndex::new(source);
+        // "ab😀中" is 2 + 4 + 3 bytes; \r\n ends it and is not line content.
+        let line0_end_bytes = "ab😀中".len();
+        let line1_start = "ab😀中\r\n".len();
+
+        // Exact positions match the strict conversion.
+        for column in [0u32, 1, 2, 6, 9] {
+            assert_eq!(
+                index.offset_utf8_saturating(source, 0, column),
+                index.offset_utf8(source, 0, column).unwrap(),
+                "in-bounds column {column} must agree with the strict conversion"
+            );
+        }
+        assert_eq!(
+            index.offset_utf8_saturating(source, 1, 2),
+            index.offset_utf8(source, 1, 2).unwrap()
+        );
+
+        // A column past the line content clamps to the end-of-line position.
+        assert_eq!(
+            index.offset_utf8_saturating(source, 0, 40),
+            line0_end_bytes
+        );
+        // 3 bytes lands inside 😀's encoding; floor to the boundary before it.
+        assert_eq!(index.offset_utf8_saturating(source, 0, 3), 2);
+        assert_eq!(index.offset_utf8_saturating(source, 0, 5), 2);
+        // A line past the document clamps to the source end.
+        assert_eq!(index.offset_utf8_saturating(source, 40, 0), source.len());
+
+        // The virtual last line after a trailing newline and the empty source.
+        assert_eq!(index.offset_utf8_saturating(source, 2, 0), source.len());
+        let empty = LineIndex::new("");
+        assert_eq!(empty.offset_utf8_saturating("", 0, 0), 0);
+        assert_eq!(empty.offset_utf8_saturating("", 3, 7), 0);
+    }
 
     #[test]
     fn runtime_plugins_replaces_packages_with_data_only_elements() {
@@ -4424,7 +4569,7 @@ mod tests {
         let guide = workspace.source(definition.file_id.unwrap()).unwrap();
         let (line, _) = guide
             .line_index
-            .utf16_position(&guide.text, range.start)
+            .utf8_position(&guide.text, range.start)
             .unwrap_or((0, 0));
         assert_eq!(line, 2, "definition should point to the heading line");
     }
@@ -4693,20 +4838,20 @@ mod tests {
         assert_eq!(source.origin, SourceOrigin::Overlay);
         assert_eq!(source.document_version, Some(17));
         assert_eq!(
-            source.line_index.utf16_position(&source.text, 5),
-            Some((0, 3))
+            source.line_index.utf8_position(&source.text, 5),
+            Some((0, 5))
         );
-        assert_eq!(source.line_index.offset_utf16(&source.text, 1, 1), Some(9));
+        assert_eq!(source.line_index.offset_utf8(&source.text, 1, 3), Some(9));
 
         let unicode = "e\u{301}😀\r\n";
         let unicode_index = LineIndex::new(unicode);
         assert_eq!(
-            unicode_index.utf16_position(unicode, "e\u{301}😀".len()),
-            Some((0, 4))
+            unicode_index.utf8_position(unicode, "e\u{301}😀".len()),
+            Some((0, 7))
         );
-        assert_eq!(unicode_index.offset_utf16(unicode, 0, 3), None);
+        assert_eq!(unicode_index.offset_utf8(unicode, 0, 3), Some(3));
         assert_eq!(
-            unicode_index.utf16_position(unicode, unicode.len()),
+            unicode_index.utf8_position(unicode, unicode.len()),
             Some((1, 0))
         );
     }
@@ -5114,7 +5259,7 @@ mod tests {
         fs::write(&tools_path, "tools").unwrap();
         let snapshot = WorkspaceSnapshot::load(root.path()).unwrap();
         let today_path = dunce::canonicalize(root.path().join("notes/today.not")).unwrap();
-        let file_id = snapshot.file_id(&today_path).unwrap();
+        let _file_id = snapshot.file_id(&today_path).unwrap();
 
         // Typing inside an `#import <path>`: module candidates, no label or
         // function leakage, and the same relative-path style the
@@ -5135,8 +5280,7 @@ mod tests {
             let offset = offset.unwrap_or(source.len());
             let mut overlays = SourceOverlays::new();
             overlays.insert(today_path.clone(), Arc::from(source.to_owned()));
-            let overlaid =
-                WorkspaceSnapshot::load_with_overlays(root.path(), overlays).unwrap();
+            let overlaid = WorkspaceSnapshot::load_with_overlays(root.path(), overlays).unwrap();
             let overlaid_id = overlaid.file_id(&today_path).unwrap();
             let candidates = overlaid.completions_at(overlaid_id, offset);
             assert!(

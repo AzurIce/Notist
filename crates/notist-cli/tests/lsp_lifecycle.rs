@@ -10,8 +10,12 @@ fn initialize_advertises_the_documented_capabilities_and_clean_shutdown_exits_su
     let mut client = Client::spawn(&vault);
     let capabilities = client.initialize(&vault);
 
-    assert_eq!(capabilities["positionEncoding"], "utf-16");
-    assert_eq!(capabilities["textDocumentSync"], 1);
+    let encoding = capabilities["positionEncoding"].as_str().unwrap();
+    assert_eq!(encoding, "utf-8");
+    let sync = &capabilities["textDocumentSync"];
+    assert_eq!(sync["openClose"], true);
+    assert_eq!(sync["change"], 2, "TextDocumentSyncKind::INCREMENTAL");
+    assert_eq!(sync["save"], true, "didSave support is declared");
     assert_eq!(
         capabilities["completionProvider"]["triggerCharacters"],
         json!(["[", ":", "#", "(", ",", "<", "/"])
@@ -25,6 +29,37 @@ fn initialize_advertises_the_documented_capabilities_and_clean_shutdown_exits_su
 
     let status = client.shutdown_and_exit();
     assert_eq!(status.code(), Some(0));
+}
+
+#[test]
+fn clients_that_cannot_speak_utf8_are_rejected_at_initialize() {
+    // The wire protocol is UTF-8 only. A client offering utf-16 (or nothing)
+    // gets a loud refusal instead of a session whose every position is
+    // misread.
+    let vault = Vault::new(&[("README.not", "ok\n")]);
+    let mut client = Client::spawn(&vault);
+    let id = client.request(
+        "initialize",
+        json!({
+            "processId": std::process::id(),
+            "rootUri": vault.root_uri(),
+            "capabilities": { "general": { "positionEncodings": ["utf-16"] } },
+            "workspaceFolders": [{"uri": vault.root_uri(), "name": "vault"}],
+        }),
+    );
+    let response = client.await_response(id);
+    let error = response
+        .response_result
+        .expect_err("utf-16-only clients must be refused");
+    assert_eq!(error.code, -32803, "RequestFailed");
+    assert!(
+        error.message.contains("utf-8"),
+        "rejection should name the required encoding: {error:?}"
+    );
+    assert!(
+        client.wait_for_stderr("position encoding"),
+        "the refusal is also logged on stderr"
+    );
 }
 
 #[test]

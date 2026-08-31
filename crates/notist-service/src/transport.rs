@@ -3,13 +3,13 @@
 use std::collections::HashMap;
 use std::io;
 use std::path::{Path, PathBuf};
-use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use serde::{Deserialize, Serialize};
 use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt};
-use tokio::sync::mpsc;
+use tokio::sync::{mpsc, oneshot};
 use tokio::task::JoinSet;
 
 use crate::protocol::{Handshake, HandshakeAccepted, ProtocolVersion, negotiate};
@@ -69,9 +69,122 @@ pub enum ShutdownReply {
 }
 
 pub struct DaemonClient {
-    stream: ClientStream,
-    next_id: u64,
+    shared: Arc<ClientShared>,
+    writer: Option<mpsc::Sender<ClientMessage>>,
     pub handshake: HandshakeAccepted,
+}
+
+impl DaemonClient {
+    fn writer(&self) -> io::Result<&mpsc::Sender<ClientMessage>> {
+        self.writer
+            .as_ref()
+            .ok_or_else(|| io::Error::other("daemon client is closed"))
+    }
+}
+
+impl Drop for DaemonClient {
+    /// Dropping the sender ends the writer task, which drops the write half;
+    /// the daemon then sees EOF and closes its side, releasing the reader
+    /// task. Without this, the writer task's channel receiver would wait
+    /// forever and the connection would never close.
+    fn drop(&mut self) {
+        self.writer = None;
+    }
+}
+
+/// One multiplexed connection's shared state. Requests allocate an id, park a
+/// oneshot in `pending`, and hand the frame to the writer task; the reader
+/// task routes replies back by id. The write channel is bounded so a stalled
+/// daemon applies backpressure instead of unbounded client-side queuing.
+struct ClientShared {
+    pending: Mutex<HashMap<u64, PendingReply>>,
+    shutdown_waiter: Mutex<Option<oneshot::Sender<io::Result<ShutdownReply>>>>,
+    next_id: AtomicU64,
+}
+
+enum PendingReply {
+    Core(oneshot::Sender<io::Result<CoreReply>>),
+    Shutdown(oneshot::Sender<io::Result<ShutdownReply>>),
+}
+
+impl PendingReply {
+    /// Fails a parked reply because the connection died. The shutdown path
+    /// keeps its historical semantics: EOF/reset/broken-pipe mid-shutdown
+    /// counts as acceptance, since the daemon may exit before acknowledging.
+    fn fail(self, error: &io::Error) {
+        match self {
+            PendingReply::Core(sender) => {
+                let _ = sender.send(Err(io::Error::other(format!(
+                    "daemon connection closed: {error}"
+                ))));
+            }
+            PendingReply::Shutdown(sender) => {
+                let reply = if matches!(
+                    error.kind(),
+                    io::ErrorKind::UnexpectedEof
+                        | io::ErrorKind::ConnectionReset
+                        | io::ErrorKind::BrokenPipe
+                ) {
+                    Ok(ShutdownReply::Accepted { pid: None })
+                } else {
+                    Err(io::Error::new(error.kind(), error.to_string()))
+                };
+                let _ = sender.send(reply);
+            }
+        }
+    }
+}
+
+impl ClientShared {
+    fn fail_all(&self, error: &io::Error) {
+        for (_, reply) in self.pending.lock().unwrap().drain() {
+            reply.fail(error);
+        }
+        if let Some(waiter) = self.shutdown_waiter.lock().unwrap().take() {
+            PendingReply::Shutdown(waiter).fail(error);
+        }
+    }
+}
+
+/// One request in flight on a multiplexed connection.
+pub struct Inflight {
+    writer: mpsc::Sender<ClientMessage>,
+    shared: Arc<ClientShared>,
+    id: u64,
+    rx: oneshot::Receiver<io::Result<CoreReply>>,
+    completed: bool,
+}
+
+impl Inflight {
+    pub fn id(&self) -> u64 {
+        self.id
+    }
+
+    /// Waits for the reply. Cancel-safe: awaiting again after a superseded
+    /// wait is fine, which lets `cancellable` wrap this in a select.
+    pub async fn wait(&mut self) -> io::Result<CoreReply> {
+        let result = match &mut self.rx {
+            rx => match rx.await {
+                Ok(result) => result,
+                Err(_) => Err(io::Error::other("daemon connection closed")),
+            },
+        };
+        self.completed = true;
+        result
+    }
+}
+
+/// The caller stopped waiting before the reply arrived: drop the pending
+/// entry and tell the daemon to stop the computation.
+impl Drop for Inflight {
+    fn drop(&mut self) {
+        if self.completed {
+            return;
+        }
+        self.rx.close();
+        self.shared.pending.lock().unwrap().remove(&self.id);
+        let _ = self.writer.try_send(ClientMessage::Cancel { id: self.id });
+    }
 }
 
 impl DaemonClient {
@@ -99,70 +212,148 @@ impl DaemonClient {
                 ));
             }
         };
-        Ok(Self {
-            stream,
-            next_id: 1,
-            handshake: accepted,
-        })
+        Ok(Self::multiplex(stream, accepted))
     }
 
-    pub async fn request(&mut self, request: CoreRequest) -> io::Result<CoreReply> {
-        let id = self.next_id;
-        self.next_id = self
-            .next_id
-            .checked_add(1)
-            .ok_or_else(|| io::Error::other("local request ID overflow"))?;
-        write_frame(&mut self.stream, &ClientMessage::Request { id, request }).await?;
-        match read_frame(&mut self.stream).await? {
-            ServerMessage::Response {
-                id: response_id,
-                result,
-            } if response_id == id => result.map_err(io::Error::other),
-            ServerMessage::Response { .. } => Err(io::Error::new(
-                io::ErrorKind::InvalidData,
-                "daemon returned an out-of-order response",
-            )),
-            ServerMessage::HandshakeAccepted { .. }
-            | ServerMessage::HandshakeRejected { .. }
-            | ServerMessage::ShutdownAccepted { .. }
-            | ServerMessage::ShutdownRejected { .. } => Err(io::Error::new(
-                io::ErrorKind::InvalidData,
-                "daemon repeated the handshake or sent a control reply",
-            )),
+    /// Turns a handshake-completed stream into a multiplexed client: a bounded
+    /// writer task plus a reader task that routes replies to their waiters.
+    fn multiplex<S>(stream: S, accepted: HandshakeAccepted) -> Self
+    where
+        S: AsyncRead + AsyncWrite + Send + 'static,
+    {
+        let (writer, mut writer_rx) = mpsc::channel(64);
+        let (mut reader_half, mut writer_half) = tokio::io::split(stream);
+        let shared = Arc::new(ClientShared {
+            pending: Mutex::new(HashMap::new()),
+            shutdown_waiter: Mutex::new(None),
+            next_id: AtomicU64::new(1),
+        });
+
+        tokio::spawn(async move {
+            while let Some(message) = writer_rx.recv().await {
+                // A write error means the connection is dead in some way the
+                // reader will also observe; it fails every pending reply there.
+                if write_frame(&mut writer_half, &message).await.is_err() {
+                    break;
+                }
+            }
+            // The client is gone: half-close so the daemon observes EOF and
+            // can release its views (dropping the half alone does not shut
+            // the stream down — `tokio::io::split` keeps the socket alive in
+            // the read half).
+            let _ = AsyncWriteExt::shutdown(&mut writer_half).await;
+        });
+
+        let reader_shared = shared.clone();
+        tokio::spawn(async move {
+            loop {
+                match read_frame::<_, ServerMessage>(&mut reader_half).await {
+                    Ok(ServerMessage::Response { id, result }) => {
+                        if let Some(pending) = reader_shared.pending.lock().unwrap().remove(&id) {
+                            pending.deliver(result.map_err(io::Error::other));
+                        }
+                    }
+                    Ok(ServerMessage::ShutdownAccepted { pid }) => {
+                        if let Some(waiter) = reader_shared.shutdown_waiter.lock().unwrap().take() {
+                            let _ = waiter.send(Ok(ShutdownReply::Accepted { pid: Some(pid) }));
+                        }
+                    }
+                    Ok(ServerMessage::ShutdownRejected { message }) => {
+                        if let Some(waiter) = reader_shared.shutdown_waiter.lock().unwrap().take() {
+                            let _ = waiter.send(Ok(ShutdownReply::Rejected { message }));
+                        }
+                    }
+                    // A post-handshake handshake reply cannot be routed to
+                    // anything; drop it.
+                    Ok(ServerMessage::HandshakeAccepted { .. })
+                    | Ok(ServerMessage::HandshakeRejected { .. }) => {}
+                    Err(error) => {
+                        reader_shared.fail_all(&error);
+                        break;
+                    }
+                }
+            }
+        });
+
+        Self {
+            shared,
+            writer: Some(writer),
+            handshake: accepted,
         }
     }
 
-    pub async fn cancel(&mut self, id: u64) -> io::Result<()> {
-        write_frame(&mut self.stream, &ClientMessage::Cancel { id }).await
+    /// Registers a request on the connection without waiting for its reply.
+    /// Requests may interleave freely; callers that need ordering must
+    /// sequence their own requests (the LSP builder does).
+    pub fn send(&self, request: CoreRequest) -> io::Result<Inflight> {
+        let id = self.shared.next_id.fetch_add(1, Ordering::Relaxed);
+        let (tx, rx) = oneshot::channel();
+        if self
+            .shared
+            .pending
+            .lock()
+            .unwrap()
+            .insert(id, PendingReply::Core(tx))
+            .is_some()
+        {
+            return Err(io::Error::other("duplicate local request id"));
+        }
+        match self
+            .writer()?
+            .try_send(ClientMessage::Request { id, request })
+        {
+            Ok(()) => Ok(Inflight {
+                writer: self.writer()?.clone(),
+                shared: self.shared.clone(),
+                id,
+                rx,
+                completed: false,
+            }),
+            Err(error) => {
+                self.shared.pending.lock().unwrap().remove(&id);
+                Err(io::Error::other(format!(
+                    "daemon write queue rejected the request: {error}"
+                )))
+            }
+        }
+    }
+
+    pub async fn request(&self, request: CoreRequest) -> io::Result<CoreReply> {
+        self.send(request)?.wait().await
+    }
+
+    pub async fn cancel(&self, id: u64) -> io::Result<()> {
+        self.writer()?
+            .send(ClientMessage::Cancel { id })
+            .await
+            .map_err(|error| io::Error::other(format!("daemon writer closed: {error}")))
     }
 
     /// Ask the daemon to stop serving. A dropped connection after the request
     /// is treated as acceptance: the daemon may exit before acknowledging.
-    pub async fn shutdown(&mut self, force: bool) -> io::Result<ShutdownReply> {
-        write_frame(&mut self.stream, &ClientMessage::Shutdown { force }).await?;
-        let reply = read_frame(&mut self.stream).await;
-        match reply {
-            Ok(ServerMessage::ShutdownAccepted { pid }) => {
-                Ok(ShutdownReply::Accepted { pid: Some(pid) })
-            }
-            Ok(ServerMessage::ShutdownRejected { message }) => {
-                Ok(ShutdownReply::Rejected { message })
-            }
-            Ok(_) => Err(io::Error::new(
-                io::ErrorKind::InvalidData,
-                "daemon returned an unexpected shutdown reply",
+    pub async fn shutdown(&self, force: bool) -> io::Result<ShutdownReply> {
+        let (tx, rx) = oneshot::channel();
+        *self.shared.shutdown_waiter.lock().unwrap() = Some(tx);
+        if let Err(error) = self.writer()?.send(ClientMessage::Shutdown { force }).await {
+            *self.shared.shutdown_waiter.lock().unwrap() = None;
+            return Err(io::Error::other(format!("daemon writer closed: {error}")));
+        }
+        match rx.await {
+            Ok(reply) => reply,
+            Err(_) => Err(io::Error::other(
+                "daemon connection closed before the shutdown reply",
             )),
-            Err(error)
-                if matches!(
-                    error.kind(),
-                    io::ErrorKind::UnexpectedEof
-                        | io::ErrorKind::ConnectionReset
-                        | io::ErrorKind::BrokenPipe
-                ) =>
-            {
-                Ok(ShutdownReply::Accepted { pid: None })
+        }
+    }
+}
+
+impl PendingReply {
+    fn deliver(self, result: io::Result<CoreReply>) {
+        match self {
+            PendingReply::Core(sender) => {
+                let _ = sender.send(result);
             }
-            Err(error) => Err(error),
+            PendingReply::Shutdown(_) => {}
         }
     }
 }
@@ -999,5 +1190,210 @@ mod tests {
         )
         .unwrap();
         assert_eq!(accepted.daemon_binary_stamp, None);
+    }
+
+    /// Serves one connection and returns a multiplexed client over a duplex
+    /// pair, with the handshake already exchanged. The vault stays alive for
+    /// the caller to hold.
+    async fn multiplexed_pair() -> (
+        DaemonClient,
+        tokio::task::JoinHandle<io::Result<()>>,
+        tempfile::TempDir,
+    ) {
+        let vault = tempfile::TempDir::new_in(std::env::current_dir().unwrap()).unwrap();
+        std::fs::write(vault.path().join("README.not"), "= T\n").unwrap();
+        let vault_root = dunce::canonicalize(vault.path()).unwrap();
+        let (mut client_half, server_half) = tokio::io::duplex(4096);
+        let task = tokio::spawn(serve_connection(
+            server_half,
+            Arc::new(vault_root.clone()),
+            Arc::new(NotistService::for_root(&vault_root).unwrap()),
+            Arc::new(None),
+            Arc::new(AtomicUsize::new(1)),
+            tokio::sync::watch::channel(false).0,
+            None,
+        ));
+        write_frame(
+            &mut client_half,
+            &ClientMessage::Handshake {
+                handshake: Handshake {
+                    protocol_version: ProtocolVersion::CURRENT,
+                    client_kind: ClientKind::Test,
+                    client_version: "test".into(),
+                    vault_root: vault_root.clone(),
+                    vault_generation: None,
+                    requested_capabilities: Vec::new(),
+                },
+            },
+        )
+        .await
+        .unwrap();
+        let accepted = match read_frame::<_, ServerMessage>(&mut client_half)
+            .await
+            .unwrap()
+        {
+            ServerMessage::HandshakeAccepted { accepted } => accepted,
+            other => panic!("expected handshake acceptance, got {other:?}"),
+        };
+        (DaemonClient::multiplex(client_half, accepted), task, vault)
+    }
+
+    #[tokio::test]
+    async fn client_multiplexes_concurrent_requests_over_one_connection() {
+        let (client, task, _vault) = multiplexed_pair().await;
+        let opened = client.request(CoreRequest::OpenView {
+            root: dunce::canonicalize(_vault.path()).unwrap(),
+            kind: crate::ProtocolViewKind::Session,
+        });
+        let view_id = match opened.await.unwrap().response {
+            CoreResponse::Opened { view_id, .. } => view_id,
+            other => panic!("expected an opened view, got {other:?}"),
+        };
+
+        // Two requests in flight at once over the same connection, replies
+        // routed by id even though they complete out of order internally.
+        let (first, second) = tokio::join!(
+            async {
+                client
+                    .request(CoreRequest::SnapshotSummary { view_id })
+                    .await
+                    .unwrap()
+            },
+            async {
+                client
+                    .request(CoreRequest::SnapshotSummary { view_id })
+                    .await
+                    .unwrap()
+            }
+        );
+        match (first.response, second.response) {
+            (CoreResponse::SnapshotSummary(first), CoreResponse::SnapshotSummary(second)) => {
+                assert_eq!(first.module_count, second.module_count)
+            }
+            other => panic!("expected snapshot summaries, got {other:?}"),
+        }
+        // Dropping the client closes the connection (EOF), which is how the
+        // serve task knows to finish.
+        drop(client);
+        task.await.unwrap().unwrap();
+    }
+
+    #[tokio::test]
+    async fn cancelled_inflight_requests_report_the_cancellation() {
+        // A mock daemon that answers only after seeing the client's cancel:
+        // deterministic, unlike racing a real computation.
+        let (client_half, mut server) = tokio::io::duplex(4096);
+        let accepted: HandshakeAccepted = serde_json::from_str(
+            r#"{"protocol_version":{"major":3,"minor":2},"daemon_instance":"i","capabilities":[]}"#,
+        )
+        .unwrap();
+        let client = DaemonClient::multiplex(client_half, accepted);
+
+        let mut inflight = client
+            .send(CoreRequest::Status {
+                view_id: crate::ServiceViewId(0),
+            })
+            .unwrap();
+        client.cancel(inflight.id()).await.unwrap();
+
+        // The mock observes request and cancel in order, then errors.
+        match read_frame::<_, ClientMessage>(&mut server).await.unwrap() {
+            ClientMessage::Request { id, .. } => {
+                match read_frame::<_, ClientMessage>(&mut server).await.unwrap() {
+                    ClientMessage::Cancel { id: cancelled_id } => {
+                        assert_eq!(id, cancelled_id);
+                        write_frame(
+                            &mut server,
+                            &ServerMessage::Response {
+                                id,
+                                result: Box::new(Err("request cancelled".into())),
+                            },
+                        )
+                        .await
+                        .unwrap();
+                    }
+                    other => panic!("expected a cancel frame, got {other:?}"),
+                }
+            }
+            other => panic!("expected a request frame, got {other:?}"),
+        }
+
+        let error = inflight.wait().await.unwrap_err();
+        assert_eq!(error.to_string(), "request cancelled");
+    }
+
+    #[tokio::test]
+    async fn dropping_an_unwaited_inflight_sends_a_cancel() {
+        let (client_half, mut server) = tokio::io::duplex(4096);
+        let accepted: HandshakeAccepted = serde_json::from_str(
+            r#"{"protocol_version":{"major":3,"minor":2},"daemon_instance":"i","capabilities":[]}"#,
+        )
+        .unwrap();
+        let client = DaemonClient::multiplex(client_half, accepted);
+
+        let inflight = client
+            .send(CoreRequest::Status {
+                view_id: crate::ServiceViewId(0),
+            })
+            .unwrap();
+        let id = inflight.id();
+        drop(inflight);
+
+        match read_frame::<_, ClientMessage>(&mut server).await.unwrap() {
+            ClientMessage::Request { id: request_id, .. } => assert_eq!(request_id, id),
+            other => panic!("expected a request frame, got {other:?}"),
+        }
+        match read_frame::<_, ClientMessage>(&mut server).await.unwrap() {
+            ClientMessage::Cancel { id: cancel_id } => assert_eq!(cancel_id, id),
+            other => panic!("expected a cancel frame after the drop, got {other:?}"),
+        }
+    }
+
+    #[tokio::test]
+    async fn connection_loss_fails_every_pending_request() {
+        let (client_half, server) = tokio::io::duplex(4096);
+        let accepted: HandshakeAccepted = serde_json::from_str(
+            r#"{"protocol_version":{"major":3,"minor":2},"daemon_instance":"i","capabilities":[]}"#,
+        )
+        .unwrap();
+        let client = DaemonClient::multiplex(client_half, accepted);
+
+        let mut inflight = client
+            .send(CoreRequest::Status {
+                view_id: crate::ServiceViewId(0),
+            })
+            .unwrap();
+        drop(server);
+
+        let error = inflight.wait().await.unwrap_err();
+        assert!(
+            error.to_string().contains("daemon connection closed"),
+            "{error}"
+        );
+    }
+
+    #[tokio::test]
+    async fn multiplexed_shutdown_routes_the_control_reply() {
+        let (client_half, mut server) = tokio::io::duplex(4096);
+        let accepted: HandshakeAccepted = serde_json::from_str(
+            r#"{"protocol_version":{"major":3,"minor":2},"daemon_instance":"i","capabilities":[]}"#,
+        )
+        .unwrap();
+        let client = DaemonClient::multiplex(client_half, accepted);
+
+        let shutdown = client.shutdown(false);
+        let (_, reply) = tokio::join!(
+            async {
+                match read_frame::<_, ClientMessage>(&mut server).await.unwrap() {
+                    ClientMessage::Shutdown { force } => assert!(!force),
+                    other => panic!("expected a shutdown frame, got {other:?}"),
+                }
+                write_frame(&mut server, &ServerMessage::ShutdownAccepted { pid: 7 })
+                    .await
+                    .unwrap();
+            },
+            shutdown
+        );
+        assert_eq!(reply.unwrap(), ShutdownReply::Accepted { pid: Some(7) });
     }
 }

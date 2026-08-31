@@ -26,15 +26,16 @@ use lsp_types::{
     HoverProviderCapability, InitializeParams, Location, LogMessageParams, MarkupContent,
     MarkupKind, MessageType, NumberOrString, OneOf, Position, PositionEncodingKind,
     PublishDiagnosticsParams, Range, ReferenceParams, ServerCapabilities, SymbolKind,
-    TextDocumentIdentifier, TextDocumentSyncCapability, TextDocumentSyncKind, TextEdit, Uri,
+    TextDocumentContentChangeEvent, TextDocumentIdentifier, TextDocumentSyncCapability,
+    TextDocumentSyncKind, TextDocumentSyncOptions, TextDocumentSyncSaveOptions, TextEdit, Uri,
     WorkspaceSymbolParams, WorkspaceSymbolResponse,
 };
-use notist_analysis::{LineIndex, discover_vault_roots};
+use notist_analysis::{LineIndex, LineTable, discover_vault_roots};
 use notist_model::TextRange;
 use notist_service::protocol::ClientKind;
 use notist_service::{
-    CoreRequest, CoreResponse, DiagnosticRecord, PassiveDebouncedWatcher, ProtocolViewKind,
-    ServiceViewId,
+    CoreRequest, CoreResponse, DiagnosticRecord, OverlayDocument, PassiveDebouncedWatcher,
+    ProtocolViewKind, ServiceViewId,
 };
 
 use crate::service::{LocalNotistClient, RequestHandle};
@@ -53,14 +54,27 @@ const URI_PATH_ENCODE_SET: &AsciiSet = &CONTROLS
 
 pub fn run(no_daemon: bool) -> Result<ExitCode, Box<dyn Error>> {
     let (connection, io_threads) = Connection::stdio();
-    // Two-phase handshake: the client's offered encodings must be known
-    // before the result is sent, so `Connection::initialize` (which builds
-    // the response up front) cannot be used here.
+    // Two-phase handshake: whether the client can speak our only wire
+    // encoding must be known before the result is sent, so
+    // `Connection::initialize` (which builds the response up front) cannot
+    // be used here.
     let (initialize_id, initialize_params) = connection.initialize_start()?;
     let initialization: InitializeParams = serde_json::from_value(initialize_params)?;
-    let encoding = negotiated_position_encoding(&initialization);
+    if let Err(message) = require_utf8_position_encoding(&initialization) {
+        // Refuse the session instead of answering utf-8 to a client that
+        // will read it as utf-16 — that would corrupt every position.
+        let _ = connection.sender.send(Message::Response(Response::new_err(
+            initialize_id,
+            ErrorCode::RequestFailed as i32,
+            message.clone(),
+        )));
+        eprintln!("notist lsp: {message}");
+        drop(connection);
+        io_threads.join()?;
+        return Ok(ExitCode::FAILURE);
+    }
     let initialize_result = serde_json::json!({
-        "capabilities": server_capabilities(encoding),
+        "capabilities": server_capabilities(),
         "serverInfo": {
             "name": "notist",
             "version": env!("CARGO_PKG_VERSION"),
@@ -68,7 +82,7 @@ pub fn run(no_daemon: bool) -> Result<ExitCode, Box<dyn Error>> {
     });
     connection.initialize_finish(initialize_id, initialize_result)?;
     let root = workspace_root(&initialization)?;
-    let session = LspSession::with_encoding(root, no_daemon, encoding)?;
+    let session = LspSession::new(root, no_daemon)?;
     let runtime = Runtime::spawn(&connection);
     let workspace_events = runtime.injection_sender();
     let mut watcher = PassiveDebouncedWatcher::new(Duration::from_millis(250), move |paths| {
@@ -84,51 +98,47 @@ pub fn run(no_daemon: bool) -> Result<ExitCode, Box<dyn Error>> {
     Ok(ExitCode::SUCCESS)
 }
 
-/// Position encodings this server can answer with. UTF-16 is the LSP
-/// default and the historical behaviour; UTF-8 is offered for clients that
-/// cannot do UTF-16 (columns become byte offsets).
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-enum PositionEncoding {
-    Utf8,
-    Utf16,
-}
-
-impl PositionEncoding {
-    fn kind(self) -> PositionEncodingKind {
-        match self {
-            PositionEncoding::Utf8 => PositionEncodingKind::UTF8,
-            PositionEncoding::Utf16 => PositionEncodingKind::UTF16,
-        }
-    }
-}
-
-/// Picks the encoding from the client's `general.positionEncodings` offer.
-/// UTF-16 wins when offered (or when the client stays silent, per spec
-/// default); otherwise UTF-8 if offered. An offer without either falls back
-/// to the UTF-16 default.
-fn negotiated_position_encoding(params: &InitializeParams) -> PositionEncoding {
+/// The wire protocol is UTF-8 only: core offsets are bytes and the downlink
+/// is line tables. A client that does not offer utf-8 in
+/// `general.positionEncodings` is rejected at initialize instead of being
+/// served positions it would read as utf-16 (a silent client defaults to
+/// utf-16 per the spec, so answering utf-8 to it would corrupt everything).
+fn require_utf8_position_encoding(params: &InitializeParams) -> Result<(), String> {
     let offered = params
         .capabilities
         .general
         .as_ref()
         .and_then(|general| general.position_encodings.as_ref());
-    let offers = |kind: &PositionEncodingKind| {
-        offered
-            .is_none_or(|list| list.iter().any(|candidate| candidate == kind))
-    };
-    if offers(&PositionEncodingKind::UTF16) {
-        PositionEncoding::Utf16
-    } else if offers(&PositionEncodingKind::UTF8) {
-        PositionEncoding::Utf8
+    let supports_utf8 = offered.is_some_and(|list| {
+        list.iter()
+            .any(|candidate| candidate == &PositionEncodingKind::UTF8)
+    });
+    if supports_utf8 {
+        Ok(())
     } else {
-        PositionEncoding::Utf16
+        Err(
+            "notist lsp requires a client that offers the `utf-8` position encoding in              general.positionEncodings (VS Code languageclient >= 8, Zed, and Neovim >= 0.11              all do)"
+                .into(),
+        )
     }
 }
 
-fn server_capabilities(encoding: PositionEncoding) -> ServerCapabilities {
+fn server_capabilities() -> ServerCapabilities {
     ServerCapabilities {
-        position_encoding: Some(encoding.kind()),
-        text_document_sync: Some(TextDocumentSyncCapability::Kind(TextDocumentSyncKind::FULL)),
+        position_encoding: Some(PositionEncodingKind::UTF8),
+        // Incremental sync: ranged edits keep client→server traffic
+        // proportional to the edit, not the document. Whole-document changes
+        // remain accepted for clients that still send them (the obsidian
+        // plugin does today).
+        text_document_sync: Some(TextDocumentSyncCapability::Options(
+            TextDocumentSyncOptions {
+                open_close: Some(true),
+                change: Some(TextDocumentSyncKind::INCREMENTAL),
+                will_save: None,
+                will_save_wait_until: None,
+                save: Some(TextDocumentSyncSaveOptions::Supported(true)),
+            },
+        )),
         completion_provider: Some(CompletionOptions {
             resolve_provider: Some(false),
             trigger_characters: Some(vec![
@@ -293,7 +303,15 @@ fn main_loop_inner(
     builder: &mpsc::Sender<BuildJob>,
     pool: &mpsc::Sender<PoolJob>,
 ) -> Result<(), Box<dyn Error>> {
-    publish_diagnostics(connection, &mut session)?;
+    // Publication failures must not take the loop down (see the notification
+    // containment below): the next build republishes anyway.
+    if let Err(error) = publish_diagnostics(connection, &mut session) {
+        report_issue(
+            connection,
+            MessageType::ERROR,
+            format!("diagnostics publication failed: {error}"),
+        );
+    }
     let cancellations: Arc<Mutex<BTreeMap<lsp_server::RequestId, Arc<AtomicBool>>>> =
         Arc::new(Mutex::new(BTreeMap::new()));
     let mut build_in_flight = false;
@@ -353,7 +371,16 @@ fn main_loop_inner(
                     break;
                 }
                 if notification.method == Cancel::METHOD {
-                    let params: CancelParams = serde_json::from_value(notification.params)?;
+                    // A malformed cancel is dropped like any other bad message:
+                    // it must never be able to terminate the server.
+                    let Ok(params) = serde_json::from_value::<CancelParams>(notification.params)
+                    else {
+                        eprintln!(
+                            "notist lsp: dropped malformed {} notification",
+                            notification.method
+                        );
+                        continue;
+                    };
                     let id = match params.id {
                         NumberOrString::Number(id) => lsp_server::RequestId::from(id),
                         NumberOrString::String(id) => lsp_server::RequestId::from(id),
@@ -363,7 +390,7 @@ fn main_loop_inner(
                     }
                     continue;
                 }
-                let changed = handle_notification(connection, &mut session, notification)?;
+                let changed = handle_notification(connection, &mut session, notification);
                 if changed {
                     session.mark_dirty();
                     session.submit_build_if_dirty(builder, &mut build_in_flight);
@@ -390,7 +417,13 @@ fn main_loop_inner(
                         session.input_generation
                     );
                 }
-                publish_diagnostics(connection, &mut session)?;
+                if let Err(error) = publish_diagnostics(connection, &mut session) {
+                    report_issue(
+                        connection,
+                        MessageType::ERROR,
+                        format!("diagnostics publication failed: {error}"),
+                    );
+                }
                 session.submit_build_if_dirty(builder, &mut build_in_flight);
             }
         }
@@ -528,42 +561,61 @@ fn report_issue(connection: &Connection, level: MessageType, message: String) {
         )));
 }
 
+/// Failure classes for one client notification. Decode failures are pure
+/// client bugs (stderr only); session-level failures (unroutable URIs,
+/// contract issues) also reach the client through `window/logMessage`.
+enum NotificationError {
+    Decode(serde_json::Error),
+    Session(Box<dyn Error>),
+}
+
+/// Handles one client notification. Every failure is contained here — a
+/// malformed or unroutable message must never take the server down — and the
+/// return value only reports whether vault inputs changed.
 fn handle_notification(
     connection: &Connection,
     session: &mut LspSession,
     notification: Notification,
-) -> Result<bool, Box<dyn Error>> {
-    match notification.method.as_str() {
-        DidOpenTextDocument::METHOD => {
-            let params: DidOpenTextDocumentParams = serde_json::from_value(notification.params)?;
-            session.open(params)?;
-            Ok(true)
-        }
+) -> bool {
+    let method = notification.method.clone();
+    let handled = match notification.method.as_str() {
+        DidOpenTextDocument::METHOD => decode_notification(notification.params, |params| {
+            session.open(params).map(|_| true)
+        }),
         DidChangeTextDocument::METHOD => {
-            let params: DidChangeTextDocumentParams = serde_json::from_value(notification.params)?;
-            match session.change(params) {
-                Ok(changed) => Ok(changed),
-                Err(error) => {
-                    report_issue(
-                        connection,
-                        MessageType::WARNING,
-                        format!("rejected didChange: {error}"),
-                    );
-                    Ok(false)
-                }
-            }
+            decode_notification(notification.params, |params| session.change(params))
         }
         DidSaveTextDocument::METHOD => {
-            let params: DidSaveTextDocumentParams = serde_json::from_value(notification.params)?;
-            Ok(session.save(params)?)
+            decode_notification(notification.params, |params| session.save(params))
         }
-        DidCloseTextDocument::METHOD => {
-            let params: DidCloseTextDocumentParams = serde_json::from_value(notification.params)?;
-            session.close(params)?;
-            Ok(true)
-        }
+        DidCloseTextDocument::METHOD => decode_notification(notification.params, |params| {
+            session.close(params).map(|_| true)
+        }),
         _ => Ok(false),
+    };
+    match handled {
+        Ok(changed) => changed,
+        Err(NotificationError::Decode(error)) => {
+            eprintln!("notist lsp: dropped malformed {method} notification: {error}");
+            false
+        }
+        Err(NotificationError::Session(error)) => {
+            report_issue(
+                connection,
+                MessageType::WARNING,
+                format!("rejected {method}: {error}"),
+            );
+            false
+        }
     }
+}
+
+fn decode_notification<T: serde::de::DeserializeOwned>(
+    params: serde_json::Value,
+    handle: impl FnOnce(T) -> Result<bool, Box<dyn Error>>,
+) -> Result<bool, NotificationError> {
+    let params: T = serde_json::from_value(params).map_err(NotificationError::Decode)?;
+    handle(params).map_err(NotificationError::Session)
 }
 
 #[derive(Clone, Debug)]
@@ -572,21 +624,46 @@ struct OpenDocument {
     source: Arc<str>,
 }
 
+/// The adapter's coordinate converter for one source, backed by the file's
+/// byte-offset line table. The wire protocol is UTF-8 only, so columns are
+/// byte columns and convert without the source text; positions past line
+/// boundaries saturate (core validates offsets like it always has for CLI
+/// callers).
 #[derive(Clone)]
 struct ClientSource {
-    text: Arc<str>,
-    line_index: LineIndex,
-    encoding: PositionEncoding,
+    table: Arc<LineTable>,
 }
 
 impl ClientSource {
-    fn new(text: String, encoding: PositionEncoding) -> Self {
-        let text: Arc<str> = Arc::from(text);
+    fn from_text(text: &str) -> Self {
         Self {
-            line_index: LineIndex::new(&text),
-            text,
-            encoding,
+            table: Arc::new(LineIndex::new(text).line_table(text)),
         }
+    }
+
+    fn from_parts(starts: Vec<u32>, content_ends: Vec<u32>, end: u32) -> Self {
+        Self {
+            table: Arc::new(LineTable {
+                starts: starts.into(),
+                content_ends: content_ends.into(),
+                end,
+            }),
+        }
+    }
+
+    /// Incoming LSP position → byte offset.
+    fn offset(&self, position: Position) -> usize {
+        self.table.offset(position.line, position.character)
+    }
+
+    /// Outgoing byte offset → LSP position.
+    fn position(&self, offset: usize) -> Position {
+        let (line, character) = self.table.position(offset);
+        Position::new(line, character)
+    }
+
+    fn range(&self, range: TextRange) -> Range {
+        Range::new(self.position(range.start), self.position(range.end))
     }
 }
 
@@ -598,13 +675,15 @@ type VaultClient = RequestHandle;
 struct LspSession {
     root: PathBuf,
     no_daemon: bool,
-    encoding: PositionEncoding,
     documents: BTreeMap<PathBuf, OpenDocument>,
     vaults: BTreeMap<PathBuf, VaultSession>,
     published_paths: BTreeSet<PathBuf>,
     /// Content signature of the diagnostics last sent per path; unchanged
     /// sets are not republished (delta publication).
     published_signatures: BTreeMap<PathBuf, u64>,
+    /// Document versions the service's overlay set is known to hold. Drives
+    /// the UpdateViewDelta diff: only changed documents travel the wire.
+    sent_overlays: BTreeMap<PathBuf, i32>,
     input_generation: u64,
     dirty: bool,
 }
@@ -645,7 +724,6 @@ impl QueryVault {
 
 #[derive(Clone)]
 struct RequestContext {
-    encoding: PositionEncoding,
     vaults: BTreeMap<PathBuf, QueryVault>,
 }
 
@@ -654,10 +732,15 @@ struct RequestContext {
 struct BuildJob {
     workspace_root: PathBuf,
     no_daemon: bool,
-    encoding: PositionEncoding,
     documents: BTreeMap<PathBuf, OpenDocument>,
     live_vaults: Vec<(PathBuf, ServiceViewId, VaultClient)>,
     generation: u64,
+    /// Overlays that differ from `sent_overlays`, plus overlays the service
+    /// still holds for documents that have since been closed.
+    overlay_upsert: Vec<OverlayDocument>,
+    overlay_remove: Vec<PathBuf>,
+    /// The overlay versions the service will hold once this job applies.
+    new_sent: BTreeMap<PathBuf, i32>,
 }
 
 struct BuiltVault {
@@ -671,6 +754,8 @@ enum BuildOutcome {
     Applied {
         generation: u64,
         vaults: Vec<BuiltVault>,
+        /// Overlay versions the service now holds; committed only on apply.
+        new_sent: BTreeMap<PathBuf, i32>,
     },
     Failed {
         generation: u64,
@@ -690,7 +775,11 @@ impl BuildOutcome {
 fn compute_build(job: &BuildJob) -> BuildOutcome {
     let generation = job.generation;
     match compute_build_inner(job) {
-        Ok(vaults) => BuildOutcome::Applied { generation, vaults },
+        Ok(vaults) => BuildOutcome::Applied {
+            generation,
+            vaults,
+            new_sent: job.new_sent.clone(),
+        },
         Err(error) => BuildOutcome::Failed {
             generation,
             error: error.to_string(),
@@ -710,16 +799,6 @@ fn compute_build_inner(job: &BuildJob) -> Result<Vec<BuiltVault>, Box<dyn Error>
         .collect();
     let mut built = Vec::new();
     for root in &roots {
-        let documents = job
-            .documents
-            .iter()
-            .filter(|(path, _)| assigned_vault_root(path, &roots) == Some(root))
-            .map(|(path, document)| notist_service::OverlayDocument {
-                path: path.clone(),
-                version: i64::from(document.version),
-                text: document.source.to_string(),
-            })
-            .collect::<Vec<_>>();
         let (view_id, client) = if let Some(handle) = previous.remove(root) {
             handle
         } else {
@@ -734,25 +813,72 @@ fn compute_build_inner(job: &BuildJob) -> Result<Vec<BuiltVault>, Box<dyn Error>
             };
             (view_id, handle)
         };
-        client.request(CoreRequest::UpdateView {
-            view_id,
-            documents,
-            configuration: None,
-        })?;
-        let sources_reply = client.request(CoreRequest::Sources { view_id })?;
-        let CoreResponse::Sources(sources) = sources_reply.response else {
-            return Err("service returned an unexpected sources response".into());
+        // Overlay sync: a burst that changed overlays travels as a delta; a
+        // watcher-only build (overlays untouched) keeps the full update so
+        // its disk-refresh semantics are preserved exactly.
+        let upsert: Vec<_> = job
+            .overlay_upsert
+            .iter()
+            .filter(|document| assigned_vault_root(&document.path, &roots) == Some(root))
+            .cloned()
+            .collect();
+        let remove: Vec<_> = job
+            .overlay_remove
+            .iter()
+            .filter(|path| assigned_vault_root(path, &roots) == Some(root))
+            .cloned()
+            .collect();
+        if !upsert.is_empty() || !remove.is_empty() {
+            client.request(CoreRequest::UpdateViewDelta {
+                view_id,
+                upsert,
+                remove,
+            })?;
+        } else {
+            // Watcher-only build: nothing changed on the overlay side, but the
+            // full update is still what pulls external disk edits into the
+            // session snapshot — and it must carry the COMPLETE overlay set
+            // (replace semantics), never an empty one.
+            let documents: Vec<_> = job
+                .documents
+                .iter()
+                .filter(|(path, _)| assigned_vault_root(path, &roots) == Some(root))
+                .map(|(path, document)| OverlayDocument {
+                    path: path.clone(),
+                    version: i64::from(document.version),
+                    text: document.source.to_string(),
+                })
+                .collect();
+            client.request(CoreRequest::UpdateView {
+                view_id,
+                documents,
+                configuration: None,
+            })?;
+        }
+        // Downlink: per-file line tables — everything the adapter needs to
+        // convert byte columns, without pulling any source text.
+        let tables_reply = client.request(CoreRequest::SourceTables { view_id })?;
+        let CoreResponse::SourceTables(tables) = tables_reply.response else {
+            return Err("service returned an unexpected source-tables response".into());
         };
+        let sources = tables
+            .into_iter()
+            .map(|record| {
+                (
+                    record.path,
+                    ClientSource::from_parts(
+                        record.line_starts,
+                        record.content_ends,
+                        record.end,
+                    ),
+                )
+            })
+            .collect::<BTreeMap<_, _>>();
         built.push(BuiltVault {
             root: root.clone(),
             view_id,
             client,
-            sources: Arc::new(
-                sources
-                    .into_iter()
-                    .map(|source| (source.path, ClientSource::new(source.text, job.encoding)))
-                    .collect(),
-            ),
+            sources: Arc::new(sources),
         });
     }
     for (root, (view_id, client)) in previous {
@@ -767,28 +893,15 @@ fn compute_build_inner(job: &BuildJob) -> Result<Vec<BuiltVault>, Box<dyn Error>
 }
 
 impl LspSession {
-    /// Test-only default-encoding constructor; production entry points go
-    /// through `with_encoding` after handshake negotiation.
-    #[cfg(test)]
     fn new(root: PathBuf, no_daemon: bool) -> Result<Self, Box<dyn Error>> {
-        Self::with_encoding(root, no_daemon, PositionEncoding::Utf16)
-    }
-
-    /// The encoding must be fixed before the first rebuild: captured
-    /// `ClientSource`s inherit it for every position conversion.
-    fn with_encoding(
-        root: PathBuf,
-        no_daemon: bool,
-        encoding: PositionEncoding,
-    ) -> Result<Self, Box<dyn Error>> {
         let mut session = Self {
             root,
             no_daemon,
-            encoding,
             documents: BTreeMap::new(),
             vaults: BTreeMap::new(),
             published_paths: BTreeSet::new(),
             published_signatures: BTreeMap::new(),
+            sent_overlays: BTreeMap::new(),
             input_generation: 0,
             dirty: false,
         };
@@ -820,7 +933,6 @@ impl LspSession {
         BuildJob {
             workspace_root: self.root.clone(),
             no_daemon: self.no_daemon,
-            encoding: self.encoding,
             documents: self.documents.clone(),
             live_vaults: self
                 .vaults
@@ -828,6 +940,27 @@ impl LspSession {
                 .map(|(root, vault)| (root.clone(), vault.view_id, vault.client.clone()))
                 .collect(),
             generation: self.input_generation,
+            overlay_upsert: self
+                .documents
+                .iter()
+                .filter(|(path, document)| self.sent_overlays.get(*path) != Some(&document.version))
+                .map(|(path, document)| OverlayDocument {
+                    path: path.clone(),
+                    version: i64::from(document.version),
+                    text: document.source.to_string(),
+                })
+                .collect(),
+            overlay_remove: self
+                .sent_overlays
+                .keys()
+                .filter(|path| !self.documents.contains_key(*path))
+                .cloned()
+                .collect(),
+            new_sent: self
+                .documents
+                .iter()
+                .map(|(path, document)| (path.clone(), document.version))
+                .collect(),
         }
     }
 
@@ -837,6 +970,7 @@ impl LspSession {
         self.mark_dirty();
         let job = self.build_job();
         let vaults = compute_build_inner(&job)?;
+        self.sent_overlays = job.new_sent;
         self.vaults = vaults
             .into_iter()
             .map(|built| {
@@ -856,7 +990,10 @@ impl LspSession {
 
     fn apply_outcome(&mut self, outcome: BuildOutcome) {
         match outcome {
-            BuildOutcome::Applied { vaults, .. } => {
+            BuildOutcome::Applied {
+                vaults, new_sent, ..
+            } => {
+                self.sent_overlays = new_sent;
                 self.vaults = vaults
                     .into_iter()
                     .map(|built| {
@@ -872,14 +1009,15 @@ impl LspSession {
                     .collect();
             }
             // Failure reporting happens in the main loop, which owns the
-            // client connection; there is no state to roll back.
-            BuildOutcome::Failed { .. } => {}
+            // client connection. The overlay bookkeeping cannot be trusted
+            // for a failed build: clear it so the next build resends every
+            // overlay (self-healing).
+            BuildOutcome::Failed { .. } => self.sent_overlays.clear(),
         }
     }
 
     fn request_context(&self) -> RequestContext {
         RequestContext {
-            encoding: self.encoding,
             vaults: self
                 .vaults
                 .iter()
@@ -911,36 +1049,25 @@ impl LspSession {
 
     fn change(&mut self, params: DidChangeTextDocumentParams) -> Result<bool, Box<dyn Error>> {
         let path = normalize_uri_path(&params.text_document.uri)?;
-        if params.content_changes.len() != 1 {
-            return Err(format!(
-                "client sent {} content changes to a full-sync server; exactly one is required",
-                params.content_changes.len()
-            )
-            .into());
-        }
-        let change = &params.content_changes[0];
-        if change.range.is_some() {
-            return Err("client sent an incremental edit to a full-sync server".into());
-        }
-        if let Some(existing) = self.documents.get(&path)
-            && params.text_document.version < existing.version
-        {
-            return Err(format!(
-                "client sent didChange version {} behind current {} for `{}`",
-                params.text_document.version,
-                existing.version,
+        let Some(document) = self.documents.get_mut(&path) else {
+            // Clients must open a document before changing it; a ranged change
+            // against an unknown buffer would silently corrupt text, so the
+            // notification is dropped rather than guessed at.
+            eprintln!(
+                "notist lsp: unexpected didChange for unopened document `{}`",
                 path.display()
-            )
-            .into());
+            );
+            return Ok(false);
+        };
+        let new_text =
+            apply_document_changes(&document.source, &params.content_changes);
+        let mut changed = false;
+        if new_text != document.source.as_ref() {
+            document.source = Arc::from(new_text.as_str());
+            changed = true;
         }
-        self.documents.insert(
-            path,
-            OpenDocument {
-                version: params.text_document.version,
-                source: Arc::from(change.text.clone()),
-            },
-        );
-        Ok(true)
+        document.version = params.text_document.version;
+        Ok(changed)
     }
 
     fn save(&mut self, params: DidSaveTextDocumentParams) -> Result<bool, Box<dyn Error>> {
@@ -1258,6 +1385,49 @@ fn assigned_vault_root<'a>(
         .max_by_key(|root| root.components().count())
 }
 
+/// Applies LSP content changes sequentially, mirroring rust-analyzer's
+/// `apply_document_changes`. A whole-document change (no range) becomes the
+/// base text and discards all preceding partial changes — equivalent to pure
+/// sequential semantics, since a later whole-document change overwrites
+/// everything before it. Partial changes apply in order against the evolving
+/// text; the line index is rebuilt only when a change reaches past the still
+/// valid prefix, so descending edit batches (the common client shape) rebuild
+/// nothing. Out-of-bounds positions clamp into the document, and a change
+/// whose clamped start exceeds its clamped end is skipped.
+fn apply_document_changes(file_contents: &str, content_changes: &[TextDocumentContentChangeEvent]) -> String {
+    let (mut text, partials) = match content_changes
+        .iter()
+        .rposition(|change| change.range.is_none())
+    {
+        Some(base) => (
+            content_changes[base].text.clone(),
+            &content_changes[base + 1..],
+        ),
+        None => (file_contents.to_owned(), content_changes),
+    };
+    if partials.is_empty() {
+        return text;
+    }
+
+    let mut index = LineIndex::new(&text);
+    // Lines up to `index_valid` are unchanged since `index` was built.
+    let mut index_valid = u32::MAX;
+    for change in partials {
+        let Some(range) = &change.range else { continue };
+        if index_valid <= range.end.line {
+            index = LineIndex::new(&text);
+        }
+        index_valid = range.start.line;
+        let start = index.offset_utf8_saturating(&text, range.start.line, range.start.character);
+        let end = index.offset_utf8_saturating(&text, range.end.line, range.end.character);
+        if start <= end {
+            text.replace_range(start..end, &change.text);
+        }
+    }
+    text
+}
+
+
 fn normalize_uri_path(uri: &Uri) -> Result<PathBuf, Box<dyn Error>> {
     let path = uri_to_file_path(uri)?;
     if path.exists() {
@@ -1370,7 +1540,7 @@ fn publish_diagnostics(
             diagnostics_by_path
                 .entry(path)
                 .or_default()
-                .push(lsp_diagnostic(source, session.encoding, record));
+                .push(lsp_diagnostic(source, record));
         }
     }
 
@@ -1414,15 +1584,8 @@ fn lsp_severity(severity: &str) -> DiagnosticSeverity {
     }
 }
 
-fn lsp_diagnostic(
-    source: Option<&ClientSource>,
-    encoding: PositionEncoding,
-    diagnostic: DiagnosticRecord,
-) -> Diagnostic {
-    let captured_source = diagnostic
-        .source
-        .clone()
-        .map(|text| ClientSource::new(text, encoding));
+fn lsp_diagnostic(source: Option<&ClientSource>, diagnostic: DiagnosticRecord) -> Diagnostic {
+    let captured_source = diagnostic.source.clone().map(|text| ClientSource::from_text(&text));
     let source = captured_source.as_ref().or(source);
     let range = diagnostic
         .range
@@ -1466,7 +1629,7 @@ fn definition(
     let Some(definition) = definition else {
         return Ok(None);
     };
-    let target_source = ClientSource::new(definition.source, context.encoding);
+    let target_source = ClientSource::from_text(&definition.source);
     let uri = file_path_to_uri(&definition.path)?;
     Ok(Some(GotoDefinitionResponse::Scalar(Location::new(
         uri,
@@ -1499,7 +1662,7 @@ fn references(
     };
     let mut locations = Vec::new();
     for result in results {
-        let source = ClientSource::new(result.source, context.encoding);
+        let source = ClientSource::from_text(&result.source);
         let uri = file_path_to_uri(&result.path)?;
         locations.push(Location::new(uri, lsp_range(&source, result.range.into())));
     }
@@ -1591,35 +1754,12 @@ fn source_position<'a>(
     let path = normalize_uri_path(&params.text_document.uri).ok()?;
     let workspace = workspace_for_source(context, &path)?;
     let source = workspace.sources.get(&path)?;
-    let offset = match source.encoding {
-        PositionEncoding::Utf16 => source.line_index.offset_utf16(
-            &source.text,
-            params.position.line,
-            params.position.character,
-        )?,
-        PositionEncoding::Utf8 => source.line_index.offset_utf8(
-            &source.text,
-            params.position.line,
-            params.position.character,
-        )?,
-    };
+    let offset = source.offset(params.position);
     Some((path, workspace, source, offset))
 }
 
-fn lsp_position(source: &ClientSource, offset: usize) -> Position {
-    let position = match source.encoding {
-        PositionEncoding::Utf16 => source.line_index.utf16_position(&source.text, offset),
-        PositionEncoding::Utf8 => source.line_index.utf8_position(&source.text, offset),
-    };
-    let (line, character) = position.unwrap_or((0, 0));
-    Position::new(line, character)
-}
-
 fn lsp_range(source: &ClientSource, range: TextRange) -> Range {
-    Range::new(
-        lsp_position(source, range.start),
-        lsp_position(source, range.end),
-    )
+    source.range(range)
 }
 
 #[cfg(test)]
@@ -1636,17 +1776,9 @@ mod tests {
     use std::time::Duration;
 
     #[test]
-    fn converts_utf8_offsets_and_utf16_positions() {
+    fn converts_utf8_offsets_and_positions() {
         let source = "a😀中\r\nnext";
         let index = LineIndex::new(source);
-
-        assert_eq!(index.utf16_position(source, "a😀".len()), Some((0, 3)));
-        assert_eq!(
-            index.utf16_position(source, "a😀中\r\n".len()),
-            Some((1, 0))
-        );
-        assert_eq!(index.offset_utf16(source, 0, 3), Some("a😀".len()));
-        assert_eq!(index.offset_utf16(source, 1, 2), Some("a😀中\r\nne".len()));
 
         // UTF-8 columns are plain byte offsets within the line.
         assert_eq!(index.utf8_position(source, "a😀中".len()), Some((0, 8)));
@@ -1660,7 +1792,7 @@ mod tests {
     }
 
     #[test]
-    fn negotiates_position_encoding_from_client_offer() {
+    fn clients_must_offer_utf8_to_initialize() {
         fn params(encodings: serde_json::Value) -> InitializeParams {
             serde_json::from_value(serde_json::json!({
                 "process_id": null,
@@ -1669,23 +1801,17 @@ mod tests {
             }))
             .unwrap()
         }
-        assert_eq!(
-            negotiated_position_encoding(&params(serde_json::json!(["utf-8", "utf-16"]))),
-            PositionEncoding::Utf16
+        assert!(require_utf8_position_encoding(&params(serde_json::json!(["utf-8"]))).is_ok());
+        assert!(
+            require_utf8_position_encoding(&params(serde_json::json!(["utf-16", "utf-8"])))
+                .is_ok()
         );
-        assert_eq!(
-            negotiated_position_encoding(&params(serde_json::json!(["utf-8"]))),
-            PositionEncoding::Utf8
-        );
-        // No offer, or an offer without a supported encoding: LSP default.
-        assert_eq!(
-            negotiated_position_encoding(&params(serde_json::json!([]))),
-            PositionEncoding::Utf16
-        );
-        assert_eq!(
-            negotiated_position_encoding(&params(serde_json::json!(null))),
-            PositionEncoding::Utf16
-        );
+        // A client that cannot speak utf-8 is refused: answering utf-8 to it
+        // would corrupt every position.
+        assert!(require_utf8_position_encoding(&params(serde_json::json!(["utf-16"]))).is_err());
+        assert!(require_utf8_position_encoding(&params(serde_json::json!([]))).is_err());
+        // Silence means the utf-16 spec default — equally unservable.
+        assert!(require_utf8_position_encoding(&params(serde_json::json!(null))).is_err());
     }
 
     #[test]
@@ -1885,19 +2011,19 @@ mod tests {
             message: "m".into(),
         };
         assert_eq!(
-            lsp_diagnostic(None, PositionEncoding::Utf16, record("error")).severity,
+            lsp_diagnostic(None, record("error")).severity,
             Some(DiagnosticSeverity::ERROR)
         );
         assert_eq!(
-            lsp_diagnostic(None, PositionEncoding::Utf16, record("warning")).severity,
+            lsp_diagnostic(None, record("warning")).severity,
             Some(DiagnosticSeverity::WARNING)
         );
         assert_eq!(
-            lsp_diagnostic(None, PositionEncoding::Utf16, record("info")).severity,
+            lsp_diagnostic(None, record("info")).severity,
             Some(DiagnosticSeverity::INFORMATION)
         );
         assert_eq!(
-            lsp_diagnostic(None, PositionEncoding::Utf16, record("mystery")).severity,
+            lsp_diagnostic(None, record("mystery")).severity,
             Some(DiagnosticSeverity::ERROR)
         );
     }
@@ -1963,16 +2089,21 @@ mod tests {
     }
 
     #[test]
-    fn rejects_did_change_version_regressions() {
+    fn applies_changes_in_arrival_order_and_records_versions() {
         let root = tempfile::TempDir::new_in(std::env::current_dir().unwrap()).unwrap();
         fs::write(root.path().join("README.not"), "disk").unwrap();
         let root_path = dunce::canonicalize(root.path()).unwrap();
         let mut session = LspSession::new(root_path, true).unwrap();
         let path = dunce::canonicalize(root.path().join("README.not")).unwrap();
         let uri = file_path_to_uri(&path).unwrap();
+        session
+            .open(DidOpenTextDocumentParams {
+                text_document: TextDocumentItem::new(uri, "notist".into(), 1, "first".into()),
+            })
+            .unwrap();
         let change_at = |version: i32, text: &str| DidChangeTextDocumentParams {
             text_document: lsp_types::VersionedTextDocumentIdentifier {
-                uri: uri.clone(),
+                uri: file_path_to_uri(&path).unwrap(),
                 version,
             },
             content_changes: vec![lsp_types::TextDocumentContentChangeEvent {
@@ -1982,18 +2113,133 @@ mod tests {
             }],
         };
 
-        session.change(change_at(3, "third")).unwrap();
-        // A stale change must be rejected instead of silently regressing.
-        assert!(session.change(change_at(2, "second")).is_err());
-        // Equal versions are tolerated (some clients resend on save).
-        session.change(change_at(3, "third again")).unwrap();
+        assert!(session.change(change_at(3, "third")).unwrap());
+        // Versions gate nothing: the ordered stdio stream is the only
+        // ordering authority (matching rust-analyzer and tinymist), so an
+        // out-of-order version still applies and the latest version wins.
+        assert!(session.change(change_at(2, "second")).unwrap());
+        // A resend with identical content changes nothing but still records
+        // the version (some clients resend on save).
+        assert!(!session.change(change_at(2, "second")).unwrap());
         assert_eq!(
             session
                 .documents
                 .get(&path)
                 .map(|document| document.version),
-            Some(3)
+            Some(2)
         );
+        assert_eq!(
+            session
+                .documents
+                .get(&path)
+                .map(|document| document.source.to_string()),
+            Some("second".into())
+        );
+    }
+
+    #[test]
+    fn drops_changes_for_unopened_documents() {
+        let root = tempfile::TempDir::new_in(std::env::current_dir().unwrap()).unwrap();
+        fs::write(root.path().join("README.not"), "disk").unwrap();
+        let root_path = dunce::canonicalize(root.path()).unwrap();
+        let mut session = LspSession::new(root_path, true).unwrap();
+        let path = dunce::canonicalize(root.path().join("README.not")).unwrap();
+        let change = DidChangeTextDocumentParams {
+            text_document: lsp_types::VersionedTextDocumentIdentifier {
+                uri: file_path_to_uri(&path).unwrap(),
+                version: 1,
+            },
+            content_changes: vec![lsp_types::TextDocumentContentChangeEvent {
+                range: None,
+                range_length: None,
+                text: "ghost".into(),
+            }],
+        };
+
+        // No didOpen preceded this change: applying it would be a guess, so
+        // the notification is dropped instead of creating an overlay.
+        assert!(!session.change(change).unwrap());
+        assert!(session.documents.get(&path).is_none());
+    }
+
+    #[test]
+    fn applies_incremental_and_batched_changes() {
+        let root = tempfile::TempDir::new_in(std::env::current_dir().unwrap()).unwrap();
+        fs::write(root.path().join("README.not"), "disk").unwrap();
+        let root_path = dunce::canonicalize(root.path()).unwrap();
+        let mut session = LspSession::new(root_path, true).unwrap();
+        let path = dunce::canonicalize(root.path().join("README.not")).unwrap();
+        let uri = file_path_to_uri(&path).unwrap();
+        let ranged = |line: u32, start: u32, end: u32, text: &str| {
+            lsp_types::TextDocumentContentChangeEvent {
+                range: Some(lsp_types::Range {
+                    start: Position::new(line, start),
+                    end: Position::new(line, end),
+                }),
+                range_length: None,
+                text: text.into(),
+            }
+        };
+        let whole = |text: &str| lsp_types::TextDocumentContentChangeEvent {
+            range: None,
+            range_length: None,
+            text: text.into(),
+        };
+        let change = |content_changes: Vec<lsp_types::TextDocumentContentChangeEvent>| {
+            DidChangeTextDocumentParams {
+                text_document: lsp_types::VersionedTextDocumentIdentifier {
+                    uri: file_path_to_uri(&path).unwrap(),
+                    version: 1,
+                },
+                content_changes,
+            }
+        };
+
+        // A ranged CJK edit applies in place of the whole document.
+        session
+            .open(DidOpenTextDocumentParams {
+                text_document: TextDocumentItem::new(
+                    uri.clone(),
+                    "notist".into(),
+                    1,
+                    "alpha beta\ngamma\n".into(),
+                ),
+            })
+            .unwrap();
+        assert!(
+            session
+                .change(change(vec![ranged(0, 6, 10, "德贝塔")]))
+                .unwrap()
+        );
+        assert_eq!(
+            session.documents[&path].source.to_string(),
+            "alpha 德贝塔\ngamma\n"
+        );
+
+        // A batch applies its changes in order; the second change crosses the
+        // stale line-index prefix and forces a rebuild.
+        assert!(
+            session
+                .change(change(vec![ranged(0, 0, 5, "ALPHA"), ranged(1, 0, 5, "Γ")]))
+                .unwrap()
+        );
+        assert_eq!(
+            session.documents[&path].source.to_string(),
+            "ALPHA 德贝塔\nΓ\n"
+        );
+
+        // A whole-document change mid-batch becomes the base; only later
+        // partial changes apply to it.
+        assert!(
+            session
+                .change(change(vec![
+                    ranged(0, 0, 1, "X"),
+                    whole("fresh\n"),
+                    ranged(0, 0, 5, "FRESH"),
+                ]))
+                .unwrap()
+        );
+        assert_eq!(session.documents[&path].source.to_string(), "FRESH\n");
     }
 
     #[test]
@@ -2011,54 +2257,49 @@ mod tests {
     }
 
     #[test]
-    fn rejects_contract_violating_full_sync_changes() {
-        let root = tempfile::TempDir::new_in(std::env::current_dir().unwrap()).unwrap();
-        fs::write(root.path().join("README.not"), "disk").unwrap();
-        let root_path = dunce::canonicalize(root.path()).unwrap();
-        let mut session = LspSession::new(root_path, true).unwrap();
-        let path = dunce::canonicalize(root.path().join("README.not")).unwrap();
-        let uri = file_path_to_uri(&path).unwrap();
-        let change = |range: Option<lsp_types::Range>| DidChangeTextDocumentParams {
-            text_document: lsp_types::VersionedTextDocumentIdentifier {
-                uri: uri.clone(),
-                version: 2,
-            },
-            content_changes: vec![lsp_types::TextDocumentContentChangeEvent {
-                range,
-                range_length: None,
-                text: "next".into(),
-            }],
+    fn applies_clamped_descending_and_crlf_batches() {
+        let clamp = |text: &str, changes: &[TextDocumentContentChangeEvent]| {
+            apply_document_changes(text, changes)
         };
-        let mut double = change(None);
-        double
-            .content_changes
-            .push(lsp_types::TextDocumentContentChangeEvent {
-                range: None,
+        let ranged =
+            |start: (u32, u32), end: (u32, u32), text: &str| TextDocumentContentChangeEvent {
+                range: Some(lsp_types::Range {
+                    start: Position::new(start.0, start.1),
+                    end: Position::new(end.0, end.1),
+                }),
                 range_length: None,
-                text: "last".into(),
-            });
-        assert!(session.change(double).is_err());
-        assert!(
-            session
-                .change(change(Some(lsp_types::Range {
-                    start: Position::new(0, 0),
-                    end: Position::new(0, 1),
-                })))
-                .is_err()
-        );
+                text: text.into(),
+            };
 
-        session.change(change(None)).unwrap();
-        assert_eq!(
-            session
-                .documents
-                .get(&path)
-                .map(|document| document.source.to_string()),
-            Some("next".into())
+        // A descending batch (the shape VS Code sends) reuses the line index
+        // for the unchanged prefix: line 0 is untouched by the line-1 edit.
+        let applied = clamp(
+            "one two\nthree four\n",
+            &[ranged((1, 6), (1, 10), "IV"), ranged((0, 0), (0, 3), "1")],
         );
+        assert_eq!(applied, "1 two\nthree IV\n");
+
+        // Ranges past the document clamp: an end beyond the source ends the
+        // edit at the document end.
+        let applied = clamp("alpha\nbeta\n", &[ranged((0, 5), (9, 40), "γ")]);
+        assert_eq!(applied, "alphaγ");
+
+        // CRLF content with UTF-8 byte columns: the column space excludes the
+        // \r\n terminator, and `😀中` spans byte columns 2..9.
+        let applied = clamp("ab😀中\r\nnext\r\n", &[ranged((0, 2), (0, 9), "😀!")]);
+        assert_eq!(applied, "ab😀!\r\nnext\r\n");
+
+        // A change whose clamped start exceeds its clamped end is skipped
+        // instead of panicking or corrupting the buffer.
+        let applied = clamp(
+            "keep\n",
+            &[ranged((0, 3), (0, 1), "GONE"), ranged((0, 4), (0, 4), "!")],
+        );
+        assert_eq!(applied, "keep!\n");
     }
 
     #[test]
-    fn reports_rejected_did_change_via_log_message() {
+    fn reports_unroutable_did_change_via_log_message() {
         let root = tempfile::TempDir::new_in(std::env::current_dir().unwrap()).unwrap();
         fs::write(root.path().join("README.not"), "disk").unwrap();
         let root_path = dunce::canonicalize(root.path()).unwrap();
@@ -2066,16 +2307,16 @@ mod tests {
         let path = dunce::canonicalize(root.path().join("README.not")).unwrap();
         let uri = file_path_to_uri(&path).unwrap();
         let (server, client) = Connection::memory();
-        let change_at = |version: i32, text: &str| {
+        let change = |document_uri: &str, range: Option<lsp_types::Range>, text: &str| {
             Notification::new(
                 DidChangeTextDocument::METHOD.into(),
                 DidChangeTextDocumentParams {
                     text_document: lsp_types::VersionedTextDocumentIdentifier {
-                        uri: uri.clone(),
-                        version,
+                        uri: document_uri.parse().expect("test uri parses"),
+                        version: 2,
                     },
                     content_changes: vec![lsp_types::TextDocumentContentChangeEvent {
-                        range: None,
+                        range,
                         range_length: None,
                         text: text.into(),
                     }],
@@ -2094,18 +2335,39 @@ mod tests {
             })
             .unwrap();
 
-        // An accepted change stays silent.
-        handle_notification(&server, &mut session, change_at(2, "second")).unwrap();
+        // An accepted incremental change stays silent.
+        handle_notification(
+            &server,
+            &mut session,
+            change(
+                uri.as_str(),
+                Some(lsp_types::Range {
+                    start: Position::new(0, 0),
+                    end: Position::new(0, 5),
+                }),
+                "second",
+            ),
+        );
         assert!(
             client
                 .receiver
                 .recv_timeout(Duration::from_millis(200))
                 .is_err()
         );
+        assert_eq!(
+            session.documents[&path].source.to_string(),
+            "second",
+            "the ranged change applied"
+        );
 
-        // A rejected violation must reach the client as a log message;
-        // stderr alone leaves clients guessing why diagnostics went stale.
-        handle_notification(&server, &mut session, change_at(1, "regressed")).unwrap();
+        // A URI that cannot route to a vault path must reach the client as a
+        // log message; stderr alone leaves clients guessing why nothing
+        // happens.
+        handle_notification(
+            &server,
+            &mut session,
+            change("untitled:Untitled-1", None, "orphan"),
+        );
         let Message::Notification(notification) = client
             .receiver
             .recv_timeout(Duration::from_secs(2))
@@ -2116,7 +2378,109 @@ mod tests {
         assert_eq!(notification.method, LogMessage::METHOD);
         let params: LogMessageParams = serde_json::from_value(notification.params).unwrap();
         assert_eq!(params.typ, MessageType::WARNING);
-        assert!(params.message.contains("rejected didChange"), "{params:?}");
+        assert!(
+            params.message.contains("rejected textDocument/didChange"),
+            "{params:?}"
+        );
+    }
+
+    #[test]
+    fn apply_document_changes_matches_reference_on_random_edits() {
+        // xorshift64*; the fixed seed keeps any failure reproducible.
+        struct Rng(u64);
+        impl Rng {
+            fn next(&mut self) -> u64 {
+                let mut x = self.0;
+                x ^= x >> 12;
+                x ^= x << 25;
+                x ^= x >> 27;
+                self.0 = x;
+                x.wrapping_mul(0x2545_F491_4F6C_DD1D)
+            }
+            fn below(&mut self, bound: u64) -> u64 {
+                (self.next() >> 11) % bound.max(1)
+            }
+        }
+        // LineIndex splits lines on \n (so \r\n is one terminator); bare \r
+        // is intentionally absent from the alphabet because it is not an LSP
+        // line break this server models.
+        const ALPHABET: [&str; 6] = ["a", "中", "😀", "\n", "\r\n", " "];
+        fn insert_string(rng: &mut Rng) -> String {
+            (0..rng.below(7))
+                .map(|_| ALPHABET[rng.below(ALPHABET.len() as u64) as usize])
+                .collect::<String>()
+        }
+        // Independent reference semantics for UTF-8 columns: manual line
+        // splitting, line/content-end clamping, and a floor to the nearest
+        // character boundary for columns that land inside one.
+        fn naive_offset(text: &str, line: u32, character: u32) -> usize {
+            let bytes = text.as_bytes();
+            let mut bounds: Vec<(usize, usize)> = Vec::new();
+            let mut start = 0;
+            let mut i = 0;
+            while i < bytes.len() {
+                if bytes[i] == b'\n' || bytes[i] == b'\r' {
+                    bounds.push((start, i));
+                    i += usize::from(bytes[i] == b'\r' && bytes.get(i + 1) == Some(&b'\n'));
+                    i += 1;
+                    start = i;
+                } else {
+                    i += 1;
+                }
+            }
+            bounds.push((start, text.len()));
+            let Some(&(line_start, content_end)) = bounds.get(line as usize) else {
+                return text.len();
+            };
+            let mut target = line_start
+                .saturating_add(character as usize)
+                .min(content_end);
+            while target > line_start && !text.is_char_boundary(target) {
+                target -= 1;
+            }
+            target
+        }
+
+        let mut rng = Rng(0x5DEE_CE66);
+        let mut expected = String::new();
+        for step in 0..400 {
+            let change = if rng.below(5) == 0 {
+                TextDocumentContentChangeEvent {
+                    range: None,
+                    range_length: None,
+                    text: insert_string(&mut rng),
+                }
+            } else {
+                // Deliberately out-of-bounds positions exercise clamping.
+                let mut position = || Position::new(rng.below(8) as u32, rng.below(24) as u32);
+                TextDocumentContentChangeEvent {
+                    range: Some(lsp_types::Range {
+                        start: position(),
+                        end: position(),
+                    }),
+                    range_length: None,
+                    text: insert_string(&mut rng),
+                }
+            };
+
+            let mut reference = expected.clone();
+            match &change.range {
+                None => reference = change.text.clone(),
+                Some(range) => {
+                    let start = naive_offset(&reference, range.start.line, range.start.character);
+                    let end = naive_offset(&reference, range.end.line, range.end.character);
+                    if start <= end {
+                        reference.replace_range(start..end, &change.text);
+                    }
+                }
+            }
+
+            expected = apply_document_changes(&expected, std::slice::from_ref(&change));
+            assert_eq!(
+                expected, reference,
+                "diverged after step {step}: {change:?}"
+            );
+        }
     }
 
     #[test]

@@ -21,7 +21,7 @@ mod skill;
 /// `inspect` is the investigation entry point, the rest is explicit.
 const COMMAND_GROUPS: &str = "\
 Command groups:
-  inspect:     status, modules, search, items, read, references, definition, ancestors
+  inspect:     status, search, items, ancestors, references, definition
   validate:    check
   maintenance: index
   runtime:     daemon, lsp
@@ -57,7 +57,7 @@ struct Cli {
 
 #[derive(Debug, Subcommand)]
 enum Command {
-    /// Investigate a Vault: status, modules, search, items, read, references, definition, ancestors.
+    /// Investigate a Vault: status, search, items, ancestors, references, definition.
     #[command(display_order = 1)]
     Inspect {
         #[command(subcommand)]
@@ -125,13 +125,6 @@ enum Command {
 enum InspectCommand {
     /// Show a compact Vault, snapshot, diagnostics, and index summary.
     Status,
-    /// List modules in the vault.
-    Modules {
-        #[arg(long)]
-        prefix: Option<String>,
-        #[arg(long, value_enum, default_value_t)]
-        kind: ModuleKindArg,
-    },
     /// Search captured source context in a vault.
     #[command(
         after_help = "Examples:\n  notist inspect search \"workspace snapshot\" docs\n  notist inspect search --exact \"WorkspaceSnapshot\" docs --group-by match\n  notist inspect search --fuzzy \"WorkspaceSnaphot\" docs\n\nLexical/fuzzy search groups by source by default; exact/regex returns each match.\nResults are complete; a zero-hit output proves absence for the selected scope."
@@ -183,17 +176,6 @@ enum InspectCommand {
         /// Exact ModulePath or Vault-relative `.not` path.
         selector: String,
     },
-    /// Read authored source by module, path, id, line, or byte range.
-    Read {
-        /// Exact ModulePath, path, `module/id`, or `path#id` selector.
-        selector: String,
-        #[arg(long)]
-        from_line: Option<usize>,
-        #[arg(long, requires = "from_line")]
-        lines: Option<usize>,
-        #[arg(long, conflicts_with_all = ["from_line", "lines"], value_parser = parse_byte_range)]
-        byte_range: Option<notist_service::ByteRange>,
-    },
     /// Find references to a logical module.
     References {
         /// Exact ModulePath or `module/id` selector.
@@ -235,31 +217,14 @@ enum DaemonAction {
 
 #[derive(Debug, Subcommand)]
 enum SkillCommand {
-    /// Initialize the official Notist Skill in a directory.
+    /// Initialize the official Notist Skill as <SKILLS_ROOT>/notist/SKILL.md.
     Init {
-        output: PathBuf,
+        /// Skills root directory that receives the fixed `notist` skill directory.
+        skills_root: PathBuf,
         /// Replace an existing SKILL.md, preserving other files in the directory.
         #[arg(long)]
         force: bool,
     },
-}
-
-#[derive(Clone, Copy, Debug, Default, ValueEnum)]
-enum ModuleKindArg {
-    #[default]
-    Any,
-    Source,
-    Virtual,
-}
-
-impl From<ModuleKindArg> for notist_service::ModuleKind {
-    fn from(value: ModuleKindArg) -> Self {
-        match value {
-            ModuleKindArg::Any => Self::Any,
-            ModuleKindArg::Source => Self::Source,
-            ModuleKindArg::Virtual => Self::Virtual,
-        }
-    }
 }
 
 #[derive(Clone, Copy, Debug, Default, ValueEnum)]
@@ -485,6 +450,11 @@ fn classify_error(error: &(dyn std::error::Error + 'static)) -> (&'static str, u
 
 fn run(cli: Cli) -> Result<ExitCode, Box<dyn std::error::Error>> {
     official_docs::ensure_synced()?;
+    if !matches!(cli.command, Command::Skill { .. }) {
+        for notice in skill::startup_notices() {
+            eprintln!("{notice}");
+        }
+    }
     match cli.command {
         Command::Inspect { command } => run_inspect(command, cli.vault.clone(), cli.no_daemon),
         Command::Check {
@@ -521,7 +491,7 @@ fn run(cli: Cli) -> Result<ExitCode, Box<dyn std::error::Error>> {
                 IndexCommand::Status => (false, false),
                 IndexCommand::Rebuild { wait } => (true, wait),
             };
-            let (_, mut client, view_id) = connect_cli(cli.vault.clone(), cli.no_daemon)?;
+            let (_, client, view_id) = connect_cli(cli.vault.clone(), cli.no_daemon)?;
             let effective_wait = rebuild && (wait || cli.no_daemon);
             let reply = client.request(if rebuild {
                 CoreRequest::IndexRebuild {
@@ -592,9 +562,12 @@ fn run(cli: Cli) -> Result<ExitCode, Box<dyn std::error::Error>> {
         } => service::run_daemon(resolve_vault_root(&cli.vault)?, background_child),
         Command::Lsp => lsp::run(cli.no_daemon),
         Command::Skill {
-            command: SkillCommand::Init { output, force },
+            command: SkillCommand::Init {
+                skills_root,
+                force,
+            },
         } => {
-            let output = skill::init(output, force)?;
+            let output = skill::init(skills_root, force)?;
             println!("initialized Notist Skill at {}", output.display());
             Ok(ExitCode::SUCCESS)
         }
@@ -630,7 +603,7 @@ fn run_inspect(
 ) -> Result<ExitCode, Box<dyn std::error::Error>> {
     match command {
         InspectCommand::Status => {
-            let (root, mut client, view_id) = connect_cli(vault.clone(), no_daemon)?;
+            let (root, client, view_id) = connect_cli(vault.clone(), no_daemon)?;
             let reply = client.request(CoreRequest::Status { view_id })?;
             let CoreResponse::Status(status) = reply.response else {
                 return query_response_error("status", reply.response);
@@ -662,32 +635,7 @@ fn run_inspect(
             }
             Ok(ExitCode::SUCCESS)
         }
-        InspectCommand::Modules { prefix, kind } => {
-            let (_, mut client, view_id) = connect_cli(vault.clone(), no_daemon)?;
-            let reply = client.request(CoreRequest::ListModules {
-                view_id,
-                query: notist_service::ModulesQuery {
-                    prefix,
-                    kind: kind.into(),
-                },
-            })?;
-            let CoreResponse::Modules(page) = reply.response else {
-                return query_response_error("modules", reply.response);
-            };
-            println!("{}", plural(page.records.len(), "module"));
-            for item in &page.records {
-                let path = item
-                    .relative_path
-                    .as_ref()
-                    .map_or("<virtual>".into(), |path| path.display().to_string());
-                let title = item
-                    .title
-                    .as_ref()
-                    .map_or(String::new(), |title| format!(" — {title}"));
-                println!("{}  {}{}", item.module, path, title);
-            }
-            Ok(ExitCode::SUCCESS)
-        }        InspectCommand::Search {
+        InspectCommand::Search {
             query,
             mode,
             exact,
@@ -813,15 +761,11 @@ fn run_inspect(
             };
             println!("{}", plural(items.records.len(), "item"));
             for item in &items.records {
+                // Identity commands carry no file paths; scope Items expose
+                // their line range so the host Read can fetch the section.
                 let position = item.location.line_range.map_or_else(
                     || item.location.relative_path.display().to_string(),
-                    |range| {
-                        format!(
-                            "{}:{}",
-                            item.location.relative_path.display(),
-                            range.start
-                        )
-                    },
+                    |range| format!("lines {}..{}", range.start, range.end),
                 );
                 let annotations = item
                     .attributes
@@ -846,50 +790,6 @@ fn run_inspect(
                     if item.ambiguous { "  (ambiguous)" } else { "" },
                 );
                 println!("{}", line.trim_end());
-            }
-            Ok(ExitCode::SUCCESS)
-        }
-        InspectCommand::Read {
-            selector,
-            from_line,
-            lines,
-            byte_range,
-        } => {
-            let (_, mut client, view_id) = connect_cli(vault.clone(), no_daemon)?;
-            let reply = client.request(CoreRequest::ReadSource {
-                view_id,
-                query: notist_service::ReadQuery {
-                    selector: notist_service::Selector::parse(&selector),
-                    window: notist_service::ReadWindow {
-                        from_line,
-                        lines,
-                        byte_range,
-                    },
-                },
-            })?;
-            let CoreResponse::SourcePage(result) = reply.response else {
-                return query_response_error("read", reply.response);
-            };
-            if let Some(chunk) = result.records.first() {
-                let start = chunk.location.line_range.map_or(1, |range| range.start);
-                for (offset, line) in chunk.source.lines().enumerate() {
-                    println!("{:>5} | {}", start + offset, line);
-                }
-                // Citation footer: the edit precondition — identity, window,
-                // and fingerprint come from here, never from invented bytes.
-                let location = &chunk.location;
-                let mut footer = format!(
-                    "-- {}  {}  bytes {}..{}",
-                    location.module,
-                    location.relative_path.display(),
-                    location.byte_range.start,
-                    location.byte_range.end
-                );
-                if let Some(range) = location.line_range {
-                    footer.push_str(&format!("  lines {}..{}", range.start, range.end));
-                }
-                footer.push_str(&format!("  fingerprint {}", location.source_fingerprint));
-                println!("{footer}");
             }
             Ok(ExitCode::SUCCESS)
         }
@@ -996,7 +896,7 @@ fn run_inspect(
             offset,
             byte_range,
         } => {
-            let (_, mut client, view_id) = connect_cli(vault.clone(), no_daemon)?;
+            let (_, client, view_id) = connect_cli(vault.clone(), no_daemon)?;
             let reply = client.request(CoreRequest::Ancestors {
                 view_id,
                 query: notist_service::AncestorsQuery {
@@ -1010,10 +910,8 @@ fn run_inspect(
             };
             for root in &ancestors.records {
                 println!(
-                    "module {}  {}  fingerprint {}",
-                    root.location.module,
-                    root.location.relative_path.display(),
-                    root.location.source_fingerprint,
+                    "module {}  fingerprint {}",
+                    root.location.module, root.location.source_fingerprint,
                 );
                 print_ancestor_tree(root, 0);
             }
@@ -1023,18 +921,18 @@ fn run_inspect(
 }
 
 /// Prints one ancestor subtree in document order, root first, indenting each
-/// level; each line reads like the annotation surface it came from.
+/// level; each line reads like the annotation surface it came from. Rows
+/// carry line ranges only — identity commands show no file paths.
 fn print_ancestor_tree(record: &notist_service::AncestorRecord, depth: usize) {
     let position = record.location.line_range.map_or_else(
         || {
             format!(
-                "{}@{}..{}",
-                record.location.relative_path.display(),
+                "bytes {}..{}",
                 record.location.byte_range.start,
                 record.location.byte_range.end
             )
         },
-        |range| format!("{}:{}", record.location.relative_path.display(), range.start),
+        |range| format!("lines {}..{}", range.start, range.end),
     );
     let annotations = record
         .attributes
