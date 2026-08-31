@@ -1,9 +1,13 @@
 @![implementation = "partial"]
-@![agents = "cli/ 各篇的输出示例必须来自实测，并完整体现字段说明声称的每一种形态——虚拟模块、@id 标记、ambiguous、definition 标记、省略等边界；能共现的形态在同一样例中出现，互斥形态以括注说明"]
+@![agents = "所有 CLI 命令的输出示例必须来自实测，并完整体现字段说明声称的每一种形态——虚拟模块、@id 标记、ambiguous、definition 标记、省略等边界；能共现的形态在同一样例中出现，互斥形态以括注说明"]
 
 = Notist CLI: Command Design and Reference
 
-本文是 `notist` CLI 命令面的单一真相，由两篇组成：本文固定全局治理与跨命令契约（三层分离、命令分组、全局参数、输出投影、错误与退出状态，以及 Validate/Maintenance/Runtime/Publishing 各组命令）；`inspect` 调查组（status/modules/search/locate/items/attrs/read/references/definition/ancestors）的逐命令规范与身份/坐标寻址契约在 #<vault::cli::inspect>。高层分发边界（Skill、官方 docs Vault、发布边界）在 #<vault::designs::host::cli-command-surface-skill-distribution>，查询契约见 #<vault::designs::host::query-contract>，检索语义见 #<vault::designs::host::search-retrieval-index>，daemon 与协议见 #<vault::designs::host::daemon-process-views> 与 #<vault::designs::host::client-interface-protocol>。
+#[
+
+]@type="user"
+
+本文是 `notist` CLI 命令面的单一真相，由两篇组成：本文固定全局治理与跨命令契约（三层分离、命令分组、全局参数、输出投影、错误与退出状态，以及 Validate/Maintenance/Runtime/Publishing 各组命令）；`inspect` 调查组（status/search/locate/items/attrs/ancestors/references/definition）的逐命令规范与身份/坐标寻址契约在 #<vault::cli::inspect>。高层分发边界（Skill、官方 docs Vault、发布边界）在 #<vault::designs::host::cli-command-surface-skill-distribution>，查询契约见 #<vault::designs::host::query-contract>，检索语义见 #<vault::designs::host::search-retrieval-index>，daemon 与协议见 #<vault::designs::host::daemon-process-views> 与 #<vault::designs::host::client-interface-protocol>。
 
 当前实现状态：`partial`。本文描述最新裁决链确立的*目标命令面*：完整结果契约（无预算、无翻页，#<vault::ai::2026-08-29 去上界输出与 inspect 命令面裁决>）、顶层收敛为 inspect/check/index/daemon/lsp/skill/build/preview，以及 2026-08-30 的 inspect 统合（#<vault::ai::2026-08-30 inspect 命令面统合设计>：身份/坐标分离、locate 桥、items/attrs 四视角、`@![...]` 继承）。迁移完成前，已安装二进制的 `--help` 是实际可执行面的最终依据。2026-08-15 v3 的预算/cursor/next 制度已被推翻，其表述不应再被当作长期契约。
 
@@ -14,8 +18,8 @@
 CLI 只保留三层，且每层只有一个入口：
 
 ```text
-语义命令    我想做什么            inspect status/modules/search/locate/items/attrs/read/references/definition/ancestors、check
-运行时策略  服务如何执行          daemon 连接、index、语义窗口（read 窗口、snippet bytes）
+语义命令    我想做什么            inspect status/search/locate/items/attrs/ancestors/references/definition、check
+运行时策略  服务如何执行          daemon 连接、index、语义窗口（snippet bytes）
 输出投影    结果如何显示          完整 text；颜色与 TTY 只影响渲染
 ```
 
@@ -25,7 +29,7 @@ CLI 只保留三层，且每层只有一个入口：
 
 ```text
 Inspect
-  status modules search locate items attrs read references definition ancestors
+  status search locate items attrs ancestors references definition
 Validate
   check
 Maintenance
@@ -36,7 +40,7 @@ Publishing
   build preview
 ```
 
-`inspect --help` 是调查命令的唯一发现入口；普通知识工作只使用 inspect 与 check。命令面没有写命令（2026-08-28 裁决）：磁盘写入来自宿主编辑工具或其他外部进程，daemon 通过 watcher 观察并发布新 snapshot；修改 Vault 后运行 `notist check` 验证。
+`inspect --help` 是调查命令的唯一发现入口；普通知识工作只使用 inspect 与 check。内容访问与目录列举由宿主 Read/ls 承担——`X/Y.not` 即模块 `vault::X::Y`，`X/Y/README.not` 即 `vault::X`；inspect 只收录语义查询。命令面没有写命令（2026-08-28 裁决）：磁盘写入来自宿主编辑工具或其他外部进程，daemon 通过 watcher 观察并发布新 snapshot；修改 Vault 后运行 `notist check` 验证。
 
 命令面没有写命令（2026-08-28 裁决）：磁盘写入来自宿主编辑工具或其他外部进程，daemon 通过 watcher 观察并发布新 snapshot；修改 Vault 后运行 `notist check` 验证。
 
@@ -79,11 +83,11 @@ Text 投影契约：
 - collection 命令以计数头开头（如 `4 modules`、`1 reference (incoming)`）；计数头是元信息行，不是记录。
 - 错误写 stderr：`error[code]: message`，hint 与 candidates 逐行跟随。
 - 颜色、TTY 只能改变渲染，不能改变 logical result、排序或 exit status。
-- excerpt 只用于挑选候选；形成事实结论前必须 `read` authored source。
+- excerpt 只用于挑选候选；形成事实结论前用宿主 Read 读取 authored source。
 
 === 语义窗口与截断的边界
 
-`read --from-line/--lines/--byte-range`、`--snippet-bytes` 是语义窗口：调用者选择读取哪一段数据，服务端不额外截断。截断策略（limit/max_bytes/cursor）不属于命令语法；2026-08-29 裁决撤销了输出截断器，这条边界防止它以窗口的名义回归。
+`--snippet-bytes` 是语义窗口：调用者选择摘录大小，服务端不额外截断。截断策略（limit/max_bytes/cursor）不属于命令语法；2026-08-29 裁决撤销了输出截断器，这条边界防止它以窗口的名义回归。
 
 === Error 与退出状态
 
@@ -100,7 +104,7 @@ exit 70  internal failure
 
 == Inspect
 
-Inspect 组是 Agent 的查询与导航原语：status、modules、search、locate、items、attrs、read、references、definition、ancestors；`inspect --help` 是唯一发现入口。逐命令规范、身份/坐标寻址契约与 Agent 工作流见 #<vault::cli::inspect>。
+Inspect 组是 Agent 的查询与导航原语：status、search、locate、items、attrs、ancestors、references、definition；`inspect --help` 是唯一发现入口。逐命令规范、身份/坐标寻址契约与 Agent 工作流见 #<vault::cli::inspect>。
 
 == Validate
 
@@ -203,20 +207,23 @@ notist lsp
 === skill
 
 ```shell
-notist skill init <OUTPUT> [--force]
+notist skill init <SKILLS_ROOT> [--force]
 ```
 
-- 默认要求 OUTPUT 是尚不存在的目录，只生成确定性的 `SKILL.md`。
-- `--force`：OUTPUT 必须是已有目录，原子替换其中的 `SKILL.md`，保留其他文件。
-- 不猜测 Host 安装目录，不修改 Host registry，不接受把当前 Vault 导出为 Skill。
+- 在 SKILLS_ROOT 下物化名字固定的 `notist/SKILL.md`；SKILLS_ROOT 不存在时创建。
+- 默认要求 `<SKILLS_ROOT>/notist` 尚不存在，只生成确定性的 `SKILL.md`。
+- `--force`：`<SKILLS_ROOT>/notist` 必须是已有目录，原子替换其中的 `SKILL.md`，保留其他文件。
+- CLI 共享启动路径对 `~/.agents/skills` 与 `./.agents/skills` 做无状态安装探测（2026-08-30 裁决）：存在 `notist/SKILL.md` 则与内嵌 fingerprint 比较，缺失或失配只在 stderr 提示对应 init 命令，不改变退出码；安装在自定义位置的 Skill 不在探测范围；`skill init` 自身不探测。
+- 不修改 Host registry，不接受把当前 Vault 导出为 Skill。
 - 分发与 docs Vault 边界见 #<vault::designs::host::cli-command-surface-skill-distribution>。
 
 == 迁移与兼容
 
-命令面经历过两次有意 breaking change，项目从未发布过版本，不保留兼容窗口：
+命令面经历过三次有意 breaking change，项目从未发布过版本，不保留兼容窗口：
 
 - 2026-08-15 v3：把旧的全库 `inspect` 与无界 dump 拆散为 bounded 命令族，引入预算与 cursor。
 - 2026-08-29（#<vault::ai::2026-08-29 去上界输出与 inspect 命令面裁决>）：推翻预算/cursor/next 制度，撤销输出截断器；命令按数据域重组为顶层 `inspect` 组；`query definition` 变为 `inspect definition`；`debug` 与 `export` 退出命令面（git 历史可恢复）。
+- 2026-08-30（#<vault::designs::host::cli-command-surface-skill-distribution>）：`skill init` 参数从目标目录改为 skills root（物化 `<SKILLS_ROOT>/notist/SKILL.md`，目录名由命令固定），CLI 启动路径新增对两个约定 skills root 的无状态安装探测。
 
 以下 flag 属于已退役的分页机器，不进入任何命令：
 

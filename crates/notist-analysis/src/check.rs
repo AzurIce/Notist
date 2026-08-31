@@ -476,21 +476,21 @@ impl Checker<'_> {
         }
     }
 
-fn type_insertable(ty: &Type) -> bool {
-    match ty {
-        Type::Content
-        | Type::String
-        | Type::None
-        | Type::Int
-        | Type::Float
-        | Type::Bool
-        | Type::Target
-        | Type::Inferred => true,
-        Type::Optional(inner) => Self::type_insertable(inner),
-        Type::Union(members) => members.iter().all(Self::type_insertable),
-        Type::Function => false,
+    fn type_insertable(ty: &Type) -> bool {
+        match ty {
+            Type::Content
+            | Type::String
+            | Type::None
+            | Type::Int
+            | Type::Float
+            | Type::Bool
+            | Type::Target
+            | Type::Inferred => true,
+            Type::Optional(inner) => Self::type_insertable(inner),
+            Type::Union(members) => members.iter().all(Self::type_insertable),
+            Type::Function => false,
+        }
     }
-}
 
     /// Statically types an expression, recording diagnostics along the way.
     ///

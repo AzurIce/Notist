@@ -1,0 +1,53 @@
+@![type="user",.user]
+
+= Notist 数据模型
+
+Notist 下有两层树结构，一层是直接对应文件系统结构的 *Module* 树，一层是对应具体文档的 *Item* 树。
+
+== Module 树
+
+形如 `<vault_root>/path/to/m.not` 的路径会被对应到一个 `vault::path::to::m` 模块，类似 Rust，不过不需要显式声明，直接从目录结构得到。
+
+同样类似 Rust，模块 `m` 除了上述一种路径外也对应另一种路径：`<vault_root>/path/to/m/README.not`，且它们两个是互斥的。
+
+```
+vault/
+  ai/
+    yyyy-mm-dd topic.not     -> vault::ai::yyyy-mm-dd topic
+  designs/
+    README.not               -> vault::designs
+  cli/
+    attr.not                 -> vault::cli::attr
+  cli.not                    -> vault::cli
+  README.not                 -> vault
+```
+
+`vault::cli` 被称为 *ModulePath*。
+
+== Item 树
+
+在过去的文档里可能有称为 Content 的部分，也有称为 Scope 的部分。
+
+我们重新定义，我们认为一篇文档（对应一个具体的 `.not` 文件的内容）它的 *求值* 结果是一棵 Item 树。
+
+而同时，按照我们 _一切皆 call_ 的思想，其实这棵 Item 树的实际表示就是一个个的 call（名称 + args）
+
+`#[]` 的求值产物是一个名称为 `scope` 的 call，被称为 ScopeItem。
+
+于是文档内实际内容的一切，就统一到了 Item 下面。
+
+虽然 Item 树是有层级的，但是它们在文档中的标识却是拍平的，被称为 *ItemId*。
+
+*ItemId* 在模块内唯一，当同一篇文档中存在两个相同的 *ItemId* 时报错。
+
+Item 分为匿名 Item 和具名 Item：
+- 被 `@[id="xxx"]`（原先的 `@id,#tag,.class` 注解我也打算修改调整）标注的 Item 会具有 `xxx` 的 ItemId
+- heading 的默认 ItemId 是标题链——从顶层标题到自身的标题文字用 `/` 连接，比如本节的默认 ItemId 是 `Notist 数据模型/Item 树`（不受链上某个标题的 id 标注影响）
+- 其余 Item 是匿名 Item。
+
+匿名 Item 不可寻址，要指向它必须先给它一个 id。但不可寻址不代表不存在——匿名 Item 同样可以附加属性、被查询：查询面覆盖全部 Item，寻址面只覆盖有 ItemId 的 Item。
+
+`vault::model/Notist 数据模型/Item 树` 这样包含 *ModulePath* 和 *ItemId* 的东西叫 *ItemPath*。
+
+== 属性标注
+

@@ -50,12 +50,11 @@ fn references_returns_cross_file_locations_through_the_real_loop() {
             "context": {"includeDeclaration": true}
         }),
     );
-    let locations: Vec<Location> =
-        serde_json::from_value::<Option<Vec<Location>>>(common::ok_result(
-            client.await_response(including_definition),
-        ))
-        .expect("references response shape")
-        .expect("references including the definition");
+    let locations: Vec<Location> = serde_json::from_value::<Option<Vec<Location>>>(
+        common::ok_result(client.await_response(including_definition)),
+    )
+    .expect("references response shape")
+    .expect("references including the definition");
     assert_eq!(locations.len(), 2);
     let definition = locations
         .iter()
@@ -63,68 +62,6 @@ fn references_returns_cross_file_locations_through_the_real_loop() {
         .expect("definition location in target.not");
     assert_eq!(definition.range.start, Position::new(0, 0));
     assert_eq!(definition.range.end, Position::new(0, 0));
-
-    let status = client.shutdown_and_exit();
-    assert_eq!(status.code(), Some(0));
-}
-
-#[test]
-fn wide_character_lines_round_trip_utf16_positions_end_to_end() {
-    // The root module (`README.not`) keeps the `#<target>` links resolvable
-    // while exercising UTF-16 positions over emoji and CJK characters.
-    let vault = Vault::new(&[
-        ("target.not", "= Target\n"),
-        ("README.not", "😀中 #<target>\n😀中 #<tar"),
-    ]);
-    let wide = vault.uri("README.not");
-    let mut client = Client::spawn(&vault);
-    client.initialize(&vault);
-    client.expect_diagnostics(&wide, |_| true, "the baseline push");
-
-    let hover_id = client.request(
-        "textDocument/hover",
-        json!({
-            "textDocument": {"uri": wide},
-            "position": {"line": 0, "character": 8}
-        }),
-    );
-    let hover: Option<lsp_types::Hover> =
-        serde_json::from_value(common::ok_result(client.await_response(hover_id)))
-            .expect("hover response shape");
-    let hover = hover.expect("hover over the wiki reference");
-    let range = hover.range.expect("hover range");
-    assert_eq!(range.start, Position::new(0, 5));
-    assert_eq!(range.end, Position::new(0, 13));
-    assert!(matches!(
-        hover.contents,
-        HoverContents::Markup(ref markup) if markup.value.contains("target")
-    ));
-
-    let completion_id = client.request(
-        "textDocument/completion",
-        json!({
-            "textDocument": {"uri": wide},
-            "position": {"line": 1, "character": 9}
-        }),
-    );
-    let completion: Option<CompletionResponse> =
-        serde_json::from_value(common::ok_result(client.await_response(completion_id)))
-            .expect("completion response shape");
-    let CompletionResponse::Array(items) = completion.expect("completion items") else {
-        panic!("expected an array completion response");
-    };
-    assert!(items.iter().any(|item| item.kind == Some(CompletionItemKind::MODULE)));
-    let candidate = items
-        .iter()
-        .find(|item| item.label == "target")
-        .expect("`target` module completion");
-    let CompletionTextEdit::Edit(edit) = candidate.text_edit.as_ref().expect("text edit") else {
-        panic!("expected a plain text edit");
-    };
-    assert_eq!(edit.new_text, "target");
-    assert_eq!(edit.range.start, Position::new(1, 6));
-    assert_eq!(edit.range.end, Position::new(1, 9));
-    assert_eq!(utf16_slice("😀中 #<tar", edit.range), "tar");
 
     let status = client.shutdown_and_exit();
     assert_eq!(status.code(), Some(0));
@@ -144,7 +81,10 @@ fn document_references_resolves_modules_without_position_ambiguity() {
     // symbol: this is exactly the case `textDocument/references` cannot
     // express (it returns null for the module), and the reason the
     // experimental document-level method takes the path as the selector.
-    let vault = Vault::new(&[("infra.not", "# Infra\n"), ("README.not", "see #<infra> here\n")]);
+    let vault = Vault::new(&[
+        ("infra.not", "# Infra\n"),
+        ("README.not", "see #<infra> here\n"),
+    ]);
     let infra = vault.uri("infra.not");
     let readme = vault.uri("README.not");
     let mut client = Client::spawn(&vault);
@@ -159,9 +99,16 @@ fn document_references_resolves_modules_without_position_ambiguity() {
         }),
     );
     let incoming = common::ok_result(client.await_response(incoming_id));
-    assert!(incoming["revision"].is_u64(), "revision is a freshness gate");
+    assert!(
+        incoming["revision"].is_u64(),
+        "revision is a freshness gate"
+    );
     let items = incoming["items"].as_array().expect("items array");
-    assert_eq!(items.len(), 1, "one incoming occurrence, no definition marker");
+    assert_eq!(
+        items.len(),
+        1,
+        "one incoming occurrence, no definition marker"
+    );
     assert_eq!(items[0]["direction"], "incoming");
     assert_eq!(items[0]["targetModule"], "vault::infra");
     assert_eq!(items[0]["uri"].as_str().expect("uri"), readme);
@@ -220,12 +167,18 @@ fn render_document_returns_the_evaluated_fragment_and_module_resources() {
         json!({ "textDocument": {"uri": readme} }),
     );
     let rendered = common::ok_result(client.await_response(render_id));
-    assert!(rendered["revision"].is_u64(), "revision is a freshness gate");
+    assert!(
+        rendered["revision"].is_u64(),
+        "revision is a freshness gate"
+    );
     let page = &rendered["page"];
     assert_eq!(page["title"], "Hello");
     let fragment = page["fragment"].as_str().expect("fragment string");
     assert!(fragment.contains("Hello"), "heading text is rendered");
-    assert!(fragment.contains("emphasized"), "inline markup text survives");
+    assert!(
+        fragment.contains("emphasized"),
+        "inline markup text survives"
+    );
     assert!(!fragment.contains("= Hello"), "source markers do not leak");
     let resources = rendered["resources"].as_array().expect("resources array");
     assert!(

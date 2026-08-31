@@ -2,6 +2,8 @@
 
 本文确立 inspect 调查组的统合命令面：身份与坐标分离、四视角（items/ancestors/attrs/read）加 locate 桥、`@![...]` 沿 Module 树继承、属性无合并。2026-08-30 裁决。演进路径：ancestors（点/区域 → 祖先链属性）落地 → outline 改造为 items（可寻址 Item 表）落地 → 属性可见性系统审查 → 本统合构思。前序裁决为 #<vault::ai::2026-08-29 去上界输出与 inspect 命令面裁决>；本文落笔时 items/ancestors 已按早期形态实现，其余按文末实施清单推进，迁移完成前已安装二进制的 `--help` 是实际可执行面的最终依据。治理文档 #<vault::cli> 与逐命令文档 #<vault::cli::inspect> 已随本文修订为*目标命令面*。
 
+2026-08-30 追记：R1/R3 的寻址方向与实施清单中的 locate、attrs 项已被同日 #<vault::ai::2026-08-30 inspect 寻址与范围设计困境> 修订为 R11 草案（path 原生地址 + 兄弟提升范围规则 + `--attr` 筛选，locate/attrs 划掉）；R10 已实施（ls/read 移除）。该困境记录收口前，以本文 + 该记录共同为准。
+
 == 底层模型：四份数据、四个投影
 
 统合的依据是底层本就存在四份权威数据，每份一个投影，对任意 Target 的描述即告完备：
@@ -33,6 +35,15 @@ R7 *属性无合并*：有效环境是链上各层条目的有序并集（内层
 
 R8 *杂项*：`definition` 输出补身份（目标 `ModulePath[/ItemName]` + location），使坐标世界闭环回身份世界；内联坐标 sugar（`vault::guide:45` 类）暂缓——ItemName 是任意字面字符串，分隔符碰撞不可控，坐标用 flag 表达；输出侧保留 `path:line` 坐标回声（编辑器跳转与 grep 往返依赖它），R1 的"除名"只约束输入文法。
 
+R9 *modules 改造为 ls，默认单层*：`modules` 直接更名为 `ls`（2026-08-30 同日实施）。实证依据：本机 ZCode 会话 129 份、132 万次 Bash 调用中 `ls` 8.1 万次为列举绝对主力，`find` 1.0 万次，而 **`tree` 零次**——Agent 的真实习惯是"列一层 → cd/read 深入"，从不需要全树倾泻；pi（badlogic）同样只把 ls/find 作为可选只读工具。语义：`ls [MODULE]` 列直接孩子（缺省 Vault 根，目标自身永不列出，叶子输出 `0 modules` 即 absence 证明，不存在报 `not_found`）；`--recursive` 保留子树全量（一次调用拿 sitemap 的形态，即旧行为）。`--prefix` 随之消亡；资源文件不是 Module 树的孩子（items 的辖域）。输出投影同步补齐：collection 计数头（`N modules` 等，单复数正确）、items 的 `scope@id` 与 `(ambiguous)` 标记、read citation footer、references 方向头 + excerpt + `(definition)` 标记、definition 输出补身份。ls 行输出为 `ModulePath — 语义标题`，不出现 `.not` 路径——身份命令的输出保持纯身份，文件路径只在坐标载荷命令（read 的 citation footer、search、definition）中交付；items/ancestors 行内的路径列是否同样去除待裁决。
+
+R10 *模块树发现与内容访问归位宿主：`ls` 与 `read` 移除*（2026-08-30 同日实施，部分推翻 R2/R8/R9 中的相应投影）：
+
+- **ls 移除**：模块树就是目录树——D0004 的映射规则（stem.not → 子模块；README.not → 所在目录）是确定性且一句话可述的，与 Rust 的 `mod.rs` 约定完全同构，而 Agent 导航 Rust 仓库从不需要专用模块工具；且全行业在收敛回 shell（Claude Code 连 Glob/Grep 都撤成了 Bash shim）。模块树发现由宿主 `ls`/`tree` 承担，README 约定写进 SKILL 一句话。R9 的 ls 形态（单层/`--recursive`）随之废弃，不再有命令承载。
+- **read 移除**：行号源文是宿主 Read 的镜像；ItemPath 节读的行区间由 items（Item 自身）与 ancestors（节子树）的 `lines a..b` 字段提供，喂给宿主 Read。citation footer 与"编辑前置指纹"概念随 ModulePath 身份世界一并消解——path 原生寻址下宿主 Read/Edit 直接持有路径与内容，notist 不再需要发证。R8 的"输出保留路径回声"收缩为：路径只在坐标载荷命令（search/definition/references）的输出中出现，身份命令（items/ancestors/attrs）行内零路径。
+- **search 保留**：排序（top-k 相关性）、容错与求值后字段（heading/tag）是 grep 不可重建的能力；存在理由显式写入 cli 文档，并附复核条件——若使用数据表明 Agent 均以 grep 自足，接受退场。
+- CLI 的新身份一句话：*纯文本的事交给宿主，notist 只卖语义*——items/ancestors/attrs/definition/references/check（加 search）各自对应一件宿主工具做不到的事。
+
 == 目标命令面
 
 ```text
@@ -42,7 +53,7 @@ R8 *杂项*：`definition` 输出补身份（目标 `ModulePath[/ItemName]` + lo
 ```
 
 ```text
-发现     status / modules / search          我在哪个 Vault、有哪些身份、哪里有候选
+发现     status / ls / search               我在哪个 Vault、有哪些身份、哪里有候选
 导航     read（内容）/ items（内部身份）/ attrs（环境）/ ancestors（结构上下文）
 桥       locate                              坐标 → 身份
 位置     definition                          纯坐标（LSP definition 投影）

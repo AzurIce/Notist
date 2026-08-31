@@ -4,20 +4,20 @@
     "type": "split",
     "children": [
       {
-        "id": "da053cab572f8d0e",
+        "id": "cbc139153741d056",
         "type": "tabs",
         "children": [
           {
-            "id": "f974eff16b7578c5",
+            "id": "75552d4d3f465603",
             "type": "leaf",
             "state": {
               "type": "notist-view",
               "state": {
-                "file": "cli/README.not",
+                "file": "model.not",
                 "mode": "source"
               },
               "icon": "file-text",
-              "title": "README"
+              "title": "model"
             }
           }
         ]
@@ -34,14 +34,15 @@
         "type": "tabs",
         "children": [
           {
-            "id": "38c7b13218340e95",
+            "id": "a9e95e273b9848b5",
             "type": "leaf",
             "state": {
               "type": "notist-explorer",
               "state": {
                 "expanded": [
-                  "designs",
-                  "designs/world"
+                  "cli",
+                  "",
+                  "designs"
                 ],
                 "dimNonNot": false
               },
@@ -95,29 +96,28 @@
             }
           },
           {
-            "id": "948875e3b4c1f790",
+            "id": "64be46725b1c6136",
             "type": "leaf",
             "state": {
               "type": "notist-explorer",
               "state": {
-                "expanded": [
-                  "cli"
-                ],
+                "expanded": [],
                 "dimNonNot": false
               },
-              "icon": "folder-tree",
-              "title": "Notist explorer"
+              "icon": "lucide-ghost",
+              "title": "notist-explorer"
             }
           },
           {
-            "id": "51cd9e44640a43eb",
+            "id": "0a4775e371031b5c",
             "type": "leaf",
             "state": {
               "type": "notist-explorer",
               "state": {
                 "expanded": [
                   "cli",
-                  "",
+                  "designs/lsp",
+                  "example",
                   "designs"
                 ],
                 "dimNonNot": false
@@ -131,7 +131,7 @@
       }
     ],
     "direction": "horizontal",
-    "width": 260.51074600219727
+    "width": 256.51074600219727
   },
   "right": {
     "id": "f8d03a7322595300",
@@ -153,21 +153,21 @@
       "bases:新建数据库": false
     }
   },
-  "active": "51cd9e44640a43eb",
+  "active": "75552d4d3f465603",
   "lastOpenFiles": [
-    "designs/language/annotation-syntax.not.tmp.285429.e3356e3ba708",
-    "ai/README.not.tmp.285429.d957c7377e1a",
+    "designs/world/reference-ref-target.not.tmp.3619102.b3eb6609e8df",
+    "designs/world/reference-ref-target.not.tmp.3619102.83c63b9908a1",
+    "designs/world/reference-ref-target.not.tmp.3619102.cc0e3568eb92",
+    "designs/world/reference-ref-target.not.tmp.3619102.ab75b63fb91e",
+    "designs/world/reference-ref-target.not.tmp.3619102.7caa98917902",
+    "designs/world/reference-ref-target.not.tmp.3619102.e9e0f9b38317",
+    "designs/world/reference-ref-target.not.tmp.3619102.3a3832b533ef",
+    "designs/world/reference-ref-target.not.tmp.3619102.efec334cb8e5",
+    "designs/world/reference-ref-target.not.tmp.3619102.49012625adc8",
     "ai/2026-08-30 LSP 请求支持对照.not",
-    "ai/2026-08-30 LSP 请求支持对照.not.tmp.285429.b8a6518e5783",
-    "designs/README.not",
-    "cli/README.not",
-    "cli/inspect.not",
-    "ai/2026-08-30 obsidian-notist preview mode design.not.tmp.1175605.c549d87525df",
-    "cli/inspect.not.tmp.285429.6aea3e5b012e",
-    "cli/inspect.not.tmp.285429.3319b126e1e7",
-    "cli/inspect.not.tmp.285429.97a895a984b3",
+    "functions.not",
+    "AGENTS.md",
     "fx2.md",
-    "notist-highlight-fixture.md",
-    "AGENTS.md"
+    "notist-highlight-fixture.md"
   ]
 }

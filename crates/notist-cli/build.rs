@@ -24,7 +24,7 @@ fn build_resources() -> io::Result<()> {
     println!("cargo:rerun-if-changed={}", skill_root.display());
 
     let docs = collect_files(&docs_root)?;
-    let fingerprint = docs_fingerprint(&docs);
+    let docs_fingerprint = fingerprint(&docs);
     let archive = encode_archive(&docs)?;
     let output = PathBuf::from(env::var_os("OUT_DIR").unwrap());
     let archive_path = output.join("official-docs.bundle.gz");
@@ -41,8 +41,12 @@ fn build_resources() -> io::Result<()> {
         ));
     }
     fs::write(output.join("notist-skill.md"), &skill_files[0].1)?;
+    println!(
+        "cargo:rustc-env=NOTIST_SKILL_FINGERPRINT={}",
+        fingerprint(&skill_files)
+    );
 
-    println!("cargo:rustc-env=NOTIST_DOCS_FINGERPRINT={fingerprint}");
+    println!("cargo:rustc-env=NOTIST_DOCS_FINGERPRINT={docs_fingerprint}");
     Ok(())
 }
 
@@ -92,7 +96,7 @@ fn collect_files_from(
     Ok(())
 }
 
-fn docs_fingerprint(files: &[(String, Vec<u8>)]) -> String {
+fn fingerprint(files: &[(String, Vec<u8>)]) -> String {
     let mut digest = Sha256::new();
     for (path, bytes) in files {
         digest.update((path.len() as u64).to_le_bytes());

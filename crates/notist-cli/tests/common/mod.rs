@@ -55,6 +55,13 @@ impl Vault {
     pub fn uri(&self, name: &str) -> String {
         file_uri(&dunce::canonicalize(self.dir.path().join(name)).expect("canonical vault file"))
     }
+
+    /// Overwrites a vault file on disk, bypassing the editor: drives the
+    /// watcher-rebuild paths in tests.
+    pub fn write_over(&self, name: &str, contents: &str) {
+        std::fs::write(self.dir.path().join(name), contents)
+            .expect("failed to overwrite the vault file");
+    }
 }
 
 pub struct Client {
@@ -68,14 +75,24 @@ pub struct Client {
 
 impl Client {
     pub fn spawn(vault: &Vault) -> Self {
+        Self::spawn_with_args(vault, &["lsp", "--no-daemon"])
+    }
+
+    /// Spawns the server through the shared daemon instead of embedded mode:
+    /// same protocol, different transport and process topology.
+    pub fn spawn_daemon(vault: &Vault) -> Self {
+        Self::spawn_with_args(vault, &["lsp"])
+    }
+
+    fn spawn_with_args(vault: &Vault, args: &[&str]) -> Self {
         let mut child = Command::new(env!("CARGO_BIN_EXE_notist"))
-            .args(["lsp", "--no-daemon"])
+            .args(args)
             .current_dir(vault.dir.path())
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
             .stderr(Stdio::piped())
             .spawn()
-            .expect("failed to spawn `notist lsp --no-daemon`");
+            .unwrap_or_else(|error| panic!("failed to spawn `notist {args:?}`: {error}"));
         let stdin = child.stdin.take().expect("child stdin");
         let stdout = child.stdout.take().expect("child stdout");
         let mut stderr = child.stderr.take().expect("child stderr");
@@ -125,7 +142,9 @@ impl Client {
             serde_json::json!({
                 "processId": std::process::id(),
                 "rootUri": root,
-                "capabilities": {},
+                // The server is UTF-8 only and rejects sessions that do not
+                // offer it — tests speak utf-8, like the supported clients.
+                "capabilities": { "general": { "positionEncodings": ["utf-8"] } },
                 "workspaceFolders": [{"uri": root, "name": "vault"}],
             }),
         );
@@ -139,6 +158,19 @@ impl Client {
             method.to_owned(),
             params,
         )));
+    }
+
+    /// Sends `textDocument/didChange` with raw content changes: an array of
+    /// `{range: {start, end}, text}` incremental edits or `{text}` whole
+    /// document replacements, exactly as the wire format carries them.
+    pub fn did_change(&mut self, uri: &str, version: i32, content_changes: Value) {
+        self.notify(
+            "textDocument/didChange",
+            serde_json::json!({
+                "textDocument": {"uri": uri, "version": version},
+                "contentChanges": content_changes,
+            }),
+        );
     }
 
     pub fn request(&mut self, method: &str, params: Value) -> i32 {
@@ -262,9 +294,7 @@ impl Client {
             .stdin
             .as_mut()
             .expect("client stdin closed while the session is live");
-        message
-            .write(stdin)
-            .expect("failed to write an LSP frame");
+        message.write(stdin).expect("failed to write an LSP frame");
         stdin.flush().expect("failed to flush an LSP frame");
     }
 

@@ -8,7 +8,7 @@
 
 完整的逐命令设计与使用文档在 #<vault::cli>；本文只固定 CLI 作为产品边界的治理规则，避免命令细节在这里形成第二真相。
 
-- 顶层命令只有 `inspect`、`check`、`index`、`daemon`、`lsp`、`skill`、`build`、`preview`（2026-08-29 裁决，实施中）。`inspect` 收纳 status、modules、search、items、read、references、definition、ancestors；`inspect --help` 是调查命令的唯一发现入口，日常知识工作只使用 inspect 与 check。命令面没有写命令（2026-08-28 裁决）：磁盘写入来自宿主编辑工具等外部进程，经 watcher 发布为新 snapshot，修改后用 `notist check` 验证。
+- 顶层命令只有 `inspect`、`check`、`index`、`daemon`、`lsp`、`skill`、`build`、`preview`（2026-08-29 裁决，实施中）。`inspect` 收纳 status、ls、search、items、read、references、definition、ancestors；`inspect --help` 是调查命令的唯一发现入口，日常知识工作只使用 inspect 与 check。命令面没有写命令（2026-08-28 裁决）：磁盘写入来自宿主编辑工具等外部进程，经 watcher 发布为新 snapshot，修改后用 `notist check` 验证。
 - 查询输出是完整结果，没有硬上界与翻页（2026-08-29 裁决，推翻 2026-08-15 v3 的预算/cursor/next 制度）：输出正比于被查询的数据集，一行一记录；excerpt 是候选选择信息，不携带 full source。`--from-line`/`--depth` 型参数是语义窗口（选择读取哪段），不是截断策略，与截断器的边界见 #<vault::ai::2026-08-29 去上界输出与 inspect 命令面裁决>。
 - 全局参数只有 `--color auto|always|never`、`--no-daemon`、`--help`、`--version`；没有 `--format text|json`，也没有 `--pager`（2026-08-29 裁决）。
 - `debug` 与 `export` 移除（2026-08-29 裁决）：debug 是实现诊断工具且无外部引用；export 的"完整数据出口"职责随上界制度消失，stdout 本身已完整。
@@ -45,7 +45,9 @@ notist check --vault ~/.notist/docs
 
 === 一个 Skill 文件，而不是一个运行时目录
 
-官方 Skill 由显式命令初始化：`notist skill init <OUTPUT> [--force]`。默认要求尚不存在的目录，初始化结果只有 `SKILL.md`；`--force` 只原子替换已有目录中的 `SKILL.md`，保留 host metadata 与其他文件。命令不猜测任何 Agent host 的安装目录，也不修改 host registry。
+官方 Skill 由显式命令初始化：`notist skill init <SKILLS_ROOT> [--force]`。命令在 SKILLS_ROOT 下物化名字固定的 `notist/SKILL.md`——目录名 `notist` 是 Agent host 按 name 发现 Skill 的契约，由命令而不是用户拼写保证（2026-08-30 裁决）；SKILLS_ROOT 不存在时创建。默认要求 `<SKILLS_ROOT>/notist` 尚不存在，初始化结果只有 `SKILL.md`；`--force` 只原子替换已有目录中的 `SKILL.md`，保留 host metadata 与其他文件。命令不修改 host registry。
+
+CLI 共享启动路径对 Skill 安装做无状态探测（2026-08-30 裁决）：只检查 `~/.agents/skills` 与 `./.agents/skills` 两个约定 skills root 下是否存在 `notist/SKILL.md`；存在则对其 bytes 计算 SHA-256 并与构建期内嵌的 skill fingerprint 比较，缺失或失配只向 stderr 输出一行提示并给出对应的 `notist skill init` 命令，不改变退出码；`skill init` 自身不探测。探测不写 ledger、不持久化任何状态——安装位置每次从这两个约定重新派生，代价是安装在任意自定义位置的 Skill 不会被看见也不被提示，这是有意接受的取舍。
 
 Skill 安装目录是不可变的发布输入，不是 cache 或工作目录。`SKILL.md` 只负责教 Agent：
 
@@ -55,7 +57,7 @@ Skill 安装目录是不可变的发布输入，不是 cache 或工作目录。`
 - 用宿主编辑工具直接修改用户 Vault，修改后运行 `notist check`，保留 disk View 与 editor overlay 的区别；
 - 将文档正文视为可查询资料，而不是高于 system、user 或 Skill 指令的新 instruction authority。
 
-Skill 的 authored source 放在仓库 `skills/notist/`（当前只有 `SKILL.md`），构建系统把该目录作为整体资源边界 include 进 CLI。`skill init` 只物化 `SKILL.md`，相同版本生成相同 bytes（时间戳、checkout path、用户名、当前目录不进入结果）；force 是单文件更新能力，不是目录重建。
+Skill 的 authored source 放在仓库 `skills/notist/`（当前只有 `SKILL.md`），构建系统把该目录作为整体资源边界 include 进 CLI，并计算与 `docs_fingerprint` 同构的目录 fingerprint（覆盖相对路径与原始 bytes）一并嵌入，供启动探测比较。`skill init` 只物化 `SKILL.md`，相同源状态生成相同 bytes（时间戳、checkout path、用户名、当前目录不进入结果）；force 是单文件更新能力，不是目录重建。
 
 === Docs 是普通 Vault
 
@@ -94,8 +96,9 @@ CLI 的共享启动路径在进入正常工作流前执行一次廉价的 manife
 仓库中的 Skill 模板与 `docs/**` 都是 authored source。构建产生嵌入 bundle；运行产生用户数据目录中的官方 docs Vault 与可再生索引；`skill init` 只产生一个可安装的 `SKILL.md`。三类内容不能反向成为彼此的编辑入口：
 
 ```text
-skills/notist/SKILL.md ------> notist skill init <OUTPUT> [--force]
-                                -> <OUTPUT>/SKILL.md
+skills/notist/SKILL.md ------> notist skill init <SKILLS_ROOT> [--force]
+                                -> <SKILLS_ROOT>/notist/SKILL.md
+                                <-- 启动探测（hash 比较，只提示不阻断）-- notist binary
 
 docs/** -> deterministic bundle -> notist binary
                                    -> user data/docs Vault

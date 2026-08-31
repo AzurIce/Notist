@@ -1,0 +1,110 @@
+= LSP incremental sync 设计
+
+目标：把 `notist lsp` 的 didChange 从「FULL 全文单 change + 契约强制」升级为「INCREMENTAL 声明 + 宽容双形态接受」。本设计解除 2026-08-25 lsp architecture redesign 阶段 A 中的 FULL 契约强制部分。对齐基准是 rust-analyzer（`lsp/utils.rs` 的 `apply_document_changes`）与 tinymist（`input.rs` 的 `edit_source`）的实际实现，逐项对照见下；typst（`Source::edit` + `reparser`）提供行索引一体与增量重解析的远期参照。当前行为快照见 #<vault::designs::lsp::checktable>。文末附 notist LSP 整体问题面全量分析与推进顺序——本设计位于其 P1 位。
+
+== 三方对照与采纳
+
+```text
+维度              rust-analyzer                tinymist                本设计（对齐后）
+capability        Options{openClose,           Options{openClose,      同 ra：Options 形式
+                  change: Incremental, save}   change: Incremental,    {openClose:true,
+                                               save:Supported}         change, save}
+双形态            partial 依序；整文档 change  逐条 match：有 range    逐条依序 + ra 的
+                  取最后一个为基、丢弃其前     edit / 无 range replace 整文档优先优化
+                  全部 change（与纯顺序
+                  语义等价的优化）
+行索引            惰性重建：index_valid 前缀   typst Source 内嵌       同 ra：惰性重建
+                  有效性，越界才重建           Lines，edit 原地修正    （原地修正留远期）
+越界 range        offset 严格校验失败 →        Option + .expect →      字符列钳位（LSP 规范
+                  该 change 静默跳过           panic                   明文：character 超行
+                                                                       长按行长处理）；
+                                                                       钳位后 start>end 丢弃
+版本门控          无：无条件记录最新 version   无：完全忽略 version    同两家：无门控，仅记录
+未 didOpen        tracing::error! + 丢弃       "file missing" 错误     同 ra：丢弃 + 服务端
+                  会话存活                                             日志，会话存活
+无变化抑制        文本未变不推 VFS             无                      采纳：文本未变不 dirty
+崩溃面            无                           越界 panic（反面教材）  无（钳位 + 丢弃）
+```
+
+== 决策
+
+- *声明 INCREMENTAL，宽容双形态*：`server_capabilities` 改为 `TextDocumentSync::Options` 形式（`open_close: true`、`change: INCREMENTAL`、`save`），与 ra/tinymist 三方同形。带 range 与不带 range 的 change 都合法、可混批、依序应用；obsidian 继续发全文零改动，VS Code/Zed 声明后自动升级。
+- *整文档 change 优先（ra 语义）*：一批 contentChanges 中若出现 range-less change，以最后一个为起点、丢弃其之前的所有 change，其后的部分 change 照常应用。这与纯顺序应用结果等价（后到的整文档必然覆盖先前工作），但省掉注定被覆盖的中间态。
+- *应用为纯函数，不持久行索引*：`OpenDocument` 保持 `{ version, text }` 不变；应用逻辑是 rust-analyzer 式纯函数 `apply_document_changes(encoding, old_text, changes) -> String`，行索引在函数内按「前缀有效性」惰性重建（批内降序编辑零重建），不跨批持久。落地时据此偏离了本节初稿的「`OpenDocument` 持久 LineIndex」方案：纯函数没有陈旧索引状态，且可整体对拍测试。typst 式「行索引原地增量修正」仍是后续优化方向。
+- *越界处理：钳位优先、退化丢弃、绝不 panic*：字符列超过行长按行长处理（LSP 规范 Position 节明文要求）、行号超过文档尾钳到文档尾、UTF-8 模式列取整到字符边界；钳位后 start > end 的该条 change 丢弃（对齐 ra 的 skip），不进 logMessage。与 ra 的差异点：ra 是严格校验失败即跳过，我们多做一步钳位——规范本身规定了列钳位语义，且 CJK/emoji 文档上边界列更常见；若实测遇到系统性错位的客户端，退回 ra 式严格跳过是一行之改。
+- *版本门控移除*：与 ra/tinymist 完全一致——不校验单调性，didChange 到达即应用，`params.version` 仅记录（publishDiagnostics 透传仍用它）。依据：stdio 单一有序流内通知天然保序，乱序只能来自传输故障，两家标杆都不设防。等版本 ranged 双重应用风险由「无变化抑制」兜底：重发同文本不会触发重建。
+- *未 didOpen 的 didChange 丢弃*：对未知文档的 didChange 记服务端日志（tracing 式）并丢弃，会话存活（同 ra）。撤销上一稿的「宽松空缓冲起步」——ranged-only 对空缓冲会钳到 0..0 静默产生垃圾文本，宽松是错的。normalize_uri_path 失败仍保留 logMessage WARNING（传输层问题，非同步契约）。
+- *无变化抑制*：应用后文本与旧文本逐字节相同则不 `mark_dirty`（同 ra 的 `*data != new_contents`），等版本重发与空编辑零成本。
+- *调度与诊断面不变*：`mark_dirty` → single-flight latest-wins；publishDiagnostics 的 version 透传、签名 diff 不动。
+
+== 应用算法（session.change 重写，apply_document_changes 为纯函数便于测试）
+
+```text
+apply_changes(old_text, changes, encoding) -> String:
+  # 整文档优先：取最后一个 range-less change 为基
+  (text, partials) = split_at_last_whole(changes) or (old_text, changes)
+  index       = LineIndex::new(&text)
+  index_valid = !0                              # 初始索引对全文有效
+  for change in partials:                       # 依序，每条对前一状态换算
+    if change.end.line > index_valid:
+      index = LineIndex::new(&text)             # 惰性重建
+    (s, e) = saturating(index, change.range, encoding)
+    if s <= e: text.replace_range(s..e, &change.text)
+    index_valid = change.start.line
+  return text
+
+session.change(params):
+  path = normalize_uri_path(uri)                # 失败仍 WARNING（传输层，非契约）
+  doc  = documents.get(path) else { 日志 + 丢弃 } # 未 didOpen
+  text = apply_changes(&doc.text, params.content_changes, encoding)
+  if text != doc.text: documents.insert({version, text, LineIndex::new}); dirty
+  else: documents.insert({params.version, ...}) # 只更新 version，不重建不 dirty
+```
+
+== 实施清单
+
+1. *notist-analysis*：`LineIndex` saturating 换算 API（行尾/文档尾/字符中间钳位、`\r\n` 不计行长、空文档与纯换行文档）+ 单测。这是唯一动其他 crate 的点。
+2. *lsp.rs*：`OpenDocument` 结构改造；`apply_document_changes` 纯函数（对齐 ra，直接移植其测试用例库：整文档混批、降序批量、无效 range 跳过、CRLF）；`open/change/save` 适配；capabilities 改 Options 形式；删除 FULL 契约拒绝路径。
+3. *测试面改写*：
+   - 既有拒绝类测试翻转：`rejects_contract_violating_full_sync_changes`、`reports_rejected_did_change_via_log_message`（路径删除）、`rejects_did_change_version_regressions`（门控移除，改为「旧版本重发同文本不触发重建」语义）、`lsp_lifecycle.rs` 的 `textDocumentSync == 1` 断言（改为 Options 对象断言）。
+   - 新增：CJK/emoji/`\r\n` 混合文本 range 应用、EOF 位置（尾随换行后的 line N）、多 change 依序与降序批量、整文档 change 中途出现、未 didOpen 丢弃、无变化抑制。
+   - headless 端到端：`tests/common` Client 增加 `did_change_incremental` 原语，场景「ranged 编辑后 hover/definition 命中新文本、诊断随增量刷新」。
+   - 随机化往返：种子化 PRNG property test，随机编辑序列后服务端缓冲逐字节等于期望文本；覆盖代理对内部、`\r\n` 中间等怪位（vault 中文密集，UTF-16 desync 是头号风险）。
+4. *姊妹项目审查（AGENTS.md 义务）*：obsidian-notist `src/lsp/session.ts` 头注释逐条更新（「FULL sync, strictly」段作废）+ obsidian CLI 实机回归（继续发全文路径）；vscode-notist `src/protocol.ts` 头注释同步 + `just lsp-smoke`（languageclient 在声明后立即改发 ranged edits，是首个真实增量客户端）；zed-notist 无客户端改动，记录即可。
+5. *文档收尾*：更新 #<vault::designs::lsp::checktable> 的能力声明节与 didChange 行。
+
+== 风险与边界
+
+- *UTF-16 desync*：中文+emoji 密集文档上，列换算错一格即静默内容损坏；saturating 换算测试必须覆盖代理对内部与 `\r\n` 中间。eglot 曾因增量 payload 计算错误与 clangd desync（eglot #259），说明服务端钳位/丢弃防线必要。
+- *移除版本门控的残余风险*：病态客户端同版本重发同一 ranged change 会双重应用；ra/tinymist 同样不防，且有序流内不发生。若未来实机遇到，加回「version 相等且与上批逐字节相同则跳过」是一行之改。
+- *与 C 层（重建管线）的关系*：本设计只省 client→server 传输；每次重建仍全量 UpdateView 所有 overlay + Sources 全 vault 拉取（#<super::2026-08-25 notist lsp audit follow-up> 挂账）。配套小改——LSP 侧记 last-sent version，UpdateView 只发改过的 overlay——列为紧随其后的后续项；Sources 增量化另立。
+- *obsidian 全文节流*：客户端改发 CM6 transaction range 后节流可放宽，属 obsidian-notist 侧后续项。
+
+== 附：notist LSP 整体问题面与推进顺序（2026-08-30 全量分析）
+
+与 rust-analyzer/tinymist 全量对照后的问题清单，逐项经当时的工作区代码核实。骨架是健康的：单 mutator 事件总线、每请求 Arc 快照、single-flight latest-wins 构建、签名 diff 诊断推送、编码协商、错误码四分。差距集中在四件结构事：
+
+- *A 查询管线文本运动量（最大结构差距）*：每次编辑突发文本整体流动约三次——client→LSP（全文，本文设计解决）；LSP→service `UpdateView` 重发所有打开文档全文；service→LSP `Sources` 取回全 vault 全文并逐文件重建 LineIndex。ra 零批量搬运（vfs 单份文本 + salsa 记忆化查询）；tinymist 只推变更的单文件。瓶颈是搬运不是计算（wasm 化后全库 check 仅 0.14s CPU）。→ *2026-08-31 上行段已解*（`UpdateViewDelta` 只发变更 overlay）；*下行段已解*（utf-8 连接走 `SourceTables` 行表，utf-16 连接保留全文回退）。
+- *B daemon 默认路径并发退化*：`notist lsp` 默认走 daemon（`--no-daemon` 可选）；daemon 连接在客户端侧被整把互斥锁串行，取消在完成后才被观察（假取消）——一个长 renderDocument 请求堵住诊断发布与后续一切。service 侧本已支持多路复用与 Cancel，是 LSP 的 daemon client 未接线。→ *2026-08-31 已解*（客户端多路复用 + 真 Cancel 落地，见《健壮性并发与数据面设计》；`--no-daemon` 默认值未改，daemon 路径已可并发）。
+- *C 主循环健壮性（当时核实为现存问题）*：① 畸形通知参数解码错误一路上抛，一条坏 didChange 即杀死整个 server；ra 的形态是 handler 错误一律记日志吞掉、循环永不因单条消息退出。② `publish_diagnostics` 在主循环同步做阻塞 IPC，daemon 路径上与在途长请求抢锁，堵住期间 `$cancelRequest` 与 exit 均无响应。→ *2026-08-31 双双修复*（notification/publish 错误就地降级为日志，循环只因 EOF/exit 退出）。
+- *D 能力面薄*：signatureHelp / documentHighlight / foldingRange / documentLink / codeAction / `$/progress` / didChangeConfiguration——功能差距而非架构差距，按 #<vault::designs::lsp::checktable> 的性价比清单推进；semanticTokens 维持有意不做。
+- *E 生命周期与工作区*：根集 initialize 时固定，无 didChangeWorkspaceFolders、无 `workspace/configuration` 拉取；位置编码已翻转为 utf-8 优先（核心是字节 offset，提供 utf-8 的客户端同时获得行表数据面）。
+- *F 语义深度*：documentSymbol 仅标题、resolver 仅 Let/参数/import 绑定子集、hover 基础形态。差距最大但 vault 导航/检索用例不依赖，承认不追。
+
+推进顺序：*P0* = C-①②（已修复）；*P1* = 本文增量同步（已落地）→ C 层增量（已落地）+ daemon 多路复用与真取消（已落地）；*P2* = D/E 清单（待推进）。
+
+== 落地记录（2026-08-30）
+
+- *notist-analysis*：`LineIndex::offset_utf16_saturating` / `offset_utf8_saturating`（行/列钳位、代理对与字符边界取整、`\r\n` 不计行长）+ 单测。
+- *lsp.rs*：`apply_document_changes` 纯函数（整文档优先、index_valid 惰性重建、越界钳位、start>end 跳过）；`change()` 重写（无版本门控、未打开文档丢弃并记 stderr、无变化抑制仅记 version）；capabilities 改 `Options` 形式（openClose / INCREMENTAL / save）。
+- *测试*：翻转三个旧拒绝类测试为 `applies_changes_in_arrival_order_and_records_versions` / `applies_incremental_and_batched_changes` / `reports_unroutable_did_change_via_log_message`；新增 `drops_changes_for_unopened_documents`、`applies_clamped_descending_and_crlf_batches`、`apply_document_changes_matches_reference_on_random_edits`（固定种子 400 步随机编辑对拍独立参考实现）；headless 侧 `lsp_queries.rs` 增量端到端（混批 + 诊断门控 + hover 命中编辑后文本）、`lsp_sync.rs` 翻转为不可路由 URI / 未打开文档两拒绝路径、lifecycle 的 capabilities 断言对象化。全 workspace 28 个测试套件零失败。
+- *姊妹项目*：obsidian `session.ts` 头注释更新（插件继续发整文档，合法；改发 CM6 range 是后续项）；vscode `protocol.ts` 头注释 + `lsp-smoke.mjs` 契约探针更新（INCREMENTAL 断言 + 越界 ranged 追加探针），对真实 server 实跑全绿；zed 无客户端改动。obsidian 实机回归（obsidian CLI 驱动运行中的 Obsidian）待有实例时补做。
+- *设计同步*：`#<vault::designs::host::lsp-adapter>` 文本同步节改为 INCREMENTAL 契约；`#<vault::designs::lsp::checktable>` 能力声明与 didChange / logMessage 行更新；`#<vault::designs::lsp::test>` 判据与场景目录更新。
+
+== 参考
+
+- rust-analyzer：`crates/rust-analyzer/src/lsp/utils.rs`（apply_document_changes：整文档优先、index_valid 惰性重建、无效 range 跳过 + 大量单测）、`src/handlers/notification.rs`（未 didOpen 丢弃、无变化抑制、无版本门控）、`src/lsp/capabilities.rs`（Options 形式声明）。
+- tinymist：`crates/tinymist/src/input.rs`（edit_source 双形态）、`src/lsp/init.rs`（声明）、越界 `.expect` panic 反面教材。
+- typst：`typst-syntax/src/source.rs`（text + 行索引一体、edit 原地维护）、`typst-syntax/src/reparser.rs`（块级增量重解析）。
+- #<super::2026-08-25 lsp architecture redesign>：本设计解除其阶段 A 的 FULL 契约强制；single-flight、编码协商、错误码分类等其余裁决不受影响。
+- #<vault::designs::lsp::checktable>：didChange 当前行为与 typst 对照。

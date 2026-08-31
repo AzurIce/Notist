@@ -8385,7 +8385,7 @@ var TreeCursor = (_a3 = class {
   }
 }, __name(_a3, "TreeCursor"), _a3);
 var _a4;
-var Node = (_a4 = class {
+var Node2 = (_a4 = class {
   /** @internal */
   constructor(internal, {
     id,
@@ -8978,7 +8978,7 @@ function unmarshalNode(tree, address = TRANSFER_BUFFER) {
   const column = C.getValue(address, "i32");
   address += SIZE_OF_INT;
   const other = C.getValue(address, "i32");
-  const result = new Node(INTERNAL, {
+  const result = new Node2(INTERNAL, {
     id,
     tree,
     startIndex: index,
@@ -12168,6 +12168,124 @@ function notistRefJump(hooks) {
   ];
 }
 
+// src/lsp/source-map.ts
+var utf8BytesOf = (codePoint) => codePoint <= 127 ? 1 : codePoint <= 2047 ? 2 : codePoint <= 65535 ? 3 : 4;
+var SourceMap = class _SourceMap {
+  constructor(text, lineStartBytes, lineStartChars, totalByteLength) {
+    this.text = text;
+    this.lineStartBytes = lineStartBytes;
+    this.lineStartChars = lineStartChars;
+    this.totalByteLength = totalByteLength;
+  }
+  static fromText(text) {
+    const lineStartBytes = [0];
+    const lineStartChars = [0];
+    let bytes = 0;
+    let i2 = 0;
+    while (i2 < text.length) {
+      const code = text.charCodeAt(i2);
+      if (code === 10) {
+        bytes += 1;
+        lineStartBytes.push(bytes);
+        lineStartChars.push(i2 + 1);
+        i2 += 1;
+        continue;
+      }
+      const isPair = code >= 55296 && code <= 56319 && i2 + 1 < text.length && text.charCodeAt(i2 + 1) >= 56320 && text.charCodeAt(i2 + 1) <= 57343;
+      const codePoint = isPair ? text.codePointAt(i2) : code;
+      bytes += utf8BytesOf(codePoint);
+      i2 += isPair ? 2 : 1;
+    }
+    return new _SourceMap(text, lineStartBytes, lineStartChars, bytes);
+  }
+  get lineCount() {
+    return this.lineStartBytes.length;
+  }
+  /** Byte offset of the first character of `line` (clamped). */
+  byteAtLine(line) {
+    return this.lineStartBytes[Math.max(0, Math.min(line, this.lineCount - 1))];
+  }
+  byteOfPosition(pos) {
+    const line = Math.max(0, Math.min(pos.line, this.lineCount - 1));
+    const charStart = this.lineStartChars[line];
+    const charEnd = line + 1 < this.lineCount ? this.lineStartChars[line + 1] - 1 : this.text.length;
+    let byte = this.lineStartBytes[line];
+    let utf16 = 0;
+    let i2 = charStart;
+    while (i2 < charEnd && utf16 < pos.character) {
+      const code = this.text.charCodeAt(i2);
+      const isPair = code >= 55296 && code <= 56319 && i2 + 1 < charEnd && this.text.charCodeAt(i2 + 1) >= 56320 && this.text.charCodeAt(i2 + 1) <= 57343;
+      const codePoint = isPair ? this.text.codePointAt(i2) : code;
+      byte += utf8BytesOf(codePoint);
+      utf16 += isPair ? 2 : 1;
+      i2 += isPair ? 2 : 1;
+    }
+    return byte;
+  }
+  /** Position of a byte offset. Offsets inside a code point snap to the
+   * position of that code point's first unit. */
+  position(byteOffset) {
+    const target = Math.max(0, Math.min(byteOffset, this.totalByteLength));
+    const starts = this.lineStartBytes;
+    let lo = 0;
+    let hi = starts.length - 1;
+    while (lo < hi) {
+      const mid = lo + hi + 1 >> 1;
+      if (starts[mid] <= target) {
+        lo = mid;
+      } else {
+        hi = mid - 1;
+      }
+    }
+    let byte = starts[lo];
+    let i2 = this.lineStartChars[lo];
+    let utf16 = 0;
+    while (i2 < this.text.length && byte < target) {
+      const code = this.text.charCodeAt(i2);
+      if (code === 10)
+        break;
+      const isPair = code >= 55296 && code <= 56319 && i2 + 1 < this.text.length && this.text.charCodeAt(i2 + 1) >= 56320 && this.text.charCodeAt(i2 + 1) <= 57343;
+      const codePoint = isPair ? this.text.codePointAt(i2) : code;
+      if (byte + utf8BytesOf(codePoint) > target)
+        break;
+      byte += utf8BytesOf(codePoint);
+      utf16 += isPair ? 2 : 1;
+      i2 += isPair ? 2 : 1;
+    }
+    return { line: lo, character: utf16 };
+  }
+  /** UTF-8 byte column within `line` for a UTF-16 column (both clamped to
+   * the line's content). This is the outgoing wire conversion. */
+  utf8ColumnOf(line, utf16Column) {
+    return this.byteOfPosition({ line, character: utf16Column }) - this.byteAtLine(line);
+  }
+  /** UTF-16 column within `line` for a UTF-8 byte column (both clamped; a
+   * byte column inside a code point snaps to its first unit). This is the
+   * incoming wire conversion. */
+  utf16ColumnOf(line, utf8Column) {
+    const base = this.byteAtLine(line);
+    return this.position(base + utf8Column).character;
+  }
+  /** Static variant of `utf16ColumnOf` for callers that only hold one line
+   * of text (excerpts, previews). */
+  static utf16ColumnInLine(line, utf8Column) {
+    let byte = 0;
+    let utf16 = 0;
+    let i2 = 0;
+    while (i2 < line.length && byte < utf8Column) {
+      const code = line.charCodeAt(i2);
+      const isPair = code >= 55296 && code <= 56319 && i2 + 1 < line.length && line.charCodeAt(i2 + 1) >= 56320 && line.charCodeAt(i2 + 1) <= 57343;
+      const codePoint = isPair ? line.codePointAt(i2) : code;
+      if (byte + utf8BytesOf(codePoint) > utf8Column)
+        break;
+      byte += utf8BytesOf(codePoint);
+      utf16 += isPair ? 2 : 1;
+      i2 += isPair ? 2 : 1;
+    }
+    return utf16;
+  }
+};
+
 // src/lsp/cm.ts
 var import_view5 = require("@codemirror/view");
 var import_lint = require("@codemirror/lint");
@@ -12720,7 +12838,9 @@ var _NotistTextView = class _NotistTextView extends import_obsidian2.TextFileVie
           // without it insert mode depends on the flaky native caret.
           (0, import_view7.drawSelection)(),
           (0, import_commands3.history)(),
-          import_view7.keymap.of([...import_commands3.defaultKeymap, ...import_commands3.historyKeymap]),
+          // defaultKeymap deliberately omits Tab; without indentWithTab
+          // the browser moves focus out of the editor instead.
+          import_view7.keymap.of([...import_commands3.defaultKeymap, ...import_commands3.historyKeymap, import_commands3.indentWithTab]),
           // tree-sitter highlighting; [] when wasm init failed.
           notistHighlight(),
           // Image-reference hover previews (shell glue below).
@@ -13294,13 +13414,18 @@ var _NotistTextView = class _NotistTextView extends import_obsidian2.TextFileVie
     if (this.editorView)
       applyLspDiagnostics(this.editorView, diagnostics);
   }
-  /** Reveal a definition target range in this editor. */
+  /** Reveal a definition target range in this editor. Wire ranges carry
+   * utf-8 byte columns — convert them against this document's text (the
+   * target was opened above, so the doc matches what the server served). */
   revealLspRange(range) {
     const view = this.editorView;
     if (!view)
       return;
-    const from = offsetFromPos(view.state.doc, range.start);
-    const to = offsetFromPos(view.state.doc, range.end);
+    const map = SourceMap.fromText(view.state.doc.toString());
+    const start2 = map.position(map.byteAtLine(range.start.line) + range.start.character);
+    const end = map.position(map.byteAtLine(range.end.line) + range.end.character);
+    const from = offsetFromPos(view.state.doc, start2);
+    const to = offsetFromPos(view.state.doc, end);
     view.dispatch({
       selection: { anchor: from, head: to },
       effects: import_view7.EditorView.scrollIntoView(from, { y: "center" })
@@ -13354,12 +13479,14 @@ var NotistExplorerView = class extends import_obsidian3.ItemView {
     this.renaming = false;
     this.pendingRender = false;
     this.renderQueued = false;
-    /** Folder auto-expand timer while dragging over a collapsed folder. */
-    this.dragOpenTimer = null;
+    /** Collapsed folder pending auto-open while dragging over it. */
+    this.dragOpen = null;
     // ---- drag & drop ------------------------------------------------------------------
     /** Source path of the in-flight drag. The dataTransfer payload is unreadable
      * during dragover (spec: types only until drop), so state lives here. */
     this.dragSource = null;
+    /** Drop region currently lit: the elements and the dir they represent. */
+    this.dropLit = null;
   }
   getViewType() {
     return VIEW_TYPE_NOTIST_EXPLORER;
@@ -13552,7 +13679,7 @@ var NotistExplorerView = class extends import_obsidian3.ItemView {
     tree.setAttribute("role", "tree");
     tree.setAttribute("tabindex", "0");
     tree.addEventListener("keydown", (evt) => this.onKeyDown(evt));
-    this.wireRootDropZone(tree);
+    this.wireDropZone(tree);
     tree.addEventListener("contextmenu", (evt) => {
       if (evt.target instanceof Element && evt.target.closest(".notist-explorer-row"))
         return;
@@ -13590,14 +13717,17 @@ var NotistExplorerView = class extends import_obsidian3.ItemView {
     this.plugin.scheduleLayoutSave();
   }
   renderNode(parent, node) {
-    const isOpen = node.isFolder && this.expanded.has(node.path);
-    const row = this.renderRow(parent, node, { open: isOpen });
-    if (!node.isFolder)
+    if (!node.isFolder) {
+      this.renderRow(parent, node);
       return;
+    }
+    const isOpen = this.expanded.has(node.path);
+    const wrap = parent.createDiv("notist-explorer-node");
+    const row = this.renderRow(wrap, node, { open: isOpen });
     row.setAttribute("aria-expanded", String(isOpen));
     if (!isOpen)
       return;
-    const childrenHost = parent.createDiv("notist-explorer-children");
+    const childrenHost = wrap.createDiv("notist-explorer-children");
     for (const child of node.children)
       this.renderNode(childrenHost, child);
   }
@@ -13759,6 +13889,7 @@ var NotistExplorerView = class extends import_obsidian3.ItemView {
     );
     if (folder) {
       menu.addSeparator();
+      this.addCopyPathItems(menu, folder.path);
       menu.addItem(
         (item) => item.setTitle("Rename").setIcon("pencil").onClick(() => this.beginRename(folder.path))
       );
@@ -13770,6 +13901,55 @@ var NotistExplorerView = class extends import_obsidian3.ItemView {
       );
     }
     menu.showAtMouseEvent(evt);
+  }
+  /** The file's canonical Notist ModulePath (`vault::a::b`): directory
+   * segments plus the file stem, except README.not which *is* its directory's
+   * module. Null for files that are not .not modules. */
+  modulePathOf(file) {
+    if (file.extension !== "not")
+      return null;
+    const dir = file.parent?.path ?? "";
+    const segments = dir && dir !== "/" ? dir.split("/") : [];
+    if (file.basename.toLowerCase() !== "readme")
+      segments.push(file.basename);
+    return ["vault", ...segments].join("::");
+  }
+  /** Native-style "Copy path" group: Notist ModulePath, vault-relative and
+   * absolute variants. When Obsidian's section submenus are available the
+   * short titles read as continuations of "Copy path", exactly like its own
+   * explorer menu; older builds fall back to flat, self-contained items.
+   * Vault paths are copied verbatim — markdown files (which Obsidian copies
+   * extension-less) never appear in this tree. */
+  addCopyPathItems(menu, path, file) {
+    const withSubmenus = menu;
+    const asSubmenu = typeof withSubmenus.setSectionSubmenu === "function";
+    if (asSubmenu) {
+      withSubmenus.setSectionSubmenu("info.copy", {
+        title: "Copy path",
+        icon: "lucide-clipboard"
+      });
+    }
+    if (file) {
+      const modulePath = this.modulePathOf(file);
+      if (modulePath !== null) {
+        menu.addItem(
+          (item) => item.setTitle(asSubmenu ? "as Notist ModulePath" : "Copy Notist ModulePath").setIcon("lucide-link").setSection("info.copy").onClick(() => this.copyToClipboard(modulePath))
+        );
+      }
+    }
+    menu.addItem(
+      (item) => item.setTitle(asSubmenu ? "from vault folder" : "Copy vault path").setIcon("vault").setSection("info.copy").onClick(() => this.copyToClipboard(path))
+    );
+    if (this.canReachSystem()) {
+      const absolute = `${this.app.vault.adapter.getBasePath()}/${path}`;
+      menu.addItem(
+        (item) => item.setTitle(asSubmenu ? "from system root" : "Copy full path").setIcon("lucide-hard-drive").setSection("info.copy").onClick(() => this.copyToClipboard(absolute))
+      );
+    }
+  }
+  copyToClipboard(text) {
+    void navigator.clipboard.writeText(text);
+    new import_obsidian3.Notice("Copied to your clipboard");
   }
   showFileMenu(node, evt) {
     const menu = new import_obsidian3.Menu();
@@ -13784,6 +13964,7 @@ var NotistExplorerView = class extends import_obsidian3.ItemView {
       );
     }
     menu.addSeparator();
+    this.addCopyPathItems(menu, node.path, node.file);
     menu.addItem(
       (item) => item.setTitle("Rename").setIcon("pencil").onClick(() => this.beginRename(node.path))
     );
@@ -13998,6 +14179,33 @@ var NotistExplorerView = class extends import_obsidian3.ItemView {
     const configured = this.app.vault.getConfig?.("trashOption");
     return configured === "system" ? "system" : "vault";
   }
+  clearDropHighlight() {
+    if (!this.dropLit)
+      return;
+    for (const el of this.dropLit.els) {
+      el.removeClass("is-drop-target");
+      el.removeClass("is-root-drop-target");
+    }
+    this.dropLit = null;
+  }
+  /** Light the region a drop into `dir` lands in: the whole tree for the
+   * vault root, otherwise the folder's wrapper box (row + children block). */
+  lightDropRegion(dir) {
+    if (this.dropLit?.dir === dir && this.dropLit.els.every((el2) => el2.isConnected))
+      return;
+    this.clearDropHighlight();
+    let el = null;
+    if (dir) {
+      const row = this.contentEl.querySelector(`[data-path="${cssEscape(dir)}"]`);
+      el = row?.parentElement instanceof HTMLElement && row.parentElement.hasClass("notist-explorer-node") ? row.parentElement : row ?? null;
+    } else {
+      el = this.contentEl.querySelector(".notist-explorer-tree");
+    }
+    if (!el)
+      return;
+    el.addClass(dir ? "is-drop-target" : "is-root-drop-target");
+    this.dropLit = { dir, els: [el] };
+  }
   wireDrag(row, node) {
     row.draggable = true;
     row.addEventListener("dragstart", (evt) => {
@@ -14010,73 +14218,92 @@ var NotistExplorerView = class extends import_obsidian3.ItemView {
     row.addEventListener("dragend", () => {
       this.dragSource = null;
       row.removeClass("is-dragged");
-    });
-    if (!node.isFolder)
-      return;
-    row.addEventListener("dragover", (evt) => {
-      const source = this.dragSource;
-      if (!source || source === node.path || node.path.startsWith(`${source}/`))
-        return;
-      evt.preventDefault();
-      if (evt.dataTransfer)
-        evt.dataTransfer.dropEffect = "move";
-      row.addClass("is-drop-target");
-      if (!this.expanded.has(node.path) && this.dragOpenTimer === null) {
-        this.dragOpenTimer = window.setTimeout(() => {
-          this.dragOpenTimer = null;
-          this.expanded.add(node.path);
-          this.render();
-          this.saveExpansion();
-        }, 700);
-      }
-    });
-    row.addEventListener("dragleave", () => {
-      row.removeClass("is-drop-target");
-      if (this.dragOpenTimer !== null) {
-        window.clearTimeout(this.dragOpenTimer);
-        this.dragOpenTimer = null;
-      }
-    });
-    row.addEventListener("drop", (evt) => {
-      evt.preventDefault();
-      row.removeClass("is-drop-target");
-      if (this.dragOpenTimer !== null) {
-        window.clearTimeout(this.dragOpenTimer);
-        this.dragOpenTimer = null;
-      }
-      const source = this.dragSource ?? evt.dataTransfer?.getData("application/x-notist-node") ?? null;
-      this.dragSource = null;
-      if (source && source !== node.path && !node.path.startsWith(`${source}/`)) {
-        void this.moveTo(source, node.path);
-      }
+      this.clearDropHighlight();
+      this.cancelDragOpen();
     });
   }
-  /** Empty space between/after rows drops into the vault root. */
-  wireRootDropZone(tree) {
+  /** Nearest drop region for a pointer position, as a destination directory:
+   * a folder row (or anywhere inside its wrapper) takes the drop itself, a
+   * file row forwards to its parent folder, bare tree space is the root. */
+  dropDirAt(target) {
+    const row = target.closest(".notist-explorer-row");
+    if (row) {
+      const path2 = row.dataset.path ?? "";
+      return row.dataset.kind === "folder" ? path2 : this.parentPathOf(path2) ?? "";
+    }
+    const wrap = target.closest(".notist-explorer-node");
+    const path = wrap?.querySelector(":scope > .notist-explorer-row")?.dataset.path;
+    return path !== void 0 ? path : "";
+  }
+  /** Hovering a collapsed folder long enough peeks it open, like Zed. */
+  scheduleDragOpen(dir) {
+    if (this.dragOpen?.dir === dir)
+      return;
+    this.cancelDragOpen();
+    if (this.expanded.has(dir))
+      return;
+    this.dragOpen = {
+      dir,
+      timer: window.setTimeout(() => {
+        this.dragOpen = null;
+        this.expanded.add(dir);
+        this.render();
+        this.lightDropRegion(dir);
+        this.saveExpansion();
+      }, 700)
+    };
+  }
+  cancelDragOpen() {
+    if (this.dragOpen)
+      window.clearTimeout(this.dragOpen.timer);
+    this.dragOpen = null;
+  }
+  /** True only when dropping `source` into directory `dir` moves anything:
+   * not onto itself, not into its own subtree, and not back onto the spot it
+   * already occupies. Name clashes are handled later, in moveTo. */
+  canDropOn(source, dir) {
+    if (source === dir)
+      return false;
+    if (dir.startsWith(`${source}/`))
+      return false;
+    const name2 = source.slice(source.lastIndexOf("/") + 1);
+    return (dir ? `${dir}/${name2}` : name2) !== source;
+  }
+  /** All pointer feedback is delegated to the tree so crossing row boundaries
+   * never tears the highlight down mid-flight (clear-on-dragleave + relight
+   * on the next dragover read as background flicker between items). */
+  wireDropZone(tree) {
     tree.addEventListener("dragover", (evt) => {
-      if (!this.dragSource)
+      const source = this.dragSource;
+      if (!source || !(evt.target instanceof Element))
         return;
-      if (evt.target instanceof Element && evt.target.closest('.notist-explorer-row[data-kind="folder"]')) {
+      const dir = this.dropDirAt(evt.target);
+      if (dir === null || !this.canDropOn(source, dir))
         return;
-      }
       evt.preventDefault();
       if (evt.dataTransfer)
         evt.dataTransfer.dropEffect = "move";
-      tree.addClass("is-root-drop-target");
+      this.lightDropRegion(dir);
+      if (dir)
+        this.scheduleDragOpen(dir);
     });
     tree.addEventListener("dragleave", (evt) => {
-      if (evt.target === tree)
-        tree.removeClass("is-root-drop-target");
+      const next = evt.relatedTarget;
+      if (!(next instanceof Node) || !tree.contains(next)) {
+        this.clearDropHighlight();
+        this.cancelDragOpen();
+      }
     });
     tree.addEventListener("drop", (evt) => {
-      tree.removeClass("is-root-drop-target");
-      if (evt.target instanceof Element && evt.target.closest('.notist-explorer-row[data-kind="folder"]')) {
-        return;
-      }
+      evt.preventDefault();
+      this.cancelDragOpen();
+      this.clearDropHighlight();
       const source = this.dragSource ?? evt.dataTransfer?.getData("application/x-notist-node") ?? null;
       this.dragSource = null;
-      if (source)
-        void this.moveTo(source, "");
+      const dir = evt.target instanceof Element ? this.dropDirAt(evt.target) : null;
+      if (source && dir !== null && this.canDropOn(source, dir)) {
+        void this.moveTo(source, dir);
+      }
     });
   }
   async moveTo(sourcePath, targetDir) {
@@ -14084,7 +14311,11 @@ var NotistExplorerView = class extends import_obsidian3.ItemView {
     if (!source)
       return;
     const name2 = sourcePath.split("/").pop() ?? sourcePath;
-    const destination = this.nextAvailablePath(targetDir, name2);
+    const destination = targetDir ? `${targetDir}/${name2}` : name2;
+    if (this.app.vault.getAbstractFileByPath(destination)) {
+      new import_obsidian3.Notice(`Notist explorer: "${name2}" already exists in the target folder`);
+      return;
+    }
     try {
       await this.app.vault.rename(source, destination);
       this.expanded.add(targetDir);
@@ -14630,8 +14861,14 @@ var NotistOutgoingLinksView = class extends NotistReferencesView {
 };
 function buildExcerpt(line, location) {
   const MAX = 120;
-  const start2 = Math.max(0, location.range.start.character);
-  const end = Math.max(start2, location.range.end.character);
+  const start2 = SourceMap.utf16ColumnInLine(
+    line,
+    Math.max(0, location.range.start.character)
+  );
+  const end = SourceMap.utf16ColumnInLine(
+    line,
+    Math.max(start2, location.range.end.character)
+  );
   const beforeFull = line.slice(0, start2);
   const mark = line.slice(start2, end) || line.slice(start2, start2 + 1);
   const afterFull = line.slice(Math.min(end, line.length));
@@ -15717,7 +15954,7 @@ ${tail}` : "")
           { uri: lspPathToUri(this.vaultRoot), name: "vault" }
         ],
         capabilities: {
-          general: { positionEncodings: ["utf-16"] },
+          general: { positionEncodings: ["utf-8"] },
           textDocument: {
             publishDiagnostics: {},
             completion: { completionItem: {} },
@@ -15768,6 +16005,7 @@ ${tail}` : "")
       version: 1,
       views: 1,
       text,
+      sentMap: SourceMap.fromText(text),
       pendingText: null,
       timer: null
     });
@@ -15841,6 +16079,7 @@ ${tail}` : "")
       version: 1,
       views: entry.views,
       text,
+      sentMap: SourceMap.fromText(text),
       pendingText: null,
       timer: null
     });
@@ -15864,9 +16103,11 @@ ${tail}` : "")
     const text = entry.pendingText;
     entry.pendingText = null;
     entry.text = text;
+    entry.sentMap = SourceMap.fromText(text);
     this.transport?.notify("textDocument/didChange", {
       textDocument: { uri: entry.uri, version: entry.version },
-      // FULL sync contract: exactly one change, no range.
+      // Whole-document change (no range): still accepted under the
+      // server's INCREMENTAL sync.
       contentChanges: [{ text }]
     });
   }
@@ -15896,12 +16137,16 @@ ${tail}` : "")
     return items.length ? items : null;
   }
   async hover(path, position) {
-    return this.positionRequest(
+    const hover = await this.positionRequest(
       "hover",
       path,
       "textDocument/hover",
       position
     );
+    const sentMap = this.sentMapFor(path);
+    if (!hover?.range || !sentMap)
+      return hover;
+    return { ...hover, range: this.wireRangeToClient(sentMap, hover.range) };
   }
   async definition(path, position) {
     const result = await this.positionRequest("definition", path, "textDocument/definition", position);
@@ -15993,7 +16238,10 @@ ${tail}` : "")
       "textDocument/references",
       {
         textDocument: { uri: entry.uri },
-        position,
+        position: {
+          line: position.line,
+          character: entry.sentMap.utf8ColumnOf(position.line, position.character)
+        },
         context: { includeDeclaration }
       }
     );
@@ -16012,7 +16260,10 @@ ${tail}` : "")
       transport.cancel(previous);
     const { id, promise } = transport.requestWithId(method, {
       textDocument: { uri: entry.uri },
-      position
+      position: {
+        line: position.line,
+        character: entry.sentMap.utf8ColumnOf(position.line, position.character)
+      }
     });
     this.lastRequestId.set(key, id);
     try {
@@ -16069,8 +16320,29 @@ ${tail}` : "")
     } catch {
       return;
     }
-    this.diagnostics.set(path, p.diagnostics);
-    this.handlers.onDiagnostics(path, p.diagnostics);
+    const entry = this.docs.get(path);
+    const diagnostics = entry ? p.diagnostics.map((diagnostic) => ({
+      ...diagnostic,
+      range: this.wireRangeToClient(entry.sentMap, diagnostic.range)
+    })) : p.diagnostics;
+    this.diagnostics.set(path, diagnostics);
+    this.handlers.onDiagnostics(path, diagnostics);
+  }
+  /** Wire (utf-8 byte columns) range → client (utf-16 columns) range.
+   * Registered docs only: ranges for files the plugin has not opened stay
+   * in wire units until a consumer reads that file. */
+  wireRangeToClient(sentMap, range) {
+    return {
+      start: { line: range.start.line, character: sentMap.utf16ColumnOf(range.start.line, range.start.character) },
+      end: { line: range.end.line, character: sentMap.utf16ColumnOf(range.end.line, range.end.character) }
+    };
+  }
+  /** The byte↔column map over the last text sent to the server for `path`,
+   * or null when the document is not open. Consumers of incoming wire
+   * positions (jumps into files opened on demand) rebuild a map from the
+   * file text at the point of use. */
+  sentMapFor(path) {
+    return this.docs.get(path)?.sentMap ?? null;
   }
   setState(state, detail) {
     this.state = state;
@@ -16322,6 +16594,7 @@ var NotistPlugin = class extends import_obsidian7.Plugin {
       })
     );
     this.patchQuickSwitcher();
+    this.patchCommandPalette();
     this.patchNewFileCreation();
     this.registerEvent(
       this.app.vault.on("rename", (file, oldPath) => {
@@ -17120,6 +17393,37 @@ var NotistPlugin = class extends import_obsidian7.Plugin {
       if (wrappedCheckCallback && command.checkCallback === wrappedCheckCallback) {
         command.checkCallback = originalCheckCallback;
       }
+    });
+  }
+  /**
+   * Filter the command palette (ctrl+p) in the Notist world down to this
+   * plugin's commands, app-level commands (app:*) and the rare
+   * prefix-less ones — other Markdown-world namespaces (editor:,
+   * namespaces (editor:, workspace:, graph:, …) stay out. The palette
+   * modal re-reads getCommands() on every keystroke, so toggling the
+   * world takes effect immediately; Markdown world and the hotkeys
+   * settings (which read listCommands directly) are untouched. Internal
+   * API, restored on unload.
+   */
+  patchCommandPalette() {
+    const palette = this.app.internalPlugins?.getPluginById?.("command-palette")?.instance;
+    const original = palette?.getCommands;
+    if (!palette || typeof original !== "function") {
+      console.warn("Notist: cannot filter the command palette; core plugin is unavailable");
+      return;
+    }
+    const wrapped = () => {
+      const commands = original.call(palette);
+      if (this.world !== "notist")
+        return commands;
+      return commands.filter(
+        (command) => command.id.startsWith(`${this.manifest.id}:`) || command.id.startsWith("app:") || !command.id.includes(":")
+      );
+    };
+    palette.getCommands = wrapped;
+    this.register(() => {
+      if (palette.getCommands === wrapped)
+        delete palette.getCommands;
     });
   }
   /** Remove tabs produced by older experimental Explorer/Problems views. */

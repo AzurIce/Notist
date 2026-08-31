@@ -261,7 +261,7 @@ fn parse_bare_attribute(
     };
 
     // `key = value`: whitespace is allowed around the `=` (D0006).
-    let mut cursor = skip_attribute_whitespace(source, name_end, allow_line_break);
+    let cursor = skip_attribute_whitespace(source, name_end, allow_line_break);
     if source.as_bytes().get(cursor) == Some(&b'=') {
         let value_start = skip_attribute_whitespace(source, cursor + 1, allow_line_break);
         let (value, end) = parse_attribute_value(source, value_start, errors)?;

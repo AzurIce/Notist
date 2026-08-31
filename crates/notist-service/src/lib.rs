@@ -20,10 +20,10 @@ pub mod transport;
 pub mod watcher;
 
 pub use query::*;
+pub use query::ReferenceRecord;
 // `query` and `request` each define `ModuleRecord`/`ReferenceRecord` for
 // different wire shapes; the root facade resolves them to the query-side
 // records, and inspect callers use the `request::` path explicitly.
-pub use query::{ModuleRecord, ReferenceRecord};
 pub use request::*;
 pub use watcher::PassiveDebouncedWatcher;
 
@@ -187,6 +187,39 @@ impl NotistService {
             let mut view = view.lock().unwrap();
             if let Some(configuration) = configuration {
                 view.replace_configuration(configuration)?;
+            }
+            view.replace_inputs(overlays, versions)?
+        };
+        Ok(self.snapshot_identity(view_id, &host, &snapshot))
+    }
+
+    /// Upserts and removes individual overlays without touching the rest of
+    /// the view's overlay set — the incremental counterpart of
+    /// `replace_view_inputs`.
+    pub fn merge_view_inputs(
+        &self,
+        view_id: ServiceViewId,
+        upsert: Vec<OverlayDocument>,
+        remove: Vec<PathBuf>,
+    ) -> io::Result<SnapshotIdentity> {
+        let (host, view, kind) = self.view(view_id)?;
+        if kind != ViewKind::Session {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                "disk views do not accept client overlays",
+            ));
+        }
+        let snapshot = {
+            let mut view = view.lock().unwrap();
+            let mut overlays = view.overlays().clone();
+            let mut versions = view.document_versions().clone();
+            for document in upsert {
+                overlays.insert(document.path.clone(), Arc::from(document.text));
+                versions.insert(document.path, document.version);
+            }
+            for path in remove {
+                overlays.remove(&path);
+                versions.remove(&path);
             }
             view.replace_inputs(overlays, versions)?
         };

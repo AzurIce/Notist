@@ -1,0 +1,85 @@
+= LSP 健壮性、daemon 并发与数据面设计
+
+三件事来自 #<super::2026-08-30 LSP incremental sync 设计> 文末的整体问题面分析（P0 健壮性、问题二 daemon 并发、问题三 C 层数据运动），经 rust-analyzer / tinymist 对照与代码核实后定案。增量同步本身已落地，本文是其后续阶段的实施设计。对齐结论：bug ① 直接做；daemon 并发做方案 B（用户裁决）；数据面走「UpdateViewDelta + 位置表」。
+
+== 一、主循环错误遏制（bug ①）
+
+现状：`main_loop_inner` 对 notification 处理结果 `?` 直传（lsp.rs:366），逐 arm 看只有 didChange 的会话错误被兜住；didOpen/didSave/didClose 的参数解码与 normalize_uri_path 错误、`$/cancelRequest` 解码错误、两处 `publish_diagnostics` 错误（lsp.rs:296、393）全部致命——一条畸形消息或一个不可路由 URI 即杀死整个 server。rust-analyzer 的形态是 handler 错误一律记日志吞掉，循环永不因单条消息退出。
+
+设计：notification 路径全部就地降级，分两级——
+
+- *解码失败*（serde 不匹配）：记 stderr（debug 级语义），丢弃该消息，继续。纯客户端 bug，不打扰客户端。
+- *会话级失败*（normalize_uri_path 等）：沿用现有 `window/logMessage` WARNING 通道（与 didChange 的 `rejected didChange` 同型），会话存活。
+- `publish_diagnostics` 内部错误降级为 `report_issue` ERROR + 继续，不出主循环。
+
+`handle_notification` 签名从 `Result<bool>` 改为 `bool`（错误自报）；主循环两处 `publish_diagnostics(...)?` 改为错误即日志。
+
+测试（headless，`lsp_sync.rs`）：畸形 didChange 参数（contentChanges 非数组）后 hover 仍应答；didOpen 带 `untitled:` URI 收到 WARNING 且会话存活；畸形 `$/cancelRequest` 后会话存活。
+
+== 二、daemon 客户端多路复用与真取消（方案 B）
+
+用户裁决直接做 B。核实结论修正了工作量预期：*协议与 daemon 侧已全部就绪*——`ClientMessage::Cancel { id }` 存在（transport.rs:30）且 daemon 对每个请求维护 per-id `AtomicBool`（:288）、请求 `requests.spawn` + `spawn_blocking` + `execute_cancellable` 并发执行（:331）、响应按 id 匹配。唯一串行化点在客户端：`RequestHandle::Guarded(Arc<Mutex<LocalNotistClient>>)`（service.rs:26）+ `DaemonClient::request` 的半双工用法（write 后原地 read 等自己 id，transport.rs:109）；`cancellable` 的 daemon 分支拿锁发普通请求，flag 从未出界，`DaemonClient::cancel` 从未被 LSP 调用。
+
+设计：
+
+- *`DaemonClient` 复用器*：连接拆 writer 任务（ owning 写半，bounded mpsc 通道，满足设计文档的有界队列要求）+ reader 任务（按 id 把 `Response` 分发进 `pending: Mutex<HashMap<u64, oneshot::Sender>>`）；`request(&self, CoreRequest) -> Inflight`——分配 id、注册 oneshot、投递写通道；`Inflight` await 得 `CoreReply`。`request` 从 `&mut self` 变 `&self`，`DaemonClient` 变 `Arc` 可克隆句柄。连接 EOF 时 reader 令全部 pending 失败（"daemon connection closed"），配合第一节的遏制不会杀 server。
+- *`Inflight` Drop = Cancel*：客户端放弃等待（LSP worker 被取消或超时）时自动发 `cancel(id)`，不在 daemon 侧留下孤儿长计算。
+- *真取消接线*：`RequestHandle::cancellable` 的 daemon 分支改为——`runtime.spawn` 请求 future，轮询 `cancelled` flag，置位即 `client.cancel(id)`；服务端回 "request cancelled"，LSP 主循环现有逻辑把它映射为 `RequestCanceled (-32800)` 响应。`$cancelRequest` 从此两条路径都是真取消。
+- *去 `Guarded`*：`RequestHandle::Daemon` 改为 `Arc<DaemonClient>` 直持，无锁。并发度受 LSP worker 池（2-8）约束，即有界队列。
+- *顺序语义文档化*：连接内请求并发执行、完成序不保证；快照派发语义使读查询天然安全，需要顺序的调用方（LSP 的 single-flight builder）自行串行。CLI 本就逐个请求。
+- *bug ② 的处置*：B 落地后 `publish_diagnostics` 的等待收敛为 Diagnostics 自身计算（不再排在长请求后面），主循环冻结问题消解；「publish 挪 worker」的加固降级为可选后续项，实测有需要再做。
+
+测试：transport 单测（并发交错请求按 id 各自应答、取消在途请求返回 cancelled、断连令全部 pending 失败）；`lsp/test.not` 挂账的「双模式二阶段」——`common::Client` 增加 daemon 变体（去掉 `--no-daemon`），现有 headless 场景套跑 daemon 模式。工作量 1-2 天。
+
+== 三、数据面：UpdateViewDelta + 位置表
+
+=== UpdateViewDelta（先行，两案通用）
+
+现状：`UpdateView` 是整组替换（request.rs:831 每次 `SourceOverlays::new()` 从零建，经 `replace_view_inputs` 换入），发子集会清空其余 overlay，增量上行必须动协议。
+
+新增 `CoreRequest::UpdateViewDelta { view_id, upsert: Vec<OverlayDocument>, remove: Vec<PathBuf> }`：service 侧读当前 view 的 overlay 集合，应用 upsert/remove 后走既有 `replace_view_inputs`。旧 `UpdateView` 保留。LSP 侧簿记 `sent_overlays: Map<path, version>`：构建 job 差分出 upsert/remove；收到 `Updated` 回执提交簿记；请求失败清空簿记（下次全量重发，自愈）。single-flight 构建保证 delta 依序生效。
+
+=== 位置表下行（方案 b 终态，含一处对前稿的修正）
+
+前稿断言「宽字符表只对代理对有条目、中文几乎不占空间」——*错误*。utf-16 与 utf-8 的换算差异来自每一个多字节字符（`中` = 3 字节 vs 1 code unit），因此 utf-16 模式的精确换算表密度是文本级；「传表不传文」只在 **utf-8 协商**下成立，此时换算表退化为纯行表（每行约 8 字节：行起始 + 内容尾）。这不是实现选择，是两种编码的数学。
+
+设计因此分两档，按协商编码选择：
+
+- *utf-8 连接*（VS Code languageclient / Zed 均可协商；前提是把我们的编码偏好从 utf-16 翻转为 utf-8 优先）：新增 `SourceTables` 响应——每文件 `{ path, document_version, line_starts: Vec<u32>, content_ends: Vec<u32> }`，替换 `Sources` 全文拉取。v1 全量返回（行表 ≈ 每行 8 字节，docs 全库约几十 KB，已比全文小一个量级），按需再做差量。adapter 保留现有换算代码，数据源从 `ClientSource`（全文+索引）换成行表；入站饱和钳位退化到行边界（字符边界校验归 core，与 CLI 裸 offset 同一纪律——core 对任意 offset 本就健壮）。
+- *utf-16 连接*（obsidian 插件：CM6 内部就是 utf-16，改造它做列换算是独立客户端工程，不在本期）：回退现行 `Sources` 全文模式，行为与今天完全一致。模式选择在 adapter（initialize 协商后定死整条连接）。
+
+对照总结：ra 的 LSP 层用 line-index 表在文本旁换算；我们把表跨进程流动、换算逻辑不动——形态与 ra 对齐，同时保住 daemon 共享层。核心协议全程保持字节偏移，编辑器编码不泄漏进 CLI 消费的共享协议（client-interface-protocol 的「参数投影与返回格式」边界）。效果在 docs 规模用户无感，价值在规模化与架构诚实；排在 B 之后从容做。
+
+== 落地记录（2026-08-30，全部四点已实现）
+
+- *①主循环错误遏制*：`handle_notification` 改 `bool` 签名 + `NotificationError::{Decode,Session}` 两级降级（解码 stderr 丢弃、会话级 WARNING）、`$/cancelRequest` 解码容错、两处 `publish_diagnostics` 错误降级为 ERROR 日志；headless 场景 `malformed_notifications_are_contained_and_keep_the_session_alive`。
+- *②方案 B*：`DaemonClient` 重构为多路复用器（bounded writer 通道 + reader 按 id 路由 + `pending` 表 + `Inflight{Drop=Cancel}` + `DaemonClient::Drop` 关通道促 EOF——修掉一个 writer 任务持 Arc 导致连接永不关闭的循环）；`RequestHandle::Daemon{runtime, client}` 去 `Guarded` 锁；`cancellable` daemon 分支经 `cancelled_poll` + `client.cancel(id)` 真取消；transport 新增五个单测（并发按 id 路由、真取消、Drop-cancel、断连失败、shutdown 路由）；`common::Client::spawn_daemon` + `daemon_mode_serves_the_full_sync_contract`（「双模式二阶段」落地）。
+- *③a UpdateViewDelta*：协议新增 `update_view_delta {upsert, remove}`；service `merge_view_inputs`（读当前 overlay 集合，增删后走同一 `replace_inputs`）；LSP 侧 `sent_overlays` 簿记差分、失败清簿记自愈、watcher-only 构建（overlay 未变）保留全量 `UpdateView` 以不改变磁盘刷新语义；service 单测 `update_view_delta_upserts_and_removes_without_touching_other_overlays`。
+- *③b 编码偏好 + 位置表*：`negotiated_position_encoding` 改 utf-8 优先（**静默客户端仍 utf-16 规范默认**——首版实现漏了这条，被 wide-character headless 测试当场抓回）；`LineIndex::line_table` + `LineTable{starts, content_ends, end}` 换算 + round-trip 单测；协议新增 `source_tables` / `SourceTableRecord{path, document_version, line_starts, content_ends, end}`；`ClientSource` 重构为 `CoordinateSpace::{FullText, LineTable}` 双模式，`compute_build_inner` 按协商编码拉表或全文；headless `utf8_negotiation_runs_the_table_only_data_plane`（utf-8 列 hover + 等长 ranged 编辑后位置稳定）。
+- *验证*：workspace 28 套件零失败（transport 新增 5 个单测）；vscode lsp-smoke 对真实 server 12 项检查全绿。obsidian 实机回归待有实例时补做；obsidian 插件显式提供 utf-16，行为不变。姊妹项目审查补全：obsidian `src/lsp/protocol.ts` 头注释的 FULL sync 残留一并修正，zed-notist 核实为零协议假设、无需改动（Zed 核心自行协商 sync/encoding），tree-sitter-notist 无语法面改动不涉及。
+
+== utf-8-only 裁决与落地（2026-08-31，用户裁决）
+
+*裁决：LSP 线协议只说 utf-8，utf-16 兼容回退层整体移除。*语义：`require_utf8_position_encoding` 在 initialize 阶段检查 `general.positionEncodings`——提供且含 utf-8 → 以 utf-8 应答；沉默（规范默认 utf-16）或仅 utf-16 → `RequestFailed (-32803)` 拒连并说明原因（回答 utf-8 给按 utf-16 读取的客户端是静默全量坐标损坏，宁可响亮失败）。落地：删除 `PositionEncoding` 枚举与全部编码分支（`apply_document_changes`/`ClientSource`/`lsp_diagnostic` 收敛为 utf-8 单态，`ClientSource` 即行表本身）；`notist-analysis` 删除 `utf16_position`/`offset_utf16`/`offset_utf16_saturating`，property test 改 utf-8 字节列域（独立 oracle：行表钳位 + 字符边界 floor）；headless 新增拒连场景，`converts_utf8_offsets_and_utf16_positions` 裁为 utf-8、wide-character utf-16 用例删除（同 fixture 的 utf-8 用例取代）。
+
+*obsidian 插件迁移*：移植 vscode-notist 的 `source-map.ts`（加 `utf8ColumnOf`/`utf16ColumnOf`/静态 `utf16ColumnInLine`），offer 改 utf-8，`positionRequest`/`references` 出站换字节列，诊断/hover 入站换回 utf-16 列（经 `sentMap`——在 flush 后取，时序对齐服务器文本）；跨文件跳转在 `revealLspRange` 内按目标文档文本换算，引用摘要在 `buildExcerpt` 内按行换算（`utf16ColumnInLine`）。未打开文件的 Problems 字符列显示为字节列（行号不受影响），已知边界。vscode smoke 改 utf-8 协商 + 字节列位置换算，13 项检查全绿。
+
+== 审查与清理记录（2026-08-31）
+
+- *抓到一个真 bug*：watcher 触发的构建（overlay 无变化）走全量 `UpdateView` 分支时发了**空** overlay 集——整组替换语义下，外部磁盘改动后的第一次重建会把所有打开文档的 overlay 清空（编辑器未保存内容丢失）。修复为发送完整的 per-vault overlay 集，回归测试 `watcher_rebuilds_preserve_open_overlays`（mutation 验证：还原 bug 测试变红）。教训：删除「未读」字段前要确认语义，`BuildJob.documents` 恰是 watcher 路径所需的。
+- 编译告警清零（4 处：negotiation 死闭锁、lsp_position 死 shim、lsp_sync 未用变量、BuildJob.documents 往返）；代码格式整理到 rustfmt 干净。
+- 文档：附录问题清单行号已随实现漂移，改为按状态描述（C-①② 标记已修复、A/B 标记已解）；checktable 的 `$/cancelRequest` 行更新为双路径真取消；`lsp/test.not` 双模式行标记已覆盖。
+
+== 推进顺序
+
+1. *第一节*主循环错误遏制（半天，独立先行）；
+2. *第二节*方案 B（1-2 天，含双模式测试）；
+3. *第三节*UpdateViewDelta（协议 minor + service merge + LSP 簿记，约一天）；
+4. *第三节*编码偏好翻转 + SourceTables（utf-8 路径，量级一天；utf-16 回退路径零改动）。
+
+== 参考
+
+- #<super::2026-08-30 LSP incremental sync 设计>：整体问题面分析（文末附录）、增量同步的已落地形态、saturating 换算与随机对拍测试（UpdateViewDelta 的 service 侧应用同源）。
+- rust-analyzer：单进程 + TaskPool（ThreadIntent 分级）+ salsa revision 取消；无 daemon，状态共享退化为文件系统。本文 B 使 daemon 侧既有的同形态能力对客户端可见。
+- tinymist：actor 隔离（Editor/compile/preview）+ `Source` 三位一体原地编辑；其预览滚动同步方案已被 vscode-notist 借鉴（`data-notist-start/end`）。
+- vscode-notist `src/preview.ts` 与 obsidian-notist 预览：`notist/renderDocument` 的两个客户端，重型预计算的直接来源，B 的主要受益方。

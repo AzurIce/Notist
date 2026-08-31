@@ -5,36 +5,31 @@ description: Use Notist to create, edit, validate, search, and navigate `.not` k
 
 # Notist
 
-Notist manages knowledge-base **Vaults**. A Vault is a directory containing a `Notist.toml`; its content lives in `.not` files, organized into Modules addressed by `ModulePath` (for example `vault::designs::host::query-contract`). The installed `notist` executable is the only tool needed to query, validate, and publish a Vault, and the official docs Vault (a regular Vault itself) documents the full surface.
+Notist manages knowledge-base **Vaults**. A Vault is a directory containing a `Notist.toml`; its content lives in `.not` files, organized into Modules addressed by `ModulePath` (for example `vault::designs::host::query-contract`). The installed `notist` executable provides the semantic layer — validated structure, resolved references, attribute annotations — while content access and directory listing stay with your host tools (`Read`, `ls`, `grep`). The official docs Vault (a regular Vault itself) documents the full surface.
 
 ## `.not` syntax
 
 `.not` is not Markdown, and it differs in ways that matter: emphasis is `*strong*` (not `**bold**`), a single newline is a soft break while a blank line starts a new paragraph, annotations are `@id` / `#tag` / `key=value`, links are `#<vault::module/target>`, and source has separate markup and code contexts. Before writing or editing `.not` files, read the authoritative quick reference:
 
-```shell
-notist inspect read vault::cheatsheet --vault <DOCS_ROOT>
-```
+Read `<DOCS_ROOT>/cheatsheet.not` with your host `Read` (its full path is that, relative to the docs Vault root).
 
 After editing, validate with `notist check --vault <DOCS_ROOT>`. The full grammar is `grammar.not`; the per-constructor reference is `functions.not`.
 
 ## Investigate with `inspect`
 
-`inspect` groups the read commands; `notist inspect --help` lists them all. A typical investigation:
+`inspect` groups the semantic queries; `notist inspect --help` lists them all. Directory listing and file reading stay with your host tools (`ls`, `Read`) — the mapping is one line: a file `X/Y.not` is the module `vault::X::Y`, and `X/Y/README.not` *is* `vault::X`. A typical investigation:
 
 ```shell
 notist inspect status --vault <DOCS_ROOT>                                     # which Vault, snapshot, index health
-notist inspect modules --vault <DOCS_ROOT> --prefix vault::designs            # discover ModulePaths
 notist inspect search "query terms" --vault <DOCS_ROOT>                       # ranked candidates — candidates, not evidence
-notist inspect items vault::designs::host::query-contract --vault <DOCS_ROOT>     # addressable items: @id nodes, headings, resources
-notist inspect ancestors vault::designs::host::query-contract/属性表 --vault <DOCS_ROOT>     # ancestor chain with attribute annotations
-notist inspect read vault::designs::host::query-contract --vault <DOCS_ROOT>  # authored evidence
+notist inspect items vault::designs::host::query-contract --vault <DOCS_ROOT>     # addressable items: @id nodes, headings, resources (with line ranges)
+notist inspect ancestors vault::designs::host::query-contract/属性表 --vault <DOCS_ROOT>     # ancestor subtree with attribute annotations
 notist inspect references vault::designs::host::query-contract --vault <DOCS_ROOT>          # who links here
 ```
 
 - Results are complete: no paging, no output ceiling. A zero-hit search proves absence within the selected scopes.
-- Lexical/fuzzy search groups by source by default; `--group-by section|match`, `--operator any`, and the repeatable `--scope MODULE` adjust recall. Excerpts select candidates — `inspect read` is the only evidence entry.
-- `inspect read --from-line/--lines/--byte-range` are semantic windows you choose, not truncation.
-- `inspect ancestors` accepts a selector, `--offset N`, or `--byte-range START..END` and returns the subtree of scopes overlapping that region, each with its attribute annotations — use it to learn which `@` annotations govern a position or region (including sibling scopes a range grazes) before editing it.
+- Lexical/fuzzy search groups by source by default; `--group-by section|match`, `--operator any`, and the repeatable `--scope MODULE` adjust recall. Excerpts select candidates — read the file with your host `Read` for evidence.
+- `inspect ancestors` accepts a selector, `--offset N`, or `--byte-range START..END` and returns the subtree of scopes overlapping that region, each with its attribute annotations and line range (feed the range to your host `Read`) — use it to learn which `@` annotations govern a position or region (including sibling scopes a range grazes) before editing it.
 - `notist check` is the whole-Vault health verdict (exit 1 on any error); it does not take a module scope.
 
 ## Working with Vaults

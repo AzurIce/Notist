@@ -14,19 +14,21 @@ obsidian-notist 插件当前的交互契约。实现见 `obsidian-notist` 仓库
 - *文件树*（CSS `data-path` 过滤）：Notist World 隐藏 `.md`，保留 `.not` 与图片、Canvas 等资源文件（文件夹保持可见）；Markdown World 不显示 `.not`。
 - *侧栏*：两个 World *只共用原生 file-explorer*，靠 CSS `data-path` 过滤出各自文件——过滤只影响显示，右键菜单/拖拽/删除全部原生可用。「新建笔记」单点 chokepoint：所有入口（头部按钮、右键菜单、命令面板、快捷键）都汇聚到 `FileManager.createNewMarkdownFile`，运行期 patch 它（内部 API，卸载时还原），Notist World 下改建成 `Untitled.not`（自动编号、尊重新建位置设置的父目录），之后由原生 afterCreate 完成打开 + Explorer 内联改名——整条 UX 全原生。*历史教训*：create 事件兜底曾误伤外部 mv 进来的 `.md`（已删除，宁缺毋滥）；DOM 点击拦截与命令 patch 因覆盖不全也被 chokepoint 取代。打开 `.not` 经 view registry 自然进 notist view；view 自带*内联标题输入框*（对齐 inline title，提交走公开 API `fileManager.renameFile`）。两个 CSS/类型坑：① TextFileView 子类字段名不得叫 `titleEl`（遮蔽 ItemView 内建字段，Obsidian 内部 `titleEl.setText` 崩溃、view 打不开）；② 插件样式选择器要压过主题的 `input[type="text"]`（0,1,1 特异性），用 `input.notist-title` 打平并靠加载顺序取胜。实验性的自建 `notist-explorer` 已删除；未来模块树若需要独立语义导航，应作为新能力设计，不能冒充或复制原生文件树。
 - *ribbon*：Notist World 只显示白名单图标（按 aria-label 匹配，设置页可编辑，默认仅切换器）；Markdown World 不动。MutationObserver 跟踪后加载的图标。
+- *命令面板*（ctrl+p）：Notist World 只保留本插件命令、`app:*` 命令与无前缀命令（日记/模板两个散命令），Markdown World 显示全部。实现为运行期包一层核心 command-palette 插件实例的 `getCommands`（内部 API，卸载时还原；modal 每次 onOpen 清缓存重拉，切换即时生效）。热键设置页与快捷键执行不经过此层，被隐藏的命令仍可用热键触发；面板开着时插件热重载会短暂显示旧列表，关开一次即新。
 - *标签页*：快照前与恢复后各清理一次异世界 leaf——Markdown World 不允许 `notist-view`，Notist World 不允许 `markdown` 标签。清理即自愈：脏快照恢复出来立刻被摘、重存干净版。
 - *启动兜底*：插件加载时对当前 World 做一次清理，并摘除旧版本可能残留的 `notist-explorer` / `notist-diagnostics` 实验 leaf。
 
 == 设计取舍
 
 - 临时跨 World 查看允许（如 Notist World 里 Quick Switcher 开 md），但该标签活不过下一次切换；更硬的实时拦截暂不做。
-- Quick Switcher、链接建议、核心搜索仍跨 World 混杂——属已知泄漏点，暂不处理。
+- Quick Switcher 已在 Notist World 改路由到 Notist 符号搜索（patch `switcher:open`，Markdown World 原样）；链接建议、核心搜索仍跨 World 混杂——属已知泄漏点，暂不处理。
 - 逃生门：命令 `Reset world layouts` 清空两边布局快照；`data.json` 可整个删除归零。
 
 == 脆弱点
 
 - ribbon 白名单的 aria-label 跟随 Obsidian 界面语言。
 - 文件树过滤与 ribbon 隐藏依赖内部 DOM 结构（`data-path`、`.side-dock-ribbon-action`），Obsidian 改版可能失效；失效方向是退化为不过滤，不会藏掉切换器。
+- 命令面板过滤依赖 `internalPlugins.getPluginById("command-palette").instance.getCommands` 这一内部 API，Obsidian 改版可能失效；失效方向是退化为不过滤（console.warn）。
 - 布局快照存于 `data.json`，与 Obsidian 自己的 `workspace.json`（只记最后布局）是两套持久化，启动时以后者为准、与当前 World 一致则无冲突。
 
 == 参考

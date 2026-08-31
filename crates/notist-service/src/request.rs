@@ -38,17 +38,28 @@ pub enum CoreRequest {
         documents: Vec<OverlayDocument>,
         configuration: Option<ConfigurationRecord>,
     },
+    /// Incremental overlay update: upserts the given documents and removes
+    /// the given paths from the view's overlay set, leaving every other
+    /// overlay untouched. The full-replace `UpdateView` stays available for
+    /// callers that want to define the whole overlay set.
+    UpdateViewDelta {
+        view_id: ServiceViewId,
+        upsert: Vec<OverlayDocument>,
+        remove: Vec<PathBuf>,
+    },
     SnapshotSummary {
         view_id: ServiceViewId,
     },
     Status {
         view_id: ServiceViewId,
     },
-    ListModules {
-        view_id: ServiceViewId,
-        query: crate::query::ModulesQuery,
-    },
     Sources {
+        view_id: ServiceViewId,
+    },
+    /// Per-file line tables (byte offsets) instead of full text: enough for a
+    /// UTF-8-negotiated LSP adapter to convert positions without pulling the
+    /// whole vault's source across the wire.
+    SourceTables {
         view_id: ServiceViewId,
     },
     ReloadDiskView {
@@ -116,10 +127,6 @@ pub enum CoreRequest {
         view_id: ServiceViewId,
         query: crate::query::AncestorsQuery,
     },
-    ReadSource {
-        view_id: ServiceViewId,
-        query: crate::query::ReadQuery,
-    },
     ReferencesPage {
         view_id: ServiceViewId,
         query: crate::query::ReferencesQuery,
@@ -165,10 +172,11 @@ impl CoreRequest {
             Self::OpenView { .. } => None,
             Self::CloseView { view_id }
             | Self::UpdateView { view_id, .. }
+            | Self::UpdateViewDelta { view_id, .. }
             | Self::SnapshotSummary { view_id }
             | Self::Status { view_id }
-            | Self::ListModules { view_id, .. }
             | Self::Sources { view_id }
+            | Self::SourceTables { view_id }
             | Self::ReloadDiskView { view_id }
             | Self::Diagnostics { view_id }
             | Self::DiagnosticsPage { view_id, .. }
@@ -184,7 +192,6 @@ impl CoreRequest {
             | Self::DocumentSymbols { view_id, .. }
             | Self::Items { view_id, .. }
             | Self::Ancestors { view_id, .. }
-            | Self::ReadSource { view_id, .. }
             | Self::ReferencesPage { view_id, .. }
             | Self::WorkspaceSymbols { view_id, .. }
             | Self::Search { view_id, .. }
@@ -333,8 +340,8 @@ pub enum CoreResponse {
     Updated,
     SnapshotSummary(SnapshotSummary),
     Status(crate::query::StatusRecord),
-    Modules(crate::query::QueryResult<crate::query::ModuleRecord>),
     Sources(Vec<SourceRecord>),
+    SourceTables(Vec<SourceTableRecord>),
     Reloaded,
     Diagnostics(Vec<DiagnosticRecord>),
     DiagnosticsPage(crate::query::DiagnosticsResult),
@@ -348,7 +355,6 @@ pub enum CoreResponse {
     DocumentSymbols(Vec<DocumentSymbolRecord>),
     Items(crate::query::QueryResult<crate::query::ItemRecord>),
     Ancestors(crate::query::QueryResult<crate::query::AncestorRecord>),
-    SourcePage(crate::query::QueryResult<crate::query::SourceChunk>),
     ReferencesPage(crate::query::QueryResult<crate::query::ReferenceRecord>),
     WorkspaceSymbols(Vec<WorkspaceSymbolRecord>),
     ResolvedReference(RefTargetRecord),
@@ -379,6 +385,20 @@ pub struct SourceRecord {
     pub path: PathBuf,
     pub text: String,
     pub document_version: Option<i64>,
+}
+
+/// Byte-offset line table for one source (see `LineTable` in
+/// notist-analysis): everything a UTF-8-negotiated adapter needs to convert
+/// positions without the source text.
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct SourceTableRecord {
+    pub path: PathBuf,
+    pub document_version: Option<i64>,
+    pub line_starts: Vec<u32>,
+    pub content_ends: Vec<u32>,
+    /// Total source length in bytes: the saturation target for positions
+    /// past the last line.
+    pub end: u32,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
@@ -857,6 +877,17 @@ impl NotistService {
                     response: CoreResponse::Updated,
                 })
             }
+            CoreRequest::UpdateViewDelta {
+                view_id,
+                upsert,
+                remove,
+            } => {
+                let snapshot = self.merge_view_inputs(view_id, upsert, remove)?;
+                Ok(CoreReply {
+                    snapshot,
+                    response: CoreResponse::Updated,
+                })
+            }
             CoreRequest::SnapshotSummary { view_id } => {
                 let (snapshot, summary) =
                     self.with_snapshot(view_id, |workspace| SnapshotSummary {
@@ -907,19 +938,6 @@ impl NotistService {
                     },
                 })
             }
-            CoreRequest::ListModules { view_id, query } => {
-                let (snapshot, result) = self
-                    .with_snapshot_identity(view_id, |workspace, identity| {
-                        crate::query::list_modules(workspace, identity, &query)
-                    })?;
-                Ok(CoreReply {
-                    snapshot,
-                    response: match result {
-                        Ok(page) => CoreResponse::Modules(page),
-                        Err(error) => CoreResponse::QueryError(error),
-                    },
-                })
-            }
             CoreRequest::Sources { view_id } => {
                 let (snapshot, sources) = self.with_snapshot(view_id, |workspace| {
                     workspace
@@ -934,6 +952,27 @@ impl NotistService {
                 Ok(CoreReply {
                     snapshot,
                     response: CoreResponse::Sources(sources),
+                })
+            }
+            CoreRequest::SourceTables { view_id } => {
+                let (snapshot, tables) = self.with_snapshot(view_id, |workspace| {
+                    workspace
+                        .sources()
+                        .map(|source| {
+                            let table = source.line_index.line_table(&source.text);
+                            SourceTableRecord {
+                                path: source.canonical_path.clone(),
+                                document_version: source.document_version,
+                                line_starts: table.starts.iter().copied().collect(),
+                                content_ends: table.content_ends.iter().copied().collect(),
+                                end: table.end,
+                            }
+                        })
+                        .collect()
+                })?;
+                Ok(CoreReply {
+                    snapshot,
+                    response: CoreResponse::SourceTables(tables),
                 })
             }
             CoreRequest::ReloadDiskView { view_id } => {
@@ -1357,19 +1396,6 @@ impl NotistService {
                     snapshot,
                     response: match result {
                         Ok(page) => CoreResponse::Ancestors(page),
-                        Err(error) => CoreResponse::QueryError(error),
-                    },
-                })
-            }
-            CoreRequest::ReadSource { view_id, query } => {
-                let (snapshot, result) = self
-                    .with_snapshot_identity(view_id, |workspace, identity| {
-                        crate::query::read_source(workspace, identity, &query)
-                    })?;
-                Ok(CoreReply {
-                    snapshot,
-                    response: match result {
-                        Ok(page) => CoreResponse::SourcePage(page),
                         Err(error) => CoreResponse::QueryError(error),
                     },
                 })
@@ -2366,6 +2392,104 @@ mod tests {
     }
 
     #[test]
+    fn update_view_delta_upserts_and_removes_without_touching_other_overlays() {
+        let root = tempfile::TempDir::new_in(std::env::current_dir().unwrap()).unwrap();
+        let path = root.path().join("README.not");
+        fs::write(&path, "disk").unwrap();
+        let readme = dunce::canonicalize(&path).unwrap();
+        let other = root.path().join("other.not");
+        fs::write(&other, "other").unwrap();
+        let other = dunce::canonicalize(other).unwrap();
+        let service = NotistService::new();
+        let opened = service
+            .execute(CoreRequest::OpenView {
+                root: root.path().to_path_buf(),
+                kind: ProtocolViewKind::Session,
+            })
+            .unwrap();
+        let CoreResponse::Opened { view_id, .. } = opened.response else {
+            panic!("expected open view")
+        };
+
+        // Two full uploads establish two overlays.
+        for (path, text) in [(&readme, "first"), (&other, "second")] {
+            service
+                .execute(CoreRequest::UpdateView {
+                    view_id,
+                    documents: vec![OverlayDocument {
+                        path: path.clone(),
+                        version: 1,
+                        text: text.into(),
+                    }],
+                    configuration: None,
+                })
+                .unwrap();
+        }
+
+        // The delta changes only `README.not`; `other.not` keeps its overlay,
+        // which a naive replace-with-subset would have dropped.
+        let updated = service
+            .execute(CoreRequest::UpdateViewDelta {
+                view_id,
+                upsert: vec![OverlayDocument {
+                    path: readme.clone(),
+                    version: 2,
+                    text: "changed".into(),
+                }],
+                remove: Vec::new(),
+            })
+            .unwrap();
+
+        let sources = service
+            .execute(CoreRequest::Sources { view_id })
+            .unwrap();
+        let CoreResponse::Sources(sources) = sources.response else {
+            panic!("expected sources")
+        };
+        let text_of = |path: &Path| {
+            sources
+                .iter()
+                .find(|source| source.path == path)
+                .map(|source| source.text.to_string())
+                .unwrap_or_else(|| "<missing>".into())
+        };
+        assert_eq!(text_of(&readme), "changed");
+        assert_eq!(text_of(&other), "second");
+        assert_eq!(
+            sources
+                .iter()
+                .find(|source| source.path == readme)
+                .and_then(|source| source.document_version),
+            Some(2),
+            "the delta carries the new document version"
+        );
+
+        // Removing an overlay falls back to the disk content.
+        service
+            .execute(CoreRequest::UpdateViewDelta {
+                view_id,
+                upsert: Vec::new(),
+                remove: vec![readme.clone()],
+            })
+            .unwrap();
+        let sources = service
+            .execute(CoreRequest::Sources { view_id })
+            .unwrap();
+        let CoreResponse::Sources(sources) = sources.response else {
+            panic!("expected sources")
+        };
+        let text_of = |path: &Path| {
+            sources
+                .iter()
+                .find(|source| source.path == path)
+                .map(|source| source.text.to_string())
+        };
+        assert_eq!(text_of(&readme).as_deref(), Some("disk"));
+        assert_eq!(text_of(&other).as_deref(), Some("second"));
+        assert!(matches!(updated.response, CoreResponse::Updated));
+    }
+
+    #[test]
     fn cancelled_core_requests_stop_before_snapshot_work() {
         let service = NotistService::new();
         let cancelled = AtomicBool::new(true);
@@ -2829,24 +2953,6 @@ mod tests {
             };
             assert_eq!(!result.records.is_empty(), expected);
         }
-
-        let read = service
-            .execute(CoreRequest::ReadSource {
-                view_id,
-                query: crate::query::ReadQuery {
-                    selector: crate::query::Selector::Module {
-                        module: "vault::long".into(),
-                        name: None,
-                    },
-                    window: Default::default(),
-                },
-            })
-            .unwrap();
-        let CoreResponse::SourcePage(read) = read.response else {
-            panic!("expected source page")
-        };
-        assert!(read.records[0].reached_end);
-        assert!(read.records[0].source.lines().count() > 4);
 
         fs::write(
             root.path().join("README.not"),
