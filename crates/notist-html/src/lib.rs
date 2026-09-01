@@ -5,8 +5,8 @@ use std::fmt::Write;
 
 use notist_eval::ElementTree;
 use notist_model::{
-    ModulePath, ModuleReference, Node, NodeValue, TableAlignment, TableCellPlacement, TextRange,
-    Target, table_layout_nodes,
+    ModulePath, ModuleReference, Node, NodeValue, TableAlignment, TableCellPlacement, Target,
+    TextRange, table_layout_nodes,
 };
 use percent_encoding::{NON_ALPHANUMERIC, utf8_percent_encode};
 
@@ -421,7 +421,12 @@ pub fn render_element_tree_with_renderers(
     annotations: &[RenderedAnnotation],
     renderers: &HtmlRendererRegistry,
 ) -> String {
-    let projected_tree = renderers.project_tree(tree);
+    // ScopeItems are model-tree facts but render transparently: unfold them
+    // before projection, so their children render directly in the parent's
+    // flow and annotation coverage flows to the covered blocks.
+    let mut working = tree.clone();
+    unfold_scope_items(&mut working.roots);
+    let projected_tree = renderers.project_tree(&working);
     let plan = AnchorPlan::compute_tree(&projected_tree, annotations);
     let mut renderer = Renderer {
         output: String::new(),
@@ -434,6 +439,24 @@ pub fn render_element_tree_with_renderers(
     };
     renderer.element_tree(&projected_tree);
     renderer.output
+}
+
+/// Unfolds `scope` nodes in place: their children splice into the parent's
+/// node list, recursively. The Item tree keeps ScopeItems; the HTML
+/// projection does not give them a visible element of their own.
+fn unfold_scope_items(nodes: &mut Vec<Node>) {
+    let owned = std::mem::take(nodes);
+    *nodes = owned
+        .into_iter()
+        .flat_map(|mut node| {
+            unfold_scope_items(&mut node.children);
+            if node.name == "scope" {
+                std::mem::take(&mut node.children)
+            } else {
+                vec![node]
+            }
+        })
+        .collect();
 }
 
 /// Computes resolvable anchor labels directly from a canonical tree.
@@ -2290,16 +2313,16 @@ mod tests {
         // section used to project onto only the first covered block. A
         // heading wraps everything below it into a single section, so this
         // is the realistic shape for `#[...]@anno` over multiple paragraphs.
-        let source = "= Title\n\n#[\nfirst para\n\n- item one\n- item two\n\nlast para\n]@mark,.user\ntrailing tail";
+        let source = "= Title\n\n@(mark: true, class: \"user\")#[\nfirst para\n\n- item one\n- item two\n\nlast para\n]\ntrailing tail";
         let evaluation = evaluate(source);
         // The scope covers `#[]`: both leading blocks fully, and the last
         // paragraph only partially (following text joins its paragraph).
         let annotations = vec![RenderedAnnotation {
-            scope: TextRange::new(9, 59),
+            scope: TextRange::new(37, 85),
             id: None,
             classes: vec!["user".into()],
             tags: Vec::new(),
-            properties: vec![("type".into(), "user".into())],
+            properties: vec![("mark".into(), "true".into())],
         }];
 
         let html = render_element_tree_with_renderers(
@@ -2311,14 +2334,19 @@ mod tests {
         );
         // Every fully covered block carries the projection on its own tag.
         assert!(
-            html.contains("<p class=\"user\" data-notist-type=\"user\""),
+            html.contains("<p class=\"user\" data-notist-mark=\"true\""),
             "{html}"
         );
         assert!(html.contains("<ul class=\"user\""), "{html}");
-        // The partially overlapped last paragraph falls back to inline
-        // wrapping instead of losing the annotation entirely.
-        assert!(html.contains("notist-annotated user"), "{html}");
-        assert_eq!(html.matches("class=\"user\"").count(), 2);
+        // The scope boundary ends the governed paragraph: "last para" is
+        // fully covered too, while "trailing tail" lies outside the scope
+        // and stays unprojected.
+        assert!(
+            html.contains("<p class=\"user\" data-notist-mark=\"true\" data-notist-start=\"75\""),
+            "{html}"
+        );
+        assert!(html.contains("data-notist-mark=\"true\""), "{html}");
+        assert_eq!(html.matches("class=\"user\"").count(), 3);
     }
 
     #[test]
@@ -2640,8 +2668,9 @@ mod tests {
     fn unsafe_url_references_render_without_executable_hrefs() {
         // External urls live on the String branch of `link`; the renderer
         // must never emit them as clickable hrefs.
-        let evaluation =
-            evaluate("#link(\"javascript:alert(1)\") #link(\"data:text/html,<script>alert(1)</script>\")");
+        let evaluation = evaluate(
+            "#link(\"javascript:alert(1)\") #link(\"data:text/html,<script>alert(1)</script>\")",
+        );
         let html = render_element_tree(&evaluation.tree);
         assert!(html.contains("notist-reference-external"));
         assert!(!html.contains("href=\"javascript:"));

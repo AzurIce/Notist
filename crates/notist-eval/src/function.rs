@@ -194,7 +194,7 @@ impl Function for ElementFunction {
 /// schemas should reject such parameters up front.
 fn value_to_node_value(value: &Value) -> NodeValue {
     match value {
-        Value::None => NodeValue::None,
+        Value::Unit => NodeValue::None,
         Value::Bool(value) => NodeValue::Bool(*value),
         Value::Int(value) => NodeValue::Int(*value),
         Value::Float(value) => NodeValue::Float(*value),
@@ -202,6 +202,9 @@ fn value_to_node_value(value: &Value) -> NodeValue {
         Value::Content(forest) => NodeValue::Stream(forest.clone()),
         Value::Target(reference) => NodeValue::Target(reference.clone()),
         Value::Function(_) => NodeValue::None,
+        // Collections cannot cross the element boundary either; schemas
+        // should reject such parameters up front.
+        Value::Array(_) | Value::Dict(_) => NodeValue::None,
     }
 }
 
@@ -572,7 +575,7 @@ mod tests {
             _context: &FunctionContext<'_>,
             _input: FunctionInput<'_>,
         ) -> Result<Value, Vec<EvalDiagnostic>> {
-            Ok(Value::None)
+            Ok(Value::Unit)
         }
     }
 

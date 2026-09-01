@@ -1,4 +1,4 @@
-@![implementation = "partial"]
+@!(implementation: "partial")
 = Shaping Contribution
 
 本文定义插件元素如何声明成型 schema。成型算法本身由 pipeline 的 structure 阶段拥有，见 #<vault::designs::pipeline::structure>；插件节点如何从 call 规约出来见 #<vault::designs::pipeline::plugin-call-reduction>。
@@ -39,13 +39,13 @@
 | `inline` | body 是 inline 流，不产生 paragraph |
 | `flow` | body 执行完整 paragraph / list / section 折叠 |
 | `cells` | body 保持 cell 序列，不做段落组合 |
-| `none` | body 不参与成型 |
+| `()` | body 不参与成型 |
 
 == role
 
 | role | 成型行为 |
 |---|---|
-| `none` | 普通节点 |
+| `()` | 普通节点 |
 | `heading` | 开启 `core::section` 归组 |
 | `item` | 相邻同类合并为 `core::list` |
 

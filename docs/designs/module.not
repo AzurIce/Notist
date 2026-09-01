@@ -1,3 +1,4 @@
+@(type: "user", class: "user")
 #[
 = Module 设计
 
@@ -74,4 +75,4 @@ obsidian plugin.not
 
 还是不好。
 
-]@type=user,.user
+]

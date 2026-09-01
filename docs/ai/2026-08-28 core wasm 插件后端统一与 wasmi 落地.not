@@ -1,4 +1,4 @@
-@![implementation = "aligned"]
+\@!(implementation: "aligned")
 = core wasm 插件后端统一与 wasmi 落地
 
 本文记录 wasm 插件后端从 wasip2 组件（wasmtime JIT）整体迁往零导入 core module（wasmi 解释执行）的完整过程：性能归因、ABI 设计、两端字节级验证、重构范围、实测数据与遗留事项。现行规范见 #<vault::designs::plugin-system::core-wasm> 与 #<vault::designs::plugin-system::abi>；实验资产（协议 fixtures + Node/Worker 一致性测试）曾位于 `experiments/core-wasm-plugin/`，2026-08-29 清理移除，需要时从 Git 历史找回。合并 commit `e6128db`（worktree 分支 `experiment/freestanding-core-wasm`，含 `7b32d7d`/`e21bb99` 两个前置实验 commit）。

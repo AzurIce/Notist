@@ -1,0 +1,47 @@
+
+@(o: "o")
+= Heading 1
+
+Lorem ipsum dolor sit amet, consectetur adipiscing elit. Donec efficitur ligula sed nunc sagittis, quis sagittis eros fringilla. Suspendisse pharetra cursus ex, non volutpat mi luctus eu. Nulla facilisi. Vestibulum at elit iaculis, rutrum ligula malesuada, lobortis arcu. Sed egestas ultrices mattis.
+
+Lorem ipsum dolor sit amet, consectetur adipiscing elit. Donec efficitur ligula sed nunc sagittis, quis sagittis eros fringilla. Suspendisse pharetra cursus ex, non volutpat mi luctus eu. Nulla facilisi. Vestibulum at elit iaculis, rutrum ligula malesuada, lobortis arcu. Sed egestas ultrices mattis.
+
+@(a: "a")
+== Heading 2.1
+
+Lorem ipsum dolor sit amet, consectetur adipiscing elit. Donec efficitur ligula sed nunc sagittis, quis sagittis eros fringilla. Suspendisse pharetra cursus ex, |>non volutpat mi luctus eu. Nulla facilisi. Vestibulum at elit iaculis, rutrum ligula malesuada, lobortis arcu. Sed egestas ultrices mattis.
+
+Lorem ipsum dolor sit amet, consectetur adipiscing elit. Donec efficitur ligula sed nunc sagittis, quis sagittis eros fringilla. Suspendisse pharetra cursus ex, non volutpat mi luctus eu. Nulla facilisi. Vestibulum at elit iaculis, rutrum ligula malesuada, lobortis arcu. Sed egestas ultrices mattis.
+
+@(b: "b")
+== Heading 2.2
+
+Lorem ipsum dolor sit amet, consectetur adipiscing elit. Donec efficitur ligula sed nunc sagittis, quis sagittis eros fringilla. Suspendisse pharetra cursus ex, non volutpat mi luctus eu. Nulla facilisi. Vestibulum at elit iaculis, rutrum ligula malesuada, lobortis arcu. Sed egestas ultrices mattis.
+
+@(c: "c")
+- List<|
+  - List List
+  - List List
+
+上文 `|>` 与 `<|` 标出的范围即请求对象；下面每条 `$ notist` 命令都是本文件的可执行测试案例（从仓库根目录运行）。
+
+```text
+$ notist inspect info vault::example::test --line 12..22 --vault docs
+$ notist inspect info vault::example::test --offset 900 --vault docs
+$ notist inspect info vault::example::test --vault docs
+```
+
+== 多属性演示
+
+@(stage: "demo")
+@(owner: "azurice")
+=== 堆叠注解的子节
+
+这小节同时受 stage 与 owner 两个前导注解治理。
+
+@(kind: "note")
+- 带注解的条目
+- 普通条目
+
+@(a: "1", b: "2", c: "3")
+- 多 key 注解条目

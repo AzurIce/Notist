@@ -1,4 +1,4 @@
-@![implementation = "partial"]
+@!(implementation: "partial")
 = LSP 无头契约测试
 
 `notist lsp` 的对外行为由三层测试共同守护，每层回答不同的问题：
@@ -27,7 +27,7 @@ crates/notist-cli/tests/    外面看到的对不对（真实二进制 + stdio �
 每个测试独立拉起一个真实 server 与一个临时 vault：
 
 - 被测进程用 `env!("CARGO_BIN_EXE_notist")` 启动，参数 `lsp --no-daemon`（embedded 路径；daemon 双模式是第二阶段），cwd 即 vault 根，`initialize` 显式携带 rootUri/workspaceFolders；
-- 帧编解码复用 `lsp_server::Message::read/write`，不得手写 Content-Length 解析——被测对象是 server 不是传输格式；
+- 帧编解码复用 `lsp_server::Message::read/write`，不得手写 Item-Length 解析——被测对象是 server 不是传输格式；
 - 测试端 client 是唯一的共享设施（`tests/common/mod.rs`）：按 id 关联 request/response、按 method+谓词等待通知、增量捕获 stderr、Drop 时 kill 兜底。
 
 === 确定性规则

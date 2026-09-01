@@ -1,0 +1,109 @@
+= Typst markup 空白与段落成型规则
+
+#callout(kind="note", title=[文档定位])[
+本文对 Typst 的 markup 成型规则做源码级调查：一段含换行与缩进的裸文本如何经过词法、求值、realization、布局四个阶段变成 `text` 与 `paragraph`，以及空格在每一层的精确语义。调查动机是为 Notist 的 markup surface 与段落模型提供横向参照（关联 #<super::2026-07-11 typst element function and syntax sugar>、#<super::2026-08-26 typst import package cache mechanism>）。本文是事实记录，不含 Notist 侧裁决。
+]
+
+#callout(kind="info", title=[引用源码])[
+所有引用基于仓库 #link("https://github.com/typst/typst") main 分支 2026-08-31 拉取的 HEAD。注意：段落分组与空格塌缩逻辑刚被拆分为独立 crate `typst-realize`（含专门的 `spaces.rs`）；较旧的 0.14 发布版中这套逻辑位于 `typst` crate 的 `realization.rs`，规则本身一致。关键文件：`crates/typst-syntax/src/lexer.rs`、`crates/typst-eval/src/markup.rs`、`crates/typst-realize/src/lib.rs`、`crates/typst-realize/src/spaces.rs`、`crates/typst-layout/src/inline/collect.rs`、`crates/typst-layout/src/inline/line.rs`。
+]
+
+== 一句话总结
+
+Typst 里段落不是语法层产物：markup 语法只负责标出空格与段界（parbreak），`par` 元素是 realization 阶段把连续 inline content 分组后构造出来的。空格在词法层就被折叠成"至多一个"，语义层永远只面对单个 `SpaceElem`；到布局时空格并入同一样式的 shaping 字符串，由断行器决定消费（断行处 trim 掉）或渲染（一个空格字形，justify 时可拉伸）。
+
+== 示例：两行 lorem 的完整旅程
+
+调查起因是这段文本（第 1 行行尾一个空格，第 2 行行首两个空格、行尾一个空格）：
+
+```text
+Lorem ipsum dolor sit amet, consectetur adipiscing elit. Donec efficitur ligula 
+  sed nunc sagittis, quis sagittis eros fringilla. 
+```
+
+逐层产物：
+
+```text
+源码字符  "ligula" + " \n  " + "sed" …… "fringilla." + " \n"
+词法      Text("Lorem … ligula") Space Text("sed … fringilla.") Space
+eval      TextElem · SpaceElem(单例) · TextElem · SpaceElem(单例)
+realize   PAR 分组 [Text, Space, Text]，段尾 Space 被丢弃
+          → ParElem(body: [Text, Space, Text])，整段是一个段落
+布局      "…ligula sed…fringilla." 一个 shaping 串；"ligula/sed" 之间是
+          合法断行点：断则空格不渲染，不断则渲染一个空格字形
+```
+
+关键点：`ligula` 行尾空格 + 换行 + 第二行行首缩进，三段空白在词法层是*一个*空白 run，产出*一个* `Space` token——软换行加缩进与一个空格完全等价。
+
+== 阶段一：词法层——空白折叠成单个 token
+
+`crates/typst-syntax/src/lexer.rs:134` 的 `whitespace`：markup 模式下空格、Tab、换行都算空白字符，lexer 贪婪吃掉一整个连续空白 run，按其中换行数二分：
+
+- ≥2 个换行（即有空行）→ 一个 `Parbreak` token；
+- 否则（纯空格或 Tab，或只含 1 个换行）→ 一个 `Space` token。
+
+所以 `a··b`（同行双空格）与 `a⏎b`（单换行）在 token 层完全等价；连续多个空行也只产出一个 `Parbreak`。
+
+== 阶段二：eval 层——token 到 content
+
+`crates/typst-eval/src/markup.rs` 的求值映射：
+
+- `Text` 节点 → `TextElem::packed`，*粒度是词级 run*：每段不含空白与特殊语法的连续字符是一个 `TextElem`，一段正文是十几个 `TextElem` 与 `SpaceElem` 交错；
+- `Space` 节点 → `SpaceElem::shared()`，*预分配的共享单例*——空格不携带数据与样式，所有空格共用同一个 content；
+- `Parbreak` → `ParbreakElem::shared()`，同样是单例；
+- 注释（LineComment/BlockComment）是 trivia，*根本不进入 AST 的 expr 序列*，产出为零。
+
+== 阶段三：realize 层——段落分组与空格塌缩
+
+`par` 不是语法层概念。求值产物是一条扁平的 inline/block 混合 content 流，realization 用分组规则（`typst-realize/src/lib.rs:1044` 的 `PAR` 规则）把 inline 元素聚成 `ParElem`：
+
+- *Trigger*（开启或延续段落）：`TextElem`、`HElem`、`LinebreakElem`、`SmartQuoteElem`、`InlineElem`、`BoxElem`；
+- *Inner*：`SpaceElem`，只能存在于段落内部；
+- *Interrupt*：其余一切块级元素（heading、block、list……），终止当前段落分组；
+- `ParbreakElem` 在分组循环里直接 finish 当前分组（lib.rs:766）。
+
+分组收尾时：尾部 Inner（空格）被 trim；没被任何分组收编的游离 `SpaceElem` 直接丢弃（lib.rs:788 附近的 filter 规则注释原话："spaces that were not collected by the paragraph grouper don't interest us"）。随后 `finish_par` 调用 `collapse_spaces` 再构建 `ParElem::new(body)`（lib.rs:1189）。
+
+=== collapse_spaces 的四态邻接模型
+
+`crates/typst-realize/src/spaces.rs:30` 对分组内的 children 做一趟原地扫描，当前空格的去留由上一个非隐身元素的状态决定：
+
+| 状态 | 成员元素 | 对空格的影响 |
+| - | - | - |
+| `Supportive` | TextElem、SmartQuote、Box、Inline 等普通元素 | 空格两侧均为 Supportive 才保留 |
+| `Space` | `SpaceElem` | 相邻多个空格塌缩为一个，取第一个的样式 |
+| `Destructive` | `LinebreakElem`、weak 或 fractional 的 `h()` | 两侧空格直接丢弃 |
+| `Invisible` | `TagElem`（introspection tag）、其余 `h()` | 不影响塌缩，视同不存在 |
+
+段首空格不会开启分组（分组只能由 Trigger 开启）；段尾空格被 trim；两者都不进入 `ParElem`。
+
+== 阶段四：布局层——空格并入 shaping 字符串
+
+段落布局时（`crates/typst-layout/src/inline/collect.rs:138` 的 `collect`），children 被收集成*一个字符串 + 分段信息*：
+
+- `SpaceElem` → `push_text(" ")`（collect.rs:154）：空格作为*字面空格字符*追加进段落全文，与相邻同样式 text 合并进同一个 shaping segment（`build_text`，collect.rs:287）。空格不是独立布局 item，而是交给字体 shaper 正常 shape 出的字形；
+- `LinebreakElem` 推入文本流为 `"\n"`，是强制断点；断行器（Knuth-Plass）在空格处找可选断点；
+- 成行后"Trim end-of-line whitespace glyphs"（`inline/line.rs:327`）把行尾空格字形剪掉——断行处的空格宽度不渲染；justify 时则反向拉伸空格宽度；
+- 另有 CJ 标点行界压缩（line.rs，对应《Requirements for Chinese Text Layout》3.1.6.3）。
+
+注释粘连的解释也在这里：两词间的注释产出为零，两个相邻 `TextElem` 样式相同即被 `build_text` 合并进一个 segment，渲染成一个连续词。
+
+== 空格规则速查
+
+| 源码写法 | 产物 | 效果 |
+| - | - | - |
+| 同行连续空格或 Tab | 一个 `Space` token | 一个空格宽（词法层已折叠） |
+| 单个换行（含行尾与行首缩进） | 同一个 `Space` token | 等价一个空格，是合法断行点 |
+| 空行（≥2 换行） | `Parbreak` token | 结束段落；连续多空行也只是一个 `Parbreak` |
+| 段首或段尾空白 | `SpaceElem` | 分组/塌缩阶段丢弃，不进入 `ParElem` |
+| `\`（Linebreak） | `LinebreakElem` | 强制换行；两侧空格按 Destructive 丢弃 |
+| `~` | Shorthand → NBSP 符号 | 产出是 text 不是 `SpaceElem`：不折叠、不受段边 trim、不可断行 |
+| 注释 | trivia，AST 无对应 expr | 产出为零；被注释分隔的两词粘连 |
+| `#h(..)` | `HElem` | weak 或 fractional 时两侧空格丢弃，其余对空格不可见 |
+| introspection tag | `TagElem` | Invisible，不影响塌缩 |
+
+== 对 Notist 的设计参照
+
+- *空白在词法层折叠*：让语义层永远只面对"至多一个空格"，后续所有阶段不需要处理空白数量问题；
+- *段落是 realize 分组产物而非语法产物*：语法只标出 parbreak，`par` 在成型时才构造，这使段落成为可被 show/set 规则作用的一等元素（Typst 文档确认只有"正经段落"触发 `show par`、产出 PDF 的 `P` 与 HTML 的 `p` 标签；纯 inline 容器内容不成为段落）；
+- *空格塌缩用 Supportive/Destructive/Invisible 三态邻接模型统一处理*：段边 trim、linebreak 邻接、连续空格、tag 穿插全部收进一趟扫描，而不是各处特判。

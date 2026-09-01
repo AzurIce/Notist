@@ -1,4 +1,4 @@
-@![implementation = "aligned"]
+@!(implementation: "aligned")
 = Plugin ABI: Shared Types and WIT Boundary
 
 本文定义宿主与 Wasm guest 之间的共享类型与模块 ABI 的载荷层；调用约定（裸内存 ABI、句柄与所有权）见 #<vault::designs::plugin-system::core-wasm>。call 森林在 reduce 阶段的求值语义见 #<vault::designs::pipeline::plugin-call-reduction>；package 如何声明 Wasm module 见 #<vault::designs::plugin-system::package>。

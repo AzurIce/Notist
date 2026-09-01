@@ -13,8 +13,8 @@ pub use plugin::{PluginElementDecl, PluginParamDecl};
 pub use signature::{
     DefaultValue, FunctionSignature, Parameter, Type, builtin_signatures, callout_signature,
     details_signature, empty_content_signature, figure_signature, heading_signature,
-    inline_body_signature, item_signature, link_signature, raw_signature,
-    table_cell_signature, table_signature,
+    inline_body_signature, item_signature, link_signature, raw_signature, table_cell_signature,
+    table_signature,
 };
 
 /// A half-open byte range in a source file.

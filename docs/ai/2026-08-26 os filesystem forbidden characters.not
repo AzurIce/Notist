@@ -135,7 +135,7 @@ NFKC  Compatibility Decomposition, then Canonical Composition
 
 == URL / 配置文件里的额外坑
 
-* URL 路径段（RFC 3986 unreserved + 一些 sub-delims）：`A–Z a–z 0–9 - . _ ~ ! $ & ' ( ) * + , ; = : @`；其他字符必须 percent-encode。`/` 必须编码为 `%2F` 才能在路径段内出现。
+* URL 路径段（RFC 3986 unreserved + 一些 sub-delims）：`A–Z a–z 0–9 - . _ ~ ! $ & ' ( ) * + , ; = : \@`；其他字符必须 percent-encode。`/` 必须编码为 `%2F` 才能在路径段内出现。
 * HTML 实体：`&` 必须 `&amp;`，`<` 必须 `&lt;`，`>` 必须 `&gt;`，`"` 必须 `&quot;` 或 `&#34;`。
 * JSON：必须 JSON-escape `"` `\` 与控制字符（`\n` `\r` `\t` `\b` `\f` `\u00XX`）。
 

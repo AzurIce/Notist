@@ -1,9 +1,7 @@
 mod common;
 
 use common::{Client, Vault};
-use lsp_types::{
-    CompletionItemKind, CompletionResponse, CompletionTextEdit, HoverContents, Location, Position,
-};
+use lsp_types::{Location, Position};
 use serde_json::json;
 
 #[test]

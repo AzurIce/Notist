@@ -1,6 +1,8 @@
+@!(implementation: "partial")
+
 = Type System
 
-本文定义当前工具保证的类型与求值模型。精确语法见 #<vault::grammar>，内置构造器签名见 #<vault::functions>，日常速查见 #<vault::cheatsheet>。完整设计见 #<vault::designs::language::type-system>（类型）、#<vault::designs::language::call-model>（调用模型）、#<vault::designs::language::property-table>（属性表）与 #<vault::designs::pipeline::evaluate>（求值模型）。
+本文是类型系统的唯一权威规范：类型与值、可空与 Union、集合、Target、函数类型与调用绑定、静态检查。规范描述完整模型，实现进度逐节以 `implementation` 标注区分：`aligned` 已实现、`partial` 部分实现、`missing` 已裁定未实现。精确语法见 #<vault::grammar>，内置构造器签名见 #<vault::functions>，日常速查见 #<vault::cheatsheet>。求值模型见 #<vault::designs::pipeline::evaluate>，属性表见 #<vault::designs::language::property-table>。
 
 == 三个阶段
 
@@ -12,139 +14,241 @@ source Document
 -> resolve names and check expression types
 -> evaluate Code expressions
 -> concatenate Markup fragments and embedded outputs
--> Content
+-> Item
 ```
 
-静态检查在求值之前运行：它解析名称、推断并检查类型、把每个调用点解析为确定的已解析调用；求值器只消费这份语义输入，不重新猜测。整篇文档是隐式的 Markup 表达式，静态类型与求值结果均为 `Content`。
+静态检查在求值之前运行：它解析名称、推断并检查类型、把每个调用点解析为确定的已解析调用；求值器只消费这份语义输入，不重新猜测。整篇文档是隐式的 Markup 表达式，静态类型与求值结果均为 `Item`。
 
+@(implementation: "aligned")
 == Type 与 Value 对应
 
 类型是值的静态投影：每个类型描述一类值，类型系统与值宇宙共享同一套概念。
 
-```text
-Type                          Value
-None                          none
-Bool                          true | false
-Int                           十进制整数
-Float                         十进制浮点
-String                        UTF-8 字符串（四种字面量形态）
-Content                       文档内容，元素的有序组合
-fn(形参表) -> R                Function（闭包：签名 + 实现 + 捕获环境）
-```
+| Type | Value |
+| --- | --- |
+| `Unit` | `()` |
+| `Bool` | `true` 或 `false` |
+| `Int` | 十进制整数 |
+| `Float` | 十进制浮点 |
+| `String` | UTF-8 字符串 |
+| `Item` | 文档内容，call 森林 |
+| `Target` | 模块路径 + 可选 label 的引用目标 |
+| `Array` | 值的有序不可变收集 |
+| `Dict` | key → 值的有序不可变映射 |
+| `fn(形参表) -> R` | Function（闭包：签名 + 实现 + 捕获环境） |
 
-集合类型与联合类型暂不进入语言；可空由独立的内置类型构造 `T?` 承担（见下）。
+进入语言的类型就是普通值：可以字面量构造、绑定、传递、返回与比较，每个公开类型都具有相应的值构造、观察与操作。
 
 === 类型语法
 
-```text
-Type
-├─ None / Bool / Int / Float / String / Content
-├─ T?                    # 可空
-└─ fn(形参表) -> R       # 形参：名字: 类型，带 = 表示可省略
-```
+| 形式 | 说明 |
+| --- | --- |
+| `Unit` / `Bool` / `Int` / `Float` / `String` / `Item` / `Target` | 基础类型 |
+| `T?` | 可空，`T | Unit` 的 sugar |
+| `T | U` | union |
+| `Array<T>` / `Dict<K, V>` | 集合类型参数化 |
+| `fn(形参表) -> R` | 形参为 `名字: 类型`，带 `=` 表示可省略 |
 
 标注位置：`let name: T = ...`、函数形参、函数返回类型、lambda 形参。函数类型就是定义签名去掉 default 表达式：
 
 ```text
-定义签名:  fn(kind: String = "note", title: Content? = none, trailing body: Content) -> Content
-函数类型:  fn(kind: String =, title: Content? =, trailing body: Content) -> Content
+定义签名:  fn(kind: String = "note", title: Item? = (), trailing body: Item) -> Item
+函数类型:  fn(kind: String =, title: Item? =, trailing body: Item) -> Item
 ```
 
-函数的可调用签名包含：形参的名称与类型、是否带默认值而可省略、显式声明的 trailing Content 形参、结果类型。函数值的具体签名由符号元数据携带；`fn(...) -> R` 是书写层面上的函数类型。
+=== Unit 与 ()
 
-== 可空与可省略
+`()` 是 `Unit` 的字面量，也是它的唯一值。括号的判别完全局部：`(e)` 是分组，类型与值就是 `e` 的类型与值，不产生集合；`()` 是 Unit 字面量；`(a, b)` 与 `(k: v)` 分别是 Array 与 Dict 字面量（见集合类型）。
 
-`T?` 是可空类型：值空间等于 T 的值空间并上 `None`。规则：
+`Unit` 可提升为任意可空类型的成员（见可空与 Union）；插入 Markup 产生空内容；`()` 可作 Dict key；缺省形参的 default 常写作 `()`。
 
-- `None` 可提升到任意 `T?`（`None` 字面量的类型是 `None`）；
-- `T` → `T?` 是隐式提升（widening）；
-- `T?` → `T` 没有隐式降级——使用前需要显式处理；
-- `(T?)?` 折叠为 `T?`。
+=== 相等
 
-「可省略」与可空正交：可省略由形参是否带默认值决定。函数类型签名中 `?` 只用于可空；有 default 的形参用 `=`（不带值）标记。四种形参形态：
+相等定义在 Unit / Bool / Int / Float / String / Target 上：同族值比较，跨族不等。Array 按位置递归比较；Dict 按 key/value 映射比较，忽略插入序；仅当成员自身支持相等时，集合才支持 `==`。Item 与 Function 没有自动相等。
+
+@(implementation: "partial")
+=== 可空与 Union
+
+`T?` 是可空类型的书写形式，等价于 union `T | Unit`：值空间是 T 的值空间并上 `Unit`。Union 归一化为扁平集合：嵌套 union 展开、成员去重、单成员塌缩为该成员、含 `Never` 时删除 `Never`。
+
+规则：
+
+- `Unit` 可提升到任意 `T?`（`()` 字面量的类型是 `Unit`）；
+- `T` → `T | Unit` 是隐式提升（widening）；
+- `T | Unit` → `T` 没有隐式降级——使用前需要显式处理；
+- `(T?)?` 折叠为 `T?`（归一化的自然结果）。
+
+accept 规则：union 期望接受任一成员；union 实际值必须整体可被期望接受。
+
+`Never` 是内部的 bottom 类型：没有 runtime 值、不可书写，可赋值给任意期望类型；当前唯一来源是空集合的成员类型（见集合类型）。（未实现）
+
+「可省略」与可空正交：可省略由形参是否带默认值决定（见函数类型与调用模型）；`?` 只用于可空，有 default 的形参用 `=`（不带值）标记。
+
+实现状态：union 的 surface 语法、归一化与 accept/contains 规则已实现；`Never` 已实现（空集合的成员类型）。`T?` 归一化为 `T | Unit` 尚未落地——当前实现仍以独立的 Optional 构造表示可空。
+
+=== Item 类型
+
+`Item` 是不透明类型：一个类型涵盖所有内容组合，节点结构（名字、嵌套、参数）是运行时数据，静态检查不追踪它。Item 值是 call 森林：每个节点是 `Node`（name + args + children），`name` 标识构造器身份，分两类：
+
+| 名字 | 来源 |
+| --- | --- |
+| `core::*` | 内置节点：`core::text` / `core::heading` / `core::callout` / ...，以及成型产生的 `core::paragraph` / `core::list` / `core::section` |
+| `{package}::*` | 插件节点：插件元素就是普通内容节点 |
+
+不存在封闭的元素集合：封闭的只是注册侧——`core::*` 的 handler 永远由宿主提供；没有 handler 的名字不被规约触碰，它自己就是终态内容。内置构造器以 first-class 函数的形式存在——`callout(kind: ..., body: ...)` 产生一个 `core::callout` 节点，其类型就是 `Item`；用户函数与内置构造器因此同构，渲染与查询按节点身份消费结果，不区分来源。节点名字词表的具体分类见 #<vault::designs::pipeline::evaluate/Evaluation and Reduction Stage/Call 与 Node>。
+
+森林的内部形状由规约不动点与提及自由决定，因此不泄露为语言操作：`Item` 不可模式匹配、不可比较相等。
+
+@(implementation: "partial")
+== 集合类型
+
+`Array` 与 `Dict` 是一等不可变 Value：可以字面量构造、绑定、传递、返回与比较；构造后不可原地修改，转换操作产生新集合。
+
+字面量与判别：
+
+| 字面量 | 结果 |
+| --- | --- |
+| `(1, 2, 3)` | `Array` |
+| `(1,)` | 单元素 `Array`——尾逗号必需，与分组区分 |
+| `(,)` | 空 `Array` |
+| `("theme": "dark", "n": 2)` | `Dict` |
+| `(:)` | 空 `Dict` |
+| `()` | 不是集合——`Unit` 的字面量 |
+
+- 判别完全局部：含任一 `k: v` 条目或 Dict spread → Dict；否则含逗号 → Array；单表达式无逗号 → 分组。`(x)` 永远是分组，`#(x)` 是求值嵌入；
+- Dict 条目严格键值：不存在裸键补值的糖；裸标识符键是糖，`(k: v)` 等价于 `("k": v)`；
+- spread：`..expr` 在 Dict 字面量内拼接另一个求值为 Dict 的表达式，在 Array 字面量内就地拼接元素；按源序展开，Dict 内同键后者覆盖；
+- 标注位置（`@`/`@!` 直接跟随的括号）是 Dict 字面量，分组在该位置不成立，条目同样严格键值；payload 必须求值为 Dict，否则产生求值诊断；
+- `(x: Int) => ...` 仍是 lambda（parser 以 `=>` 区分形参表与 Dict 字面量）；调用实参 `#f(name: value)` 仍是 named argument，把 Dict 作为单个实参写 `#f((name: value))`；
+- 字面量按源码顺序求值；Dict 保存插入序，相同 key 后者覆盖 value，不移动位置。
+
+key 约束：Dict key 只能是 Unit / Bool / Int / String 或它们的 union；key 身份携带具体类型标签，`true`、`1`、`"1"` 是不同 key；Float、Item、集合与 Function 不能作 key，在字面量与操作实参处报告。
+
+插入：Array 与 Dict 不能插入 Markup——插入边界产生确定诊断，不 stringify。
+
+类型参数化与字面量 typing：
+
+| 形式 | 含义 |
+| --- | --- |
+| `Array<T>` | `T` 为元素类型 |
+| `Dict<K, V>` | `K` 为 key 类型，`V` 为 value 类型 |
+
+- 集合赋值对数值 coercion 保持 invariant：`Array<Int>` 不赋值给 `Array<Float>`（`Float` 接受 `Int` 的 coercion 不穿过集合参数）；对 union 成员协变：`Array<Int>` 可赋给 `Array<Int | String>`，反之不可——不可变集合的只读性使这个方向 sound；
+- 无期望类型时，Array 成员类型、Dict 的 K/V 分别归并为 union；空字面量的成员类型是 `Never`，可流向任意 `Array<T>` / `Dict<K, V>` 期望；
+- 字面量在期望类型下逐成员按 T / K / V 检查（成员级 Int → Float coercion 未实现——当前实现按整体赋值检查并拒绝 `Array<Int>` → `Array<Float>`）；
+- `let` 标注与实参按上述规则静态检查；裸形式 `Array` / `Dict` 表示元素类型未约束。
+
+标注 payload 值域：`@`/`@!` payload 的 V 只能是 Unit / Bool / Int / Float / String，或由它们递归组成的 Array / Dict（K 仍受 key 约束），静态检查在 payload 处报告越界。`Unit` 值合法并读作「属性缺席」——深层覆盖以写 `k: ()` 删除继承的属性，删除与未提及在合并层可分（条目在场与否），在消费层等效（`() `即缺席）。
+
+观察与转换操作（未实现）：`len` / `at` / `contains` / `append` / `concat` / `keys` / `values` / `pairs` 一类核心 builtin 的完整名单与签名待裁定。
+
+范围外：可变集合与原地 mutation、method/field access 语法、`for` 循环、用户可写的泛型函数、独立 tuple 类型（Array 即 tuple）、调用点 spread（`f(..xs)`，与字面量内 spread 分属两个位置）。
+
+@(implementation: "aligned")
+== Target 与 link
+
+`Target` 是一等值：模块路径加可选 label 的结构化拼写，可以 `let` 绑定与传递。字面量的转义与段语法见 #<vault::grammar::code/Code/Target 引用>。
+
+- `link(target: Target | String) -> Item`：`Target` 分支解析模块内引用（module/scope/resource），进静态引用图；`String` 分支只表示外部 url（必须带 scheme），无 scheme 字符串报「内部目标请用 `<...>` 字面量」诊断。`#<...>` 是 `link(<...>)` 的语法糖；
+- 插入规则：Target 插入 Item 自动包成 `core::reference(target)` 节点，与 `String → core::text` 同级；
+- 静态引用图：check 只索引两类静态证据——直接插入的 Target 字面量（含 Item block 内部）与 `link(...)` 的字面量实参；`let` 绑定的 Target 传给 `link` 是受控动态洞：值层照常渲染，但不进静态引用图。RefTarget 解析见 #<vault::designs::world::reference-ref-target>。
+
+@(implementation: "partial")
+== 函数类型与调用模型
+
+函数的可调用签名包含：形参的名称与类型、是否带默认值而可省略、显式声明的 trailing Item 形参、rest 形参（未实现）、结果类型。函数值的具体签名由符号元数据携带；`fn(...) -> R` 是书写层面上的函数类型。
+
+形参的绑定方式由是否带默认值决定，不需要额外的修饰符——分界线就是 default。四种形参形态：
+
+| 形参 | 绑定 |
+| --- | --- |
+| `kind: String` | 必填，位置绑定（positional） |
+| `kind: String =` | 可省略（有 default），具名绑定（named） |
+| `kind: String?` | 必填但值可为 Unit，位置绑定 |
+| `kind: String? =` | 可省略且值可为 Unit（default 通常为 `()`），具名绑定 |
+
+可省略与位置绑定互斥：位置实参按声明顺序依次填充、无法跳过——任何可以省略的形参都必须具名绑定。可空管值域、可省略管能否不给，两轴正交；default 表达式不限于 `()`（`lang: String? = "auto"` 合法）。
+
+rest 形参接收剩余位置实参（未实现）：
 
 ```text
-kind: String      必填，位置绑定（positional）
-kind: String =    可省略（有 default），具名绑定（named）
-kind: String?     必填但值可为 None，位置绑定
-kind: String? =   可省略且值可为 None（default 通常为 none），具名绑定
+..name: T
 ```
 
-可省略与位置绑定互斥：位置实参按声明顺序依次填充、无法跳过——任何可以省略的形参都必须具名绑定。因此 positional 的 `T?` 是必填但可空的形参：调用必须显式传 `none` 或值。
+- `..name: T` 接收零或多个位置实参，每个按 `T` 检查；函数体内 `name` 的静态类型是 `Array<T>`；
+- rest 必须是最后一个形参，不带 default；与 `trailing body` 在同一签名中互斥，同时声明产生诊断；
+- 签名只有 rest 且 `T` 接受 Item 时，trailing `[...]` block 是 rest 的位置实参——`#f[a][b]` 等价于 `#f([a], [b])`。
 
-== 调用与绑定
+调用与绑定：
 
-必填即 positional、可选即 named，两种表面不互通。调用点按位或按名绑定：
-
-- 具名实参写作 `name: value`；
-- positional 实参按声明顺序依次填充 positional 形参，named 实参按名字匹配 named 形参；
-- 位置实参必须全部出现在具名实参之前，具名实参之间可任意排序；trailing Content block 是唯一例外——它是恒为最后的 positional 实参，允许跟在具名实参之后；
-- 默认值表达式在定义时求值（捕获定义处环境），不能引用形参。
-
-调用点检查拒绝四类错误：重复绑定（同一形参被绑定两次）、未知实参（签名中不存在的名字）、缺失实参（无默认值的必填形参未被提供）、绑定方式不匹配（positional 实参没有剩余可填充的形参，或 named 实参指向 positional 形参）——绝不静默忽略或改绑。
+- 具名实参写作 `name: value`，可在任意位置绑定具名形参；positional 实参按声明顺序填充尚未绑定的 positional 形参；
+- trailing Item block 是恒为最后的 positional 实参，允许跟在具名实参之后——`#f(kind: "warning")[内容]` 与 `#f(kind: "warning", [内容])` 等价，trailing block 只是追加一个位置实参的语法糖，没有独立的绑定通道；
+- 固定 positional 形参填满后，剩余位置实参进入 rest；没有 rest 时是诊断；
+- 所有显式实参与 trailing block 按源码顺序求值一次；绑定是静态计划，不改变求值顺序；
+- 默认值表达式在定义时求值（捕获定义处环境），不随调用环境变化，不能引用形参。
 
 ```not
 #heading(level: 2)[标题]
 #callout(kind: "warning")[内容]          // trailing block 跟在具名实参之后
 #callout(kind: "warning", [内容])        // 与上一行等价
 #heading(2, [标题])                       // 位置实参按声明顺序填充
+#table(columns: 2, align: ("left", "right"), #table-cell[A], #table-cell[B])   // 交错实参，剩余进入 rest（未实现）
 ```
 
-=== 赋值兼容与 coercion
+调用点检查拒绝四类错误：重复绑定（同一形参被绑定两次）、未知实参（签名中不存在的名字）、缺失实参（无默认值的必填形参未被提供）、绑定方式不匹配（positional 实参没有剩余可填充的形参，或 named 实参指向 positional 形参）——绝不静默忽略或改绑。
 
-相同类型直接赋值；不做隐式函数 subtyping，也不做全局 subtyping。唯一的 coercion 是数值方向：`Int` 传给 `Float` 形参时，静态检查在解析结果中插入显式数值 coercion。普通函数要求 Content 参数时仍然拒绝 String——「可展示」不会渗透成所有 API 的隐式转换规则。
+实现状态：实参交错与 rest 未实现——当前实现要求位置实参全部先于具名实参（trailing block 除外），rest 形参不可书写。
 
-== Content 类型
-
-`Content` 是不透明类型：一个类型涵盖所有内容组合，节点结构（名字、嵌套、参数）是运行时数据，静态检查不追踪它。Content 值是 call 森林：每个节点是 `Node`（name + args + children），`name` 标识构造器身份，分两类：
-
-```text
-core::*           # 内置节点：core::text / core::heading / core::callout / ...
-                  # 以及成型产生的 core::paragraph / core::list / core::section
-{package}::*      # 插件节点：插件元素就是普通内容节点
-```
-
-不存在封闭的元素集合：封闭的只是注册侧——`core::*` 的 handler 永远由宿主提供；没有 handler 的名字不被规约触碰，它自己就是终态内容。内置构造器以 first-class 函数的形式存在——`callout(kind: ..., body: ...)` 产生一个 `core::callout` 节点，其类型就是 `Content`；用户函数与内置构造器因此同构，渲染与查询按节点身份消费结果，不区分来源。节点名字词表的具体分类见 #<vault::designs::pipeline::evaluate/Call 与 Node>。
-
+@(implementation: "aligned")
 == 插入规则
 
-嵌入表达式的结果按插入规则进入外层 Content：
+嵌入表达式的结果按插入规则进入外层 Item：
 
-```text
-Content  原样插入
-String   转为 Text 元素
-Int / Float / Bool   经 toString 转为 Text，与 String 同路
-None     产生空内容
-Function 不能插入，产生诊断
-```
+| 值 | 插入结果 |
+| --- | --- |
+| `Item` | 原样插入 |
+| `String` | 转为 Text 元素 |
+| `Int` / `Float` / `Bool` | 经 toString 转为 Text，与 `String` 同路 |
+| `Target` | 包成 `core::reference` 节点 |
+| `Unit` | 产生空内容 |
+| `Array` / `Dict` / `Function` | 不能插入，产生诊断 |
 
 ```not
-值: #42  #(1.5)  #true  #"字符串"  #none
+值: #42  #(1.5)  #true  #"字符串"  #()
 ```
 
-插入转换只在 Markup insertion 边界成立——普通函数要求 Content 参数时仍然拒绝 String。
+插入转换只在 Markup insertion 边界成立——普通函数要求 Item 参数时仍然拒绝 String。
+
+@(implementation: "aligned")
+== 静态检查
+
+求值之前先执行静态检查，三个职责：
+
+1. 名称解析：名字绑定到 scope 链上的哪一个 binding——解析结果使用稳定的 Symbol identity，不反复按字符串查表；
+2. 类型推断与检查：为每个表达式推断类型，检查 `let` 绑定、实参与签名是否一致；形参必须声明类型；嵌套非递归函数的结果可由 body 推断，根级函数必须声明结果类型（递归绑定暂缓，待 `let rec` 引入）；
+3. 调用解析：把每个调用点解析为确定的已解析调用——callee 身份、实参到形参的绑定、默认值、coercion、trailing/rest 目标与结果类型。
+
+静态检查的产物——名称解析结果、类型与已解析调用——构成求值器唯一的语义输入：求值器不重新猜测名字指向哪个函数、实参如何绑定，只执行这份输入。
 
 == 求值模型
 
 === scope：节点即环境
 
-值层组合树上的每个节点同时就是一个 scope，承担两种角色：内容的容器与名字的容器。名称解析沿节点链自内向外进行，最近绑定者胜出；`let` 绑定从声明处开始对后续节点可见——没有全局 hoist，前向引用产生诊断。scope 按来源分为根、Content literal、Code block、元素形成的 scope 与手动 scope（`#[...]`）。
+值层组合树上的每个节点同时就是一个 scope，承担两种角色：内容的容器与名字的容器。名称解析沿节点链自内向外进行，最近绑定者胜出；`let` 绑定从声明处开始对后续节点可见——没有全局 hoist，前向引用产生诊断。scope 按来源分为根、Item literal、Code block、元素形成的 scope 与手动 scope（`#[...]`）。
 
 === 顺序求值
 
-声明与正文按源码顺序求值：`let` 绑定扩展后续节点的环境；可展示的 Markup 与嵌入表达式通过 Content insertion 追加内容。函数应用遵循统一顺序：求值 callee → 按源码顺序求值显式实参与 trailing Content → 按形参声明顺序建立绑定（应用 coercion 或代入默认值）→ 调用函数值 → 校验返回值。每个表达式只求值一次。
+声明与正文按源码顺序求值：`let` 绑定扩展后续节点的环境；可展示的 Markup 与嵌入表达式通过 Item insertion 追加内容。函数应用遵循统一顺序：求值 callee → 按源码顺序求值显式实参与 trailing Item → 按形参声明顺序建立绑定（应用 coercion 或代入默认值）→ 调用函数值 → 校验返回值。每个表达式只求值一次。
 
 === 求值结果
 
 求值结果是三元组：
 
-```text
-求值结果 {
-  bindings:    Environment,      // 根 scope 自有的 binding
-  content:     Content,          // 文档内容，成型后供渲染、检索与查询
-  annotations: AnnotationTable,  // 属性表：元素区间 → 属性集
-}
-```
+| 字段 | 类型 | 含义 |
+| --- | --- | --- |
+| `bindings` | `Environment` | 根 scope 自有的 binding |
+| `content` | `Item` | 文档内容，成型后供渲染、检索与查询 |
+| `annotations` | `AnnotationTable` | 属性表：元素区间 → 属性集 |
 
 每个 Module 独立求值后，这三者成为 ModuleResult；bindings 可被其他 Module import，content 供渲染与查询消费，annotations 是标注与模块元数据的唯一入口。见 #<vault::designs::world::module-result>。
 
@@ -154,10 +258,10 @@ Function 不能插入，产生诊断
 
 == 属性表
 
-属性（标注）在求值期绑定到值，求值收尾转写为旁置的属性表：以元素序列区间为键、属性集为值的映射。树不携带属性——属性是位置注解，与结构解耦。三类条目：元素条目（实元素上的属性 → 单元素区间）、区间条目（透明 scope 溶解后的属性与身份 → 内容覆盖的区间）、节条目（修饰节头部 heading 的属性 → 该节覆盖的区间）。
+属性（标注）在求值期绑定到值，求值收尾转写为旁置的属性表：以 Item 区间为键、属性集为值的映射。树不携带属性——属性是位置注解，与结构解耦。条目按挂载形态分两类：Item 条目（Item 上的属性覆盖该 Item 的区间——ScopeItem 的区间覆盖其全部内容，可以跨越段落边界）、节条目（修饰节头部 heading 的属性 → 该节覆盖的区间）。
 
-属性是值的属性：绑定在值上的属性随值复制——`#let alert = [注意]@wip` 后 `#alert #alert` 产生两个元素个体，属性表里有两条 `wip` 条目。标注语法见 #<vault::designs::language::annotation-syntax>。
+属性是值的属性：绑定在值上的属性随值复制——`#let alert = @(wip: true)[注意]` 后 `#alert #alert` 产生两个节点个体，属性表里有两条 `wip` 条目。标注语法见 #<vault::grammar::annotation>。
 
 == 诊断与恢复
 
-语法、未解析名称与类型错误允许产生 partial 结果，使编辑器与预览能继续处理其他源码；恢复节点保留自己的错误状态——错误实参不使用默认值，错误 callee 不伪装成返回 `None` 的成功函数。未注册名字的调用原样保留为内容节点；unknown function 诊断由 check 层产生，渲染有 fallback 标签兜底。
+语法、未解析名称与类型错误允许产生 partial 结果，使编辑器与预览能继续处理其他源码；恢复节点保留自己的错误状态——错误实参不使用默认值，错误 callee 不伪装成返回 `Unit` 的成功函数。未注册名字的调用原样保留为内容节点；unknown function 诊断由 check 层产生，渲染有 fallback 标签兜底。

@@ -1,5 +1,6 @@
 = Designs
 
+@(type: "user", class: "user")
 #[
   Notist 的设计文档。
 
@@ -33,7 +34,7 @@
         service -.->|"HTML target"| htm
     """#,
     )[]
-  ]@type=user,.user
+  ]
 
 ```text
 pipeline/      编译管线：parse → check → evaluate → structure → project
@@ -79,15 +80,12 @@ plugin-system/ 插件系统：package、ABI、贡献、信任模型与生命周�
 
 按概念依赖顺序阅读：
 
-1. #<vault::designs::language::markup-surface>：Markup 表面语法与 scope 书写形态。
-2. #<vault::designs::language::code-grammar>：Code 核心语法。
-3. #<vault::designs::language::type-system>：核心类型系统。
-4. #<vault::designs::language::collection-types>：集合类型草案，尚未进入 current surface（最小 union 切片见 #<vault::designs::language::target-and-union>）。
-5. #<vault::designs::language::scope-environment>：词法作用域与值层 scope。
-6. #<vault::designs::language::call-model>：函数签名与调用模型；rest 部分待实现。
-7. #<vault::designs::language::property-table>：旁置属性表。
-8. #<vault::designs::language::annotation-syntax>：标注语法。
-9. #<vault::designs::language::syntax-sugar>：Markup 语法糖规格。
+1. #<vault::grammar::markup>：Markup 表面语法与 scope 书写形态。
+2. #<vault::grammar::code>：Code 核心语法。
+3. #<vault::types>：类型系统、调用模型与集合类型的权威规范（逐节标注实现状态）。
+4. #<vault::designs::language::property-table>：旁置属性表。
+5. #<vault::grammar::annotation>：标注语法。
+6. #<vault::grammar::markup>：Markup 语法糖规格。
 
 === Vault 层
 
@@ -115,7 +113,7 @@ plugin-system/ 插件系统：package、ABI、贡献、信任模型与生命周�
 每篇 active design 在文件开头用模块属性声明实现对齐状态：
 
 ```notist
-@![implementation = "aligned"]
+@!(implementation: "aligned")
 ```
 
 取值：
@@ -129,8 +127,7 @@ plugin-system/ 插件系统：package、ABI、贡献、信任模型与生命周�
 当前已知的非 `aligned` 文档：
 
 
-- #<vault::designs::language::collection-types>：`missing`
-- #<vault::designs::language::call-model>：`partial`（rest 调用模型未实现）
+- #<vault::types>：`partial`（`T?` 归一为 union、期望类型下字面量逐成员 coercion、集合观察 builtin、rest 与实参交错未实现）
 - #<vault::designs::pipeline>：`aligned`（统一 Node 管线与 HTML target 二阶段投影已实现）
 - #<vault::designs::pipeline::evaluate>：`partial`（Node 值域已对齐；递归绑定与部分语言细节仍待实现）
 - #<vault::designs::plugin-system>：`partial`（完整 native/Wasm App API 与独立 runtime crate 尚未抽出）

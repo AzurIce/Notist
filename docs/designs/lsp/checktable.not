@@ -1,4 +1,4 @@
-@![implementation = "aligned"]
+@!(implementation: "aligned")
 = LSP 请求支持对照
 
 对 `notist lsp`（`crates/notist-cli/src/lsp.rs`，adapter 设计见 #<vault::designs::host::lsp-adapter>）与 LSP 客户端可达方法面的逐项对照，方法全集以仓库依赖 `lsp-types 0.97.0`（对应 LSP 3.17 规范面）的 request/notification 模块为准。所有未支持的方法一律回 `MethodNotFound (-32601)`，客户端可安全探测。目的：给后续补充能力一份清单——哪些是缺口、哪些是有意不做。协议契约的权威设计见 #<vault::designs::host::client-interface-protocol>（core request 与 CLI 的映射在其「Client Interface」一节）；客户端依赖侧记录在 obsidian-notist `src/lsp/session.ts` 头注释。
@@ -69,7 +69,7 @@ capabilities 全静态声明，无 `client/registerCapability` 动态注册；�
 | `textDocument/willSave` | 忽略 | 可选通知，无消费场景（`willSaveWaitUntil` 同） |
 | `textDocument/didSave` | 部分 | 仅当携带 text 时应用；不带则不动作，磁盘变化交给 watcher |
 | `textDocument/didClose` | 支持 | 丢 overlay，诊断回落磁盘态并推空集清除 |
-| `workspace/didChangeConfiguration` | 忽略 | `UpdateView.configuration` 恒 None；配置流入是候选 |
+| `workspace/didChangeConfiguration` | 忽略 | `UpdateView.configuration` 恒 Unit；配置流入是候选 |
 | `workspace/didChangeWatchedFiles` | 有意忽略 | 自带 PassiveDebouncedWatcher（250ms）驱动 WorkspaceChanged，不依赖客户端转发 |
 | `workspace/didChangeWorkspaceFolders` | 忽略 | 根集 initialize 时固定；root 下按最近 Notist.toml 路由多 vault |
 | `workspace/didCreateFiles` / `didRenameFiles` / `didDeleteFiles` | 忽略 | watcher 已覆盖磁盘感知；改名引用修复属 `will*` 域 |

@@ -1,4 +1,4 @@
-@![implementation = "partial"]
+\@!(implementation: "partial")
 = obsidian-notist LSP Diagnostics 设计
 
 本文审计 2026-08-26 已落地的 obsidian-notist LSP diagnostics，并给出覆盖打开与未打开文件、版本一致性、导航、重启、多 leaf、降级与未来 code action 的完整设计。2026-08-27 已按本文落地全 vault Problems 底栏、状态计数、当前文件导航与故障清理；version 门控、session generation、文本 hash 匹配和 code action 仍未实现，所以整体状态保持 `partial`。实现证据来自插件的 `src/lsp/`、`src/main.ts`、`src/notist-view.ts` 与 `src/problems-dock.ts`，服务端依据 `/home/azurice/Files/notist/crates/notist-cli/src/lsp.rs`。相关协议背景见 #<vault::obsidian-notist::lsp>、#<vault::designs::host::lsp-adapter>；实现踩坑见 #<vault::ai::2026-08-26 obsidian-notist lsp client implementation>。
@@ -85,7 +85,7 @@ server 对未打开文件发送 `version = null` 是正常情况；server 对已
 
 *决策：当前 leaf 使用 CM 原生导航，全局面板承担跨文件汇总。*
 
-`@codemirror/lint` 提供 `nextDiagnostic`、`previousDiagnostic`、`openLintPanel`、`diagnosticCount`、`forEachDiagnostic` 和 `lintKeymap`。当前 `notistLsp` 扩展已经加入 `lintKeymap`，并显式添加 `Shift-F8 -> previousDiagnostic`；原生 `lintKeymap` 提供 F8 与 `Mod-Shift-M`（`@codemirror/lint` 6.9.7 API）。F8/Shift-F8 使用 CM 当前 state 的已映射位置，避免壳层自己维护 offset。
+`\@codemirror/lint` 提供 `nextDiagnostic`、`previousDiagnostic`、`openLintPanel`、`diagnosticCount`、`forEachDiagnostic` 和 `lintKeymap`。当前 `notistLsp` 扩展已经加入 `lintKeymap`，并显式添加 `Shift-F8 -> previousDiagnostic`；原生 `lintKeymap` 提供 F8 与 `Mod-Shift-M`（`\@codemirror/lint` 6.9.7 API）。F8/Shift-F8 使用 CM 当前 state 的已映射位置，避免壳层自己维护 offset。
 
 `openLintPanel` 可以作为当前文件的快捷面板，但它只知道当前 editor，不替代全局 vault 面板。全局面板的每行点击应调用现有 definition 跳转同类的“打开文件 + reveal range”壳层动作。状态栏计数点击全局面板；计数为零时仍可打开面板看到“无诊断”，而 server 不可用时显示不可用横幅，避免把故障误解为干净。
 

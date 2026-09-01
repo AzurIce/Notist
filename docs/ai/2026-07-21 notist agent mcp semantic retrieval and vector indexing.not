@@ -441,7 +441,7 @@ FreshDiskANN 研究持续插入和删除下的磁盘图更新；Filtered-DiskANN
 
 常见压缩方式包括 float16、int8 scalar quantization、binary/bit quantization 和 PQ。它们可以大幅降低内存和 IO，但会影响长尾查询和细粒度 rerank。Matryoshka Representation Learning 允许截取前若干维进行不同成本的检索，但必须用目标模型和数据验证截断后的质量。
 
-推荐流程：保留一个 exact float 或高精度离线基线，先测 int8/float16，再测 ANN；任何压缩方案都报告 Recall@k、nDCG、内存和 p95 latency，而不是只报告吞吐。
+推荐流程：保留一个 exact float 或高精度离线基线，先测 int8/float16，再测 ANN；任何压缩方案都报告 Recall\@k、nDCG、内存和 p95 latency，而不是只报告吞吐。
 
 == 八、工程索引路线和选型
 
@@ -646,7 +646,7 @@ Embedding 可能暴露语义、受到 membership/inversion 类攻击，也可能
 
 | 层 | 指标 |
 | --- | --- |
-| lexical/dense retrieval | Recall@k、MRR、nDCG、MAP、过滤正确率、p50/p95 latency |
+| lexical/dense retrieval | Recall\@k、MRR、nDCG、MAP、过滤正确率、p50/p95 latency |
 | provenance | citation precision/recall、quote match、staleness rate |
 | answer | faithfulness、completeness、abstention、人工 pairwise preference |
 | Agent loop | success rate、tool calls、steps、tokens、cost、latency、recovery rate |
@@ -708,7 +708,7 @@ BEIR 和 MTEB 可以提供通用参考，但不能替代 Notist 自己的 corpus
 
 改善：数据量和并发提高后仍能保持 p95 latency，候选精度和多样性更好。
 
-验收：报告 Recall@k 与 exact baseline 的差距、内存、构建时间、增量延迟和模型升级回滚。
+验收：报告 Recall\@k 与 exact baseline 的差距、内存、构建时间、增量延迟和模型升级回滚。
 
 === 阶段 5：层级摘要和显式图检索
 

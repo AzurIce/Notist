@@ -1,4 +1,4 @@
-@![implementation = "partial"]
+@!(implementation: "partial")
 = Query Contract
 
 本文是 A2 查询契约的独立成篇，从归档的历史混合文档中独立成篇。CLI 命令面与 Skill 分发见 #<vault::designs::host::cli-command-surface-skill-distribution>；daemon 进程与 View 见 #<vault::designs::host::daemon-process-views>；core request 与本地协议见 #<vault::designs::host::client-interface-protocol>；Analyzer 对查询契约的实现见 #<vault::designs::host::analyzer-snapshot>。
@@ -10,7 +10,7 @@
 
 ```shell
 notist inspect search "annotation table" --vault docs
-notist inspect items vault::designs::language::type-system --vault docs
+notist inspect items vault::types --vault docs
 notist inspect read vault::designs::language::property-table/属性表 --vault docs
 ```
 
@@ -30,7 +30,7 @@ text projection
 
 == Core Query Contract
 
-CLI 与未来 adapter 都把输入投影到协议无关的 core operation（#<vault::designs::host::client-interface-protocol/Client Interface>）：core operation 接受一个已经捕获的 WorkspaceSnapshot 和结构化 request，返回 typed result；CLI 只负责参数拼写与展示。
+CLI 与未来 adapter 都把输入投影到协议无关的 core operation（#<vault::designs::host::client-interface-protocol/Client Interface and Protocol/Client Interface>）：core operation 接受一个已经捕获的 WorkspaceSnapshot 和结构化 request，返回 typed result；CLI 只负责参数拼写与展示。
 
 颜色、TTY 不能改变匹配集合、排序、source range 或错误分类。当前有限 CLI 命令不提供公开 JSON envelope；`QueryResult` 是 core 内部契约，text renderer 消费它，但它本身不是输出格式。
 
@@ -65,7 +65,7 @@ in_scope(module) =
 - include 可重复取并集；exclude 可重复，并在 include 之后生效。
 - scope 属于查询语义本身：对同一查询改变 scope 即是另一个查询。scope 必须在 candidate generation 前下推，不能先物化全 Vault 结果再过滤。
 
-CLI 投影见 #<vault::cli::inspect/身份与坐标>。`check` 不接受 scope：它的 exit status 是完整 Vault 的健康结论。
+CLI 投影见 #<vault::cli::inspect/CLI Inspect: Agent Query and Navigation/身份与坐标>。`check` 不接受 scope：它的 exit status 是完整 Vault 的健康结论。
 
 === Snapshot Stamp
 
@@ -92,12 +92,12 @@ Scope 与 selector 是两种不同的 ModulePath 用法：scope 表达「可能�
 selector 是 ModulePath 或 ItemPath 的规范输入（词汇见 #<vault::designs::world::reference-ref-target>），三类精确身份：
 
 ```text
-ModuleSelector  { module: "vault::designs::language::type-system" }
-PathSelector    { path: "designs/language/type-system.not" }
+ModuleSelector  { module: "vault::types" }
+PathSelector    { path: "types.not" }
 ItemSelector    { module: "vault::designs::language::property-table", name: "属性表" }
 ```
 
-规范输入是等价字符串：`vault::designs::language::type-system`、`designs/language/type-system.not` 或 `vault::designs::language::property-table/属性表`（Module 风格用 `/` 携带 ItemName，Path 风格因 `/` 是文件系统分隔符而用 `#`）。ItemName 的匹配顺序与引用寻址一致（#<vault::designs::world::reference-ref-target/ItemName>）：先按显式 `@id`，再按标题默认名（标题文本）精确匹配。短 basename、模糊路径与"最接近的 Module"不能静默解析；零匹配返回 `not_found`，多匹配返回 `ambiguous_selector` 和有界候选。模糊发现属于 search，不属于 selector resolution。
+规范输入是等价字符串：`vault::types`、`types.not` 或 `vault::designs::language::property-table/属性表`（Module 风格用 `/` 携带 ItemName，Path 风格因 `/` 是文件系统分隔符而用 `#`）。ItemName 的匹配顺序与引用寻址一致（#<vault::designs::world::reference-ref-target/Reference and RefTarget/引用与寻址/ItemId>）：先按显式 `id:` 标注，再按标题默认名（标题文本）精确匹配。短 basename、模糊路径与"最接近的 Module"不能静默解析；零匹配返回 `not_found`，多匹配返回 `ambiguous_selector` 和有界候选。模糊发现属于 search，不属于 selector resolution。
 
 所有可作为证据或编辑位置的 record 使用统一 location：
 

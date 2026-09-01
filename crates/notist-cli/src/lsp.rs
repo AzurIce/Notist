@@ -866,11 +866,7 @@ fn compute_build_inner(job: &BuildJob) -> Result<Vec<BuiltVault>, Box<dyn Error>
             .map(|record| {
                 (
                     record.path,
-                    ClientSource::from_parts(
-                        record.line_starts,
-                        record.content_ends,
-                        record.end,
-                    ),
+                    ClientSource::from_parts(record.line_starts, record.content_ends, record.end),
                 )
             })
             .collect::<BTreeMap<_, _>>();
@@ -1059,8 +1055,7 @@ impl LspSession {
             );
             return Ok(false);
         };
-        let new_text =
-            apply_document_changes(&document.source, &params.content_changes);
+        let new_text = apply_document_changes(&document.source, &params.content_changes);
         let mut changed = false;
         if new_text != document.source.as_ref() {
             document.source = Arc::from(new_text.as_str());
@@ -1394,7 +1389,10 @@ fn assigned_vault_root<'a>(
 /// valid prefix, so descending edit batches (the common client shape) rebuild
 /// nothing. Out-of-bounds positions clamp into the document, and a change
 /// whose clamped start exceeds its clamped end is skipped.
-fn apply_document_changes(file_contents: &str, content_changes: &[TextDocumentContentChangeEvent]) -> String {
+fn apply_document_changes(
+    file_contents: &str,
+    content_changes: &[TextDocumentContentChangeEvent],
+) -> String {
     let (mut text, partials) = match content_changes
         .iter()
         .rposition(|change| change.range.is_none())
@@ -1426,7 +1424,6 @@ fn apply_document_changes(file_contents: &str, content_changes: &[TextDocumentCo
     }
     text
 }
-
 
 fn normalize_uri_path(uri: &Uri) -> Result<PathBuf, Box<dyn Error>> {
     let path = uri_to_file_path(uri)?;
@@ -1585,7 +1582,10 @@ fn lsp_severity(severity: &str) -> DiagnosticSeverity {
 }
 
 fn lsp_diagnostic(source: Option<&ClientSource>, diagnostic: DiagnosticRecord) -> Diagnostic {
-    let captured_source = diagnostic.source.clone().map(|text| ClientSource::from_text(&text));
+    let captured_source = diagnostic
+        .source
+        .clone()
+        .map(|text| ClientSource::from_text(&text));
     let source = captured_source.as_ref().or(source);
     let range = diagnostic
         .range
@@ -1803,8 +1803,7 @@ mod tests {
         }
         assert!(require_utf8_position_encoding(&params(serde_json::json!(["utf-8"]))).is_ok());
         assert!(
-            require_utf8_position_encoding(&params(serde_json::json!(["utf-16", "utf-8"])))
-                .is_ok()
+            require_utf8_position_encoding(&params(serde_json::json!(["utf-16", "utf-8"]))).is_ok()
         );
         // A client that cannot speak utf-8 is refused: answering utf-8 to it
         // would corrupt every position.

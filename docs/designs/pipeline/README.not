@@ -1,4 +1,4 @@
-@![implementation = "aligned"]
+@!(implementation: "aligned")
 = Compilation Pipeline Overview
 
 本文是 Notist 编译管线的总入口：把一篇 source 如何一步步变成可投影文档讲清楚。各阶段细节分别由自己的文档定义；本文只规定阶段边界、输入输出、所有权与不变量。
@@ -20,33 +20,33 @@ source
 | 阶段 | 输入 | 输出 | 所有者 | 详细文档 |
 |---|---|---|---|---|
 | parse | source text | `syntax::Parse` | notist-syntax | #<parse> |
-| check | `Parse` + WorkspaceSnapshot | 已解析调用 / 类型 / Symbol identity | notist-analysis | #<vault::designs::language::type-system> |
-| lower | 静态检查产物 | call 森林 | notist-eval | #<evaluate/Lowering：Call 的来源> |
-| reduce | call 森林 | call 森林（不动点） | notist-eval | #<evaluate/调用规约> |
+| check | `Parse` + WorkspaceSnapshot | 已解析调用 / 类型 / Symbol identity | notist-analysis | #<vault::types/Type System/静态检查> |
+| lower | 静态检查产物 | call 森林 | notist-eval | #<evaluate/Evaluation and Reduction Stage/Lowering：Call 的来源> |
+| reduce | call 森林 | call 森林（不动点） | notist-eval | #<evaluate/Evaluation and Reduction Stage/调用规约> |
 | structure | call 森林 | 成型后的森林 | notist-eval | #<structure> |
 | project | 成型森林 + 属性表 + target 上下文 | target fragment | notist-html / target renderer | #<project> |
 
-当前实现中 clean parse 的求值、成型与 HTML 投影都运行在统一 `Node` 森林上；`ElementTree` 只是成型后的 Node 容器，不存在转回 legacy `Content` / `StructuredDocument` 的生产桥接。HTML target 在渲染前使用独立的 target-side projection registry，再由 serializer 输出 HTML。
+当前实现中 clean parse 的求值、成型与 HTML 投影都运行在统一 `Node` 森林上；`ElementTree` 只是成型后的 Node 容器，不存在转回 legacy `Item` / `StructuredDocument` 的生产桥接。HTML target 在渲染前使用独立的 target-side projection registry，再由 serializer 输出 HTML。
 
 == 阶段边界
 
 - *P1 只向前*：任一阶段不得反向调用前一阶段，尤其不允许 project 阶段重新 parse source。
-- *P2 单一语义真相*：值层是 call 森林与属性表；成型后的结构是它们的可重建投影（#<vault::designs::pipeline::structure/不变量>）。
+- *P2 单一语义真相*：值层是 call 森林与属性表；成型后的结构是它们的可重建投影（#<vault::designs::pipeline::structure/Structure Stage/不变量>）。
 - *P3 Range 稳定*：所有阶段保持 byte range 语义，诊断与属性表可以在 source、节点、target 之间互相定位。
 - *P4 错误可恢复*：parse/check/evaluate 产生诊断后继续，后续阶段仍能消费部分结果；错误不伪装成合法值。
 - *P5 确定性*：parse、check、evaluate、structure 是纯函数；project 允许读取 target 上下文，但不改变语义树。
 
 == Parse
 
-parse 把 source 变成 mode-aware 的语法树：Markup 与 Code 交替扫描，语法糖以专用节点保留。详细规则见 #<vault::designs::pipeline::parse>；两个语法表面见 #<vault::designs::language::markup-surface> 与 #<vault::designs::language::code-grammar>。
+parse 把 source 变成 mode-aware 的语法树：Markup 与 Code 交替扫描，语法糖以专用节点保留。详细规则见 #<vault::designs::pipeline::parse>；两个语法表面见 #<vault::grammar::markup> 与 #<vault::grammar::code>。
 
 == Check
 
-check 在求值前完成三件事：名称解析、类型检查、调用解析。它产出求值器唯一消费的语义输入；求值器不重新猜名字或实参绑定。详细规则见 #<vault::designs::language::type-system>、#<vault::designs::language::scope-environment> 与 #<vault::designs::language::call-model>。
+check 在求值前完成三件事：名称解析、类型检查、调用解析。它产出求值器唯一消费的语义输入；求值器不重新猜名字或实参绑定。详细规则见 #<vault::types/Type System/静态检查>、#<vault::designs::pipeline::evaluate/Evaluation and Reduction Stage/名称环境> 与 #<vault::types/Type System/函数类型与调用模型>。
 
 == Lower
 
-lower 是 evaluate 的前半段：它消费 check 后的语法树，产出统一的 call 森林。`Call` 并不由 parser 直接产生——parse 产出 `syntax::Call` 与糖节点；lower 才把显式调用、语法糖与文档文字统一成 reduction IR。详细规则见 #<vault::designs::pipeline::evaluate/Lowering：Call 的来源>。
+lower 是 evaluate 的前半段：它消费 check 后的语法树，产出统一的 call 森林。`Call` 并不由 parser 直接产生——parse 产出 `syntax::Call` 与糖节点；lower 才把显式调用、语法糖与文档文字统一成 reduction IR。详细规则见 #<vault::designs::pipeline::evaluate/Evaluation and Reduction Stage/Lowering：Call 的来源>。
 
 == Reduce
 

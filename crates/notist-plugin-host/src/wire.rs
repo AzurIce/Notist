@@ -50,7 +50,7 @@ pub(crate) fn validate_forest(nodes: &[Node]) -> Result<(), String> {
 /// Function values cannot live on content nodes.
 pub(crate) fn value_to_node_value(value: &Value) -> Result<NodeValue, String> {
     Ok(match value {
-        Value::None => NodeValue::None,
+        Value::Unit => NodeValue::None,
         Value::Bool(value) => NodeValue::Bool(*value),
         Value::Int(value) => NodeValue::Int(*value),
         Value::Float(value) => NodeValue::Float(*value),
@@ -59,6 +59,9 @@ pub(crate) fn value_to_node_value(value: &Value) -> Result<NodeValue, String> {
         Value::Target(reference) => NodeValue::Target(reference.clone()),
         Value::Function(_) => {
             return Err("function values cannot cross the plugin boundary".into());
+        }
+        Value::Array(_) | Value::Dict(_) => {
+            return Err("collection values cannot cross the plugin boundary".into());
         }
     })
 }

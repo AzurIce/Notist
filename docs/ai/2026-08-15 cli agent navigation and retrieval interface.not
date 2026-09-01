@@ -187,7 +187,7 @@ grouping: source 返回该 Module 最佳 unit；section 返回每个最近 Headi
 
 === G3 默认排序缺少来源权威先验
 
-当前纯 BM25 让 `vault::designs::archive::D0008-...` 和 `vault::old-designs::archive::D0011-...` 压过现行 D0023/D0025；dated AI 文档也会压过当前规范。对任意用户 Vault 不应按路径魔法排序，但 Notist 语言已经提供更好的通用信号：模块属性（`@![...]`）。建议把 `status=archived`、`status=draft`、`doc-kind=reference` 等模块属性纳入索引字段与 ranking version，定义可解释的来源先验；官方 docs 通过模块属性表达 authority，其他 Vault 用同一机制自描述。过渡期可在官方 docs Vault 的 ranking profile 中给 active designs/reference docs 一个温和 boost，并明确这是 profile 不是语言语义。
+当前纯 BM25 让 `vault::designs::archive::D0008-...` 和 `vault::old-designs::archive::D0011-...` 压过现行 D0023/D0025；dated AI 文档也会压过当前规范。对任意用户 Vault 不应按路径魔法排序，但 Notist 语言已经提供更好的通用信号：模块属性（`\@!(class: ..)`）。建议把 `status=archived`、`status=draft`、`doc-kind=reference` 等模块属性纳入索引字段与 ranking version，定义可解释的来源先验；官方 docs 通过模块属性表达 authority，其他 Vault 用同一机制自描述。过渡期可在官方 docs Vault 的 ranking profile 中给 active designs/reference docs 一个温和 boost，并明确这是 profile 不是语言语义。
 
 === G4 exact scan 与 lexical index 的字段语义不一致
 
@@ -335,7 +335,7 @@ bm25-v4
 === P2：schema v3 成本优化
 
 - G7：公开 SnapshotStamp 去 canonical root。
-- outline/read 单源 context 去重；benchmark 证明字节下降且 pass@1 不降。
+- outline/read 单源 context 去重；benchmark 证明字节下降且 pass\@1 不降。
 - 在固定任务、固定模型、固定 seed 上重跑 #<vault::ai::2026-07-26 agent-friendly CLI output and Notist improvements> 式成本验收；不把 bytes/4 当账单 token。
 
 == 验收

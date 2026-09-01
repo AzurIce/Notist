@@ -1,4 +1,4 @@
-@![implementation = "aligned"]
+@!(implementation: "aligned")
 = Module and ModuleResult
 
 本文是 Module 与 ModuleResult 的独立成篇，从归档的历史混合文档中独立成篇。Vault 边界见 #<vault::designs::world::boundary-discovery>；import 见 #<vault::designs::world::import>；引用寻址见 #<vault::designs::world::reference-ref-target>。
@@ -22,26 +22,26 @@ vault-root/
 ```
 
 - 普通文件名成为最后一个路径段；`README.not` 表示所在目录。`submodule2.not` 与 `submodule2/README.not` 都映射到 `vault::submodule2`，不能同时存在——一个逻辑 Module 至多一个 source，使定义、import、引用与输出路径共享单一身份；
-- 目录只要有 `.not` 后代或资源文件后代就形成 virtual module（即使没有自己的 `README.not`），只提供命名空间与 child identity，不凭空产生 Content 或 bindings；
+- 目录只要有 `.not` 后代或资源文件后代就形成 virtual module（即使没有自己的 `README.not`），只提供命名空间与 child identity，不凭空产生 Item 或 bindings；
 - 移动 source 若改变 ModulePath，就是逻辑 Module 重命名，而不仅是文件移动——Reference 与 import 需要同一个 rename plan。
 
 === 资源目录
 
-资源文件（图片等）通过"目录模块 + 文件名 id"寻址：`vault::docs::images/logo.png` 指向 `docs/images/logo.png`。因此资源目录也进入 Module 树，作为虚拟模块：提供命名空间与 child identity（文件名即 ItemName），但没有 source、没有 Content、没有可 import 的 bindings。这是对旧设计"asset 目录不进 Module tree"的修正——寻址空间包含资源文件，求值与导入的语义仍只属于 `.not` source。
+资源文件（图片等）通过"目录模块 + 文件名 id"寻址：`vault::docs::images/logo.png` 指向 `docs/images/logo.png`。因此资源目录也进入 Module 树，作为虚拟模块：提供命名空间与 child identity（文件名即 ItemName），但没有 source、没有 Item、没有可 import 的 bindings。这是对旧设计"asset 目录不进 Module tree"的修正——寻址空间包含资源文件，求值与导入的语义仍只属于 `.not` source。
 
 === ModuleResult
 
-每个 source-backed Module 在自己的根 scope 中按源码顺序求值（#<vault::designs::pipeline::evaluate/求值规则>，scope 见 #<vault::designs::language::scope-environment/scope 是值层节点>），得到：
+每个 source-backed Module 在自己的根节点中按源码顺序求值（#<vault::designs::pipeline::evaluate/Evaluation and Reduction Stage/求值规则>，名称环境见 #<vault::designs::pipeline::evaluate/Evaluation and Reduction Stage/名称环境>），得到：
 
 ```text
 ModuleResult {
   bindings:    Environment,      // Module root 自有的 binding，可被其他 Module import
-  content:     Content,          // 本文档的求值结果，成型后供渲染、检索与查询
+  content:     Item,          // 本文档的求值结果，成型后供渲染、检索与查询
   annotations: AnnotationTable,  // 属性表（property table），含模块级条目
 }
 ```
 
-#<vault::designs::pipeline::evaluate/求值结果> 中单文件的"求值结果"在此正式成为 ModuleResult。bindings 是程序的一面——跨模块复用的入口；content 是文档的一面——渲染与查询消费的产物；annotations 是属性的一面——标注与模块元数据的唯一入口。
+#<vault::designs::pipeline::evaluate/Evaluation and Reduction Stage/求值结果> 中单文件的"求值结果"在此正式成为 ModuleResult。bindings 是程序的一面——跨模块复用的入口；content 是文档的一面——渲染与查询消费的产物；annotations 是属性的一面——标注与模块元数据的唯一入口。
 
 === bindings ownership
 

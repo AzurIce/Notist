@@ -404,10 +404,7 @@ fn revision_stream(
     initial.chain(revisions)
 }
 
-async fn shutdown_signal(
-    updates: broadcast::Sender<PreviewEvent>,
-    rebuild_stop: Arc<AtomicBool>,
-) {
+async fn shutdown_signal(updates: broadcast::Sender<PreviewEvent>, rebuild_stop: Arc<AtomicBool>) {
     if let Err(error) = tokio::signal::ctrl_c().await {
         emit_preview_error(&error.to_string());
     }

@@ -19,11 +19,11 @@
                 "state": {
                   "type": "notist-view",
                   "state": {
-                    "file": "model.not",
+                    "file": "example/test.not",
                     "mode": "source"
                   },
                   "icon": "file-text",
-                  "title": "model"
+                  "title": "test"
                 }
               }
             ]
@@ -122,9 +122,11 @@
                   "state": {
                     "expanded": [
                       "cli",
+                      "grammar",
+                      "designs",
+                      "designs/language",
                       "designs/lsp",
-                      "example",
-                      "designs"
+                      "designs/pipeline"
                     ],
                     "dimNonNot": false
                   },
@@ -137,7 +139,7 @@
           }
         ],
         "direction": "horizontal",
-        "width": 256.51074600219727
+        "width": 323.698184967041
       },
       "right": {
         "id": "f8d03a7322595300",
@@ -270,7 +272,7 @@
   },
   "vimMode": true,
   "defaultViewMode": "source",
-  "lspEnabled": true,
+  "lspEnabled": false,
   "notistCommand": "nix develop /home/azurice/Files/notist -c cargo run --manifest-path /home/azurice/Files/notist/Cargo.toml -p notist-cli",
   "notistExtraArgs": "--no-daemon",
   "problemsExpanded": false

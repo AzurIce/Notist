@@ -25,20 +25,20 @@ __text__                   → underline([text])
 == 内置构造器签名
 
 ```text
-link(target: Target | String) -> Content
-heading(level: Int = 1, trailing body: Content) -> Content
-raw(source: String, lang: String? = none, block: Bool = false) -> Content
-rule() -> Content
-callout(kind: String = "note", title: Content? = none, trailing body: Content) -> Content
-details(summary: Content? = none, open: Bool = false, trailing body: Content) -> Content
-item(ordered: Bool = false, trailing body: Content) -> Content
-table-cell(colspan: Int = 1, rowspan: Int = 1, trailing body: Content) -> Content
-table(columns: Int, header: Bool = false, align: String? = none,
-      trailing body: Content) -> Content
-figure(kind: String? = none, supplement: Content? = none,
-       caption: Content? = none, trailing body: Content) -> Content
+link(target: Target | String) -> Item
+heading(level: Int = 1, trailing body: Item) -> Item
+raw(source: String, lang: String? = (), block: Bool = false) -> Item
+rule() -> Item
+callout(kind: String = "note", title: Item? = (), trailing body: Item) -> Item
+details(summary: Item? = (), open: Bool = false, trailing body: Item) -> Item
+item(ordered: Bool = false, trailing body: Item) -> Item
+table-cell(colspan: Int = 1, rowspan: Int = 1, trailing body: Item) -> Item
+table(columns: Int, header: Bool = false, align: String? = (),
+      trailing body: Item) -> Item
+figure(kind: String? = (), supplement: Item? = (),
+       caption: Item? = (), trailing body: Item) -> Item
 strong / emph / underline / strike
-  (trailing body: Content) -> Content
+  (trailing body: Item) -> Item
 ```
 
 未注册的内置名称一律产生 unknown function 诊断（调用保留为内容节点）；加载插件后的 `{package}::{element}` 是注册名，不受此限。
@@ -58,26 +58,26 @@ strong / emph / underline / strike
 ]
 ```
 
-- 命名实参 `name: value`；位置实参必须全部在具名实参之前，trailing Content block 是唯一例外；
+- 命名实参 `name: value`；位置实参必须全部在具名实参之前，trailing Item block 是唯一例外；
 - `#f(kind: "warning")[内容]` 与 `#f(kind: "warning", [内容])` 等价；
 - 带默认值的形参只能具名绑定；重复/未知/缺失实参、类型不匹配都有确定诊断。
 
 == 类型速查
 
 ```text
-None / Bool / Int / Float / String / Content   基础类型
-T?                                             可空（含 None）
+Unit / Bool / Int / Float / String / Item   基础类型
+T?                                             可空（含 Unit）
 fn(形参表) -> R                                 函数类型（形参 name: Type，= 表示可省略）
 ```
 
 ```text
 kind: String      必填，位置绑定
 kind: String =    可省略（有默认值），具名绑定
-kind: String?     必填但可为 None
-kind: String? =   可省略且可为 None
+kind: String?     必填但可为 Unit
+kind: String? =   可省略且可为 Unit
 ```
 
-唯一 coercion：Int 传给 Float 形参时自动数值转换。插入规则：Content 原样；String 转 Text；Int/Float/Bool 转 Text；None 为空；Function 不能插入。
+唯一 coercion：Int 传给 Float 形参时自动数值转换。插入规则：Item 原样；String 转 Text；Int/Float/Bool 转 Text；Unit 为空；Function 不能插入。
 
 == 标注速查
 
@@ -91,13 +91,12 @@ key = value                键值属性（String / Int / Bool 字面量，String
 ```not
 文字内容@note                      # 行内 postfix：绑定前面紧接着的值
 
-@[wip]                            # 块级前缀：绑定下一个块级节点
+@(wip: true)                            # 块级前缀：绑定下一个块级节点
 = 标题
 
-@![#design, status = "draft"]    # 模块属性：文件开头
+@!(design: true, status: "draft")    # 模块属性：文件开头
 
-#[一段内容]@install               # 手动 scope + 行内标注
-```
+@(install               # 手动 scope + 行内标注)#[一段内容 ```
 
 注意：标注的键值用等号（`key = value`），调用点命名实参用冒号（`name: value`）。
 
@@ -120,7 +119,7 @@ key = value                键值属性（String / Int / Bool 字面量，String
 #let accent = "violet"                // let 绑定（顺序作用域）
 #let double = (x: Int) => x * 2       // lambda
 #let double(x: Int) -> Int = x * 2    // 函数定义糖（与上一行等价）
-#if 2 > 1 [对] else [错]               // if 表达式（Content 分支）
+#if 2 > 1 [对] else [错]               // if 表达式（Item 分支）
 #(1 + 2)                              // 括号嵌入完整表达式
 #{ let x = 1; x + 2 }                 // Code block
 #import <self::theme>::{accent as a}    // import（显式选择器，无 wildcard）
@@ -142,7 +141,7 @@ String 四种形态：`"转义"`、`"""多行"""`（opening 后立即换行）�
 
 == 模式与边界速查
 
-- Markup：文档默认；`#` 进入 Code；Code 中 `[...]` 回到 Markup；`#[...]` 是 Markup 中 Content literal 的书写形式；裸 `[` `]` 是文本；
+- Markup：文档默认；`#` 进入 Code；Code 中 `[...]` 回到 Markup；`#[...]` 是 Markup 中 Item literal 的书写形式；裸 `[` `]` 是文本；
 - `#` 嵌入边界：顶层嵌入以空白终止（R01），二元运算符必须与操作数相邻；完整表达式写进括号 `#(...)`；紧跟文字时用 `;` 结束（`;` 被消费、不产生输出）；
 - 转义：`\` 转义 `#` `[` `]` `@` `\`；
 - 注释仅 Code 上下文：`//` 行注释、`/* ... */` 嵌套块注释；Markup 中它们是普通文本；

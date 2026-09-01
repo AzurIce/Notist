@@ -1,0 +1,142 @@
+@!(implementation: "partial")
+= Code
+
+本文是 Code 模式语法的权威定义：字面量、运算符、表达式、声明、类型语法与 Target 引用。Markup 模式见 #<vault::grammar::markup>；标注见 #<vault::grammar::annotation>；模式概览见 #<vault::grammar>。函数声明语义见 #<vault::types/Type System/函数类型与调用模型>；类型语义见 #<vault::types/Type System/Type 与 Value 对应>。
+
+== Code 核心语法
+
+=== 标识符
+
+标识符由 Unicode 字母（含中文）、数字、`-`、`_` 组成，首字符不能是数字或 `-`。`-` 属于标识符字符：`my-var` 是一个名字，不是减法——想写减法要加空格（`my - var`）。本节的分隔规则作用于 Code 内部（`#(...)`、Code block）；裸 `#` 嵌入的顶层边界见 #<vault::grammar::markup/Markup/最小骨架/嵌入的边界>——`#1 + 2` 的 `1` 在空格处终止，` + 2` 是文本。
+
+=== 注释
+
+`//` 行注释与 `/* ... */` 嵌套块注释是 Code 上下文的词法 trivia；Markup 文本流中 `//` 与 `/*` 是普通文本，不做注释剥离。注释不进入值或 Item（检索字段见 #<vault::designs::host::search-retrieval-index/Search Modes and Retrieval Index/检索单元与索引> 的 `comment` 字段）。
+
+=== 字面量
+
+```text
+Int       十进制数字序列
+Float     数字 + `.` + 数字（`0.5`；`.5`、`1.` 不合法，写 `0.5`、`1.0`）
+Bool      true | false
+Unit      ()
+String    见下（四种形态）
+Item   [...]（回到 Markup）
+```
+
+负数是一元 `-` 运算符（字面量本身无符号）。科学计数法暂缓。
+
+集合字面量与括号判别（Array `(a, b)`、Dict `(k: v)`、空形式 `(,)` / `(:)`；`()` 是 Unit 的字面量，不是集合）见 #<vault::types/Type System/集合类型>。
+
+String 字面量四种形态（继承旧字符串字面量设计的历史决定）：
+
+```text
+"..."          转义 inline
+"""..."""      转义多行（opening 三引号后立即换行才进入多行形态）
+r#"..."#       raw inline（hash 级别可升级：r##"..."##）
+r#"""..."""#   raw 多行（同样要求 opening 后立即换行）
+```
+
+- 转义集：`\"` `\\` `\n` `\r` `\t`；raw 形态不做任何转义处理；
+- Multiline 形态的 opening framing newline 不属于值；closing 前紧邻的一个 framing newline 被裁掉；除此之外不裁空白、不 dedent；
+- 四种形态产生同一个 `String` 类型——form/style 是字面量 provenance，不影响值语义（#<vault::types/Type System/Type 与 Value 对应>）。
+
+=== primary 与运算符
+
+primary：字面量、名字、括号表达式、调用、Item literal、Code block、lambda。
+
+运算符（有限集合）：
+
+```text
+一元：-    not
+乘除：*    /
+加减：+    -
+比较：<   <=   >   >=
+相等：==   !=
+逻辑：and  or（短路）
+```
+
+优先级从高到低：一元（`-`、`not`）→ `* /` → `+ -` → 比较与相等 → `and` → `or`。
+
+- `-a * b` 是 `(-a) * b`；
+- `not a == b` 是 `not (a == b)`；
+- `a and not b` 是 `a and (not b)`；
+- 相等定义在 Unit/Bool/Int/Float/String/Target 上（同族值比较，跨族不等）；Array 按位置递归比较，Dict 按 key/value 映射比较（忽略插入序）；Item 与 Function 没有自动相等（#<vault::types/Type System/Type 与 Value 对应/相等>）。
+
+=== 表达式
+
+*调用*：`callee(实参)` 加可选 trailing block `[...]`——绑定、默认值、coercion 与调用点检查见 #<vault::types/Type System/函数类型与调用模型>。
+
+*if*：表达式，typst 风格：
+
+```not
+#if 条件 { ... } else { ... }
+#if 条件 [内容] else [内容]
+```
+
+- 分支是 Code block（求值为值）或 Item block（求值为内容），复用既有块语法；
+- `else` 可省略：两个分支都存在时，类型为两分支类型的 join；*无 `else` 时*，条件为假产生 `()`——Code block 分支的类型 `T` 提升为 `T?`（Item 分支无 else 时类型仍是 `Item`，空内容合法）；
+- 条件必须是 `Bool`。
+
+*lambda*：`(形参表) => 表达式`：
+
+```not
+#let double = (x: Int) => x * 2
+#let add = (a: Int, b: Int) => a + b
+```
+
+- 形参必须声明类型（与命名函数一致，#<vault::types/Type System/函数类型与调用模型>）；返回类型由 body 推断；
+- 参数列表括号必写（单参数省略括号暂不支持）；
+- `let f(形参表) -> R = body` 定义糖与 `let f = (形参表) => body` 等价（定义糖的返回类型声明与推断结果一致）；
+- lambda 是普通 Function 值：可以绑定、传递、调用（#<vault::types/Type System/函数类型与调用模型>）。
+
+=== 声明
+
+*let*：`let name = 表达式` 或 `let name: T = 表达式`——右侧先在旧环境中求值，绑定对后续可见；类型标注可选（未标注时由右侧推断）。同名遮蔽允许（最近绑定者胜出，见 #<vault::designs::pipeline::evaluate/Evaluation and Reduction Stage/名称环境>）。
+
+*函数定义糖*：`let name(形参表) -> R = body`（≡ lambda 绑定，见上）。形参语法与 #<vault::types/Type System/函数类型与调用模型> 一致：带 `=` 的形参是 named 可省略，不带的是 positional 必填。
+
+*import*：见 #<vault::designs::world::import>。
+
+*模块属性*：`@!(...)` 见 #<vault::grammar::annotation/Annotation/两种前缀对应两种挂载位置>。
+
+（递归绑定暂缓：`let` 的右侧看不到正在声明的名字，递归函数待引入 `let rec` 时再设计——见 #<vault::types/Type System/静态检查>。）
+
+=== 类型语法
+
+```text
+Type
+├─ Unit / Bool / Int / Float / String / Item / Target
+├─ T?                    # 可空
+├─ T | U                 # union
+├─ Array<T> / Array      # 集合；裸形式元素类型未约束
+├─ Dict<K, V> / Dict     # 同上，K/V 各自可省
+├─ (Type)                # 括号分组
+└─ fn(形参表) -> R       # 形参：名字: 类型，带 = 表示可省略
+```
+
+标注位置：`let name: T = ...`、函数形参、函数返回类型、lambda 形参。类型语义（值空间、归一化与 accept 规则）见 #<vault::types/Type System/Type 与 Value 对应>。
+
+（Item 形状 refinement（Inline/Block）是类型系统的未来扩展，暂不进入本语法。）
+
+== 字面量载荷
+
+围栏代码块（```` ``` ````）内部与 String 字面量内部是词法层的字面量载荷：lexer 以"扫到闭合围栏/闭合引号"为唯一状态，不识别任何 Markup/Code 构造。它们不是语义 context，不参与 quotation。围栏的完整语法（opener 长度、闭合规则、lang 标注、error recovery）见 #<vault::grammar::markup/Markup/语法糖/raw>；编辑器按载荷 range 做语言注入。
+
+== Target 引用
+
+```not
+#<setup>                          # 相对 ModulePath：从当前模块解析
+#<self::setup>                    # 当前模块路径前缀
+#<super::intro>                   # 父级
+#<vault::guide/install>           # 绝对路径 + ItemId（ItemPath）
+#<vault::guide::assets/logo.png>  # 资源文件（完整文件名）
+```
+
+- `<` 与 `>` 之间是 Target 字面量：ModulePath 加可选的 `/` 后缀；段内允许空格、数字开头与 `/` 之外的任意 Unicode，`\<`、`\>`、`\\` 转义定界符与反斜杠；
+- `/` 后缀是「模块内 Item」：文档模块中是带 `id:` 标注的 scope 或标题默认名，资源目录中是完整文件名；ItemId 是字面字符串，可以再含 `/` 与 `#`（第一个 `/` 是结构符，其后皆为字面）；
+- `vault`、`self`、`super` 是只允许出现在路径开头的保留段；路径段不能包含 control character 或 `::`（`::` 是段分隔符）；
+- 标题拥有默认名：`#<vault::guide/安装>` 按标题文本精确匹配，重复标题产生歧义诊断；
+- 外部 url 不是 Target：写 `#link("https://...")`（String 分支），解析为 External 目标，当前渲染为未解析的可见文本并产生 info 级 `external-reference-unsupported` 诊断——不是语法错误。
+
+显式构造 `link(target: Target | String)` 使用同一个引用解析入口：`#<vault::guide>` 与 `#link(<vault::guide>)` 产生同一种 Reference 元素。

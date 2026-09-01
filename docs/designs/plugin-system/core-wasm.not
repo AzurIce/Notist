@@ -1,4 +1,4 @@
-@![implementation = "aligned"]
+@!(implementation: "aligned")
 = Core Wasm Backend
 
 把插件编成零导入 core module，用一套显式的最小约定取代 canonical ABI，使同一份 `semantic.wasm` 能被 wasmtime `Module` 与浏览器 `WebAssembly.Instance` 直接实例化。语义与载荷与组件形态完全共享（#<vault::designs::plugin-system::abi>）。

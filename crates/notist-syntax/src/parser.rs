@@ -1,11 +1,9 @@
 use notist_model::{TableAlignment, TextRange, Type};
 
 use crate::argument::parse_string_at;
-use crate::scope::{
-    parse_annotation_block, parse_attributes, parse_identifier, parse_qualified_name,
-};
+use crate::scope::{parse_identifier, parse_qualified_name};
 use crate::{
-    Argument, Attributes, BinaryOperator, BlockAnnotation, BodyForm, Call, ContentBlock,
+    Annotation, Argument, BinaryOperator, BodyForm, Call, ContentBlock, DictEntry,
     EmbeddedExpression, Expression, ExpressionKind, HeadingSugar, ListSugar, ListSugarRow, Markup,
     MarkupItem, Parse, SpannedName, SpannedText, SyntaxError, TableSugar, TableSugarCell,
     UnaryOperator, UserFunctionDefinition, UserParameter, parse_target_body,
@@ -30,6 +28,8 @@ pub(crate) fn parse(source: &str) -> Parse {
     }
 }
 
+/// Resolves each annotation's binding target: the next non-annotation
+/// sibling item in the same markup stream (stacked annotations share one
 struct Parser<'a> {
     source: &'a str,
     cursor: usize,
@@ -183,67 +183,41 @@ impl Parser<'_> {
                     text_start = self.cursor;
                     at_line_start = false;
                 }
-                // D0006: `@[...]` block-prefix and `@![...]` module annotations
-                // are distinct token sequences at line start; `@` elsewhere is
-                // ordinary text (inline postfix is parsed after expressions).
-                Some(b'@')
-                    if self.annotation_at_line_start()
-                        && matches!(
-                            self.source.as_bytes().get(self.cursor + 1),
-                            Some(b'[' | b'!')
-                        ) =>
-                {
+                // An `@` anywhere in the text flow opens an annotation: the
+                // payload expression evaluates to a Dict and binds the
+                // immediately following Item (`@!` binds the module root).
+                // A literal `@` is escaped as `\@`.
+                Some(b'@') => {
                     self.push_text(&mut items, text_start, self.cursor);
                     let annotation_start = self.cursor;
                     let module = self.source.as_bytes().get(self.cursor + 1) == Some(&b'!');
-                    // Only earlier leading `@![...]` may precede a module
+                    self.cursor += 1 + usize::from(module);
+                    // Only earlier leading `@!` may precede a module
                     // annotation besides whitespace; anything else is content.
                     let mut leads_content = false;
                     if module {
-                        self.cursor += 2;
-                        leads_content = self.only_preamble_before(annotation_start);
+                        leads_content =
+                            items.iter().all(|item| !is_content_item(item, self.source));
                         if !leads_content {
                             self.errors.push(SyntaxError {
-                                message:
-                                    "module annotation `@![...]` must appear before any content"
-                                        .into(),
-                                range: TextRange::new(annotation_start, annotation_start + 2),
+                                message: "module annotation `@!` must appear before any content"
+                                    .into(),
+                                range: TextRange::new(annotation_start, self.cursor),
                             });
                         }
-                    } else {
-                        self.cursor += 1;
                     }
-                    if self.byte() == Some(b'[') {
-                        let (attributes, block_range, closed) =
-                            parse_annotation_block(self.source, self.cursor, &mut self.errors);
-                        self.cursor = block_range.end;
-                        if !closed {
-                            self.errors.push(SyntaxError {
-                                message: "unclosed annotation block".into(),
-                                range: block_range,
-                            });
-                        }
-                        let annotation = BlockAnnotation {
-                            attributes,
+                    let expression = self.parse_code_expression_top_level();
+                    if expression.kind != ExpressionKind::Error {
+                        let annotation = Annotation {
+                            module,
+                            expression,
+                            target_range: None,
                             range: TextRange::new(annotation_start, self.cursor),
                         };
-                        if module {
-                            items.push(MarkupItem::ModuleAnnotation(annotation));
-                            if leads_content {
-                                self.module_preamble_end = self.cursor;
-                            }
-                        } else {
-                            items.push(MarkupItem::BlockAnnotation(annotation));
+                        items.push(MarkupItem::Annotation(annotation));
+                        if module && leads_content {
+                            self.module_preamble_end = self.cursor;
                         }
-                    } else {
-                        self.errors.push(SyntaxError {
-                            message: if module {
-                                "expected `[` after `@!`".into()
-                            } else {
-                                "expected `[` after `@`".into()
-                            },
-                            range: TextRange::new(annotation_start, self.cursor),
-                        });
                     }
                     text_start = self.cursor;
                     at_line_start = false;
@@ -256,7 +230,6 @@ impl Parser<'_> {
                     let expression = self.parse_code_block();
                     items.push(MarkupItem::Embedded(EmbeddedExpression {
                         expression,
-                        attributes: Attributes::default(),
                         scope_range: TextRange::new(block_start, self.cursor),
                         range: TextRange::new(block_start, self.cursor),
                     }));
@@ -281,13 +254,35 @@ impl Parser<'_> {
         }
 
         self.push_text(&mut items, text_start, self.cursor);
-        (
-            Markup {
-                items,
-                range: TextRange::new(start, self.cursor),
-            },
-            false,
-        )
+        let mut markup = Markup {
+            items,
+            range: TextRange::new(start, self.cursor),
+        };
+        self.resolve_annotation_targets(&mut markup);
+        (markup, false)
+    }
+
+    /// Resolves each annotation's binding target: the next non-annotation
+    /// sibling item in the same markup stream (stacked annotations share one
+    /// target). Runs at every markup level as each level finishes parsing.
+    fn resolve_annotation_targets(&self, markup: &mut Markup) {
+        let items = &mut markup.items;
+        for index in 0..items.len() {
+            let target = items[index + 1..]
+                .iter()
+                .find(|item| !matches!(item, MarkupItem::Annotation(_)))
+                .map(|item| item.range());
+            if let MarkupItem::Annotation(annotation) = &mut items[index] {
+                if !annotation.module {
+                    // A leading annotation belongs to the block it declares
+                    // (2026-09-01 ruling): the binding span starts at the
+                    // annotation itself, not at the bound block.
+                    annotation.target_range = target.map(|target| {
+                        TextRange::new(annotation.range.start, target.end)
+                    });
+                }
+            }
+        }
     }
 
     /// Parses Markup inside `[start, end)` with a nested parser over the
@@ -773,13 +768,10 @@ impl Parser<'_> {
         if self.byte() == Some(b';') {
             self.cursor += 1;
         }
-        let (attributes, end) = parse_attributes(self.source, self.cursor, &mut self.errors);
-        self.cursor = end;
         EmbeddedExpression {
             expression,
-            attributes,
             scope_range: TextRange::new(start, expression_end),
-            range: TextRange::new(start, end),
+            range: TextRange::new(start, expression_end),
         }
     }
 
@@ -1015,7 +1007,11 @@ impl Parser<'_> {
         self.cursor += 1;
         self.skip_trivia();
         // Lambda lookahead: `(name: Type, ...) => expression` (D0007).
+        // Lambda lookahead: `(name: Type, ...) => expression` (D0007). A
+        // failed lookahead rewinds diagnostics too: an `(a: 1)` Dict literal
+        // must not inherit "unknown type" errors from the parameter guess.
         let checkpoint = self.cursor;
+        let diagnostics_checkpoint = self.errors.len();
         if let Some(parameters) = self.parse_parameter_list() {
             self.skip_trivia();
             if self.byte() == Some(b'=')
@@ -1033,21 +1029,173 @@ impl Parser<'_> {
                     range,
                 };
             }
+            self.errors.truncate(diagnostics_checkpoint);
             self.cursor = checkpoint;
         }
-        let inner = self.parse_code_expression();
-        self.skip_trivia();
+        // `()`: the Unit literal.
         if self.byte() == Some(b')') {
             self.cursor += 1;
-        } else {
+            return Expression {
+                kind: ExpressionKind::Unit,
+                range: TextRange::new(start, self.cursor),
+            };
+        }
+        // `(,)`: the empty Array.
+        if self.byte() == Some(b',') {
+            self.cursor += 1;
+            self.skip_trivia();
+            if self.byte() == Some(b')') {
+                self.cursor += 1;
+                return Expression {
+                    kind: ExpressionKind::Array(Vec::new()),
+                    range: TextRange::new(start, self.cursor),
+                };
+            }
             self.errors.push(SyntaxError {
-                message: "unclosed parenthesized expression".into(),
+                message: "expected an Array element after the leading `,`".into(),
                 range: TextRange::new(start, self.cursor),
             });
         }
+        // `(:)`: the empty Dict.
+        if self.byte() == Some(b':') {
+            self.cursor += 1;
+            self.skip_trivia();
+            if self.byte() == Some(b')') {
+                self.cursor += 1;
+                return Expression {
+                    kind: ExpressionKind::Dict(Vec::new()),
+                    range: TextRange::new(start, self.cursor),
+                };
+            }
+            self.errors.push(SyntaxError {
+                message: "expected a Dict entry after the leading `:`".into(),
+                range: TextRange::new(start, self.cursor),
+            });
+        }
+
+        enum ParenEntry {
+            Item(Expression),
+            Keyed {
+                key: Expression,
+                value: Expression,
+                range: TextRange,
+            },
+            Spread(Expression),
+        }
+
+        let mut entries: Vec<ParenEntry> = Vec::new();
+        let mut dict_shaped = false;
+        let mut saw_comma = false;
+        loop {
+            self.skip_trivia();
+            if self.byte() == Some(b')') {
+                self.cursor += 1;
+                break;
+            }
+            let entry_start = self.cursor;
+            let entry = if self.byte() == Some(b'.')
+                && self.source.as_bytes().get(self.cursor + 1) == Some(&b'.')
+            {
+                self.cursor += 2;
+                self.skip_trivia();
+                let mut expr = self.parse_code_expression();
+                expr.range = TextRange::new(entry_start, self.cursor);
+                ParenEntry::Spread(expr)
+            } else {
+                let mut expr = self.parse_code_expression();
+                self.skip_trivia();
+                if self.byte() == Some(b':') {
+                    self.cursor += 1;
+                    self.skip_trivia();
+                    let mut value = self.parse_code_expression();
+                    let entry_range = TextRange::new(expr.range.start, value.range.end);
+                    value.range = entry_range;
+                    expr.range = entry_range;
+                    dict_shaped = true;
+                    ParenEntry::Keyed {
+                        key: expr,
+                        value,
+                        range: entry_range,
+                    }
+                } else {
+                    ParenEntry::Item(expr)
+                }
+            };
+            entries.push(entry);
+            self.skip_trivia();
+            match self.byte() {
+                Some(b',') => {
+                    saw_comma = true;
+                    self.cursor += 1;
+                }
+                Some(b')') => {
+                    self.cursor += 1;
+                    break;
+                }
+                _ => {
+                    self.errors.push(SyntaxError {
+                        message: "expected `,` or `)` in a collection literal".into(),
+                        range: TextRange::new(self.cursor, self.next_char_end(self.cursor)),
+                    });
+                    break;
+                }
+            }
+        }
+        let range = TextRange::new(start, self.cursor);
+
+        // Dict-shaped literals: every entry must be `key: value` or a spread.
+        if dict_shaped {
+            let mut dict_entries = Vec::new();
+            for entry in entries {
+                match entry {
+                    ParenEntry::Keyed { key, value, .. } => {
+                        dict_entries.push(DictEntry::Entry {
+                            key: Box::new(key),
+                            value: Box::new(value),
+                        });
+                    }
+                    ParenEntry::Spread(expr) => {
+                        dict_entries.push(DictEntry::Spread(Box::new(expr)));
+                    }
+                    ParenEntry::Item(expr) => {
+                        self.errors.push(SyntaxError {
+                            message: "Dict literal entries must be `key: value`".into(),
+                            range: expr.range,
+                        });
+                    }
+                }
+            }
+            return Expression {
+                kind: ExpressionKind::Dict(dict_entries),
+                range,
+            };
+        }
+
+        // A single entry without a comma is a grouping expression.
+        if entries.len() == 1 && !saw_comma {
+            if let ParenEntry::Item(expr) = entries.pop().unwrap() {
+                return Expression {
+                    kind: ExpressionKind::Parenthesized(Box::new(expr)),
+                    range,
+                };
+            }
+        }
+
+        let mut elements = Vec::new();
+        for entry in entries {
+            match entry {
+                ParenEntry::Item(expr) | ParenEntry::Spread(expr) => elements.push(expr),
+                ParenEntry::Keyed { range, .. } => {
+                    self.errors.push(SyntaxError {
+                        message: "Array literal entries cannot use `key: value`".into(),
+                        range,
+                    });
+                }
+            }
+        }
         Expression {
-            kind: ExpressionKind::Parenthesized(Box::new(inner)),
-            range: TextRange::new(start, self.cursor),
+            kind: ExpressionKind::Array(elements),
+            range,
         }
     }
 
@@ -1056,6 +1204,9 @@ impl Parser<'_> {
     /// a parameter list.
     fn parse_parameter_list(&mut self) -> Option<Vec<UserParameter>> {
         let start = self.cursor;
+        // Speculative type parses push diagnostics; a bail rewinds them so
+        // the paren re-parse (dict literal / grouping) stays clean.
+        let diagnostics_checkpoint = self.errors.len();
         let mut parameters = Vec::new();
         loop {
             self.skip_trivia();
@@ -1098,6 +1249,7 @@ impl Parser<'_> {
                     return Some(parameters);
                 }
                 _ => {
+                    self.errors.truncate(diagnostics_checkpoint);
                     self.cursor = start;
                     return None;
                 }
@@ -1477,12 +1629,6 @@ impl Parser<'_> {
         }
         if !name.value.contains("::") {
             match name.value.as_str() {
-                "none" => {
-                    return Expression {
-                        kind: ExpressionKind::None,
-                        range: name.range,
-                    };
-                }
                 "true" => {
                     return Expression {
                         kind: ExpressionKind::Bool(true),
@@ -1678,6 +1824,22 @@ impl Parser<'_> {
     }
 
     fn parse_primary_type(&mut self) -> Type {
+        self.skip_trivia();
+        if self.byte() == Some(b'(') {
+            // Parenthesized grouping: `(Int | String)?`.
+            self.cursor += 1;
+            let inner = self.parse_type();
+            self.skip_trivia();
+            if self.byte() == Some(b')') {
+                self.cursor += 1;
+            } else {
+                self.errors.push(SyntaxError {
+                    message: "expected `)` after grouped type".into(),
+                    range: TextRange::new(self.cursor, self.next_char_end(self.cursor)),
+                });
+            }
+            return inner;
+        }
         let start = self.cursor;
         let Some((name, end)) = parse_identifier(self.source, start) else {
             self.errors.push(SyntaxError {
@@ -1688,13 +1850,24 @@ impl Parser<'_> {
         };
         self.cursor = end;
         match name.as_str() {
-            "None" => Type::None,
+            "Unit" => Type::Unit,
             "Bool" => Type::Bool,
             "Int" => Type::Int,
             "Float" => Type::Float,
             "String" => Type::String,
-            "Content" => Type::Content,
+            // The surface name is `Item`; `Content` stays as an alias.
+            "Content" | "Item" => Type::Content,
             "Target" => Type::Target,
+            "Array" => {
+                let element = self.parse_type_parameters(1).pop();
+                Type::Array(element.map(Box::new))
+            }
+            "Dict" => {
+                let mut parameters = self.parse_type_parameters(2);
+                let value = parameters.pop();
+                let key = parameters.pop();
+                Type::Dict(key.map(Box::new), value.map(Box::new))
+            }
             "fn" => self.parse_function_type(start),
             _ => {
                 self.errors.push(SyntaxError {
@@ -1704,6 +1877,40 @@ impl Parser<'_> {
                 Type::Inferred
             }
         }
+    }
+
+    /// Parses the optional `<T>` / `<K, V>` parameter list of a collection
+    /// type. Returns up to `arity` declared parameters; an absent list (the
+    /// unparameterized form) yields an empty vector.
+    fn parse_type_parameters(&mut self, arity: usize) -> Vec<Type> {
+        self.skip_trivia();
+        if self.byte() != Some(b'<') {
+            return Vec::new();
+        }
+        self.cursor += 1;
+        let mut parameters = Vec::new();
+        loop {
+            self.skip_trivia();
+            parameters.push(self.parse_type());
+            self.skip_trivia();
+            match self.byte() {
+                Some(b',') if parameters.len() < arity => {
+                    self.cursor += 1;
+                }
+                Some(b'>') => {
+                    self.cursor += 1;
+                    break;
+                }
+                _ => {
+                    self.errors.push(SyntaxError {
+                        message: "expected `,` or `>` in type parameters".into(),
+                        range: TextRange::new(self.cursor, self.next_char_end(self.cursor)),
+                    });
+                    break;
+                }
+            }
+        }
+        parameters
     }
 
     /// Parses `fn(parameters) -> R` (D0007). The declared parameter details
@@ -1951,27 +2158,6 @@ impl Parser<'_> {
         }
     }
 
-    /// Returns whether the cursor sits at a line start: only spaces and
-    /// tabs since the previous newline (or since the document start).
-    fn annotation_at_line_start(&self) -> bool {
-        let prefix = &self.source[..self.cursor];
-        match prefix.rfind('\n') {
-            Some(index) => prefix[index + 1..]
-                .bytes()
-                .all(|byte| matches!(byte, b' ' | b'\t')),
-            None => prefix.bytes().all(|byte| matches!(byte, b' ' | b'\t')),
-        }
-    }
-
-    /// Returns whether everything before `position` past earlier leading
-    /// module annotations is whitespace — a `@![...]` there still precedes
-    /// the first meaningful token (D0006).
-    fn only_preamble_before(&self, position: usize) -> bool {
-        self.source[self.module_preamble_end..position]
-            .bytes()
-            .all(|byte| byte.is_ascii_whitespace())
-    }
-
     /// Skips whitespace and comments. D0007 lexical trivia (`//` line
     /// comments and nested `/* ... */` blocks) exists only in Code contexts;
     /// Markup text never strips comments (E09).
@@ -2088,4 +2274,30 @@ fn trim_trailing_framing_newline(
         }
     }
     trimmed
+}
+
+/// Whether a Markup item produces content: module annotations and
+/// no-output bindings (`#let`/`#import`) do not, everything else does.
+fn is_content_item(item: &MarkupItem, source: &str) -> bool {
+    match item {
+        MarkupItem::Annotation(annotation) => !annotation.module,
+        MarkupItem::Embedded(embedded) => !matches!(
+            embedded.expression.kind,
+            ExpressionKind::Let { .. }
+                | ExpressionKind::LetFunction(_)
+                | ExpressionKind::Import { .. }
+                | ExpressionKind::Unit
+        ),
+        MarkupItem::Text(text) => {
+            let slice = source
+                .get(text.range.start..text.range.end)
+                .unwrap_or_default();
+            !slice.trim().is_empty()
+        }
+        MarkupItem::Heading(_)
+        | MarkupItem::Rule(_)
+        | MarkupItem::List(_)
+        | MarkupItem::Table(_)
+        | MarkupItem::Raw(_) => true,
+    }
 }

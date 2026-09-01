@@ -25,7 +25,8 @@ pub struct Expression {
 /// Code expression forms supported by the first Markup/Code implementation.
 #[derive(Clone, Debug, PartialEq)]
 pub enum ExpressionKind {
-    None,
+    /// The `()` literal: the Unit value.
+    Unit,
     Bool(bool),
     Int(i64),
     Float(f64),
@@ -33,6 +34,13 @@ pub enum ExpressionKind {
     Content(ContentBlock),
     Name(SpannedName),
     Call(Box<Call>),
+    /// An Array literal: `(a, b)` / `(a,)` / `(,)`; entries may spread Arrays.
+    Array(Vec<Expression>),
+    /// `..expr` inside a collection literal: splice the evaluated value.
+    Spread(Box<Expression>),
+    /// A Dict literal: `(k: v)` / `(:)`; entries are `key: value` pairs or
+    /// `..expr` spreads of another Dict.
+    Dict(Vec<DictEntry>),
     Binary {
         operator: BinaryOperator,
         left: Box<Expression>,
@@ -74,6 +82,18 @@ pub enum ExpressionKind {
     Parenthesized(Box<Expression>),
     /// A recoverable invalid expression retained in the tree.
     Error,
+}
+
+/// One entry of a Dict literal: a `key: value` pair or a `..expr` spread.
+#[derive(Clone, Debug, PartialEq)]
+pub enum DictEntry {
+    /// `..expr`: splice another Dict into the literal.
+    Spread(Box<Expression>),
+    /// `key: value`; the key expression evaluates to the dict key.
+    Entry {
+        key: Box<Expression>,
+        value: Box<Expression>,
+    },
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]

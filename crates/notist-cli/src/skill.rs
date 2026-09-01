@@ -158,7 +158,10 @@ mod tests {
             .unwrap();
         assert_eq!(entries.len(), 1);
         assert_eq!(entries[0].file_name(), SKILL_FILE_NAME);
-        assert_eq!(fs::read(output.join(SKILL_FILE_NAME)).unwrap(), NOTIST_SKILL_MD);
+        assert_eq!(
+            fs::read(output.join(SKILL_FILE_NAME)).unwrap(),
+            NOTIST_SKILL_MD
+        );
         assert_eq!(
             init(root, false).unwrap_err().kind(),
             io::ErrorKind::AlreadyExists

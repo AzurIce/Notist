@@ -1,0 +1,85 @@
+@!(implementation: "partial")
+= 区域属性投影与 inspect info 命令
+
+本文裁决区域属性投影算法并落地其命令形态 `notist inspect info`（2026-08-31 会话收口）。它是 CLI Agent 面重设计的第一块基石：后续的坐标→身份桥、ancestors 坐标问法的输出升级等，都以本文的投影为语义核心。数据模型词汇以 #<vault::model/Notist 数据模型/Item 树> 的统一模型为准——文档求值结果是一棵 Item 树，ScopeItem 是一种 Item，Item 分匿名与具名，查询面覆盖全部 Item，寻址面只覆盖有 ItemId 的 Item；旧记录中"元素树 vs ItemName 扁平表"的两份数据表述是统一定义之前的框架（换算规则见 `docs/ai/AGENTS.md`）。
+
+== 问题与已知
+
+Agent 的读、编辑操作几乎全部基于文件路径 + 行号/字节偏移/内容匹配，其操作范围与 Item 树边界没有任何保证关系：可能不是完整子树，可能断在非 Item 边界处。而属性标注附着于 Item，只在完整子树上才有确定的有效值。因此"给任意范围算一个属性值"在环境不一致时这个值根本不存在；正确的需求是求范围的有效属性环境*分解*：把范围切成若干段有效环境一致的极大区间，每段各自有确定的属性值，段边界恰好落在"两侧属性不同"的位置。
+
+== 算法
+
+对输入范围 R（module + 区间；行区间是 Agent 入口坐标，由 line index 换算为字节）：
+
+1. *展开*。属性表条目以区间为键，但管辖范围是其附着 scope 的整个子树（#<vault::designs::language::property-table> 的节语义）：把每个条目展开为"最深包含节点"的范围，标题绑定的条目上卷到外层节；模块级 `@!` 属性以全文件范围合成条目参与。
+2. *原子化*。以全部展开后管辖范围的边界（裁剪进 R）切分 R。每个原子片段对每个条目要么完全在内要么完全在外；scope 之间的空白缝隙先归并给上一条管辖范围（2026-09-02 裁决：段从其首个有效行起算，前导空白随上一段呈现；树层空白字节不属任何节点），内容空隙字节由相邻边界自然成片。重叠过滤跑在展开*之后*——条目绑定的节点可以在范围之外（如范围上方的标题），其管辖范围伸进范围即参与。
+3. *求环境*。片段的有效环境 = 覆盖它的条目按管辖范围从大到小遍历、逐 key 首写者胜（最内层值存活）。这是纯区间 stabbing——属性表是唯一入口，不沿树走；对求值后才存在的属性（`@keep`、`..` spread）天然正确，grep 原文在原理上做不到。
+4. *游程合并*。相邻片段的有效环境逐 key 相等则合并，收敛出环境一致的极大段。合并判据是*有效值相等*而不是链全等：两侧各自的 scope 挂同 key 同值时合并为一段，该 key 的来源列多个（零损失仍在）。继承不是合并的停止条件——LCA 及以上对两侧贡献逐 key 相同，天然不产生边界；LCA 只在呈现时出场，作为公共环境的最深锚点。
+5. *投影*。公共环境（全段共享的 key，来源跨段取并集）+ 每段（行/字节区间、段起点最近具名 Item、私有条目及其管辖来源）。
+
+== 命令面
+
+```shell
+notist inspect info <SELECTOR> [--line START..END | --offset N | --byte-range START..END] [--no-content]
+```
+
+- SELECTOR 为 `ModulePath[/ItemName]`；三个坐标 flag 互斥，给出时覆盖 selector 自身的 item 选择（与 ancestors 同一优先级）；全部缺省 = 整个模块。
+- `--line` 为 1-based 闭区间（宿主 grep/Read 的原生产出是行号）；`--byte-range` 为 UTF-8 半开区间（由 notist 发放）；`--offset` 为零宽点查询。
+- 每段默认内嵌其覆盖的完整源文行（行号 gutter 与 read 同构）——info 由此成为*带属性注解的 read*，段与文本的对应由工具完成，调用者不再自行按行号拼接；`--no-content` 只投影属性面。
+- 属性默认显示为**合并后的最终 Dict**（notist Dict 字面量 `(k: "v", ...)`，key 排序）——直接回答“这些行上什么在生效”；`--origins` 切换到分层溯源视图（`common` 块 + 按声明分组的条目行，各带出处），供“这个属性在哪声明的”类追问。`common` 块仅在 `--origins` 模式出现。
+- 颜色遵循全局 `--color`（auto 按 stdout TTY 门控），按 token 类别统一、处处一致：bold=结构标签（`module`/`container`/`common`/`segments`/段号），cyan=一切身份（ModulePath、`in` 的 Item 名、节点名——含来源里的），green=属性 key，dim=其余元数据（路径、指纹、一切行/字节区间、节点 kind、层级、`in`、gutter 分隔线），body=段内源文正文用常规前景色（正文是语境、结构是信号，正文不参与变暗竞赛）。颜色只改渲染——关色输出逐字节不变；read 的源文 frame 同语言，但其正文保持默认色（read 的正文是载荷，info 的正文是语境）。
+- 错误沿用 typed error：越界/非 UTF-8 边界为 `invalid_argument`，selector 不存在为 `not_found`。
+- 本命令是坐标载荷命令，输出允许路径回声；header 携带路径与 fingerprint，是编辑交接的直接来源。
+
+输出逐行契约：header 一行（module、相对路径、行区间、字节区间、fingerprint）；`container` 一行（最深包含整段范围的 Item）；`segments  N`；每段依次为——`[i]` header 行（区间 + `in <ItemId>` 段起点最近具名 Item，模块内相对）、合并环境 Dict 行、该段的行号源文。Dict 行为 notist 字面量 `(k1: "v1", k2: "v2")`，key 排序、字符串值带引号、空环境为 `(:)`。`--origins` 模式另含 `common  N` 块与 `@(k: v)  <- <ItemPath>  lines a..b` 形式的分层溯源行（匿名 Item 显示 `<anonymous>`，模块来源显示 `module`）。身份一律为可复制进 selector 的 ItemPath。
+
+== 实测示例
+
+示例 Vault `docs/example/test.not` 是常驻测试案例：文件末尾的 text 块以 `$ notist …` 形式内嵌请求命令（从仓库根目录运行），输出测试逐条解析执行。该文件模块 `vault::example::test`：`= Heading 1` 带 `@(o: "o")`，其下 `== Heading 2.1` 带 `@(a: "a")`、`== Heading 2.2` 带 `@(b: "b")` 与一个带 `@(c: "c")` 的匿名 list Item，`|>`/`<|` 标出请求范围（lines 12..22）：
+
+```text
+module <vault::example::test>  lines 12..22  bytes 654..1607  fingerprint 70d3df3a8cb7bc27
+container <vault::example::test/Heading 1> lines 2..47 bytes 1..2252
+segments 3
+[1] <vault::example::test/Heading 1/Heading 2.1> lines 12..15 bytes 654..1260
+    (a: “a”, o: “o”)
+   12 | Lorem ipsum dolor sit amet, consectetur adipiscing elit. Donec efficitur ligula sed nunc sagittis, quis sagittis eros fringilla. Suspendisse pharetra cursus ex, |>non volutpat mi luctus eu. …
+   13 |
+   14 | Lorem ipsum dolor sit amet, consectetur adipiscing elit. Donec efficitur ligula sed nunc sagittis, quis sagittis eros fringilla. Suspendisse pharetra cursus ex, non volutpat mi luctus eu. …
+   15 |
+[2] <vault::example::test/Heading 1/Heading 2.2> lines 16..20 bytes 1260..1588
+    (b: “b”, o: “o”)
+   16 | @(b: “b”)
+   17 | == Heading 2.2
+   18 |
+   19 | Lorem ipsum dolor sit amet, consectetur adipiscing elit. Donec efficitur ligula sed nunc sagittis, quis sagittis eros fringilla. Suspendisse pharetra cursus ex, non volutpat mi luctus eu. …
+   20 |
+[3] <vault::example::test/Heading 1/Heading 2.2> lines 21..22 bytes 1588..1607
+    (b: “b”, c: “c”, o: “o”)
+   21 | @(c: “c”)
+   22 | - List<|
+```
+
+（实测输出中 Lorem 行为完整行，此处以 … 截断版面。）示例阅读：段 [1] 内部的两个段落与空行是不同 Item，但环境相同故合并——边界只由属性差异产生；`@(b: “b”)` 与 `@(c: “c”)` 各自打开其声明的段（前导注解归属裁决），注解与它声明的属性同段呈现；段间空白（行 15、行 20）不属任何节点，显示时归并给上一段（空白缝归上裁决）——每段从其首个有效行开始；段 [2] 与段 [3] 的区分完全来自匿名 list Item 上的 `c`，按可寻址 Item 切割的方案会丢掉它；全段共享的 `o` 在每段 Dict 里重复——每段自足，单独读任何一段都完整。`--origins` 视图回到分层形态（`common` 块 + 按声明分组的 `@(...)` 条目行，各带出处区间，即声明行位置），指认“改这个属性去哪”。
+
+模块 `@!` 继承的呈现（`vault::cli` lines 40..45，`--origins --no-content`；`agents` 条目值过长，此处截断）：
+
+```text
+module <vault::cli> lines 40..45 bytes 2730..3236 fingerprint 01b26c5dd518e9be
+container <vault::cli/Notist CLI: Command Design and Reference/设计总览/命令分组> lines 29..46 bytes 2555..3445
+common 2
+    @(agents: 所有 CLI 命令的输出示例必须来自实测，并完整体现字段说明声称的每一种形态——虚拟模块、@id 标记、ambiguous、definition 标记、省略等边界；…) <- module lines 1..249 bytes 0..13519
+    @(implementation: partial) <- module lines 1..249 bytes 0..13519
+segments 1
+[1] <vault::cli/Notist CLI: Command Design and Reference/设计总览/命令分组> lines 40..45 bytes 2730..3236
+```
+
+== 裁决
+
+- *空白归属*（2026-09-02）：求值树 span 诚实——块节点从其前导注解行（或首 token）起、止于终止换行（2026-09-01 两项裁决保留）；节间空白行不属任何节点，树不再保证字节全覆盖。region 显示是窗口策略：全空白缝隙归并给上一段、选区尾部空白吸收进末段（原子化步骤 2），“段内显示的节点永远完整”因而是常态；“局部视图”不再设落点行（start-cut/end-cut 已删）——点查询与单节点视图的完整范围由 `container` 行携带，边缘切割由 agent 对边界字节自查 ancestors。
+- *注解前缀字节归属*（2026-09-01，方案 A）：前导注解行属于所附块——块节点 span 与属性条目区间都从注解行自身起算（stream_lower 的节点扩展与条目区间、parser 的 `target_range` 三处对齐；纯文本段落不扩展，span 保持诚实，环境由条目区间保证），声明属性的字节受该属性管辖，节间不留注解隙地。规则记录于 #<vault::designs::language::property-table>。
+- *身份拼写*：已落地标题链（model.not）——`in <ItemId>` 与 `<ItemPath>` 按标题链解析（链上各节标题文字以 `/` 连接，不受链上 `id` 标注影响）；重复 ItemId 产生 `duplicate-item-id` 诊断，`ambiguous_selector` 仅存于重复冲突的防御路径。
+
+== 实现
+
+service 层 `region_info`（`crates/notist-service/src/query.rs`，`CoreRequest::Region`/`CoreResponse::Region`），CLI `InspectCommand::Info`，输出形状测试在 `crates/notist-cli/tests/inspect_outputs.rs`（分段、点查询、行区间校验、内容内嵌与 `--no-content`，以及解析执行 `docs/example/test.not` 内嵌请求的常驻案例测试）。协议增量为新增枚举变体，同 binary 的 client/daemon 生效；过期 daemon 由既有 binary stamp 回收机制处理，姊妹项目不走 CoreRequest，无需同步。

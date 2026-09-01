@@ -21,7 +21,7 @@ mod skill;
 /// `inspect` is the investigation entry point, the rest is explicit.
 const COMMAND_GROUPS: &str = "\
 Command groups:
-  inspect:     status, search, items, ancestors, references, definition
+  inspect:     status, ls, search, locate, items, read, ancestors, references, definition
   validate:    check
   maintenance: index
   runtime:     daemon, lsp
@@ -57,7 +57,7 @@ struct Cli {
 
 #[derive(Debug, Subcommand)]
 enum Command {
-    /// Investigate a Vault: status, search, items, ancestors, references, definition.
+    /// Investigate a Vault: status, ls, search, locate, items, read, ancestors, references, definition.
     #[command(display_order = 1)]
     Inspect {
         #[command(subcommand)]
@@ -125,6 +125,16 @@ enum Command {
 enum InspectCommand {
     /// Show a compact Vault, snapshot, diagnostics, and index summary.
     Status,
+    /// List the child modules of one module (ls for the Module tree).
+    Ls {
+        /// Target ModulePath; defaults to the Vault root.
+        target: Option<String>,
+        /// List the whole subtree instead of direct children only.
+        #[arg(long)]
+        recursive: bool,
+        #[arg(long, value_enum, default_value_t)]
+        kind: ModuleKindArg,
+    },
     /// Search captured source context in a vault.
     #[command(
         after_help = "Examples:\n  notist inspect search \"workspace snapshot\" docs\n  notist inspect search --exact \"WorkspaceSnapshot\" docs --group-by match\n  notist inspect search --fuzzy \"WorkspaceSnaphot\" docs\n\nLexical/fuzzy search groups by source by default; exact/regex returns each match.\nResults are complete; a zero-hit output proves absence for the selected scope."
@@ -176,6 +186,17 @@ enum InspectCommand {
         /// Exact ModulePath or Vault-relative `.not` path.
         selector: String,
     },
+    /// Read authored source by module, path, id, line, or byte range.
+    Read {
+        /// Exact ModulePath, path, `module/id`, or `path#id` selector.
+        selector: String,
+        #[arg(long)]
+        from_line: Option<usize>,
+        #[arg(long, requires = "from_line")]
+        lines: Option<usize>,
+        #[arg(long, conflicts_with_all = ["from_line", "lines"], value_parser = parse_byte_range)]
+        byte_range: Option<notist_service::ByteRange>,
+    },
     /// Find references to a logical module.
     References {
         /// Exact ModulePath or `module/id` selector.
@@ -194,6 +215,45 @@ enum InspectCommand {
         offset: usize,
         #[arg(long)]
         expected_fingerprint: Option<String>,
+    },
+    /// Resolve a host coordinate (file path plus line/byte position) into
+    /// notist identity: the containing module and its addressable scopes.
+    Locate {
+        /// Vault-relative (or absolute) file path.
+        path: PathBuf,
+        /// 1-based line to resolve.
+        #[arg(long)]
+        line: Option<usize>,
+        /// Byte offset to resolve.
+        #[arg(long, conflicts_with_all = ["line", "byte_range"])]
+        offset: Option<usize>,
+        /// Byte range to resolve (uses its start).
+        #[arg(long, value_parser = parse_byte_range, conflicts_with_all = ["line", "offset"])]
+        byte_range: Option<notist_service::ByteRange>,
+    },
+    /// Project the attribute environment of an arbitrary region: cut the
+    /// range at governing annotation boundaries, merge adjacent pieces with
+    /// equal effective attributes, and report the common environment plus
+    /// each uniform segment.
+    Info {
+        /// Module selector (ModulePath, optionally with /ItemName).
+        selector: String,
+        /// 1-based inclusive line range START..END.
+        #[arg(long, value_parser = parse_line_range, conflicts_with_all = ["offset", "byte_range"])]
+        line: Option<notist_service::LineRange>,
+        /// Byte offset (zero-width point).
+        #[arg(long, conflicts_with_all = ["line", "byte_range"])]
+        offset: Option<usize>,
+        /// Byte range START..END (UTF-8, half-open).
+        #[arg(long, value_parser = parse_byte_range, conflicts_with_all = ["line", "offset"])]
+        byte_range: Option<notist_service::ByteRange>,
+        /// Omit the per-segment source lines.
+        #[arg(long)]
+        no_content: bool,
+        /// Show each entry's declaring annotation provenance (the layered
+        /// ancestor view) instead of the merged effective Dict.
+        #[arg(long)]
+        origins: bool,
     },
     /// Print the ancestor chain of a region with its attribute annotations,
     /// innermost first, ending at the module root.
@@ -225,6 +285,24 @@ enum SkillCommand {
         #[arg(long)]
         force: bool,
     },
+}
+
+#[derive(Clone, Copy, Debug, Default, ValueEnum)]
+enum ModuleKindArg {
+    #[default]
+    Any,
+    Source,
+    Virtual,
+}
+
+impl From<ModuleKindArg> for notist_service::ModuleKind {
+    fn from(value: ModuleKindArg) -> Self {
+        match value {
+            ModuleKindArg::Any => Self::Any,
+            ModuleKindArg::Source => Self::Source,
+            ModuleKindArg::Virtual => Self::Virtual,
+        }
+    }
 }
 
 #[derive(Clone, Copy, Debug, Default, ValueEnum)]
@@ -366,6 +444,16 @@ fn parse_byte_range(value: &str) -> Result<notist_service::ByteRange, String> {
     Ok(notist_service::ByteRange { start, end })
 }
 
+fn parse_line_range(value: &str) -> Result<notist_service::LineRange, String> {
+    let (start, end) = value.split_once("..").ok_or("expected START..END")?;
+    let start = start.parse().map_err(|_| "invalid line-range start")?;
+    let end = end.parse().map_err(|_| "invalid line-range end")?;
+    if start == 0 || start > end {
+        return Err("line range must be 1-based with START <= END".into());
+    }
+    Ok(notist_service::LineRange { start, end })
+}
+
 fn parse_duration_ms(value: &str) -> Result<u64, String> {
     let millis = if let Some(value) = value.strip_suffix("ms") {
         value.parse().map_err(|_| "invalid millisecond duration")?
@@ -456,7 +544,9 @@ fn run(cli: Cli) -> Result<ExitCode, Box<dyn std::error::Error>> {
         }
     }
     match cli.command {
-        Command::Inspect { command } => run_inspect(command, cli.vault.clone(), cli.no_daemon),
+        Command::Inspect { command } => {
+            run_inspect(command, cli.vault.clone(), cli.no_daemon, cli.color)
+        }
         Command::Check {
             scope,
             summary,
@@ -557,35 +647,24 @@ fn run(cli: Cli) -> Result<ExitCode, Box<dyn std::error::Error>> {
             Ok(ExitCode::SUCCESS)
         }
         Command::Daemon {
-            background_child,
-            ..
+            background_child, ..
         } => service::run_daemon(resolve_vault_root(&cli.vault)?, background_child),
         Command::Lsp => lsp::run(cli.no_daemon),
         Command::Skill {
-            command: SkillCommand::Init {
-                skills_root,
-                force,
-            },
+            command: SkillCommand::Init { skills_root, force },
         } => {
             let output = skill::init(skills_root, force)?;
             println!("initialized Notist Skill at {}", output.display());
             Ok(ExitCode::SUCCESS)
         }
-        Command::Build {
-            output,
-            clean,
-        } => build::run(
+        Command::Build { output, clean } => build::run(
             resolve_vault_root(&cli.vault)?,
             output,
             cli.color,
             cli.no_daemon,
             clean,
         ),
-        Command::Preview {
-            host,
-            port,
-            open,
-        } => preview::run(
+        Command::Preview { host, port, open } => preview::run(
             resolve_vault_root(&cli.vault)?,
             host,
             port,
@@ -600,6 +679,7 @@ fn run_inspect(
     command: InspectCommand,
     vault: PathBuf,
     no_daemon: bool,
+    color: clap::ColorChoice,
 ) -> Result<ExitCode, Box<dyn std::error::Error>> {
     match command {
         InspectCommand::Status => {
@@ -621,10 +701,9 @@ fn run_inspect(
                 "Index        {} ({} units)",
                 status.index.health, status.index.unit_count
             );
-            let generation =
-                crate::official_docs::generation_for_root(&root)
-                    .ok()
-                    .flatten();
+            let generation = crate::official_docs::generation_for_root(&root)
+                .ok()
+                .flatten();
             if let Ok(pid_path) =
                 notist_service::transport::daemon_pid_path(&root, generation.as_deref())
             {
@@ -632,6 +711,38 @@ fn run_inspect(
                     Ok(pid) => println!("Daemon       pid {}", pid.trim()),
                     Err(_) => println!("Daemon       not running"),
                 }
+            }
+            Ok(ExitCode::SUCCESS)
+        }
+        InspectCommand::Ls {
+            target,
+            recursive,
+            kind,
+        } => {
+            let (_, client, view_id) = connect_cli(vault.clone(), no_daemon)?;
+            let reply = client.request(CoreRequest::ListModules {
+                view_id,
+                query: notist_service::ModulesQuery {
+                    target,
+                    recursive,
+                    kind: kind.into(),
+                },
+            })?;
+            let CoreResponse::Modules(page) = reply.response else {
+                return query_response_error("ls", reply.response);
+            };
+            println!("{}", plural(page.records.len(), "module"));
+            for item in &page.records {
+                // Identity-only rows: the `.not` path is not shown here — it
+                // is handed over by read's citation footer when editing.
+                let suffix = if item.relative_path.is_none() {
+                    " — <virtual>".to_owned()
+                } else {
+                    item.title
+                        .as_ref()
+                        .map_or(String::new(), |title| format!(" — {title}"))
+                };
+                println!("{}{}", item.module, suffix);
             }
             Ok(ExitCode::SUCCESS)
         }
@@ -731,7 +842,7 @@ fn run_inspect(
                 );
                 println!(
                     "
-{}. {}  {} field={}{}",
+{}. {} {} field={}{}",
                     index + 1,
                     result.location.module,
                     position,
@@ -770,7 +881,7 @@ fn run_inspect(
                 let annotations = item
                     .attributes
                     .iter()
-                    .map(|annotation| format_annotation(annotation, "@[", "]"))
+                    .map(|annotation| format_annotation(annotation, "@(", ")"))
                     .collect::<Vec<_>>()
                     .join(" ");
                 // `@id`-named Items are spelled differently from heading
@@ -781,15 +892,67 @@ fn run_inspect(
                     item.kind.clone()
                 };
                 let line = format!(
-                    "{}  {}{}  {}  {}{}",
+                    "{} {}{} {} {}{}",
                     item.name,
                     kind,
-                    item.level.map_or(String::new(), |level| format!(" L{level}")),
+                    item.level
+                        .map_or(String::new(), |level| format!(" L{level}")),
                     position,
                     annotations,
-                    if item.ambiguous { "  (ambiguous)" } else { "" },
+                    if item.ambiguous { " (ambiguous)" } else { "" },
                 );
                 println!("{}", line.trim_end());
+            }
+            Ok(ExitCode::SUCCESS)
+        }
+        InspectCommand::Read {
+            selector,
+            from_line,
+            lines,
+            byte_range,
+        } => {
+            let (_, client, view_id) = connect_cli(vault.clone(), no_daemon)?;
+            let reply = client.request(CoreRequest::ReadSource {
+                view_id,
+                query: notist_service::ReadQuery {
+                    selector: notist_service::Selector::parse(&selector),
+                    window: notist_service::ReadWindow {
+                        from_line,
+                        lines,
+                        byte_range,
+                    },
+                },
+            })?;
+            let CoreResponse::SourcePage(result) = reply.response else {
+                return query_response_error("read", reply.response);
+            };
+            if let Some(chunk) = result.records.first() {
+                let palette = Palette::stdout(color);
+                let start = chunk.location.line_range.map_or(1, |range| range.start);
+                for (offset, line) in chunk.source.lines().enumerate() {
+                    println!(
+                        "{} {} {}",
+                        palette.dim(&format!("{:>5}", start + offset)),
+                        palette.dim("|"),
+                        line
+                    );
+                }
+                // Citation footer: the path handoff to the host editor.
+                let location = &chunk.location;
+                let mut footer = format!(
+                    "-- {} {}",
+                    location.module,
+                    location.relative_path.display()
+                );
+                if let Some(range) = location.line_range {
+                    footer.push_str(&format!(" lines {}..{}", range.start, range.end));
+                }
+                footer.push_str(&format!(
+                    " bytes {}..{}",
+                    location.byte_range.start, location.byte_range.end
+                ));
+                footer.push_str(&format!(" fingerprint {}", location.source_fingerprint));
+                println!("{footer}");
             }
             Ok(ExitCode::SUCCESS)
         }
@@ -839,11 +1002,11 @@ fn run_inspect(
                     |range| format!("{}:{}", item.location.relative_path.display(), range.start),
                 );
                 let definition_mark = if item.is_definition {
-                    "  (definition)"
+                    " (definition)"
                 } else {
                     ""
                 };
-                println!("{} -> {}  {}{}", item.source, item.target, position, definition_mark);
+                println!("{} -> {} {}{}", item.source, item.target, position, definition_mark);
                 if !item.excerpt.is_empty() {
                     let ellipsis = if item.excerpt_truncated { " …" } else { "" };
                     println!("    {}{}", item.excerpt.replace('\n', " "), ellipsis);
@@ -882,12 +1045,72 @@ fn run_inspect(
                     None => definition.module.clone(),
                 };
                 println!(
-                    "{}  {}:{}..{}",
+                    "{} {}:{}..{}",
                     identity,
                     definition.relative_path.display(),
                     definition.byte_range.start,
                     definition.byte_range.end
                 );
+            }
+            Ok(ExitCode::SUCCESS)
+        }
+        InspectCommand::Locate {
+            path,
+            line,
+            offset,
+            byte_range,
+        } => {
+            let (_, client, view_id) = connect_cli(vault.clone(), no_daemon)?;
+            let reply = client.request(CoreRequest::Locate {
+                view_id,
+                query: notist_service::LocateQuery {
+                    path,
+                    line,
+                    offset,
+                    byte_range,
+                },
+            })?;
+            let CoreResponse::Locate(record) = reply.response else {
+                return query_response_error("locate", reply.response);
+            };
+            let mut parts = vec![record.module.clone()];
+            parts.extend(record.breadcrumb.clone());
+            let head = match &record.item {
+                Some(item) => format!("{} --item {item}", parts.join(" ")),
+                None => parts.join(" "),
+            };
+            let position = record.point_line.map_or_else(
+                || record.relative_path.display().to_string(),
+                |point| format!("{}:{}", record.relative_path.display(), point),
+            );
+            println!("{head} {position}");
+            Ok(ExitCode::SUCCESS)
+        }
+        InspectCommand::Info {
+            selector,
+            line,
+            offset,
+            byte_range,
+            no_content,
+            origins,
+        } => {
+            let (_, client, view_id) = connect_cli(vault.clone(), no_daemon)?;
+            let reply = client.request(CoreRequest::Region {
+                view_id,
+                query: notist_service::RegionQuery {
+                    selector: notist_service::Selector::parse(&selector),
+                    offset,
+                    byte_range,
+                    line_range: line,
+                    include_content: !no_content,
+                },
+            })?;
+            let CoreResponse::Region(page) = reply.response else {
+                return query_response_error("inspect info", reply.response);
+            };
+            let palette = Palette::stdout(color);
+            for record in &page.records {
+                print_region_record(record, &palette, origins);
             }
             Ok(ExitCode::SUCCESS)
         }
@@ -910,13 +1133,59 @@ fn run_inspect(
             };
             for root in &ancestors.records {
                 println!(
-                    "module {}  fingerprint {}",
+                    "module {} fingerprint {}",
                     root.location.module, root.location.source_fingerprint,
                 );
                 print_ancestor_tree(root, 0);
             }
             Ok(ExitCode::SUCCESS)
         }
+    }
+}
+
+/// ANSI styling for human output, governed by `--color` and stdout TTY
+/// detection; styling never changes the logical result, only its rendering.
+struct Palette {
+    enabled: bool,
+}
+
+impl Palette {
+    fn stdout(color: clap::ColorChoice) -> Self {
+        Self {
+            enabled: matches!(color, clap::ColorChoice::Always)
+                || matches!(color, clap::ColorChoice::Auto) && std::io::stdout().is_terminal(),
+        }
+    }
+
+    fn paint(&self, code: &str, text: &str) -> String {
+        if self.enabled && !text.is_empty() {
+            format!("\x1b[{code}m{text}\x1b[0m")
+        } else {
+            text.to_owned()
+        }
+    }
+
+    fn bold(&self, text: &str) -> String {
+        self.paint("1", text)
+    }
+
+    fn dim(&self, text: &str) -> String {
+        self.paint("2", text)
+    }
+
+    /// Content bodies at the regular foreground tone: in `info` the source
+    /// lines are context, the structure is the signal — they read as text,
+    /// one step above the dimmed metadata.
+    fn body(&self, text: &str) -> String {
+        self.paint("37", text)
+    }
+
+    fn green(&self, text: &str) -> String {
+        self.paint("32", text)
+    }
+
+    fn cyan(&self, text: &str) -> String {
+        self.paint("36", text)
     }
 }
 
@@ -928,8 +1197,7 @@ fn print_ancestor_tree(record: &notist_service::AncestorRecord, depth: usize) {
         || {
             format!(
                 "bytes {}..{}",
-                record.location.byte_range.start,
-                record.location.byte_range.end
+                record.location.byte_range.start, record.location.byte_range.end
             )
         },
         |range| format!("lines {}..{}", range.start, range.end),
@@ -939,15 +1207,15 @@ fn print_ancestor_tree(record: &notist_service::AncestorRecord, depth: usize) {
         .iter()
         .map(|annotation| {
             if record.kind == "module" {
-                format_annotation(annotation, "@![", "]")
+                format_annotation(annotation, "@!(", ")")
             } else {
-                format_annotation(annotation, "@[", "]")
+                format_annotation(annotation, "@(", ")")
             }
         })
         .collect::<Vec<_>>()
         .join(" ");
     let line = format!(
-        "{}{}{}{}  {}  {}",
+        "{}{}{}{} {} {}",
         "  ".repeat(depth),
         record.kind,
         record
@@ -964,6 +1232,221 @@ fn print_ancestor_tree(record: &notist_service::AncestorRecord, depth: usize) {
     for child in &record.children {
         print_ancestor_tree(child, depth + 1);
     }
+}
+
+/// Prints the region attribute projection: header with the module identity
+/// and fingerprint, the common environment, then one block per uniform
+/// segment. The ModulePath is the file spelling, so no separate path echo.
+/// Color roles are token-based and uniform everywhere: bold = structural
+/// labels, cyan = every identity (module path, Item and node names, also
+/// inside origins), green = attribute keys,
+/// dim = all metadata (paths, fingerprints, every line/byte range, node
+/// kinds, levels, the gutter), body = segment source bodies.
+fn print_region_record(
+    record: &notist_service::RegionRecord,
+    palette: &Palette,
+    origins: bool,
+) {
+    let header = [
+        palette.cyan(&format!("<{}>", record.module)),
+        palette.dim(&format!(
+            "lines {}..{}",
+            record.line_range.start, record.line_range.end
+        )),
+        palette.dim(&format!(
+            "bytes {}..{}",
+            record.byte_range.start, record.byte_range.end
+        )),
+        palette.dim(&format!("fingerprint {}", record.source_fingerprint)),
+    ]
+    .join(" ");
+    println!("{} {}", palette.bold("module"), header);
+    if let Some(container) = &record.container {
+        print_region_container("container", container, palette);
+    }
+    if origins && !record.common.is_empty() {
+        println!("{} {}", palette.bold("common"), record.common.len());
+        for group in &record.common {
+            print_region_entry(group, palette);
+        }
+    }
+    println!("{} {}", palette.bold("segments"), record.segments.len());
+    for (index, segment) in record.segments.iter().enumerate() {
+        // Same grammar as `module` and `container`: identity first, then the
+        // coordinate pair. The identity is the innermost containing Item.
+        let mut head = Vec::new();
+        if let Some(name) = &segment.item {
+            head.push(palette.cyan(&format!("<{name}>")));
+        }
+        head.push(palette.dim(&format!(
+            "lines {}..{}",
+            segment.line_range.start, segment.line_range.end
+        )));
+        head.push(palette.dim(&format!(
+            "bytes {}..{}",
+            segment.byte_range.start, segment.byte_range.end
+        )));
+        println!(
+            "{} {}",
+            palette.bold(&format!("[{}]", index + 1)),
+            head.join(" ")
+        );
+        if origins {
+            for group in &segment.attributes {
+                print_region_entry(group, palette);
+            }
+        } else {
+            // The merged effective environment as a notist Dict literal:
+            // every key governing this segment, sorted.
+            let mut entries: Vec<(String, String)> = segment
+                .attributes
+                .iter()
+                .flat_map(|group| {
+                    group
+                        .entries
+                        .iter()
+                        .map(|(key, value)| (key.clone(), value.clone()))
+                        .collect::<Vec<_>>()
+                })
+                .chain(
+                    record
+                        .common
+                        .iter()
+                        .flat_map(|group| {
+                            group
+                                .entries
+                                .iter()
+                                .filter(|(key, _)| {
+                                    !segment.attributes.iter().any(|group| {
+                                        group.entries.iter().any(|(k, _)| k.as_str() == *key)
+                                    })
+                                })
+                                .map(|(key, value)| (key.clone(), value.clone()))
+                                .collect::<Vec<_>>()
+                        }),
+                )
+                .collect();
+            entries.sort_by(|a, b| a.0.cmp(&b.0));
+            entries.dedup_by(|a, b| a.0 == b.0);
+            println!("    {}", dict_literal(&entries));
+        }
+        for line in &segment.content {
+            println!(
+                "{} {} {}",
+                palette.dim(&format!("{:>5}", line.number)),
+                palette.dim("|"),
+                palette.body(&line.text),
+            );
+        }
+    }
+}
+
+/// Formats entries as a notist Dict literal: `(k: "v", ...)`, `(:)` empty.
+/// Identifier keys stay bare; string-ish values are quoted so the literal
+/// is valid Dict syntax.
+fn dict_literal(entries: &[(String, String)]) -> String {
+    if entries.is_empty() {
+        // notist: `()` is Unit; the empty Dict literal is `(:)`.
+        return "(:)".to_owned();
+    }
+    let inner = entries
+        .iter()
+        .map(|(key, value)| format!("{}: {}", dict_key(key), dict_value(value)))
+        .collect::<Vec<_>>()
+        .join(", ");
+    format!("({inner})")
+}
+
+fn dict_key(key: &str) -> String {
+    let identifier = !key.is_empty()
+        && key
+            .chars()
+            .enumerate()
+            .all(|(index, c)| {
+                c == '_' || c.is_alphanumeric() && !c.is_numeric() || (index > 0 && c.is_numeric())
+            });
+    if identifier {
+        key.to_owned()
+    } else {
+        let escaped = key.replace('\\', "\\\\").replace('"', "\\\"");
+        format!("\"{escaped}\"")
+    }
+}
+
+fn dict_value(value: &str) -> String {
+    // Values are canonical strings; spell scalar-looking values bare so
+    // `true` / `42` round-trip as their literal shapes.
+    if value == "true"
+        || value == "false"
+        || value.parse::<i64>().is_ok()
+        || value.parse::<f64>().is_ok()
+    {
+        value.to_owned()
+    } else {
+        let escaped = value.replace('\\', "\\\\").replace('"', "\\\"");
+        format!("\"{escaped}\"")
+    }
+}
+
+fn print_region_container(
+    label: &str,
+    container: &notist_service::RegionContainer,
+    palette: &Palette,
+) {
+    let identity = container
+        .path
+        .as_deref()
+        .map_or_else(|| "<anonymous>".to_owned(), |path| format!("<{path}>"));
+    println!(
+        "{} {} lines {}..{} bytes {}..{}",
+        palette.bold(label),
+        palette.cyan(&identity),
+        container.line_range.start,
+        container.line_range.end,
+        container.byte_range.start,
+        container.byte_range.end,
+    );
+}
+
+/// Prints one declaring annotation and the keys it governs, spelled the way
+/// it was declared: `@(k1: v1, k2: v2)  <- <ItemPath>  lines a..b`.
+fn print_region_entry(group: &notist_service::RegionEntryGroup, palette: &Palette) {
+    let pairs = group
+        .entries
+        .iter()
+        .map(|(key, value)| format!("{}: {}", palette.green(key), value))
+        .collect::<Vec<_>>()
+        .join(", ");
+    let origins = group
+        .origins
+        .iter()
+        .map(|origin| {
+            let identity = if origin.kind == "module" {
+                palette.dim("module")
+            } else {
+                palette.cyan(
+                    &origin
+                        .path
+                        .as_deref()
+                        .map_or_else(|| "<anonymous>".to_owned(), |path| format!("<{path}>")),
+                )
+            };
+            palette.dim(&format!(
+                "{} lines {}..{} bytes {}..{}",
+                identity,
+                origin.line_range.start,
+                origin.line_range.end,
+                origin.byte_range.start,
+                origin.byte_range.end
+            ))
+        })
+        .collect::<Vec<_>>()
+        .join(" | ");
+    println!(
+        "    {} <- {}",
+        palette.cyan(&format!("@({pairs})")),
+        origins
+    );
 }
 
 fn open_disk_view(
@@ -1033,16 +1516,16 @@ fn format_annotation(
 ) -> String {
     let mut items = Vec::new();
     if let Some(id) = &annotation.id {
-        items.push(id.clone());
-    }
-    for tag in &annotation.tags {
-        items.push(format!("#{tag}"));
-    }
-    for class in &annotation.classes {
-        items.push(format!(".{class}"));
+        items.push(format!("id: {id}"));
     }
     for (key, value) in &annotation.properties {
-        items.push(format!("{key} = {value}"));
+        items.push(format!("{key}: {value}"));
+    }
+    for tag in &annotation.tags {
+        items.push(format!("tags: {tag}"));
+    }
+    for class in &annotation.classes {
+        items.push(format!("class: {class}"));
     }
     if items.is_empty() {
         return String::new();
@@ -1105,8 +1588,7 @@ fn emit_diagnostic_page(result: &notist_service::DiagnosticsResult, color: clap:
     }
     eprintln!(
         "{} diagnostics in {} sources",
-        result.summary.total_diagnostics,
-        result.summary.checked_sources
+        result.summary.total_diagnostics, result.summary.checked_sources
     );
 }
 

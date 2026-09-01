@@ -451,15 +451,15 @@ pub fn load_package(package_dir: &Path) -> Result<LoadedPlugin, String> {
         package = %manifest.package,
         "manifest read"
     );
-    let wasm = manifest.wasm.as_ref().ok_or_else(|| {
-        format!("plugin `{}` declares no wasm module", manifest.package)
-    })?;
+    let wasm = manifest
+        .wasm
+        .as_ref()
+        .ok_or_else(|| format!("plugin `{}` declares no wasm module", manifest.package))?;
     let wasm_path = package_dir.join(&wasm.module);
     let wasm_bytes = std::fs::read(&wasm_path)
         .map_err(|error| format!("cannot read {}: {error}", wasm_path.display()))?;
     let compile_started = std::time::Instant::now();
-    let (runtime, declarations) =
-        load_module_runtime(&manifest.package, &wasm_path, &wasm_bytes)?;
+    let (runtime, declarations) = load_module_runtime(&manifest.package, &wasm_path, &wasm_bytes)?;
     tracing::debug!(
         target: "notist_plugin_host",
         package = %manifest.package,
@@ -639,7 +639,7 @@ fn element_signature(element: &PluginElementDecl) -> Result<FunctionSignature, S
 
 fn parse_type(ty: &str) -> Result<Type, String> {
     match ty {
-        "None" => Ok(Type::None),
+        "None" => Ok(Type::Unit),
         "Bool" => Ok(Type::Bool),
         "Int" => Ok(Type::Int),
         "Float" => Ok(Type::Float),
@@ -674,9 +674,15 @@ impl ModuleRuntime {
         let module = wasmi::Module::new(&wasmi_engine(), wasm_bytes)
             .map_err(|error| format!("invalid wasm module {}: {error}", wasm_path.display()))?;
         let mut store = wasmi::Store::new(module.engine(), ModuleStoreState);
-        let instance = wasmi::Instance::new(&mut store, &module, &[])
-            .map_err(|error| format!("cannot instantiate module {}: {error}", wasm_path.display()))?;
-        let export = |name: &str| format!("plugin `{}` module is missing export `{name}`", wasm_path.display());
+        let instance = wasmi::Instance::new(&mut store, &module, &[]).map_err(|error| {
+            format!("cannot instantiate module {}: {error}", wasm_path.display())
+        })?;
+        let export = |name: &str| {
+            format!(
+                "plugin `{}` module is missing export `{name}`",
+                wasm_path.display()
+            )
+        };
         let memory = instance
             .get_memory(&store, "memory")
             .ok_or_else(|| export("memory"))?;
@@ -811,7 +817,7 @@ fn load_module_runtime(
             return Err(format!(
                 "{} is not a zero-import core wasm module (plugins ship as core modules, not components)",
                 wasm_path.display()
-            ))
+            ));
         }
     }
     let mut runtime = ModuleRuntime::load(wasm_path, wasm_bytes)?;
@@ -822,8 +828,9 @@ fn load_module_runtime(
             format!("plugin `{package}`: module init failed: {message}")
         }
     })?;
-    let declarations = notist_model::wire::decode_declarations(&payload)
-        .map_err(|message| format!("plugin `{package}` returned invalid init payload: {message}"))?;
+    let declarations = notist_model::wire::decode_declarations(&payload).map_err(|message| {
+        format!("plugin `{package}` returned invalid init payload: {message}")
+    })?;
     for declaration in &declarations {
         validate_guest_element_name(package, &declaration.name)?;
     }

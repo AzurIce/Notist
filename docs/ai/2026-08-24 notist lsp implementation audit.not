@@ -1,6 +1,6 @@
 = notist LSP 实现审计与改进空间
 
-承接 Obsidian 插件接入方案（#<vault::obsidian-notist::lsp>）：客户端接入设计已定（桌面 spawn `notist lsp` 走 stdio、自写薄 JSON-RPC client、didChange 客户端防抖），审计过程中发现 server 端当前实现（`crates/notist-cli/src/lsp.rs`，约 1210 行）存在若干问题与改进空间，本文集中梳理，供 notist 侧排期参考。审计范围：`lsp.rs` 全文 + `crates/notist-cli/src/service.rs` 的 daemon 连接路径 + `notist-service` 协议类型；对照设计文档 #<vault::designs::host::lsp-adapter>（标 `@![implementation = "partial"]`，审计确认属实）。
+承接 Obsidian 插件接入方案（#<vault::obsidian-notist::lsp>）：客户端接入设计已定（桌面 spawn `notist lsp` 走 stdio、自写薄 JSON-RPC client、didChange 客户端防抖），审计过程中发现 server 端当前实现（`crates/notist-cli/src/lsp.rs`，约 1210 行）存在若干问题与改进空间，本文集中梳理，供 notist 侧排期参考。审计范围：`lsp.rs` 全文 + `crates/notist-cli/src/service.rs` 的 daemon 连接路径 + `notist-service` 协议类型；对照设计文档 #<vault::designs::host::lsp-adapter>（标 `\@!(implementation: "partial")`，审计确认属实）。
 
 == 契约与正确性问题
 

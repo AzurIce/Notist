@@ -1,7 +1,7 @@
-@![implementation = "aligned"]
+@!(implementation: "aligned")
 = Property Table
 
-本文是 L7 属性表的独立成篇，从归档的历史混合文档中独立成篇，并吸收旧标注文档中属性与求值、成型的语义半边。标注的表面语法仍见 #<vault::designs::language::annotation-syntax>。
+本文是 L7 属性表的独立成篇，从归档的历史混合文档中独立成篇，并吸收旧标注文档中属性与求值、成型的语义半边。标注的表面语法仍见 #<vault::grammar::annotation>。
 
 == 属性表
 
@@ -15,24 +15,25 @@
 
 序列是分层的（容器 body 是子序列），区间在同一层序列上，可以跨越段落边界。成型只重组节点，不合并、不删除个体（#<vault::designs::pipeline::structure>）——区间在求值、成型与投影之间稳定（文本拼接是渲染层优化，不是成型语义）。
 
-三类条目：
+两类条目：
 
-- 节点条目：实节点上的属性（`#callout[...]@danger`）→ 单节点区间；
-- 区间条目：透明 scope 溶解后的属性与身份（`#[...]@install`）→ 内容覆盖的区间；
-- 节条目：修饰节头部 heading 的属性（`@[#施工]`、`= 标题@安装`）→ 该节覆盖的区间——节边界由 heading 归组规则确定（#<vault::designs::pipeline::structure>），节属性语义上作用于整个子树。
+- Item 条目：Item 上的属性 → 覆盖该 Item 区间的条目——ScopeItem（`#[...]`、Item literal）的区间覆盖其全部内容，可以跨越段落边界；
+- 节条目：修饰节头部 heading 的属性（`@(wip: true)`、`@(id: "安装")` 紧贴 heading）→ 该节覆盖的区间——节边界由 heading 归组规则确定（#<vault::designs::pipeline::structure>），节属性语义上作用于整个子树。
 
-属性是值的属性：绑定在值上的属性随值复制——`#let alert = [注意]@wip` 后 `#alert #alert` 产生两个节点个体，属性表里有两条 `wip` 条目。
+属性是值的属性：绑定在值上的属性随值复制——`#let alert = @(wip: true)[注意]` 后 `#alert #alert` 产生两个节点个体，属性表里有两条 `wip` 条目。
 
-模块属性（`@![...]`）作为模块级条目进入属性表，随求值结果发布为模块元数据。
+前导注解行属于所附块（2026-09-01 裁决）：独立注解行（或堆叠的注解行块）绑定其后紧邻的 Item，所附块的 span 从注解行自身起算，条目区间同——声明属性的字节受该属性管辖，块间不留注解隙地。后缀注解的字节本就在所附块行内，不在此列。
+
+模块属性（`@!(class: ..)`）作为模块级条目进入属性表，随求值结果发布为模块元数据。
 
 == 属性与求值、成型
 
-求值期：标注语法求值时把属性绑定到"值"上——postfix 绑定前面紧接着的表达式结果，前缀绑定下一个块级节点，模块属性绑定根 scope。
+求值期：标注语法求值时把属性绑定到"值"上——`@expr` 绑定其后紧邻的 Item，`@!expr` 绑定根 scope。
 
-求值收尾：绑定转写为属性表条目——实节点属性是单节点区间条目，透明 scope（Content literal、手动 scope）溶解后其属性与身份是内容覆盖的区间条目，可以跨越段落边界；修饰节头部 heading 的属性上卷为节条目，节边界由成型归组规则确定（#<vault::designs::pipeline::structure/Section 归组>），语义作用于整个节子树。属性是值的属性：绑定在值上的属性随值复制，每次插入产生独立条目。
+求值收尾：绑定转写为属性表条目——Item 的属性是覆盖该 Item 区间的条目（ScopeItem 的区间覆盖其全部内容，可以跨越段落边界）；修饰节头部 heading 的属性上卷为节条目，节边界由成型归组规则确定（#<vault::designs::pipeline::structure/Structure Stage/Section 归组>），语义作用于整个节子树。属性是值的属性：绑定在值上的属性随值复制，每次插入产生独立条目。
 
 查询一律以区间命中（单节点区间是特例），没有节点命中与区间命中两种形状——属性表是唯一入口。
 
 == 与求值、成型的关系
 
-求值结果三元组与 `content`（call 森林）的产生见 #<vault::designs::pipeline::evaluate/求值结果>；scope 溶解见 #<vault::designs::language::scope-environment/与成型、属性表的关系>；结构树投影见 #<vault::designs::pipeline::structure/不变量>。值层与属性表是唯一真相，成型后的结构树是它们的投影：可丢弃、可重建，任何消费者都不能把投影当作新的真相；消费端联合消费结构树与属性表。
+求值结果三元组与 `content`（call 森林）的产生见 #<vault::designs::pipeline::evaluate/Evaluation and Reduction Stage/求值结果>；Item 树见 #<vault::model/Notist 数据模型/Item 树>；结构树投影见 #<vault::designs::pipeline::structure/Structure Stage/不变量>。值层与属性表是唯一真相，成型后的结构树是它们的投影：可丢弃、可重建，任何消费者都不能把投影当作新的真相；消费端联合消费结构树与属性表。

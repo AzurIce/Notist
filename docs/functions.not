@@ -5,23 +5,23 @@
 == 签名总览
 
 ```text
-link(target: Target | String) -> Content
-heading(level: Int = 1, trailing body: Content) -> Content
-raw(source: String, lang: String? = none, block: Bool = false) -> Content
-rule() -> Content
-callout(kind: String = "note", title: Content? = none, trailing body: Content) -> Content
-details(summary: Content? = none, open: Bool = false, trailing body: Content) -> Content
-item(ordered: Bool = false, trailing body: Content) -> Content
-table-cell(colspan: Int = 1, rowspan: Int = 1, trailing body: Content) -> Content
-table(columns: Int, header: Bool = false, align: String? = none, trailing body: Content) -> Content
-figure(kind: String? = none, supplement: Content? = none, caption: Content? = none, trailing body: Content) -> Content
-strong(trailing body: Content) -> Content
-emph(trailing body: Content) -> Content
-underline(trailing body: Content) -> Content
-strike(trailing body: Content) -> Content
+link(target: Target | String) -> Item
+heading(level: Int = 1, trailing body: Item) -> Item
+raw(source: String, lang: String? = (), block: Bool = false) -> Item
+rule() -> Item
+callout(kind: String = "note", title: Item? = (), trailing body: Item) -> Item
+details(summary: Item? = (), open: Bool = false, trailing body: Item) -> Item
+item(ordered: Bool = false, trailing body: Item) -> Item
+table-cell(colspan: Int = 1, rowspan: Int = 1, trailing body: Item) -> Item
+table(columns: Int, header: Bool = false, align: String? = (), trailing body: Item) -> Item
+figure(kind: String? = (), supplement: Item? = (), caption: Item? = (), trailing body: Item) -> Item
+strong(trailing body: Item) -> Item
+emph(trailing body: Item) -> Item
+underline(trailing body: Item) -> Item
+strike(trailing body: Item) -> Item
 ```
 
-签名记号：`T?` 是可空类型（可传 `none`）；`= 默认值` 表示形参可省略且只能具名绑定；`trailing` 表示末尾 Content 形参，调用时写作尾随 `[内容]`。
+签名记号：`T?` 是可空类型（可传 `()`）；`= 默认值` 表示形参可省略且只能具名绑定；`trailing` 表示末尾 Item 形参，调用时写作尾随 `[内容]`。
 
 == 调用规则
 
@@ -32,7 +32,7 @@ strike(trailing body: Content) -> Content
 ```
 
 - 命名实参写作 `name: value`；
-- 位置实参必须全部出现在具名实参之前，trailing Content block 是唯一例外——`#f(kind: "warning")[内容]` 与 `#f(kind: "warning", [内容])` 等价；
+- 位置实参必须全部出现在具名实参之前，trailing Item block 是唯一例外——`#f(kind: "warning")[内容]` 与 `#f(kind: "warning", [内容])` 等价；
 - 带默认值的形参只能具名绑定（可选即 named），不带默认值的形参按声明顺序位置绑定；
 - 重复绑定、未知实参、缺失必填实参与类型不匹配都产生指向调用位置的诊断；
 - 内置构造器是 first-class 函数：可以绑定、传递与组合——`#let make_title = heading` 合法。
@@ -40,7 +40,7 @@ strike(trailing body: Content) -> Content
 == link
 
 ```text
-link(target: Target | String) -> Content
+link(target: Target | String) -> Item
 ```
 
 产生 Reference 元素。`Target` 是 ModulePath 加可选 label 的结构化拼写，`String` 只表示外部 url。`#<...>` 是 Target 字面量糖，与 `link(<...>)` 共享同一解析入口：
@@ -58,7 +58,7 @@ link(target: Target | String) -> Content
 == heading
 
 ```text
-heading(level: Int = 1, trailing body: Content) -> Content
+heading(level: Int = 1, trailing body: Item) -> Item
 ```
 
 产生 Heading 元素。`level` 必须至少为 1，无上限（渲染时折叠到 h6 以内）。糖：行首的 `=` 串（无空白）后接内容，`=` 数量即 level：
@@ -70,13 +70,13 @@ heading(level: Int = 1, trailing body: Content) -> Content
 
 - 语法边界：行首 `=` 连续出现一个或多个，其后必须跟空白（或行尾），再后是标题 body；`=foo` 是普通文本；
 - 错误恢复：行首 `=` 后无内容 → 空 body 的 Heading；
-- 标题拥有默认名：body 提取的纯文本（Text 元素按顺序拼接，含嵌套）——`= 安装指南` 默认即可被 `#<.../安装指南>` 引用；显式 `@id` 覆盖默认 id；无效文本回退为 `loc-<起始字节偏移>` 锚点；
+- 标题拥有默认名：body 提取的纯文本（Text 元素按顺序拼接，含嵌套）——`= 安装指南` 默认即可被 `#<.../安装指南>` 引用；显式 `id:` 标注 覆盖默认 id；无效文本回退为 `loc-<起始字节偏移>` 锚点；
 - 同级标题与其后内容归组为嵌套的 Section 节点（见 #<vault::designs::pipeline::structure> 与 #<vault::designs::host::html-renderer>）。
 
 == raw
 
 ```text
-raw(source: String, lang: String? = none, block: Bool = false) -> Content
+raw(source: String, lang: String? = (), block: Bool = false) -> Item
 ```
 
 产生 Raw 元素。构造器校验：`block` 为 false 时 `source` 含换行产生诊断——多行源码必须写 `block: true`。
@@ -108,7 +108,7 @@ println!("Hello");
 == rule
 
 ```text
-rule() -> Content
+rule() -> Item
 ```
 
 产生 Rule 分割线。糖：行首三个以上连续 `-` 且其后只有空白：
@@ -123,7 +123,7 @@ rule() -> Content
 == callout
 
 ```text
-callout(kind: String = "note", title: Content? = none, trailing body: Content) -> Content
+callout(kind: String = "note", title: Item? = (), trailing body: Item) -> Item
 ```
 
 产生 Callout 提示框。`kind` 是面向语义与导出的稳定分类，为空产生诊断；`title` 未提供时不生成标题。无语法糖——通过显式调用使用：
@@ -137,10 +137,10 @@ callout(kind: String = "note", title: Content? = none, trailing body: Content) -
 == details
 
 ```text
-details(summary: Content? = none, open: Bool = false, trailing body: Content) -> Content
+details(summary: Item? = (), open: Bool = false, trailing body: Item) -> Item
 ```
 
-产生 Details 可折叠内容。`summary` 为 `none` 时由渲染器提供通用折叠标题；`open` 决定初始展开状态。无语法糖：
+产生 Details 可折叠内容。`summary` 为 `()` 时由渲染器提供通用折叠标题；`open` 决定初始展开状态。无语法糖：
 
 ```not
 #details(summary: [查看详情], open: false)[
@@ -151,7 +151,7 @@ details(summary: Content? = none, open: Bool = false, trailing body: Content) ->
 == item
 
 ```text
-item(ordered: Bool = false, trailing body: Content) -> Content
+item(ordered: Bool = false, trailing body: Item) -> Item
 ```
 
 产生列表条目：`ordered` 为 false 时是 ListItem，为 true 时是 EnumItem。糖：行首 `- ` 或 `+ `（符号后必须有空白）：
@@ -177,12 +177,12 @@ item(ordered: Bool = false, trailing body: Content) -> Content
 == table-cell / table
 
 ```text
-table-cell(colspan: Int = 1, rowspan: Int = 1, trailing body: Content) -> Content
-table(columns: Int, header: Bool = false, align: String? = none,
-      trailing body: Content) -> Content
+table-cell(colspan: Int = 1, rowspan: Int = 1, trailing body: Item) -> Item
+table(columns: Int, header: Bool = false, align: String? = (),
+      trailing body: Item) -> Item
 ```
 
-`table-cell` 产生表格单元；`table` 消费按行平铺的 `table-cell`（每 `columns` 个 cell 为一行）并产生 Table 元素。`columns` 必填；`header` 决定首行是否进入表头；`align` 是逗号分隔的列对齐串（`left` / `center` / `right` / `default`，数量必须等于 `columns`，`none` 表示全部默认）。Table 本身没有 caption——需要题注时用 `figure` 包住 table。body 中允许纯空白与段间分隔作为源码排版，其余可见元素必须是 `table-cell`：
+`table-cell` 产生表格单元；`table` 消费按行平铺的 `table-cell`（每 `columns` 个 cell 为一行）并产生 Table 元素。`columns` 必填；`header` 决定首行是否进入表头；`align` 是逗号分隔的列对齐串（`left` / `center` / `right` / `default`，数量必须等于 `columns`，`()` 表示全部默认）。Table 本身没有 caption——需要题注时用 `figure` 包住 table。body 中允许纯空白与段间分隔作为源码排版，其余可见元素必须是 `table-cell`：
 
 ```not
 #table(columns: 2, header: true, align: "left, right")[
@@ -208,8 +208,8 @@ table(columns: Int, header: Bool = false, align: String? = none,
 == figure
 
 ```text
-figure(kind: String? = none, supplement: Content? = none,
-       caption: Content? = none, trailing body: Content) -> Content
+figure(kind: String? = (), supplement: Item? = (),
+       caption: Item? = (), trailing body: Item) -> Item
 ```
 
 产生 Figure 块级 wrapper，语义对齐 Typst 0.14 的 `figure`：body 是任意块内容，caption 是题注，kind 是稳定分类，supplement 是题注前缀。`kind` 省略时从 body 自动推断：Table → `"table"`，Raw → `"raw"`，块级插件节点 → 其 name，其他 → `"figure"`。渲染时 supplement 输出为 `supplement + ": " + caption`：
@@ -228,10 +228,10 @@ Typst figure 的 `placement` / `scope` / `gap` / `outlined` / `numbering` 依赖
 == strong / emph / underline / strike
 
 ```text
-strong(trailing body: Content)    -> Content
-emph(trailing body: Content)      -> Content
-underline(trailing body: Content) -> Content
-strike(trailing body: Content)    -> Content
+strong(trailing body: Item)    -> Item
+emph(trailing body: Item)      -> Item
+underline(trailing body: Item) -> Item
+strike(trailing body: Item)    -> Item
 ```
 
 行内强调构造器。糖：
@@ -256,4 +256,4 @@ __text__  ~= underline([text])
 
 不在上表的内置名称由 check 层报 unknown function 诊断；`::` 命名空间形式在对应插件经 `Notist.toml` 加载后是合法注册名（见 #<vault::plugins>），不报 unknown。
 
-调用不会被静默丢弃——调用本身原样保留为内容节点，预览与工具恢复可以继续处理其余源码；渲染器把未注册投影的名字投影为 `<{package}-{element}>` 形式的 fallback 标签。插件元素是普通内容节点，不改变内置构造器集合（节点模型见 #<vault::designs::pipeline::evaluate/Call 与 Node>）。
+调用不会被静默丢弃——调用本身原样保留为内容节点，预览与工具恢复可以继续处理其余源码；渲染器把未注册投影的名字投影为 `<{package}-{element}>` 形式的 fallback 标签。插件元素是普通内容节点，不改变内置构造器集合（节点模型见 #<vault::designs::pipeline::evaluate/Evaluation and Reduction Stage/Call 与 Node>）。

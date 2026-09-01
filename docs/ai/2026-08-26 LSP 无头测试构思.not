@@ -1,6 +1,6 @@
 = LSP 无头测试构思
 
-回应 #<vault::designs::thoughts> 中「2026-08-26 LSP 无头测试」一条：现在缺少对 LSP 的无头测试，接入侧（obsidian-notist）靠人工"感受"发现问题，低效且只能看到表面异常。本文盘点现状、定位真实缺口，并给出可落地的 harness 设计。行为依据 main @ fcc725e 的 `crates/notist-cli/src/lsp.rs`（约 2040 行）。
+回应 #<vault::designs::thoughts> 中「2026-08-26 LSP 无头测试」一条：现在缺少对 LSP 的无头测试，接入侧（obsidian-notist）靠人工"感受"发现问题，低效且只能看到表面异常。本文盘点现状、定位真实缺口，并给出可落地的 harness 设计。行为依据 main \@ fcc725e 的 `crates/notist-cli/src/lsp.rs`（约 2040 行）。
 
 == 核心结论
 

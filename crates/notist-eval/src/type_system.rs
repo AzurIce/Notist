@@ -1,4 +1,5 @@
 use std::collections::HashMap;
+use std::fmt;
 
 use notist_model::{Node, TextRange};
 use notist_syntax::{
@@ -9,9 +10,9 @@ pub use notist_model::{DefaultValue, FunctionSignature, Parameter, Type};
 
 use crate::EvalDiagnostic;
 
-#[derive(Clone, Debug, PartialEq)]
+#[derive(Clone, Debug)]
 pub enum Value {
-    None,
+    Unit,
     Bool(bool),
     Int(i64),
     Float(f64),
@@ -25,6 +26,56 @@ pub enum Value {
     /// module-local selector. Inserting a Target into Markup produces a
     /// `core::reference` element.
     Target(notist_model::Target),
+    /// An ordered collection of values; `..` spread splices Arrays.
+    Array(Vec<Value>),
+    /// An ordered key-to-value mapping: annotation payloads are Dicts.
+    /// Equality ignores insertion order (C6).
+    Dict(Vec<(DictKey, Value)>),
+}
+
+/// A Dict key: identifier keys are sugar for String keys (C5).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum DictKey {
+    Unit,
+    Bool(bool),
+    Int(i64),
+    String(String),
+}
+
+impl std::fmt::Display for DictKey {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::Unit => formatter.write_str("()"),
+            Self::Bool(value) => write!(formatter, "{value}"),
+            Self::Int(value) => write!(formatter, "{value}"),
+            Self::String(value) => formatter.write_str(value),
+        }
+    }
+}
+
+impl PartialEq for Value {
+    fn eq(&self, other: &Self) -> bool {
+        match (self, other) {
+            (Self::Unit, Self::Unit) => true,
+            (Self::Bool(left), Self::Bool(right)) => left == right,
+            (Self::Int(left), Self::Int(right)) => left == right,
+            (Self::Float(left), Self::Float(right)) => left == right,
+            (Self::String(left), Self::String(right)) => left == right,
+            (Self::Content(left), Self::Content(right)) => left == right,
+            (Self::Function(left), Self::Function(right)) => left == right,
+            (Self::Target(left), Self::Target(right)) => left == right,
+            (Self::Array(left), Self::Array(right)) => left == right,
+            (Self::Dict(left), Self::Dict(right)) => {
+                left.len() == right.len()
+                    && left.iter().all(|(key, value)| {
+                        right.iter().any(|(other_key, other_value)| {
+                            key == other_key && value == other_value
+                        })
+                    })
+            }
+            _ => false,
+        }
+    }
 }
 
 /// A first-class function value (D0002): a closure carrying its callable
@@ -52,7 +103,7 @@ pub enum FunctionImplementation {
 impl Value {
     pub fn ty(&self) -> Type {
         match self {
-            Self::None => Type::None,
+            Self::Unit => Type::Unit,
             Self::Bool(_) => Type::Bool,
             Self::Int(_) => Type::Int,
             Self::Float(_) => Type::Float,
@@ -60,6 +111,8 @@ impl Value {
             Self::Content(_) => Type::Content,
             Self::Function(_) => Type::Function,
             Self::Target(_) => Type::Target,
+            Self::Array(_) => Type::Array(None),
+            Self::Dict(_) => Type::Dict(None, None),
         }
     }
 }
@@ -86,7 +139,7 @@ struct BoundValue {
 
 pub(crate) fn default_to_value(default: &DefaultValue) -> Value {
     match default {
-        DefaultValue::None => Value::None,
+        DefaultValue::None => Value::Unit,
         DefaultValue::Bool(value) => Value::Bool(*value),
         DefaultValue::Int(value) => Value::Int(*value),
         DefaultValue::Float(value) => Value::Float(*value),
@@ -157,7 +210,7 @@ impl BoundArguments {
 
     pub fn optional_string(&self, name: &str) -> Option<&str> {
         match self.get(name) {
-            Some(Value::None) => None,
+            Some(Value::Unit) => None,
             Some(Value::String(value)) => Some(value),
             _ => unreachable!("signature binding guarantees an optional string value"),
         }
@@ -166,7 +219,7 @@ impl BoundArguments {
     /// Returns an optional integer argument after signature validation.
     pub fn optional_int(&self, name: &str) -> Option<i64> {
         match self.get(name) {
-            Some(Value::None) => None,
+            Some(Value::Unit) => None,
             Some(Value::Int(value)) => Some(*value),
             _ => unreachable!("signature binding guarantees an optional integer value"),
         }
@@ -199,7 +252,7 @@ impl BoundArguments {
     /// Removes and returns an optional Content argument after signature validation.
     pub fn take_optional_content(&mut self, name: &str) -> Option<Vec<Node>> {
         match self.values.remove(name).map(|bound| bound.value) {
-            Some(Value::None) => None,
+            Some(Value::Unit) => None,
             Some(Value::Content(content)) => Some(content),
             _ => unreachable!("signature binding guarantees an optional Content value"),
         }
@@ -393,7 +446,7 @@ pub(crate) fn evaluate_literal(
     base_offset: usize,
 ) -> Option<(Value, ValueOrigin)> {
     let value = match &expression.kind {
-        ExpressionKind::None => Value::None,
+        ExpressionKind::Unit => Value::Unit,
         ExpressionKind::Bool(value) => Value::Bool(*value),
         ExpressionKind::Int(value) => Value::Int(*value),
         ExpressionKind::Float(value) => Value::Float(*value),

@@ -735,7 +735,7 @@ pub mod node_engine {
     /// yet and stay invisible to handlers.
     fn value_from_node_value(value: &NodeValue) -> Option<Value> {
         match value {
-            NodeValue::None => Some(Value::None),
+            NodeValue::None => Some(Value::Unit),
             NodeValue::Bool(value) => Some(Value::Bool(*value)),
             NodeValue::Int(value) => Some(Value::Int(*value)),
             NodeValue::Float(value) => Some(Value::Float(*value)),

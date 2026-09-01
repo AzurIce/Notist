@@ -1,4 +1,4 @@
-@![implementation = "partial"]
+@!(implementation: "partial")
 = Plugin Runtime Composition
 
 本文定义 plugin contribution 如何进入一次 Notist 运行时，以及 native 与 Wasm plugin 的关系。它补充 #<vault::designs::plugin-system::package> 的 package 形态和 #<vault::designs::plugin-system::eval-contribution> 的函数注册契约；求值引擎本身见 #<vault::designs::pipeline::plugin-call-reduction>。

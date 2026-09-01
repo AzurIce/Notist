@@ -17,7 +17,7 @@
 + *offset 单位是 UTF-16 code unit*：web-tree-sitter 的 parse callback 用 `stringToUTF16` marshal，index/Point 全是 code unit，与 CM char offset 天然对齐；中文内容实测正确。bun harness 同时验证了增量编辑（含 ASCII 插入 + CJK 替换连续两笔）后 captures 不漂移。
 + *heading_marker 节点含尾部空格*：`= ` 长 2、`== ` 长 3，标题级别不能按 marker 长度算，要 `marker.text.match(/^=+/)` 数 `=`。
 + *capture 名混用 `.` 与 `_`*（`link_uri`、`punctuation.list_marker.markup`）：映射 CSS class 时 `[._]` 都要归一成 `-`。
-+ *capture 互相嵌套*（如 `@string` 覆盖整个 raw 字符串、`@punctuation.bracket` 覆盖其中的 `r#"`）：`RangeSetBuilder` 要求有序不相交，需 boundary sweep 切段、每段取覆盖它的 capture 类名并集；内层概念靠 styles.css 规则顺序（等特异性后者胜）覆盖外层颜色。
++ *capture 互相嵌套*（如 `\@string` 覆盖整个 raw 字符串、`\@punctuation.bracket` 覆盖其中的 `r#"`）：`RangeSetBuilder` 要求有序不相交，需 boundary sweep 切段、每段取覆盖它的 capture 类名并集；内层概念靠 styles.css 规则顺序（等特异性后者胜）覆盖外层颜色。
 + *多 change 事务不做增量*：vim 多光标等场景一笔事务多个 change，`tree.edit` 的坐标空间随每笔变化，逐笔映射易错；.not 文档小，直接全量 reparse。
 + *老坑再现*：`bun add` 因 install 钩子（`scripts/install.ts` 需要 vault 参数）失败而不写回 package.json，web-tree-sitter 依赖手动补登。
 

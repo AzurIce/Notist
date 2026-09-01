@@ -28,18 +28,18 @@ println!("Hello");
 
 = #accent
 
-#let warning(body: Content) -> Content =
+#let warning(body: Item) -> Item =
   callout(kind: "warning", body)
 
 #warning([这是一段可以通过函数构造的内容。])
 #warning[这是一段可以通过函数构造的内容。]
 ```
 
-这里有一个类型和求值系统上的关键概念——所有的文档元素都是 Content 类型。上面的 `[这是一段可以通过函数构造的内容。]` 就是 Content 字面量：方括号内回到 Markup 模式，正常编写文档元素。
+这里有一个类型和求值系统上的关键概念——所有的文档元素都是 Item 类型。上面的 `[这是一段可以通过函数构造的内容。]` 就是 Item 字面量：方括号内回到 Markup 模式，正常编写文档元素。
 
-上面的 `#warning[...]` 是 trailing Content 参数的紧凑写法：`#warning[这是一段可以通过函数构造的内容。]` 与 `#warning([这是一段可以通过函数构造的内容。])` 等价——trailing block 只是追加一个位置实参的语法糖。
+上面的 `#warning[...]` 是 trailing Item 参数的紧凑写法：`#warning[这是一段可以通过函数构造的内容。]` 与 `#warning([这是一段可以通过函数构造的内容。])` 等价——trailing block 只是追加一个位置实参的语法糖。
 
-`#` 后表达式的精确边界规则见 #<vault::designs::language::markup-surface/嵌入的边界>；本文只保留语言概览与最小示例。
+`#` 后表达式的精确边界规则见 #<vault::grammar::markup/Markup/最小骨架/嵌入的边界>；本文只保留语言概览与最小示例。
 
 Markup 模式下的标题、代码块、分割线等写法，本质都是对内置函数的语法糖：
 
@@ -58,7 +58,7 @@ println!("Hello");
 分割线以下
 ```
 
-求值之前，静态类型系统先完成名称解析与类型检查，求值器只消费这份语义输入。一篇 Notist 文档的正文是隐式的 Content quotation——等价于整段正文都被包裹在一段 Content 字面量中；它的求值结果除了一段 Content 值（call 森林）以外，还包含带有函数、变量等符号的环境，以及旁置的属性表（标注与模块元数据，见 #<vault::designs::language::property-table>）。
+求值之前，静态类型系统先完成名称解析与类型检查，求值器只消费这份语义输入。一篇 Notist 文档的正文是隐式的 Item quotation——等价于整段正文都被包裹在一段 Item 字面量中；它的求值结果除了一段 Item 值（call 森林）以外，还包含带有函数、变量等符号的环境，以及旁置的属性表（标注与模块元数据，见 #<vault::designs::language::property-table>）。
 
 ---
 
@@ -71,7 +71,7 @@ println!("Hello");
 
 = #accent
 
-#let warning(body: Content) -> Content =
+#let warning(body: Item) -> Item =
   callout(kind: "warning", body)
 
 #warning[这是一段可以通过函数构造的内容。]
@@ -82,7 +82,7 @@ println!("Hello");
 ```text
 bindings = {
   accent = "violet"
-  warning = (body: Content) -> Content
+  warning = (body: Item) -> Item
 }
 
 content = [
@@ -95,4 +95,4 @@ annotations = {}   // 示例中没有标注，属性表为空
 
 标题来自变量 `accent` 的值，callout 的内容由函数调用构造——文档里的每一处内容都来自同一次求值。`bindings` 是程序的一面，`content` 是文档的一面，`annotations` 是标注的一面；三者来自同一次求值，却承担不同职责。
 
-这个结果如何产生——类型系统见 #<vault::designs::language::type-system/类型系统>，属性表见 #<vault::designs::language::property-table>，求值模型与 call 森林见 #<vault::designs::pipeline::evaluate/求值规则>，scope 与词法环境见 #<vault::designs::language::scope-environment/scope 是值层节点>。
+这个结果如何产生——类型系统见 #<vault::types/Type System/Type 与 Value 对应>，属性表见 #<vault::designs::language::property-table>，求值模型、call 森林与名称环境见 #<vault::designs::pipeline::evaluate/Evaluation and Reduction Stage/求值规则>。

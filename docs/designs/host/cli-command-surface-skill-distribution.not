@@ -1,4 +1,4 @@
-@![implementation = "partial"]
+@!(implementation: "partial")
 = CLI Command Surface and Skill Distribution
 
 本文是 A4 CLI 命令面与官方 Skill 分发的独立成篇，从归档的历史混合文档中独立成篇。查询契约见 #<vault::designs::host::query-contract>；daemon 进程与 View 见 #<vault::designs::host::daemon-process-views>；core request 与本地协议见 #<vault::designs::host::client-interface-protocol>。
@@ -110,6 +110,6 @@ docs/** -> deterministic bundle -> notist binary
 
 == CLI 适配
 
-CLI 是 #<vault::cli> 命令面与 daemon 之间的最薄适配层：参数解析 → core request（#<vault::designs::host::client-interface-protocol/Client Interface> 表）→ daemon 或 embedded service → response 格式化为 bounded text。`--no-daemon` 在当前进程创建临时 VaultEngine 与 disk View，执行相同 core request——embedded mode 不是第二套实现，只是把同一 service object 放在 client 进程中（#<vault::designs::host::client-interface-protocol/失败与重启>）。
+CLI 是 #<vault::cli> 命令面与 daemon 之间的最薄适配层：参数解析 → core request（#<vault::designs::host::client-interface-protocol/Client Interface and Protocol/Client Interface> 表）→ daemon 或 embedded service → response 格式化为 bounded text。`--no-daemon` 在当前进程创建临时 VaultEngine 与 disk View，执行相同 core request——embedded mode 不是第二套实现，只是把同一 service object 放在 client 进程中（#<vault::designs::host::client-interface-protocol/Client Interface and Protocol/失败与重启>）。
 
 `daemon`、`lsp`、`skill init`、`build`、`preview` 各自是固定协议的 adapter（#<vault::cli>）；它们的 stdout 边界由协议决定，不混入普通查询 text。CLI 不做任何语义猜测：selector 解析、fingerprint 检查都在 core 侧完成，CLI 只投影与展示。

@@ -1,7 +1,7 @@
-@![implementation = "partial"]
+@!(implementation: "partial")
 = Evaluation and Reduction Stage
 
-本文承接 #<vault::designs::language::type-system/静态检查>（静态检查：名称解析、类型、已解析调用）与 #<vault::designs::language::scope-environment/名称解析>（scope 与词法环境）。本文定义 #<vault::designs::pipeline> 的求值阶段：在 scope 链上执行静态检查的产物，把源码 lower 成 call 森林，并把森林规约到不动点；结果交给 #<vault::designs::pipeline::structure> 递归成型。
+本文承接 #<vault::types/Type System/静态检查>（静态检查：名称解析、类型、已解析调用）。本文定义 #<vault::designs::pipeline> 的求值阶段：在 Item 树上执行静态检查的产物，把源码 lower 成 call 森林，并把森林规约到不动点；名称环境（名称解析与词法边界）也是本文的定义对象。结果交给 #<vault::designs::pipeline::structure> 递归成型。
 
 ```text
 静态检查产物（type system）
@@ -17,19 +17,9 @@
 
 == 值的宇宙
 
-求值处理的值分为几类：
+求值处理的值宇宙与类型一一对应：Unit / Bool / Int / Float / String / Item / Target / Array / Dict / Function。完整的类型与值表见 #<vault::types/Type System/Type 与 Value 对应>。
 
-```text
-Value
-├─ None
-├─ Bool / Int / Float / String
-├─ Content          # call 森林/子树
-└─ Function         # 形参可以是普通值，也可以是 trailing Content
-```
-
-（集合类型 Array/Dict 暂不进入语言，待后续设计引入。）
-
-每个公开类型都必须具有相应的值构造、观察与操作——进入语言的类型就是普通值，可以绑定、传递与运算。类型与值一一对应，见 #<vault::designs::language::type-system/类型系统>。
+每个公开类型都必须具有相应的值构造、观察与操作——进入语言的类型就是普通值，可以绑定、传递与运算。
 
 == Call 与 Node
 
@@ -38,7 +28,7 @@ Value
 ```text
 Node {
   name      // qualified name
-  args      // 名称 + 带类型的参数（None / Bool / Int / Float / String / Content / Array）
+  args      // 名称 + 带类型的参数（Unit / Bool / Int / Float / String / Item / Array）
   children  // 递归 call 森林
   block     // 是否中断段落流
 }
@@ -61,9 +51,9 @@ Node {
 
 - 内置集合的封闭性由 `core::` namespace 与构造器签名保证——封闭的是注册侧，`core::*` 的 handler 永远由宿主提供；
 - 提及自由：handler 的输出森林可以写任何名字，包括 `core::*` 与其他 package 的名字；名字的语义由注册方决定，没有 handler 的名字只是数据；
-- 每个构造器的参数类型与 body 模式由其签名校验，例如 `core::heading` 要求 `level: Int` 与 `body: Content`；
-- 容器子元素不变量在构造器校验，例如 Table 的填行/span（#<vault::designs::plugin-system::core/table>）；
-- 完整 call 契约见 #<vault::designs::world::core-namespace-plugin-boundary/Call 契约>。
+- 每个构造器的参数类型与 body 模式由其签名校验，例如 `core::heading` 要求 `level: Int` 与 `body: Item`；
+- 容器子元素不变量在构造器校验，例如 Table 的填行/span（#<vault::designs::plugin-system::core/Core Constructors/内置构造器/table>）；
+- 完整 call 契约见 #<vault::designs::world::core-namespace-plugin-boundary/Core Namespace and Plugin Boundary/Call 契约>。
 
 == Lowering：Call 的来源
 
@@ -76,10 +66,10 @@ Node {
 | 显式 `#heading(...)[...]` | `core::heading` call（arguments + body 子森林） |
 | `= Title` 糖 | 同一个 `core::heading` call |
 | `- item` 糖 | `core::item` call（ordered: false） |
-| Content literal `[...]` | 嵌套子森林 |
+| Item literal `[...]` | 嵌套子森林 |
 | 插件函数调用 | `{package}::{element}` call |
 | 普通实参表达式 | 求值为值 |
-| Content 实参 / trailing body | 保持为子森林 |
+| Item 实参 / trailing body | 保持为子森林 |
 
 注意区分两个 Call：
 
@@ -132,34 +122,38 @@ parse / check 后，lower 产出：
 
 `core::heading` 有 handler，规约继续；`core::text` 与 `core::parbreak` 没有 handler，原样留存。最终森林进入 structure。
 
-== Content 值
+== Item 值
 
-`Content` 是 call 森林的值类型。它是不透明的文档流/子树，类型系统不追踪内部结构：值的"形状"由规约不动点与提及自由决定，静态检查不可预测——森林表示不泄露为语言操作，Content 不可模式匹配、不可比较相等。
+`Item` 是 call 森林的值类型。它是不透明的文档流/子树，类型系统不追踪内部结构：值的"形状"由规约不动点与提及自由决定，静态检查不可预测——森林表示不泄露为语言操作，Item 不可模式匹配、不可比较相等。
 
-Content 值的规约状态分两侧：
+Item 值的规约状态分两侧：
 
-- *输入侧恒为规约完成*：函数收到的 Content 实参与 trailing body 总是规约完的（输入函数式）；`let` 绑定与 content literal `[...]` 持有的也是规约完成的森林；
-- *输出侧可以是未规约森林*：函数返回的 Content 可以仍含有 handler 的 call（输出宏式），由不动点继续规约——函数没有"规约完再返回"的义务。
+- *输入侧恒为规约完成*：函数收到的 Item 实参与 trailing body 总是规约完的（输入函数式）；`let` 绑定与 content literal `[...]` 持有的也是规约完成的森林；
+- *输出侧可以是未规约森林*：函数返回的 Item 可以仍含有 handler 的 call（输出宏式），由不动点继续规约——函数没有"规约完再返回"的义务。
 
-需要延迟计算的地方使用 `fn() -> Content`。
+需要延迟计算的地方使用 `fn() -> Item`。
 
-Content 值不是散落的数据：它们组合在同一棵 scope 树上（#<vault::designs::language::scope-environment/scope 是值层节点>）。节点既装内容，也装名字；属性不挂在树上，见 #<vault::designs::language::property-table>。
+Item 值不是散落的数据：它们组合在同一棵 Item 树上（#<vault::model/Notist 数据模型/Item 树>）。节点既装内容，也装名字；属性不挂在树上，见 #<vault::designs::language::property-table>。
 
-== Content 组合与插入规则
+== 名称环境
 
-求值在 scope 树上进行：名字沿节点链解析，内容按源码顺序组合成 `Content`。文档正文是隐式的 Content quotation——普通文字、引用、标注与嵌入的计算按源码顺序组合成 call 森林。
+binding 挂在 Item 树的节点上，名称解析沿节点链自内向外——词法环境不是树之外的平行结构，就是树本身（#<vault::model/Notist 数据模型/Item 树>）。
 
-Markup insertion 边界上，嵌入表达式的结果按规则插入外层 Content：
+- *N1 节点链*：名称解析沿节点链自内向外进行；求值器消费静态检查给出的 resolved name，不重新猜测名字指向（#<vault::types/Type System/静态检查>）。
+- *N2 遮蔽*：最近绑定者胜出（shadowing）；同名 `let` 允许在后续声明处建立新绑定并遮蔽外层或先前的同名绑定。
+- *N3 let 可见性*：`let` 绑定从声明处开始对同一节点的后续内容可见，声明之前的节点不可见。
+- *N4 递归暂缓*：`let` 的右侧看不到正在声明的名字；递归绑定待 `let rec` 引入。
+- *N5 根 bindings*：求值结束后，根节点自有的 binding 进入求值结果 `bindings`（见求值结果）；其他节点上的 binding 只是求值期的环境事实，成型后的结构树消费者不依赖它们。
 
-| 值 | 插入结果 |
-|---|---|
-| `Content` | 原样插入 |
-| `String` | 转为 `core::text` 节点 |
-| `Int` / `Float` / `Bool` | 经 toString 转为 `core::text` 节点，与 `String` 同路 |
-| `None` | 产生空内容 |
-| 其他类型（如 `Function`） | 不能插入，产生诊断 |
+词法边界：`#[...]`、Item literal 与 Code block 是词法边界，其内部 `let` 不出块。`#[...]` 与 Item literal 的产物是 ScopeItem——树上的匿名 Item，查询面覆盖全部 Item，寻址面只覆盖有 ItemId 的 Item（#<vault::model/Notist 数据模型/Item 树>）。
 
-插入转换只存在于 Markup insertion 边界；普通函数要求 Content 参数时仍然拒绝 String——"可展示"不会渗透成所有 API 的隐式转换规则（#<vault::designs::language::type-system/Content 类型>）。
+== Item 组合与插入规则
+
+求值在 Item 树上进行：名字沿节点链解析，内容按源码顺序组合成 `Item`。文档正文是隐式的 Item quotation——普通文字、引用、标注与嵌入的计算按源码顺序组合成 call 森林。
+
+Markup insertion 边界上，嵌入表达式的结果按插入规则转换后进入外层 Item——哪个值能插入、如何转换，见 #<vault::types/Type System/插入规则>。
+
+插入转换只存在于 Markup insertion 边界；普通函数要求 Item 参数时仍然拒绝 String——"可展示"不会渗透成所有 API 的隐式转换规则（#<vault::types/Type System/Type 与 Value 对应/Item 类型>）。
 
 == 调用规约
 
@@ -184,7 +178,7 @@ Markup insertion 边界上，嵌入表达式的结果按规则插入外层 Conte
 
 - 预算只记在 handler 调用上：每次 dispatch 计一次 depth 与一次 call；
 - 参数值中的嵌套流、trailing body 中的流都先递归规约（输入函数式）；
-- 函数永远返回 `Value`；`Value::Content` 即 call 森林，返回后由不动点继续规约；
+- 函数永远返回 `Value`；`Value::Item` 即 call 森林，返回后由不动点继续规约；
 - 不接受 body 的函数、重复/未知/缺失实参、类型错误都产生诊断，不静默丢弃、不通过 accessor panic 假装成功；
 - 未知函数名不产生规约诊断——名字拼错归 check 层报告，规约层保持 total。
 
@@ -192,10 +186,10 @@ Markup insertion 边界上，嵌入表达式的结果按规则插入外层 Conte
 
 == 求值规则
 
-- *E1 顺序*：声明与正文按源码顺序求值；`let` 绑定扩展后续节点的环境（#<vault::designs::language::scope-environment/名称解析>），可展示的 Markup 与嵌入表达式通过 Content insertion 追加节点。
-- *E2 函数应用顺序*：求值 callee 表达式 → 按源码顺序求值显式实参与 trailing Content → 按形参声明顺序建立绑定（应用解析结果中的 coercion，或代入缺省形参的默认值）→ 调用函数值 → 校验返回值满足声明的结果类型。签名不表达返回森林的规约状态：`-> Content` 的函数可以返回含有 handler 的 call，规约由不动点继续。
-- *E3 单次求值*：每个表达式只求值一次；默认值表达式在定义时求值，捕获定义处环境，不随调用环境变化（#<vault::designs::language::call-model> 函数类型）。
-- *E4 错误恢复*：错误实参不使用默认值，错误 callee 不伪装成返回 `None` 的成功函数（#<vault::designs::language::type-system/静态检查>）。
+- *E1 顺序*：声明与正文按源码顺序求值；`let` 绑定扩展后续节点的环境（见名称环境），可展示的 Markup 与嵌入表达式通过 Item insertion 追加节点。
+- *E2 函数应用顺序*：求值 callee 表达式 → 按源码顺序求值显式实参与 trailing Item → 按形参声明顺序建立绑定（应用解析结果中的 coercion，或代入缺省形参的默认值）→ 调用函数值 → 校验返回值满足声明的结果类型。签名不表达返回森林的规约状态：`-> Item` 的函数可以返回含有 handler 的 call，规约由不动点继续。
+- *E3 单次求值*：每个表达式只求值一次；默认值表达式在定义时求值，捕获定义处环境，不随调用环境变化（#<vault::types/Type System/函数类型与调用模型>）。
+- *E4 错误恢复*：错误实参不使用默认值，错误 callee 不伪装成返回 `Unit` 的成功函数（#<vault::types/Type System/静态检查>）。
 
 == 求值结果
 
@@ -203,21 +197,23 @@ Markup insertion 边界上，嵌入表达式的结果按规则插入外层 Conte
 
 ```text
 求值结果 {
-  bindings:    Environment,      // 根 scope 自有的 binding（scope）
-  content:     Content,          // call 森林（值层真相），交给 shaping 递归成型
+  bindings:    Environment,      // 根节点自有的 binding
+  content:     Item,          // call 森林（值层真相），交给 shaping 递归成型
   annotations: AnnotationTable,  // 属性表：节点区间 → 属性集（property table）
 }
 ```
 
-#<vault::designs::overview/最小示例> 的最小示例中：`accent` 与 `warning` 进入 `bindings`，标题与 callout 组合成 `content`——此时它还是 call 森林，求值收尾按 #<vault::designs::pipeline::structure/输入与输出> 把它递归成型。（此结构在引入 Vault 与 Module 后成为 ModuleResult，见 #<vault::designs::world::module-result/ModuleResult>。）
+#<vault::designs::overview/Language Overview/最小示例> 的最小示例中：`accent` 与 `warning` 进入 `bindings`，标题与 callout 组合成 `content`——此时它还是 call 森林，求值收尾按 #<vault::designs::pipeline::structure/Structure Stage/输入与输出> 把它递归成型。（此结构在引入 Vault 与 Module 后成为 ModuleResult，见 #<vault::designs::world::module-result/Module and ModuleResult/Module/ModuleResult>。）
 
 == Conformance
 
 | 输入 | 预期 | 测试 |
 |---|---|---|
-| `a[plain]#"text"#[content]z` | Markup、String 插入与 Content literal 按源码顺序形成内容流 | `evaluates_markup_with_string_and_content_interpolation` |
+| `a[plain]#"text"#[content]z` | Markup、String 插入与 Item literal 按源码顺序形成内容流 | `evaluates_markup_with_string_and_content_interpolation` |
 | `value: #42` | Int 经 toString 插入为 `core::text` 节点 | `stringifies_scalar_values_in_markup_position` |
 | `#let accent = "violet"` 后 `= #accent` | 根 binding 流入后续内容并进入 bindings | `let_bindings_flow_into_later_markup` |
+| heading / item / Item literal 内 `#let` | 绑定不逃逸到文档 scope，外部引用产生 unresolved name | `element_and_content_scopes_are_lexical_boundaries` |
+| `@(id: "install")#[安装指南]` + `#<vault::guide/install>` | 手动 scope 的 `id:` 标注解析为模块内 Item（Scope）目标 | `manual_scope_ids_resolve_as_module_labels` |
 | `#if true [yes] else [no]` / 无 else | 分支按值选择；缺省 else 产生空内容 | `if_expression_selects_branches_and_omitting_else_yields_none` |
 | `before { let x = 1; x + 1 } after` | Code block 的 join 值插入正文 | `bare_code_blocks_insert_their_join_value` |
 | 带求值诊断的输入 | 诊断随求值结果透传 | `structuring_preserves_evaluation_diagnostics` |
@@ -228,9 +224,9 @@ Markup insertion 边界上，嵌入表达式的结果按规则插入外层 Conte
 - 已裁定：文档先 lower 为 call 森林，规约是不动点；`content` 是 call 森林（值层真相）。
 - 已裁定：`Node` 是唯一内容表示；"leaf" 只是阶段术语；`core::parbreak` 是成型前合法、成型后消失的 transient 节点。
 - 已裁定：所有构造器——内置与插件——共享同一 FunctionRegistry 与规约规则；完整模型见 #<vault::designs::pipeline::plugin-call-reduction>。
-- 待定：递归绑定引入后，`let rec` 的求值规则与 scope 可见性由 #<vault::designs::language::scope-environment/名称解析> 与本文共同补充。
+- 待定：递归绑定引入后，`let rec` 的求值规则与可见性由本文的名称环境规则共同补充。
 - 待定：`#let x = #f(...)` 中 `f` 返回未规约森林时，绑定值持有的规约状态（输入侧恒已规约的推定待确认）。
 
 == 实现现状
 
-值域已统一（2026-08-24）：`Value::Content` 持有 `Node` call 森林，`FunctionOutput` 已坍缩为 `Value`；生产规约运行在 node_engine 上，插件输出森林由宿主统一重新送入不动点。旧 Stream/Leaf 表示和桥接已删除。详见 #<vault::designs::pipeline::plugin-call-reduction/实现现状>。
+值域已统一（2026-08-24）：`Value::Item` 持有 `Node` call 森林，`FunctionOutput` 已坍缩为 `Value`；生产规约运行在 node_engine 上，插件输出森林由宿主统一重新送入不动点。旧 Stream/Leaf 表示和桥接已删除。详见 #<vault::designs::pipeline::plugin-call-reduction/Plugin Call Reduction/实现现状>。

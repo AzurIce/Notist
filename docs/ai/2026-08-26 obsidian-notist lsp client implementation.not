@@ -1,6 +1,6 @@
 = obsidian-notist LSP 客户端实现记录
 
-obsidian-notist 插件接入 notist LSP 的实现记录（2026-08-26），方案见 #<vault::obsidian-notist::lsp>，server 侧行为依据 #<vault::ai::2026-08-25 notist lsp audit follow-up> 核实过的 main @ 39f6086。实现范围超出原「落地顺序」的前两步：diagnostics、completion、hover、definition 四项一次落地（references/symbols 仍留给语义面板阶段）。
+obsidian-notist 插件接入 notist LSP 的实现记录（2026-08-26），方案见 #<vault::obsidian-notist::lsp>，server 侧行为依据 #<vault::ai::2026-08-25 notist lsp audit follow-up> 核实过的 main \@ 39f6086。实现范围超出原「落地顺序」的前两步：diagnostics、completion、hover、definition 四项一次落地（references/symbols 仍留给语义面板阶段）。
 
 == 结构
 
@@ -27,7 +27,7 @@ obsidian-notist 插件接入 notist LSP 的实现记录（2026-08-26），方案
 - *shutdown 监听顺序*：必须在发 `exit` 通知*之前*注册 exit 监听——server 收到 exit 可能秒退，先注册后发送否则等满 2s grace 还白挨一个 SIGKILL 噪音日志。另外主动 stop 时的退出不该报 error：session 加 `stopping` 标志区分。
 - *spawn 成败判定*：用 ChildProcess 的 `spawn` 事件确认启动成功、`error` 事件捕获 ENOENT，不要 setTimeout 猜测。
 - *obsidian CLI eval*：async IIFE 的返回值*偶尔*不打印（同步返回 + 轮询更稳）；`dev:errors` 只捕获未处理异常，自己 console.error 的要走 `dev:console level=error` 看。
-- *已知坑复现*：`bun add -d` 仍因 `install` 钩子（scripts/install.ts 缺参数退出 1）不写 package.json——依赖实际装好了，手动把 `@codemirror/autocomplete`/`@codemirror/lint` 补进 devDependencies 即可（两者在 esbuild external 清单里，只为 tsc 类型）。
+- *已知坑复现*：`bun add -d` 仍因 `install` 钩子（scripts/install.ts 缺参数退出 1）不写 package.json——依赖实际装好了，手动把 `\@codemirror/autocomplete`/`\@codemirror/lint` 补进 devDependencies 即可（两者在 esbuild external 清单里，只为 tsc 类型）。
 
 == 未做与后续
 

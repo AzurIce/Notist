@@ -1,4 +1,4 @@
-@![type="user",.user]
+@!(type: "user", class: "user")
 
 = Notist 数据模型
 
@@ -41,7 +41,7 @@ vault/
 *ItemId* 在模块内唯一，当同一篇文档中存在两个相同的 *ItemId* 时报错。
 
 Item 分为匿名 Item 和具名 Item：
-- 被 `@[id="xxx"]`（原先的 `@id,#tag,.class` 注解我也打算修改调整）标注的 Item 会具有 `xxx` 的 ItemId
+- 被 `@(id: "xxx")`（原先的 `@id,#tag,.class` 注解我也打算修改调整）标注的 Item 会具有 `xxx` 的 ItemId
 - heading 的默认 ItemId 是标题链——从顶层标题到自身的标题文字用 `/` 连接，比如本节的默认 ItemId 是 `Notist 数据模型/Item 树`（不受链上某个标题的 id 标注影响）
 - 其余 Item 是匿名 Item。
 

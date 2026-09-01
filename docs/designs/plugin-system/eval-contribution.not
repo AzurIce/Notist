@@ -1,4 +1,4 @@
-@![implementation = "partial"]
+@!(implementation: "partial")
 = Eval Contribution
 
 本文定义插件如何贡献语义函数：wasm `init` 注册的元素声明如何变成 `FunctionRegistry` 中的可调用对象，以及静态分析与 runtime 如何分别消费这些贡献。Call 的规约规则见 #<vault::designs::pipeline::plugin-call-reduction>。

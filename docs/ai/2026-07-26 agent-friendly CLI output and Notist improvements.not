@@ -369,7 +369,7 @@ snapshot_revision
 产品验收应同时看质量与成本：
 
 - p99 ordinary tool output 不超过 32 KiB，单次 hard maximum 不超过 64 KiB。
-- v0.3 同任务重跑时 pass@1 不下降，factoid 因 source read 提升。
+- v0.3 同任务重跑时 pass\@1 不下降，factoid 因 source read 提升。
 - CLI/MCP 平均成本接近 shell 档，而不是只报告压缩百分比。
 - cacheRead、tool output bytes 和 cost per successful task 至少下降一个数量级。
 - common-query、unanswerable 和 multi-hop 分开报告，防止 top-k 过小掩盖召回损失。

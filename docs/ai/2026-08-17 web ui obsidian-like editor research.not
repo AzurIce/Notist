@@ -17,14 +17,14 @@
 === CodeMirror 6（MIT）—— Obsidian 同款，推荐
 
 - Live Preview 机制：ViewPlugin 监听文档/视口/选区变化，遍历 Lezer 增量语法树（syntaxTree + visibleRanges），对光标范围外的语法区段挂 Decoration.replace/widget 渲染富内容，光标进入即还原源码；装饰仅在视图层，文本字节不变，round-trip 安全。
-- 自定义语法：`@lezer/markdown` 提供 MarkdownConfig（parseBlock/parseInline/defineNodes）扩展点；超出扩展点时可写独立 Lezer grammar（见下文「.not 语法接入」）。
+- 自定义语法：`\@lezer/markdown` 提供 MarkdownConfig（parseBlock/parseInline/defineNodes）扩展点；超出扩展点时可写独立 Lezer grammar（见下文「.not 语法接入」）。
 - 移动端有 Obsidian mobile 背书；体积为候选中最小（核心 + Markdown 语言包约 100KB min+gzip 级）；Joplin 等亦采用，生态活跃。
-- 代价：CM6/Lezer 学习曲线陡；@lezer/markdown 的 CommonMark flank 规则对 CJK 加粗有已知缺陷（若走独立 grammar 则不受影响）。
+- 代价：CM6/Lezer 学习曲线陡；\@lezer/markdown 的 CommonMark flank 规则对 CJK 加粗有已知缺陷（若走独立 grammar 则不受影响）。
 
 === 文档模型阵营（ProseMirror/Tiptap、Milkdown、BlockNote、Lexical）
 
 - 共同问题：Markdown 只是 import/export，schema 外的源码信息（自定义标记、注释、空行）round-trip 会丢；做 Obsidian 式「行内源码/渲染混合」与范式冲突，只能做纯 WYSIWYG + 独立源码模式。自定义语法需要 node/mark + input rule + serializer 整套，成本高于 CM6 装饰路线。
-- Tiptap（MIT，38k stars，headless、框架无关）是「最快做出漂亮 WYSIWYG」的选择；BlockNote（核心 MPL-2.0，XL 包 AGPL/商业）UI 开箱即用但块模型离 Markdown 源文件最远；Milkdown 需 remark 插件 + PM schema 双份工作量，社区抱怨 API 不稳定；Lexical 的 Markdown transformer 是正则实现、round-trip bug 多（新版 @lexical/mdast 基于 micromark 有改善），生态 React 优先。
+- Tiptap（MIT，38k stars，headless、框架无关）是「最快做出漂亮 WYSIWYG」的选择；BlockNote（核心 MPL-2.0，XL 包 AGPL/商业）UI 开箱即用但块模型离 Markdown 源文件最远；Milkdown 需 remark 插件 + PM schema 双份工作量，社区抱怨 API 不稳定；Lexical 的 Markdown transformer 是正则实现、round-trip bug 多（新版 \@lexical/mdast 基于 micromark 有改善），生态 React 优先。
 
 === 其他
 
@@ -39,7 +39,7 @@
 
 == .not 语法接入 CM6 的两条路径
 
-.not 不是 Markdown 超集（`=` 标题、`@![]` annotation、`#<wiki>` 引用、函数调用等），直接扩展 @lezer/markdown 的 MarkdownConfig 覆盖有限，更现实的是二选一：
+.not 不是 Markdown 超集（`=` 标题、`\@!()` annotation、`#<wiki>` 引用、函数调用等），直接扩展 \@lezer/markdown 的 MarkdownConfig 覆盖有限，更现实的是二选一：
 
 - 独立 Lezer grammar：为 .not 写一份 Lezer 语法，浏览器内增量解析、与 CM6 高亮/折叠/Live Preview 装饰天然集成。代价是维护第二份解析器，存在与 notist-syntax 语义漂移的风险；但 Lezer 只需覆盖「编辑时展示」所需的语法形状，不需要求值语义。
 - notist-syntax 编译 WASM：单一事实来源、零漂移；但 notist-syntax 目前是整篇一次性解析，无增量 reparse，每次击键全量 parse（笔记级文档体量下大概率可接受，需 spike 实测）；且 wasm-bindgen 包体在数百 KB–数 MB 级。
@@ -92,7 +92,7 @@
 - Obsidian 插件文档（Editor extensions）：https://docs.obsidian.md/Plugins/Editor/Editor+extensions
 - CM6 Live Preview 开源复刻：https://github.com/blueberrycongee/codemirror-live-markdown
 - atomic-editor（view-only、round-trip 验证）：https://github.com/kenforthewin/atomic-editor
-- @lezer/markdown MarkdownConfig：https://npmx.dev/package/@lezer/markdown
+- \@lezer/markdown MarkdownConfig：https://npmx.dev/package/\@lezer/markdown
 - CM6 lang-package 示例：https://codemirror.net/examples/lang-package/
 - SilverBullet：https://silverbullet.md ；评测：https://lwn.net/Articles/1030941/
 - 思源架构说明：https://github.com/siyuan-note/siyuan/blob/master/AGENTS.md
