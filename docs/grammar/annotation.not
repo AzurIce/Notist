@@ -1,0 +1,68 @@
+@!(implementation: "planned")
+@!(type: "user")
+= Annotation
+
+标注模式用于给 Module 或 Item 应用 Dict 值作为属性标注，以 `@!` 或 `@` 前缀进入。
+
+它与 `#` 进入的 Code 模式都带有“表达式”求值的含义，区别在于 Annotation 下无法使用 `let` 等能力，且要求求值结果类型为 Dict。
+
+== 两种前缀对应两种挂载位置
+
+1. `@!expr` 对应模块
+  必须在文件开头（第一个 Item 之前），绑定到模块。
+
+   ```not
+   #let design = (type: "design")
+   @!(status: "draft", ..design)
+
+   = Design Doc
+   xxx
+   ```
+
+   这个例子里先通过 `#` Code 模式定义了一个类型为 Dict 的绑定 `design`，然后在 `@!` Annotation 模式中通过 spread 语法参与一个 Dict 值的构造，最终应用出来的属性标注为：
+
+   ```
+    (status: "draft", type: "design")
+   ```
+
+2. `@expr` 对应后面紧接着的 Item
+  可以在文档流的任意位置使用，绑定到紧接着的下一个 Item。
+
+  ```not
+  @(id: "design")
+  = Design Doc
+
+  @(author: "AzurIce")
+  Lorem ipsum dolor sit amet, consectetur adipiscing elit. Donec efficitur ligula 
+  sed nunc sagittis, quis sagittis eros fringilla. Suspendisse pharetra cursus ex,
+  non volutpat mi luctus eu. Nulla facilisi. Vestibulum at elit iaculis, rutrum
+  ligula malesuada, lobortis arcu. @(desc: "foo")#[Sed egestas] ultrices mattis.
+
+  @(desc: "foo")
+  #[
+    Lorem ipsum
+
+    Lorem ipsum
+  ]
+  ```
+
+== 拆分
+
+多个相继的属性标注会被合并为一个属性标注，于是一个很长的属性可以通过多次使用 `@!` 或 `@` 进行拆分分散，下面两种属性标注是等价的：
+
+```not
+@(key1: "value1", key2: "value2", key3: "value3")
+第一种，未拆分
+
+@(key1: "value1")
+@(key2: "value2")
+@(key3: "value3")
+第二种，拆分
+```
+
+并不要求中间间隔，但是中间不得出现 Item。
+  
+== 身份与约定键
+
+- `id` 是约定保留键：`@(id: "install")` ，赋予 ItemId（#<vault::model/Notist 数据模型/Item 树>）；模块标注中无意义。
+- `tags`、`desc`、`agents` 等是用户普通约定键（查询与样式的习惯用法），引擎不给任何键开语法或谓词特例。

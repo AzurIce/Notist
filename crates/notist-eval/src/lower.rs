@@ -11,14 +11,15 @@ use std::collections::HashMap;
 
 use notist_model::{DefaultValue, FunctionSignature, Node, NodeValue, Parameter, TextRange, Type};
 use notist_syntax::{
-    BinaryOperator, BodyForm, Call, ContentBlock, Expression, ExpressionKind, Markup, MarkupItem,
-    UnaryOperator, UserFunctionDefinition, UserParameter,
+    BinaryOperator, BodyForm, Call, ContentBlock, DictEntry, Expression, ExpressionKind, Markup,
+    MarkupItem, UnaryOperator, UserFunctionDefinition, UserParameter,
 };
 
 use crate::function::{Function, FunctionContext, FunctionInput, FunctionRegistry};
 use crate::leaf::{ReduceFrame, ReduceLimits, node_engine};
 use crate::type_system::{
-    FunctionImplementation, FunctionValue, Value, ValueOrigin, bind_arguments, evaluate_literal,
+    DictKey, FunctionImplementation, FunctionValue, Value, ValueOrigin, bind_arguments,
+    evaluate_literal,
 };
 use crate::{EvalDiagnostic, stream_lower};
 
@@ -120,7 +121,7 @@ pub(crate) fn user_function_value(
 
 fn expression_default(expression: &Expression) -> Option<DefaultValue> {
     match &expression.kind {
-        ExpressionKind::None => Some(DefaultValue::None),
+        ExpressionKind::Unit => Some(DefaultValue::None),
         ExpressionKind::Bool(value) => Some(DefaultValue::Bool(*value)),
         ExpressionKind::Int(value) => Some(DefaultValue::Int(*value)),
         ExpressionKind::Float(value) => Some(DefaultValue::Float(*value)),
@@ -250,7 +251,7 @@ impl ExpressionState<'_> {
                 match value {
                     Some(value) => (value, ValueOrigin::Default, Vec::new()),
                     None => (
-                        Value::None,
+                        Value::Unit,
                         ValueOrigin::Default,
                         vec![EvalDiagnostic {
                             message: format!("unresolved name `{}`", name.value),
@@ -279,7 +280,7 @@ impl ExpressionState<'_> {
                             message: format!("`not` requires a Bool operand, got {}", other.ty()),
                             range: expression_range.shifted(self.base_offset),
                         });
-                        (Value::None, ValueOrigin::Default, diagnostics)
+                        (Value::Unit, ValueOrigin::Default, diagnostics)
                     }
                 }
             }
@@ -295,7 +296,7 @@ impl ExpressionState<'_> {
                         self.evaluate_expression(statement, statement.range);
                     diagnostics.append(&mut statement_diagnostics);
                     match value {
-                        Value::None => {}
+                        Value::Unit => {}
                         Value::Content(content) => match &mut joined {
                             None => joined = Some(Value::Content(content)),
                             Some(Value::Content(existing)) => {
@@ -324,7 +325,7 @@ impl ExpressionState<'_> {
                 }
                 self.variables.pop();
                 (
-                    joined.unwrap_or(Value::None),
+                    joined.unwrap_or(Value::Unit),
                     ValueOrigin::Default,
                     diagnostics,
                 )
@@ -339,7 +340,7 @@ impl ExpressionState<'_> {
                 if let Some(scope) = self.variables.last_mut() {
                     scope.insert(name.value.clone(), value);
                 }
-                (Value::None, ValueOrigin::Default, diagnostics)
+                (Value::Unit, ValueOrigin::Default, diagnostics)
             }
             ExpressionKind::If {
                 condition,
@@ -362,14 +363,14 @@ impl ExpressionState<'_> {
                             diagnostics.append(&mut branch_diagnostics);
                             (value, origin, diagnostics)
                         }
-                        None => (Value::None, ValueOrigin::Default, diagnostics),
+                        None => (Value::Unit, ValueOrigin::Default, diagnostics),
                     },
                     other => {
                         diagnostics.push(EvalDiagnostic {
                             message: format!("`if` condition must be a Bool, got {}", other.ty()),
                             range: expression_range.shifted(self.base_offset),
                         });
-                        (Value::None, ValueOrigin::Default, diagnostics)
+                        (Value::Unit, ValueOrigin::Default, diagnostics)
                     }
                 }
             }
@@ -412,7 +413,7 @@ impl ExpressionState<'_> {
                 // Imports resolve only within a vault context: the analysis
                 // layer orchestrates cross-module evaluation and seeds the
                 // imported bindings (D0004). Standalone evaluation is a no-op.
-                (Value::None, ValueOrigin::Default, Vec::new())
+                (Value::Unit, ValueOrigin::Default, Vec::new())
             }
             ExpressionKind::LetFunction(definition) => {
                 // D0002: the definition binds a first-class closure into the
@@ -427,7 +428,7 @@ impl ExpressionState<'_> {
                         Value::Function(Box::new(function)),
                     );
                 }
-                (Value::None, ValueOrigin::Default, Vec::new())
+                (Value::Unit, ValueOrigin::Default, Vec::new())
             }
             ExpressionKind::Parenthesized(inner) => self.evaluate_expression(inner, inner.range),
             ExpressionKind::Target(reference) => (
@@ -440,9 +441,84 @@ impl ExpressionState<'_> {
                 },
                 Vec::new(),
             ),
-            ExpressionKind::Error => (Value::None, ValueOrigin::Default, Vec::new()),
-            ExpressionKind::None
-            | ExpressionKind::Bool(_)
+            ExpressionKind::Error => (Value::Unit, ValueOrigin::Default, Vec::new()),
+            ExpressionKind::Unit => (Value::Unit, ValueOrigin::Default, Vec::new()),
+            ExpressionKind::Array(elements) => {
+                let mut values = Vec::with_capacity(elements.len());
+                let mut diagnostics = Vec::new();
+                for element in elements {
+                    let (value, _, mut element_diagnostics) =
+                        self.evaluate_expression(element, element.range);
+                    diagnostics.append(&mut element_diagnostics);
+                    match value {
+                        Value::Array(spread) => values.extend(spread),
+                        Value::Unit => {}
+                        other => values.push(other),
+                    }
+                }
+                (Value::Array(values), ValueOrigin::Default, diagnostics)
+            }
+            ExpressionKind::Dict(entries) => {
+                let mut dict: Vec<(DictKey, Value)> = Vec::new();
+                let mut diagnostics = Vec::new();
+                for entry in entries {
+                    match entry {
+                        DictEntry::Spread(expr) => {
+                            let (value, _, mut spread_diagnostics) =
+                                self.evaluate_expression(&expr, expr.range);
+                            diagnostics.append(&mut spread_diagnostics);
+                            match value {
+                                Value::Dict(spread) => {
+                                    for (key, value) in spread {
+                                        dict.retain(|(existing, _)| existing != &key);
+                                        dict.push((key, value));
+                                    }
+                                }
+                                other => diagnostics.push(EvalDiagnostic {
+                                    message: format!(
+                                        "`..` spread requires a Dict, got {}",
+                                        other.ty()
+                                    ),
+                                    range: expr.range.shifted(self.base_offset),
+                                }),
+                            }
+                        }
+                        DictEntry::Entry { key, value } => {
+                            // Identifier keys are sugar for their own name:
+                            // they never resolve as variables.
+                            let dict_key = match &key.kind {
+                                ExpressionKind::Name(name) => {
+                                    Some(DictKey::String(name.value.clone()))
+                                }
+                                _ => {
+                                    let (key_value, _, mut key_diagnostics) =
+                                        self.evaluate_expression(&key, key.range);
+                                    diagnostics.append(&mut key_diagnostics);
+                                    dict_key(&key_value, &key)
+                                }
+                            };
+                            let Some(dict_key) = dict_key else {
+                                continue;
+                            };
+                            let (entry_value, _, mut value_diagnostics) =
+                                self.evaluate_expression(&value, value.range);
+                            diagnostics.append(&mut value_diagnostics);
+                            dict.retain(|(existing, _)| existing != &dict_key);
+                            dict.push((dict_key, entry_value));
+                        }
+                    }
+                }
+                (Value::Dict(dict), ValueOrigin::Default, diagnostics)
+            }
+            ExpressionKind::Spread(expr) => {
+                let (_, _, mut spread_diagnostics) = self.evaluate_expression(&expr, expr.range);
+                spread_diagnostics.push(EvalDiagnostic {
+                    message: "`..` spread is only valid inside a collection literal".into(),
+                    range: expr.range.shifted(self.base_offset),
+                });
+                (Value::Unit, ValueOrigin::Default, spread_diagnostics)
+            }
+            ExpressionKind::Bool(_)
             | ExpressionKind::Int(_)
             | ExpressionKind::Float(_)
             | ExpressionKind::String(_) => {
@@ -467,7 +543,7 @@ impl ExpressionState<'_> {
                     message: format!("operator {operator:?} requires Bool operands"),
                     range: range.shifted(self.base_offset),
                 });
-                return (Value::None, diagnostics);
+                return (Value::Unit, diagnostics);
             };
             if (operator == BinaryOperator::And && !left_bool)
                 || (operator == BinaryOperator::Or && left_bool)
@@ -477,21 +553,21 @@ impl ExpressionState<'_> {
             let (right, _, mut right_diagnostics) = self.evaluate_expression(right, right.range);
             diagnostics.append(&mut right_diagnostics);
             if !diagnostics.is_empty() {
-                return (Value::None, diagnostics);
+                return (Value::Unit, diagnostics);
             }
             let Value::Bool(right_bool) = right else {
                 diagnostics.push(EvalDiagnostic {
                     message: format!("operator {operator:?} requires Bool operands"),
                     range: range.shifted(self.base_offset),
                 });
-                return (Value::None, diagnostics);
+                return (Value::Unit, diagnostics);
             };
             return (Value::Bool(right_bool), diagnostics);
         }
         let (right, _, mut right_diagnostics) = self.evaluate_expression(right, right.range);
         diagnostics.append(&mut right_diagnostics);
         if !diagnostics.is_empty() {
-            return (Value::None, diagnostics);
+            return (Value::Unit, diagnostics);
         }
 
         let value = match (operator, left, right) {
@@ -505,7 +581,7 @@ impl ExpressionState<'_> {
                         ),
                         range: range.shifted(self.base_offset),
                     });
-                    return (Value::None, diagnostics);
+                    return (Value::Unit, diagnostics);
                 }
                 // Same-family equality; cross-family values are unequal (D0007).
                 let equal = left == right;
@@ -604,7 +680,7 @@ impl ExpressionState<'_> {
                     ),
                     range: range.shifted(self.base_offset),
                 });
-                return (Value::None, diagnostics);
+                return (Value::Unit, diagnostics);
             }
         };
         (value, diagnostics)
@@ -619,7 +695,7 @@ impl ExpressionState<'_> {
             message: "division by zero".into(),
             range: range.shifted(self.base_offset),
         });
-        (Value::None, diagnostics)
+        (Value::Unit, diagnostics)
     }
 
     fn arithmetic_overflow(
@@ -631,12 +707,13 @@ impl ExpressionState<'_> {
             message: "integer arithmetic overflow".into(),
             range: range.shifted(self.base_offset),
         });
-        (Value::None, diagnostics)
+        (Value::Unit, diagnostics)
     }
 
     /// Evaluates a `Content` literal: the block markup lowers through the
     /// stream lowering pass and reduces to the fixpoint, so the resulting
-    /// `Value::Content` forest is input-side (fully reduced).
+    /// `Value::Content` forest is input-side (fully reduced). The literal is
+    /// an Item value — a plain forest, no wrapper node.
     fn evaluate_content_block(&mut self, block: &ContentBlock) -> (Value, Vec<EvalDiagnostic>) {
         let (nodes, mut diagnostics) = stream_lower::lower_body_with_environment(
             self.source,
@@ -678,7 +755,7 @@ impl ExpressionState<'_> {
                     self.evaluate_function_value(&function, call, site_range)
                 }
                 other => (
-                    Value::None,
+                    Value::Unit,
                     vec![EvalDiagnostic {
                         message: format!("`{name}` is not callable ({})", other.ty()),
                         range: call.name.range.shifted(self.base_offset),
@@ -732,7 +809,7 @@ impl ExpressionState<'_> {
             FunctionImplementation::Builtin(name) => match self.registry.get(name) {
                 Some(builtin) => self.evaluate_builtin(builtin, name, call, site_range),
                 None => (
-                    Value::None,
+                    Value::Unit,
                     vec![EvalDiagnostic {
                         message: format!("unknown builtin `{name}`"),
                         range: call.name.range.shifted(self.base_offset),
@@ -788,7 +865,7 @@ impl ExpressionState<'_> {
             Ok(bound) => bound,
             Err(mut errors) => {
                 diagnostics.append(&mut errors);
-                return (Value::None, diagnostics);
+                return (Value::Unit, diagnostics);
             }
         };
 
@@ -816,11 +893,11 @@ impl ExpressionState<'_> {
                     ),
                     range: site_range.shifted(self.base_offset),
                 });
-                (Value::None, diagnostics)
+                (Value::Unit, diagnostics)
             }
             Err(mut errors) => {
                 diagnostics.append(&mut errors);
-                (Value::None, diagnostics)
+                (Value::Unit, diagnostics)
             }
         }
     }
@@ -846,7 +923,7 @@ impl ExpressionState<'_> {
                 message: format!("function `{name}` exceeded the evaluation depth limit"),
                 range: site_range.shifted(self.base_offset),
             });
-            return (Value::None, diagnostics);
+            return (Value::Unit, diagnostics);
         }
         let (trailing_content, mut trailing_diagnostics) = self.evaluate_trailing(&call.trailing);
         diagnostics.append(&mut trailing_diagnostics);
@@ -869,7 +946,7 @@ impl ExpressionState<'_> {
             Ok(bound) => bound,
             Err(mut errors) => {
                 diagnostics.append(&mut errors);
-                return (Value::None, diagnostics);
+                return (Value::Unit, diagnostics);
             }
         };
 
@@ -890,7 +967,7 @@ impl ExpressionState<'_> {
                 ),
                 range: site_range.shifted(self.base_offset),
             });
-            return (Value::None, diagnostics);
+            return (Value::Unit, diagnostics);
         }
         (value, diagnostics)
     }
@@ -918,5 +995,21 @@ impl ExpressionState<'_> {
             result.push((forest, range));
         }
         (result, diagnostics)
+    }
+}
+
+/// Resolves a Dict key expression to its runtime key: identifier keys are
+/// sugar for String keys, other keys must evaluate to a literal key value.
+fn dict_key(value: &Value, expression: &Expression) -> Option<DictKey> {
+    match (&expression.kind, value) {
+        (_, Value::String(text)) => Some(DictKey::String(text.clone())),
+        (_, Value::Int(text)) => Some(DictKey::Int(*text)),
+        (_, Value::Bool(value)) => Some(DictKey::Bool(*value)),
+        (_, Value::Unit) => Some(DictKey::Unit),
+        (ExpressionKind::Name(name), _) => {
+            // Identifier keys are sugar for their own name, not a lookup.
+            Some(DictKey::String(name.value.clone()))
+        }
+        _ => None,
     }
 }

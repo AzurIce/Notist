@@ -97,7 +97,7 @@ pub enum VirtualRoot {
 
 包 spec 有两种形态：
 
-- `PackageSpec { namespace, name, version }` —— 完整 spec，对应 `@preview/foo:1.0.0`
+- `PackageSpec { namespace, name, version }` —— 完整 spec，对应 `\@preview/foo:1.0.0`
 - `VersionlessPackageSpec { namespace, name }` —— 无版本 spec，用于查 latest
 
 ```rust
@@ -112,7 +112,7 @@ pub struct VersionlessPackageSpec { namespace: EcoString, name: EcoString }
 - 其他 namespace 视为本地包（只能从 data dir 查）
 - Universe 协议：URL = `{base}/{namespace}/{name}-{version}.tar.gz`，index = `{base}/{namespace}/index.json`
 
-*Notist 映射*：Notist 的 import 完全走静态 `ModulePath`，*没有运行时包解析*。如果将来要支持"远程 spec"（如 `@notist/preset-foo:0.1` 风格），可以参考这一拆分——先 spec 解析、再 by-namespace 选后端。但*当前不必要*——8-23 路线已明确"core wasm 通道"是终态。
+*Notist 映射*：Notist 的 import 完全走静态 `ModulePath`，*没有运行时包解析*。如果将来要支持"远程 spec"（如 `\@notist/preset-foo:0.1` 风格），可以参考这一拆分——先 spec 解析、再 by-namespace 选后端。但*当前不必要*——8-23 路线已明确"core wasm 通道"是终态。
 
 == 核心 Trait
 
@@ -316,9 +316,9 @@ struct ModuleInner {
 
 A module can
 - be built-in
-- stem from a @reference:scripting:modules[file import]
-- stem from a @reference:scripting:packages[package import] (and thus indirectly its entrypoint file)
-- result from a call to the @plugin[plugin] function
+- stem from a \@reference:scripting:modules[file import]
+- stem from a \@reference:scripting:packages[package import] (and thus indirectly its entrypoint file)
+- result from a call to the \@plugin[plugin] function
 
 *所有来源*都收敛到同一个 `Module` 类型——上层不需要知道是文件 / 包 / wasm / builtin。
 
@@ -450,7 +450,7 @@ let data = self.downloader.download(spec, &url)?;
 
 Notist 的 D0029 boundary 错误可以采纳这种"按 kind 给 hint"的形式——例如：
 
-- 跨 vault 逃逸：hint 改用 `@vault-alias` 引用
+- 跨 vault 逃逸：hint 改用 `\@vault-alias` 引用
 - 跨 scope 越权：hint 用 super:: 升级
 - 找不到：hint 用 `vault:discover` 搜索
 

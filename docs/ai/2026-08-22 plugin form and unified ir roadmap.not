@@ -38,7 +38,7 @@ notist_sdk::export_plugin!("shader", Plugin);
 
 arena 实测覆盖：三层嵌套树经 guest 重索引后宿主侧结构完好、参数变换可见、guest `Err` 穿越、fuel 计账、真实 wasip2 组件实例化。*边界上零手写序列化*，canonical ABI 自动编组。
 
-与本日 kimi 调查报告的差异修正：报告反对 arena 的主论据「guest ergonomics 差」在 notist 架构下不成立——作者走 SDK，宏在边界做嵌套 Node ↔ arena 转换，索引不可见。报告成立的部分：resource 句柄不适合请求/响应式小树（N+1 跨界调用）；schema 演化期 typed-WIT 的 `@since` 版本化代价高。
+与本日 kimi 调查报告的差异修正：报告反对 arena 的主论据「guest ergonomics 差」在 notist 架构下不成立——作者走 SDK，宏在边界做嵌套 Node ↔ arena 转换，索引不可见。报告成立的部分：resource 句柄不适合请求/响应式小树（N+1 跨界调用）；schema 演化期 typed-WIT 的 `\@since` 版本化代价高。
 
 == 裁决：bytes 边界维持，codec 解耦
 

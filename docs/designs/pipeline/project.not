@@ -1,4 +1,4 @@
-@![implementation = "aligned"]
+@!(implementation: "aligned")
 = Project Stage
 
 本文定义 #<vault::designs::pipeline> 的最后阶段：把成型后的森林投影为 target 可见的结果。HTML target 的完整映射见 #<vault::designs::host::html-renderer>；插件节点的 namespace 契约见 #<vault::designs::world::core-namespace-plugin-boundary>。
@@ -23,7 +23,7 @@
 
 == 安全边界
 
-投影输出不是可信 HTML：Raw 文本与插件节点内容必须转义（#<vault::designs::host::html-renderer/Source Range 与安全>）。serializer 的词表收口（trusted 边界）目前是待定项，见 #<vault::designs::plugin-system::projection/已裁定 / 待定>。
+投影输出不是可信 HTML：Raw 文本与插件节点内容必须转义（#<vault::designs::host::html-renderer/HTML Renderer/notist-html/Source Range 与安全>）。serializer 的词表收口（trusted 边界）目前是待定项，见 #<vault::designs::plugin-system::projection/Projection Contribution/已裁定 / 待定>。
 
 == 已裁定 / 待定
 

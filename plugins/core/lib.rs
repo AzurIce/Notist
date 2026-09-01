@@ -298,11 +298,10 @@ impl Function for LinkFunction {
             return Ok(Value::Content(Vec::new()));
         };
         match value {
-            Value::Target(reference) => Ok(Value::Content(vec![Node::call(
-                "core::reference",
-                input.range,
-            )
-            .arg("target", NodeValue::Target(reference.clone()))])),
+            Value::Target(reference) => Ok(Value::Content(vec![
+                Node::call("core::reference", input.range)
+                    .arg("target", NodeValue::Target(reference.clone())),
+            ])),
             Value::String(url) => {
                 // The String branch is exclusively for external urls.
                 match notist_syntax::parse_reference_url(url) {
@@ -312,19 +311,20 @@ impl Function for LinkFunction {
                             notist_model::ModuleReference::External(_)
                         ) =>
                     {
-                        Ok(Value::Content(vec![Node::call(
-                            "core::reference",
-                            input.range,
-                        )
-                        .arg("target", NodeValue::String(url.clone()))]))
+                        Ok(Value::Content(vec![
+                            Node::call("core::reference", input.range)
+                                .arg("target", NodeValue::String(url.clone())),
+                        ]))
                     }
                     Ok(_) => Err(vec![EvalDiagnostic {
-                        message:
-                            "internal targets must use a `<...>` target literal, not a String"
-                                .into(),
+                        message: "internal targets must use a `<...>` target literal, not a String"
+                            .into(),
                         range: input.range,
                     }]),
-                    Err(message) => Err(vec![EvalDiagnostic { message, range: input.range }]),
+                    Err(message) => Err(vec![EvalDiagnostic {
+                        message,
+                        range: input.range,
+                    }]),
                 }
             }
             other => Err(vec![EvalDiagnostic {

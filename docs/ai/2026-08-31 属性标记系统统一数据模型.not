@@ -1,0 +1,57 @@
+\@!(implementation: "planned")
+= 属性标记系统统一数据模型
+
+本文裁决属性标注系统的重设计：废除 `\@id, #tag, .class, key = value` 四形态条目文法，统一为"\@() 即 annotation code 模式，求值为 Dict"的单一模型。裁决于 2026-08-31 会话收口，实现未启动；权威语法面落地后由 #<vault::grammar::annotation> 承接，本文保留动机、调查与被否方案供后续 Agent 复用。
+
+== 动机
+
+现行条目文法（#<vault::grammar::annotation>）为 `条目 = id | #tag | .class | key = value`，四形态从语法、AST（`Attributes { id, items: Vec<Tag|Class|KeyValue> }`）、属性表、查询谓词一路穿透：`search --fields` 有 `tag` 无 `class`/`id`、`attrs --kind id|tag|class|property`、计划中的 `--attr SPEC` 需接受四种拼写。每新增一种属性类别，谓词形状 ×N 个查询入口都要跟着长。
+
+实测（2026-08-31，target/debug 二进制探针）确认现行 bare 形态存在语义洞：
+
+- bare 被 id 占用（`scope.rs` `parse_bare_attribute`：列表首个裸标识符即 id），语法上最便宜的书写姿势绑在语义最重的身份变更上；语料中 `\@wip`/`\@anchor` 写的是 flag 意图、`\@install`/`\@renamed` 写的是命名意图，bare 本身已歧义；
+- postfix bare 覆盖 heading ItemId（`#heading[原标题]\@(renamed`) → `renamed scope\@id`），块级 `\@(wip: true)` + `= 安装` 却既不产生 id 也不产生 tag——解析为 id 但不产生可寻址 label，什么都不是；
+- tag 双语法缺口：postfix `\@#urgent` 进 search tag 字段，块级 `\@(urgent: true)` 不进（统合实施清单 #5）。同一概念两种写法一种可查一种不可查。
+
+== 调查依据
+
+*Rust 属性的数据模型*（回答"\@() 背后是什么"）：语言层只有 `Path AttrInput?`，`AttrInput = 定界token树 | = 表达式`，稳定面长期仅收字面量；proc-macro 层收到的是无结构 TokenStream，结构由每个宏自己发明——语言层数据模型不存在；生态约定层 syn::Meta（`Path | List | NameValue` 的树）是事实标准解释器。serde 等共识用法是 bare flag + 扁平 namevalue，不提供位置实参。结论：Rust 的属性是程序输入不是数据，`name(key = value)` 的 name 是消费者/指令名——照搬进数据标注语言是主谓倒置。notist 行为归 call、注解保持惰性数据的边界不动。
+
+*横向参照*：HTML/CSS（全 kv + 约定键 + 查询侧 sugar，`id`/`class` 是普通属性）、Pandoc（`{#id .class key=val}` 四形态同框的反面先例——数据模型虽可归一，概念类型数不减）、Typst（identity 用 `<label>`、`(a: 1)` Dict 字面量、bare 标识符取值手势）、Obsidian（inline `#tag` 与 frontmatter `tags:` 双语法长年互相打架，即清单 #5 的同款教训）。
+
+== 裁决
+
+1. *\@ 即 annotation code 模式*：`\@` 打开 Code 求值，结果必须是 Dict，绑定到挂载目标；与 `#`（结果按插入规则拼入内容）对称。两种模式前缀、一个结果义务差异。
+2. *标注复用集合类型的 Dict*：Dict 字面量 `(k: v)` 已是 #<vault::types/Type System/集合类型> 的目标设计（C3）；本裁决对其做前置扩展——标识符键糖（`(k: v)` ≡ `("k": v)`，标注依赖）、Dict/Array 字面量内 `..` spread（原"待定"前置），并约定键值拼写全语言统一为 `:`（形参默认值的 `=` 是"可省略"语义，不冲突）。一般 dict 条目严格键值；三个空各有专属标点：`()` 是 Unit 的字面量（不是集合）、`(:)` 是空 Dict、`(,)` 是空 Array——Array 字面量一律含逗号（`(,)`、`(e,)`、`(a, b)`），单元素尾逗号因此与分组完全可判。
+3. *标识符载荷即引用，无 fallback*：`\@keep` 求值 `keep`——值必须是 Dict，就地展开为条目；未绑定或求值结果非 Dict 一律诊断（check 的职责），不存在"未绑定退化为 `keep: true`"的降级。flag 的书写位置是注解字面量的显式条目：`\@(keep: true)`。
+4. *组 = 普通 Dict 绑定*：`#let user = (type: "user", keep: true)`，无专用构造器；组可 import（`#import <self::attrs>::{user}`），共享词汇表；`\@(..user, status: "review")` 以 `..` spread 拼接，同键后写者胜。参数化组未来自然退化为"返回 Dict 的函数"，无需新机制。
+5. *括号内无裸键糖*：Dict 字面量（含注解字面量）的条目一律显式键值——`\@(wip)` 之类的裸条目不存在，flag 写 `\@(wip: true)`；`(x)` 是分组——裸标识符加括号已被"`#(accent)` 结束表达式"的成文用法占用，永不判别为 Dict。`\@keep` 与 `\@(keep: true)` 因此总是可区分：前者是引用，后者是字面量。也不与 `{}` 统一（`{...}` 已是 join 语义的 Code block，按内容猜形态是同类坑）。
+6. *`\@(class: ..)` 块级形态退役*：块级用可跨行的 `\@(...)`；`\@[`、`\@!(` 特殊 token 序列从 lexer 铲除，只剩 `\@` 与 `\@!`。"三种 token 序列、`\@` 前缀改变 `[...)` 解读"的语法边界规则整节废除。
+7. *模块注解正常求值*：`\@!` 文件开头锚定（约束保留，理由从"不求值可读、索引器快速扫描"改写为"模块注解的锚定位置"），求值进 import 闭包，无字面量限制、无降级豁免。求值失败是 check 的诊断职责，属性缺席是求值失败的正常投影——PL 不给元数据开旁路（2026-08-31 裁决，推翻 annotation-syntax 的"不求值可读"立论）。性能论证接受现状：daemon 增量求值已在做，索引本来就要对模块求值（heading 默认 id 已经如此）。
+8. *id 成为约定保留键*：显式命名写 `\@(id: "install")`（至多一个，唯一性校验，赋予 ItemId——语义不变）；原 bare=id 的 postfix 命名手势由显式 `id:` 键承接。`tags`/`class` 降格为普通约定键，查询面不再有专属类别。
+9. *查询面零变化*：属性表仍以区间为键存规范 kv；索引、`--attr` SPEC（拼写收敛为 `key = value` 与裸 key 存在性）、search 字段不知道 `\@` 已经是 code 模式。Dict 层是纯书写语法，展开发生在求值期、入表前。
+10. *None 更名 Unit*：类型 `None` 改名 `Unit`，`none` 关键词退役，`()` 是其唯一字面量；空 Array 相应拼作 `(,)`。语义全部沿用（插入为空、同族相等、`T?` = `T | Unit`、缺省 `= ()`）。`..` spread 同时支持 Array：字面量内元素就地拼接。
+
+== 值域与运算符增量
+
+- 值域不新增：Dict 已在 #<vault::types/Type System/集合类型> 作为目标设计（不可变、结构相等、key 限 None/Bool/Int/String——标注的标识符键糖产出 String key，天然合规）；
+- `..` spread 从该切片的"待定"前置为 Dict 字面量内可用（仅限字面量内）；
+- 注解表达式的求值环境：文档 let 环境含 import；求值时机与属性绑定一致（求值期）。
+
+== 影响面与待跟进清单
+
+- *文法与实现*：annotation 条目文法废除，并入 Code 表达式；`Attributes`/`Attribute` AST 的 `Tag`/`Class`/`KeyValue` 变体铲除为单一 Dict 结果；parser 三 token 序列归二；eval 注解求值进文档环境；analyzer 的 label 收集（`id:` 键）与 items 命名同步；collection-types 切片随之提前（Dict 字面量、标识符键糖、Dict 内 spread、key 检查）。
+- *索引*：search 索引改吃求值后属性表而非 raw parse——与统合实施清单 #5（块级注解覆盖缺口）同一笔投入，一并偿还。
+- *语料迁移*：`docs/` 全库 `\@(class: ..)`/`\@!(class: ..)`、`#tag`、`.class`、bare id 用法一次性迁移（含 example/ 教学页 annotations.not 与 README.not、各文档 `\@!(implementation: ...)` 头）；测试 fixture（`inspect_outputs.rs` 等）同步。
+- *姊妹项目审查*（AGENTS.md 条款，文法变更级）：tree-sitter-notist grammar/queries、zed-notist grammar 快照（extension.toml 钉 rev）、obsidian-notist 高亮（wasm + highlights 重出）、vscode-notist TextMate 近似（`just tm-smoke`）。
+- *过渡期诊断*：grammar 三子模块（markup/code/annotation）与本文的模块头已按新语法书写（`\@!(...)`），现行二进制解析产生 8 条预期诊断，实现落地后消失；活注解（如 cli/inspect.not 的 `\@(todo: ...)`）在新语法实现前保留旧拼写。
+- *待定细节*：保留键注册表（`id` 之外是否预留更多）、`--attr` SPEC 对 list 值（spread 展开后的重复键是否折叠为集合）的谓词拼写、Dict 是否需要索引访问（`user.type`）——初版均不做，按需再议。
+
+== 被否方案备忘
+
+- *bare 同名解析展开与 flag fallback*（绑定了 Dict 就静默改义；未绑定就静默补 `k: true`）：含义非本地化，`--attr` 与 raw grep 可预测性破坏；最终全部废除——载荷是纯引用，未绑定即诊断，flag 走显式条目 `\@(k: true)`。
+- *`attr()` 构造器 + `user()` 调用展开*：值语义配调用记号，味道错误；被"组 = Dict 绑定 + bare 取值"取代。
+- *vault 配置层别名*：词汇表开第二个平行来源，不可 import 不可组合，否。
+- *bare-key-true 括号糖*（`(keep)` ≡ `keep: true`，含"字面量含键值/spread 即判 Dict 时生效"的条件化变体）：与分组表达式二义或判读跨条目上下文敏感；且 `#(accent)` 是成文的表达式结束用法，裸标识符括号已被分组占用。独立 flag 由 `\@keep` fallback 覆盖，强制键值写 `\@(keep: true)`。
+- *Dict 与 `{}` 统一*：Code block 已占用 `{}`，按内容猜形态是 JS 式坑，否。
+- *模块注解字面量限制 + 优雅降级护栏*：被 PL 立场推翻（裁决 7）——check 负责诊断，不为元数据开求值豁免。

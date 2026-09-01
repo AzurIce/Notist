@@ -5,7 +5,7 @@
 == 技术栈与工程化
 
 - bun 全链（install/run/esbuild/tsc），`bunfig.toml` 钉 npmmirror registry（本机默认 registry 不通）；`flake.nix` dev shell 提供 bun。
-- esbuild 打 `src/main.ts` → `main.js`，obsidian/electron/@codemirror/*/@lezer/* 标 external。
+- esbuild 打 `src/main.ts` → `main.js`，obsidian/electron/\@codemirror/*/\@lezer/* 标 external。
 - 安装脚本 `scripts/install.ts`：`bun run sync <vault>` = 构建 + 拷贝三产物（committable，Vault 可 git 跟踪、跨机器可用）；`--link` 为软链开发模式。幂等，`--link` 拒覆盖真实目录。
 
 == 双 World 机制

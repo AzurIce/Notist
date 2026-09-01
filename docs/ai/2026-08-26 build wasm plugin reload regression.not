@@ -1,7 +1,7 @@
-@![implementation = "research"]
+\@!(implementation: "research")
 = 规约插件系统重构后 build 性能回归调查
 
-回应「重构基于规约的插件系统后，build 过程 CPU/内存占用大且很慢」的问题。调查基于 main @ f4b976a，对照基线取插件系统迁移前夜 ab8bc43；方法为 `/usr/bin/time` 计时对照、samply 采样剖析、探针计数与控制实验。结论先行：*回归不是求值或序列化变慢，而是 render 路径上早已存在的「每模块重载插件」设计撞上了真实 WASM 组件——一次 build 触发约 90 次 wasmtime 组件全量 cranelift 编译*。
+回应「重构基于规约的插件系统后，build 过程 CPU/内存占用大且很慢」的问题。调查基于 main \@ f4b976a，对照基线取插件系统迁移前夜 ab8bc43；方法为 `/usr/bin/time` 计时对照、samply 采样剖析、探针计数与控制实验。结论先行：*回归不是求值或序列化变慢，而是 render 路径上早已存在的「每模块重载插件」设计撞上了真实 WASM 组件——一次 build 触发约 90 次 wasmtime 组件全量 cranelift 编译*。
 
 == 测量总览
 

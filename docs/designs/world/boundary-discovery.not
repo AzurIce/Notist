@@ -1,4 +1,4 @@
-@![implementation = "aligned"]
+@!(implementation: "aligned")
 = Vault Boundary and Discovery
 
 本文是 Vault 边界与发现的独立成篇，从归档的历史混合文档中独立成篇。Module 树与 ModuleResult 见 #<vault::designs::world::module-result>。
@@ -29,4 +29,4 @@ CLI 与 LSP 的具体行为（overlay 归属、vault 切换）属于实现文档
 - 加载的 plugin 与其 schema；
 - 引用与 import 的解析边界：跨 Vault 一律不解析——跨 Vault 目标对外表现为 unresolved，Vault 不探测边界外。
 
-配置内容模型（language version、plugin schema 的字段与语义）见 #<vault::designs::world::core-namespace-plugin-boundary/Notist.toml 配置内容模型>；实现前 Notist.toml 保持空标记或未知键预留，分析层按字节载荷携带配置。
+配置内容模型（language version、plugin schema 的字段与语义）见 #<vault::designs::world::core-namespace-plugin-boundary/Core Namespace and Plugin Boundary/Notist.toml 配置内容模型>；实现前 Notist.toml 保持空标记或未知键预留，分析层按字节载荷携带配置。

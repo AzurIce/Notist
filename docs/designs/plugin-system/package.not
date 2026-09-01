@@ -1,4 +1,4 @@
-@![implementation = "partial"]
+@!(implementation: "partial")
 = Plugin Package and Lifecycle
 
 本文定义插件 package 的形态、manifest、namespace、core package 以及装载生命周期。插件求值语义见 #<vault::designs::pipeline::plugin-call-reduction>；共享类型与模块 ABI 见 #<vault::designs::plugin-system::abi>。
@@ -113,7 +113,7 @@ native package                  Wasm package
 
 - native plugin 的 `register` 与 Wasm plugin 的 `init` 都必须产生同一种 contribution；任一校验失败都不得留下部分注册。
 - Wasm `init` 消耗与 `evaluate` 相同的 fuel 预算且要求确定性；native plugin 不需要 Wasm fuel，但属于进程级信任边界。
-- 插件失败是 host boundary diagnostic，不伪装成 `None` 成功。
+- 插件失败是 host boundary diagnostic，不伪装成 `Unit` 成功。
 - 插件 namespace 冲突在加载时拒绝；backend 不改变 namespace policy。
 - package、manifest、native surface、Wasm module 或 assets 变化进入 source-set / plugin fingerprint，分配新的 `FunctionEnvironmentId` 并发布新 snapshot revision。
 - daemon 递归 watch 外部 package 目录；`plugin.json` / wasm / assets 变化触发 disk view reload。

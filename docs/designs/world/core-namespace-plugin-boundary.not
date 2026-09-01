@@ -1,7 +1,7 @@
-@![implementation = "partial"]
+@!(implementation: "partial")
 = Core Namespace and Plugin Boundary
 
-本文是 core namespace 与插件边界的独立成篇，吸收第一代 core namespace 设计的裁决并更新到当前 surface。当前内置构造器见 #<vault::designs::plugin-system::core>；函数签名与调用模型见 #<vault::designs::language::call-model>；Vault 配置容器见 #<vault::designs::world::boundary-discovery>。
+本文是 core namespace 与插件边界的独立成篇，吸收第一代 core namespace 设计的裁决并更新到当前 surface。当前内置构造器见 #<vault::designs::plugin-system::core>；函数签名与调用模型见 #<vault::types/Type System/函数类型与调用模型>；Vault 配置容器见 #<vault::designs::world::boundary-discovery>。
 
 == Core Namespace
 
@@ -68,7 +68,7 @@ Node {
 - 插件通过显式 namespace 与 import/prelude 进入环境，不注册到 `core`；
 - 插件 schema 由 Vault 配置声明（见下），Analyzer 在 snapshot 中捕获 schema identity；
 - plugin runtime 默认不在普通编辑/诊断路径执行；
-- 插件失败是 host boundary diagnostic，不伪装成 `None` 成功；
+- 插件失败是 host boundary diagnostic，不伪装成 `Unit` 成功；
 - 插件不能修改 parser、不能重新解释已有 token。
 
 == Notist.toml 配置内容模型

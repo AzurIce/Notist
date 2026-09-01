@@ -1,9 +1,10 @@
-@![implementation = "aligned"]
+@!(implementation: "aligned")
 = Plugin Call Reduction
 
+@(type: "user", class: "user")
 #[
   Notist 的求值系统基于“规约”实现。
-]@type=user,.user
+]
 
 本文记录 Notist 的内容求值模型：规约（reduction）。它把三个问题合并成一个模型——插件如何调用内置或其它插件、插件如何组合任意内容、求值结果如何进入成型与投影。本文是 PluginSystem 与 pipeline 的 reduce 契约；package / ABI / 信任模型 / safety 的完整定义见 #<vault::designs::plugin-system>。
 
@@ -51,19 +52,19 @@ text("world")
 - *输入函数式、输出宏式*。handler 收到的参数与 body 总是规约完成的；返回的森林是未规约的，重新进入不动点。规约纯且 total（无副作用、未知名字不报错），输入侧先规约永远安全——模型因此不需要 quote。
 - *诊断*。类型错误、向不接受 body 的函数传 body 产生诊断；未知名字不产生规约诊断。单个 call 的失败只收集诊断并跳过它，兄弟节点继续（sibling recovery）；诊断不伪装成成功。
 
-== 值域：Content 即 call 森林
+== 值域：Item 即 call 森林
 
 函数永远返回 `Value`；内容值就是 call 森林：
 
 ```rust
 enum Value {
-    None, Bool, Int, Float, String,
-    Content(Forest),        // Forest = Vec<Node>，call 森林
+    Unit, Bool, Int, Float, String,
+    Item(Forest),        // Forest = Vec<Node>，call 森林
     Function(..),
 }
 ```
 
-- handler 返回 `Content` 森林后，不动点继续在其中寻找有 handler 的 call——"返回内容"与"返回待规约流"是同一件事，函数没有"规约完再返回"的义务；
+- handler 返回 `Item` 森林后，不动点继续在其中寻找有 handler 的 call——"返回内容"与"返回待规约流"是同一件事，函数没有"规约完再返回"的义务；
 - 标量与 `Function` 不参与规约；出现在内容位置是类型错误，产生诊断。
 
 == 名字与 namespace
@@ -143,9 +144,9 @@ handler 通过返回包含新 call 的森林表达组合；组件返回后，宿
 
 当前实现已与上述核心模型对齐：
 
-- `notist-eval::Value::Content` 持有 `Vec<Node>`；handler 统一返回 `Value`，内容结果重新进入 node engine 的不动点。handler 原样返回自身 call 视为本轮无变化；持续产生新的自返 call 由深度与调用预算兜底。
+- `notist-eval::Value::Item` 持有 `Vec<Node>`；handler 统一返回 `Value`，内容结果重新进入 node engine 的不动点。handler 原样返回自身 call 视为本轮无变化；持续产生新的自返 call 由深度与调用预算兜底。
 - component `evaluate` 返回的 `Node` 森林由宿主统一继续规约；预算只统计实际 handler dispatch。core 与插件的差异只在注册所有权，handler 输出可以提及任意名字。
-- lower、reduce、shape 都直接消费和产出 `Node` 森林。`ElementTree` 只是成型后的 Node 容器；旧的 `Content` / `ElementInstance` / `InstanceNode` / `FieldValue` 和 Stream/Leaf 桥接已删除。
+- lower、reduce、shape 都直接消费和产出 `Node` 森林。`ElementTree` 只是成型后的 Node 容器；旧的 `Item` / `ElementInstance` / `InstanceNode` / `FieldValue` 和 Stream/Leaf 桥接已删除。
 - HTML target 在 project 阶段使用独立的 `HtmlProjectionRegistry`：插件投影与未知调用 fallback 先生成 `html::*` 数据节点，再由 serializer 输出标签、属性和子森林；语义 registry 不注册 `html::*`。
 
 == 已裁定 / 待定
@@ -153,5 +154,5 @@ handler 通过返回包含新 call 的森林表达组合；组件返回后，宿
 - 已裁定：一切皆 call；`Node` 是唯一表示；"leaf" 只是阶段术语，不是类型。
 - 已裁定：规约是声明式不动点；预算只记 handler 调用；遍历策略不属于语义。
 - 已裁定：名字所有权只在注册侧；提及自由，`core::*` 与其他 package 同权。
-- 已裁定：函数永远返回 `Value`；`Content` 值即 call 森林。
-- 待定：whitespace-only `core::text` 的 framing 语义（实现现状：段落起点的空白被丢弃），与 #<vault::designs::pipeline::structure/已裁定 / 待定> 联动。
+- 已裁定：函数永远返回 `Value`；`Item` 值即 call 森林。
+- 待定：whitespace-only `core::text` 的 framing 语义（实现现状：段落起点的空白被丢弃），与 #<vault::designs::pipeline::structure/Structure Stage/已裁定 / 待定> 联动。

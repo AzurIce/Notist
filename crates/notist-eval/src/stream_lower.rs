@@ -11,13 +11,16 @@ use std::collections::{HashMap, VecDeque};
 
 use notist_model::{Node, NodeValue, TextRange};
 use notist_syntax::{
-    Attributes, Call, EmbeddedExpression, ExpressionKind, Markup, MarkupItem,
-    UserFunctionDefinition,
+    Call, EmbeddedExpression, ExpressionKind, Markup, MarkupItem, UserFunctionDefinition,
 };
 
 use crate::lower;
-use crate::type_system::Value;
+use crate::type_system::{DictKey, Value};
 use crate::{AnnotationEntry, EvalDiagnostic, FunctionRegistry};
+
+/// A materialized attribute set: canonical `key = display` pairs, ready for
+/// the property table and every query consumer.
+pub type MaterializedAttributes = Vec<(String, String)>;
 
 /// The result of the lowering pass.
 #[derive(Clone, Debug, Default, PartialEq)]
@@ -31,7 +34,7 @@ pub struct Lowered {
     /// Side annotation table.
     pub annotations: Vec<AnnotationEntry>,
     /// Module-level attributes.
-    pub module_attributes: Vec<Attributes>,
+    pub module_attributes: Vec<MaterializedAttributes>,
 }
 
 /// Lowers a document Markup tree into a call forest with pre-seeded root
@@ -127,8 +130,8 @@ struct LowerState<'a> {
     nodes: Vec<Node>,
     diagnostics: Vec<EvalDiagnostic>,
     annotations: Vec<AnnotationEntry>,
-    module_attributes: Vec<Attributes>,
-    pending_annotations: Vec<(Attributes, TextRange)>,
+    module_attributes: Vec<MaterializedAttributes>,
+    pending_annotations: Vec<(MaterializedAttributes, TextRange)>,
     pending_block_start: Option<TextRange>,
     pending_block_end: usize,
 }
@@ -137,14 +140,8 @@ impl LowerState<'_> {
     fn lower_markup(&mut self, markup: &Markup) {
         for item in &markup.items {
             match item {
-                MarkupItem::BlockAnnotation(annotation) => {
-                    self.pending_annotations.push((
-                        annotation.attributes.clone(),
-                        annotation.range.shifted(self.base_offset),
-                    ));
-                }
-                MarkupItem::ModuleAnnotation(annotation) => {
-                    self.module_attributes.push(annotation.attributes.clone());
+                MarkupItem::Annotation(annotation) => {
+                    self.lower_annotation(annotation);
                 }
                 MarkupItem::Embedded(embedded) => self.lower_embedded(embedded),
                 MarkupItem::Heading(sugar) => {
@@ -246,14 +243,49 @@ impl LowerState<'_> {
         self.push_node(node);
     }
 
-    fn push_node(&mut self, node: Node) {
+    fn push_node(&mut self, mut node: Node) {
         let parbreak = node.is_core("parbreak");
         let blank = node.is_core("text")
             && node.get("text").is_some_and(
                 |value| matches!(value, NodeValue::String(text) if text.trim().is_empty()),
             );
+        let plain_text = node.is_core("text");
+        // A pending annotation binds forward to the next block, so a block
+        // start with pending annotations is that annotation's target. Plain
+        // text only accumulates into a paragraph: its span stays honest and
+        // the annotation is carried by the entry interval instead.
+        let binds_pending = !self.pending_annotations.is_empty()
+            && self.pending_block_start.is_none()
+            && !parbreak
+            && !blank
+            && !plain_text;
+        let leading_start = if binds_pending {
+            self.pending_annotations
+                .iter()
+                .map(|(_, range)| range.start)
+                .min()
+        } else {
+            None
+        };
         let inline = !node.block && !parbreak;
-        self.track_pending_annotation(node.range, inline, parbreak, blank);
+        // Block spans are content-honest: a block starts at its declaring
+        // annotation (or its first token) and ends at the line break that
+        // terminates it. Inter-block blank lines belong to no node — spans
+        // are facts, and window policies (region display, point-query
+        // fallbacks) compose their own coverage over them (2026-09-02
+        // ruling).
+        if node.block {
+            if let Some(&b'\n') = self.source.as_bytes().get(node.range.end) {
+                node.range.end += 1;
+            }
+        }
+        self.track_pending_annotation(node.range, inline, parbreak, blank, plain_text);
+        if let Some(leading) = leading_start {
+            // Leading annotations belong to the block they declare
+            // (2026-09-01 ruling): the block's span starts at the annotation,
+            // so the declaring bytes are governed by what they declare.
+            node.range.start = node.range.start.min(leading);
+        }
         self.nodes.push(node);
     }
 
@@ -263,6 +295,7 @@ impl LowerState<'_> {
         inline: bool,
         parbreak: bool,
         blank: bool,
+        plain_text: bool,
     ) {
         if self.pending_annotations.is_empty() {
             return;
@@ -273,7 +306,9 @@ impl LowerState<'_> {
             }
             self.pending_block_start = Some(range);
             self.pending_block_end = range.end;
-            if !inline {
+            // An inline element (scope, call node) is bound immediately; only
+            // plain text accumulates into a paragraph target.
+            if !inline || !plain_text {
                 let end = self.pending_block_end;
                 self.flush_pending_annotations(end);
             }
@@ -294,8 +329,10 @@ impl LowerState<'_> {
         let mut remaining = Vec::new();
         for (attributes, annotation_range) in self.pending_annotations.drain(..) {
             if annotation_range.start < start.start {
+                // A leading annotation governs from its own bytes on: the
+                // entry starts at the annotation, not at the block it binds to.
                 self.annotations.push(AnnotationEntry {
-                    range: TextRange::new(start.start, block_end),
+                    range: TextRange::new(annotation_range.start, block_end),
                     attributes,
                 });
             } else {
@@ -312,7 +349,7 @@ impl LowerState<'_> {
         }
         for (_, range) in self.pending_annotations.drain(..) {
             self.diagnostics.push(EvalDiagnostic {
-                message: "block annotation `@[...]` is not followed by a block".into(),
+                message: "annotation `@(...)` is not followed by an Item".into(),
                 range,
             });
         }
@@ -363,14 +400,39 @@ impl LowerState<'_> {
         nested.nodes
     }
 
-    fn lower_embedded(&mut self, embedded: &EmbeddedExpression) {
-        if !embedded.attributes.items.is_empty() || embedded.attributes.id.is_some() {
-            self.annotations.push(AnnotationEntry {
-                range: embedded.scope_range.shifted(self.base_offset),
-                attributes: embedded.attributes.clone(),
+    /// Evaluates an annotation payload and queues the materialized Dict on
+    /// the following Item (or the module root for `@!`). There is no
+    /// fallback: a payload that does not evaluate to a Dict is a diagnostic
+    /// and the annotation is dropped.
+    fn lower_annotation(&mut self, annotation: &notist_syntax::Annotation) {
+        let (value, mut payload_diagnostics) = lower::evaluate_expression_fragment(
+            self.source,
+            &annotation.expression,
+            self.base_offset,
+            self.registry,
+            0,
+            &self.user_functions,
+            self.variables.clone(),
+        );
+        self.diagnostics.append(&mut payload_diagnostics);
+        let Value::Dict(entries) = value else {
+            self.diagnostics.push(EvalDiagnostic {
+                message: format!("annotation must evaluate to a Dict, got {}", value.ty()),
+                range: annotation.range.shifted(self.base_offset),
             });
+            return;
+        };
+        let materialized =
+            materialize_attributes(&entries, self.base_offset, &mut self.diagnostics);
+        if annotation.module {
+            self.module_attributes.push(materialized);
+        } else {
+            self.pending_annotations
+                .push((materialized, annotation.range.shifted(self.base_offset)));
         }
+    }
 
+    fn lower_embedded(&mut self, embedded: &EmbeddedExpression) {
         match &embedded.expression.kind {
             ExpressionKind::Let { name, value, .. } => {
                 let (value, mut diagnostics) = lower::evaluate_expression_fragment(
@@ -406,6 +468,38 @@ impl LowerState<'_> {
                     // reducer decides — handler dispatch or terminal leaf.
                     self.lower_unknown_call(call);
                 }
+            }
+            ExpressionKind::Content(block) => {
+                // 手动 scope `#[...]` at markup position: its product is a
+                // `scope` call — the ScopeItem keeps its content as children
+                // in the Item tree (model.not). Content in code position
+                // (`#let x = #[...]`, branches, arguments) stays a plain
+                // Item-literal forest.
+                let (value, mut diagnostics) = lower::evaluate_expression_fragment(
+                    self.source,
+                    &embedded.expression,
+                    self.base_offset,
+                    self.registry,
+                    0,
+                    &self.user_functions,
+                    self.variables.clone(),
+                );
+                self.diagnostics.append(&mut diagnostics);
+                let forest = match value {
+                    Value::Content(forest) => forest,
+                    other => {
+                        return self
+                            .insert_value(other, embedded.scope_range.shifted(self.base_offset))
+                    }
+                };
+                let mut node = Node::block_call("scope", block.range.shifted(self.base_offset));
+                // Inline one-liner scopes join the surrounding text flow;
+                // scopes spanning blocks interrupt it.
+                node.block = forest
+                    .iter()
+                    .any(|child| child.block || child.is_core("parbreak"));
+                node.children = forest;
+                self.push_node(node);
             }
             _ => {
                 let (value, mut diagnostics) = lower::evaluate_expression_fragment(
@@ -546,7 +640,7 @@ impl LowerState<'_> {
         range: TextRange,
     ) {
         let value = match value {
-            Value::None => NodeValue::None,
+            Value::Unit => NodeValue::None,
             Value::Bool(value) => NodeValue::Bool(value),
             Value::Int(value) => NodeValue::Int(value),
             Value::Float(value) => NodeValue::Float(value),
@@ -556,6 +650,13 @@ impl LowerState<'_> {
             Value::Function(_) => {
                 self.diagnostics.push(EvalDiagnostic {
                     message: "function values cannot live on content nodes".into(),
+                    range,
+                });
+                return;
+            }
+            Value::Array(_) | Value::Dict(_) => {
+                self.diagnostics.push(EvalDiagnostic {
+                    message: "collection values cannot live on content nodes".into(),
                     range,
                 });
                 return;
@@ -592,7 +693,7 @@ impl LowerState<'_> {
             Value::Int(value) => self.push_text_leaf(value.to_string(), range),
             Value::Float(value) => self.push_text_leaf(value.to_string(), range),
             Value::Bool(value) => self.push_text_leaf(value.to_string(), range),
-            Value::None => {}
+            Value::Unit => {}
             other => self.diagnostics.push(EvalDiagnostic {
                 message: format!("cannot insert {} into Markup", other.ty()),
                 range,
@@ -604,7 +705,6 @@ impl LowerState<'_> {
         self.push_node(Node::call("core::text", range).arg("text", text));
     }
 }
-
 
 /// Lowers one Markup text run into inline `core::*` nodes, splitting blank
 /// lines into `core::parbreak` separators and scanning the inline sugar
@@ -797,4 +897,62 @@ fn find_unescaped_sequence(
         bytes[cursor..].starts_with(delimiter)
             && preceding_backslashes(bytes, 0, cursor).is_multiple_of(2)
     })
+}
+
+/// Flattens an evaluated Dict into canonical `key = display` pairs. Values
+/// display without quotes (matching the attrs surface); nested collections
+/// render in source-like form.
+fn materialize_attributes(
+    entries: &[(DictKey, Value)],
+    base_offset: usize,
+    diagnostics: &mut Vec<EvalDiagnostic>,
+) -> MaterializedAttributes {
+    entries
+        .iter()
+        .map(|(key, value)| {
+            (
+                key.to_string(),
+                value_display(value, base_offset, diagnostics),
+            )
+        })
+        .collect()
+}
+
+fn value_display(
+    value: &Value,
+    base_offset: usize,
+    diagnostics: &mut Vec<EvalDiagnostic>,
+) -> String {
+    match value {
+        Value::Unit => "()".to_owned(),
+        Value::Bool(value) => value.to_string(),
+        Value::Int(value) => value.to_string(),
+        Value::Float(value) => value.to_string(),
+        Value::String(value) => value.clone(),
+        Value::Array(elements) => {
+            let inner = elements
+                .iter()
+                .map(|element| value_display(element, base_offset, diagnostics))
+                .collect::<Vec<_>>()
+                .join(", ");
+            format!("({inner},)")
+        }
+        Value::Dict(entries) => {
+            let inner = entries
+                .iter()
+                .map(|(key, value)| {
+                    format!("{key}: {}", value_display(value, base_offset, diagnostics))
+                })
+                .collect::<Vec<_>>()
+                .join(", ");
+            format!("({inner})")
+        }
+        Value::Content(_) | Value::Function(_) | Value::Target(_) => {
+            diagnostics.push(EvalDiagnostic {
+                message: "annotation values must be literal Dict entries".into(),
+                range: TextRange::new(base_offset, base_offset),
+            });
+            "()".to_owned()
+        }
+    }
 }

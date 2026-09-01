@@ -1,7 +1,7 @@
-@![implementation = "aligned"]
+@!(implementation: "aligned")
 = Parse Stage
 
-本文定义 Notist 的第一阶段：把 source text 解析为 mode-aware 语法树。Markup 与 Code 的完整表面语法见 #<vault::designs::language::markup-surface> 与 #<vault::designs::language::code-grammar>；语法糖语义见 #<vault::designs::language::syntax-sugar>。
+本文定义 Notist 的第一阶段：把 source text 解析为 mode-aware 语法树。Markup 与 Code 的完整表面语法见 #<vault::grammar::markup> 与 #<vault::grammar::code>；语法糖语义见 #<vault::grammar::markup>。
 
 ```text
 source: String ── parse ──> Parse {
@@ -14,7 +14,7 @@ source: String ── parse ──> Parse {
 
 - 输入：一个 UTF-8 source string，以及调用方提供的 absolute base offset。
 - 输出：`Parse`。
-  - `root: Markup`：文档根节点。Document root 与 Content literal body 共享 `Markup` 类型。
+  - `root: Markup`：文档根节点。Document root 与 Item literal body 共享 `Markup` 类型。
   - `errors: Vec<SyntaxError>`：可恢复语法错误，每个错误带 byte range。
 - parse 不做名称解析、不查函数签名、不执行用户代码。
 
@@ -25,12 +25,12 @@ parser 默认处于 Markup 模式。Markup 扫描在遇到下列结构时切换�
 | 结构 | 行为 |
 |---|---|
 | `#expr` | 嵌入 Code 表达式，记录 scope range 与完整 range |
-| `[markup]` | Content literal；方括号内回到 Markup 模式 |
+| `[markup]` | Item literal；方括号内回到 Markup 模式 |
 | 反引号 / fenced raw | 保护扫描，不把内容当 Markup/Code |
 | `#<target>` | Target 字面量扫描（`<` 到未转义 `>`） |
-| `@[...]` / `@![...]` | 属性列表，不是 Markup 内容 |
+| `@(class: ..)` / `@!(class: ..)` | 属性列表，不是 Markup 内容 |
 
-Markup 与 Code 的边界规则由 #<vault::designs::language::markup-surface/嵌入的边界> 定义；parser 只消费静态边界，不依赖函数签名判断 `[` / `-` 含义。
+Markup 与 Code 的边界规则由 #<vault::grammar::markup/Markup/最小骨架/嵌入的边界> 定义；parser 只消费静态边界，不依赖函数签名判断 `[` / `-` 含义。
 
 == Markup 节点
 
@@ -55,22 +55,22 @@ MarkupItem =
 
 ```text
 ExpressionKind =
-  | None | Bool | Int | Float | String
-  | Content(ContentBlock) | Name | Call
+  | Unit | Bool | Int | Float | String
+  | Item(ContentBlock) | Name | Call
   | Binary | Unary | Block | Let | If | Lambda
   | Import | LetFunction | Parenthesized
   | Error
 ```
 
 - ContentBlock 的 body 是递归的 `Markup`；
-- Call 记录 name、arguments 与 trailing Content blocks；
+- Call 记录 name、arguments 与 trailing Item blocks；
 - Error 是保留源码范围的可恢复占位，不是合法值。
 
 == 受保护扫描
 
-- raw literal 的 delimiter、inline/fenced 形态与关闭规则见 #<vault::designs::language::syntax-sugar/raw>；
+- raw literal 的 delimiter、inline/fenced 形态与关闭规则见 #<vault::grammar::markup/Markup/语法糖/raw>；
 - Target 字面量的 `<...>` 内是路径拼写，不再扫描 Markup；
-- Code 注释与 string literal 按 #<vault::designs::language::code-grammar> 扫描，不泄漏到外层结构。
+- Code 注释与 string literal 按 #<vault::grammar::code> 扫描，不泄漏到外层结构。
 
 == 错误恢复
 
@@ -84,7 +84,7 @@ parser 是总函数：错误记录到 `Parse.errors`，当前节点以 `Error` �
 
 - *S1 顺序*：`Markup.items` 与表达式子节点保持 source order。
 - *S2 Range*：每个节点携带半开 byte range；parser 不改变 source 文本。
-- *S3 无语义猜测*：parse 不 resolve 名字、不查 registry、不猜 trailing Content 属于哪个形参。
+- *S3 无语义猜测*：parse 不 resolve 名字、不查 registry、不猜 trailing Item 属于哪个形参。
 - *S4 糖保留身份*：语法糖以专用节点保留，直到 lowering 才替换为 `core::*` intrinsic 调用。
 
 == Conformance

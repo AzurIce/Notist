@@ -234,7 +234,7 @@ v3 是有意 breaking change：
 === Phase D：Skill 与验收
 
 - Skill 改为：search 找候选 -> read 取证；locate 找字面/正则；需要更多才 `next`；穷举与否定必须 complete；完整数据 export。
-- 用固定任务/模型/seed 重跑成本与 pass@1，比较 v2 与 v3 的 per-task bytes 和调用轮数。
+- 用固定任务/模型/seed 重跑成本与 pass\@1，比较 v2 与 v3 的 per-task bytes 和调用轮数。
 - 明确验收：子命令 help 中没有任何 budget/paging/rendering flag；所有 collection 都只有一个 `next` 续读；Agent 不需要接触 page/budget/coverage。
 
 == 验收

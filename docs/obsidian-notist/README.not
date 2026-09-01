@@ -1,5 +1,6 @@
 = obsidian-notist
 
+@(type: "user", class: "user")
 #[
   现在 Notist 需要一个 GUI 来承载人机交互体验的试验。
 
@@ -7,7 +8,7 @@
 
   初始调查由 kimi/k3 整理在了 #<vault::ai::2026-08-24 obsidian plugin feasibility research> 中。
 
-  #<vault::ai::2026-08-24 obsidian plugin feasibility research/Obsidian 双链与图谱引擎专题> 中提到 Obsidian 自己的双链、图谱等引擎只对 Markdown 生效且无法干预。因此我们大概需要自己实现一整套基于 Notist 且与 Obsidian 自身引擎独立的系统。
+  #<vault::ai::2026-08-24 obsidian plugin feasibility research/Obsidian 插件接入方案可行性调研/Obsidian 双链与图谱引擎专题> 中提到 Obsidian 自己的双链、图谱等引擎只对 Markdown 生效且无法干预。因此我们大概需要自己实现一整套基于 Notist 且与 Obsidian 自身引擎独立的系统。
 
   == 想法
 
@@ -17,8 +18,8 @@
   目前的想法是，我们将一个 Obsidian Vault 分为两个 World，一个是它本身原生的那套 Markdown World，一个是我们的 Notist World。
 
   在 UI 上面，或许有一个地方（随手能碰到的地方）有一个 World 切换的滑块（类似 Trae 编辑器最上方标题栏处的那种切换滑块），一经切换则将整个 UI 切换到对应 World。两个 World 不互相干扰。
-  #<vault::ai::2026-08-24 obsidian plugin feasibility research/World 切换 UI 专题>
-]@type=user,.user
+  #<vault::ai::2026-08-24 obsidian plugin feasibility research/Obsidian 插件接入方案可行性调研/World 切换 UI 专题>
+]
 
 ---
 
@@ -47,7 +48,7 @@ view + 渲染 + 基础编辑（MVP）→ 搜索/backlinks 面板 → graph → �
 - #<vault::obsidian-notist::dual-world>：当前插件的双 World 交互契约（切换机制、隔离规则、取舍与脆弱点）。
 - #<vault::obsidian-notist::highlight>：.not 编辑器语法高亮方案（复用 tree-sitter-notist + web-tree-sitter，含打包、增量同步、capture 映射与验证计划）。
 - #<vault::obsidian-notist::lsp>：.not 编辑器接入 notist LSP 的方案（桌面 spawn `notist lsp` 走 stdio、自写薄 JSON-RPC client、文档同步与 CM 集成点、降级策略）。
-- #<vault::ai::2026-08-24 obsidian plugin feasibility research>：本模块的可行性调研与决策记录；其中 #<vault::ai::2026-08-24 obsidian plugin feasibility research/Obsidian 双链与图谱引擎专题> 详查官方引擎的实现与扩展性——结论是主走自建索引与渲染（语义权威本就在 notist-service），注入 `resolvedLinks` 白嫖官方 graph 至多作可降级的可选增强。
+- #<vault::ai::2026-08-24 obsidian plugin feasibility research>：本模块的可行性调研与决策记录；其中 #<vault::ai::2026-08-24 obsidian plugin feasibility research/Obsidian 插件接入方案可行性调研/Obsidian 双链与图谱引擎专题> 详查官方引擎的实现与扩展性——结论是主走自建索引与渲染（语义权威本就在 notist-service），注入 `resolvedLinks` 白嫖官方 graph 至多作可降级的可选增强。
 - #<vault::ai::2026-08-17 web ui obsidian-like editor research>：CM6 选型、.not 语法接入两路径、LSP-over-WS。
 - #<vault::ai::2026-08-18 notist plugin system design>：含 Obsidian 插件机制调研。
 - 先例：Excalidraw（Obsidian 内独立世界）、obsidian-mermaid-view（registerExtensions + 三模式 view）、Code Workbench（外部 LSP client）。

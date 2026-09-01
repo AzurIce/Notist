@@ -23,7 +23,7 @@
 == Obsidian 插件 API 能力
 
 - *自定义扩展名一等支持*：`registerView` + `registerExtensions(["not"], viewType)`，继承 `TextFileView` 即可让 .not 进文件树并可编辑。先例：Excalidraw、obsidian-mermaid-view、Code Workbench。
-- *编辑器*：自定义 view 内可自建 CM6，`@codemirror/*` 与 `@lezer/*` 由宿主运行时提供（esbuild external，不打进 bundle）；StreamLanguage 起步、Lezer grammar 升级均可；Live Preview 风格 `Decoration.replace` + Widget 是成熟模式。`registerEditorExtension` 只对官方 markdown 编辑器生效，与 .not 无关。
+- *编辑器*：自定义 view 内可自建 CM6，`\@codemirror/*` 与 `\@lezer/*` 由宿主运行时提供（esbuild external，不打进 bundle）；StreamLanguage 起步、Lezer grammar 升级均可；Live Preview 风格 `Decoration.replace` + Widget 是成熟模式。`registerEditorExtension` 只对官方 markdown 编辑器生效，与 .not 无关。
 - *渲染钩子*：`registerMarkdownPostProcessor` / `registerMarkdownCodeBlockProcessor('not', ...)` 只作用于 markdown——可覆盖 .md 笔记内嵌 notist 片段，与 .not 文件本身无关。
 - *外部进程*：桌面端 Electron 可直接 `child_process.spawn`；移动端无 Node API，用了必须 `isDesktopOnly: true`。LSP client 类插件已有先例（Code Workbench：发现已安装 server、opt-in、不捆绑）。审核对执行外部进程类插件趋严（2026 年 Shell Commands 滥用事件），打包/下载二进制需在 README 充分披露。
 - *WASM*：纯解析/渲染代码走 wasm-bindgen（`wasm32-unknown-unknown`）两端通用，有官方推荐 Rust 模板；WASI 组件（wasip1/p2）不能直接在浏览器跑（需 polyfill/jco transpile），notist 本体依赖 wasmtime 不可编 wasm，只能拆 `notist-syntax`/`notist-html` 单独编。

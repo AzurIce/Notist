@@ -1,4 +1,4 @@
-@![implementation = "partial"]
+\@!(implementation: "partial")
 = obsidian-notist 语义面板设计
 
 本文调查 Notist World 中大纲、入链、出链与符号导航应如何替换 Obsidian 的 Markdown 数据源，并给出隐藏策略、客户端分层、数据新鲜度与落地顺序。总原则承接 #<vault::obsidian-notist>：Obsidian 只提供 workspace 壳层，Notist 语义的唯一权威仍是 notist-service；既不能把 `.not` 伪装成 Markdown 元数据，也不能在插件端另写一套 Wiki Reference 解释器。
@@ -113,7 +113,7 @@ Notist World 对错误语义叶子采用两层组合：
 | tags / properties | 长期隐藏 | service 有部分 attribute 数据，但尚无稳定 LSP query 与对应交互设计 |
 | Excalidraw 侧栏 | 长期隐藏 | 它属于第三方 Markdown / canvas 工作流，和 Notist 语义没有可复用契约 |
 
-不采用向 Obsidian `metadataCache.resolvedLinks` 注入 `.not` 的路线。#<vault::ai::2026-08-24 obsidian plugin feasibility research/Obsidian 双链与图谱引擎专题> 已确认这是内部 API 赌博，也会破坏“语义唯一权威在 notist-service”的边界。graph 未来应读取同一语义 snapshot 自绘，不能成为本阶段面板的前置依赖。
+不采用向 Obsidian `metadataCache.resolvedLinks` 注入 `.not` 的路线。#<vault::ai::2026-08-24 obsidian plugin feasibility research/Obsidian 插件接入方案可行性调研/Obsidian 双链与图谱引擎专题> 已确认这是内部 API 赌博，也会破坏“语义唯一权威在 notist-service”的边界。graph 未来应读取同一语义 snapshot 自绘，不能成为本阶段面板的前置依赖。
 
 == 大纲：活动文档的 evaluated heading tree
 

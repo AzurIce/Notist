@@ -1,4 +1,4 @@
-@![implementation = "partial"]
+@!(implementation: "partial")
 = Search Modes and Retrieval Index
 
 本文是 A2 检索语义与索引的独立成篇，从归档的历史混合文档中独立成篇。分页预算、cursor 与 selector 见 #<vault::designs::host::query-contract>；Analyzer 与 snapshot 见 #<vault::designs::host::analyzer-snapshot>。
@@ -27,7 +27,7 @@ Core query 保留四种模式：`lexical|exact|fuzzy|regex`。CLI 不再暴露 `
 | `tag` | 属性 tag | 4.0 |
 | `module` | ModulePath segment 与完整路径 | 6.0 |
 | `path` | Vault-relative path 与文件 stem | 3.0 |
-| `body` | 普通 authored Content | 1.0 |
+| `body` | 普通 authored Item | 1.0 |
 | `raw` | Raw 内容 | 0.7 |
 | `comment` | source comment | 不默认检索 |
 
@@ -39,7 +39,7 @@ Exact（CLI `locate`）默认大小写敏感，`--ignore-case` 显式启用；�
 
 === Scope、Excerpt 与分组
 
-`--scope` 与 `--exclude-scope` 都接受精确绝对 ModulePath prefix，可重复：include 取并集，exclude 在 include 之后生效。匹配按段边界进行——`vault::foo` 只命中自身与 `vault::foo::*`，不命中 `vault::foobar`；完整 CLI 语义见 #<vault::cli::inspect/身份与坐标>。`--field`、scope 与访问控制在 candidate generation 前生效（Vault 外路径永远不进入 index 或 result），不能先取全 Vault 候选再过滤。
+`--scope` 与 `--exclude-scope` 都接受精确绝对 ModulePath prefix，可重复：include 取并集，exclude 在 include 之后生效。匹配按段边界进行——`vault::foo` 只命中自身与 `vault::foo::*`，不命中 `vault::foobar`；完整 CLI 语义见 #<vault::cli::inspect/CLI Inspect: Agent Query and Navigation/身份与坐标>。`--field`、scope 与访问控制在 candidate generation 前生效（Vault 外路径永远不进入 index 或 result），不能先取全 Vault 候选再过滤。
 
 ```text
 SearchHit {

@@ -19,7 +19,7 @@ target_literal 成为唯一的「开环」成对定界符的问题已修：新�
 - *import 路径补全上下文*：`#import <path>` 进行中从未有任何补全（`targets()` 按设计不含 import，且 `rfind("#<")` 兜底匹配不到 `#import <`）。新增纯词法识别 `import_target_path_start` + `import_path_context`（未闭合路径、已闭合 `>::{` 且光标在路径内均有效；`>` 后必须紧跟 `::`；选择器位置不给路径候选）。注意既有怪癖：输入 `self::t` 只匹配以 self 形式可达的目标，兄弟模块给出 `super::` 风格不匹配即空——与 wiki target 行为一致，非本次引入。
 - *LSP 编码协商*：改用 `initialize_start`/`initialize_finish` 两段握手（lsp-server 的 `initialize` 不支持先读参数再回结果），按 `capabilities.general.positionEncodings` 协商 UTF-16（默认/优先）或 UTF-8，编码进 `ClientSource`/`RequestContext`/`BuildJob` 穿线；`LineIndex` 新增 `utf8_position`/`offset_utf8`。
 - *serverInfo* 补齐（name `notist`，version 取 CARGO_PKG_VERSION）。
-- highlights.scm 双重捕获去重（保留 `@module`，弃 `@link_uri`），target 定界符补 `@punctuation.bracket`；Rust binding 导出 folds/indents/outline/brackets 四个 query；README 记录 wasm 构建命令。
+- highlights.scm 双重捕获去重（保留 `\@module`，弃 `\@link_uri`），target 定界符补 `\@punctuation.bracket`；Rust binding 导出 folds/indents/outline/brackets 四个 query；README 记录 wasm 构建命令。
 
 == 下游同步
 

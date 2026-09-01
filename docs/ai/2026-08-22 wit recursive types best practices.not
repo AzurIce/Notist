@@ -82,7 +82,7 @@ lukewagner 的立场：DOM/AST 这类巨大且长期存活的结构本就不该�
 notist 的场景是受 fuel/depth 预算约束的规约树请求/响应，几个关键考量：
 
 - 输入不可信：插件返回值本来就要过 `validate_nodes` 做节点数校验（`crates/notist-plugin-host/src/wire.rs` 的 `validate_nodes`）。arena 方案不会省掉这层，索引完整性检查与原校验属于同一类工作。
-- schema 演化：WIT 的 record 加字段、variant 加 case 都是 breaking change（须走 `@since` / `@unstable` feature gate）；serde JSON 宽松得多。插件 ABI 仍在演进期，这一点很实际。
+- schema 演化：WIT 的 record 加字段、variant 加 case 都是 breaking change（须走 `\@since` / `\@unstable` feature gate）；serde JSON 宽松得多。插件 ABI 仍在演进期，这一点很实际。
 - guest 语言生态：bytes + JSON 意味着任何语言的插件只需一个 JSON 库。
 
 因此维持现状（Phase E 的 bytes WIT）是正确选择；`wire.rs` 头部注释「recursive shape cannot be expressed directly in WIT」与上游事实一致。后续若上游 `box<T>` 或递归类型落地，再评估迁移原生类型化 ABI。

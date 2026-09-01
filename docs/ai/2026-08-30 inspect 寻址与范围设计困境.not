@@ -42,7 +42,7 @@ ancestors 已经输出"重叠子树 + 每层属性"，计划中 attrs 的增量�
 == 未决清单
 
 - R11 草案整体未裁决——尤其是兄弟提升规则（方案 B）与 `--item` 命名。
-- R6 `@![...]` 沿 Module 树继承未实施；实施后 ancestors 根行体现模块链。
-- 注解覆盖缺口未修复：`parse.annotations()` 只收集后缀注解——块级 `@[id=...]` 不可寻址、块级 `@[#tag]` 不进检索 tag 字段、`--attr` 依赖同一修复。
+- R6 `\@!(class: ..)` 沿 Module 树继承未实施；实施后 ancestors 根行体现模块链。
+- 注解覆盖缺口未修复：`parse.annotations()` 只收集后缀注解——块级 `\@(id: ...)` 不可寻址、块级 `\@(tag: true)` 不进检索 tag 字段、`--attr` 依赖同一修复。
 - search 复核条件：使用数据表明 Agent 均以 grep 自足则退场。
 - items/ancestors 行内零路径已执行；若将来需要坐标回声再议。

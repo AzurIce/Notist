@@ -2,7 +2,7 @@
 
 Notist 是一门带有静态类型系统的文档编程语言。它只有两个语法模式：默认处于 Markup 模式书写正文，`#` 把求值表达式嵌入正文（Code 模式）——写法与感受像标记语言，能力却来自真实的求值。
 
-一个 `.not` 文件既是可读的文本，也是一个有类型的文档程序：解析、静态检查、求值三个阶段把源码变成一棵 `Content` 树（文档）、一个环境（bindings）与一张属性表（annotations）。检查、预览与静态站点构建都消费这同一份求值结果。
+一个 `.not` 文件既是可读的文本，也是一个有类型的文档程序：解析、静态检查、求值三个阶段把源码变成一棵 `Item` 树（文档）、一个环境（bindings）与一张属性表（annotations）。检查、预览与静态站点构建都消费这同一份求值结果。
 
 本文从写作者的角度介绍核心机制。精确的字符、空白与分隔规则见 #<vault::grammar>；类型与求值规则见 #<vault::types>；内置构造器见 #<vault::functions>；日常速查见 #<vault::cheatsheet>；命令行见 #<vault::cli>。
 
@@ -15,7 +15,7 @@ Notist 是一门带有静态类型系统的文档编程语言。它只有两个�
 
 = #accent
 
-#let warning(body: Content) -> Content =
+#let warning(body: Item) -> Item =
   callout(kind: "warning", body)
 
 #warning[这是一段可以通过函数构造的内容。]
@@ -26,7 +26,7 @@ Notist 是一门带有静态类型系统的文档编程语言。它只有两个�
 ```text
 bindings = {
   accent = "violet"
-  warning = (body: Content) -> Content
+  warning = (body: Item) -> Item
 }
 
 content = [
@@ -37,7 +37,7 @@ content = [
 annotations = {}   // 示例中没有标注，属性表为空
 ```
 
-`bindings` 是程序的一面——跨模块复用的入口；`content` 是文档的一面——渲染与查询消费的产物；`annotations` 是属性的一面——标注与模块元数据的唯一入口。三者来自同一次求值，却承担不同职责。这个结果如何产生：类型见 #<vault::designs::language::type-system>，属性表见 #<vault::designs::language::property-table>，求值模型见 #<vault::designs::pipeline::evaluate>，scope 见 #<vault::designs::language::scope-environment>。
+`bindings` 是程序的一面——跨模块复用的入口；`content` 是文档的一面——渲染与查询消费的产物；`annotations` 是属性的一面——标注与模块元数据的唯一入口。三者来自同一次求值，却承担不同职责。这个结果如何产生：类型见 #<vault::types>，属性表见 #<vault::designs::language::property-table>，求值模型与名称环境见 #<vault::designs::pipeline::evaluate>。
 
 == 一篇 Notist 文档
 
@@ -50,8 +50,7 @@ The language reference is #<vault::grammar>.
 
 == Status
 
-#[The documentation build passes.]@status,#verified,owner = "Alice"
-
+@(status: true, verified: true, owner: "Alice")#[The documentation build passes. 
 #callout(kind: "warning", title: [发布前检查])[
 Run `cargo test` before publishing.
 ]
@@ -63,8 +62,7 @@ notist build docs
 ]
 ````
 
-这仍然是一篇以普通文字为主体的文档：`= ` 与 `== ` 是 `heading` 的语法糖；`#callout` 与 `#details` 是产生内容的构造器；行内反引号与围栏是内置 Raw 语法；`#<vault::grammar>` 是跨文档引用；`#[...]@...` 为一段内容附加可查询的元数据。
-
+这仍然是一篇以普通文字为主体的文档：`= ` 与 `== ` 是 `heading` 的语法糖；`#callout` 与 `#details` 是产生内容的构造器；行内反引号与围栏是内置 Raw 语法；`#<vault::grammar>` 是跨文档引用；`@(todo: "...")` 为一段内容附加可查询的元数据。
 == Vault 与 Module
 
 Vault 是运行边界。一个目录通过根目录下的 `Notist.toml` 声明为 vault 根（文件可以为空——存在本身就声明根）；没有 marker 时把 worktree 根作为单个隐式 vault。跨 Vault 一律不解析名称与引用。
@@ -99,11 +97,11 @@ Module 是求值单元：每个 source-backed Module 独立求值，产生 `bind
 - `#<super::intro>` 先回到父 Module，再找到 `vault::intro`；
 - `#<vault::grammar>` 从 Vault 根开始，不受当前文档位置影响。
 
-`/ItemName` 后缀指向目标模块内的 Item（模块内实体：带 `@id` 的 scope 或标题）。标题额外拥有默认名——标题文本本身即可作为 ItemName 使用：`#<vault::guide/安装>` 可以直达标题为「安装」的节。重复标题产生歧义诊断，作者用显式 `@id` 标注消歧。带 scheme 的外部 URL（`https://` 等）语法合法，当前渲染为未解析的可见文本并产生 info 级诊断。
+`/ItemName` 后缀指向目标模块内的 Item（模块内实体：带 `id:` 标注的 scope 或标题）。标题额外拥有默认名——标题文本本身即可作为 ItemName 使用：`#<vault::guide/安装>` 可以直达标题为「安装」的节。重复标题产生歧义诊断，作者用显式 `id:` 标注 标注消歧。带 scheme 的外部 URL（`https://` 等）语法合法，当前渲染为未解析的可见文本并产生 info 级诊断。
 
 == 用构造器产生内容
 
-内置元素以 first-class 构造器函数的形式存在。命名实参写作 `name: value`，trailing Content 写在方括号里：
+内置元素以 first-class 构造器函数的形式存在。命名实参写作 `name: value`，trailing Item 写在方括号里：
 
 ```not
 #heading(level: 2)[标题]
@@ -116,7 +114,7 @@ Run `notist check docs` after editing.
 ]
 ```
 
-`#name(args)[Content]` 中的 `[...]` 先递归求值为结构化 `Content`，再绑定到签名声明的 trailing 形参：`#f(kind: "warning")[内容]` 与 `#f(kind: "warning", [内容])` 等价——trailing block 只是追加一个位置实参的语法糖，它是唯一允许跟在具名实参之后的位置实参。
+`#name(args)[Item]` 中的 `[...]` 先递归求值为结构化 `Item`，再绑定到签名声明的 trailing 形参：`#f(kind: "warning")[内容]` 与 `#f(kind: "warning", [内容])` 等价——trailing block 只是追加一个位置实参的语法糖，它是唯一允许跟在具名实参之后的位置实参。
 
 位置实参必须全部出现在具名实参之前；重复实参、未知实参、缺失必填实参与类型不匹配都产生指向调用位置的诊断。签名记号的完整规则见 #<vault::types>，内置构造器的逐一说明见 #<vault::functions>。
 
@@ -140,17 +138,16 @@ println!("Hello");
 #<target>  *加粗*  _斜体_  __下划线__  ~~删除线~~
 ````
 
-糖的语义不经过名字查找：`= 标题` 不是「调用名为 heading 的函数」，而是语法层构造。每个糖的完整规格见 #<vault::designs::language::syntax-sugar>，速查见 #<vault::cheatsheet>。
+糖的语义不经过名字查找：`= 标题` 不是「调用名为 heading 的函数」，而是语法层构造。每个糖的完整规格见 #<vault::grammar::markup>，速查见 #<vault::cheatsheet>。
 
 == 标注
 
 标注把属性绑定到求值结果（值）上，用于分类与查询：
 
 ```not
-#[The documentation build passes.]@status,#verified,.highlight,owner = "Alice"
-```
+@(status: true, verified: true, class: "highlight", owner: "Alice")#[The documentation build passes. ```
 
-四种条目：`@id` 赋 ItemName（模块内唯一）；`#tag` 是标签；`.class` 是类名；`key = value` 是键值属性。三种挂载位置：行内 postfix（紧贴在值之后）、块级前缀 `@[...]`（修饰下一个块级节点）、模块属性 `@![...]`（文件开头）。完整语法见 #<vault::designs::language::annotation-syntax>。
+四种条目：`@id` 赋 ItemName（模块内唯一）；`#tag` 是标签；`.class` 是类名；`key = value` 是键值属性。三种挂载位置：行内 postfix（紧贴在值之后）、块级前缀 `@(class: ..)`（修饰下一个块级节点）、模块属性 `@!(class: ..)`（文件开头）。完整语法见 #<vault::grammar::annotation>。
 
 == 检查、构建与预览
 

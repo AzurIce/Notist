@@ -42,4 +42,4 @@ typed-WIT arena 从「性能候选」降级为「语言开放性候选」，
 仅当出现非 Rust 插件生态需求时重启评估。
 ```
 
-core 是否 wasm 化仍由 Step 2/3 的完整实验定案；本基准说明即便 wasm 化，postcard 边界下序列化成本（每文档 ~7ms @ 千次 medium dispatch）也可接受，不再构成否决项。
+core 是否 wasm 化仍由 Step 2/3 的完整实验定案；本基准说明即便 wasm 化，postcard 边界下序列化成本（每文档 ~7ms \@ 千次 medium dispatch）也可接受，不再构成否决项。

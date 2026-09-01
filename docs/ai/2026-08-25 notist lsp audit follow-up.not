@@ -1,6 +1,6 @@
 = notist LSP 审计跟进：重写后核实
 
-对 #<vault::ai::2026-08-24 notist lsp implementation audit> 的逐条核实。该审计的问题经 #<vault::ai::2026-08-25 lsp architecture redesign> 重设计后随 `640f569`（rebuild session scheduler and close contract audit gaps）与 `39f6086`（adopt PassiveDebouncedWatcher）并入 main。核实对象：main @ `39f6086` 的 `crates/notist-cli/src/lsp.rs`（重写后 1948 行）、`crates/notist-cli/src/service.rs`、`crates/notist-service`。行号均为当前 main。
+对 #<vault::ai::2026-08-24 notist lsp implementation audit> 的逐条核实。该审计的问题经 #<vault::ai::2026-08-25 lsp architecture redesign> 重设计后随 `640f569`（rebuild session scheduler and close contract audit gaps）与 `39f6086`（adopt PassiveDebouncedWatcher）并入 main。核实对象：main \@ `39f6086` 的 `crates/notist-cli/src/lsp.rs`（重写后 1948 行）、`crates/notist-cli/src/service.rs`、`crates/notist-service`。行号均为当前 main。
 
 == 已闭环
 
@@ -47,4 +47,4 @@
 - #<vault::ai::2026-08-24 notist lsp implementation audit>：被核实的原始审计。
 - #<vault::ai::2026-08-25 lsp architecture redesign>：重设计文档（阶段 A/C/D 子集/E 已落地的自述）。
 - #<vault::obsidian-notist::lsp>：客户端接入设计方案（已按本文结论更新）。
-- 核实对象：`crates/notist-cli/src/lsp.rs`、`crates/notist-cli/src/service.rs`、`crates/notist-service/src/{lib.rs,request.rs,transport.rs,watcher.rs}`（main @ 39f6086）。
+- 核实对象：`crates/notist-cli/src/lsp.rs`、`crates/notist-cli/src/service.rs`、`crates/notist-service/src/{lib.rs,request.rs,transport.rs,watcher.rs}`（main \@ 39f6086）。

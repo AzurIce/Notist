@@ -1,6 +1,6 @@
 = LSP 接入方案
 
-obsidian-notist 插件为 `.not` 编辑器接入 notist LSP 的设计方案。插件端现状（极简 CM6、tree-sitter 高亮、双 World 壳层）见 #<vault::ai::2026-08-24 obsidian-notist editor cm6 migration> 与 #<vault::obsidian-notist::highlight>；server 端设计见 #<vault::designs::host::lsp-adapter>。本文的 server 行为描述以 2026-08-25 重写后的 `crates/notist-cli/src/lsp.rs`（LspSession 事件循环架构，main @ 39f6086）为准；重写前的审计与重写过程见 #<vault::ai::2026-08-24 notist lsp implementation audit> 与 #<vault::ai::2026-08-25 lsp architecture redesign>。
+obsidian-notist 插件为 `.not` 编辑器接入 notist LSP 的设计方案。插件端现状（极简 CM6、tree-sitter 高亮、双 World 壳层）见 #<vault::ai::2026-08-24 obsidian-notist editor cm6 migration> 与 #<vault::obsidian-notist::highlight>；server 端设计见 #<vault::designs::host::lsp-adapter>。本文的 server 行为描述以 2026-08-25 重写后的 `crates/notist-cli/src/lsp.rs`（LspSession 事件循环架构，main \@ 39f6086）为准；重写前的审计与重写过程见 #<vault::ai::2026-08-24 notist lsp implementation audit> 与 #<vault::ai::2026-08-25 lsp architecture redesign>。
 
 == 决策
 
@@ -35,7 +35,7 @@ obsidian-notist 插件为 `.not` 编辑器接入 notist LSP 的设计方案。�
 
 四层，遵守「语义组件不 import obsidian API」的纪律（#<vault::obsidian-notist>），前三层只依赖 Node 与 CM：
 
-- *`src/lsp/transport.ts`*：spawn 子进程 + Content-Length framing + JSON-RPC 请求/响应 id 关联 + 通知分发。零依赖，可直接单测。
+- *`src/lsp/transport.ts`*：spawn 子进程 + Item-Length framing + JSON-RPC 请求/响应 id 关联 + 通知分发。零依赖，可直接单测。
 - *`src/lsp/session.ts`*：LSP 会话——initialize 握手（`workspaceFolders = [vault 根]`）、生命周期（start/stop/崩溃重启）、文档注册表、请求封装（hover/completion/definition/...）、`publishDiagnostics` 落地为 per-path 存储。
 - *`src/lsp/cm.ts`*：CM 扩展工厂——diagnostics 进 `@codemirror/lint`、completion 进 `@codemirror/autocomplete`、hover 进 `hoverTooltip`、definition 键位。这两个 CM 包已在 esbuild external 清单（Obsidian 宿主提供运行时，`esbuild.config.mjs:16,20`），零 bundle 成本。
 - *壳适配层*（`main.ts` / `settings.ts`，可 import obsidian API）：server 二进制发现与设置项、状态栏指示、`onload/onunload` 生命周期挂载。
@@ -93,4 +93,4 @@ obsidian-notist 插件为 `.not` 编辑器接入 notist LSP 的设计方案。�
 - #<vault::ai::2026-08-24 notist lsp implementation audit>：重写前的实现审计（历史对照）。
 - #<vault::ai::2026-08-24 obsidian plugin feasibility research>：桌面增强层（spawn `notist lsp`）的原始调研与 Code Workbench 先例。
 - #<vault::ai::2026-08-17 web ui obsidian-like editor research>：daemon HTTP/WS 服务层与 LSP-over-WS 的二期方向。
-- 实现依据：`notist` 仓库 `crates/notist-cli/src/lsp.rs`（main @ 39f6086）、`crates/notist-cli/src/service.rs`；插件仓库 `src/main.ts`、`src/notist-view.ts`、`esbuild.config.mjs`。
+- 实现依据：`notist` 仓库 `crates/notist-cli/src/lsp.rs`（main \@ 39f6086）、`crates/notist-cli/src/service.rs`；插件仓库 `src/main.ts`、`src/notist-view.ts`、`esbuild.config.mjs`。

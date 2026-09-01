@@ -36,6 +36,10 @@ const NAV_TOP_MARKER: &str = "top";
 fn module_attributes_pinned(attributes: &[AttributeRecord]) -> bool {
     attributes.iter().any(|attribute| {
         attribute.tags.iter().any(|tag| tag == NAV_TOP_MARKER)
+            || attribute
+                .properties
+                .iter()
+                .any(|(key, value)| key == NAV_TOP_MARKER && value == "true")
             || attribute.id.as_deref() == Some(NAV_TOP_MARKER)
     })
 }
@@ -2718,12 +2722,12 @@ mod tests {
         let root = tempfile::TempDir::new_in(std::env::current_dir().unwrap()).unwrap();
         fs::write(
             root.path().join("README.not"),
-            "#<guide/intro>\n\n#heading[Home]@home",
+            "#<guide/intro>\n\n@(id: \"home\")#heading[Home]",
         )
         .unwrap();
         fs::write(
             root.path().join("guide.not"),
-            "#heading[Introduction]@intro",
+            "@(id: \"intro\")#heading[Introduction]",
         )
         .unwrap();
         let output = root.path().join("site");
@@ -2742,7 +2746,7 @@ mod tests {
         let root = tempfile::TempDir::new_in(std::env::current_dir().unwrap()).unwrap();
         fs::write(
             root.path().join("README.not"),
-            "= Home\n\n@[bid,#wip,.hero,priority=1]\n== Section\n\n#[scoped]@sid,#tag-a,k=2 text.",
+            "= Home\n\n@(id: \"bid\", wip: true, class: \"hero\", priority: 1)\n== Section\n\n@(id: \"sid\", tag: \"tag-a\", k: 2)#[scoped] text.",
         )
         .unwrap();
         let output = root.path().join("site");
@@ -2750,12 +2754,10 @@ mod tests {
         write_rendered_site(&rendered, &output, SiteOptions::default()).unwrap();
 
         let home = fs::read_to_string(output.join("index.html")).unwrap();
-        // Block-prefix `@[...]`: id on the heading, attributes on the inline wrapper.
+        // Prefix annotations: id on the heading, attributes on the wrapper.
         assert!(home.contains("id=\"bid\""), "{home}");
-        assert!(home.contains("notist-annotated hero"), "{home}");
-        assert!(home.contains("data-notist-tag=\"wip\""), "{home}");
+        assert!(home.contains("data-notist-wip=\"true\""), "{home}");
         assert!(home.contains("data-notist-priority=\"1\""), "{home}");
-        // Postfix `@...` on a manual scope keeps working through the same table.
         assert!(home.contains("id=\"sid\""), "{home}");
         assert!(home.contains("data-notist-tag=\"tag-a\""), "{home}");
         assert!(home.contains("data-notist-k=\"2\""), "{home}");
@@ -2846,9 +2848,9 @@ mod tests {
         let root = tempfile::TempDir::new_in(std::env::current_dir().unwrap()).unwrap();
         fs::write(root.path().join("Notist.toml"), "").unwrap();
         fs::write(root.path().join("README.not"), "= Home").unwrap();
-        fs::write(root.path().join("alpha.not"), "@![#top]\n= Alpha").unwrap();
-        fs::write(root.path().join("beta.not"), "@![order = 10]\n= Beta").unwrap();
-        fs::write(root.path().join("gamma.not"), "@![order = 5]\n= Gamma").unwrap();
+        fs::write(root.path().join("alpha.not"), "@!(top: true)\n= Alpha").unwrap();
+        fs::write(root.path().join("beta.not"), "@!(order: 10)\n= Beta").unwrap();
+        fs::write(root.path().join("gamma.not"), "@!(order: 5)\n= Gamma").unwrap();
         fs::write(root.path().join("delta.not"), "= Delta").unwrap();
         fs::write(root.path().join("zeta.not"), "= Zeta").unwrap();
 

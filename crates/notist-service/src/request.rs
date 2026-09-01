@@ -5,6 +5,7 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::{Duration, Instant};
 
+use notist_analysis::MaterializedAttributes;
 use notist_analysis::{
     AnalyzerConfiguration, AnnotationEntry, CompletionKind, DiagnosticKind, DocumentVersions,
     ResourceFile, ResourceKind, SignatureSet, SourceOverlays, Value, WorkspaceSnapshot,
@@ -15,7 +16,6 @@ use notist_html::{
     outline_entries_tree, register_web_component_renderer, render_element_tree_with_renderers,
 };
 use notist_model::{DefaultValue, FunctionSignature, ModulePath, Parameter, TextRange, Type};
-use notist_syntax::Attribute;
 use percent_encoding::{AsciiSet, CONTROLS, NON_ALPHANUMERIC, utf8_percent_encode};
 use serde::{Deserialize, Serialize};
 
@@ -52,6 +52,10 @@ pub enum CoreRequest {
     },
     Status {
         view_id: ServiceViewId,
+    },
+    ListModules {
+        view_id: ServiceViewId,
+        query: crate::query::ModulesQuery,
     },
     Sources {
         view_id: ServiceViewId,
@@ -127,6 +131,21 @@ pub enum CoreRequest {
         view_id: ServiceViewId,
         query: crate::query::AncestorsQuery,
     },
+    ReadSource {
+        view_id: ServiceViewId,
+        query: crate::query::ReadQuery,
+    },
+    Locate {
+        view_id: ServiceViewId,
+        query: crate::query::LocateQuery,
+    },
+    /// Region attribute projection (`inspect info`): cuts an arbitrary range
+    /// at governing annotation boundaries and reports the uniform effective
+    /// attribute segments.
+    Region {
+        view_id: ServiceViewId,
+        query: crate::query::RegionQuery,
+    },
     ReferencesPage {
         view_id: ServiceViewId,
         query: crate::query::ReferencesQuery,
@@ -175,6 +194,7 @@ impl CoreRequest {
             | Self::UpdateViewDelta { view_id, .. }
             | Self::SnapshotSummary { view_id }
             | Self::Status { view_id }
+            | Self::ListModules { view_id, .. }
             | Self::Sources { view_id }
             | Self::SourceTables { view_id }
             | Self::ReloadDiskView { view_id }
@@ -192,6 +212,9 @@ impl CoreRequest {
             | Self::DocumentSymbols { view_id, .. }
             | Self::Items { view_id, .. }
             | Self::Ancestors { view_id, .. }
+            | Self::ReadSource { view_id, .. }
+            | Self::Locate { view_id, .. }
+            | Self::Region { view_id, .. }
             | Self::ReferencesPage { view_id, .. }
             | Self::WorkspaceSymbols { view_id, .. }
             | Self::Search { view_id, .. }
@@ -304,7 +327,7 @@ impl ConfigurationRecord {
 impl From<TypeRecord> for Type {
     fn from(value: TypeRecord) -> Self {
         match value {
-            TypeRecord::None => Self::None,
+            TypeRecord::None => Self::Unit,
             TypeRecord::Bool => Self::Bool,
             TypeRecord::Int => Self::Int,
             TypeRecord::Float => Self::Float,
@@ -340,6 +363,7 @@ pub enum CoreResponse {
     Updated,
     SnapshotSummary(SnapshotSummary),
     Status(crate::query::StatusRecord),
+    Modules(crate::query::QueryResult<crate::query::ModuleRecord>),
     Sources(Vec<SourceRecord>),
     SourceTables(Vec<SourceTableRecord>),
     Reloaded,
@@ -354,6 +378,9 @@ pub enum CoreResponse {
     Hover(Option<HoverRecord>),
     DocumentSymbols(Vec<DocumentSymbolRecord>),
     Items(crate::query::QueryResult<crate::query::ItemRecord>),
+    SourcePage(crate::query::QueryResult<crate::query::SourceChunk>),
+    Locate(crate::query::LocateRecord),
+    Region(crate::query::QueryResult<crate::query::RegionRecord>),
     Ancestors(crate::query::QueryResult<crate::query::AncestorRecord>),
     ReferencesPage(crate::query::QueryResult<crate::query::ReferenceRecord>),
     WorkspaceSymbols(Vec<WorkspaceSymbolRecord>),
@@ -938,6 +965,19 @@ impl NotistService {
                     },
                 })
             }
+            CoreRequest::ListModules { view_id, query } => {
+                let (snapshot, result) = self
+                    .with_snapshot_identity(view_id, |workspace, identity| {
+                        crate::query::list_modules(workspace, identity, &query)
+                    })?;
+                Ok(CoreReply {
+                    snapshot,
+                    response: match result {
+                        Ok(page) => CoreResponse::Modules(page),
+                        Err(error) => CoreResponse::QueryError(error),
+                    },
+                })
+            }
             CoreRequest::Sources { view_id } => {
                 let (snapshot, sources) = self.with_snapshot(view_id, |workspace| {
                     workspace
@@ -1060,13 +1100,15 @@ impl NotistService {
                                         |annotation| {
                                             SemanticRecord {
                                                 module: module_name.clone(),
-                                                range: annotation.scope_range.into(),
-                                                kind: "embedded".into(),
+                                                range: annotation
+                                                    .target_range
+                                                    .unwrap_or(annotation.range)
+                                                    .into(),
+                                                kind: "annotation".into(),
                                                 name: annotation
-                                                    .attributes
-                                                    .id
+                                                    .id()
                                                     .as_ref()
-                                                    .map(|id| id.value.clone()),
+                                                    .map(|(id, _)| id.clone()),
                                             }
                                         },
                                     ));
@@ -1202,8 +1244,9 @@ impl NotistService {
                 let (snapshot, result) = self.with_snapshot(view_id, |workspace| {
                     let mut items = Vec::new();
                     if let Some(file_id) = workspace.file_id(&path)
-                        && let Some(module) =
-                            workspace.modules().find(|candidate| candidate.file_id == Some(file_id))
+                        && let Some(module) = workspace
+                            .modules()
+                            .find(|candidate| candidate.file_id == Some(file_id))
                     {
                         // Definition marker (module head); only meaningful
                         // for reference-to-module consumers.
@@ -1254,9 +1297,11 @@ impl NotistService {
                             crate::query::ReferenceDirection::Outgoing
                                 | crate::query::ReferenceDirection::Both
                         ) {
-                            for reference in workspace.references().iter().filter(|reference| {
-                                reference.source_module_id == module.id
-                            }) {
+                            for reference in workspace
+                                .references()
+                                .iter()
+                                .filter(|reference| reference.source_module_id == module.id)
+                            {
                                 let Some(source) = workspace.source(reference.source_file_id)
                                 else {
                                     continue;
@@ -1396,6 +1441,45 @@ impl NotistService {
                     snapshot,
                     response: match result {
                         Ok(page) => CoreResponse::Ancestors(page),
+                        Err(error) => CoreResponse::QueryError(error),
+                    },
+                })
+            }
+            CoreRequest::ReadSource { view_id, query } => {
+                let (snapshot, result) = self
+                    .with_snapshot_identity(view_id, |workspace, identity| {
+                        crate::query::read_source(workspace, identity, &query)
+                    })?;
+                Ok(CoreReply {
+                    snapshot,
+                    response: match result {
+                        Ok(page) => CoreResponse::SourcePage(page),
+                        Err(error) => CoreResponse::QueryError(error),
+                    },
+                })
+            }
+            CoreRequest::Locate { view_id, query } => {
+                let (snapshot, result) = self
+                    .with_snapshot_identity(view_id, |workspace, identity| {
+                        crate::query::locate(workspace, identity, &query)
+                    })?;
+                Ok(CoreReply {
+                    snapshot,
+                    response: match result {
+                        Ok(record) => CoreResponse::Locate(record),
+                        Err(error) => CoreResponse::QueryError(error),
+                    },
+                })
+            }
+            CoreRequest::Region { view_id, query } => {
+                let (snapshot, result) = self
+                    .with_snapshot_identity(view_id, |workspace, identity| {
+                        crate::query::region_info(workspace, identity, &query)
+                    })?;
+                Ok(CoreReply {
+                    snapshot,
+                    response: match result {
+                        Ok(record) => CoreResponse::Region(record),
                         Err(error) => CoreResponse::QueryError(error),
                     },
                 })
@@ -1893,7 +1977,10 @@ fn render_module_page(
     RenderedPageRecord {
         module_segments: module.logical_path.segments().to_vec(),
         fragment,
-        title: prepared.headings.first().map(|heading| heading.text.clone()),
+        title: prepared
+            .headings
+            .first()
+            .map(|heading| heading.text.clone()),
         headings: prepared.headings.clone(),
         bindings: prepared.bindings.clone(),
         source: module.source.as_deref().map(str::to_owned),
@@ -1976,9 +2063,7 @@ fn render_document(
     let resources = precompute
         .resources
         .iter()
-        .filter(|resource| {
-            resource.module_segments == module.logical_path.segments().to_vec()
-        })
+        .filter(|resource| resource.module_segments == module.logical_path.segments().to_vec())
         .cloned()
         .collect();
     Ok(RenderedDocumentRecord { page, resources })
@@ -1998,35 +2083,34 @@ fn module_resources(module: &notist_analysis::Module) -> Vec<RenderedResourceRec
         .collect()
 }
 
-/// Projects `@![...]` module attributes onto the wire record (D0006).
-pub(crate) fn attribute_records(attributes: &[notist_syntax::Attributes]) -> Vec<AttributeRecord> {
+/// Projects evaluated module attributes onto the wire record. `id` is the
+/// addressing key; `tags`/`class` feed the convention lists; everything else
+/// lands in `properties`.
+pub(crate) fn attribute_records(attributes: &[MaterializedAttributes]) -> Vec<AttributeRecord> {
     attributes
         .iter()
-        .map(|attributes| {
-            let mut tags = Vec::new();
-            let mut classes = Vec::new();
-            let mut properties = Vec::new();
-            for item in &attributes.items {
-                match item {
-                    Attribute::Class(name) => classes.push(name.value.clone()),
-                    Attribute::Tag(name) => tags.push(name.value.clone()),
-                    Attribute::KeyValue { key, value, .. } => {
-                        properties.push((key.value.clone(), value.text().to_owned()));
-                    }
+        .map(|entries| {
+            let mut record = AttributeRecord {
+                id: None,
+                tags: Vec::new(),
+                classes: Vec::new(),
+                properties: Vec::new(),
+            };
+            for (key, value) in entries {
+                match key.as_str() {
+                    "id" => record.id = Some(value.clone()),
+                    "tags" => record.tags.push(value.clone()),
+                    "class" => record.classes.push(value.clone()),
+                    _ => record.properties.push((key.clone(), value.clone())),
                 }
             }
-            AttributeRecord {
-                id: attributes.id.as_ref().map(|id| id.value.clone()),
-                tags,
-                classes,
-                properties,
-            }
+            record
         })
         .collect()
 }
 
-/// Projects the evaluation annotation table (postfix `@...` and block-prefix
-/// `@[...]`, D0002/D0006) onto renderer annotations.
+/// Projects the evaluation annotation table onto renderer annotations:
+/// every materialized `key: value` entry, keyed `id` becomes the scope id.
 fn rendered_annotations(entries: &[AnnotationEntry]) -> Vec<RenderedAnnotation> {
     entries
         .iter()
@@ -2034,18 +2118,18 @@ fn rendered_annotations(entries: &[AnnotationEntry]) -> Vec<RenderedAnnotation> 
             let mut classes = Vec::new();
             let mut tags = Vec::new();
             let mut properties = Vec::new();
-            for item in &entry.attributes.items {
-                match item {
-                    Attribute::Class(name) => classes.push(name.value.clone()),
-                    Attribute::Tag(name) => tags.push(name.value.clone()),
-                    Attribute::KeyValue { key, value, .. } => {
-                        properties.push((key.value.clone(), value.text().to_owned()));
-                    }
+            let mut id = None;
+            for (key, value) in &entry.attributes {
+                match key.as_str() {
+                    "id" => id = Some(value.clone()),
+                    "class" => classes.push(value.clone()),
+                    "tags" => tags.push(value.clone()),
+                    _ => properties.push((key.clone(), value.clone())),
                 }
             }
             RenderedAnnotation {
                 scope: entry.range,
-                id: entry.attributes.id.as_ref().map(|id| id.value.clone()),
+                id,
                 classes,
                 tags,
                 properties,
@@ -2058,12 +2142,14 @@ fn rendered_annotations(entries: &[AnnotationEntry]) -> Vec<RenderedAnnotation> 
 /// scalar literals with their value, `Content`, or a `fn(...) -> R` signature.
 fn binding_detail(value: &Value) -> String {
     match value {
-        Value::None => "None".into(),
+        Value::Unit => "None".into(),
         Value::Bool(value) => format!("Bool = {value}"),
         Value::Int(value) => format!("Int = {value}"),
         Value::Float(value) => format!("Float = {value}"),
         Value::String(value) => format!("String = {}", truncated_string(value)),
         Value::Content(_) => "Content".into(),
+        Value::Array(values) => format!("Array({})", values.len()),
+        Value::Dict(entries) => format!("Dict({})", entries.len()),
         Value::Function(function) => format_signature(&function.signature),
         Value::Target(reference) => {
             let mut detail = reference.module.to_string();
@@ -2272,6 +2358,7 @@ fn diagnostic_code(kind: &DiagnosticKind) -> &'static str {
     match kind {
         DiagnosticKind::DuplicateModule => "duplicate-module",
         DiagnosticKind::DuplicateLabel => "duplicate-label",
+        DiagnosticKind::DuplicateItemId => "duplicate-item-id",
         DiagnosticKind::InvalidSyntax => "invalid-syntax",
         DiagnosticKind::UnresolvedModule => "unresolved-module",
         DiagnosticKind::UnresolvedLabel => "unresolved-label",
@@ -2440,9 +2527,7 @@ mod tests {
             })
             .unwrap();
 
-        let sources = service
-            .execute(CoreRequest::Sources { view_id })
-            .unwrap();
+        let sources = service.execute(CoreRequest::Sources { view_id }).unwrap();
         let CoreResponse::Sources(sources) = sources.response else {
             panic!("expected sources")
         };
@@ -2472,9 +2557,7 @@ mod tests {
                 remove: vec![readme.clone()],
             })
             .unwrap();
-        let sources = service
-            .execute(CoreRequest::Sources { view_id })
-            .unwrap();
+        let sources = service.execute(CoreRequest::Sources { view_id }).unwrap();
         let CoreResponse::Sources(sources) = sources.response else {
             panic!("expected sources")
         };
@@ -2886,7 +2969,12 @@ mod tests {
         assert_eq!(first.records.len(), 2);
         assert!(first.records[0].score.is_some());
         assert!(first.records[0].match_range.is_some());
-        assert!(first.records[0].excerpt.to_lowercase().contains("workspace"));
+        assert!(
+            first.records[0]
+                .excerpt
+                .to_lowercase()
+                .contains("workspace")
+        );
 
         let mut grouped_query = query.clone();
         grouped_query.group_by = None;
@@ -2987,8 +3075,7 @@ mod tests {
         }
     }
 
-    const ANCESTORS_SOURCE: &str =
-        "@![status = \"draft\"]\n\n@[wip]\n= 安装\n\n先读概述。\n\n== 故障排除\n\n出问题时看日志。\n\n= 后记\n\n完。\n";
+    const ANCESTORS_SOURCE: &str = "@!(status: \"draft\")\n\n@(id: \"wip\")\n= 安装\n\n先读概述。\n\n== 故障排除\n\n出问题时看日志。\n\n= 后记\n\n完。\n";
 
     fn ancestors_fixture(
         file_name: &str,
@@ -3040,7 +3127,11 @@ mod tests {
     fn ancestors_module_selector_returns_the_full_tree_with_module_attributes_at_the_root() {
         let (service, view_id, _root) = ancestors_fixture("guide.not", ANCESTORS_SOURCE);
         let records = expect_ancestors(ancestors_response(
-            &service, view_id, "vault::guide", None, None,
+            &service,
+            view_id,
+            "vault::guide",
+            None,
+            None,
         ));
         assert_eq!(records.len(), 1);
         assert_eq!(records[0].kind, "module");
@@ -3189,10 +3280,10 @@ mod tests {
 
     #[test]
     fn ancestors_ambiguous_item_names_are_a_typed_error() {
-        let (service, view_id, _root) = ancestors_fixture(
-            "dupe.not",
-            "= 重复\n\n一段。\n\n== 重复\n\n另一段。\n",
-        );
+        // Two same-titled top-level sections produce the same title-chain
+        // ItemId: a genuine duplicate, reported as a typed query error.
+        let (service, view_id, _root) =
+            ancestors_fixture("dupe.not", "= 重复\n\n一段。\n\n= 重复\n\n另一段。\n");
         let response = ancestors_response(&service, view_id, "vault::dupe/重复", None, None);
         let CoreResponse::QueryError(error) = response else {
             panic!("expected a query error")
@@ -3201,16 +3292,23 @@ mod tests {
     }
 
     #[test]
+    fn ancestors_resolves_nested_headings_by_title_chain() {
+        // Same title at a different nesting level is a different ItemId: the
+        // nested duplicate resolves through its title chain.
+        let (service, view_id, _root) =
+            ancestors_fixture("dupe.not", "= 重复\n\n一段。\n\n== 重复\n\n另一段。\n");
+        let response = ancestors_response(&service, view_id, "vault::dupe/重复/重复", None, None);
+        assert!(
+            matches!(response, CoreResponse::Ancestors(_)),
+            "title chain resolves the nested heading: {response:?}"
+        );
+    }
+
+    #[test]
     fn ancestors_rejects_offsets_that_are_not_utf8_boundaries() {
         let (service, view_id, _root) = ancestors_fixture("guide.not", ANCESTORS_SOURCE);
         let offset = ANCESTORS_SOURCE.find("概述").unwrap() + 1;
-        let response = ancestors_response(
-            &service,
-            view_id,
-            "vault::guide",
-            Some(offset),
-            None,
-        );
+        let response = ancestors_response(&service, view_id, "vault::guide", Some(offset), None);
         let CoreResponse::QueryError(error) = response else {
             panic!("expected a query error")
         };
@@ -3258,7 +3356,7 @@ mod tests {
     fn items_override_ambiguity_and_name_selectors() {
         let (service, view_id, _root) = ancestors_fixture(
             "mixed.not",
-            "#heading[原标题]@renamed\n\n正文。\n\n= 原标题\n\n另一节。\n",
+            "@(id: \"renamed\")#heading[原标题]\n\n正文。\n\n= 原标题\n\n另一节。\n",
         );
         let records = items_records(&service, view_id, "vault::mixed").unwrap();
         assert_eq!(records.len(), 2);

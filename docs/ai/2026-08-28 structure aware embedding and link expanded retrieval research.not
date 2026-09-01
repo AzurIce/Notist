@@ -6,7 +6,7 @@
 
 == 先给结论
 
-+ 结构感知切分的收益已有实证：cAST（ACL 2025）证明按语法树切分比固定窗口在代码检索上高约 4 个点的 Recall@5；Markdown 场景的共识实践是 heading 切分加父标题上下文前缀。notist 的解析器免费给出更细一级的同等物——scope、heading section、list item 边界全部是作者声明而非工具猜测的。
++ 结构感知切分的收益已有实证：cAST（ACL 2025）证明按语法树切分比固定窗口在代码检索上高约 4 个点的 Recall\@5；Markdown 场景的共识实践是 heading 切分加父标题上下文前缀。notist 的解析器免费给出更细一级的同等物——scope、heading section、list item 边界全部是作者声明而非工具猜测的。
 + notist 的真正差异化在于检索管线最贵的三样东西都是 resolved 的而非猜出来的：切分边界（scope/section 树）、上下文（ModulePath/HeadingPath/ItemName/属性）、边（ResolvedReference 引用图）。传统 RAG 里这三样分别靠启发式窗口、LLM 逐 chunk 生成上下文、LLM 抽取实体图——notist 全部零推理成本拿到，且每样都带 source range。
 + embedding 输入应该用确定性结构前缀（Module、HeadingPath、Tags、属性、Kind）替代 Anthropic Contextual Retrieval 式的 LLM 生成上下文。前者的语义注入质量未必更差，但可版本化、可重建、零成本，完全符合"向量索引只是派生数据"的纪律。
 + 属性在检索里有三重角色：embedding_text 的前缀成分、检索期 pre-filter（过滤在候选生成前生效）、结果投影的解释信息。属性挂在绝对 source range 上，粒度比 frontmatter 细一档——可以精确到"这个 scope 是草稿"而不是"这篇文档是草稿"。
@@ -29,7 +29,7 @@
 
 === 结构感知切分从经验变成实证
 
-- cAST（arXiv 2506.15655，ACL 2025）：把文档解析成 AST 后递归下钻大节点、贪心合并兄弟节点，保证每个 chunk 是语法完整单元。代码 RAG 上相对固定窗口约 +4 Recall@5，下游生成质量同步提升。被 Databricks、LlamaIndex CodeSplitter 等采纳为工程默认。要点：结构边界是免费的，切分单位应该是语法完整单元——这正是 notist scope 与 section 的定义。
+- cAST（arXiv 2506.15655，ACL 2025）：把文档解析成 AST 后递归下钻大节点、贪心合并兄弟节点，保证每个 chunk 是语法完整单元。代码 RAG 上相对固定窗口约 +4 Recall\@5，下游生成质量同步提升。被 Databricks、LlamaIndex CodeSplitter 等采纳为工程默认。要点：结构边界是免费的，切分单位应该是语法完整单元——这正是 notist scope 与 section 的定义。
 - Markdown heading 切分成为推荐默认：2026 年的 benchmark 指南（PremAI、Firecrawl 等）与社区共识收敛到"按 header 切分、段内递归、把父标题链作为 chunk 上下文前缀"。社区总结的最佳实践原话是"Markdown paragraph chunking with reference to parent headers"。同时多组研究（arXiv 2410.13070 等）提醒语义切分不是银弹，LLM 切分成本不总换得回召回提升——结论是结构边界必须免费，notist 恰好满足。
 - 层级切分支持多分辨率检索：系统性研究（arXiv 2603.06976）指出层级 chunking 使 multi-resolution retrieval 成为可能。这与 07-21 文档的"分层语义索引"（Vault summary 到 Module 到 section 到 leaf）互相印证，notist 的 heading 树与 scope 嵌套天然提供层级，无需聚类。
 
@@ -61,7 +61,7 @@ HippoRAG 2（arXiv 2502.14802，2025-02）用个性化 PageRank 在实体图上�
 | --- | --- | --- | --- |
 | 切分单元 | 固定窗口，或 LLM 语义切分（贵、不稳定） | scope、heading section、list item、Raw block = SearchUnit | 作者声明的语法完整边界，解析器免费产出，带 source range |
 | 上下文注入 | Anthropic 式 LLM 生成上下文，每 chunk 一次推理 | ModulePath / HeadingPath / ItemName / tags / 属性拼确定性前缀 | 零推理成本、可版本化、可重建 |
-| 元数据过滤 | frontmatter 或无 | `@[...]` 块级、`@note` 行内、`@![...]` 模块级属性（`#tag`、`.class`、`key = value`） | pre-filter 在候选生成前生效；粒度到 scope 级 |
+| 元数据过滤 | frontmatter 或无 | `\@(class: ..)` 块级、`\@note` 行内、`\@!(class: ..)` 模块级属性（`#tag`、`.class`、`key = value`） | pre-filter 在候选生成前生效；粒度到 scope 级 |
 | 图边 | LLM 实体抽取（噪声、成本、需标 derived） | ResolvedReference 引用图、import 边、模块父子、backlink | resolved 的显式边，高精度 |
 | 层级摘要 | RAPTOR 式聚类加摘要 | heading/scope 树 rollup、outline | 层级是现成的，摘要可选 |
 | 结果身份 | chunk id 启发式、页码 | ItemPath（ModulePath/ItemName）+ source fingerprint + byte range | 命中即可寻址、可校验、可引用 |
@@ -71,14 +71,14 @@ HippoRAG 2（arXiv 2502.14802，2025-02）用个性化 PageRank 在实体图上�
 Markdown 世界只有 heading 一种结构边界，且是"工具从 `#` 字符猜出来的"。notist 多出三种作者显式声明的边界：
 
 - `#[一段内容]` 手动 scope：显式创建有词法边界的 scope 节点，可嵌套、可承载属性、渲染时不可见。作者可以在不改变渲染输出的前提下声明"这几段是一个 example / 一个 definition / 一个已废弃的方案"，而检索索引直接把这些声明当作单元边界与元数据。这是"切段"与"切节"之外的第三种切分单位：按语义分组切，且分组是作者意图而非模型推断。
-- `@id` 命名的 scope 成为 Item（ItemName 可寻址）。检索命中一个 scope 等于命中一个可跳转地址，`read vault::module/name` 直接取整节。匿名 scope 仍有边界与属性价值。
+- `\@id` 命名的 scope 成为 Item（ItemName 可寻址）。检索命中一个 scope 等于命中一个可跳转地址，`read vault::module/name` 直接取整节。匿名 scope 仍有边界与属性价值。
 - heading section 由同级标题归组而成，天然给出层级；scope 可嵌套在 section 内，也可以反过来组织多个 section，两种粒度正交。
 
 对 embedding 的具体含义：检索单元粒度从"文本窗口"变成"语言定义的语义单元"，同一单元内的 token 共享完整上下文，跨单元的边界恰好是作者认为的语义切换点。cAST 在代码上验证的机制，notist 在散文与代码混合的文档上以更低成本获得。
 
 === 属性的三重角色
 
-notist 属性是一套语法三种挂载（行内 postfix `@note` 绑定前一个值、块级前缀 `@[...]` 绑定下一个块级节点、模块级 `@![...]`），条目形态是 `#tag`、`.class`、`key = value`。求值后由 `structured_module()` 产出挂在绝对 source range 上的 AnnotationEntry 表。检索视角下它同时是：
+notist 属性是一套语法三种挂载（行内 postfix `\@note` 绑定前一个值、块级前缀 `\@(class: ..)` 绑定下一个块级节点、模块级 `\@!(class: ..)`），条目形态是 `#tag`、`.class`、`key = value`。求值后由 `structured_module()` 产出挂在绝对 source range 上的 AnnotationEntry 表。检索视角下它同时是：
 
 + embedding_text 的前缀成分。`status = "draft"`、`#design`、`#deprecated` 进入向量空间的位置——同样一段文字，标注为裁决的与标注为草稿的应该在语义上可区分。前缀要给 token 预算（建议不超过 25%），否则稀释正文。
 + 检索期过滤器。`#wip`、`#outdated` 默认排除；`#design` 限定范围。过滤在候选生成之前生效（pre-filter），这既是精度手段也是权限模型的雏形。实现入口是 search-retrieval-index 已预留的"属性检索字段（class、key=value）随属性索引扩展"。
@@ -98,7 +98,7 @@ notist 属性是一套语法三种挂载（行内 postfix `@note` 绑定前一�
 
 === 检索单元与身份
 
-- 单元与 SearchUnit 完全对齐：复用 `SearchUnitBuilder` 产物，不另造一套切分器。paragraph、list item、heading section、Raw block 为独立 unit；scope 若带属性或 `@id` 则优先按 scope 切（scope 边界覆盖窗口切分）；超过 4 KiB 的既有 source-safe 切分规则沿用。
+- 单元与 SearchUnit 完全对齐：复用 `SearchUnitBuilder` 产物，不另造一套切分器。paragraph、list item、heading section、Raw block 为独立 unit；scope 若带属性或 `\@id` 则优先按 scope 切（scope 边界覆盖窗口切分）；超过 4 KiB 的既有 source-safe 切分规则沿用。
 - 三档粒度分阶段做：先只做 unit 档；section/module 档（rollup 向量或摘要向量）等 benchmark 显示"全局性问题召回不足"再加，避免过早扩表。
 - 身份沿用 07-21 文档的三层方案：逻辑身份（FileId/ModuleId/ItemName）不等于版本身份（source fingerprint + content hash）不等于 EmbeddingKey = hash(unit 身份, source fingerprint, chunker version, model id, dims)。index manifest 记录全部版本要素，任一不匹配触发重建——与现行 lexical index 的 manifest 纪律一致。
 
@@ -173,7 +173,7 @@ $ notist read "vault::ai::2026-08-25 notist lsp audit follow-up/诊断推送模�
 + 从 `export --output` 的 snapshot artifacts（或 `structured_module()`）提取 unit 集：每条含纯文本、ModulePath、HeadingPath、ItemName、属性、source range。docs vault 实测 104 sources/109 modules，unit 在千级。
 + 用 fastembed-rs 或 ollama 跑 Qwen3-Embedding-0.6B（或手头任一多语言模型），CPU 数分钟量级。内存精确扫描，无任何索引工程。
 + 构造 30–50 条人工标注 query：每条标注意料单元的 ItemPath。覆盖四类——同义改述（中文 query 对英文正文、反之）、概念跨模块、多跳引用问题、精确标识符（对照项，预期 lexical 赢）。
-+ 四组对比：lexical-only（现行 Tantivy 基线）、dense-only、hybrid（RRF）、hybrid + 一跳引用扩展。指标 Recall@5/@8 与 MRR，分 query 类型报告。
++ 四组对比：lexical-only（现行 Tantivy 基线）、dense-only、hybrid（RRF）、hybrid + 一跳引用扩展。指标 Recall\@5/\@8 与 MRR，分 query 类型报告。
 + 消融两组：结构前缀 vs 裸正文 embedding（直接检验本文核心命题）；有/无属性 pre-filter 的 precision 变化。
 + 判读：hybrid 相对 lexical 在同义改述与跨模块两类上有明确提升、且精确标识符类不回退，才值得推动 `--mode hybrid` 进契约；否则停在这里，文档本身就是结论。
 

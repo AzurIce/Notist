@@ -4,13 +4,13 @@
 
 == 编辑器内核：textarea → CodeMirror 6
 
-- `@codemirror/*` 在 esbuild 标 external、由 Obsidian 宿主运行时提供，只需补 devDependencies 供 tsc 类型检查。
+- `\@codemirror/*` 在 esbuild 标 external、由 Obsidian 宿主运行时提供，只需补 devDependencies 供 tsc 类型检查。
 - 扩展组合保持最小：`lineNumbers`、`highlightActiveLine(Gutter)`、`history`、`defaultKeymap + historyKeymap`、`lineWrapping`、`updateListener → requestSave`。
 - `setViewData` 用 `settingData` 标志抑制程序化替换文档触发的回写循环；`onClose` destroy EditorView；内容相同则跳过替换以保光标。
 
 == vim 键位
 
-- Obsidian 自带的 vim 开关只管 markdown 编辑器，自定义 view 必须自己接：`@replit/codemirror-vim` 打包进 `main.js`（其 `@codemirror/*` 依赖走宿主 external；vim 引擎本体在 `@replit/codemirror-vim-core`，一并打包）。
+- Obsidian 自带的 vim 开关只管 markdown 编辑器，自定义 view 必须自己接：`\@replit/codemirror-vim` 打包进 `main.js`（其 `\@codemirror/*` 依赖走宿主 external；vim 引擎本体在 `\@replit/codemirror-vim-core`，一并打包）。
 - 开关存 `data.json`（`vimMode`，默认关），设置页 toggle 即时生效：`vim()` 包在 `Compartment` 里，对所有打开的 notist leaf 做 `reconfigure`，无需重开编辑器。`vim()` 必须放在 keymap 链最前，其绑定才优先。每次 `vim()` 重建后 `getCM()` 返回新的 CM5 适配实例，监听器要按实例重新挂接。
 - *IME 抑制*：normal/visual 下用第二个 Compartment 把 `EditorView.editable` 置 false（contenteditable 关闭，OS 输入法不启动——IME 只在可编辑上下文激活，与 Zed「Disable IME in normal mode」同思路）；监听 vim 扩展的 `vim-mode-change` 事件跟随切换，仅 insert/replace 可编辑。
 - *drawSelection 必装*：replit-vim 设计上配合 `drawSelection()`——normal 模式它自画块光标并隐藏 CM 光标层，insert 模式移除 `cm-vimMode` class 交还 CM 画竖线；不装则 insert 只能依赖原生 caret，而 Chrome 在 contenteditable 翻转后不重画，光标「消失」。
@@ -27,7 +27,7 @@
 == 踩坑记录（复用价值高）
 
 + *sync 漏跑*：插件以拷贝模式装进 vault，改完必须 `bun run sync <vault>` 再 `plugin:reload`，否则 reload 的是旧产物——本次「样式改了没生效」排查一圈，发现 vault 里一直是旧 styles.css。
-+ *Prec.highest 主题*：`@replit/codemirror-vim` 以 `Prec.highest` 注入 `.cm-fat-cursor` 样式（默认 `#ff9696` 红块），注入时机在插件 CSS 之后、同特异性必赢，插件侧需 `!important` 压制。
++ *Prec.highest 主题*：`\@replit/codemirror-vim` 以 `Prec.highest` 注入 `.cm-fat-cursor` 样式（默认 `#ff9696` 红块），注入时机在插件 CSS 之后、同特异性必赢，插件侧需 `!important` 压制。
 + *当前行断裂*：`.cm-content` 的水平 padding 不在 `.cm-activeLine` 背景覆盖范围内（getBoundingClientRect 实测 gutter 右缘与行左缘差 16px），把水平 padding 挪到 `.cm-line` 上，让行背景连自己的 padding 一起盖住。
 + *bun add 不写 package.json*：项目的 install 钩子（`scripts/install.ts` 需要 vault 参数、无参即非零退出）会导致 `bun add` 装完包但不写回 package.json，devDependencies 需手动补登。
 + *update 周期内 dispatch 会抛异常*：`vim-mode-change` 可能由事务触发、在 CM 更新进行中回调，此时 `EditorView.dispatch` 直接 throw（console 可见 `Calls to EditorView.update are not allowed ...`），editable compartment 从此与 vim 真实模式脱钩——编辑器卡死（输不了字、Esc 回不去 normal）。修法：reconfigure 包 `setTimeout(0)` 延后到更新周期外。

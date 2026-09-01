@@ -13,11 +13,11 @@
             "state": {
               "type": "notist-view",
               "state": {
-                "file": "model.not",
+                "file": "example/test.not",
                 "mode": "source"
               },
               "icon": "file-text",
-              "title": "model"
+              "title": "test"
             }
           }
         ]
@@ -116,9 +116,11 @@
               "state": {
                 "expanded": [
                   "cli",
+                  "grammar",
+                  "designs",
+                  "designs/language",
                   "designs/lsp",
-                  "example",
-                  "designs"
+                  "designs/pipeline"
                 ],
                 "dimNonNot": false
               },
@@ -131,7 +133,7 @@
       }
     ],
     "direction": "horizontal",
-    "width": 256.51074600219727
+    "width": 323.698184967041
   },
   "right": {
     "id": "f8d03a7322595300",
@@ -153,19 +155,20 @@
       "bases:新建数据库": false
     }
   },
-  "active": "75552d4d3f465603",
+  "active": "0a4775e371031b5c",
   "lastOpenFiles": [
-    "designs/world/reference-ref-target.not.tmp.3619102.b3eb6609e8df",
-    "designs/world/reference-ref-target.not.tmp.3619102.83c63b9908a1",
-    "designs/world/reference-ref-target.not.tmp.3619102.cc0e3568eb92",
-    "designs/world/reference-ref-target.not.tmp.3619102.ab75b63fb91e",
-    "designs/world/reference-ref-target.not.tmp.3619102.7caa98917902",
-    "designs/world/reference-ref-target.not.tmp.3619102.e9e0f9b38317",
-    "designs/world/reference-ref-target.not.tmp.3619102.3a3832b533ef",
-    "designs/world/reference-ref-target.not.tmp.3619102.efec334cb8e5",
-    "designs/world/reference-ref-target.not.tmp.3619102.49012625adc8",
-    "ai/2026-08-30 LSP 请求支持对照.not",
-    "functions.not",
+    "ai/2026-08-31 区域属性投影与 inspect info 命令.not.tmp.3619102.f6249f2a3896",
+    "ai/README.not.tmp.3619102.c22dbf9f4519",
+    "ai/README.not.tmp.3619102.abcb6869cd4a",
+    "ai/2026-08-31 区域属性投影与 inspect info 命令.not.tmp.3619102.a2997ee27d0b",
+    "ai/2026-08-31 区域属性投影与 inspect info 命令.not.tmp.3619102.1417248c0f1f",
+    "ai/2026-08-31 区域属性投影与 inspect info 命令.not.tmp.3619102.12f31e960800",
+    "ai/2026-08-31 区域属性投影与 inspect info 命令.not.tmp.3619102.24ede26ca25c",
+    "ai/2026-08-31 区域属性投影与 inspect info 命令.not.tmp.3619102.7237f7368aed",
+    "ai/2026-08-31 区域属性投影与 inspect info 命令.not.tmp.3619102.ef38b1bedb6d",
+    "ai/2026-08-31 区域属性投影与 inspect info 命令.not.tmp.3619102.d41c37157bf0",
+    "example/submodule.not",
+    "ai/AGENTS.md",
     "AGENTS.md",
     "fx2.md",
     "notist-highlight-fixture.md"

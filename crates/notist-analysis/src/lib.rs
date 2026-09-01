@@ -5,6 +5,7 @@ use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 
+pub use notist_eval::MaterializedAttributes;
 use notist_eval::{
     ElementTree, EvalDiagnostic, Evaluator, Function, FunctionContext, FunctionInput,
     FunctionRegistry, ShapingRegistry,
@@ -380,12 +381,14 @@ impl Function for SchemaFunction {
 
 fn placeholder_value(ty: &Type, name: &str) -> Value {
     match ty {
-        Type::None => Value::None,
+        Type::Unit => Value::Unit,
         Type::Bool => Value::Bool(false),
         Type::Int => Value::Int(0),
         Type::Float => Value::Float(0.0),
         Type::String => Value::String(String::new()),
         Type::Content => Value::Content(Vec::new()),
+        Type::Array(_) => Value::Array(Vec::new()),
+        Type::Dict(..) => Value::Dict(Vec::new()),
         Type::Function => Value::Function(Box::new(notist_eval::FunctionValue {
             signature: notist_eval::FunctionSignature {
                 parameters: Vec::new(),
@@ -402,8 +405,8 @@ fn placeholder_value(ty: &Type, name: &str) -> Value {
         Type::Union(members) => members
             .first()
             .map(|member| placeholder_value(member, name))
-            .unwrap_or(Value::None),
-        Type::Optional(_) | Type::Inferred => Value::None,
+            .unwrap_or(Value::Unit),
+        Type::Optional(_) | Type::Never | Type::Inferred => Value::Unit,
     }
 }
 
@@ -489,6 +492,7 @@ pub type DocumentVersions = BTreeMap<PathBuf, i64>;
 pub enum DiagnosticKind {
     DuplicateModule,
     DuplicateLabel,
+    DuplicateItemId,
     InvalidSyntax,
     UnresolvedModule,
     UnresolvedLabel,
@@ -807,7 +811,7 @@ pub struct WorkspaceSnapshot {
     module_import_seeds: BTreeMap<ModuleId, HashMap<String, Value>>,
     /// Module attributes declared by `@![...]` (D0006), captured once per
     /// snapshot in the same dependency-ordered evaluation pass.
-    module_attributes: BTreeMap<ModuleId, Vec<notist_syntax::Attributes>>,
+    module_attributes: BTreeMap<ModuleId, Vec<MaterializedAttributes>>,
     diagnostics: Vec<Diagnostic>,
     signatures: SignatureSet,
     function_registry: Arc<FunctionRegistry>,
@@ -1105,7 +1109,7 @@ impl WorkspaceSnapshot {
 
     /// Returns a module's `@![...]` module attributes (D0006), published as
     /// module metadata in source order.
-    pub fn module_attributes(&self, module_id: ModuleId) -> &[notist_syntax::Attributes] {
+    pub fn module_attributes(&self, module_id: ModuleId) -> &[MaterializedAttributes] {
         self.module_attributes
             .get(&module_id)
             .map(Vec::as_slice)
@@ -1223,10 +1227,21 @@ impl WorkspaceSnapshot {
             .cloned()
             .unwrap_or_default();
         let headings = heading_default_ids(module, &seeds);
-        headings
+        let range = headings
             .iter()
             .find(|(text, _)| text == name)
-            .map(|(_, range)| *range)
+            .map(|(_, range)| *range)?;
+        // Navigation snaps the span start forward past leading blank lines:
+        // the cursor lands on the item's first content line, not on the
+        // whitespace the span absorbs.
+        let text = module.source.as_deref()?;
+        let bytes = text.as_bytes();
+        let mut start = range.start;
+        while start < range.end && matches!(bytes[start], b'\n' | b'\r' | b' ' | b'\t') {
+            start += 1;
+        }
+        let line_start = text[..start].rfind('\n').map_or(0, |pos| pos + 1);
+        Some(TextRange::new(line_start, range.end))
     }
 
     /// Returns a module by its logical path.
@@ -1698,15 +1713,29 @@ impl WorkspaceSnapshot {
             .target_name
             .as_deref()
             .and_then(|name| self.label(&module.logical_path, name));
+        // Navigation snaps the range start forward past leading blank lines:
+        // the cursor lands on the item's first content line, not on the
+        // whitespace the block span absorbs.
+        let navigation_start = |text: &str, range: TextRange| -> TextRange {
+            let bytes = text.as_bytes();
+            let mut start = range.start;
+            while start < range.end.min(bytes.len())
+                && matches!(bytes[start], b'\n' | b'\r' | b' ' | b'\t')
+            {
+                start += 1;
+            }
+            let line_start = text[..start].rfind('\n').map_or(0, |pos| pos + 1);
+            TextRange::new(line_start, range.end)
+        };
+        let range = label
+            .map(|label| label.range)
+            .or_else(|| reference.target_range)
+            .map(|range| navigation_start(module.source.as_deref().unwrap_or(""), range));
         Some(DefinitionTarget {
             revision: self.revision,
             module_id: module.id,
             file_id: label.map(|label| label.file_id).or(module.file_id),
-            // An explicit scope id has a source range of its own.  For a
-            // heading default id (or a resource), `self.label()` returns
-            // `None`; use the already-resolved reference range so definition
-            // jumps to the heading instead of only to the containing file.
-            range: label.map(|label| label.range).or(reference.target_range),
+            range,
             annotation: label.map(|label| label.id.clone()),
             target_module: Some(reference.target_module.clone()),
             target_name: reference.target_name.clone(),
@@ -1952,38 +1981,38 @@ impl WorkspaceSnapshot {
         }
         let source = self.source(file_id)?;
         for annotation in source.parse.annotations() {
-            if let Some(id) = &annotation.attributes.id
-                && contains(id.range, offset)
+            if !contains(annotation.range, offset) {
+                continue;
+            }
+            if let Some((id, id_range)) = annotation.id()
+                && contains(id_range, offset)
             {
                 return Some(HoverInfo {
                     revision: self.revision,
                     file_id,
-                    range: id.range,
-                    contents: format!("`{}: AnnotationId`", id.value),
+                    range: id_range,
+                    contents: format!("`{id}: AnnotationId`"),
                 });
             }
-            for item in &annotation.attributes.items {
-                let (range, contents) = match item {
-                    notist_syntax::Attribute::Tag(name) if contains(name.range, offset) => {
-                        (name.range, format!("`{}: AnnotationTag`", name.value))
-                    }
-                    notist_syntax::Attribute::Class(name) if contains(name.range, offset) => {
-                        (name.range, format!("`{}: AnnotationClass`", name.value))
-                    }
-                    notist_syntax::Attribute::KeyValue { key, .. }
-                        if contains(key.range, offset) =>
-                    {
-                        (key.range, format!("`{}: AnnotationProperty`", key.value))
-                    }
-                    _ => continue,
-                };
-                return Some(HoverInfo {
-                    revision: self.revision,
-                    file_id,
-                    range,
-                    contents,
-                });
+            for (key, _) in annotation.dict_entries() {
+                if contains(key.range, offset) {
+                    let ExpressionKind::Name(name) = &key.kind else {
+                        continue;
+                    };
+                    return Some(HoverInfo {
+                        revision: self.revision,
+                        file_id,
+                        range: key.range,
+                        contents: format!("`{}: AnnotationProperty`", name.value),
+                    });
+                }
             }
+            return Some(HoverInfo {
+                revision: self.revision,
+                file_id,
+                range: annotation.range,
+                contents: "`Annotation: Dict`".into(),
+            });
         }
         if let Some(SymbolId::Local { module_id, symbol }) = self.symbol_at(file_id, offset)
             && let Some(semantics) = self.module_semantics(module_id)
@@ -2193,7 +2222,7 @@ impl WorkspaceSnapshot {
                     detail: "Annotation property".into(),
                     documentation: Some(format!("Observed annotation property `{key}`.")),
                     replacement: context.replace,
-                    insert_text: format!("{key}="),
+                    insert_text: format!("{key}: "),
                     module_id: None,
                 })
                 .collect::<Vec<_>>();
@@ -2360,9 +2389,11 @@ impl WorkspaceSnapshot {
             self.module_semantics
                 .insert(module.id, resolve_module_symbols(parse));
             for annotation in parse.annotations() {
-                for item in &annotation.attributes.items {
-                    if let notist_syntax::Attribute::KeyValue { key, .. } = item {
-                        self.attribute_keys.insert(key.value.clone());
+                for (key, _) in annotation.dict_entries() {
+                    if let ExpressionKind::Name(name) = &key.kind {
+                        self.attribute_keys.insert(name.value.clone());
+                    } else if let ExpressionKind::String(literal) = &key.kind {
+                        self.attribute_keys.insert(literal.value.clone());
                     }
                 }
             }
@@ -2438,7 +2469,7 @@ impl WorkspaceSnapshot {
         // cycles (already diagnosed) break with empty bindings.
         let evaluator = Evaluator::new((*self.function_registry).clone());
         let mut module_import_seeds: BTreeMap<ModuleId, HashMap<String, Value>> = BTreeMap::new();
-        let mut module_attributes: BTreeMap<ModuleId, Vec<notist_syntax::Attributes>> =
+        let mut module_attributes: BTreeMap<ModuleId, Vec<MaterializedAttributes>> =
             BTreeMap::new();
         let mut visiting: BTreeSet<ModuleId> = BTreeSet::new();
         {
@@ -2448,7 +2479,7 @@ impl WorkspaceSnapshot {
                 imports: &[ImportEdge],
                 evaluator: &Evaluator,
                 cache: &mut BTreeMap<ModuleId, HashMap<String, Value>>,
-                attributes: &mut BTreeMap<ModuleId, Vec<notist_syntax::Attributes>>,
+                attributes: &mut BTreeMap<ModuleId, Vec<MaterializedAttributes>>,
                 visiting: &mut BTreeSet<ModuleId>,
             ) -> HashMap<String, Value> {
                 if let Some(bindings) = cache.get(&module_id) {
@@ -2527,16 +2558,16 @@ impl WorkspaceSnapshot {
                 continue;
             };
             for annotation in parse.annotations() {
-                let Some(id) = &annotation.attributes.id else {
+                let Some((id_value, id_range)) = annotation.id() else {
                     continue;
                 };
-                let key = (module.logical_path.clone(), id.value.clone());
+                let key = (module.logical_path.clone(), id_value.clone());
                 if label_indexes.contains_key(&key) {
                     diagnostics.push(Diagnostic {
                         kind: DiagnosticKind::DuplicateLabel,
-                        message: format!("duplicate label `{}`", id.value),
+                        message: format!("duplicate label `{id_value}`"),
                         source_path: Some(source_path.clone()),
-                        range: Some(id.range),
+                        range: Some(id_range),
                     });
                     continue;
                 }
@@ -2544,15 +2575,42 @@ impl WorkspaceSnapshot {
                 labels.push(LabelDefinition {
                     id: AnnotationId {
                         module_id: module.id,
-                        name: id.value.clone(),
+                        name: id_value.clone(),
                     },
                     file_id,
                     module: module.logical_path.clone(),
                     source_path: source_path.clone(),
-                    name: id.value.clone(),
-                    range: id.range,
-                    scope_range: annotation.scope_range,
+                    name: id_value.clone(),
+                    range: id_range,
+                    scope_range: annotation.target_range.unwrap_or(annotation.range),
                 });
+            }
+
+            // Heading title chains are default ItemIds: one flat ItemId
+            // namespace per module, shared with explicit `id` labels
+            // (model.not). A collision is an authoring error.
+            let mut item_ids: HashMap<String, TextRange> = self
+                .labels
+                .iter()
+                .filter(|definition| definition.module == module.logical_path)
+                .map(|definition| (definition.name.clone(), definition.range))
+                .collect();
+            let seeds = self
+                .module_import_seeds
+                .get(&module.id)
+                .cloned()
+                .unwrap_or_default();
+            for (name, range) in heading_default_ids(module, &seeds) {
+                if item_ids.contains_key(&name) {
+                    diagnostics.push(Diagnostic {
+                        kind: DiagnosticKind::DuplicateItemId,
+                        message: format!("duplicate ItemId `{name}`"),
+                        source_path: Some(source_path.clone()),
+                        range: Some(range),
+                    });
+                    continue;
+                }
+                item_ids.insert(name, range);
             }
         }
 
@@ -3412,14 +3470,27 @@ fn attribute_completion_context(
 ) -> Option<CompletionContext> {
     let before = source.get(..offset)?;
     let attribute_start = before.rfind('@')?;
-    parse.embedded_at(attribute_start)?;
+    // The `@` must begin a parsed annotation payload.
+    if !parse
+        .annotations()
+        .iter()
+        .any(|annotation| annotation.range.start == attribute_start)
+    {
+        return None;
+    }
     let tail = &source[attribute_start + 1..offset];
     if tail.contains(['\n', '\r']) {
         return None;
     }
     let relative_start = tail.rfind(',').map_or(0, |comma| comma + 1);
-    let prefix = &tail[relative_start..];
-    if prefix.starts_with(['#', '.'])
+    // Skip the entry-list opening `(` when the annotation starts right here.
+    let entry_tail = tail.strip_prefix('(').unwrap_or(tail);
+    let entry_relative = relative_start.max(tail.len() - entry_tail.len());
+    let entry_slice = &entry_tail[entry_relative..];
+    let prefix_start =
+        attribute_start + 1 + entry_relative + (entry_slice.len() - entry_slice.trim_start().len());
+    let prefix = entry_slice.trim_start();
+    if prefix.contains(':')
         || prefix.contains('=')
         || !prefix
             .chars()
@@ -3427,7 +3498,7 @@ fn attribute_completion_context(
     {
         return None;
     }
-    let start = attribute_start + 1 + relative_start;
+    let start = prefix_start;
     Some(CompletionContext {
         prefix: prefix.to_owned(),
         replace: TextRange::new(start, offset),
@@ -3888,46 +3959,80 @@ fn heading_default_ids(
         )
         .tree;
     let mut headings = Vec::new();
-    collect_heading_default_ids_in_nodes(&tree.roots, &mut headings);
+    let mut chain = Vec::new();
+    collect_heading_default_ids_in_nodes(&tree.roots, &mut chain, &mut headings);
     headings
 }
 
 /// Collects heading texts in render (depth-first) order, mirroring the anchor
 /// planning walk of the HTML renderer.
-fn collect_heading_default_ids_in_nodes(nodes: &[Node], output: &mut Vec<(String, TextRange)>) {
+fn collect_heading_default_ids_in_nodes(
+    nodes: &[Node],
+    chain: &mut Vec<String>,
+    output: &mut Vec<(String, TextRange)>,
+) {
     for node in nodes {
-        collect_heading_default_ids(node, output);
+        collect_heading_default_ids(node, chain, output);
     }
 }
 
-fn collect_heading_default_ids(node: &Node, output: &mut Vec<(String, TextRange)>) {
+/// A heading's default ItemId is its title chain: the titles of the
+/// enclosing sections joined with `/`, ending at its own title (model.not).
+/// Chain titles are heading texts, regardless of any `id` annotations on the
+/// chain.
+fn collect_heading_default_ids(
+    node: &Node,
+    chain: &mut Vec<String>,
+    output: &mut Vec<(String, TextRange)>,
+) {
+    if node.is_core("section") {
+        let title = node
+            .children
+            .first()
+            .filter(|child| child.is_core("heading"))
+            .map(|heading| heading_plain_text(&heading.children))
+            .unwrap_or_default();
+        chain.push(title);
+        collect_heading_default_ids_in_nodes(&node.children, chain, output);
+        chain.pop();
+        return;
+    }
     if node.is_core("heading") {
-        output.push((heading_plain_text(&node.children), node.range));
+        // Inside a section the chain already carries the enclosing titles
+        // including this heading's own; a sectionless heading falls back to
+        // its plain title. The range is the block's span: leading whitespace
+        // and the declaring annotation through the terminating newline.
+        let id = if chain.is_empty() {
+            heading_plain_text(&node.children)
+        } else {
+            chain.join("/")
+        };
+        output.push((id, node.range));
     }
     match node.core_local() {
-        None => collect_heading_default_ids_in_nodes(&node.children, output),
+        None => collect_heading_default_ids_in_nodes(&node.children, chain, output),
         Some(
             "paragraph" | "strong" | "emph" | "strike" | "underline" | "heading" | "item"
-            | "unresolved-call" | "section" | "list" | "table" | "table-cell" | "figure",
+            | "unresolved-call" | "list" | "table" | "table-cell" | "figure",
         ) => {
-            collect_heading_default_ids_in_nodes(&node.children, output);
+            collect_heading_default_ids_in_nodes(&node.children, chain, output);
             for name in ["supplement", "caption"] {
                 if let Some(nodes) = stream_arg(node, name) {
-                    collect_heading_default_ids_in_nodes(nodes, output);
+                    collect_heading_default_ids_in_nodes(nodes, chain, output);
                 }
             }
         }
         Some("callout") => {
             if let Some(title) = stream_arg(node, "title") {
-                collect_heading_default_ids_in_nodes(title, output);
+                collect_heading_default_ids_in_nodes(title, chain, output);
             }
-            collect_heading_default_ids_in_nodes(&node.children, output);
+            collect_heading_default_ids_in_nodes(&node.children, chain, output);
         }
         Some("details") => {
             if let Some(summary) = stream_arg(node, "summary") {
-                collect_heading_default_ids_in_nodes(summary, output);
+                collect_heading_default_ids_in_nodes(summary, chain, output);
             }
-            collect_heading_default_ids_in_nodes(&node.children, output);
+            collect_heading_default_ids_in_nodes(&node.children, chain, output);
         }
         _ => {}
     }
@@ -4080,15 +4185,16 @@ mod tests {
             );
         }
         assert_eq!(
+            index.offset_utf8_saturating(source, 1, 0), line1_start,
+            "line start offset equals the byte length of the previous lines"
+        );
+        assert_eq!(
             index.offset_utf8_saturating(source, 1, 2),
             index.offset_utf8(source, 1, 2).unwrap()
         );
 
         // A column past the line content clamps to the end-of-line position.
-        assert_eq!(
-            index.offset_utf8_saturating(source, 0, 40),
-            line0_end_bytes
-        );
+        assert_eq!(index.offset_utf8_saturating(source, 0, 40), line0_end_bytes);
         // 3 bytes lands inside 😀's encoding; floor to the boundary before it.
         assert_eq!(index.offset_utf8_saturating(source, 0, 3), 2);
         assert_eq!(index.offset_utf8_saturating(source, 0, 5), 2);
@@ -4287,12 +4393,12 @@ mod tests {
         fs::create_dir(root.path().join("pages")).unwrap();
         fs::write(
             root.path().join("README.not"),
-            "#<pages::guide/intro> #<self/here> #[Here]@here",
+            "#<pages::guide/intro> #<self/here> @(id: \"here\")#[Here]",
         )
         .unwrap();
         fs::write(
             root.path().join("pages/guide.not"),
-            "#heading[Introduction]@intro",
+            "@(id: \"intro\")#heading[Introduction]",
         )
         .unwrap();
 
@@ -4329,7 +4435,7 @@ mod tests {
         let root = TempDir::new().unwrap();
         fs::write(
             root.path().join("README.not"),
-            "#[one]@same #[two]@same #<self/same>",
+            "@(id: \"same\")#[one] @(id: \"same\")#[two] #<self/same>",
         )
         .unwrap();
 
@@ -4460,7 +4566,7 @@ mod tests {
         let root = TempDir::new().unwrap();
         fs::write(
             root.path().join("README.not"),
-            "#<guide/简介> #<guide/安装>",
+            "#<guide/指南/简介> #<guide/指南/安装>",
         )
         .unwrap();
         fs::write(
@@ -4474,7 +4580,7 @@ mod tests {
         let heading = workspace
             .references()
             .iter()
-            .find(|reference| reference.target_name.as_deref() == Some("简介"))
+            .find(|reference| reference.target_name.as_deref() == Some("指南/简介"))
             .expect("heading text label resolves");
         assert!(heading.target_range.is_some());
         let ambiguous: Vec<_> = workspace
@@ -4489,7 +4595,7 @@ mod tests {
         let first = workspace
             .references()
             .iter()
-            .find(|reference| reference.target_name.as_deref() == Some("安装"))
+            .find(|reference| reference.target_name.as_deref() == Some("指南/安装"))
             .expect("ambiguous reference resolves");
         assert!(
             first.target_range.expect("heading range").start
@@ -4510,12 +4616,12 @@ mod tests {
         fs::write(root.path().join("README.not"), "= Home").unwrap();
         fs::write(
             root.path().join("guide.not"),
-            "= Guide\n\n== Intro\n\n#[explicit]@intro",
+            "= Guide\n\n== Intro\n\n@(id: \"intro\")#[explicit]",
         )
         .unwrap();
         fs::write(
             root.path().join("explicit.not"),
-            "#<vault::guide/intro> #<vault::guide/Intro>",
+            "#<vault::guide/intro> #<vault::guide/Guide/Intro>",
         )
         .unwrap();
 
@@ -4540,7 +4646,7 @@ mod tests {
     #[test]
     fn definition_jumps_to_heading_default_id_not_just_file() {
         let root = TempDir::new().unwrap();
-        fs::write(root.path().join("README.not"), "#<guide/Intro>").unwrap();
+        fs::write(root.path().join("README.not"), "#<guide/Guide/Intro>").unwrap();
         fs::write(
             root.path().join("guide.not"),
             "= Guide\n\n== Intro\n\ncontent here",
@@ -4860,7 +4966,11 @@ mod tests {
     fn snapshot_queries_and_delta_use_captured_semantics() {
         let root = TempDir::new().unwrap();
         fs::write(root.path().join("README.not"), "#<page/intro>").unwrap();
-        fs::write(root.path().join("page.not"), "#heading[Intro]@intro").unwrap();
+        fs::write(
+            root.path().join("page.not"),
+            "@(id: \"intro\")#heading[Intro]",
+        )
+        .unwrap();
         let engine = VaultEngine::open(root.path()).unwrap();
         let mut view = engine.disk_view().unwrap();
         let first = view.snapshot();
@@ -4899,7 +5009,11 @@ mod tests {
             [root_file]
         );
 
-        fs::write(root.path().join("page.not"), "#heading[Changed]@intro").unwrap();
+        fs::write(
+            root.path().join("page.not"),
+            "@(id: \"intro\")#heading[Changed]",
+        )
+        .unwrap();
         fs::write(root.path().join("extra.not"), "extra").unwrap();
         let second = view.reload().unwrap();
         let delta = second.delta_from(&first).unwrap();
@@ -5212,7 +5326,7 @@ mod tests {
         assert_eq!(heading.replacement, TextRange::new(1, 3));
         assert_eq!(
             heading.detail,
-            "#heading(level: Int = 1)[body: Content] -> Content"
+            "#heading(level: Int = 1)[body: Item] -> Item"
         );
     }
 
@@ -5331,7 +5445,7 @@ mod tests {
         let root = TempDir::new().unwrap();
         let main_path = root.path().join("main.not");
         fs::write(&main_path, "#<self/").unwrap();
-        fs::write(root.path().join("foo.not"), "#[Intro]@intro").unwrap();
+        fs::write(root.path().join("foo.not"), "@(id: \"intro\")#[Intro]").unwrap();
         let snapshot = WorkspaceSnapshot::load(root.path()).unwrap();
         let main_path = dunce::canonicalize(&main_path).unwrap();
         let file_id = snapshot.file_id(&main_path).unwrap();
@@ -5422,7 +5536,7 @@ mod tests {
     fn snapshot_completes_observed_annotation_property_keys() {
         let root = TempDir::new().unwrap();
         let path = root.path().join("README.not");
-        let source = "#[one]@first,owner=Alice\n#[two]@second,ow";
+        let source = "@(id: \"first\", owner: \"Alice\")#[one]\n@(id: \"second\", ow";
         fs::write(&path, source).unwrap();
         let snapshot = WorkspaceSnapshot::load(root.path()).unwrap();
         let file_id = snapshot
@@ -5433,10 +5547,10 @@ mod tests {
         assert_eq!(candidates.len(), 1);
         assert_eq!(candidates[0].kind, CompletionKind::Attribute);
         assert_eq!(candidates[0].label, "owner");
-        assert_eq!(candidates[0].insert_text, "owner=");
+        assert_eq!(candidates[0].insert_text, "owner: ");
         assert_eq!(
             candidates[0].replacement,
-            TextRange::new(source.len() - 2, source.len())
+            TextRange::new(source.len() - 3, source.len())
         );
     }
 
@@ -5463,7 +5577,7 @@ mod tests {
         let root = TempDir::new().unwrap();
         fs::write(
             root.path().join("guide.not"),
-            "@![#design, #wip, status = \"draft\"]\n\n= 指南",
+            "@!(type: \"design\", wip: true, status: \"draft\")\n\n= 指南",
         )
         .unwrap();
         let snapshot = WorkspaceSnapshot::load(root.path()).unwrap();
@@ -5475,21 +5589,21 @@ mod tests {
 
         let attributes = snapshot.module_attributes(module_id);
         assert_eq!(attributes.len(), 1);
-        assert!(attributes[0]
-            .items
-            .iter()
-            .any(|attribute| matches!(attribute, notist_syntax::Attribute::Tag(name) if name.value == "design")));
-        assert!(attributes[0]
-            .items
-            .iter()
-            .any(|attribute| matches!(attribute, notist_syntax::Attribute::Tag(name) if name.value == "wip")));
-        assert!(attributes[0].items.iter().any(|attribute| {
-            matches!(
-                attribute,
-                notist_syntax::Attribute::KeyValue { key, value, .. }
-                    if key.value == "status" && value.raw == "\"draft\""
-            )
-        }));
+        assert!(
+            attributes[0]
+                .iter()
+                .any(|(key, value)| key == "type" && value == "design")
+        );
+        assert!(
+            attributes[0]
+                .iter()
+                .any(|(key, value)| key == "wip" && value == "true")
+        );
+        assert!(
+            attributes[0]
+                .iter()
+                .any(|(key, value)| key == "status" && value == "draft")
+        );
         // Virtual modules carry no attributes.
         let virtual_root = snapshot
             .modules()
@@ -5505,7 +5619,7 @@ mod tests {
         let root = TempDir::new().unwrap();
         fs::write(
             root.path().join("guide.not"),
-            "#[安装指南]@install\n\n[[vault::guide#install]]",
+            "@(id: \"install\")#[安装指南]\n\n[[vault::guide#install]]",
         )
         .unwrap();
         let snapshot = WorkspaceSnapshot::load(root.path()).unwrap();

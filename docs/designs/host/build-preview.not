@@ -1,4 +1,4 @@
-@![implementation = "aligned"]
+@!(implementation: "aligned")
 = Build and Preview
 
 本文是 A7 静态构建与本地预览的独立成篇，从归档的历史混合文档中独立成篇。HTML fragment 渲染见 #<vault::designs::host::html-renderer>；RefTarget 见 #<vault::designs::world::reference-ref-target>；WorkspaceSnapshot 见 #<vault::designs::host::analyzer-snapshot>。
@@ -41,15 +41,15 @@ vault::designs::type-system  -> designs/type-system/index.html
 
 URL 中的路径 segment 单独 percent encode；页面之间使用相对链接，使构建结果可直接从任意静态文件服务器或子路径部署。
 
-- *资源复制*：资源目录虚拟模块（#<vault::designs::world::module-result/资源目录>）中的文件按引用复制到输出（`vault::docs::images/logo.png` → 输出下对应路径），Reference 指向复制后的相对路径；未被引用的资源文件也可以整体复制（站点资源），由 CLI 决定——值层只有 Reference，资源解析属于构建层。当前 CLI 决策：默认整体复制所有模块资源（无额外旗标）；
+- *资源复制*：资源目录虚拟模块（#<vault::designs::world::module-result/Module and ModuleResult/Module/资源目录>）中的文件按引用复制到输出（`vault::docs::images/logo.png` → 输出下对应路径），Reference 指向复制后的相对路径；未被引用的资源文件也可以整体复制（站点资源），由 CLI 决定——值层只有 Reference，资源解析属于构建层。当前 CLI 决策：默认整体复制所有模块资源（无额外旗标）；
 - *虚拟目录模块*生成索引页（列出子模块与资源）；
 - 引用在构建时解析：目标存在输出链接，不存在保留可见文本与 unresolved 样式；
 - syntax/analysis/evaluation diagnostics 不阻止生成其他可用页面，但 `notist build` 输出 diagnostics 并返回非零退出码；
-- 默认不清空整个输出目录（只创建或覆盖本次 Vault 对应的页面与 `_notist` 资源），删除旧产物必须显式 `--clean`；`--clean` 只允许清理已解析、验证位于目标 output root 内的 artifact（#<vault::cli/build>）。
+- 默认不清空整个输出目录（只创建或覆盖本次 Vault 对应的页面与 `_notist` 资源），删除旧产物必须显式 `--clean`；`--clean` 只允许清理已解析、验证位于目标 output root 内的 artifact（#<vault::cli/Notist CLI: Command Design and Reference/Publishing/build>）。
 
 站点级职责（完整 HTML page shell、vault 名称与模块导航、`_notist/style.css` 等共享资源）属于 CLI build 层，不进入 fragment renderer。
 
-Vault 可通过 `Notist.toml` 的 `[site] styles` 声明额外站点样式表（配置模型见 #<vault::designs::world::core-namespace-plugin-boundary/Notist.toml 配置内容模型>）：CLI 站点层把每个文件复制到 `_notist/styles/<相对路径>` 并在每个页面 head 注入 link，位置在内置 `_notist/style.css` 之后、插件资源之前——用户样式可以覆盖默认样式；build 与 preview 走同一条注入路径，不发展两套语义。文件缺失时降级为 warning 并从页面 head 中省略，不阻塞构建。daemon watcher 把声明的样式文件变化视为 reload 事件（#<vault::designs::host::daemon-process-views>），preview 因此能在纯 CSS 编辑后自动重建。
+Vault 可通过 `Notist.toml` 的 `[site] styles` 声明额外站点样式表（配置模型见 #<vault::designs::world::core-namespace-plugin-boundary/Core Namespace and Plugin Boundary/Notist.toml 配置内容模型>）：CLI 站点层把每个文件复制到 `_notist/styles/<相对路径>` 并在每个页面 head 注入 link，位置在内置 `_notist/style.css` 之后、插件资源之前——用户样式可以覆盖默认样式；build 与 preview 走同一条注入路径，不发展两套语义。文件缺失时降级为 warning 并从页面 head 中省略，不阻塞构建。daemon watcher 把声明的样式文件变化视为 reload 事件（#<vault::designs::host::daemon-process-views>），preview 因此能在纯 CSS 编辑后自动重建。
 
 == Local Preview
 

@@ -31,7 +31,7 @@ plugins/shader/
 
 ```text
 shader(source: String, width: Int = 800, height: Int = 600,
-       trailing body: Content) -> Content
+       trailing body: Item) -> Item
 ```
 
 `source` 是 WGSL fragment 主函数：

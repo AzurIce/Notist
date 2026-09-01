@@ -1,4 +1,4 @@
-@![implementation = "partial"]
+\@!(implementation: "partial")
 = obsidian-notist UX polish and document references
 
 2026-08-27 会话记录：对当日早些时候合并的 diagnostics 与语义面板两批功能做系统性 UX 整改，并落地 #<vault::ai::2026-08-26 obsidian-notist semantic panels design> 裁定的上游协议 `notist/documentReferences`，替代入链面板的 `(0,0)` 位置降级。实现证据：obsidian-notist `src/explorer-badges.ts`（新）、`src/problems-dock.ts`、`src/semantic-panels.ts`、`src/main.ts`、`src/notist-view.ts`、`src/lsp/session.ts`、`styles.css`；notist `crates/notist-cli/src/lsp.rs`、`crates/notist-service/src/request.rs`、`crates/notist-cli/tests/lsp_queries.rs`。
@@ -56,7 +56,7 @@
 
 == 重要发现：`[[wiki]]` 不是现行语法
 
-排查"基础设施.not 入链为空"时确认：notist 已按 #<vault::designs::language::target-and-union> 废弃 `[[...]]` wiki 引用，现行引用语法是 `#<target>` Target 字面量（`link(<...>)` 同入口）。vault 中大量 `[[基础设施]]` 文本在语义层不构成引用边，`notist references` 与 documentReferences 返回 0 是正确行为，不是实现缺陷。渲染层对 `[[...]]` 显示为未解析文本。这一点对后续任何"入链数量对不上"的报告都适用：先检查用的是不是 `#<...>`。
+排查"基础设施.not 入链为空"时确认：notist 已按 #<vault::types/Type System/Target 与 link> 废弃 `[[...]]` wiki 引用，现行引用语法是 `#<target>` Target 字面量（`link(<...>)` 同入口）。vault 中大量 `[[基础设施]]` 文本在语义层不构成引用边，`notist references` 与 documentReferences 返回 0 是正确行为，不是实现缺陷。渲染层对 `[[...]]` 显示为未解析文本。这一点对后续任何"入链数量对不上"的报告都适用：先检查用的是不是 `#<...>`。
 
 == 残留与后续
 
@@ -70,5 +70,5 @@
 - #<vault::ai::2026-08-26 obsidian-notist lsp diagnostics design>：Problems 首版设计与"徽标不做"的原裁决（本文推翻并记录理由）。
 - #<vault::ai::2026-08-26 obsidian-notist semantic panels design>：documentReferences 推荐协议、`(0,0)` 降级的歧义分析、面板分层路线。
 - #<vault::designs::host::lsp-adapter>：LSP adapter 协议边界。
-- #<vault::designs::language::target-and-union>：`[[wiki]]` 废弃、`#<target>` 现行语法的裁定。
+- #<vault::types/Type System/Target 与 link>：`[[wiki]]` 废弃、`#<target>` 现行语法的裁定。
 - #<vault::obsidian-notist::lsp>：插件 LSP 总体接入与 server 契约（本文补充 experimental capability 一节）。

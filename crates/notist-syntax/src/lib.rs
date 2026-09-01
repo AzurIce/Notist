@@ -6,13 +6,11 @@ mod raw;
 mod scope;
 
 pub use argument::{
-    Argument, BinaryOperator, Expression, ExpressionKind, ImportSelector, StringLiteral,
+    Argument, BinaryOperator, DictEntry, Expression, ExpressionKind, ImportSelector, StringLiteral,
     StringLiteralForm, StringLiteralStyle, UnaryOperator, UserFunctionDefinition, UserParameter,
 };
 pub use raw::{RawLiteral, RawLiteralForm, SpannedText};
-pub use scope::{Attribute, AttributeValue, Attributes, BodyForm, SpannedName};
-
-
+pub use scope::{BodyForm, SpannedName};
 
 /// A recoverable syntax error with a precise source range.
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -54,12 +52,10 @@ pub enum MarkupItem {
     /// A contiguous pipe-table run (D0003 table sugar): a header row, a
     /// separator row, and zero or more body rows.
     Table(TableSugar),
-    /// A standalone `@[...]` annotation bound to the next block-level node
-    /// (D0006 block-prefix mount point).
-    BlockAnnotation(BlockAnnotation),
-    /// A file-leading `@![...]` annotation bound to the root scope as module
-    /// metadata (D0006 module mount point).
-    ModuleAnnotation(BlockAnnotation),
+    /// A `@expr` (or file-leading `@!expr`) annotation. A module annotation
+    /// binds the root scope; every other annotation binds the Item that
+    /// immediately follows it in the markup stream.
+    Annotation(Annotation),
 }
 
 /// A line-leading heading sugar node: the `=` run length is the level, the
@@ -112,10 +108,17 @@ pub struct TableSugarCell {
     pub range: TextRange,
 }
 
-/// A standalone bracket-delimited annotation (`@[...]` / `@![...]`, D0006).
+/// A `@`/`@!` annotation: one evaluated expression whose Dict value
+/// becomes the attribute set of the mount target.
 #[derive(Clone, Debug, PartialEq)]
-pub struct BlockAnnotation {
-    pub attributes: Attributes,
+pub struct Annotation {
+    /// `@!` binds the module root scope instead of the following Item.
+    pub module: bool,
+    /// The payload expression; evaluation must produce a Dict.
+    pub expression: Expression,
+    /// The range of the Item this annotation binds (resolved after parsing
+    /// as the next non-annotation sibling item); `None` when dangling.
+    pub target_range: Option<TextRange>,
     pub range: TextRange,
 }
 
@@ -123,19 +126,10 @@ pub struct BlockAnnotation {
 #[derive(Clone, Debug, PartialEq)]
 pub struct EmbeddedExpression {
     pub expression: Expression,
-    /// Source-only metadata. Type checking and evaluation ignore it.
-    pub attributes: Attributes,
-    /// The `#` plus expression, excluding postfix Attributes.
+    /// The `#` plus expression.
     pub scope_range: TextRange,
-    /// The complete expression including postfix Attributes.
+    /// The complete expression range.
     pub range: TextRange,
-}
-
-impl EmbeddedExpression {
-    /// Returns the independent source range of the postfix `@...` metadata.
-    pub fn attributes_range(&self) -> Option<TextRange> {
-        self.attributes.range
-    }
 }
 
 /// A Code-mode Content literal whose body is parsed as Markup.
@@ -283,14 +277,12 @@ impl Parse {
         output
     }
 
-    /// Collects annotated embedded expressions in source order.
-    pub fn annotations(&self) -> Vec<&EmbeddedExpression> {
+    /// Collects annotations in source order.
+    pub fn annotations(&self) -> Vec<&Annotation> {
         let mut output = Vec::new();
         visit_markup(&self.root, &mut |item| {
-            if let MarkupItem::Embedded(embedded) = item
-                && embedded.attributes.range.is_some()
-            {
-                output.push(embedded);
+            if let MarkupItem::Annotation(annotation) = item {
+                output.push(annotation);
             }
         });
         output
@@ -317,6 +309,9 @@ fn visit_markup<'a>(markup: &'a Markup, visitor: &mut impl FnMut(&'a MarkupItem)
         match item {
             MarkupItem::Embedded(embedded) => {
                 visit_expression_markup(&embedded.expression, visitor)
+            }
+            MarkupItem::Annotation(annotation) => {
+                visit_expression_markup(&annotation.expression, visitor)
             }
             MarkupItem::Heading(sugar) => visit_markup(&sugar.body, visitor),
             MarkupItem::List(sugar) => {
@@ -740,7 +735,10 @@ mod tests {
         let ExpressionKind::Target(first) = &targets[0].kind else {
             panic!("expected target literal");
         };
-        assert_eq!(first.module, ModuleReference::Absolute(vec!["wiki link".into()]));
+        assert_eq!(
+            first.module,
+            ModuleReference::Absolute(vec!["wiki link".into()])
+        );
         assert_eq!(first.name.as_deref(), Some("install"));
         let ExpressionKind::Target(second) = &targets[1].kind else {
             panic!("expected target literal");
@@ -754,7 +752,12 @@ mod tests {
         let parse = parse("#<https://example.com/a>");
         assert_eq!(parse.errors.len(), 1, "{:?}", parse.errors);
         let unclosed_parse = crate::parse("#<vault::x");
-        assert_eq!(unclosed_parse.errors.len(), 1, "{:?}", unclosed_parse.errors);
+        assert_eq!(
+            unclosed_parse.errors.len(),
+            1,
+            "{:?}",
+            unclosed_parse.errors
+        );
     }
 
     #[test]
@@ -762,10 +765,7 @@ mod tests {
         let source = "#<vault::x\nfollow-up";
         let parse = crate::parse(source);
         assert_eq!(parse.errors.len(), 1, "{:?}", parse.errors);
-        assert_eq!(
-            parse.errors[0].range,
-            TextRange::new(1, "#<vault::x".len())
-        );
+        assert_eq!(parse.errors[0].range, TextRange::new(1, "#<vault::x".len()));
         // Parsing resumes on the next line instead of consuming the file.
         let MarkupItem::Text(trailer) = &parse.root.items[1] else {
             panic!("expected trailing text, got {:?}", parse.root.items[1]);
@@ -782,10 +782,7 @@ mod tests {
         let ExpressionKind::Target(target) = &targets[0].kind else {
             panic!("expected target literal");
         };
-        assert_eq!(
-            target.module,
-            ModuleReference::Relative(vec!["anb".into()])
-        );
+        assert_eq!(target.module, ModuleReference::Relative(vec!["anb".into()]));
     }
 
     #[test]
@@ -829,7 +826,9 @@ mod tests {
             let parsed = crate::parse(source);
             assert_eq!(parsed.errors.len(), 1, "{source:?}: {:?}", parsed.errors);
             assert!(
-                parsed.errors[0].message.contains("unclosed import selector"),
+                parsed.errors[0]
+                    .message
+                    .contains("unclosed import selector"),
                 "{source:?}: {:?}",
                 parsed.errors
             );
@@ -858,75 +857,88 @@ mod tests {
     }
 
     #[test]
-    fn nests_annotated_content_without_confusing_later_raw_markup() {
-        let parse = parse("#[outer #[inner]@inner]@outer `real`");
-        assert!(parse.errors.is_empty(), "{:?}", parse.errors);
-        assert_eq!(parse.annotations().len(), 2);
-        let raw = parse.raw_literals();
-        assert_eq!(raw.len(), 1);
-        assert_eq!(
-            parse_source(
-                &parse,
-                raw[0].payload_range,
-                "#[outer #[inner]@inner]@outer `real`"
-            ),
-            "real"
-        );
+    fn annotation_literals_parse_entries_strictly() {
+        // New model: `@(...)` is a strict `key: value` Dict literal.
+        let parsed = parse("#[x]@(id: \"x\", status: \"draft\")");
+        assert!(parsed.errors.is_empty(), "{:?}", parsed.errors);
+        let annotations = parsed.annotations();
+        assert_eq!(annotations.len(), 1);
+        let ExpressionKind::Dict(entries) = &annotations[0].expression.kind else {
+            panic!("expected a Dict payload");
+        };
+        assert_eq!(entries.len(), 2);
+
+        // 裸键糖已废除：`@(wip)` 是分组表达式（求值 wip），不是条目——
+        // Dict 义务由求值层的类型检查给出诊断。
+        let bare = parse("#[x]@(wip)");
+        assert!(bare.errors.is_empty(), "{:?}", bare.errors);
+        let ExpressionKind::Parenthesized(inner) = &bare.annotations()[0].expression.kind else {
+            panic!("expected grouping");
+        };
+        assert!(matches!(inner.kind, ExpressionKind::Name(_)));
     }
 
     #[test]
-    fn attributes_keep_independent_ranges_and_all_metadata_kinds() {
-        let source = "#[outer #[inner]@inner,#tag,#tag,.class,.class,key=value,key=\"two\"]@outer,#top,owner=\"Alice\"";
-        let parse = parse(source);
+    fn annotations_bind_forward_and_stack_anywhere() {
+        let parsed = parse("#let g = (a: 1)\n@(id: \"x\", ..g)\n= T\n");
+        assert!(parsed.errors.is_empty(), "{:?}", parsed.errors);
+        let annotations = parsed.annotations();
+        assert_eq!(annotations.len(), 1);
+        assert!(!annotations[0].module);
+        assert!(annotations[0].expression.range.start < parsed.root.range.end);
+
+        // A mid-text annotation binds the following Item.
+        let inline = parse("text @(kind: \"note\")#[scope] tail");
+        assert!(inline.errors.is_empty(), "{:?}", inline.errors);
+        assert_eq!(inline.annotations().len(), 1);
+    }
+
+    #[test]
+    fn module_annotations_use_the_at_bang_prefix() {
+        let parse = parse("#let d = (a: 1)\n@!d\n@!(b: 2)\n= T\n");
         assert!(parse.errors.is_empty(), "{:?}", parse.errors);
         let annotations = parse.annotations();
         assert_eq!(annotations.len(), 2);
-
-        let inner = annotations
-            .iter()
-            .find(|annotation| annotation.attributes.id.as_ref().unwrap().value == "inner")
-            .unwrap();
-        assert_eq!(
-            &source[inner.scope_range.start..inner.scope_range.end],
-            "#[inner]"
-        );
-        let inner_attributes = inner.attributes_range().unwrap();
-        assert_eq!(
-            &source[inner_attributes.start..inner_attributes.end],
-            "@inner,#tag,#tag,.class,.class,key=value,key=\"two\""
-        );
-        assert_eq!(inner.attributes.id.as_ref().unwrap().value, "inner");
-        assert_eq!(inner.attributes.items.len(), 6);
-        assert!(inner.scope_range.end <= inner_attributes.start);
-        assert_eq!(inner.range.end, inner_attributes.end);
-
-        let outer = annotations
-            .iter()
-            .find(|annotation| annotation.attributes.id.as_ref().unwrap().value == "outer")
-            .unwrap();
-        assert_eq!(outer.attributes.id.as_ref().unwrap().value, "outer");
-        assert_eq!(
-            &source[outer.attributes_range().unwrap().start..outer.range.end],
-            "@outer,#top,owner=\"Alice\""
-        );
-        assert!(
-            inner.range.start >= outer.scope_range.start
-                && inner.range.end <= outer.scope_range.end
-        );
+        assert!(annotations.iter().all(|annotation| annotation.module));
     }
 
     #[test]
-    fn attributes_may_omit_id_but_reject_a_second_bare_id() {
-        let valid = parse("#[a]@#tag,.class,key=value");
-        assert!(valid.errors.is_empty(), "{:?}", valid.errors);
-        let attributes = &valid.annotations()[0].attributes;
-        assert!(attributes.id.is_none());
-        assert_eq!(attributes.items.len(), 3);
+    fn collection_literals_discriminate_by_local_shape() {
+        let cases: [(&str, &str); 7] = [
+            ("#()", "Unit"),
+            ("#(:)", "Dict"),
+            ("#(,)", "Array"),
+            ("#(1 + 2)", "grouping"),
+            ("#(1,)", "Array"),
+            ("#(1, 2)", "Array"),
+            ("#(k: 1)", "Dict"),
+        ];
+        for (source, kind) in cases {
+            let parsed = parse(source);
+            assert!(parsed.errors.is_empty(), "{source:?}: {:?}", parsed.errors);
+            let MarkupItem::Embedded(embedded) = &parsed.root.items[0] else {
+                panic!("{source:?}: expected an embedded expression");
+            };
+            let described = match &embedded.expression.kind {
+                ExpressionKind::Unit => "Unit".to_owned(),
+                ExpressionKind::Dict(entries) => {
+                    format!("Dict({})", entries.len())
+                }
+                ExpressionKind::Array(elements) => format!("Array({})", elements.len()),
+                ExpressionKind::Parenthesized(_) => "grouping".to_owned(),
+                _ => "other".to_owned(),
+            };
+            assert!(described.starts_with(kind), "{source:?}: {described}");
+        }
 
-        let invalid = parse("#[a]@first,second");
-        assert!(invalid.errors.iter().any(|error| {
-            error.message == "expected a tag, class, or key-value attribute after `,`"
-        }));
+        // A Dict cannot mix bare value entries with keyed entries.
+        let mixed = parse("#(a, k: 1)");
+        assert!(
+            mixed
+                .errors
+                .iter()
+                .any(|error| error.message.contains("`key: value`"))
+        );
     }
 
     #[test]
@@ -1036,164 +1048,93 @@ mod tests {
     }
 
     #[test]
-    fn parses_block_and_module_annotations() {
-        // D0006: `@![...]` at the file start is the module mount point,
-        // `@[...]` at line start is the block-prefix mount point.
-        let parsed =
-            parse("@![#design, status = \"draft\"]\n\n@[wip]\n= Title\n\n@[install]\nbody");
+    fn parses_module_annotations_with_dict_payloads() {
+        let source = "#let d = (a: 1)\n@!d\n@!(b: 2)\n= T\n";
+        let parsed = parse(source);
         assert!(parsed.errors.is_empty(), "{:?}", parsed.errors);
-        assert!(matches!(
-            &parsed.root.items[0],
-            MarkupItem::ModuleAnnotation(_)
-        ));
-        assert_eq!(
+        let module_annotations: Vec<_> = parsed
+            .root
+            .items
+            .iter()
+            .filter(|item| matches!(item, MarkupItem::Annotation(annotation) if annotation.module))
+            .collect();
+        assert_eq!(module_annotations.len(), 2);
+        assert!(
             parsed
                 .root
                 .items
-                .iter()
-                .filter(|item| matches!(item, MarkupItem::BlockAnnotation(_)))
-                .count(),
-            2
+                .last()
+                .is_some_and(|item| matches!(item, MarkupItem::Heading(_)))
         );
-        let MarkupItem::ModuleAnnotation(module) = &parsed.root.items[0] else {
-            panic!()
-        };
-        assert!(module.attributes.items.iter().any(|attribute| {
-            matches!(attribute, Attribute::Tag(name) if name.value == "design")
-        }));
-        assert!(module.attributes.items.iter().any(|attribute| {
-            matches!(attribute, Attribute::KeyValue { key, value, .. } if key.value == "status" && value.raw == "\"draft\"")
-        }));
     }
 
     #[test]
-    fn attribute_values_share_the_code_string_grammar() {
-        // Attribute strings are Code string literals: escapes decode,
-        // `"""` spans lines, and raw `r#"..."#` forms are accepted.
+    fn annotation_string_values_share_the_code_string_grammar() {
+        // Annotation values are Code string literals: escapes decode, `"""`
+        // spans lines, and raw `r#"..."#` forms are accepted.
         let value_of = |source: &str| {
             let parsed = parse(source);
             assert!(parsed.errors.is_empty(), "{:?}", parsed.errors);
-            let MarkupItem::ModuleAnnotation(annotation) = &parsed.root.items[0] else {
+            let MarkupItem::Annotation(annotation) = &parsed.root.items[0] else {
                 panic!()
             };
-            let Some(Attribute::KeyValue { value, .. }) = annotation.attributes.items.first()
-            else {
+            let ExpressionKind::Dict(entries) = &annotation.expression.kind else {
                 panic!()
             };
-            value.clone()
+            let Some(DictEntry::Entry { value, .. }) = entries.first() else {
+                panic!()
+            };
+            let ExpressionKind::String(literal) = &value.kind else {
+                panic!()
+            };
+            literal.value.clone()
         };
 
         // Escape sequences decode; `raw` keeps the source text.
-        let value = value_of("@![desc = \"line1\\nline2\"]\n\n= Title");
-        assert_eq!(value.text(), "line1\nline2");
-        assert_eq!(value.raw, "\"line1\\nline2\"");
+        let value = value_of("@!(desc: \"line1\\nline2\")\n\n= Title");
+        assert_eq!(value, "line1\nline2");
 
-        // Multiline requires `"""`; framing newlines are trimmed.
-        let value = value_of("@![desc=\"\"\"\nline1\nline2\n\"\"\"]\n\n= Title");
-        assert_eq!(value.text(), "line1\nline2");
+        let value = value_of("@(desc: r#\"raw \\ keep\"#)\n= T");
+        assert_eq!(value, "raw \\ keep");
 
-        // Raw strings keep quotes without escapes.
-        let value = value_of("@![desc = r#\"a \"quoted\" bit\"#]\n\n= Title");
-        assert_eq!(value.text(), "a \"quoted\" bit");
-
-        // Bare identifiers keep their source text.
-        let value = value_of("@![desc = draft]\n\n= Title");
-        assert_eq!(value.text(), "draft");
-        assert!(value.string.is_none());
+        let multiline = value_of("@(desc: \"\"\"\nline\n\"\"\")\n= T");
+        assert_eq!(multiline, "line");
     }
 
     #[test]
-    fn inline_attribute_strings_end_at_line_breaks() {
-        // An inline attribute string cannot span a line break: the scan and
-        // the unclosed diagnostic stop at the end of the opening line.
-        let parsed = parse("@![desc=\"first\nsecond\"]\n\n= Title");
-        let error = parsed
-            .errors
-            .iter()
-            .find(|error| error.message == "unclosed escaped string literal")
-            .expect("unclosed string diagnostic");
-        assert_eq!(error.range, TextRange::new(8, 14));
-    }
-
-    #[test]
-    fn postfix_annotations_are_line_bound() {
-        // A postfix entry must not reach across the line end: `anchor` below
-        // is an id, and the next line's `=` is heading sugar, never a
-        // key-value separator.
-        let parsed = parse("#[正文]@anchor\n== 标题\n");
-        assert!(parsed.errors.is_empty(), "{:?}", parsed.errors);
-
-        // Same for the single-`=` heading: without the line bound the marker
-        // would be swallowed as `anchor`'s value.
-        let parsed = parse("#[正文]@anchor\n= 标题\n");
-        assert!(parsed.errors.is_empty(), "{:?}", parsed.errors);
-        assert!(parsed.root.items.iter().any(|item| matches!(
-            item,
-            MarkupItem::Heading(sugar) if sugar.level == 1
-        )));
-
-        // Same-line key=value in the postfix form still works.
-        let parsed = parse("#[x]@k = \"v\"\n= 标题\n");
-        assert!(parsed.errors.is_empty(), "{:?}", parsed.errors);
-
-        // Inside `]`-delimited blocks the key and value may sit on separate
-        // lines (D0006).
-        let parsed = parse("@[k =\n\"v\"]\n= 标题\n");
-        assert!(parsed.errors.is_empty(), "{:?}", parsed.errors);
-    }
-
-    #[test]
-    fn parses_stacked_module_annotations() {
-        // Leading `@![...]` may stack: an earlier module annotation is
-        // metadata, not content, so the next one still precedes the first
-        // meaningful token (D0006).
-        let parsed = parse("@![a = \"1\"]\n@![#wip]\n\n= Title\n");
-        assert!(parsed.errors.is_empty(), "{:?}", parsed.errors);
-        assert_eq!(
-            parsed
-                .root
-                .items
-                .iter()
-                .filter(|item| matches!(item, MarkupItem::ModuleAnnotation(_)))
-                .count(),
-            2
-        );
-    }
-
-    #[test]
-    fn rejects_misplaced_module_annotations_and_dangling_at() {
-        let parsed = parse("正文\n@![x]");
+    fn annotation_strings_stay_line_bound_and_multiline_needs_triple_quotes() {
+        // An inline string still cannot cross a line break; the diagnostic
+        // stops at the end of the opening line.
+        let parsed = parse("@(desc: \"unclosed)\n= T");
         assert!(
             parsed
                 .errors
                 .iter()
-                .any(|error| error.message.contains("before any content"))
+                .any(|error| error.message.contains("unclosed")),
+            "{:?}",
+            parsed.errors
         );
-        // A module annotation after content is misplaced even when earlier
-        // ones led the file; each offender is diagnosed once.
-        let parsed = parse("@![a = \"1\"]\n正文\n@![b = \"2\"]\n@![c = \"3\"]");
-        assert_eq!(
-            parsed
-                .errors
-                .iter()
-                .filter(|error| error.message.contains("before any content"))
-                .count(),
-            2
-        );
-        let parsed = parse("@!missing");
+    }
+
+    #[test]
+    fn module_annotations_reject_content_before_them() {
+        let parsed = parse("= Heading\n@!(a: 1)\n");
         assert!(
             parsed
                 .errors
                 .iter()
-                .any(|error| error.message == "expected `[` after `@!`")
+                .any(|error| error.message.contains("must appear before any content"))
         );
-        // `@` followed by an identifier is ordinary text, never an annotation.
-        let mention = parse("@user 提及");
-        assert!(mention.errors.is_empty(), "{:?}", mention.errors);
-        assert!(matches!(
-            &mention.root.items[0],
-            MarkupItem::Text(text) if text.value == "@user 提及"
-        ));
+    }
+
+    #[test]
+    fn dangling_annotations_produce_diagnostics() {
+        // An annotation with no following Item cannot bind.
+        let parsed = parse("@(a: 1)");
+        assert!(
+            !parsed.annotations().is_empty(),
+            "the annotation itself still parses"
+        );
     }
 
     #[test]
@@ -1456,8 +1397,7 @@ mod tests {
 
     #[test]
     fn parses_typed_user_functions_and_binary_precedence() {
-        // D0007 type surface: scalars, T?, and fn(parameters) -> R. Array/
-        // Dict/Union were removed (R07).
+        // D0007 type surface: scalars, T?, and fn(parameters) -> R.
         let parse = parse(
             "#let combine(\
              values: fn(x: Int =, y: Int =) -> Int,\
@@ -1477,14 +1417,6 @@ mod tests {
         assert_eq!(function.parameters[2].ty, Type::Function);
         assert_eq!(function.result, Type::Optional(Box::new(Type::Float)));
 
-        // Array/Dict/Union names are no longer types (R07).
-        let legacy = crate::parse("#let f(values: Array<Int>) = 1");
-        assert!(
-            legacy
-                .errors
-                .iter()
-                .any(|error| error.message == "unknown type `Array`")
-        );
         let ExpressionKind::Binary {
             operator: BinaryOperator::Add,
             right,
@@ -1500,6 +1432,46 @@ mod tests {
                 ..
             }
         ));
+    }
+
+    #[test]
+    fn parses_collection_union_and_grouped_types() {
+        // Parameterized collections (C2), the Item alias, grouped unions,
+        // and the unparameterized forms.
+        let parse = parse(
+            "#let store(\
+             counts: Array<Int>,\
+             meta: Dict<String, Int | Bool>,\
+             label: Item?,\
+             any: Array,\
+             grouped: (Int | String)?,\
+             ) -> Dict = ()",
+        );
+        assert!(parse.errors.is_empty(), "{:?}", parse.errors);
+        let functions = parse.user_functions();
+        assert_eq!(functions.len(), 1);
+        let parameters = &functions[0].parameters;
+        assert_eq!(
+            parameters[0].ty,
+            Type::Array(Some(Box::new(Type::Int)))
+        );
+        assert_eq!(
+            parameters[1].ty,
+            Type::Dict(
+                Some(Box::new(Type::String)),
+                Some(Box::new(Type::union([Type::Int, Type::Bool])))
+            )
+        );
+        assert_eq!(
+            parameters[2].ty,
+            Type::Optional(Box::new(Type::Content))
+        );
+        assert_eq!(parameters[3].ty, Type::Array(None));
+        assert_eq!(
+            parameters[4].ty,
+            Type::Optional(Box::new(Type::union([Type::Int, Type::String])))
+        );
+        assert_eq!(functions[0].result, Type::Dict(None, None));
     }
 
     #[test]
@@ -1610,7 +1582,56 @@ mod tests {
         ));
     }
 
-    fn parse_source<'a>(_parse: &Parse, range: TextRange, source: &'a str) -> &'a str {
-        &source[range.start..range.end]
+}
+
+impl MarkupItem {
+    /// The item's complete source range.
+    pub fn range(&self) -> TextRange {
+        match self {
+            Self::Text(text) => text.range,
+            Self::Raw(raw) => raw.range,
+            Self::Embedded(embedded) => embedded.range,
+            Self::Heading(sugar) => sugar.range,
+            Self::Rule(range) => *range,
+            Self::List(sugar) => sugar.range,
+            Self::Table(sugar) => sugar.range,
+            Self::Annotation(annotation) => annotation.range,
+        }
+    }
+}
+
+impl Annotation {
+    /// Extracts a conventional `id` entry from the payload Dict: the entry
+    /// keyed `id` whose value is a String literal. Returns the id text and
+    /// the value's source range.
+    pub fn id(&self) -> Option<(String, TextRange)> {
+        let ExpressionKind::Dict(entries) = &self.expression.kind else {
+            return None;
+        };
+        for entry in entries {
+            if let DictEntry::Entry { key, value } = entry
+                && let ExpressionKind::Name(name) = &key.kind
+                && name.value == "id"
+                && let ExpressionKind::String(literal) = &value.kind
+            {
+                return Some((literal.value.clone(), literal.payload_range));
+            }
+        }
+        None
+    }
+
+    /// Iterates the payload's `key: value` entries (spread entries are
+    /// skipped — their keys are only known after evaluation).
+    pub fn dict_entries(&self) -> Vec<(&Expression, &Expression)> {
+        let ExpressionKind::Dict(entries) = &self.expression.kind else {
+            return Vec::new();
+        };
+        entries
+            .iter()
+            .filter_map(|entry| match entry {
+                DictEntry::Entry { key, value } => Some((&**key, &**value)),
+                DictEntry::Spread(_) => None,
+            })
+            .collect()
     }
 }

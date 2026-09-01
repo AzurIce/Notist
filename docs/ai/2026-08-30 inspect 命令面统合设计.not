@@ -1,6 +1,6 @@
 = inspect 命令面统合裁决
 
-本文确立 inspect 调查组的统合命令面：身份与坐标分离、四视角（items/ancestors/attrs/read）加 locate 桥、`@![...]` 沿 Module 树继承、属性无合并。2026-08-30 裁决。演进路径：ancestors（点/区域 → 祖先链属性）落地 → outline 改造为 items（可寻址 Item 表）落地 → 属性可见性系统审查 → 本统合构思。前序裁决为 #<vault::ai::2026-08-29 去上界输出与 inspect 命令面裁决>；本文落笔时 items/ancestors 已按早期形态实现，其余按文末实施清单推进，迁移完成前已安装二进制的 `--help` 是实际可执行面的最终依据。治理文档 #<vault::cli> 与逐命令文档 #<vault::cli::inspect> 已随本文修订为*目标命令面*。
+本文确立 inspect 调查组的统合命令面：身份与坐标分离、四视角（items/ancestors/attrs/read）加 locate 桥、`\@!(class: ..)` 沿 Module 树继承、属性无合并。2026-08-30 裁决。演进路径：ancestors（点/区域 → 祖先链属性）落地 → outline 改造为 items（可寻址 Item 表）落地 → 属性可见性系统审查 → 本统合构思。前序裁决为 #<vault::ai::2026-08-29 去上界输出与 inspect 命令面裁决>；本文落笔时 items/ancestors 已按早期形态实现，其余按文末实施清单推进，迁移完成前已安装二进制的 `--help` 是实际可执行面的最终依据。治理文档 #<vault::cli> 与逐命令文档 #<vault::cli::inspect> 已随本文修订为*目标命令面*。
 
 2026-08-30 追记：R1/R3 的寻址方向与实施清单中的 locate、attrs 项已被同日 #<vault::ai::2026-08-30 inspect 寻址与范围设计困境> 修订为 R11 草案（path 原生地址 + 兄弟提升范围规则 + `--attr` 筛选，locate/attrs 划掉）；R10 已实施（ls/read 移除）。该困境记录收口前，以本文 + 该记录共同为准。
 
@@ -27,15 +27,15 @@ R3 *locate 桥*：`inspect locate <PATH> [--line|--offset|--byte-range]` 把外�
 
 R4 *坐标形式与挂载*：坐标挂在 ModulePath 上（文档模块 source 与文件 1:1，字节无歧义），形式为 `--line N`（Agent 入口——grep/Read 的原生产出是行号）、`--offset BYTE` 与 `--byte-range S..E`（协议流通，UTF-8 半开区间）。行号→字节换算由服务端 line index 承担，Agent 不自造字节坐标。坐标只精确到行即可满足 scope 级查询；列级精度只有 definition 需要，而它走字节。
 
-R5 *attrs/ancestors 两栖*：两者同时接受身份与坐标。理由：匿名 scope 上的属性（无 `@id` 的 `#callout[...]@danger` 类）只有坐标能看见——locate 只能到最近可寻址祖先；且"任意区域"本就是这一能力的原始需求。原则：身份问身份的事，坐标问坐标的事，这两个命令两种问法都认。
+R5 *attrs/ancestors 两栖*：两者同时接受身份与坐标。理由：匿名 scope 上的属性（无 `\@id` 的 `#callout[...]\@(danger`) 类）只有坐标能看见——locate 只能到最近可寻址祖先；且"任意区域"本就是这一能力的原始需求。原则：身份问身份的事，坐标问坐标的事，这两个命令两种问法都认。
 
-R6 *`@![...]` 沿 Module 树继承*：模块属性向 descendants 传播，有效集合 = 自身 + 各级祖先模块的有序并集。挂载点天然存在——D0004 的 head 规则（README.not 表示所在目录，见 #<vault::designs::world::module-result>）使每个有 README 的层级都能携带 `@![...]`；无 README 的虚拟层级贡献空集。语义统一为一条规则：*属性附着于其 scope，作用于该 scope 的整个子树*——`@[...]` 附着于块级 scope（scope 嵌套内下卷，见 #<vault::designs::language::property-table>），`@![...]` 附着于模块 scope（Module 树内下传）。annotation-syntax 的 `!` 释义随之从"Rust inner attribute"类比修正为"模块 scope 根"。文档局部属性的挂载点是首个一级标题的 scope 注解（注意其覆盖不含首标题之前的序言）。
+R6 *`\@!(class: ..)` 沿 Module 树继承*：模块属性向 descendants 传播，有效集合 = 自身 + 各级祖先模块的有序并集。挂载点天然存在——D0004 的 head 规则（README.not 表示所在目录，见 #<vault::designs::world::module-result>）使每个有 README 的层级都能携带 `\@!(class: ..)`；无 README 的虚拟层级贡献空集。语义统一为一条规则：*属性附着于其 scope，作用于该 scope 的整个子树*——`\@(class: ..)` 附着于块级 scope（scope 嵌套内下卷，见 #<vault::designs::language::property-table>），`\@!(class: ..)` 附着于模块 scope（Module 树内下传）。annotation-syntax 的 `!` 释义随之从"Rust inner attribute"类比修正为"模块 scope 根"。文档局部属性的挂载点是首个一级标题的 scope 注解（注意其覆盖不含首标题之前的序言）。
 
 R7 *属性无合并*：有效环境是链上各层条目的有序并集（内层 → 外层），每层带出处，同 key 多层并存合法且常见（如各层级标题的 `desc = "..."` 都要保留）。拼接与覆盖都是信息毁灭；树形分层展示零损失，"key 的最终生效值"是使用方策略（取最内层），未来可加 `--resolve` 便利视图，但它永远只是视图不是存储语义。此规则与 property-table 的"属性集逐条目、无合并"同构，现延伸到 Module 维度。
 
 R8 *杂项*：`definition` 输出补身份（目标 `ModulePath[/ItemName]` + location），使坐标世界闭环回身份世界；内联坐标 sugar（`vault::guide:45` 类）暂缓——ItemName 是任意字面字符串，分隔符碰撞不可控，坐标用 flag 表达；输出侧保留 `path:line` 坐标回声（编辑器跳转与 grep 往返依赖它），R1 的"除名"只约束输入文法。
 
-R9 *modules 改造为 ls，默认单层*：`modules` 直接更名为 `ls`（2026-08-30 同日实施）。实证依据：本机 ZCode 会话 129 份、132 万次 Bash 调用中 `ls` 8.1 万次为列举绝对主力，`find` 1.0 万次，而 **`tree` 零次**——Agent 的真实习惯是"列一层 → cd/read 深入"，从不需要全树倾泻；pi（badlogic）同样只把 ls/find 作为可选只读工具。语义：`ls [MODULE]` 列直接孩子（缺省 Vault 根，目标自身永不列出，叶子输出 `0 modules` 即 absence 证明，不存在报 `not_found`）；`--recursive` 保留子树全量（一次调用拿 sitemap 的形态，即旧行为）。`--prefix` 随之消亡；资源文件不是 Module 树的孩子（items 的辖域）。输出投影同步补齐：collection 计数头（`N modules` 等，单复数正确）、items 的 `scope@id` 与 `(ambiguous)` 标记、read citation footer、references 方向头 + excerpt + `(definition)` 标记、definition 输出补身份。ls 行输出为 `ModulePath — 语义标题`，不出现 `.not` 路径——身份命令的输出保持纯身份，文件路径只在坐标载荷命令（read 的 citation footer、search、definition）中交付；items/ancestors 行内的路径列是否同样去除待裁决。
+R9 *modules 改造为 ls，默认单层*：`modules` 直接更名为 `ls`（2026-08-30 同日实施）。实证依据：本机 ZCode 会话 129 份、132 万次 Bash 调用中 `ls` 8.1 万次为列举绝对主力，`find` 1.0 万次，而 **`tree` 零次**——Agent 的真实习惯是"列一层 → cd/read 深入"，从不需要全树倾泻；pi（badlogic）同样只把 ls/find 作为可选只读工具。语义：`ls [MODULE]` 列直接孩子（缺省 Vault 根，目标自身永不列出，叶子输出 `0 modules` 即 absence 证明，不存在报 `not_found`）；`--recursive` 保留子树全量（一次调用拿 sitemap 的形态，即旧行为）。`--prefix` 随之消亡；资源文件不是 Module 树的孩子（items 的辖域）。输出投影同步补齐：collection 计数头（`N modules` 等，单复数正确）、items 的 `scope\@id` 与 `(ambiguous)` 标记、read citation footer、references 方向头 + excerpt + `(definition)` 标记、definition 输出补身份。ls 行输出为 `ModulePath — 语义标题`，不出现 `.not` 路径——身份命令的输出保持纯身份，文件路径只在坐标载荷命令（read 的 citation footer、search、definition）中交付；items/ancestors 行内的路径列是否同样去除待裁决。
 
 R10 *模块树发现与内容访问归位宿主：`ls` 与 `read` 移除*（2026-08-30 同日实施，部分推翻 R2/R8/R9 中的相应投影）：
 
@@ -69,12 +69,12 @@ R10 *模块树发现与内容访问归位宿主：`ls` 与 `read` 移除*（2026
 2. `items` 接受 ItemName target（列出该 scope 内部 Item）。
 3. `locate`（`--line/--offset/--byte-range` → ModulePath + 可寻址链）。
 4. `--line` 坐标接入 attrs/ancestors；文法删除 path 选择器（`Selector::Path{name}` 消亡，Path 退化为 locate 输入）。
-5. `parse.annotations()` 覆盖缺口：块级注解进入注解表与检索索引——同一修复解决 search tag 字段只索引后缀注解、块级 `@[id=...]` 不可寻址两个问题。
-6. `@![...]` 继承：effective module attributes 沿 `ModulePath::ancestor()` 收集；ancestors 模块根行与 attrs 模块链行消费之。
+5. `parse.annotations()` 覆盖缺口：块级注解进入注解表与检索索引——同一修复解决 search tag 字段只索引后缀注解、块级 `\@(id: ...)` 不可寻址两个问题。
+6. `\@!(class: ..)` 继承：effective module attributes 沿 `ModulePath::ancestor()` 收集；ancestors 模块根行与 attrs 模块链行消费之。
 7. `definition` 输出补身份。
 8. 文档连锁：#<vault::cli>、#<vault::cli::inspect>（本次已随本文修订为目标面）、designs/host 各篇与 SKILL.md 随实施同步。
 
-迁移审计：继承落地后对 docs Vault 跑一遍 attrs，审计既有模块头属性（多为"本模块状态声明"，如 `@![implementation = "..."]`）的意外下传。
+迁移审计：继承落地后对 docs Vault 跑一遍 attrs，审计既有模块头属性（多为"本模块状态声明"，如 `\@!(implementation: "...")`）的意外下传。
 
 == 既有 todo（随实施裁决）
 

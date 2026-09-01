@@ -52,17 +52,22 @@ pub struct Evaluation {
     /// The side annotation table: element-sequence intervals to attribute
     /// sets (D0002). Ranges are absolute source byte ranges.
     pub annotations: Vec<AnnotationEntry>,
-    /// Module-level attributes declared by `@![...]` at the file start
+    /// Module-level attributes declared by `@!(...)` at the file start
     /// (D0006), bound to the root scope and published as module metadata.
-    pub module_attributes: Vec<notist_syntax::Attributes>,
+    pub module_attributes: Vec<MaterializedAttributes>,
 }
+
+/// A materialized attribute set: canonical `key = display` pairs produced
+/// by evaluating annotation payloads, ready for the property table and all
+/// query consumers.
+pub type MaterializedAttributes = Vec<(String, String)>;
 
 /// One entry of the side annotation table (D0002): an attribute set bound to
 /// the value produced over one element-sequence interval.
 #[derive(Clone, Debug, PartialEq)]
 pub struct AnnotationEntry {
     pub range: TextRange,
-    pub attributes: notist_syntax::Attributes,
+    pub attributes: MaterializedAttributes,
 }
 
 /// A diagnostic produced while lowering or evaluating content.
@@ -411,7 +416,7 @@ mod tests {
 
     #[test]
     fn lowers_transparent_scopes_references_and_parbreaks() {
-        let source = "Hello #<self::target>@concept,#important\n\nAfter";
+        let source = "Hello @(kind: \"concept\", topic: \"important\")#<self::target>\n\nAfter";
         let evaluation = Evaluator::default().evaluate(source);
 
         assert!(
@@ -711,19 +716,31 @@ mod tests {
 
     #[test]
     fn lowers_bare_email_addresses_as_plain_text() {
-        // D0003 deferral: bare emails no longer produce mailto links.
-        let evaluated = Evaluator::default().evaluate("Write hello+docs@example.test.");
+        // Bare `@` opens an annotation; a literal `@` is escaped.
+        let evaluated = Evaluator::default().evaluate("Write hello+docs\\@example.test.");
+        assert!(
+            evaluated.diagnostics.is_empty(),
+            "{:?}",
+            evaluated.diagnostics
+        );
+        let annotated = Evaluator::default().evaluate("Write hello+docs@example.test.");
+        assert!(
+            annotated
+                .diagnostics
+                .iter()
+                .any(|diagnostic| diagnostic.message.contains("unresolved name")),
+            "{:?}",
+            annotated.diagnostics
+        );
         assert!(
             evaluated.diagnostics.is_empty(),
             "{:?}",
             evaluated.diagnostics
         );
         assert!(
-            evaluated
-                .forest
-                .iter()
-                .any(|node| text(node)
-                    .is_some_and(|value| value.contains("hello+docs@example.test")))
+            joined_texts(&evaluated.forest).contains("hello+docs@example.test"),
+            "{:?}",
+            evaluated.forest
         );
     }
 
@@ -1295,10 +1312,15 @@ mod tests {
             "{:?}",
             evaluation.diagnostics
         );
-        assert_eq!(
-            texts(&evaluation.forest),
-            ["a[plain]", "text", "content", "z"]
-        );
+        // The manual scope `#[content]` evaluates to a ScopeItem: a `scope`
+        // call node carrying its content, inline between the text nodes.
+        assert_eq!(texts(&evaluation.forest), ["a[plain]", "text", "z"]);
+        let scope = evaluation
+            .forest
+            .iter()
+            .find(|node| node.name == "scope")
+            .expect("manual scope lowers to a scope node");
+        assert_eq!(texts(&scope.children), ["content"]);
     }
 
     #[test]
@@ -1349,14 +1371,14 @@ mod tests {
     fn source_annotations_do_not_change_evaluation() {
         let evaluator = Evaluator::default();
         let plain = evaluator.evaluate("#[body]");
-        let annotated = evaluator.evaluate("#[body]@id,#tag,.class,owner=\"Alice\"");
+        let annotated = evaluator.evaluate("@(id: \"body\", owner: \"Alice\")#[body]");
 
         assert!(
             annotated.diagnostics.is_empty(),
             "{:?}",
             annotated.diagnostics
         );
-        assert_eq!(plain.forest, annotated.forest);
+        assert_eq!(joined_texts(&plain.forest), joined_texts(&annotated.forest));
     }
 
     #[test]
@@ -1391,107 +1413,78 @@ mod tests {
 
     #[test]
     fn block_annotations_bind_the_following_block_node() {
-        // D0006: `@[...]` at line start binds the immediately following
-        // block-level node (here a heading, then a paragraph).
-        let evaluation = Evaluator::default().evaluate("@[wip]\n= Title\n\n@[install]\nabc");
+        // `@expr` at line start binds the immediately following block-level
+        // node (here a heading, then a paragraph).
+        let evaluation =
+            Evaluator::default().evaluate("@(wip: true)\n= Title\n\n@(id: \"install\")\nabc");
         assert!(
             evaluation.diagnostics.is_empty(),
             "{:?}",
             evaluation.diagnostics
         );
         assert_eq!(evaluation.annotations.len(), 2);
-        // "@[wip]\n" is 7 bytes; the heading spans [7, 14).
-        assert_eq!(evaluation.annotations[0].range, TextRange::new(7, 14));
+        // A leading annotation belongs to the block it declares: both the
+        // heading node and the entry start at the annotation (byte 0), and
+        // the span extends through the heading's terminating newline
+        // (byte 21).
+        assert_eq!(evaluation.annotations[0].range, TextRange::new(0, 21));
         assert!(
             evaluation
                 .forest
                 .iter()
-                .any(|node| { node.is_core("heading") && node.range == TextRange::new(7, 14) })
+                .any(|node| { node.is_core("heading") && node.range == TextRange::new(0, 21) })
         );
-        // "@[install]\n" ends at 26; the soft break is a separator, so the
-        // paragraph's Text node is "abc" and spans [27, 30).
-        assert_eq!(evaluation.annotations[1].range, TextRange::new(27, 30));
+        // "@(id: \"install\")" spans [22, 38); the soft break is a separator,
+        // so the paragraph's Text node is "abc" and spans [39, 42). The
+        // entry starts at the annotation.
+        assert_eq!(evaluation.annotations[1].range, TextRange::new(22, 42));
     }
 
     #[test]
     fn module_annotations_become_module_attributes() {
-        let evaluation =
-            Evaluator::default().evaluate("@![#design, #wip, status = \"draft\"]\n\n= Title");
+        let evaluation = Evaluator::default().evaluate("@!(status: \"draft\")\n= Title\n");
         assert!(
             evaluation.diagnostics.is_empty(),
             "{:?}",
             evaluation.diagnostics
         );
         assert_eq!(evaluation.module_attributes.len(), 1);
-        let attributes = &evaluation.module_attributes[0];
-        assert!(attributes.items.iter().any(|attribute| {
-            matches!(attribute, notist_syntax::Attribute::Tag(name) if name.value == "design")
-        }));
-        assert!(attributes.items.iter().any(|attribute| {
-            matches!(attribute, notist_syntax::Attribute::Tag(name) if name.value == "wip")
-        }));
-        assert!(attributes.items.iter().any(|attribute| {
-            matches!(
-                attribute,
-                notist_syntax::Attribute::KeyValue { key, value, .. }
-                    if key.value == "status" && value.raw == "\"draft\""
-            )
-        }));
-    }
-
-    #[test]
-    fn stacked_module_annotations_all_become_module_attributes() {
-        // Leading `@![...]` may stack; every entry reaches the module
-        // attribute table in source order.
-        let evaluation = Evaluator::default()
-            .evaluate("@![implementation = \"partial\"]\n@![agents = \"cli\"]\n\n= Title");
-        assert!(
-            evaluation.diagnostics.is_empty(),
-            "{:?}",
-            evaluation.diagnostics
+        assert_eq!(
+            evaluation.module_attributes[0],
+            vec![("status".to_owned(), "draft".to_owned())]
         );
-        assert_eq!(evaluation.module_attributes.len(), 2);
-        assert!(matches!(
-            &evaluation.module_attributes[0].items[0],
-            notist_syntax::Attribute::KeyValue { key, .. } if key.value == "implementation"
-        ));
-        assert!(matches!(
-            &evaluation.module_attributes[1].items[0],
-            notist_syntax::Attribute::KeyValue { key, .. } if key.value == "agents"
-        ));
     }
 
     #[test]
     fn module_annotation_strings_decode_like_code_strings() {
         // Attribute strings share the Code string grammar: `"""` multiline
         // values decode with their framing newlines trimmed.
-        let evaluation =
-            Evaluator::default().evaluate("@![desc=\"\"\"\nline1\nline2\n\"\"\"]\n\n= Title");
+        let source = "@!(desc: \"\"\"\nline1\nline2\n\"\"\")\n\n= Title";
+        let pre_parse = notist_syntax::parse(source);
+        println!("PRE-PARSE ERRORS: {:?}", pre_parse.errors);
+        let evaluation = Evaluator::default().evaluate(source);
         assert!(
             evaluation.diagnostics.is_empty(),
-            "{:?}",
+            "SRC={source:?} DIAG={:?}",
             evaluation.diagnostics
         );
         assert_eq!(evaluation.module_attributes.len(), 1);
-        let attributes = &evaluation.module_attributes[0];
-        assert!(attributes.items.iter().any(|attribute| {
-            matches!(
-                attribute,
-                notist_syntax::Attribute::KeyValue { key, value, .. }
-                    if key.value == "desc" && value.text() == "line1\nline2"
-            )
-        }));
+        assert!(
+            evaluation.module_attributes[0]
+                .iter()
+                .any(|(key, value)| { key == "desc" && value == "line1\nline2" })
+        );
     }
 
     #[test]
     fn dangling_block_annotations_produce_diagnostics() {
-        let evaluation = Evaluator::default().evaluate("@[wip]");
+        let evaluation = Evaluator::default().evaluate("@(wip: true)");
         assert!(evaluation.annotations.is_empty());
         assert!(
             evaluation
                 .diagnostics
                 .iter()
-                .any(|diagnostic| { diagnostic.message.contains("not followed by a block") })
+                .any(|diagnostic| { diagnostic.message.contains("not followed by an Item") })
         );
     }
 

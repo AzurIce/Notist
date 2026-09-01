@@ -1,7 +1,7 @@
-@![implementation = "research"]
+\@!(implementation: "research")
 = 结构化追踪落地与插件重注册根因分析
 
-回应 2026-08-26 调试 mermaid 插件时暴露的「几乎无 tracing」问题：scratch vault（`[plugins.mermaid]` + `[plugins.shader]`）执行 `notist build --no-daemon` 后，最终 HTML 里 mermaid 调用以 fallback 标签 `<mermaid>` / `<mermaid-mermaid>` 原样出现（调用节点未被规约），而 shader 却「正常」输出 `<notist-shader>`。手工插桩观察到的时序是 load#1 → dispatch×3 → dispatch×3 → load#2 → 渲染阶段零 dispatch。本篇记录：根因链（哪个阶段用哪份 registry、为什么最终渲染没 dispatch）、两次求值 pass 的归属、以及为项目补齐的结构化追踪设计。基线 feat/tracing-instrumentation @ 7d0d92f。
+回应 2026-08-26 调试 mermaid 插件时暴露的「几乎无 tracing」问题：scratch vault（`[plugins.mermaid]` + `[plugins.shader]`）执行 `notist build --no-daemon` 后，最终 HTML 里 mermaid 调用以 fallback 标签 `<mermaid>` / `<mermaid-mermaid>` 原样出现（调用节点未被规约），而 shader 却「正常」输出 `<notist-shader>`。手工插桩观察到的时序是 load#1 → dispatch×3 → dispatch×3 → load#2 → 渲染阶段零 dispatch。本篇记录：根因链（哪个阶段用哪份 registry、为什么最终渲染没 dispatch）、两次求值 pass 的归属、以及为项目补齐的结构化追踪设计。基线 feat/tracing-instrumentation \@ 7d0d92f。
 
 == 根因链：runtime_plugins 的「先卸载、后重装」在 data-only 签名上翻车
 

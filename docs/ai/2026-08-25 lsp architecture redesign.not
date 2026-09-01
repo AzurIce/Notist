@@ -1,4 +1,4 @@
-@![implementation = "research"]
+\@!(implementation: "research")
 = LSP 架构重设计调查
 
 本文基于 2026-08-25 当前 worktree 的实现与设计文档调查，目标不是为现有 `lsp.rs` 增加补丁，而是确定可迁移的 LSP session/query 架构。证据范围包括 `crates/notist-cli/src/lsp.rs`、`service.rs`、`crates/notist-service`、`crates/notist-analysis`、`crates/notist-syntax`、`crates/notist-eval`，以及 #<vault::designs::host::lsp-adapter>、#<vault::designs::host::analyzer-snapshot>、#<vault::designs::host::query-contract>。
@@ -51,7 +51,7 @@ rebuild 后，LSP 对当前 source 与历史 published path 的并集逐路径�
 - “每个 path 请求 diagnostics”：错误；应按 snapshot delta 批量发布。
 - “现有 symbol index 代表完整语言绑定”：错误；`SymbolKind` 当前只有 Function/Parameter，`let`、lambda 参数、import binding 没有统一 definition/reference identity（`crates/notist-analysis/src/check.rs:80-128,184-279`）。
 - “watcher 向 `connection.sender` 注入内部 notification 能触发 rebuild”：错误；`sender` 是客户端出站流，见第一节 diagnostics 小节。任何进程内部事件（watcher、build 完成）都必须走进程内事件总线，而不是 LSP 消息通道。
-- “query-time structured evaluation 可以安全重载插件”：错误；`structured_module` 会重新从 vault 加载插件并 reduction，而 LSP 设计要求普通请求不执行有外部副作用 runtime（`crates/notist-analysis/src/lib.rs:1545-1584`；#<vault::designs::host::lsp-adapter/Syntax 真相与求值安全>)。
+- “query-time structured evaluation 可以安全重载插件”：错误；`structured_module` 会重新从 vault 加载插件并 reduction，而 LSP 设计要求普通请求不执行有外部副作用 runtime（`crates/notist-analysis/src/lib.rs:1545-1584`；#<vault::designs::host::lsp-adapter/LSP Adapter/LSP 适配/Syntax 真相与求值安全>)。
 
 == 三、目标协议模型：LSP Session
 
@@ -147,7 +147,7 @@ SymbolReference { symbol_id, kind, file_id, byte_range, context }
 SnapshotLocation { stamp, file_id, byte_range, symbol_id? }
 ```
 
-`FileId`/`ModuleId` 在 VaultEngine 生命周期内稳定；显式 scope id 与标题默认 id 是可引用的文档身份；无 id 的普通节点只能有 `SnapshotNodeId { revision, file_id, local_id }`，不能用相同 byte range 假装跨 revision 稳定（#<vault::designs::host::analyzer-snapshot/身份分为稳定身份与 Snapshot-local 身份>)。任何 protocol result 都同时带 snapshot stamp，adapter 不再拼接来自不同 query 的 path/range。
+`FileId`/`ModuleId` 在 VaultEngine 生命周期内稳定；显式 scope id 与标题默认 id 是可引用的文档身份；无 id 的普通节点只能有 `SnapshotNodeId { revision, file_id, local_id }`，不能用相同 byte range 假装跨 revision 稳定（#<vault::designs::host::analyzer-snapshot/Analyzer and WorkspaceSnapshot/分析层：Analyzer 与 WorkspaceSnapshot/身份分为稳定身份与 Snapshot-local 身份>)。任何 protocol result 都同时带 snapshot stamp，adapter 不再拼接来自不同 query 的 path/range。
 
 扩展 `SymbolKind` 至 Function、Parameter、Let、LambdaParameter、ImportBinding、Module、ExplicitElement、Heading、PluginCall。Module/ExplicitElement 的 identity 由 module graph/id resolver 提供；local identity 由单一 lexical binder 分配。definition/reference 的范围来自 syntax source facts；heading 默认 id 若由 evaluated tree 得到，也必须在同一 candidate 中保留原始 source range。
 
@@ -262,7 +262,7 @@ lsp_range -> byte_range
 
 剩余目标与阶段不变量不变：request 捕获 snapshot handle，取消 token 贯穿 service/daemon/analysis；旧 candidate 不能覆盖新 candidate；旧 request 不能关闭或使用已失效 view；同 vault 没有无界 OS thread 和隐式 client mutex 串行。
 
-=== 阶段 D：统一 SemanticIndex
+=== 阶段 D：统一 SemanticIndex（剩余）
 
 实现完整 syntax walker，合并 resolver/checker 的 lexical environment，补 Let、LambdaParameter、ImportBinding、heading/explicit id、顶层 function 和 plugin schema 的 identity/range。以它重写 definition/references/hover/completion/document/workspace symbols。阶段不变量：同一 SymbolId 的定义、引用、hover、completion documentation 均来自同一 snapshot；显示名称变化不会把不同 symbol 合并。
 
@@ -270,7 +270,7 @@ lsp_range -> byte_range
 
 把 diagnostics 改为批量 snapshot query + WorkspaceDelta；修复 severity/related information；拆除 LSP 路径的 runtime plugin reload。阶段不变量：每次 current snapshot 更新后受影响文件得到完整集合，消失诊断得到空集合；普通 LSP query 不执行外部副作用插件。
 
-=== 阶段 E：diagnostics delta 与安全 eval
+=== 阶段 E：diagnostics delta 与安全 eval（已落地）
 
 已落地（2026-08-25）：severity 透传（阶段 A）、单请求批量 diagnostics + 内容签名 delta 发布（未变化不重发、消失路径发一次空集）、`structured_module` 拆分为 snapshot 内静态路径（LSP/check 默认，零磁盘访问与组件重实例化）与 `structured_module_with_runtime_plugins` 显式 projection 路径（render/export 专用）。剩余：related information 与 code 稳定性打磨、daemon 取消映射。
 

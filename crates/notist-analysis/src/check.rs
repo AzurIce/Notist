@@ -2,8 +2,8 @@ use std::collections::HashMap;
 
 use notist_model::{DefaultValue, FunctionSignature, Parameter, Type, builtin_signatures};
 use notist_syntax::{
-    BinaryOperator, Call, Expression, ExpressionKind, Markup, MarkupItem, Parse, UnaryOperator,
-    UserFunctionDefinition,
+    BinaryOperator, Call, DictEntry, Expression, ExpressionKind, Markup, MarkupItem, Parse,
+    UnaryOperator, UserFunctionDefinition,
 };
 
 use crate::DiagnosticKind;
@@ -328,7 +328,28 @@ impl SymbolResolver {
                 self.variables.pop();
             }
             ExpressionKind::Parenthesized(inner) => self.resolve_expression(inner),
-            ExpressionKind::None
+            ExpressionKind::Array(elements) => {
+                for element in elements {
+                    self.resolve_expression(element);
+                }
+            }
+            ExpressionKind::Dict(entries) => {
+                for entry in entries {
+                    match entry {
+                        DictEntry::Spread(expr) => self.resolve_expression(expr),
+                        DictEntry::Entry { key, value } => {
+                            // A bare identifier key is sugar for the String
+                            // key, not a name reference.
+                            if !matches!(key.kind, ExpressionKind::Name(_)) {
+                                self.resolve_expression(key);
+                            }
+                            self.resolve_expression(value);
+                        }
+                    }
+                }
+            }
+            ExpressionKind::Spread(inner) => self.resolve_expression(inner),
+            ExpressionKind::Unit
             | ExpressionKind::Bool(_)
             | ExpressionKind::Int(_)
             | ExpressionKind::Float(_)
@@ -417,7 +438,7 @@ pub fn signature_for_user_function(definition: &UserFunctionDefinition) -> Funct
 
 fn default_value(expression: &Expression) -> Option<DefaultValue> {
     match &expression.kind {
-        ExpressionKind::None => Some(DefaultValue::None),
+        ExpressionKind::Unit => Some(DefaultValue::None),
         ExpressionKind::Bool(value) => Some(DefaultValue::Bool(*value)),
         ExpressionKind::Int(value) => Some(DefaultValue::Int(*value)),
         ExpressionKind::Float(value) => Some(DefaultValue::Float(*value)),
@@ -460,6 +481,10 @@ impl Checker<'_> {
                 }
                 continue;
             }
+            if let notist_syntax::MarkupItem::Annotation(annotation) = item {
+                self.check_annotation_payload(annotation);
+                continue;
+            }
             if let notist_syntax::MarkupItem::Embedded(embedded) = item {
                 let checked = self.type_of_expression(&embedded.expression);
                 if let Some(ty) = checked.ty {
@@ -476,19 +501,100 @@ impl Checker<'_> {
         }
     }
 
+    /// Checks an `@`/`@!` annotation payload: it must be a Dict whose keys
+    /// satisfy the C5 constraint and whose values stay inside the
+    /// annotation value domain (Unit / Bool / Int / Float / String and
+    /// Arrays / Dicts of those, recursively). `Unit` values are legal and
+    /// read as "attribute absent", which is how a deep override deletes an
+    /// inherited attribute.
+    fn check_annotation_payload(&mut self, annotation: &notist_syntax::Annotation) {
+        let Some(ty) = self.type_of_expression(&annotation.expression).ty else {
+            return;
+        };
+        let Type::Dict(key, value) = &ty else {
+            if !matches!(ty, Type::Inferred) {
+                self.push(
+                    DiagnosticKind::TypeMismatch,
+                    format!("annotation must evaluate to a Dict, found {ty}"),
+                    annotation.expression.range,
+                );
+            }
+            return;
+        };
+        if let Some(key) = key
+            && !Self::is_dict_key_type(key)
+        {
+            self.push(
+                DiagnosticKind::TypeMismatch,
+                format!("cannot use {key} as an annotation key"),
+                annotation.expression.range,
+            );
+        }
+        if let Some(value) = value
+            && !Self::is_annotation_value(value)
+        {
+            self.push(
+                DiagnosticKind::TypeMismatch,
+                format!(
+                    "annotation value type {value} is outside the annotation domain \
+                     (Unit / Bool / Int / Float / String / Array / Dict of those)"
+                ),
+                annotation.expression.range,
+            );
+        }
+    }
+
+    /// The C5 Dict key constraint: Unit / Bool / Int / String or a union of
+    /// those.
+    fn is_dict_key_type(ty: &Type) -> bool {
+        Type::union([Type::Unit, Type::Bool, Type::Int, Type::String]).contains(ty)
+    }
+
+    /// The annotation payload value domain, recursively.
+    fn is_annotation_value(ty: &Type) -> bool {
+        match ty {
+            Type::Unit
+            | Type::Bool
+            | Type::Int
+            | Type::Float
+            | Type::String
+            | Type::Never
+            | Type::Inferred => true,
+            Type::Optional(inner) => Self::is_annotation_value(inner),
+            Type::Union(members) => members.iter().all(|member| Self::is_annotation_value(member)),
+            Type::Array(element) => element
+                .as_deref()
+                .map(Self::is_annotation_value)
+                .unwrap_or(true),
+            Type::Dict(key, value) => {
+                let keys_ok = key
+                    .as_deref()
+                    .map(Self::is_dict_key_type)
+                    .unwrap_or(true);
+                let values_ok = value
+                    .as_deref()
+                    .map(Self::is_annotation_value)
+                    .unwrap_or(true);
+                keys_ok && values_ok
+            }
+            _ => false,
+        }
+    }
+
     fn type_insertable(ty: &Type) -> bool {
         match ty {
             Type::Content
             | Type::String
-            | Type::None
+            | Type::Unit
             | Type::Int
             | Type::Float
             | Type::Bool
             | Type::Target
+            | Type::Never
             | Type::Inferred => true,
             Type::Optional(inner) => Self::type_insertable(inner),
             Type::Union(members) => members.iter().all(Self::type_insertable),
-            Type::Function => false,
+            Type::Function | Type::Array(_) | Type::Dict(..) => false,
         }
     }
 
@@ -499,7 +605,99 @@ impl Checker<'_> {
     /// suppress dependent type checks so errors are not reported twice.
     fn type_of_expression(&mut self, expression: &Expression) -> CheckedType {
         match &expression.kind {
-            ExpressionKind::None => CheckedType::known(Type::None),
+            ExpressionKind::Unit => CheckedType::known(Type::Unit),
+            ExpressionKind::Spread(_) => CheckedType::unknown(),
+            ExpressionKind::Array(elements) => {
+                let mut members = Vec::new();
+                let mut clean = true;
+                for element in elements {
+                    match self.type_of_expression(element).ty {
+                        Some(ty) => members.push(ty),
+                        None => clean = false,
+                    }
+                }
+                if !clean {
+                    return CheckedType::unknown();
+                }
+                // An empty literal has member type `Never` (C4): it flows
+                // into any `Array<T>` expectation.
+                let element = match members.len() {
+                    0 => Type::Never,
+                    _ => Type::union(members),
+                };
+                CheckedType::known(Type::Array(Some(Box::new(element))))
+            }
+            ExpressionKind::Dict(entries) => {
+                let mut keys = Vec::new();
+                let mut values = Vec::new();
+                let mut clean = true;
+                for entry in entries {
+                    match entry {
+                        DictEntry::Spread(expr) => match self.type_of_expression(expr).ty {
+                            // A spread Dict's entries widen K/V in unknown
+                            // ways; keep the literal typing permissive.
+                            Some(Type::Dict(..)) => {
+                                keys.push(Type::Inferred);
+                                values.push(Type::Inferred);
+                            }
+                            Some(other) => {
+                                self.push(
+                                    DiagnosticKind::TypeMismatch,
+                                    format!("`..` spread requires a Dict, found {other}"),
+                                    expr.range,
+                                );
+                                clean = false;
+                            }
+                            None => clean = false,
+                        },
+                        DictEntry::Entry { key, value } => {
+                            // A bare identifier key is sugar for the String
+                            // key; it is not a name reference (mirrors the
+                            // evaluator's `dict_key`).
+                            match &key.kind {
+                                ExpressionKind::Name(_) => keys.push(Type::String),
+                                _ => match self.type_of_expression(key).ty {
+                                    Some(key_type) => {
+                                        if !Self::is_dict_key_type(&key_type) {
+                                            self.push(
+                                                DiagnosticKind::TypeMismatch,
+                                                format!(
+                                                    "cannot use {key_type} as a Dict key"
+                                                ),
+                                                key.range,
+                                            );
+                                            clean = false;
+                                        } else {
+                                            keys.push(key_type);
+                                        }
+                                    }
+                                    None => clean = false,
+                                },
+                            }
+                            match self.type_of_expression(value).ty {
+                                Some(value_type) => values.push(value_type),
+                                None => clean = false,
+                            }
+                        }
+                    }
+                }
+                if !clean {
+                    return CheckedType::unknown();
+                }
+                // Empty K/V member types are `Never` (C4).
+                let key = match keys.len() {
+                    0 => Type::Never,
+                    _ => Type::union(keys),
+                };
+                let value = match values.len() {
+                    0 => Type::Never,
+                    _ => Type::union(values),
+                };
+                CheckedType::known(Type::Dict(
+                    Some(Box::new(key)),
+                    Some(Box::new(value)),
+                ))
+            }
             ExpressionKind::Bool(_) => CheckedType::known(Type::Bool),
             ExpressionKind::Int(_) => CheckedType::known(Type::Int),
             ExpressionKind::Float(_) => CheckedType::known(Type::Float),
@@ -530,7 +728,7 @@ impl Checker<'_> {
                         definition.name.range,
                     );
                 }
-                CheckedType::known(Type::None)
+                CheckedType::known(Type::Unit)
             }
             ExpressionKind::Parenthesized(inner) => self.type_of_expression(inner),
             ExpressionKind::Unary { operator, operand } => {
@@ -550,13 +748,13 @@ impl Checker<'_> {
                 // D0006 join semantics: Content combines; `let` yields None;
                 // a single non-Content value is the block value.
                 self.variables.push(HashMap::new());
-                let mut result = CheckedType::known(Type::None);
+                let mut result = CheckedType::known(Type::Unit);
                 for statement in statements {
                     let statement_type = self.type_of_expression(statement);
                     result = match (result.ty.clone(), statement_type.ty.clone()) {
                         (None, ty) | (ty, None) => CheckedType { ty },
-                        (Some(Type::None), Some(ty)) => CheckedType { ty: Some(ty) },
-                        (Some(ty), Some(Type::None)) => CheckedType { ty: Some(ty) },
+                        (Some(Type::Unit), Some(ty)) => CheckedType { ty: Some(ty) },
+                        (Some(ty), Some(Type::Unit)) => CheckedType { ty: Some(ty) },
                         (Some(Type::Content), Some(Type::Content)) => {
                             CheckedType::known(Type::Content)
                         }
@@ -579,6 +777,18 @@ impl Checker<'_> {
                 value,
             } => {
                 let value_type = self.type_of_expression(value);
+                if let (Some(declared), Some(actual)) = (&annotation.clone(), &value_type.ty)
+                    && !declared.accepts(actual)
+                {
+                    self.push(
+                        DiagnosticKind::TypeMismatch,
+                        format!(
+                            "type mismatch in `let {}`: expected {declared}, found {actual}",
+                            name.value
+                        ),
+                        name.range,
+                    );
+                }
                 let ty = annotation.clone().or_else(|| value_type.ty.clone());
                 if self.variables.is_empty() {
                     self.variables.push(HashMap::new());
@@ -586,7 +796,7 @@ impl Checker<'_> {
                 if let (Some(ty), Some(scope)) = (ty, self.variables.last_mut()) {
                     scope.insert(name.value.clone(), ty);
                 }
-                CheckedType::known(Type::None)
+                CheckedType::known(Type::Unit)
             }
             ExpressionKind::If {
                 condition,
@@ -636,7 +846,7 @@ impl Checker<'_> {
                 self.variables.pop();
                 CheckedType::known(Type::Function)
             }
-            ExpressionKind::Import { .. } => CheckedType::known(Type::None),
+            ExpressionKind::Import { .. } => CheckedType::known(Type::Unit),
             ExpressionKind::Error => CheckedType::unknown(),
         }
     }
@@ -991,12 +1201,85 @@ mod tests {
     }
 
     #[test]
+    fn array_literals_join_element_types_into_unions() {
+        // `(1, "a")` is Array<Int | String>: the joined element type shows
+        // up in the mismatch diagnostic against `raw`'s String parameter.
+        let diagnostics = check("#raw((1, \"a\"))");
+        assert!(
+            diagnostics
+                .iter()
+                .any(|d| d.message.contains("found Array<Int | String>")),
+            "{diagnostics:?}"
+        );
+        let diagnostics = check("#raw((1, 2))");
+        assert!(
+            diagnostics
+                .iter()
+                .any(|d| d.message.contains("found Array<Int>")),
+            "{diagnostics:?}"
+        );
+    }
+
+    #[test]
+    fn typed_collections_check_let_annotations() {
+        assert!(check("#let xs: Array<Int> = (1, 2)").is_empty());
+        assert!(check("#let xs: Array<Int> = (,)").is_empty());
+        assert!(check("#let d: Dict<String, Int | Bool> = (\"n\": 1)").is_empty());
+        // A narrower element type cannot fill a wider-parameterized
+        // expectation's coercion hole (C2: Array<Int> is not Array<Float>).
+        let diagnostics = check("#let xs: Array<Float> = (1, 2)");
+        assert!(
+            diagnostics
+                .iter()
+                .any(|d| d.message.contains("expected Array<Float>, found Array<Int>")),
+            "{diagnostics:?}"
+        );
+        let diagnostics = check("#let n: Int = \"a\"");
+        assert!(
+            diagnostics
+                .iter()
+                .any(|d| d.message.contains("type mismatch in `let n`")),
+            "{diagnostics:?}"
+        );
+    }
+
+    #[test]
+    fn dict_literals_enforce_the_key_constraint() {
+        assert!(check("#let d = (\"theme\": \"dark\")").is_empty());
+        let diagnostics = check("#let d = (1.5: \"x\")");
+        assert!(
+            diagnostics
+                .iter()
+                .any(|d| d.message.contains("cannot use Float as a Dict key")),
+            "{diagnostics:?}"
+        );
+    }
+
+    #[test]
+    fn annotation_payloads_stay_inside_the_value_domain() {
+        // Scalars and nested collections of scalars are legal; a Unit value
+        // is legal too and reads as "attribute absent".
+        assert!(check("@(id: \"install\", wip: true)").is_empty());
+        assert!(check("@(meta: (\"depth\": 2), tags: (\"a\", \"b\"))").is_empty());
+        assert!(check("@(empty: ())").is_empty());
+        // Item payloads are outside the domain.
+        let diagnostics = check("@(body: [text])");
+        assert!(
+            diagnostics
+                .iter()
+                .any(|d| d.message.contains("outside the annotation domain")),
+            "{diagnostics:?}"
+        );
+    }
+
+
+    #[test]
     fn accepts_well_typed_documents() {
         assert!(check("#heading(level=2)[Title]").is_empty());
         assert!(check("#heading[Default level]").is_empty());
         assert!(check("#raw(source=\"code\", lang=\"rust\")").is_empty());
         assert!(check("#details[Quoted [[vault::target]]]").is_empty());
-        assert!(check("a#\"string\"#[content]#none z").is_empty());
+        assert!(check("a#\"string\"#[content]#() z").is_empty());
         assert!(check("#details(body=[ordinary])").is_empty());
         // D0007: `fn(parameters) -> R` is the written function type (R07).
         assert!(

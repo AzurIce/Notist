@@ -409,7 +409,7 @@ showing 1-20; more results available
 continue with --cursor eyJ...
 ```
 
-长 opaque cursor 对人不漂亮，但诚实且可复制。以后可以让 daemon 保存一个短期 `@last` alias；这只能是 UX sugar，实际 request 仍携带完整 cursor。首版不要为了隐藏 token 引入交互状态。
+长 opaque cursor 对人不漂亮，但诚实且可复制。以后可以让 daemon 保存一个短期 `\@last` alias；这只能是 UX sugar，实际 request 仍携带完整 cursor。首版不要为了隐藏 token 引入交互状态。
 
 TTY 可以：
 
@@ -658,7 +658,7 @@ Hard bytes 比 item maximum 优先。即使 `read --lines 1000`，返回达到 6
 === Agent benchmark
 
 - p99 ordinary model-visible tool content 不超过 32 KiB；无单次 1 MB 结果。
-- v0.3 pass@1 不下降，factoid 因 read_source 提升。
+- v0.3 pass\@1 不下降，factoid 因 read_source 提升。
 - CLI/MCP cost、cacheRead 和 bytes per successful task 至少下降一个数量级。
 - reference_lookup 继续保持 ModulePath 优势。
 - unanswerable 单独测 coverage/abstention，不能靠小 limit 制造假“未找到”。

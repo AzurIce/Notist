@@ -1,6 +1,7 @@
-@![implementation = "partial"]
+@!(implementation: "partial")
 = Plugin System
 
+@(type: "user", class: "user")
 #[
 notist 的内容是求值的结果，而求值是函数式的规约过程（#<vault::designs::pipeline>），因此所有的不同内容都可以被表示为各自独立的的“函数名”+“参数”的函数调用。
 
@@ -9,7 +10,7 @@ notist 的内容是求值的结果，而求值是函数式的规约过程（#<va
 - 显示层面：对应的 web component 呈现实现。
 
 notist 内置的全部内容函数（包括 text）都通过插件系统提供。
-]@type=user,.user
+]
 
 #rule()
 
@@ -65,7 +66,7 @@ ElementSchema / ShapingRegistry → structure
 
 | 组件 | 状态 |
 |---|---|
-| 统一 `Node` 表示与规约引擎 | 求值运行于 `leaf::node_engine`（不动点：未注册名字即终态）；Stream/Leaf 双表示、`InstanceNode` 适配层与旧 Content 桥接已删除 |
+| 统一 `Node` 表示与规约引擎 | 求值运行于 `leaf::node_engine`（不动点：未注册名字即终态）；Stream/Leaf 双表示、`InstanceNode` 适配层与旧 Item 桥接已删除 |
 | Stream lowering | 全部 Markup item 直接产出 `Node` call 流；text 的 inline sugar 也直接构造 Node |
 | `FunctionRegistry` 与 `core::*` 别名 | 已实现 |
 | shaping registry / `body-mode` / `role` / `kind` | 已实现 `ShapingRegistry` / `ElementSchema`；core schema 内置，插件 schema 可注册。成型直接运行在 `Node` 森林上，`ElementTree` 只承载 Node |

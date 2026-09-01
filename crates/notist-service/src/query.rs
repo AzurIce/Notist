@@ -1,13 +1,14 @@
-use std::collections::{BTreeSet, HashMap};
+use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::io;
 use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
 
 use notist_analysis::{
-    DiagnosticKind, DiagnosticSeverity as AnalysisSeverity, MissingReason, RefTarget,
-    WorkspaceSnapshot, node_text,
+    DiagnosticKind, DiagnosticSeverity as AnalysisSeverity, MaterializedAttributes, MissingReason,
+    RefTarget, WorkspaceSnapshot, node_text,
 };
 use notist_model::{ModulePath, Node, NodeValue, TextRange};
+use notist_syntax::ExpressionKind;
 use regex::RegexBuilder;
 use serde::{Deserialize, Serialize};
 use serde_json::Value as JsonValue;
@@ -130,7 +131,6 @@ impl Selector {
             }
         }
     }
-
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -157,6 +157,112 @@ pub struct DefinitionQuery {
 pub struct LineRange {
     pub start: usize,
     pub end: usize,
+}
+
+/// One row of the module-tree `ls`: a logical module with its on-disk
+/// location and semantic title.
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct ModuleRecord {
+    pub module: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub relative_path: Option<PathBuf>,
+    pub kind: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub title: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub source_fingerprint: Option<String>,
+}
+
+/// `ls` for the Module tree: lists the direct children of one module
+/// (default: the Vault root); `recursive` lists the whole subtree instead.
+/// The target itself is never listed.
+#[derive(Clone, Debug, Default, Serialize, Deserialize)]
+pub struct ModulesQuery {
+    /// Target ModulePath; defaults to the Vault root.
+    #[serde(default)]
+    pub target: Option<String>,
+    #[serde(default)]
+    pub kind: ModuleKind,
+    #[serde(default)]
+    pub recursive: bool,
+}
+
+#[derive(Clone, Copy, Debug, Default, Serialize, Deserialize)]
+pub enum ModuleKind {
+    #[default]
+    Any,
+    Source,
+    Virtual,
+}
+
+pub fn list_modules(
+    workspace: &WorkspaceSnapshot,
+    snapshot: &SnapshotIdentity,
+    query: &ModulesQuery,
+) -> Result<QueryResult<ModuleRecord>, ToolError> {
+    let target = match query.target.as_deref() {
+        Some(target) => parse_absolute_module_path(target).ok_or_else(|| {
+            ToolError::new(
+                "invalid_selector",
+                "ls target must be an absolute ModulePath",
+            )
+        })?,
+        None => ModulePath::root(),
+    };
+    if workspace.module(&target).is_none() {
+        return Err(ToolError::new(
+            "not_found",
+            format!("module `{target}` was not found"),
+        ));
+    }
+    let target_prefix = format!("{target}::");
+    let mut records = workspace
+        .modules()
+        .filter(|module| module.logical_path != target)
+        .filter(|module| {
+            if query.recursive {
+                module.logical_path.to_string().starts_with(&target_prefix)
+            } else {
+                module.logical_path.parent().as_ref() == Some(&target)
+            }
+        })
+        .filter(|module| match query.kind {
+            ModuleKind::Any => true,
+            ModuleKind::Source => module.file_id.is_some(),
+            ModuleKind::Virtual => module.file_id.is_none(),
+        })
+        .map(|module| {
+            let title = module
+                .file_id
+                .and_then(|file_id| workspace.document_symbols(file_id).into_iter().next())
+                .map(|symbol| symbol.name);
+            ModuleRecord {
+                module: module.logical_path.to_string(),
+                relative_path: module
+                    .source_path
+                    .as_deref()
+                    .map(|path| relative_path(workspace.root(), path)),
+                kind: if module.file_id.is_some() {
+                    "source"
+                } else {
+                    "virtual"
+                }
+                .into(),
+                title,
+                source_fingerprint: module
+                    .file_id
+                    .and_then(|file_id| workspace.source(file_id))
+                    .map(|source| fingerprint(&source.text)),
+            }
+        })
+        .collect::<Vec<_>>();
+    records.sort_by(|left, right| left.module.cmp(&right.module));
+    Ok(QueryResult {
+        snapshot: snapshot.clone(),
+        records,
+        search: None,
+        hints: Vec::new(),
+    })
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -213,6 +319,30 @@ pub struct AncestorRecord {
     /// Nodes below this one that also overlap the selected region.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub children: Vec<AncestorRecord>,
+}
+
+#[derive(Clone, Debug, Default, Serialize, Deserialize)]
+pub struct ReadWindow {
+    #[serde(default)]
+    pub from_line: Option<usize>,
+    #[serde(default)]
+    pub lines: Option<usize>,
+    #[serde(default)]
+    pub byte_range: Option<super::request::ByteRange>,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct ReadQuery {
+    pub selector: Selector,
+    #[serde(default)]
+    pub window: ReadWindow,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct SourceChunk {
+    pub location: Location,
+    pub source: String,
+    pub reached_end: bool,
 }
 
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq, Serialize, Deserialize)]
@@ -341,6 +471,10 @@ impl SearchQuery {
 
 fn default_fuzzy_distance() -> u8 {
     1
+}
+
+fn default_true() -> bool {
+    true
 }
 
 fn default_wait_index_ms() -> u64 {
@@ -716,9 +850,7 @@ impl AncestorSelection {
     fn overlaps(self, range: TextRange) -> bool {
         match self {
             Self::Point(offset) => range.start <= offset && offset < range.end,
-            Self::Region(selected) => {
-                range.start < selected.end && selected.start < range.end
-            }
+            Self::Region(selected) => range.start < selected.end && selected.start < range.end,
         }
     }
 
@@ -727,6 +859,52 @@ impl AncestorSelection {
             Self::Point(start)
         } else {
             Self::Region(TextRange::new(start, end))
+        }
+    }
+}
+
+/// Walks the evaluated tree collecting section scopes named by their
+/// heading, keyed for ancestor-chain assembly.
+fn collect_section_scopes(nodes: &[Node], scopes: &mut Vec<(String, TextRange)>) {
+    let mut chain: Vec<String> = Vec::new();
+    collect_section_scopes_in_nodes(nodes, &mut chain, scopes);
+}
+
+/// Section scopes named by their heading's title chain (model.not): a
+/// section's ItemId is the chain of enclosing heading titles including its
+/// own.
+fn collect_section_scopes_in_nodes(
+    nodes: &[Node],
+    chain: &mut Vec<String>,
+    scopes: &mut Vec<(String, TextRange)>,
+) {
+    for node in nodes {
+        if node.is_core("section") {
+            let title = node
+                .children
+                .first()
+                .filter(|child| child.is_core("heading"))
+                .map(|heading| node_text(&heading.children))
+                .unwrap_or_default();
+            chain.push(title);
+            let id = chain.join("/");
+            if !id.is_empty() {
+                scopes.push((id, node.range));
+            }
+            collect_section_scopes_in_nodes(&node.children, chain, scopes);
+            for (_, value) in &node.args {
+                if let NodeValue::Stream(stream) = value {
+                    collect_section_scopes_in_nodes(stream, chain, scopes);
+                }
+            }
+            chain.pop();
+            continue;
+        }
+        collect_section_scopes_in_nodes(&node.children, chain, scopes);
+        for (_, value) in &node.args {
+            if let NodeValue::Stream(stream) = value {
+                collect_section_scopes_in_nodes(stream, chain, scopes);
+            }
         }
     }
 }
@@ -820,15 +998,17 @@ pub fn ancestors(
     } else {
         AncestorSelection::from_parts(resolved.selection.start, resolved.selection.end)
     };
-    let structured = workspace.structured_module(resolved.module.id).ok_or_else(|| {
-        ToolError::new(
-            "not_found",
-            format!(
-                "module `{}` has no evaluated source",
-                resolved.module.logical_path
-            ),
-        )
-    })?;
+    let structured = workspace
+        .structured_module(resolved.module.id)
+        .ok_or_else(|| {
+            ToolError::new(
+                "not_found",
+                format!(
+                    "module `{}` has no evaluated source",
+                    resolved.module.logical_path
+                ),
+            )
+        })?;
 
     let mut unclaimed = structured.annotations.iter().collect::<Vec<_>>();
     let children = build_overlapping_subtree(
@@ -867,20 +1047,21 @@ fn ancestor_record(
     module: &notist_analysis::Module,
     source: &notist_analysis::SourceInput,
     node: &Node,
-    attributes: &[notist_syntax::Attributes],
+    attributes: &[MaterializedAttributes],
 ) -> AncestorRecord {
     let heading = if node.is_core("heading") {
         Some(node)
     } else {
-        node.children.first().filter(|child| child.is_core("heading"))
+        node.children
+            .first()
+            .filter(|child| child.is_core("heading"))
     };
     let id = workspace
         .labels()
         .iter()
         .filter(|label| label.file_id == source.file_id)
         .filter(|label| {
-            label.scope_range.start <= node.range.start
-                && node.range.end <= label.scope_range.end
+            label.scope_range.start <= node.range.start && node.range.end <= label.scope_range.end
         })
         .min_by_key(|label| label.scope_range.end - label.scope_range.start)
         .map(|label| label.name.clone());
@@ -895,6 +1076,949 @@ fn ancestor_record(
         attributes: attribute_records(attributes),
         children: Vec::new(),
     }
+}
+
+/// Resolves external coordinates (a vault-relative file path plus an
+/// optional line/byte position) into notist identity: the containing module
+/// and the chain of addressable scopes (headings and `@id` labels),
+/// outermost first. Without a position, resolves the file to its module.
+/// This is the thin bridge between host tools and the identity world.
+#[derive(Clone, Debug, Default, Serialize, Deserialize)]
+pub struct LocateQuery {
+    pub path: PathBuf,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub line: Option<usize>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub offset: Option<usize>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub byte_range: Option<super::request::ByteRange>,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct LocateRecord {
+    pub module: String,
+    pub relative_path: PathBuf,
+    pub source_fingerprint: String,
+    /// Addressable scopes containing the position, outermost first.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub breadcrumb: Vec<String>,
+    /// The innermost scope name, for direct `--item` follow-ups.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub item: Option<String>,
+    /// 1-based line of the queried position.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub point_line: Option<usize>,
+}
+
+pub fn locate(
+    workspace: &WorkspaceSnapshot,
+    _snapshot: &SnapshotIdentity,
+    query: &LocateQuery,
+) -> Result<LocateRecord, ToolError> {
+    let absolute = if query.path.is_absolute() {
+        query.path.clone()
+    } else {
+        workspace.root().join(&query.path)
+    };
+    let absolute = dunce::canonicalize(&absolute).map_err(|_| {
+        ToolError::new(
+            "not_found",
+            format!("source `{}` was not found", query.path.display()),
+        )
+    })?;
+    if !absolute.starts_with(workspace.root()) {
+        return Err(ToolError::new(
+            "invalid_selector",
+            "source path escapes the Vault",
+        ));
+    }
+    let file_id = workspace
+        .file_id(&absolute)
+        .ok_or_else(|| ToolError::new("not_found", "source is not part of the captured Vault"))?;
+    let module = workspace
+        .module_at(file_id)
+        .ok_or_else(|| ToolError::new("not_found", "source is not part of the captured Vault"))?;
+    let source = workspace.source(file_id).unwrap();
+
+    // Normalize the position: --line becomes the byte offset of that line's
+    // start; --byte-range contributes its start. Without a position only the
+    // module identity is resolved.
+    let point = if let Some(line) = query.line {
+        let starts = line_starts(&source.text);
+        match starts.get(line.saturating_sub(1)) {
+            Some(&start) if source.text.is_char_boundary(start) => Some(start),
+            _ => {
+                return Err(ToolError::new(
+                    "invalid_argument",
+                    "line is outside the selected source",
+                ));
+            }
+        }
+    } else if let Some(offset) = query.offset {
+        if offset > source.text.len() || !source.text.is_char_boundary(offset) {
+            return Err(ToolError::new(
+                "invalid_argument",
+                "offset is not a UTF-8 boundary in the selected source",
+            ));
+        }
+        Some(offset)
+    } else if let Some(range) = query.byte_range {
+        if range.end > source.text.len() || !source.text.is_char_boundary(range.start) {
+            return Err(ToolError::new(
+                "invalid_argument",
+                "byte range is outside the selected source or not on UTF-8 boundaries",
+            ));
+        }
+        Some(range.start)
+    } else {
+        None
+    };
+
+    let mut breadcrumb = Vec::new();
+    let mut item = None;
+    let mut point_line = None;
+    if let Some(point) = point {
+        point_line = Some(
+            line_starts(&source.text)
+                .partition_point(|start| *start <= point)
+                .max(1),
+        );
+        // Addressable scopes containing the point: section scopes (named by
+        // their heading) plus `@id` labels whose scope holds the point.
+        // Anonymous scopes are not addressable (D0004).
+        let structured = workspace.structured_module(module.id);
+        let mut scopes: Vec<(String, TextRange)> = Vec::new();
+        if let Some(structured) = &structured {
+            collect_section_scopes(&structured.tree.roots, &mut scopes);
+        }
+        for label in workspace
+            .labels()
+            .iter()
+            .filter(|label| label.file_id == file_id)
+        {
+            if label.scope_range.start <= point && point < label.scope_range.end {
+                scopes.push((label.name.clone(), label.scope_range));
+            }
+        }
+        scopes.retain(|(_, range)| range.start <= point && point < range.end);
+        scopes.sort_by_key(|(_, range)| range.start);
+        breadcrumb = scopes.iter().map(|(name, _)| name.clone()).collect();
+        item = breadcrumb.last().cloned();
+    }
+
+    Ok(LocateRecord {
+        module: module.logical_path.to_string(),
+        relative_path: relative_path(workspace.root(), &source.canonical_path),
+        source_fingerprint: fingerprint(&source.text),
+        breadcrumb,
+        item,
+        point_line,
+    })
+}
+
+/// Region attribute projection (`inspect info`): the cornerstone that gives
+/// an Agent attribute awareness for an arbitrary host-derived range. The
+/// range has no guaranteed relationship to Item boundaries, so the query
+/// never assumes one: it cuts the range at governing annotation boundaries,
+/// resolves each atomic piece's effective environment from the annotation
+/// table (innermost entry wins per key), and merges adjacent pieces with
+/// equal environments into maximal uniform segments. A boundary survives in
+/// the output exactly where the two sides' effective attributes differ.
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct RegionQuery {
+    pub selector: Selector,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub offset: Option<usize>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub byte_range: Option<super::request::ByteRange>,
+    /// 1-based inclusive line range (`START..END`) — the host-native
+    /// coordinate grep/Read produce.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub line_range: Option<LineRange>,
+    /// Embed each segment's source lines: the attribute-annotated read that
+    /// spares the caller the segment-to-text join.
+    #[serde(default = "default_true")]
+    pub include_content: bool,
+}
+
+/// Where an effective attribute entry is governed from: the module itself or
+/// the Item whose subtree the annotation covers, identified by its ItemPath
+/// (`<anonymous>` when no ItemId names it).
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct RegionOrigin {
+    /// `module`, or the governing node kind for anonymous Items.
+    pub kind: String,
+    /// The governing Item's ItemPath (`ModulePath/ItemId`), when addressable.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub path: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub level: Option<u8>,
+    pub byte_range: super::request::ByteRange,
+    pub line_range: LineRange,
+}
+
+/// One effective attribute entry: a canonical `key = value` pair with every
+/// distinct governing scope that provides it (usually exactly one).
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct RegionEntryGroup {
+    /// Provenance of the declaring annotation (governing Item or module).
+    pub origins: Vec<RegionOrigin>,
+    /// The annotation's effective entries in this segment, sorted by key.
+    pub entries: Vec<(String, String)>,
+}
+
+/// One evaluated node relevant to the projection, with partial-cut flags
+/// marking where the requested range slices into it. Identified by its
+/// ItemPath when addressable, `<anonymous>` otherwise.
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct RegionContainer {
+    /// `module` or the node kind (`core::section`, `core::list`, …).
+    pub kind: String,
+    /// The node's ItemPath (`ModulePath/ItemId`), when addressable.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub path: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub level: Option<u8>,
+    pub byte_range: super::request::ByteRange,
+    pub line_range: LineRange,
+    /// The selection starts inside this container (its own start is earlier).
+    pub start_partial: bool,
+    /// The selection ends inside this container (its own end is later).
+    pub end_partial: bool,
+}
+
+/// One source line of a segment's embedded content.
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct RegionLine {
+    pub number: usize,
+    pub text: String,
+}
+
+/// One maximal segment of uniform effective attribute environment.
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct RegionSegment {
+    pub byte_range: super::request::ByteRange,
+    pub line_range: LineRange,
+    /// Innermost addressable Item containing the segment start, spelled as
+    /// the full ItemPath (`ModulePath/ItemId`; section scopes named by their
+    /// heading chain, plus `@id` labels).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub item: Option<String>,
+    /// Effective annotation groups this segment adds on top of the common
+    /// environment.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub attributes: Vec<RegionEntryGroup>,
+    /// The segment's authored source lines, when requested.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub content: Vec<RegionLine>,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct RegionRecord {
+    pub module: String,
+    pub relative_path: PathBuf,
+    pub source_fingerprint: String,
+    /// The selection actually projected, resolved to bytes.
+    pub byte_range: super::request::ByteRange,
+    pub line_range: LineRange,
+    /// Deepest evaluated node containing the whole selection.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub container: Option<RegionContainer>,
+    /// Effective annotation groups shared by every segment.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub common: Vec<RegionEntryGroup>,
+    pub segments: Vec<RegionSegment>,
+}
+
+/// One annotation entry expanded to the range of the scope whose subtree it
+/// governs: the deepest evaluated node fully containing the entry, with
+/// heading-bound entries rolled up to the enclosing section (property-table
+/// section semantics). `source_range` is the entry's own interval, which
+/// starts at the declaring annotation — the provenance pointer.
+struct GoverningEntry {
+    range: TextRange,
+    source_range: TextRange,
+    kind: String,
+    level: Option<u8>,
+    attributes: MaterializedAttributes,
+    order: usize,
+}
+
+/// Flat view of one evaluated node overlapping the selection.
+struct RegionNodeRef {
+    range: TextRange,
+    kind: String,
+    level: Option<u8>,
+}
+
+pub fn region_info(
+    workspace: &WorkspaceSnapshot,
+    snapshot: &SnapshotIdentity,
+    query: &RegionQuery,
+) -> Result<QueryResult<RegionRecord>, ToolError> {
+    let provided = query.offset.is_some() as usize
+        + query.byte_range.is_some() as usize
+        + query.line_range.is_some() as usize;
+    if provided > 1 {
+        return Err(ToolError::new(
+            "invalid_argument",
+            "offset, byte-range, and line-range select the same region; pass only one",
+        ));
+    }
+    let resolved = resolve_source(workspace, &query.selector)?;
+    let text = &*resolved.source.text;
+    let total = text.len();
+
+    // Flag coordinates override the selector's own selection, same
+    // precedence as ancestors.
+    let starts = line_starts(text);
+    let selection: TextRange = if let Some(offset) = query.offset {
+        if offset > total || !text.is_char_boundary(offset) {
+            return Err(ToolError::new(
+                "invalid_argument",
+                "offset is not a UTF-8 boundary in the selected source",
+            ));
+        }
+        TextRange::new(offset, offset)
+    } else if let Some(range) = query.byte_range {
+        if range.end > total
+            || !text.is_char_boundary(range.start)
+            || !text.is_char_boundary(range.end)
+        {
+            return Err(ToolError::new(
+                "invalid_argument",
+                "byte range exceeds the source or is not on UTF-8 boundaries",
+            ));
+        }
+        TextRange::new(range.start, range.end)
+    } else if let Some(lines) = query.line_range {
+        if lines.start == 0
+            || lines.start > starts.len()
+            || lines.end < lines.start
+            || lines.end > starts.len()
+        {
+            return Err(ToolError::new(
+                "invalid_argument",
+                "line range is outside the selected source",
+            ));
+        }
+        let start = starts[lines.start - 1];
+        let end = if lines.end == starts.len() {
+            total
+        } else {
+            starts[lines.end]
+        };
+        TextRange::new(start, end)
+    } else {
+        resolved.selection
+    };
+    let point = selection.start == selection.end;
+
+    let structured = workspace
+        .structured_module(resolved.module.id)
+        .ok_or_else(|| {
+            ToolError::new(
+                "not_found",
+                format!(
+                    "module `{}` has no evaluated source",
+                    resolved.module.logical_path
+                ),
+            )
+        })?;
+
+    // Addressable ItemPath by node interval: explicit `id` labels win, then
+    // section scopes named by their heading, then heading default names.
+    let module_path = resolved.module.logical_path.to_string();
+    let item_path = |name: String| format!("{module_path}/{name}");
+    let names = {
+        let mut map: HashMap<(usize, usize), String> = HashMap::new();
+        for (name, range) in
+            workspace.module_heading_default_ids(&resolved.module.logical_path)
+        {
+            map.insert((range.start, range.end), item_path(name));
+        }
+        let mut section_scopes: Vec<(String, TextRange)> = Vec::new();
+        collect_section_scopes(&structured.tree.roots, &mut section_scopes);
+        for (name, range) in section_scopes {
+            if !name.is_empty() {
+                map.insert((range.start, range.end), item_path(name));
+            }
+        }
+        for label in workspace.labels().iter().filter(|label| {
+            label.module == resolved.module.logical_path
+                && label.file_id == resolved.source.file_id
+        }) {
+            map.insert(
+                (label.scope_range.start, label.scope_range.end),
+                item_path(label.name.clone()),
+            );
+        }
+        map
+    };
+    let module_string = resolved.module.logical_path.to_string();
+
+    // Nodes overlapping the selection: identity anchors and containers.
+    let mut collected: Vec<RegionNodeRef> = Vec::new();
+    collect_region_nodes(&structured.tree.roots, selection, point, &mut collected);
+    let overlaps = |range: TextRange| {
+        if point {
+            range.start <= selection.start && selection.start < range.end
+        } else {
+            range.start < selection.end && selection.start < range.end
+        }
+    };
+
+    // Expand annotation entries to their governing scope ranges first, then
+    // overlap-filter: an entry bound to a node outside the selection (a
+    // heading above the range, say) still governs when its scope's subtree
+    // reaches into it.
+    let mut governing: Vec<GoverningEntry> = Vec::new();
+    for (order, entry) in structured.annotations.iter().enumerate() {
+        let (range, node) = governing_scope(&structured.tree.roots, entry.range);
+        if !overlaps(range) {
+            continue;
+        }
+        governing.push(GoverningEntry {
+            range,
+            source_range: entry.range,
+            kind: node
+                .as_ref()
+                .map_or_else(|| "module".to_owned(), |node| node.kind.clone()),
+            level: node.as_ref().and_then(|node| node.level),
+            attributes: entry.attributes.clone(),
+            order,
+        });
+    }
+    for attributes in workspace.module_attributes(resolved.module.id) {
+        if attributes.is_empty() {
+            continue;
+        }
+        governing.push(GoverningEntry {
+            range: TextRange::new(0, total),
+            source_range: TextRange::new(0, total),
+            kind: "module".into(),
+            level: None,
+            attributes: attributes.clone(),
+            order: usize::MAX,
+        });
+    }
+
+    // Whitespace between one scope's end and the next scope's start belongs
+    // to the scope above: a scope ends at its last token, so without this
+    // the stray trailing newline would decay into a zero-width gap segment.
+    let mut ordered: Vec<(usize, usize, usize)> = governing
+        .iter()
+        .enumerate()
+        .map(|(index, entry)| (entry.range.start, entry.range.end, index))
+        .collect();
+    ordered.sort_unstable();
+    let blank_gap =
+        |gap: std::ops::Range<usize>| text[gap.clone()].bytes().all(|byte| byte.is_ascii_whitespace());
+    for pair in ordered.windows(2) {
+        let (_, prev_end, prev_index) = pair[0];
+        let (next_start, _, _) = pair[1];
+        if next_start > prev_end && blank_gap(prev_end..next_start) {
+            governing[prev_index].range.end = next_start;
+        }
+    }
+    if let Some(&(_, end, index)) = ordered.iter().max_by_key(|&(_, entry_end, _)| entry_end) {
+        if selection.end > end && blank_gap(end..selection.end) {
+            governing[index].range.end = selection.end;
+        }
+    }
+
+    // Cut the selection at governing boundaries so every atomic piece is
+    // fully inside or outside each entry; gaps between scopes fall to the
+    // piece induced by the surrounding bounds.
+    let mut bounds: BTreeSet<usize> = BTreeSet::from([selection.start, selection.end]);
+    if !point {
+        for entry in &governing {
+            if entry.range.start > selection.start && entry.range.start < selection.end {
+                bounds.insert(entry.range.start);
+            }
+            if entry.range.end > selection.start && entry.range.end < selection.end {
+                bounds.insert(entry.range.end);
+            }
+        }
+    }
+    let ordered: Vec<usize> = bounds.into_iter().collect();
+    let pieces: Vec<(usize, usize)> = if point {
+        vec![(selection.start, selection.start)]
+    } else {
+        ordered.windows(2).map(|w| (w[0], w[1])).collect()
+    };
+
+    // Effective environment per piece: entries covering the piece, outermost
+    // first, first writer per key wins (innermost value survives).
+    let mut envs: Vec<BTreeMap<String, (String, usize)>> = Vec::with_capacity(pieces.len());
+    for &(start, end) in &pieces {
+        let mut covering: Vec<(usize, &GoverningEntry)> = governing
+            .iter()
+            .enumerate()
+            .filter(|(_, entry)| {
+                if point {
+                    entry.range.start <= start && start < entry.range.end
+                } else {
+                    entry.range.start <= start && end <= entry.range.end
+                }
+            })
+            .collect();
+        covering.sort_by_key(|(_, entry)| {
+            (
+                std::cmp::Reverse(entry.range.end - entry.range.start),
+                entry.order,
+            )
+        });
+        let mut map: BTreeMap<String, (String, usize)> = BTreeMap::new();
+        for (index, entry) in covering {
+            for (key, value) in &entry.attributes {
+                map.entry(key.clone())
+                    .or_insert_with(|| (value.clone(), index));
+            }
+        }
+        envs.push(map);
+    }
+
+    // Run-length merge: adjacent pieces with equal effective environments
+    // form one maximal segment; per key, remember every governing entry that
+    // provided the winning value across the merged pieces.
+    let mut merged: Vec<(usize, usize, BTreeMap<String, (String, BTreeSet<usize>)>)> = Vec::new();
+    for (&(start, end), env) in pieces.iter().zip(&envs) {
+        let equal = merged.last().is_some_and(|(_, _, last)| {
+            last.len() == env.len()
+                && last
+                    .iter()
+                    .all(|(key, (value, _))| env.get(key).is_some_and(|(other, _)| other == value))
+        });
+        if equal {
+            let last = merged.last_mut().unwrap();
+            last.1 = end;
+            for (key, (value, index)) in env {
+                last.2
+                    .entry(key.clone())
+                    .or_insert_with(|| (value.clone(), BTreeSet::new()))
+                    .1
+                    .insert(*index);
+            }
+        } else {
+            merged.push((
+                start,
+                end,
+                env.iter()
+                    .map(|(key, (value, index))| {
+                        (key.clone(), (value.clone(), BTreeSet::from([*index])))
+                    })
+                    .collect(),
+            ));
+        }
+    }
+
+    // Common environment: keys every segment carries with the same value;
+    // their origins union across segments.
+    let mut common_map: BTreeMap<String, (String, BTreeSet<usize>)> = BTreeMap::new();
+    if let Some((_, _, first)) = merged.first() {
+        for (key, (value, _)) in first {
+            if merged[1..]
+                .iter()
+                .all(|(_, _, env)| env.get(key).is_some_and(|(other, _)| other == value))
+            {
+                let mut indexes = BTreeSet::new();
+                for (_, _, env) in &merged {
+                    if let Some((_, index)) = env.get(key) {
+                        indexes.extend(index.iter().copied());
+                    }
+                }
+                common_map.insert(key.clone(), (value.clone(), indexes));
+            }
+        }
+    }
+    // Common environment groups, and the key set the segment filter checks.
+    let common_keys: BTreeSet<String> = common_map.keys().cloned().collect();
+    let common = entry_groups(
+        resolved.source,
+        &module_string,
+        &governing,
+        &names,
+        &common_map,
+    );
+
+    let mut segments = Vec::with_capacity(merged.len());
+    for (start, end, env) in &merged {
+        let range = TextRange::new(*start, *end);
+        let private: BTreeMap<String, (String, BTreeSet<usize>)> = env
+            .iter()
+            .filter(|(key, _)| !common_keys.contains(*key))
+            .map(|(key, (value, indexes))| (key.clone(), (value.clone(), indexes.clone())))
+            .collect();
+        let attributes = entry_groups(
+            resolved.source,
+            &module_string,
+            &governing,
+            &names,
+            &private,
+        );
+        let content = if query.include_content {
+            content_lines(text, &starts, *start, *end)
+        } else {
+            Vec::new()
+        };
+        segments.push(RegionSegment {
+            byte_range: super::request::ByteRange {
+                start: *start,
+                end: *end,
+            },
+            line_range: line_range(text, range),
+            item: addressable_item(workspace, resolved.source, &structured, *start)
+                .map(|name| format!("{module_string}/{name}")),
+            attributes,
+            content,
+        });
+    }
+
+    let top_container = innermost_container(&collected, selection.start, selection.end, point)
+        .map(|node| container_record(resolved.source, &names, node, selection.start, selection.end));
+
+    Ok(QueryResult {
+        snapshot: snapshot.clone(),
+        records: vec![RegionRecord {
+            module: resolved.module.logical_path.to_string(),
+            relative_path: relative_path(workspace.root(), &resolved.source.canonical_path),
+            source_fingerprint: fingerprint(text),
+            byte_range: super::request::ByteRange {
+                start: selection.start,
+                end: selection.end,
+            },
+            line_range: line_range(text, selection),
+            container: top_container,
+            common,
+            segments,
+        }],
+        search: None,
+        hints: Vec::new(),
+    })
+}
+
+/// Collects every evaluated node overlapping the selection into a flat list.
+/// Children are contained in their parent's range, so a missed parent means
+/// no descendant overlaps either.
+fn collect_region_nodes(
+    nodes: &[Node],
+    selection: TextRange,
+    point: bool,
+    out: &mut Vec<RegionNodeRef>,
+) {
+    for node in nodes {
+        let hits = if point {
+            node.range.start <= selection.start && selection.start < node.range.end
+        } else {
+            node.range.start < selection.end && selection.start < node.range.end
+        };
+        if !hits {
+            continue;
+        }
+        out.push(region_node_ref(node));
+        collect_region_nodes(&node.children, selection, point, out);
+        for (_, value) in &node.args {
+            if let NodeValue::Stream(stream) = value {
+                collect_region_nodes(stream, selection, point, out);
+            }
+        }
+    }
+}
+
+/// Returns the scope whose subtree an annotation entry governs: the deepest
+/// evaluated node fully containing the entry, with heading-bound entries
+/// rolled up to the enclosing node (property-table section semantics).
+/// `None` node means the module level; the entry's own range stands in.
+fn governing_scope(roots: &[Node], entry: TextRange) -> (TextRange, Option<RegionNodeRef>) {
+    match deepest_containing(roots, entry) {
+        Some((node, parent)) if node.is_core("heading") => match parent {
+            Some(outer) => (outer.range, Some(region_node_ref(outer))),
+            None => (node.range, Some(region_node_ref(node))),
+        },
+        Some((node, _)) => (node.range, Some(region_node_ref(node))),
+        None => (entry, None),
+    }
+}
+
+/// The deepest node whose range fully contains `entry`, with its direct
+/// parent (needed to roll heading-bound entries up to their section).
+fn deepest_containing<'a>(
+    nodes: &'a [Node],
+    entry: TextRange,
+) -> Option<(&'a Node, Option<&'a Node>)> {
+    for node in nodes {
+        if node.range.start <= entry.start && entry.end <= node.range.end {
+            let inner = deepest_containing(&node.children, entry).or_else(|| {
+                node.args
+                    .iter()
+                    .filter_map(|(_, value)| match value {
+                        NodeValue::Stream(stream) => deepest_containing(stream, entry),
+                        _ => None,
+                    })
+                    .next()
+            });
+            return Some(match inner {
+                // `inner` came out of this node's subtree: an unparented hit
+                // is a direct child of `node`.
+                Some((found, Some(parent))) => (found, Some(parent)),
+                Some((found, None)) => (found, Some(node)),
+                None => (node, None),
+            });
+        }
+    }
+    None
+}
+
+fn region_node_ref(node: &Node) -> RegionNodeRef {
+    RegionNodeRef {
+        range: node.range,
+        kind: node.name.clone(),
+        level: match node.get("level") {
+            Some(NodeValue::Int(level)) => u8::try_from(*level).ok(),
+            _ => None,
+        },
+    }
+}
+
+fn innermost_container<'a>(
+    collected: &'a [RegionNodeRef],
+    start: usize,
+    end: usize,
+    point: bool,
+) -> Option<&'a RegionNodeRef> {
+    collected
+        .iter()
+        .filter(|node| {
+            if point {
+                node.range.start <= start && start < node.range.end
+            } else {
+                node.range.start <= start && end <= node.range.end
+            }
+        })
+        .min_by_key(|node| node.range.end - node.range.start)
+}
+
+/// The full authored source lines a segment covers, 1-based numbered. A
+/// segment ending at a line start reports up to the previous line; a
+/// zero-width segment reports its single containing line.
+fn content_lines(text: &str, starts: &[usize], start: usize, end: usize) -> Vec<RegionLine> {
+    if starts.is_empty() {
+        return Vec::new();
+    }
+    let first = starts
+        .partition_point(|line_start| *line_start <= start)
+        .max(1);
+    let last = if end <= start {
+        first
+    } else {
+        starts
+            .partition_point(|line_start| *line_start < end)
+            .max(first)
+    };
+    let mut lines = Vec::with_capacity(last - first + 1);
+    for number in first..=last {
+        let line_start = starts[number - 1];
+        let line_end = if number < starts.len() {
+            starts[number]
+        } else {
+            text.len()
+        };
+        let mut line = &text[line_start..line_end];
+        line = line.strip_suffix('\n').unwrap_or(line);
+        line = line.strip_suffix('\r').unwrap_or(line);
+        lines.push(RegionLine {
+            number,
+            text: line.to_owned(),
+        });
+    }
+    lines
+}
+
+fn container_record(
+    source: &notist_analysis::SourceInput,
+    names: &HashMap<(usize, usize), String>,
+    node: &RegionNodeRef,
+    start: usize,
+    end: usize,
+) -> RegionContainer {
+    RegionContainer {
+        kind: node.kind.clone(),
+        path: names
+            .get(&(node.range.start, node.range.end))
+            .cloned(),
+        level: node.level,
+        byte_range: super::request::ByteRange {
+            start: node.range.start,
+            end: node.range.end,
+        },
+        line_range: line_range(&source.text, node.range),
+        start_partial: node.range.start < start,
+        end_partial: node.range.end > end,
+    }
+}
+
+/// Groups a segment's effective entries by their declaring annotation: one
+/// group per distinct set of governing entries (usually exactly one — a
+/// single `@(...)` with all the keys it carries).
+fn entry_groups(
+    source: &notist_analysis::SourceInput,
+    resolved_module_path: &str,
+    governing: &[GoverningEntry],
+    names: &HashMap<(usize, usize), String>,
+    env: &BTreeMap<String, (String, BTreeSet<usize>)>,
+) -> Vec<RegionEntryGroup> {
+    let mut groups: Vec<(BTreeSet<usize>, RegionEntryGroup)> = Vec::new();
+    for (key, (value, indexes)) in env {
+        if let Some(group) = groups.iter_mut().find(|(set, _)| set == indexes) {
+            group.1.entries.push((key.clone(), value.clone()));
+        } else {
+            let origins = origin_records(
+                source,
+                &resolved_module_path,
+                governing,
+                indexes,
+                names,
+            );
+            groups.push((
+                indexes.clone(),
+                RegionEntryGroup {
+                    origins,
+                    entries: vec![(key.clone(), value.clone())],
+                },
+            ));
+        }
+    }
+    groups.into_iter().map(|(_, group)| group).collect()
+}
+
+fn origin_records(
+    source: &notist_analysis::SourceInput,
+    resolved_module_path: &str,
+    governing: &[GoverningEntry],
+    indexes: &BTreeSet<usize>,
+    names: &HashMap<(usize, usize), String>,
+) -> Vec<RegionOrigin> {
+    indexes
+        .iter()
+        .map(|index| {
+            let entry = &governing[*index];
+            RegionOrigin {
+                kind: entry.kind.clone(),
+                path: if entry.kind == "module" {
+                    Some(resolved_module_path.to_owned())
+                } else {
+                    names
+                        .get(&(entry.source_range.start, entry.source_range.end))
+                        .cloned()
+                },
+                level: entry.level,
+                // Provenance points at the declaring annotation: the entry's
+                // own interval starts at the annotation bytes, while the
+                // governing range may span the whole scope subtree.
+                byte_range: super::request::ByteRange {
+                    start: entry.source_range.start,
+                    end: entry.source_range.end,
+                },
+                line_range: line_range(&source.text, entry.source_range),
+            }
+        })
+        .collect()
+}
+
+/// The innermost addressable Item name containing `point` (section scopes
+/// named by their heading, plus `@id` label scopes), for follow-up queries.
+fn addressable_item(
+    workspace: &WorkspaceSnapshot,
+    source: &notist_analysis::SourceInput,
+    structured: &notist_analysis::StructuredModule,
+    point: usize,
+) -> Option<String> {
+    let mut scopes: Vec<(String, TextRange)> = Vec::new();
+    collect_section_scopes(&structured.tree.roots, &mut scopes);
+    for label in workspace
+        .labels()
+        .iter()
+        .filter(|label| label.file_id == source.file_id)
+    {
+        scopes.push((label.name.clone(), label.scope_range));
+    }
+    scopes
+        .into_iter()
+        .filter(|(_, range)| range.start <= point && point < range.end)
+        .min_by_key(|(_, range)| range.end - range.start)
+        .map(|(name, _)| name)
+}
+
+pub fn read_source(
+    workspace: &WorkspaceSnapshot,
+    snapshot: &SnapshotIdentity,
+    query: &ReadQuery,
+) -> Result<QueryResult<SourceChunk>, ToolError> {
+    let resolved = resolve_source(workspace, &query.selector)?;
+    if query.window.byte_range.is_some()
+        && (query.window.from_line.is_some() || query.window.lines.is_some())
+    {
+        return Err(ToolError::new(
+            "invalid_argument",
+            "line and byte windows are mutually exclusive",
+        ));
+    }
+    if query.window.lines.is_some() && query.window.from_line.is_none() {
+        return Err(ToolError::new(
+            "invalid_argument",
+            "lines requires from-line",
+        ));
+    }
+    if query.window.lines.is_some_and(|lines| lines == 0) {
+        return Err(ToolError::new(
+            "invalid_argument",
+            "lines must be at least 1",
+        ));
+    }
+    let source = &resolved.source.text;
+    let mut selection = resolved.selection;
+    if let Some(range) = query.window.byte_range {
+        if range.start > range.end || range.end > source.len() {
+            return Err(ToolError::new(
+                "invalid_argument",
+                "byte range is outside the selected source",
+            ));
+        }
+        selection = TextRange::new(range.start, range.end);
+    } else if let Some(from_line) = query.window.from_line {
+        let starts = line_starts(source);
+        let start_index = from_line.saturating_sub(1);
+        let Some(&start) = starts.get(start_index) else {
+            return Err(ToolError::new(
+                "invalid_argument",
+                "from-line is outside the selected source",
+            ));
+        };
+        let count = query.window.lines.unwrap_or(usize::MAX);
+        let end = starts
+            .get(start_index.saturating_add(count))
+            .copied()
+            .unwrap_or(source.len());
+        selection = TextRange::new(start.max(selection.start), end.min(selection.end));
+    }
+    let chunk = SourceChunk {
+        location: location(
+            workspace,
+            resolved.module,
+            resolved.source,
+            selection,
+            resolved.name.clone(),
+        ),
+        source: source[selection.start..selection.end].to_owned(),
+        reached_end: true,
+    };
+    Ok(QueryResult {
+        snapshot: snapshot.clone(),
+        records: vec![chunk],
+        search: None,
+        hints: Vec::new(),
+    })
 }
 
 pub fn ref_target_record(
@@ -914,11 +2038,7 @@ pub fn ref_target_record(
             module: module_name(module_id),
             ..Default::default()
         },
-        RefTarget::Item {
-            module,
-            name,
-            kind,
-        } => super::request::RefTargetRecord {
+        RefTarget::Item { module, name, kind } => super::request::RefTargetRecord {
             kind: match kind {
                 ItemKind::Scope => "scope",
                 ItemKind::Resource(_) => "resource",
@@ -1470,9 +2590,17 @@ fn searchable_regions(
         && let Some(parse) = &module.parse
     {
         for annotation in parse.annotations() {
-            for attribute in &annotation.attributes.items {
-                if let notist_syntax::Attribute::Tag(tag) = attribute {
-                    regions.push(("tag".into(), tag.value.clone(), tag.range, false));
+            for (key, value) in annotation.dict_entries() {
+                if let ExpressionKind::Name(name) = &key.kind {
+                    regions.push(("tag".into(), name.value.clone(), name.range, false));
+                }
+                if let ExpressionKind::String(literal) = &value.kind {
+                    regions.push((
+                        "tag".into(),
+                        literal.value.clone(),
+                        literal.payload_range,
+                        false,
+                    ));
                 }
             }
         }
@@ -2290,15 +3418,29 @@ fn populate_index_paths(
                 count += 1;
             }
             for annotation in parse.annotations() {
-                for attribute in &annotation.attributes.items {
-                    if let notist_syntax::Attribute::Tag(tag_name) = attribute {
+                for (key, value) in annotation.dict_entries() {
+                    let ExpressionKind::Name(key_name) = &key.kind else {
+                        continue;
+                    };
+                    writer
+                        .add_document(doc!(
+                            fields.tag => normalize_for_index(&key_name.value),
+                            fields.stored_module => module_record.logical_path.to_string(),
+                            fields.stored_path => relative.to_string_lossy().to_string(),
+                            fields.stored_start => key.range.start as u64,
+                            fields.stored_end => key.range.end as u64,
+                            fields.stored_kind => "tag",
+                        ))
+                        .map_err(io::Error::other)?;
+                    count += 1;
+                    if let ExpressionKind::String(literal) = &value.kind {
                         writer
                             .add_document(doc!(
-                                fields.tag => normalize_for_index(&tag_name.value),
+                                fields.tag => normalize_for_index(&literal.value),
                                 fields.stored_module => module_record.logical_path.to_string(),
                                 fields.stored_path => relative.to_string_lossy().to_string(),
-                                fields.stored_start => tag_name.range.start as u64,
-                                fields.stored_end => tag_name.range.end as u64,
+                                fields.stored_start => key.range.start as u64,
+                                fields.stored_end => key.range.end as u64,
                                 fields.stored_kind => "tag",
                             ))
                             .map_err(io::Error::other)?;
@@ -2410,9 +3552,12 @@ fn build_lexicons(workspace: &WorkspaceSnapshot) -> HashMap<SearchField, Vec<Str
                 );
             }
             for annotation in parse.annotations() {
-                for attribute in &annotation.attributes.items {
-                    if let notist_syntax::Attribute::Tag(tag) = attribute {
-                        add(SearchField::Tag, &tag.value);
+                for (key, value) in annotation.dict_entries() {
+                    if let ExpressionKind::Name(key_name) = &key.kind {
+                        add(SearchField::Tag, &key_name.value);
+                    }
+                    if let ExpressionKind::String(literal) = &value.kind {
+                        add(SearchField::Tag, &literal.value);
                     }
                 }
             }
@@ -2978,7 +4123,6 @@ fn in_scope(module: &str, scopes: &[String]) -> bool {
         })
 }
 
-
 fn relative_path(root: &Path, path: &Path) -> PathBuf {
     path.strip_prefix(root).unwrap_or(path).to_path_buf()
 }
@@ -3015,6 +4159,7 @@ fn diagnostic_code(kind: &DiagnosticKind) -> &'static str {
     match kind {
         DiagnosticKind::DuplicateModule => "duplicate-module",
         DiagnosticKind::DuplicateLabel => "duplicate-label",
+        DiagnosticKind::DuplicateItemId => "duplicate-item-id",
         DiagnosticKind::InvalidSyntax => "invalid-syntax",
         DiagnosticKind::UnresolvedModule => "unresolved-module",
         DiagnosticKind::UnresolvedLabel => "unresolved-label",
