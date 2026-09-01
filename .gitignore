@@ -5,3 +5,6 @@ result
 plugins/*/lib/
 plugins/*/target/
 .env
+
+# ZCode session state
+.zcode/
