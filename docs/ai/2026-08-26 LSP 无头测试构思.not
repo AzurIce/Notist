@@ -107,4 +107,4 @@ harness 自身的两条教训（后续写协议级测试通用）：等待循环
 
 == 治理归档
 
-本篇的可执行规格部分（判据、harness 确定性规则、夹具规则、场景目录与遗留）已提炼为现行设计 #<vault::designs::lsp::test>（`partial`，首批 7 场景已覆盖）；本篇降级为过程记录——缺口分析、方案对比与实施经过以 Git 历史为审计线索。合并入 main 的决策：因 main 存在与分支重叠的未提交 lsp.rs WIP（含同逻辑的 logMessage 推送与更进一步的 report_issue 重构），当日裁决暂不合并，待 WIP 收口后并入。
+本篇的可执行规格部分（判据、harness 确定性规则、夹具规则、场景目录与遗留）已提炼为现行设计 #<vault::lsp::test>（`partial`，首批 7 场景已覆盖）；本篇降级为过程记录——缺口分析、方案对比与实施经过以 Git 历史为审计线索。合并入 main 的决策：因 main 存在与分支重叠的未提交 lsp.rs WIP（含同逻辑的 logMessage 推送与更进一步的 report_issue 重构），当日裁决暂不合并，待 WIP 收口后并入。

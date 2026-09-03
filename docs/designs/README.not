@@ -40,8 +40,7 @@
 pipeline/      编译管线：parse → check → evaluate → structure → project
 language/      语言层：与实现宿主无关的语义规范
 world/         Vault 层：模块、引用与运行边界
-host/          宿主层：CLI、LSP、daemon、分析与渲染架构
-lsp/           LSP 对外契约的黑箱无头验证
+host/          宿主层：CLI、daemon、分析与渲染架构
 plugin-system/ 插件系统：package、ABI、贡献、信任模型与生命周期
 ```
 
@@ -103,8 +102,8 @@ plugin-system/ 插件系统：package、ABI、贡献、信任模型与生命周�
 4. #<vault::designs::host::daemon-process-views>：daemon 进程与 Analyzer View。
 5. #<vault::designs::host::client-interface-protocol>：client interface、本地协议与生命周期。
 6. #<vault::designs::host::cli-command-surface-skill-distribution>：CLI 产品边界与官方 Skill 分发；完整逐命令规范和使用文档在 #<vault::cli>。
-7. #<vault::designs::host::lsp-adapter>：LSP 适配。
-8. #<vault::designs::lsp::test>：LSP 无头契约测试：黑箱层判据、harness 确定性规则与场景目录。
+7. #<vault::lsp>：LSP 设计（vault 根下的独立目录）。
+8. #<vault::lsp::test>：LSP 无头契约测试：黑箱层判据、harness 确定性规则与场景目录。
 9. #<vault::designs::host::html-renderer>：HTML 渲染。
 10. #<vault::designs::host::build-preview>：静态构建与本地预览。
 
@@ -144,8 +143,8 @@ plugin-system/ 插件系统：package、ABI、贡献、信任模型与生命周�
 - #<vault::designs::host::search-retrieval-index>：`partial`（`--exclude-scope` 未实现）
 - #<vault::designs::host::cli-command-surface-skill-distribution>：`partial`（2026-08-15 裁决的命令面未落地：`next`/`locate`/`refs`/`definition` 与 text-only 投影待实现）
 - #<vault::cli>：`partial`（完整 CLI 命令设计+使用规范；目标为 2026-08-15 裁决的命令面，当前 binary 仍为过渡 surface）
-- #<vault::designs::host::lsp-adapter>：`partial`（Document Symbol 尚未覆盖函数与变量）
-- #<vault::designs::lsp::test>：`partial`（首批 7 场景已覆盖；错误规范接线、exit 非零码、cancel、跨文件联动、didSave 与 daemon 变体待补）
+- #<vault::lsp>：`partial`（快照身份纪律、PositionCodec 双模式与统一钳位为目标设计；实现仍为 utf-8-only、无 revision pin）
+- #<vault::lsp::test>：`partial`（首批 7 场景已覆盖；错误规范接线、exit 非零码、cancel、跨文件联动、didSave 与 daemon 变体待补）
 
 位置本身表达治理状态：active 目录中的文档是现行设计；退休的文档直接移除。Git 是完整历史，不维护编号 ID 或 `Design:` trailer。
 

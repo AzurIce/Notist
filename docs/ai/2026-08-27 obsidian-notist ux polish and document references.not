@@ -69,6 +69,6 @@
 
 - #<vault::ai::2026-08-26 obsidian-notist lsp diagnostics design>：Problems 首版设计与"徽标不做"的原裁决（本文推翻并记录理由）。
 - #<vault::ai::2026-08-26 obsidian-notist semantic panels design>：documentReferences 推荐协议、`(0,0)` 降级的歧义分析、面板分层路线。
-- #<vault::designs::host::lsp-adapter>：LSP adapter 协议边界。
+- #<vault::lsp>：LSP adapter 协议边界。
 - #<vault::types/Type System/Target 与 link>：`[[wiki]]` 废弃、`#<target>` 现行语法的裁定。
 - #<vault::obsidian-notist::lsp>：插件 LSP 总体接入与 server 契约（本文补充 experimental capability 一节）。

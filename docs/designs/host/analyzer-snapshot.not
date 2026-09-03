@@ -1,7 +1,7 @@
 @!(implementation: "aligned")
 = Analyzer and WorkspaceSnapshot
 
-本文是 A1 分析层的独立成篇，从归档的历史混合文档中独立成篇。LSP 适配见 #<vault::designs::host::lsp-adapter>；daemon 进程形态见 #<vault::designs::host::daemon-process-views>；查询契约见 #<vault::designs::host::query-contract>。
+本文是 A1 分析层的独立成篇，从归档的历史混合文档中独立成篇。LSP 适配见 #<vault::lsp>；daemon 进程形态见 #<vault::designs::host::daemon-process-views>；查询契约见 #<vault::designs::host::query-contract>。
 
 
 == 分析层：Analyzer 与 WorkspaceSnapshot

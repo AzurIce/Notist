@@ -1,7 +1,7 @@
 \@!(implementation: "partial")
 = obsidian-notist LSP Diagnostics 设计
 
-本文审计 2026-08-26 已落地的 obsidian-notist LSP diagnostics，并给出覆盖打开与未打开文件、版本一致性、导航、重启、多 leaf、降级与未来 code action 的完整设计。2026-08-27 已按本文落地全 vault Problems 底栏、状态计数、当前文件导航与故障清理；version 门控、session generation、文本 hash 匹配和 code action 仍未实现，所以整体状态保持 `partial`。实现证据来自插件的 `src/lsp/`、`src/main.ts`、`src/notist-view.ts` 与 `src/problems-dock.ts`，服务端依据 `/home/azurice/Files/notist/crates/notist-cli/src/lsp.rs`。相关协议背景见 #<vault::obsidian-notist::lsp>、#<vault::designs::host::lsp-adapter>；实现踩坑见 #<vault::ai::2026-08-26 obsidian-notist lsp client implementation>。
+本文审计 2026-08-26 已落地的 obsidian-notist LSP diagnostics，并给出覆盖打开与未打开文件、版本一致性、导航、重启、多 leaf、降级与未来 code action 的完整设计。2026-08-27 已按本文落地全 vault Problems 底栏、状态计数、当前文件导航与故障清理；version 门控、session generation、文本 hash 匹配和 code action 仍未实现，所以整体状态保持 `partial`。实现证据来自插件的 `src/lsp/`、`src/main.ts`、`src/notist-view.ts` 与 `src/problems-dock.ts`，服务端依据 `/home/azurice/Files/notist/crates/notist-cli/src/lsp.rs`。相关协议背景见 #<vault::obsidian-notist::lsp>、#<vault::lsp>；实现踩坑见 #<vault::ai::2026-08-26 obsidian-notist lsp client implementation>。
 
 == 背景与结论
 
@@ -200,6 +200,6 @@ DocumentSync {
 == 参考
 
 - #<vault::obsidian-notist::lsp>：插件 LSP 总体接入、server 契约与降级原则。
-- #<vault::designs::host::lsp-adapter>：LSP adapter 的 overlay、position、diagnostics 协议边界。
+- #<vault::lsp>：LSP adapter 的 overlay、position、diagnostics 协议边界。
 - #<vault::ai::2026-08-26 obsidian-notist lsp client implementation>：当前实现、实机验证与已知竞态。
 - #<vault::ai::2026-08-26 LSP 无头测试构思>：LSP 黑箱测试 harness 的场景与验收思路。
