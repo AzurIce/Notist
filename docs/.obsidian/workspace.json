@@ -13,11 +13,11 @@
             "state": {
               "type": "notist-view",
               "state": {
-                "file": "example/test.not",
+                "file": "cli/inspect/info.not",
                 "mode": "source"
               },
               "icon": "file-text",
-              "title": "test"
+              "title": "info"
             }
           }
         ]
@@ -120,7 +120,12 @@
                   "designs",
                   "designs/language",
                   "designs/lsp",
-                  "designs/pipeline"
+                  "designs/pipeline",
+                  "designs/host",
+                  "assets",
+                  "ai",
+                  "lsp",
+                  "cli/inspect"
                 ],
                 "dimNonNot": false
               },
@@ -155,19 +160,19 @@
       "bases:新建数据库": false
     }
   },
-  "active": "0a4775e371031b5c",
+  "active": "75552d4d3f465603",
   "lastOpenFiles": [
-    "ai/2026-08-31 区域属性投影与 inspect info 命令.not.tmp.3619102.f6249f2a3896",
-    "ai/README.not.tmp.3619102.c22dbf9f4519",
-    "ai/README.not.tmp.3619102.abcb6869cd4a",
-    "ai/2026-08-31 区域属性投影与 inspect info 命令.not.tmp.3619102.a2997ee27d0b",
-    "ai/2026-08-31 区域属性投影与 inspect info 命令.not.tmp.3619102.1417248c0f1f",
-    "ai/2026-08-31 区域属性投影与 inspect info 命令.not.tmp.3619102.12f31e960800",
-    "ai/2026-08-31 区域属性投影与 inspect info 命令.not.tmp.3619102.24ede26ca25c",
-    "ai/2026-08-31 区域属性投影与 inspect info 命令.not.tmp.3619102.7237f7368aed",
-    "ai/2026-08-31 区域属性投影与 inspect info 命令.not.tmp.3619102.ef38b1bedb6d",
-    "ai/2026-08-31 区域属性投影与 inspect info 命令.not.tmp.3619102.d41c37157bf0",
-    "example/submodule.not",
+    "designs/lsp",
+    "designs/host/lsp-adapter.not",
+    "cli/inspect/info.not.tmp.3619102.cfbbb95bb94d",
+    "cli/README.not",
+    "cli/inspect/info.not",
+    "ai/2026-08-31 区域属性投影与 inspect info 命令.not.tmp.3619102.691dc6e051d9",
+    "cli/inspect/info.not.tmp.3619102.844ad82390a5",
+    "cli/inspect.not",
+    "cli/inspect.not.tmp.3619102.efe9e5dfaa99",
+    "cli/inspect.not.tmp.3619102.685f51123b0d",
+    "cli/inspect",
     "ai/AGENTS.md",
     "AGENTS.md",
     "fx2.md",
