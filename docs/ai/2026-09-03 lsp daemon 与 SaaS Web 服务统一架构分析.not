@@ -1,0 +1,273 @@
+@!(author: "gpt-5.6-sol")
+= LSP daemon 与 SaaS Web 服务统一架构分析
+
+本文整理 2026-09-03 对当前 `lsp-daemon`、UTF-16 支持和未来 SaaS/Web 编辑器方向的结构审查。本文是调研与架构建议，不是新的 governing design；其中的倾向只有在用户明确确认后，才应写入 `docs/designs/` 的现行设计。
+
+当前代码与设计的证据主要来自 `crates/notist-cli/src/lsp.rs`、`crates/notist-service/src/lib.rs`、`crates/notist-service/src/request.rs`、`crates/notist-service/src/transport.rs` 与 `crates/notist-analysis/src/lib.rs`。现行边界见 #<vault::lsp>、#<vault::designs::host::daemon-process-views>、#<vault::designs::host::client-interface-protocol> 与 #<vault::designs::host::analyzer-snapshot>。
+
+== 结论先行
+
+底层分析模型并不需要推倒重来。`VaultEngine -> AnalyzerView -> WorkspaceSnapshot` 已经提供了正确的长期状态、客户端视图和不可变结果边界；混乱集中在其上的运行时编排。
+
+当前 `notist lsp` 同时承担协议网关、Vault 路由、overlay 会话、构建调度、文件 watcher、诊断发布和请求线程池。daemon 又维护自己的 watcher、View 注册表、协议并发和生命周期。两边没有一个明确的 Session Runtime，因此相同的 revision、overlay 与变更通知语义被多个宿主分别实现。
+
+UTF-16 不是语义层问题，也不是必须把核心坐标改成 UTF-16。内部继续使用 UTF-8 byte offset 是合理的；问题在于最近一次传输优化把 byte-only `SourceTables` 与 LSP wire encoding 绑定，导致 2026-08-31 的 `adebd80` 删除了此前已经存在的 UTF-8/UTF-16 协商与转换能力。
+
+未来应统一 *application/session runtime*，而不是把本地 daemon 直接改造成 SaaS server：
+
+```text
+LSP stdio gateway ─┐
+Local CLI / IPC ────┼─> Session Runtime ─> Vault Runtime ─> WorkspaceSnapshot
+WebSocket gateway ──┤       commands / queries / events
+SaaS HTTP API ──────┘
+
+本地宿主：filesystem、watcher、Unix socket、单用户权限
+远程宿主：tenant、auth、durable store、quota、WebSocket
+```
+
+== 当前实现的结构问题
+
+=== LSP adapter 过度承担运行时职责
+
+`LspSession` 目前包含：
+
+- 打开文档和 unsaved overlay；
+- 多 Vault 发现与路径归属；
+- `input_generation`、dirty 标记和 single-flight builder；
+- overlay delta 的计算与发送；
+- `SourceTables` 的接收和本地位置换算；
+- watcher 事件接入；
+- diagnostics 的 baseline、签名去重与清除；
+- LSP 请求线程池、取消表和响应投影。
+
+这些职责分别属于 session state、build scheduler、snapshot publication、transport adapter 和 LSP projection。它们放在一个文件中并非单纯的代码长度问题：任何一个边界变化都必须穿过同一个可变状态机。
+
+=== daemon 与 LSP 重复实现变更编排
+
+daemon 的 `VaultHost` 有 disk View、session View、watcher 和共享 Engine。watcher 触发时会 reload disk View，并为每个 session View 保留 overlay 后重新构建。LSP adapter 同时又维护自己的 watcher 和 builder；它通过 `UpdateView`/`UpdateViewDelta` 把当前状态重新提交给 daemon。
+
+因此一次磁盘或编辑器变化的路径是：
+
+```text
+filesystem event
+  -> daemon watcher -> AnalyzerView rebuild
+  -> LSP watcher -> LspSession dirty
+  -> LSP builder -> UpdateView / UpdateViewDelta
+  -> daemon AnalyzerView rebuild again
+```
+
+这是重复工作和语义漂移的来源。analysis 已经有 `SnapshotPublication` 与 `WorkspaceDelta`，但 service 目前只返回 `SnapshotIdentity` 和具体结果，没有把 publication/delta 作为统一事件面交给消费者。
+
+=== 查询没有显式固定 snapshot
+
+`QueryVault` 只保存 `view_id`、request handle 和 source tables。请求开始时，LSP 侧保存的是一组可替换的 source table；daemon 侧则按 view 当前指针捕获 snapshot。
+
+这造成一个时序窗口：
+
+```text
+didChange 到达
+  -> LSP 记录新文本并异步提交 build
+  -> hover/completion 立即到达
+  -> 请求使用旧 source table 计算 byte offset
+  -> service 使用当前或新 snapshot 执行查询
+```
+
+结果中的 range、输入坐标和查询文本可能不属于同一 revision。现有测试通常先等待 diagnostics，再发查询，因此没有覆盖这个窗口。
+
+应把 revision barrier 作为 session contract：查询要么等待指定 `input_seq` 已发布，要么明确返回它实际使用的 `SnapshotIdentity`，客户端再丢弃过期结果。不能只依靠“通常 diagnostics 先到”来建立顺序。
+
+=== watcher、preview 和事件面仍然是轮询式
+
+daemon 已经能在 View 内生成 revision，analysis 也能从两个 snapshot 推导 `WorkspaceDelta`，但 preview 仍每 250ms 请求 `SnapshotSummary` 检查 revision。未来 Web 编辑器如果继续采用轮询，会把本地 adapter 的调度债复制到远程连接上。
+
+更合适的方向是：service session 发布带 revision 的 snapshot event；preview、LSP 和 WebSocket gateway 都订阅同一事件面。事件是优化和通知，不是真相来源；任何消费者仍然可以丢弃事件并从完整 snapshot 重建。
+
+== UTF-16 支持的真实边界
+
+=== 现状
+
+当前 LSP 在 initialize 时要求客户端声明 `utf-8`，否则拒绝会话；服务端固定返回 `positionEncoding = utf-8`。`ClientSource` 只持有 byte-offset `LineTable`，`SourceTables` 只下发行起点、内容终点和总 byte length。
+
+这套实现与当前测试一致：lifecycle 测试把拒绝 UTF-16-only 客户端视为成功，所有 LSP 黑箱测试也只用 UTF-8。
+
+但现行 `lsp-adapter.not` 仍要求 UTF-16 必须正确支持，Obsidian/CodeMirror 客户端也保留了 UTF-8 wire 与 UTF-16 editor offset 的转换代码。仓库因此出现实现、设计和下游客户端契约不一致。
+
+=== 为什么恢复 UTF-16 不需要改核心坐标
+
+核心查询结果已经是 `TextRange { start, end }`，含义是 UTF-8 byte offset。这个坐标适合作为跨 crate、跨语言和 citation 的内部契约，不应被 LSP 或浏览器的 code unit 规则污染。
+
+应把客户端坐标作为 session/gateway 边界能力：
+
+```text
+TextRange / byte offset       核心语义坐标
+        |
+        v
+PositionCodec { Utf8 | Utf16 }
+        |
+        +-- LSP initialize 协商
+        +-- CodeMirror / VS Code adapter
+        +-- Web editor transport projection
+```
+
+`PositionCodec` 或等价的 `TextIndex` 需要统一覆盖：
+
+- byte offset 与 line/column 的双向转换；
+- UTF-8 byte column 与 UTF-16 code-unit column；
+- emoji 代理对、中文、多字节字符和组合字符；
+- CRLF、文件尾和空行；
+- 增量 change 的越界钳位与字符边界处理。
+
+incoming position、incremental edit 和 outgoing range 必须使用同一个 source text/index。不能只为诊断恢复 UTF-16，而让 `didChange` 仍按 UTF-8 解释。
+
+=== 数据传输不应由 encoding 决定
+
+`SourceTables` 是一个传输优化，不应成为“只允许 UTF-8”的理由。对于 UTF-16，存在三种可选实现：
+
+- 下发按文件缓存的 UTF-16 line table；
+- 下发 compact text index，按需要计算 byte/code-unit 映射；
+- 在查询响应中返回带 source fingerprint 的 source slice 或完整 source，由 gateway 在同一 snapshot 上转换。
+
+不应恢复旧的“每次请求把全 Vault 全文搬回 LSP”路径。更好的契约是 service 返回 byte range 和 source identity，gateway 对已 pin 的 snapshot 做位置投影；只有缺少本地索引时才请求目标文件的文本或索引。
+
+另外，当前 diagnostics、definition 和 references 仍会在记录中附带 source text。即使恢复 UTF-16，也应把重复 source 视为独立的数据面债务，而不是继续扩大 `CoreResponse`。
+
+== 推荐的统一运行时
+
+=== Session Runtime
+
+建议新增一个协议无关的 Session Runtime 概念，可能落在 `notist-service` 内，也可能拆为独立 crate。它不处理 LSP JSON-RPC、HTTP headers 或 Unix socket，而只处理一个客户端视图的生命周期：
+
+- `open_document(path, text, version)`；
+- `apply_changes(path, changes, encoding)`；
+- `close_document(path)`；
+- `set_configuration(...)`；
+- `await_published(input_seq)`；
+- `query(snapshot_handle, CoreRequest)`；
+- `subscribe_events()`。
+
+其核心状态应类似：
+
+```text
+Session {
+  tenant_or_user_scope
+  vault_handle
+  overlay_set
+  document_versions
+  input_seq
+  published_snapshot: Arc<WorkspaceSnapshot>
+  published_revision
+  position_codec per gateway/session
+}
+```
+
+Session Runtime 负责 latest-wins 和取消，但不假装增量日志是真相。构建失败时保留上一个可用 snapshot；成功后原子发布新 snapshot 和 delta。查询必须显式捕获 snapshot handle，不能只传一个会随时间变化的 `view_id`。
+
+=== Vault Runtime
+
+Vault Runtime 负责可跨 session 复用的长期状态：
+
+- source catalog、FileId 和 ModuleId；
+- parse、分析和求值缓存；
+- disk source watcher；
+- search/reference/embedding 等派生索引；
+- plugin/function environment。
+
+它不拥有某个编辑器的 overlay，也不把一个 session 的未保存文本写入 disk View。现有 `VaultEngine` 与 `VaultHost` 已经接近这个角色，但 watcher 事件和 session publication 仍需要整理成明确 API。
+
+=== Gateway
+
+每种外部接口只做协议转换和授权：
+
+```text
+LSP gateway       JSON-RPC、stdio、URI、Position、capability negotiation
+Local CLI gateway CoreRequest 参数、text projection、IPC client lifecycle
+WebSocket gateway session commands、events、browser identity、backpressure
+SaaS HTTP gateway auth、tenant routing、quota、audit、REST/JSON projection
+```
+
+LSP 不应成为 Web API。LSP 的 position、editor lifecycle 和有限的代码智能不能表达搜索、双链、渲染、资源、权限、协同和持久化编辑。Web 可以复用同一 Core Query 和 Session Runtime，但应有自己的 API surface。
+
+== 本地 daemon 与 SaaS 的分工
+
+不建议让本地 daemon 和 SaaS server 共用同一个进程模型。二者可共用 runtime 和语义协议，但生命周期、权限和存储边界不同：
+
+| 维度 | 本地 daemon | SaaS server |
+| :--- | :--- | :--- |
+| 身份 | 当前用户 + canonical Vault root | tenant + account + vault identity |
+| 输入 | 本地 filesystem、editor overlay | object/database store、browser session、外部同步 |
+| watcher | OS 文件 watcher | 存储事件、队列或显式 mutation |
+| 连接 | Unix socket / named pipe | HTTPS、WebSocket、反向代理 |
+| 权限 | runtime directory ACL、peer credential | token、tenant isolation、Origin、quota、audit |
+| 生命周期 | idle timeout、binary stamp、单机重启 | deployment、rolling upgrade、持久 session policy |
+| 失败恢复 | 重新读盘并重建派生状态 | durable source、snapshot metadata、job retry |
+| 协同 | 不默认支持 | 需要单独的 edit conflict/CRDT 设计 |
+
+本地 daemon 可以作为 Session/Vault Runtime 的一种 host。SaaS 需要另一个 host adapter，不能把 `PathBuf`、本地 watcher 和 daemon instance id 直接暴露成远程身份。
+
+=== 远程身份不能沿用本地句柄
+
+`ServiceViewId`、`DaemonInstanceId` 和 `SnapshotIdentity` 当前适合单进程或本地 daemon。SaaS 需要把身份分成：
+
+- 稳定的 tenant、vault、document identity；
+- session-scoped capability；
+- snapshot revision/fingerprint；
+- 可过期、不可猜测的 subscription/request handle。
+
+本地 path 仍可作为 source locator，但远程请求必须经过 tenant/vault 授权和 canonical identity 校验。MCP 与远程服务的安全前提见 #<vault::ai::2026-07-21 notist agent mcp semantic retrieval and vector indexing>。
+
+=== 协同编辑另立模型
+
+单用户 overlay 是“一个 session 对 disk source 的替换视图”，而 SaaS 协同是“多个作者对同一持久文档的并发 mutation”。后者需要解决操作顺序、冲突、权限、离线、回放和审计，不能只把多个 `UpdateViewDelta` 合并。
+
+因此第一版 Web 编辑器可以是单用户 session：浏览器文本作为 overlay，经 Session Runtime 分析，保存仍由明确的 mutation API 完成。Yjs/yrs、Automerge 或其他 CRDT 只有在协同需求确认后独立设计。
+
+== 建议迁移顺序
+
+=== 先修正确性，再抽象宿主
+
+1. 增加 UTF-16 initialize、CJK/emoji 双向 range 和 UTF-16 incremental edit 的端到端测试。
+2. 增加 `didChange` 后不等待 diagnostics 就立即 hover/completion 的顺序测试。
+3. 引入 `input_seq` 与 published revision barrier；查询显式返回其使用的 `SnapshotIdentity`。
+4. 确保 source index、query snapshot 和 outgoing range 来自同一 snapshot。
+
+=== 再收敛 service runtime
+
+1. 把 LSP 的 overlay 生命周期和 latest-wins builder 下沉为 Session Runtime。
+2. 把 daemon watcher publication 变成 service event/subscription，而不是让每个 adapter 自己轮询。
+3. 让 `SnapshotPublication`/`WorkspaceDelta` 成为 service 的正式返回或事件类型。
+4. 删除 LSP 对 daemon 当前 View 指针的隐式依赖，使用 snapshot handle/barrier。
+5. 恢复 `PositionCodec(Utf8|Utf16)`，使 `SourceTables` 退化为索引实现，而非能力限制。
+
+=== 最后增加 Web/SaaS 宿主
+
+1. 先实现本地 WebSocket gateway，复用现有本地 Session Runtime，验证命令、查询、事件和 backpressure。
+2. 给 Web API 建立 tenant/vault/document identity，不暴露本地 path 句柄作为权限边界。
+3. 增加保存 mutation 的 CAS、source fingerprint、审计和冲突响应；在此之前 Web 编辑器保持单用户 overlay。
+4. 再加入 durable store、认证、配额、队列、远程索引和多租户隔离。
+5. 协同编辑另立设计，不把 CRDT 作为 Session Runtime 的隐式升级。
+
+== 不建议的路线
+
+- 不建议把核心 `TextRange` 改成 UTF-16；这会把编辑器协议细节传播到 analysis、CLI、citation 和索引。
+- 不建议继续用“拒绝 UTF-16 客户端”掩盖 codec 与 snapshot 边界问题；这会损害编辑器兼容性，也不能解决 source 重复传输。
+- 不建议只拆分 `lsp.rs` 文件而保留相同职责；文件拆分不会修复重复 watcher、隐式 snapshot 和查询顺序竞态。
+- 不建议直接给现有 Unix daemon transport 套 HTTP/WS；本地授权、路径身份、长连接和远程租户边界需要不同的 host adapter。
+- 不建议让 Web 编辑器只走 LSP-over-WebSocket；LSP 可复用编辑智能，但不是搜索、渲染、双链和持久化 API。
+- 不建议在没有 revision、权限和审计基础前引入协同 CRDT；那会把 overlay、持久 source 和 mutation history 混成一个不可验证的状态。
+
+== 与现有记录的关系
+
+- #<vault::ai::2026-08-30 LSP incremental sync 设计> 说明了 INCREMENTAL `didChange` 的应用语义；本文指出其 UTF-8-only 落地不应成为长期边界。
+- #<vault::ai::2026-08-30 LSP 健壮性并发与数据面设计> 记录了 `UpdateViewDelta`、`SourceTables` 和 daemon multiplexing 的落地；本文把它们放回 Session Runtime 与 Gateway 的更大分层中。
+- #<vault::ai::2026-08-17 web ui obsidian-like editor research> 已提出 daemon + HTTP/WS 与 LSP-over-WS 的方向；本文进一步区分可复用 runtime、Web API 和 SaaS host，不把 LSP 当唯一远程协议。
+- #<vault::designs::host::analyzer-snapshot> 已定义 immutable snapshot、View 和 WorkspaceDelta；本文建议把这些对象真正提升为 service event/query contract，而不是只在 analysis crate 内部使用。
+
+== 验证记录
+
+2026-09-03 在当前工作树运行：
+
+```text
+cargo test -p notist-cli --test lsp_lifecycle --test lsp_sync --test lsp_queries -j8 -- --test-threads=4
+```
+
+结果为 12 个测试全部通过。测试证明当前 UTF-8-only 实现自洽，但也证明了测试面把 UTF-16 拒绝当作预期行为，且没有覆盖 `didChange` 后立即查询的 revision barrier，因此不能把当前绿灯解释为架构已经收敛。

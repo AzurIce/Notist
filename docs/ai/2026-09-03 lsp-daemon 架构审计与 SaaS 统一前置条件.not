@@ -1,0 +1,197 @@
+@!(author: "claude-fable-5-1")
+= lsp-daemon 架构审计与 SaaS 统一前置条件
+
+用户提出三个问题：lsp-daemon 架构感觉凌乱；LSP 目前只支持 utf-8，要支持 utf-16 似乎会造成复杂变更而更加凌乱；未来打算做 SaaS + Web 编辑器，想统一到时的服务端与如今的 daemon。本文是对这三个问题的核实性审计存档，*不是裁决*——文中的倾向与排序建议尚未经用户拍板。
+
+审计基准：`crates/notist-service`（lib/request/query/transport/protocol/watcher）、`crates/notist-cli/src/lsp.rs` 与 `service.rs`、`notist-analysis` 的 `LineIndex`/`LineTable`，对照 #<vault::lsp>、#<vault::designs::host::daemon-process-views>、#<vault::designs::host::client-interface-protocol>、#<vault::designs::host::analyzer-snapshot> 与 #<super::2026-08-30 LSP 健壮性并发与数据面设计>。行号为审计时状态，会随实现漂移。
+
+== 结论概览
+
+"凌乱"的感受实际由三件独立的事叠加而成，混在一起看才显得无从下手：
+
+```text
+性质          内容                                    随时间的走向
+活跃 bug      请求与构建之间的坐标错配窗口            现在就在产生错误答案
+结构债        核心请求面分裂为两族                    随客户端数量线性恶化
+整洁度        运行时形态多层嵌套                      不阻塞任何事
+```
+
+第二个问题（utf-16）的前提需要修正：它之所以看起来昂贵，是因为坐标换算被放在了错误的层，而不是因为编码本身复杂。第三个问题（SaaS）的答案是 transport 复用确实容易，但有五条本地性假设需要逐条裁决，且*一条都不在 transport 上*。
+
+== 一、请求与构建之间的坐标错配窗口
+
+`view_id` 是跨构建复用的可变服务端视图（`compute_build_inner` 经 `previous.remove(root)` 复用旧句柄），而 `request_context()`（lsp.rs:1015）只捕获行表的 `Arc` 克隆加 `view_id` 与 client 句柄。因此请求 worker 用*捕获时刻的行表*做坐标换算，却把请求发给 `view_id`——它在*执行时刻*解析到当前视图状态。
+
+`build_in_flight`（lsp.rs:918）只防止构建重叠，不拦请求：构建在途期间请求照常派发，无任何机制兜底。
+
+危险窗口的精确边界：
+
+```text
+构建阶段                              行表    服务端文本   自洽性
+UpdateViewDelta 未发出                旧      旧           自洽（答案陈旧但无害）
+UpdateViewDelta 已落地                旧      新           不自洽 —— 错误位置
+apply_outcome 换上新行表后            新      新           自洽
+```
+
+第二行窗口横跨一次完整的 `SourceTables` IPC 往返。窗口不长，但触发它的是最常见的编辑模式：敲字符后立刻 hover 或补全。后果是静默的错误位置（偏移落到别处），不是崩溃。CJK 密集文档上更容易同时落到字符中间——因为列即字节列，而 `LineTable::offset` 不做字符边界取整。
+
+lsp.rs:703-705 的注释"A concurrent build swaps `sources` wholesale, so workers keep serving from the snapshot they captured"只对行表成立；语义答案来自另一个时刻。这正是 #<vault::designs::host::analyzer-snapshot/Analyzer and WorkspaceSnapshot/分析层：Analyzer 与 WorkspaceSnapshot> 禁止的"混合两个 revision 的对象"。
+
+机制其实已经齐备但未接线：每个 `CoreReply` 都带 `SnapshotIdentity`（含 revision 与 `source_fingerprint`），`SourceTableRecord` 带 `document_version`——适配层把两者都丢弃了（lsp.rs:800-872）。
+
+=== 与全文搬运的关系
+
+`LocationRecord.source`（request.rs:533）是目标文件全文，填充于 request.rs:1160、1186、1217、1226；`DiagnosticRecord.source`（request.rs:475）同理，一个文件 N 条诊断搬 N 份全文。
+
+审计初期误判其为纯冗余、可直接删除并改用缓存行表。*该判断错误*：这些全文来自请求自身捕获的快照，而缓存行表来自构建代，两者可以不是同一个语义世界。lsp.rs:1632、1665 用响应全文重建 `ClientSource`，`lsp_diagnostic`（lsp.rs:1588）的 `captured_source.as_ref().or(source)` 优先用全文、把行表当兜底，都是在规避行表已过期的情况——是刻意的，不是 #<super::2026-08-30 LSP 健壮性并发与数据面设计> 中"SourceTables 取代 Sources 全文拉取"的实现回退。
+
+因此顺序是：*先建立快照身份纪律，再删全文*。反过来会把带宽问题换成静默坐标错位。全文保护的是出站的跨文件目标；入站的位置换算完全没有保护。
+
+== 二、核心请求面分裂为两族
+
+`CoreRequest` 35 个 variant 实为两种风格并存：
+
+```text
+LSP 形状（扁平参数）                CLI 形状（嵌套 query）
+Definition { path, offset }         DefinitionLocation { query: DefinitionQuery }
+References { path, offset, .. }     ReferencesPage { query }
+Diagnostics                         DiagnosticsPage { query }
+Search                              SearchPage { query }
+返回 LocationRecord                 返回 QueryResult<T> 携带 Location
+```
+
+`Definition` 与 `DefinitionLocation` 回答同一问题、返回两种类型。更直接的证据是 `ModuleRecord` 与 `ReferenceRecord` 各有两份定义（request.rs:498/523 对 query.rs:165/369），`lib.rs:22-27` 用 re-export 注释压住名字冲突；`diagnostic_code`（request.rs:2357 与 query.rs:4158）与绝对模块路径解析（request.rs:2387 与 query.rs:4144）各有两份实现。
+
+`request.rs` 与 `query.rs` 构成*真实的循环依赖*：query.rs:24 引 `request::attribute_records`，全程使用 `request::ByteRange`，query.rs:2024 返回 `request::RefTargetRecord`，query.rs:2883 调 `request::write_artifact_atomic`。
+
+`execute_cancellable` 的 `match` 约 829 行（request.rs:868-1696），同时兼任路由、HTML 渲染管线（request.rs:1766-2385）、索引线程协调（request.rs:670-851）与原子写盘（request.rs:1700-1753）。
+
+这与 #<vault::designs::host::client-interface-protocol/Client Interface and Protocol/Client Interface> 明文要求相违："不能让 `notist refs` 与 LSP references 分别实现两套解析规则。"设计说所有 client 投影到同一组协议无关 core request，代码里是两组。
+
+=== 与第一节的连接：安全属性落在了错的一族
+
+`DefinitionQuery` 有 `expected_fingerprint` 字段（query.rs:153，消费于 query.rs:2218），CLI 亦已暴露（main.rs:217）——防的正是"用旧偏移查新文本"。而 LSP 走的 legacy `Definition { path, offset }` *没有*这个字段。
+
+新 query 族已有该保护，LSP 面向的旧族没有。这使"两族并存"从风格不一致升级为：LSP 走的恰好是缺少安全属性的那一族。收敛请求面的第一步与关闭第一节的 race 是同一件事。
+
+== 三、坐标换算被放在错误的层（utf-16 问题的实质）
+
+现状：线协议 utf-8 only，`require_utf8_position_encoding`（lsp.rs:106）对不 offer utf-8 的客户端以 `RequestFailed` 拒连；`notist-analysis` 的 utf-16 方法已按 2026-08-31 裁决删除；`ClientSource`（lsp.rs:633）退化为只持一张 `LineTable`、不持文本。
+
+utf-16 看起来昂贵的原因是"没有文本就换不出 utf-16 列"。但适配层*其实持有文本*：`LspSession.documents` 存 `OpenDocument { version, source: Arc<str> }`（lsp.rs:622）。而入站 position 按 LSP 语义必然落在已打开文档上，所以入站 utf-16→byte 需要的数据一份不缺，只是 `source_position`（lsp.rs:1750）绕开文本走了行表。
+
+真正需要额外数据的只有出站——未打开文件上的 range（跨文件跳转目标、workspace 诊断、workspace symbols），而这些恰好就是今天已在搬全文的位置。
+
+结论：*适配层同时有两个坐标源却统一选了错的那个*。把规则收成"打开的文档用本地文本换算，未打开的用行表"，utf-16 退化为适配层内部的叶子模块，`notist-analysis` 与 `CoreRequest` 都不必改动——核心协议全程字节偏移这条边界是对的，不应改。
+
+=== 这一步现在就在修一个缺口
+
+`LineTable::offset`（notist-analysis/src/lib.rs:230）做 `start + column` 后 `.min(content_end)`，*不做字符边界取整*；而 didChange 路径用的 `offset_utf8_saturating`（同文件:175）会 `while !is_char_boundary { target -= 1 }`。同一适配层两套钳位纪律。
+
+lsp.rs:627-631 的注释称越界饱和无妨，因为"core validates offsets like it always has for CLI callers"。核实：*该注释过宽*。只有 `completions_at` 真的校验（notist-analysis/src/lib.rs:2075 检查 `is_char_boundary`），definition、references、hover 走数值范围包含判断。因此码点中间的字节偏移现在就能进入这些路径。
+
+=== 代价已被外部化
+
+utf-8-only 使三个姊妹项目各自实现一份字节列换算（obsidian 与 vscode 各有 `source-map.ts`），即把服务端省下的复杂度乘以客户端数量分摊出去。CM6 内部就是 utf-16——若 Web 编辑器走 CM6（#<super::2026-08-17 web ui obsidian-like editor research> 的结论），*utf-16 就不是可选项而在 SaaS 关键路径上*，应并入 SaaS 一起裁决，不宜单独当兼容补丁。
+
+== 四、运行时形态多层嵌套
+
+`LocalNotistClient::connect` 每次连接新建一个 tokio Runtime（service.rs:95），而 `compute_build_inner` 按 vault root 逐个 connect。计数：
+
+```text
+N 个 vault 的工作区 = 1 个 LSP 进程
+                    + 最多 N 个 daemon 进程
+                    + LSP 进程内 N 个多线程 tokio runtime
+```
+
+单条请求路径三次范式切换：同步 LSP 主循环 → `runtime.block_on` 进异步 client（service.rs:41）→ 异步 daemon → `spawn_blocking` 回同步 service（transport.rs:525）。每层都要写跨界胶水，`cancelled_poll` 每 2ms 轮询原子布尔即由此而来。
+
+CLI 侧每条命令都是 connect + `OpenView` + 一次查询 + 断开；`OpenView` 内含一次 `with_snapshot` 强制发布快照。内容级缓存使其不必重解析，但仍走一次完整快照发布。
+
+此项影响整洁度与资源占用，不阻塞其他任何一项。
+
+== 五、SaaS 的五条本地性前置条件
+
+先说成立的部分：`CoreRequest`/`CoreResponse` 全是 serde 派生的协议无关枚举，`NotistService::execute(&self, request)`（request.rs:853）是唯一入口，快照是 `Arc` 不可变值，`--no-daemon` 的 embedded 模式已证明同一 service object 可换位置嵌入。*在 socket transport 旁加一层 HTTP/WS 确实是小改动*。
+
+难点五条，一条都不在 transport 上：
+
+```text
+假设                  现状                                        Web 客户端为何不成立
+存储                  analysis 直接读盘，无 VFS/SourceProvider    需可注入 source provider
+                      抽象（lib.rs:894/1506/3014/3886）
+身份与多租户          VaultIdentity{canonical_root: PathBuf}，    数千租户下每 vault 一进程不成立
+                      鉴权 = peer uid + 0o700
+                      （transport.rs:883/928）
+写路径                35 个 variant 无一改写 source              浏览器碰不到用户文件
+                      （2026-08-28 裁决）
+故障恢复              约 40 处 .lock().unwrap()，无 poison       多租户长驻进程里一次 panic
+                      恢复；merge_view_inputs 持锁操作            毒化该 vault 至重启
+                      （lib.rs:187/213）
+推送通道              ServerMessage 仅 5 个 variant，            live reload/诊断/协同都要服务端推
+                      无 notification/subscribe
+```
+
+推送通道的缺失同时解释了一个既有怪象：*存在两个文件系统 watcher*。service 侧每 vault 一个（lib.rs:309-337，reload 磁盘视图后逐个刷新 live session 并保住 overlay），LSP 侧另一个盯整个 workspace（lsp.rs:88-93，250ms 去抖后投 `WorkspaceChanged`）。两者用同一个 `PassiveDebouncedWatcher`、监视范围重叠。这不是疏忽而是被协议形状逼出来的：daemon 那个负责改快照，LSP 那个负责*知道该去取新快照*。`--no-daemon` 下两者跑在同一进程。
+
+`preview` 之所以有 SSE，是因为它是完全独立的 axum 进程、自带 rebuild 循环（preview.rs:81 自行轮询 `SnapshotSummary`），根本没走这条协议。因此"加 WS 即可"需要收紧为：*加 WS 容易，但协议本身没有可推的东西*——需要先有 `Subscribe` 或服务端 notification 形状，而 #<vault::designs::host::analyzer-snapshot/Analyzer and WorkspaceSnapshot/分析层：Analyzer 与 WorkspaceSnapshot/Delta 从两个 Snapshot 推导> 的 `WorkspaceDelta` 正是为此设计、但尚无对应协议 variant。
+
+后三条同源：都源于"客户端自己能看文件系统、自己能写盘、进程随时可重启"这一前提，而 Web 客户端三样都不成立。*建议放进同一次设计讨论*——分开裁会各自局部合理、合起来不自洽。
+
+第一节的 race 在 SaaS 下更糟且同源：可变视图加无快照钉定，多租户长驻进程中窗口会被更多并发客户端拉长。`Arc<WorkspaceSnapshot>` 模型本就支持钉定，缺的是协议上让客户端*持有并声明*某个 revision 的能力——这与缺推送、缺写路径是同一批协议空白。
+
+=== 路线倾向（未裁决）
+
+不把今天的 daemon 演化为 SaaS 服务端，而让 service crate 成为两个 host 共同嵌入的那一层——这一点今天已近乎成立，差的是把上述假设从硬编码改为可注入的本地策略。"一个共享 core 加两个 host"与"一个 daemon 兼职两种角色"的区别就在此。
+
+== 六、独立小修清单
+
+与上述设计裁决无关、可随时插入：
+
+- *`read_source` 缺字符边界校验*（query.rs:1981-1988）：只检查 `start > end || end > source.len()`，随后直接切片 `source[start..end]`。非边界偏移会 panic。同文件 `region_info`（query.rs:1375）与 `ancestors`（query.rs:979）均已校验，此处漏了。经 `notist inspect read <SEL> --byte-range a:b` 可达，CJK 文档上手写偏移易撞。已确认严重性低：daemon 路径上 panic 在 `spawn_blocking` 内被 `JoinError` 捕获转为该请求的错误响应（transport.rs:525-530），连接与 daemon 存活；且 `with_snapshot`（lib.rs:236）的锁守卫是语句级临时量，闭包在无锁状态执行，不污染 view 互斥量。embedded 路径无 `catch_unwind`，panic 会终止 CLI 进程。
+- *三处与实现脱节的注释*：lsp.rs:670-671 称 daemon 连接"remain serialized internally"（方案 B 后已是 id 多路复用）；lsp.rs:713-714 称 daemon 请求"observe cancellation only after completion"（真取消已接线，service.rs:47-68）；notist-analysis/src/lib.rs:93 称 `LineIndex` 提供 "UTF-8/UTF-16 conversion"（utf-16 方法已删）。三条都描述*当前不成立的限制*，比过时的功能描述更易误导——本次审计初期即被 lsp.rs:627 那句误导过一次。
+- *测试单位错误*：`crates/notist-cli/tests/lsp_queries.rs:68-74` 的 `utf16_slice` 仍按 utf-16 切返回 range，因 fixture 为纯 ASCII 而长绿。一旦加入中文即以误导方式失败。
+- *`save()` 破坏"版本即内容身份"*（lsp.rs:1068-1084）：保留旧 version 但替换文本，而 `build_job` 的 `overlay_upsert` 只按 version 差分（lsp.rs:940-947）。单独 save 时被兜住（upsert/remove 皆空会走 `else` 分支发全量 `UpdateView`），但同批次若有其他文档改动则走 delta 分支，该 save 的新文本不发送，服务端留旧文本继续分析。需 didSave 携带文本与 overlay 不同才有实质分歧，概率不高，但失败形态静默。形状上值得注意：2026-08-30 明确移除了版本门控（理由是 stdio 有序流），overlay 差分却在另一层把版本假设请了回来且未记录——移除的是响亮的门控，引入的是静默的依赖。
+- *`diagnostics_signature` 不含 version*（lsp.rs:1498-1515）：诊断内容不变则不重发，客户端手中诊断会一直挂旧 version 号；部分客户端会因版本不匹配丢弃诊断。
+- *initialize 只取首个 workspace folder*（lsp.rs:177-190），其余忽略，且无 `didChangeWorkspaceFolders`。与"worktree 下可发现多个 Notist.toml"不矛盾（vault 发现在该根之下递归），是 #<super::2026-08-30 LSP incremental sync 设计> 附录 E 项已承认的缺口。
+
+== 七、排序建议与待裁决事项
+
+建议排序（*非裁决*）：
+
+```text
+P0  快照身份纪律      适配层保留并比对 revision/fingerprint，不一致则丢弃或重建
+                      —— 修活跃 bug；做完才能安全删全文、收单一坐标源、给 utf-16 落点
+P1  收敛请求面        在加入第三个客户端之前完成（两族并存时加 Web 编辑器会变三族）
+P2  SaaS 五条前置     写路径与推送通道需用户裁决（推翻既有设计）
+P3  运行时形态        共享 client runtime 等，不阻塞其他项
+随时 六节小修         与设计裁决无关
+```
+
+P0 与 P1 是同一根线：最小的一步是给 `Definition`/`References`/`Completion`/`Hover` 加上 `expected_fingerprint` 语义并令适配层比对，它同时关闭第一节的 race 与迈出收敛请求面的第一步。
+
+需用户裁决的事项：
+
+- *写路径*：是否推翻 2026-08-28"daemon 不提供写路径"裁决。影响面达分析层 revision 语义，并需连带设计本地方案刻意让给编辑器的那套冲突/版本语义。
+- *推送通道*：是否引入服务端 notification 与 `WorkspaceDelta` 协议形状。与写路径同源，建议同次讨论。
+- *编码*：utf-16 是否随 Web 编辑器（CM6）一并恢复，以及是否保留 utf-8-only 拒连策略。
+- *SaaS 宿主形态*：daemon 演化为服务端，抑或 service crate 作为两个 host 共同嵌入的层。
+
+== 八、核实方法与置信度
+
+全部结论均经工作区代码核实，非凭记忆或仅凭设计文档。审计以两个并行子代理分别测绘 `notist-service` 与 `notist-cli/src/lsp.rs`，其报告的每条关键断言均经本人复核原码后才采纳；期间修正了自身两处误判（全文搬运为纯冗余、`read_source` panic 爆炸半径未知）与子代理一处过宽表述。
+
+未能实测项：`read_source` 的 panic 未做端到端复现——沙箱拦阻了创建临时 vault 的操作。该项结论为读码推断（Rust 切片语义确定）加爆炸半径的代码核实，未经运行验证。
+
+本文写作时未改动任何代码；除本文与 `docs/ai/README.not` 的索引条目外未改动任何文档。
+
+== 参考
+
+- #<super::2026-09-03 lsp daemon 与 SaaS Web 服务统一架构分析>：*同日同题的并行记录*，由另一会话写成。两篇独立得出了同一条核心结论（查询未固定 snapshot 造成的 revision 混用；utf-16 不需改核心坐标）。分工上那篇给出正向的目标形态（Session Runtime / Vault Runtime / Gateway 三层与迁移顺序），本篇偏证据与前置条件（请求面双族与 `request`/`query` 循环依赖、`expected_fingerprint` 落在错的一族、SaaS 五条本地性假设、独立小修清单）。一处表述差异：那篇将 utf-16 能力删除归因于 `SourceTables` 传输优化，本篇按 #<super::2026-08-30 LSP 健壮性并发与数据面设计> 的记录视为 2026-08-31 用户 utf-8-only 裁决的推论——`adebd80` 确实删除了 `notist-analysis` 中已存在的 utf16 换算。两篇是否合并为唯一权威记录待用户决定。
+- #<vault::lsp>：LSP 适配契约，含文本同步与 Position 节、并发节。
+- #<vault::designs::host::analyzer-snapshot>：快照与 revision 纪律、`WorkspaceDelta` 形状——第一节与推送通道两项的设计依据。
+- #<vault::designs::host::client-interface-protocol>：core request 单一来源要求、本地协议与 daemon 生命周期。
+- #<vault::designs::host::daemon-process-views>：每 vault 一 daemon、共享 Engine 不共享 Overlay。
+- #<super::2026-08-30 LSP incremental sync 设计>：增量同步落地形态与文末整体问题面附录（本文 D/E/F 项承接其分类）。
+- #<super::2026-08-30 LSP 健壮性并发与数据面设计>：多路复用、真取消、`UpdateViewDelta` 与 `SourceTables` 的落地记录，及 utf-8-only 裁决。
+- #<super::2026-08-17 web ui obsidian-like editor research>：CM6 选型与"daemon 加 HTTP/WS 服务层"的原始判断——本文第五节收紧了其中的 transport 乐观估计。
