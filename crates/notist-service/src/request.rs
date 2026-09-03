@@ -8,7 +8,7 @@ use std::time::{Duration, Instant};
 use notist_analysis::MaterializedAttributes;
 use notist_analysis::{
     AnalyzerConfiguration, AnnotationEntry, CompletionKind, DiagnosticKind, DocumentVersions,
-    ResourceFile, ResourceKind, SignatureSet, SourceOverlays, Value, WorkspaceSnapshot,
+    FileId, ResourceFile, ResourceKind, SignatureSet, SourceOverlays, Value, WorkspaceSnapshot,
     WorkspaceSymbolKind,
 };
 use notist_html::{
@@ -62,9 +62,14 @@ pub enum CoreRequest {
     },
     /// Per-file line tables (byte offsets) instead of full text: enough for a
     /// UTF-8-negotiated LSP adapter to convert positions without pulling the
-    /// whole vault's source across the wire.
+    /// whole vault's source across the wire. `include_text` additionally
+    /// embeds each file's full text in the reply — utf-16-negotiated adapters
+    /// need it to convert positions on unopened files (columns cannot be
+    /// derived from a byte-offset table alone).
     SourceTables {
         view_id: ServiceViewId,
+        #[serde(default)]
+        include_text: bool,
     },
     ReloadDiskView {
         view_id: ServiceViewId,
@@ -79,16 +84,30 @@ pub enum CoreRequest {
     Inspect {
         view_id: ServiceViewId,
     },
+    /// Position-bearing bare variant; see `expected_fingerprint` for the
+    /// staleness contract.
     Definition {
         view_id: ServiceViewId,
         path: PathBuf,
         offset: usize,
+        /// When set, the snapshot's text for `path` must have this
+        /// fingerprint (see `query::fingerprint`); a mismatch fails the
+        /// request with a message starting with `SNAPSHOT_CHANGED_PREFIX`
+        /// instead of silently resolving stale coordinates. The query
+        /// family carries the same semantics as a structured
+        /// `ToolError "snapshot_changed"`; converging the two channels is
+        /// follow-up work.
+        #[serde(default)]
+        expected_fingerprint: Option<String>,
     },
     References {
         view_id: ServiceViewId,
         path: PathBuf,
         offset: usize,
         include_definition: bool,
+        /// See `Definition::expected_fingerprint`.
+        #[serde(default)]
+        expected_fingerprint: Option<String>,
     },
     ReferencesTo {
         view_id: ServiceViewId,
@@ -109,11 +128,17 @@ pub enum CoreRequest {
         view_id: ServiceViewId,
         path: PathBuf,
         offset: usize,
+        /// See `Definition::expected_fingerprint`.
+        #[serde(default)]
+        expected_fingerprint: Option<String>,
     },
     Hover {
         view_id: ServiceViewId,
         path: PathBuf,
         offset: usize,
+        /// See `Definition::expected_fingerprint`.
+        #[serde(default)]
+        expected_fingerprint: Option<String>,
     },
     DocumentSymbols {
         view_id: ServiceViewId,
@@ -196,7 +221,7 @@ impl CoreRequest {
             | Self::Status { view_id }
             | Self::ListModules { view_id, .. }
             | Self::Sources { view_id }
-            | Self::SourceTables { view_id }
+            | Self::SourceTables { view_id, .. }
             | Self::ReloadDiskView { view_id }
             | Self::Diagnostics { view_id }
             | Self::DiagnosticsPage { view_id, .. }
@@ -416,7 +441,9 @@ pub struct SourceRecord {
 
 /// Byte-offset line table for one source (see `LineTable` in
 /// notist-analysis): everything a UTF-8-negotiated adapter needs to convert
-/// positions without the source text.
+/// positions without the source text. `source` carries the full text when the
+/// request asked for it (`include_text` — utf-16-negotiated adapters, which
+/// cannot convert columns from byte tables).
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct SourceTableRecord {
     pub path: PathBuf,
@@ -426,6 +453,8 @@ pub struct SourceTableRecord {
     /// Total source length in bytes: the saturation target for positions
     /// past the last line.
     pub end: u32,
+    #[serde(default)]
+    pub source: Option<String>,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
@@ -994,7 +1023,10 @@ impl NotistService {
                     response: CoreResponse::Sources(sources),
                 })
             }
-            CoreRequest::SourceTables { view_id } => {
+            CoreRequest::SourceTables {
+                view_id,
+                include_text,
+            } => {
                 let (snapshot, tables) = self.with_snapshot(view_id, |workspace| {
                     workspace
                         .sources()
@@ -1006,6 +1038,7 @@ impl NotistService {
                                 line_starts: table.starts.iter().copied().collect(),
                                 content_ends: table.content_ends.iter().copied().collect(),
                                 end: table.end,
+                                source: include_text.then(|| source.text.to_string()),
                             }
                         })
                         .collect()
@@ -1150,21 +1183,27 @@ impl NotistService {
                 view_id,
                 path,
                 offset,
+                expected_fingerprint,
             } => {
-                let (snapshot, definition) = self.with_snapshot(view_id, |workspace| {
-                    let file_id = workspace.file_id(&path)?;
-                    let definition = workspace.definition_at(file_id, offset)?;
-                    let source = workspace.source(definition.file_id?)?;
-                    Some(LocationRecord {
-                        path: source.canonical_path.clone(),
-                        source: source.text.to_string(),
-                        range: definition.range.unwrap_or(TextRange::new(0, 0)).into(),
-                        is_definition: true,
-                    })
+                let (snapshot, definition) = self.with_snapshot(view_id, |workspace| -> io::Result<Option<LocationRecord>> {
+                    let Some(file_id) =
+                        gated_file_id(workspace, &path, expected_fingerprint.as_deref())?
+                    else {
+                        return Ok(None);
+                    };
+                    Ok(workspace.definition_at(file_id, offset).and_then(|definition| {
+                        let source = workspace.source(definition.file_id?)?;
+                        Some(LocationRecord {
+                            path: source.canonical_path.clone(),
+                            source: source.text.to_string(),
+                            range: definition.range.unwrap_or(TextRange::new(0, 0)).into(),
+                            is_definition: true,
+                        })
+                    }))
                 })?;
                 Ok(CoreReply {
                     snapshot,
-                    response: CoreResponse::Definition(definition),
+                    response: CoreResponse::Definition(definition?),
                 })
             }
             CoreRequest::References {
@@ -1172,12 +1211,15 @@ impl NotistService {
                 path,
                 offset,
                 include_definition,
+                expected_fingerprint,
             } => {
-                let (snapshot, references) = self.with_snapshot(view_id, |workspace| {
-                    let Some(file_id) = workspace.file_id(&path) else {
-                        return Vec::new();
+                let (snapshot, references) = self.with_snapshot(view_id, |workspace| -> io::Result<Vec<LocationRecord>> {
+                    let Some(file_id) =
+                        gated_file_id(workspace, &path, expected_fingerprint.as_deref())?
+                    else {
+                        return Ok(Vec::new());
                     };
-                    workspace
+                    Ok(workspace
                         .symbol_locations_at(file_id, offset, include_definition)
                         .into_iter()
                         .filter_map(|location| {
@@ -1188,11 +1230,11 @@ impl NotistService {
                                 is_definition: location.is_definition,
                             })
                         })
-                        .collect()
+                        .collect::<Vec<_>>())
                 })?;
                 Ok(CoreReply {
                     snapshot,
-                    response: CoreResponse::References(references),
+                    response: CoreResponse::References(references?),
                 })
             }
             CoreRequest::ReferencesTo {
@@ -1346,12 +1388,15 @@ impl NotistService {
                 view_id,
                 path,
                 offset,
+                expected_fingerprint,
             } => {
-                let (snapshot, completion) = self.with_snapshot(view_id, |workspace| {
-                    let Some(file_id) = workspace.file_id(&path) else {
-                        return Vec::new();
+                let (snapshot, completion) = self.with_snapshot(view_id, |workspace| -> io::Result<Vec<CompletionRecord>> {
+                    let Some(file_id) =
+                        gated_file_id(workspace, &path, expected_fingerprint.as_deref())?
+                    else {
+                        return Ok(Vec::new());
                     };
-                    workspace
+                    Ok(workspace
                         .completions_at(file_id, offset)
                         .into_iter()
                         .map(|candidate| CompletionRecord {
@@ -1362,29 +1407,33 @@ impl NotistService {
                             replacement: candidate.replacement.into(),
                             insert_text: candidate.insert_text,
                         })
-                        .collect()
+                        .collect::<Vec<_>>())
                 })?;
                 Ok(CoreReply {
                     snapshot,
-                    response: CoreResponse::Completion(completion),
+                    response: CoreResponse::Completion(completion?),
                 })
             }
             CoreRequest::Hover {
                 view_id,
                 path,
                 offset,
+                expected_fingerprint,
             } => {
-                let (snapshot, hover) = self.with_snapshot(view_id, |workspace| {
-                    let file_id = workspace.file_id(&path)?;
-                    let hover = workspace.hover_at(file_id, offset)?;
-                    Some(HoverRecord {
+                let (snapshot, hover) = self.with_snapshot(view_id, |workspace| -> io::Result<Option<HoverRecord>> {
+                    let Some(file_id) =
+                        gated_file_id(workspace, &path, expected_fingerprint.as_deref())?
+                    else {
+                        return Ok(None);
+                    };
+                    Ok(workspace.hover_at(file_id, offset).map(|hover| HoverRecord {
                         range: hover.range.into(),
                         markdown: hover.contents,
-                    })
+                    }))
                 })?;
                 Ok(CoreReply {
                     snapshot,
-                    response: CoreResponse::Hover(hover),
+                    response: CoreResponse::Hover(hover?),
                 })
             }
             CoreRequest::DocumentSymbols { view_id, path } => {
@@ -2083,6 +2132,42 @@ fn module_resources(module: &notist_analysis::Module) -> Vec<RenderedResourceRec
         .collect()
 }
 
+/// Error-message prefix marking the stale-snapshot failure of the bare
+/// position-bearing variants (Hover/Completion/Definition/References —
+/// their error channel is a bare string, unlike the query family's
+/// structured `ToolError "snapshot_changed"`). Callers (the LSP adapter)
+/// recognize the prefix, wait for the next build, and retry once.
+pub const SNAPSHOT_CHANGED_PREFIX: &str = "snapshot_changed:";
+
+/// Staleness gate for the position-bearing bare variants: when the caller
+/// pins `expected_fingerprint` (computed over its local text, see
+/// `query::fingerprint`), the snapshot's text for `path` must match —
+/// otherwise the captured position and any returned ranges refer to another
+/// revision, and the request fails with the `SNAPSHOT_CHANGED_PREFIX`
+/// contract instead of silently misplacing them. Returns the file's id when
+/// the gate passes; `None` (file not in the snapshot) keeps each variant's
+/// existing empty-result behavior.
+fn gated_file_id(
+    workspace: &WorkspaceSnapshot,
+    path: &Path,
+    expected_fingerprint: Option<&str>,
+) -> io::Result<Option<FileId>> {
+    let Some(file_id) = workspace.file_id(path) else {
+        return Ok(None);
+    };
+    if let Some(expected) = expected_fingerprint
+        && workspace
+            .source(file_id)
+            .is_some_and(|source| crate::query::fingerprint(&source.text) != expected)
+    {
+        return Err(io::Error::other(format!(
+            "{SNAPSHOT_CHANGED_PREFIX} `{}` no longer matches the caller's pinned text",
+            path.display()
+        )));
+    }
+    Ok(Some(file_id))
+}
+
 /// Projects evaluated module attributes onto the wire record. `id` is the
 /// addressing key; `tags`/`class` feed the convention lists; everything else
 /// lands in `properties`.
@@ -2570,6 +2655,89 @@ mod tests {
         assert_eq!(text_of(&readme).as_deref(), Some("disk"));
         assert_eq!(text_of(&other).as_deref(), Some("second"));
         assert!(matches!(updated.response, CoreResponse::Updated));
+    }
+
+    #[test]
+    fn position_bearing_variants_enforce_the_expected_fingerprint_gate() {
+        let root = tempfile::TempDir::new_in(std::env::current_dir().unwrap()).unwrap();
+        let text = "#let greeting = \"hi\"\n#greeting\n";
+        let path = root.path().join("README.not");
+        fs::write(&path, text).unwrap();
+        let path = dunce::canonicalize(path).unwrap();
+        let service = NotistService::new();
+        let opened = service
+            .execute(CoreRequest::OpenView {
+                root: root.path().to_path_buf(),
+                kind: ProtocolViewKind::Session,
+            })
+            .unwrap();
+        let CoreResponse::Opened { view_id, .. } = opened.response else {
+            panic!("expected open view")
+        };
+
+        // A matching pin lets the request through unchanged.
+        let pinned = crate::query::fingerprint(text);
+        let reply = service
+            .execute(CoreRequest::Hover {
+                view_id,
+                path: path.clone(),
+                offset: text.len() - 3,
+                expected_fingerprint: Some(pinned),
+            })
+            .unwrap();
+        assert!(
+            matches!(reply.response, CoreResponse::Hover(Some(_))),
+            "pinned hover over `greeting`: {:?}",
+            reply.response
+        );
+
+        // A stale pin fails all four position-bearing variants with the
+        // `snapshot_changed:` prefix contract instead of resolving stale
+        // coordinates.
+        for request in [
+            CoreRequest::Hover {
+                view_id,
+                path: path.clone(),
+                offset: 0,
+                expected_fingerprint: Some("stale".into()),
+            },
+            CoreRequest::Completion {
+                view_id,
+                path: path.clone(),
+                offset: 0,
+                expected_fingerprint: Some("stale".into()),
+            },
+            CoreRequest::Definition {
+                view_id,
+                path: path.clone(),
+                offset: 0,
+                expected_fingerprint: Some("stale".into()),
+            },
+            CoreRequest::References {
+                view_id,
+                path: path.clone(),
+                offset: 0,
+                include_definition: false,
+                expected_fingerprint: Some("stale".into()),
+            },
+        ] {
+            let error = service.execute(request).unwrap_err();
+            assert!(
+                error.to_string().starts_with(SNAPSHOT_CHANGED_PREFIX),
+                "expected the snapshot_changed contract, got: {error}"
+            );
+        }
+
+        // No pin keeps the pre-gate behavior.
+        let reply = service
+            .execute(CoreRequest::Hover {
+                view_id,
+                path,
+                offset: 0,
+                expected_fingerprint: None,
+            })
+            .unwrap();
+        assert!(matches!(reply.response, CoreResponse::Hover(_)));
     }
 
     #[test]

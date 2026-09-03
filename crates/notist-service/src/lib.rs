@@ -343,7 +343,7 @@ impl NotistService {
         let identity = VaultIdentity {
             fingerprint: format!(
                 "{:016x}",
-                fingerprint(canonical_root.to_string_lossy().as_bytes())
+                fnv1a(canonical_root.to_string_lossy().as_bytes())
             ),
             canonical_root: canonical_root.clone(),
         };
@@ -426,7 +426,7 @@ fn normalize_watched_path(path: &Path) -> PathBuf {
     path.to_path_buf()
 }
 
-fn fingerprint(bytes: &[u8]) -> u64 {
+fn fnv1a(bytes: &[u8]) -> u64 {
     let mut hash = 0xcbf29ce484222325u64;
     for byte in bytes {
         hash ^= u64::from(*byte);

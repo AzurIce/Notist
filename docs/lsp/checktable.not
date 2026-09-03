@@ -6,7 +6,7 @@
 == 能力声明（initialize 结果）
 
 ```text
-positionEncoding        utf-8 only——不提供 utf-8 的客户端在 initialize 被拒连（RequestFailed）；下行走行表而非全文
+positionEncoding        utf-8 优先、utf-16 可协商（缺省 offer 按规范即 utf-16）；两者皆无才拒连（RequestFailed）；utf-8 会话下行字节行表，utf-16 会话下行全文
 textDocumentSync        Options { openClose: true, change: INCREMENTAL = 2, save: supported }
 completionProvider      trigger ["[", ":", "#", "(", ",", "<", "/"]，resolveProvider = false
 hoverProvider           true

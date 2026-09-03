@@ -54,7 +54,8 @@ wiki 引用从嵌套模块文件解析为子模块路径（`wide.not` 里的 `#<
 | 生命周期 | capabilities 逐字段断言；shutdown → exit 进程零退出 | 已覆盖 |
 | 同步契约 | 整文档 didChange 接受并推送 delta；ranged 增量与混批依序应用（端到端 hover 命中编辑后文本）；越界 range 钳位；不可路由 URI 拒绝后会话存活，logMessage 与 stderr 双通道可见；未打开文档的 didChange 丢弃 | 已覆盖 |
 | 推送语义 | 无文档活动时的自发 baseline；didClose 清空 | 已覆盖 |
-| 编码端到端 | emoji/CJK 行上的 hover/completion 以协商编码发起并回读校验 | 已覆盖（当前仅 utf-8；utf-16 initialize、增量编辑与双向 range 待 #<vault::lsp> 的双模式能力落地后补） |
+| 编码端到端 | emoji/CJK 行上的 hover/completion/definition/references 以协商编码发起并回读校验；utf-16-only 客户端建会且 positionEncoding 正确；仅 utf-32 拒连 | 已覆盖（utf-8 与 utf-16 双会话） |
+| Revision 顺序 | didChange 后不等待诊断立即 hover/completion：请求 pin 捕获文本的 fingerprint，snapshot 追上前等待重试，响应与某一代 revision 自洽 | 已覆盖 |
 | 查询面 | references 跨文件 Location 与 includeDeclaration 两种形态 | 已覆盖 |
 | 错误规范 | 未知方法 `-32601`、坏参数 `-32602` 经真实循环（白盒已覆盖分类，黑箱待补接线） | 待补 |
 | 生命周期 | exit-without-shutdown 按规范非零退出 | 未实现（现返回 0） |

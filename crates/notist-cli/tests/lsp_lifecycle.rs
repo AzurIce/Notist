@@ -32,8 +32,21 @@ fn initialize_advertises_the_documented_capabilities_and_clean_shutdown_exits_su
 }
 
 #[test]
-fn clients_that_cannot_speak_utf8_are_rejected_at_initialize() {
-    // The wire protocol is UTF-8 only. A client offering utf-16 (or nothing)
+fn utf16_only_clients_get_a_utf16_session() {
+    let vault = Vault::new(&[("README.not", "ok\n")]);
+    let mut client = Client::spawn(&vault);
+    let capabilities = client.initialize_with_encodings(&vault, json!(["utf-16"]));
+
+    let encoding = capabilities["positionEncoding"].as_str().unwrap();
+    assert_eq!(encoding, "utf-16");
+
+    let status = client.shutdown_and_exit();
+    assert_eq!(status.code(), Some(0));
+}
+
+#[test]
+fn clients_offering_neither_utf8_nor_utf16_are_rejected_at_initialize() {
+    // The wire protocol speaks utf-8 or utf-16. A client offering neither
     // gets a loud refusal instead of a session whose every position is
     // misread.
     let vault = Vault::new(&[("README.not", "ok\n")]);
@@ -43,18 +56,18 @@ fn clients_that_cannot_speak_utf8_are_rejected_at_initialize() {
         json!({
             "processId": std::process::id(),
             "rootUri": vault.root_uri(),
-            "capabilities": { "general": { "positionEncodings": ["utf-16"] } },
+            "capabilities": { "general": { "positionEncodings": ["utf-32"] } },
             "workspaceFolders": [{"uri": vault.root_uri(), "name": "vault"}],
         }),
     );
     let response = client.await_response(id);
     let error = response
         .response_result
-        .expect_err("utf-16-only clients must be refused");
+        .expect_err("utf-32-only clients must be refused");
     assert_eq!(error.code, -32803, "RequestFailed");
     assert!(
-        error.message.contains("utf-8"),
-        "rejection should name the required encoding: {error:?}"
+        error.message.contains("utf-8") && error.message.contains("utf-16"),
+        "rejection should name the supported encodings: {error:?}"
     );
     assert!(
         client.wait_for_stderr("position encoding"),

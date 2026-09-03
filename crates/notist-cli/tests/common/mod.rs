@@ -136,15 +136,19 @@ impl Client {
     }
 
     pub fn initialize(&mut self, vault: &Vault) -> Value {
+        self.initialize_with_encodings(vault, serde_json::json!(["utf-8"]))
+    }
+
+    /// Initializes with an explicit `general.positionEncodings` offer, for
+    /// tests exercising the encoding negotiation (utf-16 sessions, refusals).
+    pub fn initialize_with_encodings(&mut self, vault: &Vault, encodings: Value) -> Value {
         let root = vault.root_uri();
         let id = self.request(
             "initialize",
             serde_json::json!({
                 "processId": std::process::id(),
                 "rootUri": root,
-                // The server is UTF-8 only and rejects sessions that do not
-                // offer it — tests speak utf-8, like the supported clients.
-                "capabilities": { "general": { "positionEncodings": ["utf-8"] } },
+                "capabilities": { "general": { "positionEncodings": encodings } },
                 "workspaceFolders": [{"uri": root, "name": "vault"}],
             }),
         );

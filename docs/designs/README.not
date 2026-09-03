@@ -143,8 +143,7 @@ plugin-system/ 插件系统：package、ABI、贡献、信任模型与生命周�
 - #<vault::designs::host::search-retrieval-index>：`partial`（`--exclude-scope` 未实现）
 - #<vault::designs::host::cli-command-surface-skill-distribution>：`partial`（2026-08-15 裁决的命令面未落地：`next`/`locate`/`refs`/`definition` 与 text-only 投影待实现）
 - #<vault::cli>：`partial`（完整 CLI 命令设计+使用规范；目标为 2026-08-15 裁决的命令面，当前 binary 仍为过渡 surface）
-- #<vault::lsp>：`partial`（快照身份纪律、PositionCodec 双模式与统一钳位为目标设计；实现仍为 utf-8-only、无 revision pin）
-- #<vault::lsp::test>：`partial`（首批 7 场景已覆盖；错误规范接线、exit 非零码、cancel、跨文件联动、didSave 与 daemon 变体待补）
+- #<vault::lsp::test>：`partial`（错误规范接线、exit 非零码、cancel、跨文件联动、didSave 待补）
 
 位置本身表达治理状态：active 目录中的文档是现行设计；退休的文档直接移除。Git 是完整历史，不维护编号 ID 或 `Design:` trailer。
 
