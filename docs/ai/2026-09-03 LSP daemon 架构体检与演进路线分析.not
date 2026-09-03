@@ -1,0 +1,77 @@
+@!(author: "kimi-k3")
+= LSP daemon 架构体检与演进路线分析
+
+缘起：用户感觉 lsp-daemon 架构凌乱、UTF-16 支持会造成复杂变更，并希望未来 SaaS + Web 编辑器的服务端与现有 daemon 统一。本文为三路并行只读审计的存档（LSP 适配层 / daemon 本体 / 全库位置编码假设），结论均附代码行号（main \@ 2026-09-03）。*本文是分析记录，不含新裁决*；待裁决问题在文末。
+
+== 总结论
+
+骨架是对的：LSP 层是薄适配（几乎不做分析，全部经 `CoreRequest` 转发 daemon），core 协议与 transport 无关，Embedded/Daemon 双后端共用同一 `NotistService` 对象（`crates/notist-cli/src/service.rs:14-119`）。凌乱感来自三处具体的债（LSP 单文件熵、daemon 折返残留、位置换算双真相源），而非架构方向错误。UTF-16 的改动面远小于直觉——全库坐标权威是 UTF-8 字节偏移，编码换算已收口在 LSP 边界一处。
+
+== LSP 层体检（crates/notist-cli/src/lsp.rs，2722 行）
+
+形态：手写 `lsp_server` stdio 循环。两段式 initialize 握手（`lsp.rs:61-83`）先谈编码再回 capabilities；主循环单线程持有 `LspSession`、消费单一事件收件箱（`main_loop_inner`，`lsp.rs:299-432`）；1 个 latest-wins builder 线程 + `available_parallelism().clamp(2, 8)` 请求 worker 池（`lsp.rs:244-264`）；daemon 模式下 worker 用 `runtime.block_on` 同步等应答（`service.rs:41-43`）。文档同步声明 INCREMENTAL（`lsp.rs:133-141`），open documents 只存 `{version, source}` 不存行表（`lsp.rs:621-625`）。
+
+发现的凌乱点，按严重度：
+
+- *位置换算双真相源*：多数 handler 用 daemon 下行的 `SourceTables` 行表（`lsp.rs:858-878`），但 definition（`lsp.rs:1632`）、references（`lsp.rs:1665`）、`lsp_diagnostic`（`lsp.rs:1584-1605`）却用 reply 内嵌全文临时 `from_text` 建表。*补记*：同日 08:42 审计（#<super::2026-09-03 lsp-daemon 架构审计与 SaaS 统一前置条件>）核实此形态是刻意的——reply 全文来自请求自身捕获的快照，用于规避下行行表已过期的窗口，非单纯缺陷；真正的缺口是入站方向无快照身份纪律（didChange 后构建在途期间的坐标错配窗口），见该文第一节。两条路径并存本身仍值得在建立 revision 纪律后收敛。
+- *样板复制*：dispatch 是 8 个 arm 复制同一段 `parse_params → handler → to_json`（`lsp.rs:434-537`）；`rebuild_blocking` 与 `apply_outcome` 的 vaults 收集逐行重复（`lsp.rs:970-982, 992-1005`）。
+- *隐含不变量靠注释维持*：overlay 簿记自愈约定（build 失败清空重发，`lsp.rs:1007-1011`）、latest-wins 依赖主循环单线程事实（`lsp.rs:917-926`）、取消表排队期留垃圾条目（`lsp.rs:351-352`）。
+- *协议毛边*：shutdown 应答后不记状态照样受理请求；exit 无论是否先 shutdown 都返回 SUCCESS（`lsp.rs:327-335, 370-371`，规范要求非零）；`didSave` 对未打开文档凭空建 overlay 且永不清除（`lsp.rs:1068-1085`，靠 watcher 全量 `UpdateView` 碰巧覆盖）；每次 build 重跑 `discover_vault_roots` 扫盘（`lsp.rs:791`）。
+- *并发毛边*：worker 池共享单个 `Mutex<mpsc::Receiver>` 抢 job，panic 中毒直接扩散（`lsp.rs:251-263`）；completion 高频请求与 `notist/renderDocument` 重请求同池无快慢分离，8 个并发慢查询即可堵死后续请求。
+- *stringly 错误*：handler 全用 `Result<_, String>`；`lsp_severity` 把 hint 折叠成 INFORMATION（`lsp.rs:1576-1582`）。
+
+== daemon 层体检（crates/notist-service，约 1 万行）
+
+形态：每 Vault 一个 daemon 进程，client 按需拉起（`service.rs:305-324`），idle 5 分钟自退（`service.rs:337`）。endpoint 由 `HOME` + canonical root + 协议版本 + vault_generation 的 FNV-1a 哈希纯函数派生（`transport.rs:598-630, 850-860`）。自定义帧：u32 LE 长度前缀 + serde_json，单帧 256 MiB（`transport.rs:18, 567-596`）。多 client：每连接一个 tokio task，连接内 `JoinSet` + `spawn_blocking` 并发、按 id 路由（`transport.rs:451-554, 909-951`）。鉴权完全押 OS 身份（peer uid 校验 `transport.rs:928-931`，目录 0700；Windows 比 SID）。协议 major/minor（`protocol.rs:7-8`）+ binary stamp 比对回收 stale daemon（`service.rs:180-239`）。
+
+资产（SaaS 视角下仍成立的部分）：
+
+- *core 协议 transport 无关*：35 个 `CoreRequest` 变体（`request.rs:26-28`）语义全在 `NotistService::execute`，CLI/LSP/preview 只做投影（#<vault::designs::host::client-interface-protocol>）。换 transport 不动语义。
+- *`SnapshotIdentity` 随每个 reply 下发*（`request.rs:397-400`）：天然的缓存失效/乐观并发令牌；snapshot 不可变 + `Arc` 共享（#<vault::designs::host::analyzer-snapshot>）适合多副本读。
+- *View/overlay 模型*（disk view + 每会话 session view，`lib.rs:132-166`）就是多用户编辑会话雏形，view handle 已有 per-connection 租约检查（`transport.rs:503-515`）。
+- *wasmi 插件沙箱*（fuel + 内存限额）注释明言可编译进 web-deployed engine（`notist-plugin-host/src/lib.rs:660-662`），与 Web 计划是伏笔呼应（见 #<super::2026-08-28 core wasm 插件后端统一与 wasmi 落地>）。
+
+凌乱点（多为折返残留）：
+
+- *delta 推送链断裂*：analysis 层有 `SnapshotPublication`/`WorkspaceDelta`（`notist-analysis/src/lib.rs:778-797`），service 层全用丢弃 delta 的 `reload()`/`replace_inputs()`；`ServerMessage` 连 notification 变体都没有（`transport.rs:40-59`）。结果 preview 靠 250ms 轮询（`preview.rs:77-91`）、LSP 靠自身事件驱动 build——设计文档（#<vault::designs::host::daemon-process-views>）的「有界 notification 推送」没有实现载体。
+- *request/query 分层泄漏*：`ModuleRecord`/`ReferenceRecord` 两个文件各定义一份，`lib.rs:24-27` 注释自认 "for different wire shapes"。
+- *死依赖与矛盾结构*：workspace 声明的 `wasmtime = 47` 全库无引用（组件模型折返 wasmi 的残留）；`vaults` 是多 Vault map 但 daemon 进程级拒绝第二个 root（`lib.rs:138-143`）——多 Vault 能力只在 embedded 模式可用。
+- *无语义级增量*：每次发布全量 `WorkspaceSnapshot::build`，增量只有 parse cache（按文件内容复用，`analysis/lib.rs:3004-3011`）与 `same_source_content` 防自激（`analysis/lib.rs:3197-3202`）；每次 build 重扫全 Vault（`analysis/lib.rs:1498-1542`）并重新实例化所有 wasm 插件（`analysis/lib.rs:903-915`），render 时再装一次（`analysis/lib.rs:1795-1838`）。
+- *写入语义空缺是裁决而非缺陷*：daemon 明确不做写路径，真相 = 磁盘 + watcher（client-interface-protocol，2026-08-28 裁决）。SaaS 需要服务端写仲裁，这要重议裁决。
+
+== UTF-16 改动面评估
+
+全库唯一坐标权威是 *UTF-8 字节偏移*：`notist-model/src/lib.rs:20-27` 的 `TextRange{start,end}` 被 AST、诊断、求值、插件 ABI、daemon 线格式（`ByteRange`，`request.rs:432`）共用，全部编码中性。编码换算只存在于 LSP 边界，且已收口：`LineIndex`/`LineTable`（`notist-analysis/src/lib.rs:95-252`）+ `ClientSource::{offset, position, range}`（`lsp.rs:655-667`，唯一双向换算实现）+ `apply_document_changes`（`lsp.rs:1392-1426`）。
+
+*与 2026-08-31 裁决的关系必须说清*：utf-8-only 是用户裁决（见 #<super::2026-08-30 LSP 健壮性并发与数据面设计> 文末落地记录），服务端 utf-16 回退层曾被整体移除，obsidian/vscode 客户端已迁移为 offer utf-8 + 客户端侧列换算（obsidian `src/lsp/source-map.ts` 的 `utf8ColumnOf`/`utf16ColumnOf`，`session.ts:174` 实测在案）。因此「支持 UTF-16」不是补缺而是*路线选择*：
+
+- *路线 A（维持裁决）*：线协议永远 utf-8，新客户端各自做列换算。已有两个先例，未来 CM6 Web 编辑器是第三个——成本摊在每个新客户端，server 永远简单。
+- *路线 B（服务端双模式，修订裁决）*：`ClientSource` 恢复编码枚举（utf-8 行表 / utf-16 持文本 `LineIndex + Arc<str>`）、协商闸门改 utf-8 优先接受 utf-16、utf-16 会话下行走全文而非行表。集中在 `lsp.rs` + `LineIndex` 两处，内核/协议/插件 ABI 不动；utf-16 精确换算表密度是文本级（每个多字节字符都产生差值，2026-08-30 已算清），故「传表不传文」只对 utf-8 成立。
+
+无论哪条路线，前置动作相同：先统一位置换算的双真相源（上文 LSP 层第一条），否则转换点看起来散落各处，正是「很复杂」错觉的来源。另：`LineIndex` doc 注释（`analysis/lib.rs:93`）仍写 "UTF-8/UTF-16 conversion"，是 2026-08-31 删除 utf-16 路径后的残留谎言，应随手修正。
+
+== SaaS 统一演进路线
+
+现有裁决「语义核心协议无关」正好是 SaaS 化前提，不用推翻。障碍与对应动作：
+
+| 障碍 | 统一动作 |
+| - | - |
+| transport 绑本机（UDS/管道、`HOME` 派生 endpoint、uid/SID 鉴权） | transport 抽象为 trait：本地 UDS 与远程 WebSocket 两实现；握手骨架已有 client_kind/capability 协商，加 token/租户字段 |
+| 存储绑本机文件系统（build 直接 `fs::read_dir` 扫盘、watcher 用 fsnotify） | `VaultEngine` 下垫存储 trait：本地 fs / 对象存储。最大也最绕不开的一块 |
+| 无 server push | `ServerMessage` 加 notification 变体、接通已有 `WorkspaceDelta`——同时治 preview 轮询、LSP 拉诊断、Web 实时同步三个痛点，性价比最高 |
+| 单 Vault 进程级不变量 | `NotistService.vaults` 本就支持多 Vault（embedded 在用），把单 root 从不变量降级为本地 daemon 的部署策略 |
+| 无写路径（2026-08-28 裁决） | SaaS 需服务端写仲裁，属重议裁决而非改代码 |
+| 全量重建 + 每 revision 重装插件 | snapshot 不可变已适合多副本读；插件实例按包内容 hash 缓存是独立小优化 |
+
+建议次序：①收 LSP 层的口（统一换算真相源，UTF-16 若走路线 B 也在这里做）→ ②push 通道（delta + notification）→ ③存储抽象。前两步对现有 daemon 和未来 Web 服务端是共同收益，第三步才纯粹是 SaaS 的事。此路线与 #<super::2026-08-17 web ui obsidian-like editor research> 的「daemon 加 HTTP/WS 服务层」主线收敛——该文还指出 .not 语法接入需 Lezer grammar 或 notist-syntax 编 WASM 二选一，是 Web 侧独立悬案。
+
+== 待裁决清单
+
++ UTF-16 走路线 A（维持 utf-8-only，客户端各自换算）还是路线 B（服务端双模式，修订 2026-08-31 裁决）？
++ 位置换算双真相源统一到哪一边——reply 内嵌全文（简单、耗带宽）还是下行 `SourceTables`（省带宽、要求 revision 对齐）？
++ SaaS 写路径裁决现在重议，还是等 Web 编辑器立项时再议？
+
+== 关联文档
+
+- 现行设计：#<vault::lsp>、#<vault::designs::host::daemon-process-views>、#<vault::designs::host::client-interface-protocol>、#<vault::designs::host::analyzer-snapshot>
+- 前序记录：#<super::2026-08-30 LSP 健壮性并发与数据面设计>（utf-8-only 裁决与双模式原始设计）、#<super::2026-08-25 lsp architecture redesign>、#<super::2026-08-24 notist lsp implementation audit>、#<super::2026-08-17 web ui obsidian-like editor research>
