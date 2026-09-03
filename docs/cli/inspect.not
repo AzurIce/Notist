@@ -1,7 +1,7 @@
 @!(implementation: "partial")
 = CLI Inspect: Agent Query and Navigation
 
-本文是 `notist inspect` 调查组的逐命令规范，描述 2026-08-30 统合裁决（#<vault::ai::2026-08-30 inspect 命令面统合设计>）确立的*目标命令面*。实现状态 `partial`：ls/read/items/ancestors/locate 已落地，attrs（并入 ancestors）、`--line` 坐标、`--attr` 筛选与 `@!(...)` 继承在推进；标注语法已按 2026-08-31 统一数据模型裁决改写（#<vault::ai::2026-08-31 属性标记系统统一数据模型>），本文的注解面拼写为目标形态，现行二进制仍按旧语法运行，迁移完成前 `inspect --help` 是实际可执行面的最终依据。命令面治理、全局参数、错误与退出状态见 #<vault::cli>；查询契约与检索语义见 #<vault::designs::host::query-contract> 与 #<vault::designs::host::search-retrieval-index>。
+本文是 `notist inspect` 调查组的逐命令规范，描述 2026-08-30 统合裁决（#<vault::ai::2026-08-30 inspect 命令面统合设计>）确立的*目标命令面*。实现状态 `partial`：ls/read/items/ancestors/locate/info 已落地（info 独立成篇：#<vault::cli::inspect::info>），attrs（并入 ancestors）、`--line` 坐标（ancestors 尚缺）、`--attr` 筛选与 `@!(...)` 继承在推进；标注语法已按 2026-08-31 统一数据模型裁决改写（#<vault::ai::2026-08-31 属性标记系统统一数据模型>），本文的注解面拼写为目标形态，现行二进制仍按旧语法运行，迁移完成前 `inspect --help` 是实际可执行面的最终依据。命令面治理、全局参数、错误与退出状态见 #<vault::cli>；查询契约与检索语义见 #<vault::designs::host::query-contract> 与 #<vault::designs::host::search-retrieval-index>。
 
 本文的输出示例统一来自同一个示例 Vault 的实测，便于对照各命令视角：
 
