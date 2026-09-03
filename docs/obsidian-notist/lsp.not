@@ -1,6 +1,6 @@
 = LSP 接入方案
 
-obsidian-notist 插件为 `.not` 编辑器接入 notist LSP 的设计方案。插件端现状（极简 CM6、tree-sitter 高亮、双 World 壳层）见 #<vault::ai::2026-08-24 obsidian-notist editor cm6 migration> 与 #<vault::obsidian-notist::highlight>；server 端设计见 #<vault::designs::host::lsp-adapter>。本文的 server 行为描述以 2026-08-25 重写后的 `crates/notist-cli/src/lsp.rs`（LspSession 事件循环架构，main \@ 39f6086）为准；重写前的审计与重写过程见 #<vault::ai::2026-08-24 notist lsp implementation audit> 与 #<vault::ai::2026-08-25 lsp architecture redesign>。
+obsidian-notist 插件为 `.not` 编辑器接入 notist LSP 的设计方案。插件端现状（极简 CM6、tree-sitter 高亮、双 World 壳层）见 #<vault::ai::2026-08-24 obsidian-notist editor cm6 migration> 与 #<vault::obsidian-notist::highlight>；server 端设计见 #<vault::lsp>。本文的 server 行为描述以 2026-08-25 重写后的 `crates/notist-cli/src/lsp.rs`（LspSession 事件循环架构，main \@ 39f6086）为准；重写前的审计与重写过程见 #<vault::ai::2026-08-24 notist lsp implementation audit> 与 #<vault::ai::2026-08-25 lsp architecture redesign>。
 
 == 决策
 
@@ -86,7 +86,7 @@ obsidian-notist 插件为 `.not` 编辑器接入 notist LSP 的设计方案。�
 
 == 参考
 
-- #<vault::designs::host::lsp-adapter>：server 侧 LSP 适配层设计（进程与传输、overlay 语义、capabilities 契约）。
+- #<vault::lsp>：server 侧 LSP 设计（进程与传输、overlay 语义、capabilities 契约）。
 - #<vault::obsidian-notist>：插件立项与「借壳架空」纪律；#<vault::obsidian-notist::highlight>：编辑器挂载点与坐标系约定，本文直接承接。
 - #<vault::ai::2026-08-26 obsidian-notist lsp client implementation>：本方案的实现记录与踩坑（linter(null) 推送模型、setViewData 回声内容比对、reload 泄漏竞态等）。
 - #<vault::ai::2026-08-25 lsp architecture redesign>：LSP session/scheduler 重设计（本文 server 行为描述的实现依据）；#<vault::ai::2026-08-25 notist lsp audit follow-up>：重写后的逐条核实与残留问题。

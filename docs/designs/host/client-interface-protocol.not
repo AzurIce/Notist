@@ -1,7 +1,7 @@
 @!(implementation: "aligned")
 = Client Interface and Protocol
 
-本文是 A3 client interface、本地协议与 daemon 生命周期的独立成篇，从归档的历史混合文档中独立成篇。Daemon 进程与 View 模型见 #<vault::designs::host::daemon-process-views>；CLI 命令面见 #<vault::designs::host::cli-command-surface-skill-distribution>；LSP 适配见 #<vault::designs::host::lsp-adapter>。
+本文是 A3 client interface、本地协议与 daemon 生命周期的独立成篇，从归档的历史混合文档中独立成篇。Daemon 进程与 View 模型见 #<vault::designs::host::daemon-process-views>；CLI 命令面见 #<vault::designs::host::cli-command-surface-skill-distribution>；LSP 适配见 #<vault::lsp>。
 
 
 == Client Interface

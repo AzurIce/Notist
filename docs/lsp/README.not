@@ -1,0 +1,84 @@
+@!(implementation: "partial")
+= LSP
+
+`notist lsp` 是编辑器与 `notist-analysis` 之间的协议 gateway：负责文档同步、坐标换算、请求路由与结果发布，不重新实现 parser、模块解析、类型检查或求值。core 协议与 transport 无关，LSP 与 CLI 投影到同一组 core request（#<vault::designs::host::client-interface-protocol>），共享 daemon 进程与 snapshot（#<vault::designs::host::daemon-process-views>、#<vault::designs::host::analyzer-snapshot>），不维护第二套 module graph。逐方法支持面见 #<vault::lsp::checktable>；对外行为的黑箱验证见 #<vault::lsp::test>。
+
+== 进程与传输
+
+stdio transport；stdout 专用于 LSP JSON-RPC（不输出日志、进度或诊断，日志只进 stderr），普通 CLI 的彩色输出完全禁用。adapter 生命周期跟随编辑器进程；按 canonical Vault root 连接该 Vault 的共享 daemon，或在 embedded mode 中承载同一 core service。编辑器集成从 PATH 查找 `notist` 并以 `lsp` 启动；自动下载与版本管理属于扩展分发问题。
+
+== Vault 发现与 Overlay
+
+编辑器提供的 workspace root 只是 worktree，不一定是 vault。初始化时在 worktree 内发现所有 Notist.toml marker（#<vault::designs::world::boundary-discovery/Vault Boundary and Discovery/Vault/发现规则>），为每个 root 建立独立的 vault 状态；source 归属最近祖先 marker，嵌套 marker 建立新 vault 且外层停止递归；没有 marker 时 worktree root 作为单个 implicit vault。
+
+每个 vault 的 Analyzer View 接收自己的 overlays：
+
+- 已打开文档的 overlay 优先于磁盘内容；
+- `didChange` 更新 overlay，不写入用户文件；
+- `didSave` 仅在携带 text 时应用，不携带时磁盘变化交给 watcher；
+- `didClose` 移除 overlay，重新采用磁盘内容；
+- overlay 只进入 source 所属的最近 vault；
+- definition、references、completion、hover 不跨 vault 查询。
+
+== 文本同步
+
+声明 `TextDocumentSyncKind::INCREMENTAL`（Options 形式，`openClose` + `save`）：`didChange` 的 contentChanges 依序应用，ranged 增量与 range-less 整文档替换都合法、可混批——整文档 change 取最后一个为基并丢弃其之前的部分 change（与纯顺序语义等价）。版本号不做单调性门控，stdio 单一有序流是唯一顺序权威，到达即应用、仅记录最新 version；未 didOpen 的文档上的 didChange 直接丢弃并记日志。越界 position 按规范钳位（character 超行长按行长、行超文档尾按文档尾、列落在代理对/字符中间取起点），钳位后 start > end 的单条 change 跳过。应用是纯函数（旧文本 + changes → 新文本），行索引按「前缀有效性」惰性重建。文件系统 watcher 只负责未打开的文件（客户端能力不足时的补充）。
+
+== 坐标与编码
+
+核心坐标权威是 UTF-8 字节偏移：`TextRange{start,end}` 被 AST、诊断、求值、插件 ABI 与 core 线格式共用，全部编码中性。它不被任何编辑器协议的 code-unit 规则污染；客户端坐标是适配层边界能力：
+
+```text
+TextRange / byte offset       核心语义坐标
+        |
+        v
+PositionCodec { Utf8 | Utf16 }
+        |
+        +-- initialize 协商（positionEncoding）
+        +-- 客户端 adapter 列换算
+```
+
+`PositionCodec` 统一覆盖：byte offset 与 line/column 的双向转换、UTF-8 字节列与 UTF-16 code-unit 列（含 emoji 代理对、CJK、组合字符）、CRLF 与文件尾、增量 change 的越界钳位。
+
+换算纪律：
+
+- *单一换算来源*：打开的文档用适配层持有的本地文本换算，未打开的文档用下行的行表/索引换算；同一查询路径上不允许并存两套换算来源。
+- *同一 text index*：incoming position、incremental edit 与 outgoing range 必须基于同一 snapshot 的同一文本/索引——不允许入站按一个 revision 换算、出站按另一个 revision 取文本。
+- *统一钳位*：所有入站换算都做字符边界取整（列落在字符中间时回退到字符起点），与增量应用的钳位共用同一套纪律。
+
+传输形状由 codec 决定而非相反：utf-8 会话下行字节行表即可换算；utf-16 的精确换算表密度是文本级（每个多字节字符都产生列差值），需下行 utf-16 行表/紧凑索引，或在响应中携带带 snapshot 身份的源文本由 gateway 换算。不恢复「每次请求把全 Vault 全文搬回 LSP」的路径。
+
+当前实现只协商 utf-8（不 offer utf-8 的客户端在 initialize 被拒连）；UTF-16 双模式是目标能力，落地范围集中在适配层与行索引两处，核心协议、analysis 与插件 ABI 不动。
+
+== 快照身份与 Revision 纪律
+
+snapshot 是不可变值，且每个 core reply 都携带 `SnapshotIdentity`（revision + source fingerprint）。它是查询一致性的契约载体：
+
+- 位置类请求显式声明所依据的 revision / `expected_fingerprint`，服务侧比对后执行；不一致时拒绝或按声明的 revision 回答，绝不混合两个 revision 的对象；
+- 每个响应标注实际使用的 `SnapshotIdentity`，客户端据此丢弃过期结果；
+- 一次回答的 range、输入坐标与查询文本必须属于同一 revision；
+- `didChange` 触发构建在途期间到达的请求，要么等待目标 revision 发布（barrier），要么显式基于捕获的旧 snapshot 执行。
+
+顺序约束：在此纪律建立之前，响应记录中内嵌的源文本是刻意的过期保护（服务于跨文件目标的出站换算），不得先删全文再建纪律。
+
+== 构建调度与并发
+
+`didChange` → 提交 overlay → 调度 revision N → 发布 snapshot N（仅在 N 仍是最新时）。构建是 latest-wins single-flight：新输入使在途构建的结果作废，旧 revision 的慢任务不覆盖更新结果。读取请求在 worker 池并发执行，捕获 snapshot 后在其上完成；`$/cancelRequest` 在 LSP 侧与 daemon 侧都是真取消，命中回 `RequestCanceled (-32800)`。
+
+== 诊断发布
+
+initialize 后对所有文件发布 baseline（含空集）；此后按内容签名 diff 增量发布；错误消失或文档关闭必须发布空数组清除。Diagnostic 带稳定的 `source = "notist"`、可机器识别的 code、准确 range 与简洁 message；跨文件冲突用 related information 指向另一处定义。发布的诊断 range 与发布所基于的 snapshot 同代。
+
+== 求值安全
+
+Hover、completion 与 diagnostics 需要 lexical/import environment、函数签名与 typed HIR，但语言服务器不应为普通编辑操作执行有外部副作用的插件代码：core 与纯 User Function 允许分析并在确有消费者时受控常量求值；plugin schema 只读取声明的 signature；plugin runtime 默认不在 LSP 请求路径执行。未知 Function 仍可依据 schema 提供 completion 与类型诊断，动态结果降级为 unknown，不阻塞整个 workspace analysis。
+
+编辑器中的 Tree-sitter grammar 只负责即时高亮、折叠与注入；LSP 的语义必须调用主仓库的 parser——CLI、build、preview、diagnostics 与编辑器共享同一 AST 与错误恢复行为，不因 grammar 更新节奏不同产生两套语义。Tree-sitter 与语义 server 是互补关系。
+
+== Capabilities
+
+capabilities 全静态声明，无 `client/registerCapability` 动态注册；未声明的方法一律回 `MethodNotFound (-32601)`，客户端可安全探测。逐项支持面、有意不做的方法与补能力候选见 #<vault::lsp::checktable>。LSP 面向代码智能，不是搜索、双链、渲染与持久化的 API 面；这些能力属于 core request 与各自的宿主，不经 LSP 暴露。
+
+== 测试
+
+对外行为由三层测试守护：analysis 单元测试（语义对不对）、`lsp.rs` 内联白盒（内部路径对不对）、`crates/notist-cli/tests/` 黑箱契约层（外面看到的对不对）。黑箱层以客户端身份与真实 server 进程对话，capabilities 一经广播即是契约。判据、harness 确定性规则与场景目录见 #<vault::lsp::test>。

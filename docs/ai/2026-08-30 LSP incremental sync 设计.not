@@ -1,6 +1,6 @@
 = LSP incremental sync 设计
 
-目标：把 `notist lsp` 的 didChange 从「FULL 全文单 change + 契约强制」升级为「INCREMENTAL 声明 + 宽容双形态接受」。本设计解除 2026-08-25 lsp architecture redesign 阶段 A 中的 FULL 契约强制部分。对齐基准是 rust-analyzer（`lsp/utils.rs` 的 `apply_document_changes`）与 tinymist（`input.rs` 的 `edit_source`）的实际实现，逐项对照见下；typst（`Source::edit` + `reparser`）提供行索引一体与增量重解析的远期参照。当前行为快照见 #<vault::designs::lsp::checktable>。文末附 notist LSP 整体问题面全量分析与推进顺序——本设计位于其 P1 位。
+目标：把 `notist lsp` 的 didChange 从「FULL 全文单 change + 契约强制」升级为「INCREMENTAL 声明 + 宽容双形态接受」。本设计解除 2026-08-25 lsp architecture redesign 阶段 A 中的 FULL 契约强制部分。对齐基准是 rust-analyzer（`lsp/utils.rs` 的 `apply_document_changes`）与 tinymist（`input.rs` 的 `edit_source`）的实际实现，逐项对照见下；typst（`Source::edit` + `reparser`）提供行索引一体与增量重解析的远期参照。当前行为快照见 #<vault::lsp::checktable>。文末附 notist LSP 整体问题面全量分析与推进顺序——本设计位于其 P1 位。
 
 == 三方对照与采纳
 
@@ -71,7 +71,7 @@ session.change(params):
    - headless 端到端：`tests/common` Client 增加 `did_change_incremental` 原语，场景「ranged 编辑后 hover/definition 命中新文本、诊断随增量刷新」。
    - 随机化往返：种子化 PRNG property test，随机编辑序列后服务端缓冲逐字节等于期望文本；覆盖代理对内部、`\r\n` 中间等怪位（vault 中文密集，UTF-16 desync 是头号风险）。
 4. *姊妹项目审查（AGENTS.md 义务）*：obsidian-notist `src/lsp/session.ts` 头注释逐条更新（「FULL sync, strictly」段作废）+ obsidian CLI 实机回归（继续发全文路径）；vscode-notist `src/protocol.ts` 头注释同步 + `just lsp-smoke`（languageclient 在声明后立即改发 ranged edits，是首个真实增量客户端）；zed-notist 无客户端改动，记录即可。
-5. *文档收尾*：更新 #<vault::designs::lsp::checktable> 的能力声明节与 didChange 行。
+5. *文档收尾*：更新 #<vault::lsp::checktable> 的能力声明节与 didChange 行。
 
 == 风险与边界
 
@@ -87,7 +87,7 @@ session.change(params):
 - *A 查询管线文本运动量（最大结构差距）*：每次编辑突发文本整体流动约三次——client→LSP（全文，本文设计解决）；LSP→service `UpdateView` 重发所有打开文档全文；service→LSP `Sources` 取回全 vault 全文并逐文件重建 LineIndex。ra 零批量搬运（vfs 单份文本 + salsa 记忆化查询）；tinymist 只推变更的单文件。瓶颈是搬运不是计算（wasm 化后全库 check 仅 0.14s CPU）。→ *2026-08-31 上行段已解*（`UpdateViewDelta` 只发变更 overlay）；*下行段已解*（utf-8 连接走 `SourceTables` 行表，utf-16 连接保留全文回退）。
 - *B daemon 默认路径并发退化*：`notist lsp` 默认走 daemon（`--no-daemon` 可选）；daemon 连接在客户端侧被整把互斥锁串行，取消在完成后才被观察（假取消）——一个长 renderDocument 请求堵住诊断发布与后续一切。service 侧本已支持多路复用与 Cancel，是 LSP 的 daemon client 未接线。→ *2026-08-31 已解*（客户端多路复用 + 真 Cancel 落地，见《健壮性并发与数据面设计》；`--no-daemon` 默认值未改，daemon 路径已可并发）。
 - *C 主循环健壮性（当时核实为现存问题）*：① 畸形通知参数解码错误一路上抛，一条坏 didChange 即杀死整个 server；ra 的形态是 handler 错误一律记日志吞掉、循环永不因单条消息退出。② `publish_diagnostics` 在主循环同步做阻塞 IPC，daemon 路径上与在途长请求抢锁，堵住期间 `$cancelRequest` 与 exit 均无响应。→ *2026-08-31 双双修复*（notification/publish 错误就地降级为日志，循环只因 EOF/exit 退出）。
-- *D 能力面薄*：signatureHelp / documentHighlight / foldingRange / documentLink / codeAction / `$/progress` / didChangeConfiguration——功能差距而非架构差距，按 #<vault::designs::lsp::checktable> 的性价比清单推进；semanticTokens 维持有意不做。
+- *D 能力面薄*：signatureHelp / documentHighlight / foldingRange / documentLink / codeAction / `$/progress` / didChangeConfiguration——功能差距而非架构差距，按 #<vault::lsp::checktable> 的性价比清单推进；semanticTokens 维持有意不做。
 - *E 生命周期与工作区*：根集 initialize 时固定，无 didChangeWorkspaceFolders、无 `workspace/configuration` 拉取；位置编码已翻转为 utf-8 优先（核心是字节 offset，提供 utf-8 的客户端同时获得行表数据面）。
 - *F 语义深度*：documentSymbol 仅标题、resolver 仅 Let/参数/import 绑定子集、hover 基础形态。差距最大但 vault 导航/检索用例不依赖，承认不追。
 
@@ -99,7 +99,7 @@ session.change(params):
 - *lsp.rs*：`apply_document_changes` 纯函数（整文档优先、index_valid 惰性重建、越界钳位、start>end 跳过）；`change()` 重写（无版本门控、未打开文档丢弃并记 stderr、无变化抑制仅记 version）；capabilities 改 `Options` 形式（openClose / INCREMENTAL / save）。
 - *测试*：翻转三个旧拒绝类测试为 `applies_changes_in_arrival_order_and_records_versions` / `applies_incremental_and_batched_changes` / `reports_unroutable_did_change_via_log_message`；新增 `drops_changes_for_unopened_documents`、`applies_clamped_descending_and_crlf_batches`、`apply_document_changes_matches_reference_on_random_edits`（固定种子 400 步随机编辑对拍独立参考实现）；headless 侧 `lsp_queries.rs` 增量端到端（混批 + 诊断门控 + hover 命中编辑后文本）、`lsp_sync.rs` 翻转为不可路由 URI / 未打开文档两拒绝路径、lifecycle 的 capabilities 断言对象化。全 workspace 28 个测试套件零失败。
 - *姊妹项目*：obsidian `session.ts` 头注释更新（插件继续发整文档，合法；改发 CM6 range 是后续项）；vscode `protocol.ts` 头注释 + `lsp-smoke.mjs` 契约探针更新（INCREMENTAL 断言 + 越界 ranged 追加探针），对真实 server 实跑全绿；zed 无客户端改动。obsidian 实机回归（obsidian CLI 驱动运行中的 Obsidian）待有实例时补做。
-- *设计同步*：`#<vault::designs::host::lsp-adapter>` 文本同步节改为 INCREMENTAL 契约；`#<vault::designs::lsp::checktable>` 能力声明与 didChange / logMessage 行更新；`#<vault::designs::lsp::test>` 判据与场景目录更新。
+- *设计同步*：`#<vault::lsp>` 文本同步节改为 INCREMENTAL 契约；`#<vault::lsp::checktable>` 能力声明与 didChange / logMessage 行更新；`#<vault::lsp::test>` 判据与场景目录更新。
 
 == 参考
 
@@ -107,4 +107,4 @@ session.change(params):
 - tinymist：`crates/tinymist/src/input.rs`（edit_source 双形态）、`src/lsp/init.rs`（声明）、越界 `.expect` panic 反面教材。
 - typst：`typst-syntax/src/source.rs`（text + 行索引一体、edit 原地维护）、`typst-syntax/src/reparser.rs`（块级增量重解析）。
 - #<super::2026-08-25 lsp architecture redesign>：本设计解除其阶段 A 的 FULL 契约强制；single-flight、编码协商、错误码分类等其余裁决不受影响。
-- #<vault::designs::lsp::checktable>：didChange 当前行为与 typst 对照。
+- #<vault::lsp::checktable>：didChange 当前行为与 typst 对照。

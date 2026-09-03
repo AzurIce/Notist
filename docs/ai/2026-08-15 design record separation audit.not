@@ -115,7 +115,7 @@
 - 分层索引已同步：L2 → D0016、L7 → D0017、L8 → D0018；L1 范围补入 scope 书写形态。
 - D0004 已完成 V1–V4 拆分：Vault → #<vault::designs::world::boundary-discovery>；Module/ModuleResult → #<vault::designs::world::module-result>；import → #<vault::designs::world::import>；引用与 RefTarget → #<vault::designs::world::reference-ref-target>。D0004 保留全部 anchor 作 redirect。
 - D0008 已完成 A2/A4 拆分：查询契约 → #<vault::designs::host::query-contract>；检索语义与索引 → #<vault::designs::host::search-retrieval-index>；CLI/Skill → #<vault::designs::host::cli-command-surface-skill-distribution>。D0008 保留全部 anchor 作 redirect。
-- D0009 已完成 A1/A5 拆分：Analyzer/Snapshot → #<vault::designs::host::analyzer-snapshot>；LSP → #<vault::designs::host::lsp-adapter>；CLI 适配归入 D0024。D0009 保留全部 anchor 作 redirect。
+- D0009 已完成 A1/A5 拆分：Analyzer/Snapshot → #<vault::designs::host::analyzer-snapshot>；LSP → #<vault::lsp>；CLI 适配归入 D0024。D0009 保留全部 anchor 作 redirect。
 - D0010 已完成 A6/A7 拆分：HTML 渲染 → #<vault::designs::host::html-renderer>；构建/预览 → #<vault::designs::host::build-preview>。D0010 保留全部 anchor 作 redirect。
 - D0001 的 `#` 嵌入边界已迁入 D0007；D0001 降为纯阅读入口，不再承载规范。
 - V5 已起草：core namespace / prelude / Custom 契约 / capability / 插件边界 / Notist.toml 配置模型 → #<vault::designs::world::core-namespace-plugin-boundary>；第一代 `vault::old-designs::archive::D0004-core-functions-and-syntax-sugar` 已移入 archive。

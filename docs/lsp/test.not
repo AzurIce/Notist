@@ -11,7 +11,7 @@ crates/notist-cli/tests/    外面看到的对不对（真实二进制 + stdio �
 
 前两层早已存在；本设计规定的是第三层——黑箱无头契约测试。它是唯一以客户端身份说话的一层：不 import 任何内部类型来构造状态、不直调任何 handler，从 `initialize` 开始与真实 server 进程对话。动因：接入侧曾只能靠人工"感受"发现问题，表面异常（诊断没刷、刷了旧的）无法定位到实现，且修复无法沉淀为回归。
 
-相关设计：被测行为见 #<vault::designs::host::lsp-adapter>；进程模型见 #<vault::designs::host::daemon-process-views>；本地协议见 #<vault::designs::host::client-interface-protocol>。
+相关设计：被测行为见 #<vault::lsp>；进程模型见 #<vault::designs::host::daemon-process-views>；本地协议见 #<vault::designs::host::client-interface-protocol>。
 
 == 判据：规范一致与自我一致
 
@@ -54,7 +54,7 @@ wiki 引用从嵌套模块文件解析为子模块路径（`wide.not` 里的 `#<
 | 生命周期 | capabilities 逐字段断言；shutdown → exit 进程零退出 | 已覆盖 |
 | 同步契约 | 整文档 didChange 接受并推送 delta；ranged 增量与混批依序应用（端到端 hover 命中编辑后文本）；越界 range 钳位；不可路由 URI 拒绝后会话存活，logMessage 与 stderr 双通道可见；未打开文档的 didChange 丢弃 | 已覆盖 |
 | 推送语义 | 无文档活动时的自发 baseline；didClose 清空 | 已覆盖 |
-| 编码端到端 | emoji/CJK 行上的 hover/completion 以 UTF-16 发起并以 UTF-16 回读校验 | 已覆盖 |
+| 编码端到端 | emoji/CJK 行上的 hover/completion 以协商编码发起并回读校验 | 已覆盖（当前仅 utf-8；utf-16 initialize、增量编辑与双向 range 待 #<vault::lsp> 的双模式能力落地后补） |
 | 查询面 | references 跨文件 Location 与 includeDeclaration 两种形态 | 已覆盖 |
 | 错误规范 | 未知方法 `-32601`、坏参数 `-32602` 经真实循环（白盒已覆盖分类，黑箱待补接线） | 待补 |
 | 生命周期 | exit-without-shutdown 按规范非零退出 | 未实现（现返回 0） |
