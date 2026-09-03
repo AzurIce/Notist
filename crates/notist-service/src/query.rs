@@ -4127,7 +4127,11 @@ fn relative_path(root: &Path, path: &Path) -> PathBuf {
     path.strip_prefix(root).unwrap_or(path).to_path_buf()
 }
 
-fn fingerprint(source: &str) -> String {
+/// Content fingerprint for snapshot-staleness pinning: the first 16 hex
+/// chars of the source's SHA-256. Shared by the query family's
+/// `expected_fingerprint` gate and the bare position-bearing core requests
+/// (`snapshot_changed:` contract in request.rs).
+pub fn fingerprint(source: &str) -> String {
     digest(source.as_bytes())[..16].to_owned()
 }
 

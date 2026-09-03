@@ -212,8 +212,10 @@ impl LineIndex {
 
 /// Byte-offset line table for UTF-8-negotiated sessions: converts between
 /// byte columns and offsets without holding the source text. Line content
-/// excludes the `\r\n`/`\n` terminator; columns landing mid-character are the
-/// caller's contract (the core validates offsets like it does for CLI ones).
+/// excludes the `\r\n`/`\n` terminator. Mid-character columns are NOT floored
+/// here (the table holds no text); inbound LSP positions take the adapter's
+/// text path, which floors them — this table only sees core-produced offsets
+/// (always boundaries) and outbound conversions on unopened files.
 #[derive(Clone, Debug)]
 pub struct LineTable {
     pub starts: Arc<[u32]>,

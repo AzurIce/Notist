@@ -6,10 +6,10 @@ obsidian-notist 插件为 `.not` 编辑器接入 notist LSP 的设计方案。�
 
 桌面端 Electron 直接 `child_process.spawn("notist", ["lsp"])` 走 stdio 接 LSP，自写一个薄的 JSON-RPC client。理由：
 
-- *server 已功能完整*：completion/hover/definition/references/document symbol/workspace symbol/diagnostics，UTF-16 position 转换有测试覆盖；LSP 层是纯协议适配，语义全在 notist-service（`lsp.rs:75-97`）。
-- *协议面很小*：FULL 文本同步（`didChange` 发全文，`lsp.rs:765-775`）+ 7 个请求方法 + 服务端主动 push 诊断，自写 framing + id 关联约几百行，比引入 `vscode-jsonrpc` 类依赖更可控，也不与 CM 生态的半成品 LSP client 包搏斗。
+- *server 已功能完整*：completion/hover/definition/references/document symbol/workspace symbol/diagnostics，position 转换有 utf-8/utf-16 双编码的测试覆盖；LSP 层是纯协议适配，语义全在 notist-service。
+- *协议面很小*：INCREMENTAL 文本同步 + 7 个请求方法 + 服务端主动 push 诊断，自写 framing + id 关联约几百行，比引入 `vscode-jsonrpc` 类依赖更可控，也不与 CM 生态的半成品 LSP client 包搏斗。
 - *stdio 即 JSON-RPC 直桥*：Electron 渲染进程有 Node API，`child_process` 的 stdin/stdout 就是传输层，不需要 WebSocket proxy。
-- *坐标系天然对齐*：server 声明 UTF-16 position encoding，与 CM6 的 char offset 1:1 对齐，和 tree-sitter 高亮共用同一套换算约定，CJK 无需特殊处理。
+- *坐标系对齐*：server 端编码可协商（utf-8 优先、utf-16 可建会）；本客户端走 utf-8 会话，列换算收口在 `src/lsp/source-map.ts`，和 tree-sitter 高亮共用同一套约定，CJK 无需特殊处理。
 
 放弃或推迟的路线：
 
