@@ -23,15 +23,15 @@ Agent 的读、编辑操作几乎全部基于文件路径 + 行号/字节偏移/
 notist inspect info <SELECTOR> [--line START..END | --offset N | --byte-range START..END] [--no-content]
 ```
 
-- SELECTOR 为 `ModulePath[/ItemName]`；三个坐标 flag 互斥，给出时覆盖 selector 自身的 item 选择（与 ancestors 同一优先级）；全部缺省 = 整个模块。
+- SELECTOR 两族形态：`ModulePath[/ItemName]`（ItemName 为标题链 ItemId 或 `@id` 标注名）或 `PATH[#ItemName]`（OS path 形态，以 `#` 分隔因 `/` 属于文件系统）。坐标全部缺省 = selector 选中的范围（Module selector 整个模块，Item selector 其 scope span）；三个坐标 flag 互斥，给出时覆盖 selector 自身的 item 选择（与 ancestors 同一优先级）。
 - `--line` 为 1-based 闭区间（宿主 grep/Read 的原生产出是行号）；`--byte-range` 为 UTF-8 半开区间（由 notist 发放）；`--offset` 为零宽点查询。
 - 每段默认内嵌其覆盖的完整源文行（行号 gutter 与 read 同构）——info 由此成为*带属性注解的 read*，段与文本的对应由工具完成，调用者不再自行按行号拼接；`--no-content` 只投影属性面。
 - 属性默认显示为**合并后的最终 Dict**（notist Dict 字面量 `(k: "v", ...)`，key 排序）——直接回答“这些行上什么在生效”；`--origins` 切换到分层溯源视图（`common` 块 + 按声明分组的条目行，各带出处），供“这个属性在哪声明的”类追问。`common` 块仅在 `--origins` 模式出现。
 - 颜色遵循全局 `--color`（auto 按 stdout TTY 门控），按 token 类别统一、处处一致：bold=结构标签（`module`/`container`/`common`/`segments`/段号），cyan=一切身份（ModulePath、`in` 的 Item 名、节点名——含来源里的），green=属性 key，dim=其余元数据（路径、指纹、一切行/字节区间、节点 kind、层级、`in`、gutter 分隔线），body=段内源文正文用常规前景色（正文是语境、结构是信号，正文不参与变暗竞赛）。颜色只改渲染——关色输出逐字节不变；read 的源文 frame 同语言，但其正文保持默认色（read 的正文是载荷，info 的正文是语境）。
 - 错误沿用 typed error：越界/非 UTF-8 边界为 `invalid_argument`，selector 不存在为 `not_found`。
-- 本命令是坐标载荷命令，输出允许路径回声；header 携带路径与 fingerprint，是编辑交接的直接来源。
+- header 携带 module 身份、行/字节区间与 fingerprint；行内不出现文件路径（与 items/ancestors 同规，路径由 read 的 citation footer 交付）。
 
-输出逐行契约：header 一行（module、相对路径、行区间、字节区间、fingerprint）；`container` 一行（最深包含整段范围的 Item）；`segments  N`；每段依次为——`[i]` header 行（区间 + `in <ItemId>` 段起点最近具名 Item，模块内相对）、合并环境 Dict 行、该段的行号源文。Dict 行为 notist 字面量 `(k1: "v1", k2: "v2")`，key 排序、字符串值带引号、空环境为 `(:)`。`--origins` 模式另含 `common  N` 块与 `@(k: v)  <- <ItemPath>  lines a..b` 形式的分层溯源行（匿名 Item 显示 `<anonymous>`，模块来源显示 `module`）。身份一律为可复制进 selector 的 ItemPath。
+输出逐行契约：header 一行（module、行区间、字节区间、fingerprint）；`container` 一行（最深包含整段范围的 Item）；`segments N`；默认模式每段依次为——`[i]` header 行（`<ItemPath>` + 行区间 + 字节区间）、合并环境 Dict 行、该段的行号源文。Dict 行为 notist 字面量 `(k1: "v1", k2: "v2")`，key 排序、字符串值带引号、空环境为 `(:)`。`--origins` 模式以 `common N` 块 + `@(k: v) <- <ItemPath> lines a..b bytes s..e` 形式的分层溯源行取代各段 Dict 行（匿名 Item 显示 `<anonymous>`，模块来源显示 `module`）。身份一律为可复制进 selector 的 ItemPath。
 
 == 实测示例
 

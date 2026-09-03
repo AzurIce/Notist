@@ -1,4 +1,4 @@
-\@!(implementation: "planned")
+@!(implementation: "planned")
 = 属性标记系统统一数据模型
 
 本文裁决属性标注系统的重设计：废除 `\@id, #tag, .class, key = value` 四形态条目文法，统一为"\@() 即 annotation code 模式，求值为 Dict"的单一模型。裁决于 2026-08-31 会话收口，实现未启动；权威语法面落地后由 #<vault::grammar::annotation> 承接，本文保留动机、调查与被否方案供后续 Agent 复用。
