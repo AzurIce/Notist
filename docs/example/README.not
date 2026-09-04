@@ -39,10 +39,10 @@ fn main() {
 #details(summary: [点击展开])[details 正文内容。]
 
 #figure(kind: "table", supplement: [表], caption: [内置表格])[
-#table(columns: 2, header: true)[
-#table-cell[名称] #table-cell[数值]
-#table-cell[answer] #table-cell[42]
-]
+  #table(columns: 2, header: true)[
+    #table-cell[名称] #table-cell[数值]
+    #table-cell[answer] #table-cell[42]
+  ]
 ]
 
 == Code 与标注

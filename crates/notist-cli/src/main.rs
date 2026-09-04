@@ -21,7 +21,7 @@ mod skill;
 /// `inspect` is the investigation entry point, the rest is explicit.
 const COMMAND_GROUPS: &str = "\
 Command groups:
-  inspect:     status, ls, search, locate, items, read, ancestors, references, definition
+  inspect:     status, ls, search, locate, items, read, ancestors, refs, definition
   validate:    check
   maintenance: index
   runtime:     daemon, lsp
@@ -57,7 +57,7 @@ struct Cli {
 
 #[derive(Debug, Subcommand)]
 enum Command {
-    /// Investigate a Vault: status, ls, search, locate, items, read, ancestors, references, definition.
+    /// Investigate a Vault: status, ls, search, locate, items, read, ancestors, refs, definition.
     #[command(display_order = 1)]
     Inspect {
         #[command(subcommand)]
@@ -183,15 +183,18 @@ enum InspectCommand {
     /// List the addressable Items of one module: @id nodes, heading default
     /// names, and resource files, each with its attribute annotations.
     Items {
-        /// Exact ModulePath or Vault-relative `.not` path.
-        selector: String,
+        /// Exact ModulePath.
+        module: String,
     },
     /// Read a module as attribute-annotated source: cut the selected range at
     /// governing annotation boundaries, merge adjacent pieces with equal
     /// effective attributes, and embed each uniform segment's source lines.
     Read {
-        /// Exact ModulePath, path, `module/id`, or `path#id` selector.
-        selector: String,
+        /// Exact ModulePath.
+        module: String,
+        /// Read one Item's range instead of the whole module.
+        #[arg(long, conflicts_with_all = ["line", "offset", "byte_range", "from_line"])]
+        item: Option<String>,
         /// 1-based inclusive line range START..END.
         #[arg(long, value_parser = parse_line_range, conflicts_with_all = ["offset", "byte_range", "from_line"])]
         line: Option<notist_service::LineRange>,
@@ -215,17 +218,14 @@ enum InspectCommand {
         #[arg(long)]
         origins: bool,
     },
-    /// Find references to a logical module.
-    References {
-        /// Exact ModulePath or `module/id` selector.
-        selector: String,
+    /// List the references that cross into a module or item's region from
+    /// outside it.
+    Refs {
+        /// Exact ModulePath whose region's incoming references are listed.
+        module: String,
+        /// Restrict the region to one Item's canonical subtree.
         #[arg(long)]
-        include_definition: bool,
-        #[arg(long, value_enum, default_value_t)]
-        direction: ReferenceDirectionArg,
-        /// Maximum UTF-8 bytes in each reference excerpt.
-        #[arg(long, default_value_t = 256, value_parser = parse_snippet_bytes)]
-        snippet_bytes: usize,
+        item: Option<String>,
     },
     /// Find the definition at a source byte offset.
     Definition {
@@ -252,8 +252,11 @@ enum InspectCommand {
     /// Print the ancestor chain of a region with its attribute annotations,
     /// innermost first, ending at the module root.
     Ancestors {
-        /// Exact ModulePath, path, `module/id`, or `path#id` selector.
-        selector: String,
+        /// Exact ModulePath.
+        module: String,
+        /// Select one Item's region instead of the whole module.
+        #[arg(long, conflicts_with_all = ["offset", "byte_range"])]
+        item: Option<String>,
         /// Select one byte offset instead of the whole selector target.
         #[arg(long, conflicts_with = "byte_range")]
         offset: Option<usize>,
@@ -382,14 +385,6 @@ impl From<SearchFieldArg> for notist_service::SearchField {
 }
 
 #[derive(Clone, Copy, Debug, Default, ValueEnum)]
-enum ReferenceDirectionArg {
-    #[default]
-    Incoming,
-    Outgoing,
-    Both,
-}
-
-#[derive(Clone, Copy, Debug, Default, ValueEnum)]
 enum DiagnosticSeverityArg {
     #[default]
     Error,
@@ -403,16 +398,6 @@ impl From<DiagnosticSeverityArg> for notist_service::DiagnosticSeverity {
             DiagnosticSeverityArg::Error => Self::Error,
             DiagnosticSeverityArg::Warning => Self::Warning,
             DiagnosticSeverityArg::Info => Self::Info,
-        }
-    }
-}
-
-impl From<ReferenceDirectionArg> for notist_service::ReferenceDirection {
-    fn from(value: ReferenceDirectionArg) -> Self {
-        match value {
-            ReferenceDirectionArg::Incoming => Self::Incoming,
-            ReferenceDirectionArg::Outgoing => Self::Outgoing,
-            ReferenceDirectionArg::Both => Self::Both,
         }
     }
 }
@@ -850,7 +835,7 @@ fn run_inspect(
             }
             Ok(ExitCode::SUCCESS)
         }
-        InspectCommand::Items { selector } => {
+        InspectCommand::Items { module } => {
             let root = resolve_vault_root(&vault)?;
             let mut client =
                 service::LocalNotistClient::connect(no_daemon, ClientKind::Cli, root.clone())?;
@@ -858,7 +843,10 @@ fn run_inspect(
             let reply = client.request(CoreRequest::Items {
                 view_id,
                 query: notist_service::ItemsQuery {
-                    selector: notist_service::Selector::parse(&selector),
+                    selector: notist_service::Selector {
+                        module: module.clone(),
+                        item: None,
+                    },
                 },
             })?;
             let CoreResponse::Items(items) = reply.response else {
@@ -899,61 +887,61 @@ fn run_inspect(
             }
             Ok(ExitCode::SUCCESS)
         }
-        InspectCommand::References {
-            selector,
-            include_definition,
-            direction,
-            snippet_bytes,
-        } => {
-            let direction_value = notist_service::ReferenceDirection::from(direction);
-            let direction_label = match direction_value {
-                notist_service::ReferenceDirection::Incoming => "incoming",
-                notist_service::ReferenceDirection::Outgoing => "outgoing",
-                notist_service::ReferenceDirection::Both => "both",
-            };
-            let root = resolve_vault_root(&vault)?;
-            let mut client =
-                service::LocalNotistClient::connect(no_daemon, ClientKind::Cli, root.clone())?;
-            let view_id = open_disk_view(&mut client, root.clone())?;
-            let reply = client.request(CoreRequest::ReferencesPage {
+        InspectCommand::Refs { module, item } => {
+            let identity = item
+                .as_deref()
+                .map_or_else(|| module.clone(), |name| format!("{module}/{name}"));
+            let (_, client, view_id) = connect_cli(vault.clone(), no_daemon)?;
+            let reply = client.request(CoreRequest::RefsPage {
                 view_id,
-                query: notist_service::ReferencesQuery {
-                    selector: notist_service::Selector::parse(&selector),
-                    direction: direction_value,
-                    include_definition,
-                    snippet_bytes,
+                query: notist_service::RefsQuery {
+                    selector: notist_service::Selector { module, item },
                 },
             })?;
-            let CoreResponse::ReferencesPage(locations) = reply.response else {
-                return query_response_error("references", reply.response);
+            let CoreResponse::RefsPage(page) = reply.response else {
+                return query_response_error("refs", reply.response);
             };
+            // Same grammar as read: bold = structure words, cyan = every
+            // identity, dim = metadata (positions, arrows, gutter), body =
+            // authored source lines. Each row names the resolved target —
+            // folding puts different items behind one region query.
+            let palette = Palette::stdout(color);
             println!(
-                "{} ({})",
-                plural(locations.records.len(), "reference"),
-                direction_label
+                "{}: {}",
+                palette.cyan(&identity),
+                palette.bold(&plural(page.records.len(), "reference"))
             );
-            for item in &locations.records {
-                let position = item.location.line_range.map_or_else(
+            for (index, record) in page.records.iter().enumerate() {
+                let position = record.location.line_range.map_or_else(
                     || {
                         format!(
                             "{}@{}..{}",
-                            item.location.relative_path.display(),
-                            item.location.byte_range.start,
-                            item.location.byte_range.end
+                            record.location.relative_path.display(),
+                            record.location.byte_range.start,
+                            record.location.byte_range.end
                         )
                     },
-                    |range| format!("{}:{}", item.location.relative_path.display(), range.start),
+                    |range| format!("{}:{}", record.location.relative_path.display(), range.start),
                 );
-                let definition_mark = if item.is_definition {
-                    " (definition)"
-                } else {
-                    ""
-                };
-                println!("{} -> {} {}{}", item.source, item.target, position, definition_mark);
-                if !item.excerpt.is_empty() {
-                    let ellipsis = if item.excerpt_truncated { " …" } else { "" };
-                    println!("    {}{}", item.excerpt.replace('\n', " "), ellipsis);
+                println!(
+                    "{} {} {} {}  {}",
+                    palette.bold(&format!("[{}]", index + 1)),
+                    palette.cyan(&format!("<{}>", record.target)),
+                    palette.dim("<-"),
+                    palette.cyan(&format!("<{}>", record.source)),
+                    palette.dim(&position)
+                );
+                for line in &record.content {
+                    println!(
+                        "{} {} {}",
+                        palette.dim(&format!("{:>5}", line.number)),
+                        palette.dim("|"),
+                        palette.body(&line.text),
+                    );
                 }
+            }
+            for hint in &page.hints {
+                println!("hint: {hint}");
             }
             Ok(ExitCode::SUCCESS)
         }
@@ -1030,7 +1018,8 @@ fn run_inspect(
             Ok(ExitCode::SUCCESS)
         }
         InspectCommand::Read {
-            selector,
+            module,
+            item,
             line,
             offset,
             byte_range,
@@ -1043,7 +1032,7 @@ fn run_inspect(
             let reply = client.request(CoreRequest::Region {
                 view_id,
                 query: notist_service::RegionQuery {
-                    selector: notist_service::Selector::parse(&selector),
+                    selector: notist_service::Selector { module, item },
                     offset,
                     byte_range,
                     line_range: line,
@@ -1062,7 +1051,8 @@ fn run_inspect(
             Ok(ExitCode::SUCCESS)
         }
         InspectCommand::Ancestors {
-            selector,
+            module,
+            item,
             offset,
             byte_range,
         } => {
@@ -1070,7 +1060,7 @@ fn run_inspect(
             let reply = client.request(CoreRequest::Ancestors {
                 view_id,
                 query: notist_service::AncestorsQuery {
-                    selector: notist_service::Selector::parse(&selector),
+                    selector: notist_service::Selector { module, item },
                     offset,
                     byte_range,
                 },

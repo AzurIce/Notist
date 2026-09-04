@@ -1,0 +1,45 @@
+@!(implementation: "aligned")
+= Inspect Refs: 穿越查询区域边界的入链
+
+出链写在源文里，读正文即得；入链只存在于索引——`inspect refs` 回答"谁从区域之外引用这个目标"，这是本命令的存在理由。查询语义一句话：对查询区域 R，返回**目标端锚点落在 R 内、提及端 span 落在 R 外**的引用边。v1 只显示指入的一半；指出的一半（穿越集合的另一半，对模块级查询即跨节出链汇总）由使用数据决定是否投影。不变量：列出的每一行都是"若区域身份变动（改名/移动/删除），需要改写的外部提及"——列表即行动项，无噪声行。
+
+== 命令面
+
+```shell
+notist inspect refs <MODULE> [--vault DIR] [--item NAME]
+```
+
+- 查询区域：模块 selector 为整个模块；`--item` 为该 Item 的规范子树——`@id` 标注的节归一到其标题所在 section，两种拼写指向同一区域。item 子树由 section 树计算，与 read 的 `--item` 选区共用同一套规范区域。
+- 穿越判定取边的两端：**目标端锚点**（解析后的规范节点）落在区域内、**提及端 span** 落在区域外的边入选。目标端按规范节点身份判定——不用 `target_range` 重叠（节的 range 覆盖整个子树，重叠会把指向祖先的引用误读为成员），也不做 ItemName 字符串前缀匹配（`@id` 名与标题链名是同一节点的两个别名，前缀匹配在别名边界漏配）。
+- 内部边（两端都在区域内）不出现："谁引用这个模块"只回答外部引用者。同一条边随查询层级切换身份：`refs m/二` 的入链在 `refs m` 里可能是内部边——区域长大到含住两端，边即停止穿越；这是"外部提及"定义的自然结果，不是缺陷。
+- 层次折叠：模块查询折叠其全部 Item（指向模块自身与其下任意 item 的引用都入选）；item 查询只看其子树；指向祖先的引用不入选——要它们，把查询抬到那一层。
+- 未解析的引用（坏链、歧义标题、外部 URI）不是图的边，不出现在结果里，由 `check` 诊断兜底；属性值中的路径、`let` 绑定与任意调用参数中的 Target 也不是边；import 是独立的图。
+
+== 输出逐行契约
+
+输出完整，零命中即证明，与 read 同一渲染语法（bold=结构、cyan=身份、dim=元数据、body=源文）。头部回显规范身份与计数；每条引用一行 `[序号] <目标身份> <- <来源身份>  path:line`，其下以 read 的行号 gutter 内嵌提及行的完整源文。
+
+- 两端都写明解析后的规范身份：折叠使一次查询命中的边目标各不相同，目标端按行落点归属（`@id` 名与标题链名归一到同一身份）；来源端归属承载提及 span 的最内层区域，落在任何节之外时退化为模块根。
+- `path:line` 指引提及处（宿主跳转坐标），身份供 notist 链式查询（`refs --item`、`read --item`、`ancestors`）。
+- 行是节选视角——提及行而非整节，事实性回答前用 read 读取所在节；零命中附 actionable hint。
+
+== 实测示例
+
+```shell
+notist inspect refs vault::troubleshoot --item 日志
+```
+
+```text
+vault::troubleshoot/日志: 1 reference
+[1] <vault::troubleshoot/日志> <- <vault::guide/安装>  guide.not:6
+    6 | 先读概述，出问题时看 #<vault::troubleshoot/日志> 。
+```
+
+模块级查询折叠到同一条边；无人引用的目标得到否定证明：
+
+```text
+vault::guide/后记: 0 references
+hint: nothing outside the selected region mentions this target
+```
+
+判定面的常驻可执行样例在 `docs/test/` 的 `refs.not` 与 `refs_in.not`（成对模块）：文件内嵌的 `$ notist` 命令覆盖模块折叠、`@id` 与标题链的别名归一、`super::` 相对拼写、段中块级 ScopeItem、区域抬升（内部边随查询层级变穿越边）与零命中证明。

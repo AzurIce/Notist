@@ -81,6 +81,25 @@ fn line_for(output: &str, label: &str) -> String {
         .to_owned()
 }
 
+/// Strips ANSI SGR sequences so a colored run can be compared byte-for-byte
+/// with its plain counterpart.
+fn strip_ansi(colored: &str) -> String {
+    let mut stripped = String::with_capacity(colored.len());
+    let mut chars = colored.chars();
+    while let Some(c) = chars.next() {
+        if c == '\x1b' {
+            for c in chars.by_ref() {
+                if c == 'm' {
+                    break;
+                }
+            }
+        } else {
+            stripped.push(c);
+        }
+    }
+    stripped
+}
+
 #[test]
 fn status_reports_vault_identity_and_counts() {
     let vault = fixture();
@@ -243,32 +262,124 @@ fn locate_without_a_position_resolves_the_module_identity() {
 }
 
 #[test]
-fn references_lists_resolved_links_with_positions() {
+fn refs_lists_incoming_crossings_with_positions() {
     let vault = fixture();
-    // Scope-level targets are found through their ItemPath selector.
-    let incoming = run(
+    // The guide's mention of 日志 is the only external reference into
+    // troubleshoot; item- and module-level queries fold to the same edge.
+    let item = run(
         &vault,
-        &["inspect", "references", "vault::troubleshoot/日志"],
+        &["inspect", "refs", "vault::troubleshoot", "--item", "日志"],
     );
-    assert!(incoming.starts_with("1 reference (incoming)"), "{incoming}");
-    assert!(incoming.contains("vault::guide"), "{incoming}");
-    assert!(incoming.contains("vault::troubleshoot"), "{incoming}");
-    assert!(incoming.contains("->"), "{incoming}");
-    assert!(incoming.contains("\n    "), "{incoming}");
+    assert!(
+        item.starts_with("vault::troubleshoot/日志: 1 reference"),
+        "{item}"
+    );
+    assert!(
+        item.contains("[1] <vault::troubleshoot/日志> <- <vault::guide/安装>  guide.not:6"),
+        "{item}"
+    );
+    // The mentioning line rides along in read's gutter grammar.
+    assert!(item.contains("    6 | 先读概述"), "{item}");
 
-    let outgoing = run(
-        &vault,
-        &[
-            "inspect",
-            "references",
-            "vault::guide",
-            "--direction",
-            "outgoing",
-        ],
+    let module = run(&vault, &["inspect", "refs", "vault::troubleshoot"]);
+    assert!(
+        module.starts_with("vault::troubleshoot: 1 reference"),
+        "{module}"
     );
-    assert!(outgoing.contains("1 reference (outgoing)"), "{outgoing}");
-    assert!(outgoing.contains("vault::troubleshoot"), "{outgoing}");
-    assert!(outgoing.contains("guide.not:"), "{outgoing}");
+    assert!(
+        module.contains("[1] <vault::troubleshoot/日志> <- <vault::guide/安装>"),
+        "{module}"
+    );
+}
+
+/// `docs/test/refs.not` is the standing `inspect refs` fixture: `refs_in`
+/// mentions the target from outside through both item spellings (heading
+/// chain and `@id`), a `super::` relative spelling, a mid-section block
+/// ScopeItem (`@id` on a paragraph), and the module itself, while the
+/// target's own self-mentions stay internal. Every `$ notist …` line in its
+/// trailing text block is an executable request; the fixture copies both
+/// modules into a temporary vault and rewrites the embedded `--vault docs`.
+#[test]
+fn refs_executes_the_requests_embedded_in_the_refs_fixture() {
+    let source_dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../docs/test");
+    let text = std::fs::read_to_string(source_dir.join("refs.not"))
+        .expect("docs/test/refs.not is part of the repo");
+    let commands: Vec<String> = text
+        .lines()
+        .filter(|line| line.starts_with("$ notist "))
+        .map(|line| line["$ notist ".len()..].to_owned())
+        .collect();
+    assert!(
+        commands.len() >= 6,
+        "the fixture should embed module, item, alias, block-scope, nested, and zero-hit requests"
+    );
+
+    let vault = fixture();
+    let test_dir = vault.0.path().join("test");
+    std::fs::create_dir_all(&test_dir).unwrap();
+    for file in ["refs.not", "refs_in.not"] {
+        std::fs::copy(source_dir.join(file), test_dir.join(file)).unwrap();
+    }
+
+    for command in &commands {
+        let mut args = vec!["--no-daemon".to_owned()];
+        let mut tokens = command.split_whitespace().peekable();
+        while let Some(token) = tokens.next() {
+            if token == "--vault" {
+                tokens.next();
+                args.push("--vault".to_owned());
+                args.push(vault.0.path().display().to_string());
+            } else {
+                args.push(token.to_owned());
+            }
+        }
+        let output = std::process::Command::new(env!("CARGO_BIN_EXE_notist"))
+            .args(&args)
+            .output()
+            .expect("failed to spawn the notist binary");
+        let stdout = String::from_utf8_lossy(&output.stdout);
+        assert!(
+            output.status.success(),
+            "embedded request {command:?} failed: {}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+
+        if command.contains("--item 二/三") {
+            // The nested section folds its block-scope item: the external
+            // mid/relative mentions plus the intra-module crossing from
+            // section 二, attributed to its innermost scope.
+            assert!(stdout.starts_with("vault::test::refs/二/三: 3 references"), "{stdout}");
+            assert!(stdout.contains("[1] <vault::test::refs/二/三> <- <vault::test::refs/二>  test/refs.not:4"), "{stdout}");
+        } else if command.contains("--item alias") {
+            // `@id` and heading chain spellings are aliases: one region.
+            assert!(stdout.starts_with("vault::test::refs/alias: 4 references"), "{stdout}");
+            let by_chain = run(
+                &vault,
+                &["inspect", "refs", "vault::test::refs", "--item", "二"],
+            );
+            assert_eq!(
+                stdout.split_once('\n').map(|(_, rest)| rest),
+                by_chain.split_once('\n').map(|(_, rest)| rest),
+            );
+        } else if command.contains("--item mid") {
+            // A mid-section block scope is addressable on its own.
+            assert!(stdout.starts_with("vault::test::refs/mid: 1 reference"), "{stdout}");
+        } else if command.contains("--item") {
+            assert!(stdout.starts_with("vault::test::refs/二: 4 references"), "{stdout}");
+        } else if command.contains("vault::test::refs_in") {
+            // Zero crossings are a proof, with an actionable hint.
+            assert!(stdout.starts_with("vault::test::refs_in: 0 references"), "{stdout}");
+            assert!(stdout.contains("hint:"), "{stdout}");
+        } else {
+            // Module region: all five external mentions cross in; the
+            // self-mentions are internal and never surface. Each row names
+            // its resolved target, including the module-root one.
+            assert!(stdout.starts_with("vault::test::refs: 5 references"), "{stdout}");
+            assert!(stdout.contains("[1] <vault::test::refs/二> <- <vault::test::refs_in/一>"), "{stdout}");
+            assert!(stdout.contains("[5] <vault::test::refs> <- <vault::test::refs_in/一>"), "{stdout}");
+            assert!(!stdout.contains(" <- <vault::test::refs>"), "{stdout}");
+        }
+    }
 }
 
 #[test]
@@ -301,7 +412,7 @@ fn ancestors_item_selector_prints_the_named_scope_branch() {
     let vault = fixture();
     let output = run(
         &vault,
-        &["inspect", "ancestors", "vault::troubleshoot/日志"],
+        &["inspect", "ancestors", "vault::troubleshoot", "--item", "日志"],
     );
     assert!(output.contains("@!(severity: high)"), "{output}");
     assert!(output.contains("@(tag: urgent)"), "{output}");
@@ -317,7 +428,7 @@ fn ancestors_point_prints_the_containing_chain() {
         &[
             "inspect",
             "ancestors",
-            "guide.not",
+            "vault::guide",
             "--offset",
             &offset.to_string(),
         ],
@@ -342,7 +453,7 @@ fn ancestors_byte_range_prints_every_grazed_scope() {
         &[
             "inspect",
             "ancestors",
-            "guide.not",
+            "vault::guide",
             "--byte-range",
             &format!("{start}..{end}"),
         ],
@@ -509,16 +620,16 @@ fn read_byte_range_must_land_on_utf8_boundaries() {
     assert!(stderr.contains("UTF-8 boundaries"));
 }
 
-/// `docs/example/test.not` is a standing test case: every `$ notist …` line
+/// `docs/test/read.not` is a standing test case: every `$ notist …` line
 /// in its trailing text block is an executable request. The fixture copies
-/// the example directory into a temporary vault (keeping the module at
-/// `vault::example::test`), rewrites the embedded `--vault docs` to the copy,
+/// the file into a temporary vault (keeping the module at
+/// `vault::test::read`), rewrites the embedded `--vault docs` to the copy,
 /// and runs every request.
 #[test]
 fn read_executes_the_requests_embedded_in_the_example_fixture() {
-    let source_dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../docs/example");
-    let text = std::fs::read_to_string(source_dir.join("test.not"))
-        .expect("docs/example/test.not is part of the repo");
+    let source_dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../docs/test");
+    let text = std::fs::read_to_string(source_dir.join("read.not"))
+        .expect("docs/test/read.not is part of the repo");
     let commands: Vec<String> = text
         .lines()
         .filter(|line| line.starts_with("$ notist "))
@@ -530,9 +641,9 @@ fn read_executes_the_requests_embedded_in_the_example_fixture() {
     );
 
     let vault = fixture();
-    let example = vault.0.path().join("example");
-    std::fs::create_dir_all(&example).unwrap();
-    std::fs::copy(source_dir.join("test.not"), example.join("test.not")).unwrap();
+    let test_dir = vault.0.path().join("test");
+    std::fs::create_dir_all(&test_dir).unwrap();
+    std::fs::copy(source_dir.join("read.not"), test_dir.join("read.not")).unwrap();
 
     for command in &commands {
         let mut args = vec!["--no-daemon".to_owned()];
@@ -540,7 +651,7 @@ fn read_executes_the_requests_embedded_in_the_example_fixture() {
         while let Some(token) = tokens.next() {
             if token == "--vault" {
                 // Rewrite the repo-root-relative docs path to the fixture
-                // vault root so `vault::example::test` resolves.
+                // vault root so `vault::test::read` resolves.
                 tokens.next();
                 args.push("--vault".to_owned());
                 args.push(vault.0.path().display().to_string());
@@ -559,7 +670,7 @@ fn read_executes_the_requests_embedded_in_the_example_fixture() {
             String::from_utf8_lossy(&output.stderr)
         );
         assert!(
-            stdout.starts_with("module <vault::example::test>"),
+            stdout.starts_with("module <vault::test::read>"),
             "embedded request {command:?} printed unexpected header:\n{stdout}"
         );
 
@@ -571,7 +682,7 @@ fn read_executes_the_requests_embedded_in_the_example_fixture() {
             assert!(stdout.contains("segments 3"), "{stdout}");
             assert!(
                 stdout.contains(
-                    "[1] <vault::example::test/Heading 1/Heading 2.1> lines",
+                    "[1] <vault::test::read/Heading 1/Heading 2.1> lines",
                 ),
                 "{stdout}"
             );
@@ -635,18 +746,27 @@ fn read_color_changes_only_the_rendering() {
     let colored = String::from_utf8(output.stdout).unwrap();
     assert!(colored.contains('\x1b'), "always must color: {colored:?}");
     // Styling only: strip ANSI and the result is byte-identical.
-    let mut stripped = String::with_capacity(colored.len());
-    let mut chars = colored.chars();
-    while let Some(c) = chars.next() {
-        if c == '\x1b' {
-            for c in chars.by_ref() {
-                if c == 'm' {
-                    break;
-                }
-            }
-        } else {
-            stripped.push(c);
-        }
-    }
-    assert_eq!(plain, stripped, "color must not change the logical result");
+    assert_eq!(plain, strip_ansi(&colored));
+}
+
+#[test]
+fn refs_color_changes_only_the_rendering() {
+    let vault = fixture();
+    let plain = run(&vault, &["inspect", "refs", "vault::troubleshoot"]);
+    assert!(
+        !plain.contains('\x1b'),
+        "piped output must be uncolored: {plain:?}"
+    );
+    let output = std::process::Command::new(env!("CARGO_BIN_EXE_notist"))
+        .arg("--color")
+        .arg("always")
+        .arg("--no-daemon")
+        .arg("--vault")
+        .arg(vault.0.path())
+        .args(["inspect", "refs", "vault::troubleshoot"])
+        .output()
+        .expect("failed to spawn the notist binary");
+    let colored = String::from_utf8(output.stdout).unwrap();
+    assert!(colored.contains('\x1b'), "always must color: {colored:?}");
+    assert_eq!(plain, strip_ansi(&colored));
 }

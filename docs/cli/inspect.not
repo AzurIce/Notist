@@ -1,7 +1,7 @@
 @!(implementation: "partial")
 = CLI Inspect: Agent Query and Navigation
 
-本文是 `notist inspect` 调查组的逐命令规范，描述 2026-08-30 统合裁决（#<vault::ai::2026-08-30 inspect 命令面统合设计>）确立的*目标命令面*。实现状态 `partial`：ls/read/items/ancestors/locate 已落地（read 独立成篇：#<vault::cli::inspect::read>），attrs（并入 ancestors）、`--line` 坐标（ancestors 尚缺）、`--attr` 筛选与 `@!(...)` 继承在推进；标注语法已按 2026-08-31 统一数据模型裁决改写（#<vault::ai::2026-08-31 属性标记系统统一数据模型>），本文的注解面拼写为目标形态，现行二进制仍按旧语法运行，迁移完成前 `inspect --help` 是实际可执行面的最终依据。命令面治理、全局参数、错误与退出状态见 #<vault::cli>；查询契约与检索语义见 #<vault::designs::host::query-contract> 与 #<vault::designs::host::search-retrieval-index>。
+本文是 `notist inspect` 调查组的逐命令规范，描述 2026-08-30 统合裁决（#<vault::ai::2026-08-30 inspect 命令面统合设计>）确立的*目标命令面*。实现状态 `partial`：ls/read/items/ancestors/refs/locate/definition 已落地（read、refs 独立成篇：#<vault::cli::inspect::read>、#<vault::cli::inspect::refs>），`--line` 坐标（ancestors 尚缺）、`--attr` 筛选与 `@!(...)` 继承在推进；标注语法已按 2026-08-31 统一数据模型裁决改写（#<vault::ai::2026-08-31 属性标记系统统一数据模型>），本文的注解面拼写为目标形态，现行二进制仍按旧语法运行，迁移完成前 `inspect --help` 是实际可执行面的最终依据。命令面治理、全局参数、错误与退出状态见 #<vault::cli>；查询契约与检索语义见 #<vault::designs::host::query-contract> 与 #<vault::designs::host::search-retrieval-index>。
 
 本文的输出示例统一来自同一个示例 Vault 的实测，便于对照各命令视角：
 
@@ -21,16 +21,16 @@ assets/          资源目录：logo.png、notes.txt
 寻址只有两个世界：
 
 ```text
-身份    ModulePath | ModulePath/ItemId        稳定逻辑地址，唯一 selector 文法
-坐标    ModulePath ( --line N | --offset BYTE | --byte-range S..E )
+身份    ModulePath                            稳定逻辑地址，唯一 selector 文法
+区域    ModulePath ( --item NAME | --line N | --offset BYTE | --byte-range S..E )
 桥      locate PATH ( --line N | --offset BYTE | --byte-range S..E )
 ```
 
 - 文档模块的 source 与文件 1:1，坐标挂在 ModulePath 上即无歧义。OS path 从输入文法除名，只出现在 locate：grep/Read 给 Agent 的外部坐标（`path:line`）由 locate 换成身份，此后全部工作在 ModulePath 空间内完成。
 - `--line` 是面向 Agent 的一等坐标（行号是 grep/Read 的原生产出）；`--offset`/`--byte-range` 是协议流通坐标（UTF-8 半开区间），由 notist 的 citation 发放——Agent 不自造字节偏移。
-- 最小访问单位是 Item：可寻址的只有 Module 与有 ItemId 的 Item（#<vault::model/Notist 数据模型/Item 树>）。匿名 Item 不可寻址，但 ancestors 的坐标问法能看到它们承载的属性。
-- 短 basename、模糊路径不能静默解析；`not_found` 与 `ambiguous_selector` 是 typed error。身份位置出现 OS path 时报 `invalid_selector`，hint 指向 `inspect locate`。
-- 路径只出现在坐标载荷命令（search/definition/references）的输出与 `read` 的 module header 里；身份命令（items/ancestors）的行内不出现文件路径——需要编辑某个模块时，把 `read` header 交付的路径与指纹交给宿主 Read/Edit。
+- 最小访问单位是 Item：可寻址的只有 Module 与有 ItemId 的 Item（ItemPath = `ModulePath/ItemId`，经 `--item <NAME>` 传入，#<vault::model/Notist 数据模型/Item 树>）。匿名 Item 不可寻址，但 ancestors 的坐标问法能看到它们承载的属性。
+- 短 basename、模糊路径不能静默解析；`not_found` 与 `ambiguous_selector` 是 typed error。身份位置出现 OS path 或 `module/item` 混拼时报 `invalid_selector`——前者 hint 指向 `inspect locate`，后者 hint 给出 `--item` 迁移。
+- 路径只出现在坐标载荷命令（search/definition/refs）的输出与 `read` 的 module header 里；身份命令（items/ancestors）的行内不出现文件路径——需要编辑某个模块时，把 `read` header 交付的路径与指纹交给宿主 Read/Edit。
 
 Scope 是集合过滤，属于查询语义本身：改变 scope 即是另一个查询。
 
@@ -112,25 +112,25 @@ read 是带属性注解的读取，独立成篇：#<vault::cli::inspect::read>�
 用途：列出一个 Target 内部全部可寻址 Item：显式 `id:` 标注的节点、heading 默认名、模块命名空间下的资源文件。items 是身份表，不展示嵌套结构——包含关系用 ancestors。
 
 ```shell
-notist inspect items <MODULE[/ITEMID]> [--vault DIR]
+notist inspect items <MODULE> [--vault DIR]
 ```
 
 - 每条 item record：name（ItemId）、kind（`scope` | `resource:image` | `resource:file`）、origin（`id` | `heading` | `resource`）、heading 的 level、location，以及该 Item 承载的属性注解（完整落入 Item range 的注解条目）。
-- 名字解析与 `Module/name` selector 完全一致：`id:` 标注覆盖所在 heading 的默认名；heading 默认名重名时无法用名字单独寻址，行尾标 `(ambiguous)`，作者用 `id:` 标注消歧。
+- 名字解析顺序与引用寻址一致：`id:` 标注覆盖所在 heading 的默认名；heading 默认名重名时无法用名字单独寻址，行尾标 `(ambiguous)`，作者用 `id:` 标注消歧。
 - 虚拟目录模块（资源命名空间）只列资源 Item；资源 Item 没有源内 range，location 指向资源文件本身。
 - 全 Vault 结构发现用宿主 ls/tree 与 search。
 - 输出：首行计数头 `N items`；此后一行一 Item——`name kind[ Llevel] lines a..b 注解`（单空格分隔）。以 `id:` 标注命名的 Item 其 kind 显示为 `scope@id`（名字是作者授予的身份，不是标题文本）；重名行尾标 `(ambiguous)`。行内不出现文件路径——行区间直接喂给宿主 Read 完成节读。
 
 == ancestors
 
-用途：给定 Target（身份或坐标），返回 scope 树中与该区域**重叠**的全部节点所构成的子树（重叠节点连同各自到模块根的路径），以及每个节点承载的属性注解。区域擦到两个甚至三个 sibling scope 的边缘时，每个被擦到的 scope 都会带着自己的根路径出现。
+用途：给定区域（`--item` 或坐标；缺省整模块），返回 scope 树中与该区域**重叠**的全部节点所构成的子树（重叠节点连同各自到模块根的路径），以及每个节点承载的属性注解。区域擦到两个甚至三个 sibling scope 的边缘时，每个被擦到的 scope 都会带着自己的根路径出现。
 
 ```shell
-notist inspect ancestors <TARGET> [--vault DIR]
-  [--line N | --offset UTF8_BYTE_OFFSET | --byte-range START..END]
+notist inspect ancestors <MODULE> [--vault DIR]
+  [--item NAME | --line N | --offset UTF8_BYTE_OFFSET | --byte-range START..END]
 ```
 
-- 身份 target：该 scope（及其内部节点）与模块根的包含链；坐标 target：与区域重叠的子树。重叠语义：节点与区域共享至少一个 byte 即重叠；点按半开包含。节点的 range 包含其子孙的 range，因此重叠集合对祖先天然封闭，结果恰是一棵以模块根为顶的子树。
+- `--item` target：该 scope（及其内部节点）与模块根的包含链；坐标 target：与区域重叠的子树。重叠语义：节点与区域共享至少一个 byte 即重叠；点按半开包含。节点的 range 包含其子孙的 range，因此重叠集合对祖先天然封闭，结果恰是一棵以模块根为顶的子树。
 - 属性归属（认领规则）：每条注解由子树中完整包含它的最深节点上报，至多出现一次。绑在节标题上的 `@(...)` 在标题节点不在子树内时上报到对应的 `core::section` 祖先（property-table 的 section 上卷语义）；模块头 `@!(...)` 在模块根上报。
 - 输出：首行是 `module` 与 source fingerprint 摘要；此后按文档序深度优先打印子树，模块根在最前。每行包含节点 kind、可选标题与 level、`lines a..b`（喂给宿主 Read 的行区间），以及注解面拼写（`@(...)`；模块根用 `@!(...)`）。行内不出现文件路径。
 
@@ -138,23 +138,9 @@ notist inspect ancestors <TARGET> [--vault DIR]
 
 结构发现用 items；ancestors 不替代 items——它回答"区域与 scope 的重叠关系、以及作用中的属性注解"，不是"Module 有哪些可寻址 Item"。
 
-== references
+== refs
 
-用途：遍历已经解析的 Reference graph。默认 incoming，回答"谁引用这个目标"。
-
-```shell
-notist inspect references <MODULE[/ITEMID]> [--vault DIR]
-  [--direction incoming|outgoing|both]
-  [--include-definition]
-  [--snippet-bytes <n>]
-```
-
-- 默认 incoming（backlinks）。
-- `--direction outgoing`：正向列出该 Module 或节引用了什么；使用 captured reference graph，不重新扫描文本。
-- `--direction both`：同时列出两个方向；`--include-definition`：附上目标自身定义位置。
-- 每条 item 包含 source/target Module、方向、location 与最多 256 bytes excerpt；不重复整篇 source。
-- selector 的粒度决定匹配面：模块级 selector 只匹配模块级目标，scope 级目标（`module/name`）的引用要用 ItemPath selector 查询。
-- 输出：首行 `N references (incoming|outgoing|both)`；每条引用一行 `source -> target  path:line`，其后缩进一行 excerpt，截断以 ` …` 结尾；`--include-definition` 附带的目标自身定义行尾标 `(definition)`，该行无 excerpt。
+遍历穿越查询区域边界的入链，回答"谁从区域之外引用这个目标"，独立成篇：#<vault::cli::inspect::refs>。
 
 == definition
 
@@ -178,7 +164,7 @@ grep / Read 的产出（path:line）
   -> inspect items 看 Item 表
   -> inspect ancestors 看结构上下文
   -> read 读取带属性注解的源文
-  -> inspect references / definition 沿语义边导航
+  -> inspect refs / definition 沿语义边导航
   -> check 验证状态
   -> 用宿主编辑工具直接修改 .not，修改后再次 check
 ```
@@ -187,4 +173,4 @@ grep / Read 的产出（path:line）
 
 - 正向事实：read 取得充分证据后停止。
 - 否定或"列出全部"：search 结果本身完整，零命中即不存在；需要穷举的按 scope 分次查询。
-- search excerpt 不是最终证据；references 不是正文替代品。
+- search excerpt 不是最终证据；refs 不是正文替代品。
