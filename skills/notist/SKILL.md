@@ -15,26 +15,20 @@ Notist manages knowledge-base **Vaults**. A Vault is a directory containing a `N
 notist inspect read vault::cheatsheet --vault <DOCS_ROOT>
 ```
 
-After editing, validate with `notist check --vault <DOCS_ROOT>`. The full grammar is `grammar.not`; the per-constructor reference is `functions.not`.
+After editing, validate with `notist check --vault <DOCS_ROOT>`. The grammar overview is `grammar.not` (details in `grammar/`: `markup`, `code`, `annotation`); the per-constructor reference is `functions.not`.
 
 ## Investigate with `inspect`
 
-`inspect` groups the read commands; `notist inspect --help` lists them all. The mapping is one line: a file `X/Y.not` is the module `vault::X::Y`, and `X/Y/README.not` *is* `vault::X`. A typical investigation:
+`inspect` groups the read commands; `notist inspect --help` lists them all. The mapping is one line: a file `X/Y.not` is the module `vault::X::Y`, and `X/Y/README.not` *is* `vault::X`. Commands whose designs have matured into spec pages in the docs Vault (`cli/inspect/`) are documented below; the other implemented commands follow `inspect --help` until their specs land.
 
 ```shell
-notist inspect status --vault <DOCS_ROOT>                                     # which Vault, snapshot, index health
-notist inspect ls --vault <DOCS_ROOT> vault::designs                        # child modules
-notist inspect locate ai/2026-07-11 x.not --line 45 --vault <DOCS_ROOT>       # host coordinate → module + scope breadcrumb
-notist inspect search "query terms" --vault <DOCS_ROOT>                       # ranked candidates — candidates, not evidence
-notist inspect items vault::designs::host::query-contract --vault <DOCS_ROOT>     # addressable items: @id nodes, headings, resources (with line ranges)
-notist inspect read vault::designs::host::query-contract --vault <DOCS_ROOT> --line 40..60   # source lines with the effective attribute environment
-notist inspect ancestors vault::designs::host::query-contract/Selector 与 Citation --vault <DOCS_ROOT>     # ancestor subtree with attribute annotations
-notist inspect references vault::designs::host::query-contract --vault <DOCS_ROOT>          # who links here
+notist inspect read vault::test::read --vault <DOCS_ROOT> --line 12..22   # source lines with the effective attribute environment
+notist inspect refs vault::test::read --vault <DOCS_ROOT>                 # who outside mentions this target — zero hits prove none do
 ```
 
-- Results are complete: no paging, no output ceiling. A zero-hit search proves absence within the selected scopes.
-- Lexical/fuzzy search groups by source by default; `--group-by section|match`, `--operator any`, and the repeatable `--scope MODULE` adjust recall. Excerpts select candidates — `inspect read` is the evidence entry: it embeds the source lines with the effective attribute environment (segments split exactly where attributes change) and its module header carries the relative path, ranges, and fingerprint for the edit handoff.
-- `inspect ancestors` accepts a selector, `--offset N`, or `--byte-range START..END` and returns the subtree of scopes overlapping that region, each with its attribute annotations and line range (feed the range to your host `Read`) — use it to learn which `@` annotations govern a position or region (including sibling scopes a range grazes) before editing it.
+- `inspect read` decomposes the selected region into maximal segments of uniform effective attributes and embeds each segment's source lines (the gutter is 1-based source lines, so coordinates match your host `Read`). `--item NAME` selects the item's canonical region — a heading (by chain or `@id`) normalizes to its section's subtree, an `@id` on another block selects that block; the four region flags `--line/--offset/--byte-range/--from-line` are mutually exclusive and override `--item`; `--origins` switches to the provenance view (`common` block plus per-declaration rows); `--attrs-only` is the attribute-only face. The module header carries the module identity, relative path, ranges, and fingerprint — the identity-to-path handoff for host edits.
+- `inspect refs MODULE [--item NAME]` lists references that *cross* the region boundary: the resolved target anchor lands inside, the mentioning span lives outside. Every row names both resolved identities plus `path:line` of the mentioning line (embedded in read's gutter) — treat the list as the action items for a rename/move/delete. Internal edges stay invisible, and edges stop crossing once the region grows to contain both ends. Unresolved links are `check`'s job, not refs results.
+- Results are complete: no paging, no output ceiling. A zero-hit result is a proof, not an error — no matches for search, no external mentions for refs.
 - `notist check` is the whole-Vault health verdict (exit 1 on any error); it does not take a module scope.
 
 ## Working with Vaults
