@@ -41,7 +41,7 @@ Publishing
   build preview
 ```
 
-`inspect --help` 是调查命令的唯一发现入口；普通知识工作只使用 inspect 与 check。内容访问与目录列举由宿主 Read/ls 承担——`X/Y.not` 即模块 `vault::X::Y`，`X/Y/README.not` 即 `vault::X`；inspect 只收录语义查询。命令面没有写命令（2026-08-28 裁决）：磁盘写入来自宿主编辑工具或其他外部进程，daemon 通过 watcher 观察并发布新 snapshot；修改 Vault 后运行 `notist check` 验证。
+`inspect --help` 是调查命令的唯一发现入口；普通知识工作只使用 inspect 与 check。内容访问与目录列举由宿主 Read/ls 承担——模块映射是机械规则：Vault 根下的路径逐段对应 `::`，`X/Y.not` 即模块 `vault::X::Y`；`README.not` 即其所在目录的模块（`X/README.not` 即 `vault::X`，`X/Y/README.not` 即 `vault::X::Y`）；inspect 只收录语义查询。命令面没有写命令（2026-08-28 裁决）：磁盘写入来自宿主编辑工具或其他外部进程，daemon 通过 watcher 观察并发布新 snapshot；修改 Vault 后运行 `notist check` 验证。
 
 命令面没有写命令（2026-08-28 裁决）：磁盘写入来自宿主编辑工具或其他外部进程，daemon 通过 watcher 观察并发布新 snapshot；修改 Vault 后运行 `notist check` 验证。
 
