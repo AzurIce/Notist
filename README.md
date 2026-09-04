@@ -52,8 +52,8 @@ nix profile install github:AzurIce/notist
 notist inspect status --vault docs         # Vault、快照、诊断与索引概览
 notist check --vault docs                   # 校验模块与引用
 notist inspect search "workspace snapshot" --vault docs   # 检索（支持 --exact / --fuzzy）
-notist inspect read docs/grammar.not --vault docs    # 读取源文并标注生效属性环境
-notist inspect references vault::intro --vault docs   # 逻辑模块的引用
+notist inspect read vault::grammar --vault docs    # 读取源文并标注生效属性环境
+notist inspect refs vault::intro --vault docs   # 谁在模块外部提及它（改名/移动/删除时的行动清单）
 ```
 
 命令面没有写命令：用任何编辑器修改 `.not` 文件，daemon 通过 watcher 感知变更，改完跑 `notist check` 验证。`notist build` 与 `notist preview` 负责站点产出，`notist lsp` 供编辑器接入（Zed / Obsidian 插件即基于它）。完整命令规范见 `docs/cli/README.not`。
