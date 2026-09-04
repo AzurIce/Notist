@@ -139,7 +139,7 @@ plugin-system/ 插件系统：package、ABI、贡献、信任模型与生命周�
 - #<vault::designs::pipeline::plugin-call-reduction>：`aligned`（统一 Node、handler 不动点与 target-side 投影边界已实现）
 - #<vault::designs::pipeline::project>：`aligned`（HTML target 已有独立 projection registry 与 serializer）
 - #<vault::designs::plugin-system::projection>：`partial`（Node 投影规约与 fallback 已实现；trusted/词表收口仍待定）
-- #<vault::designs::host::query-contract>：`partial`（text-only 投影、`read` citation footer 与 `--exclude-scope` 尚未完整实现）
+- #<vault::designs::host::query-contract>：`partial`（text-only 投影与 `--exclude-scope` 尚未完整实现）
 - #<vault::designs::host::search-retrieval-index>：`partial`（`--exclude-scope` 未实现）
 - #<vault::designs::host::cli-command-surface-skill-distribution>：`partial`（2026-08-15 裁决的命令面未落地：`next`/`locate`/`refs`/`definition` 与 text-only 投影待实现）
 - #<vault::cli>：`partial`（完整 CLI 命令设计+使用规范；目标为 2026-08-15 裁决的命令面，当前 binary 仍为过渡 surface）

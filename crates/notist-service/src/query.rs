@@ -321,30 +321,6 @@ pub struct AncestorRecord {
     pub children: Vec<AncestorRecord>,
 }
 
-#[derive(Clone, Debug, Default, Serialize, Deserialize)]
-pub struct ReadWindow {
-    #[serde(default)]
-    pub from_line: Option<usize>,
-    #[serde(default)]
-    pub lines: Option<usize>,
-    #[serde(default)]
-    pub byte_range: Option<super::request::ByteRange>,
-}
-
-#[derive(Clone, Debug, Serialize, Deserialize)]
-pub struct ReadQuery {
-    pub selector: Selector,
-    #[serde(default)]
-    pub window: ReadWindow,
-}
-
-#[derive(Clone, Debug, Serialize, Deserialize)]
-pub struct SourceChunk {
-    pub location: Location,
-    pub source: String,
-    pub reached_end: bool,
-}
-
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum ReferenceDirection {
@@ -1216,7 +1192,7 @@ pub fn locate(
     })
 }
 
-/// Region attribute projection (`inspect info`): the cornerstone that gives
+/// Region attribute projection (`inspect read`): the cornerstone that gives
 /// an Agent attribute awareness for an arbitrary host-derived range. The
 /// range has no guaranteed relationship to Item boundaries, so the query
 /// never assumes one: it cuts the range at governing annotation boundaries,
@@ -1235,6 +1211,15 @@ pub struct RegionQuery {
     /// coordinate grep/Read produce.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub line_range: Option<LineRange>,
+    /// 1-based starting line for a `--from-line N [--lines M]` window: reads
+    /// from that line to the source end, bounded by `lines` when given. The
+    /// window clamps at the source end instead of erroring, unlike
+    /// `line_range`, which validates strictly.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub from_line: Option<usize>,
+    /// Line count for the `--from-line` window; requires `from_line`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub lines: Option<usize>,
     /// Embed each segment's source lines: the attribute-annotated read that
     /// spares the caller the segment-to-text join.
     #[serde(default = "default_true")]
@@ -1358,11 +1343,24 @@ pub fn region_info(
 ) -> Result<QueryResult<RegionRecord>, ToolError> {
     let provided = query.offset.is_some() as usize
         + query.byte_range.is_some() as usize
-        + query.line_range.is_some() as usize;
+        + query.line_range.is_some() as usize
+        + query.from_line.is_some() as usize;
     if provided > 1 {
         return Err(ToolError::new(
             "invalid_argument",
-            "offset, byte-range, and line-range select the same region; pass only one",
+            "offset, byte-range, line-range, and from-line select the same region; pass only one",
+        ));
+    }
+    if query.lines.is_some() && query.from_line.is_none() {
+        return Err(ToolError::new(
+            "invalid_argument",
+            "lines requires from-line",
+        ));
+    }
+    if query.lines.is_some_and(|lines| lines == 0) {
+        return Err(ToolError::new(
+            "invalid_argument",
+            "lines must be at least 1",
         ));
     }
     let resolved = resolve_source(workspace, &query.selector)?;
@@ -1408,6 +1406,20 @@ pub fn region_info(
         } else {
             starts[lines.end]
         };
+        TextRange::new(start, end)
+    } else if let Some(from_line) = query.from_line {
+        if from_line == 0 || from_line > starts.len() {
+            return Err(ToolError::new(
+                "invalid_argument",
+                "from-line is outside the selected source",
+            ));
+        }
+        let start = starts[from_line - 1];
+        let count = query.lines.unwrap_or(usize::MAX);
+        let end = starts
+            .get((from_line - 1).saturating_add(count))
+            .copied()
+            .unwrap_or(total);
         TextRange::new(start, end)
     } else {
         resolved.selection
@@ -1948,77 +1960,6 @@ fn addressable_item(
         .filter(|(_, range)| range.start <= point && point < range.end)
         .min_by_key(|(_, range)| range.end - range.start)
         .map(|(name, _)| name)
-}
-
-pub fn read_source(
-    workspace: &WorkspaceSnapshot,
-    snapshot: &SnapshotIdentity,
-    query: &ReadQuery,
-) -> Result<QueryResult<SourceChunk>, ToolError> {
-    let resolved = resolve_source(workspace, &query.selector)?;
-    if query.window.byte_range.is_some()
-        && (query.window.from_line.is_some() || query.window.lines.is_some())
-    {
-        return Err(ToolError::new(
-            "invalid_argument",
-            "line and byte windows are mutually exclusive",
-        ));
-    }
-    if query.window.lines.is_some() && query.window.from_line.is_none() {
-        return Err(ToolError::new(
-            "invalid_argument",
-            "lines requires from-line",
-        ));
-    }
-    if query.window.lines.is_some_and(|lines| lines == 0) {
-        return Err(ToolError::new(
-            "invalid_argument",
-            "lines must be at least 1",
-        ));
-    }
-    let source = &resolved.source.text;
-    let mut selection = resolved.selection;
-    if let Some(range) = query.window.byte_range {
-        if range.start > range.end || range.end > source.len() {
-            return Err(ToolError::new(
-                "invalid_argument",
-                "byte range is outside the selected source",
-            ));
-        }
-        selection = TextRange::new(range.start, range.end);
-    } else if let Some(from_line) = query.window.from_line {
-        let starts = line_starts(source);
-        let start_index = from_line.saturating_sub(1);
-        let Some(&start) = starts.get(start_index) else {
-            return Err(ToolError::new(
-                "invalid_argument",
-                "from-line is outside the selected source",
-            ));
-        };
-        let count = query.window.lines.unwrap_or(usize::MAX);
-        let end = starts
-            .get(start_index.saturating_add(count))
-            .copied()
-            .unwrap_or(source.len());
-        selection = TextRange::new(start.max(selection.start), end.min(selection.end));
-    }
-    let chunk = SourceChunk {
-        location: location(
-            workspace,
-            resolved.module,
-            resolved.source,
-            selection,
-            resolved.name.clone(),
-        ),
-        source: source[selection.start..selection.end].to_owned(),
-        reached_end: true,
-    };
-    Ok(QueryResult {
-        snapshot: snapshot.clone(),
-        records: vec![chunk],
-        search: None,
-        hints: Vec::new(),
-    })
 }
 
 pub fn ref_target_record(

@@ -186,16 +186,34 @@ enum InspectCommand {
         /// Exact ModulePath or Vault-relative `.not` path.
         selector: String,
     },
-    /// Read authored source by module, path, id, line, or byte range.
+    /// Read a module as attribute-annotated source: cut the selected range at
+    /// governing annotation boundaries, merge adjacent pieces with equal
+    /// effective attributes, and embed each uniform segment's source lines.
     Read {
         /// Exact ModulePath, path, `module/id`, or `path#id` selector.
         selector: String,
-        #[arg(long)]
+        /// 1-based inclusive line range START..END.
+        #[arg(long, value_parser = parse_line_range, conflicts_with_all = ["offset", "byte_range", "from_line"])]
+        line: Option<notist_service::LineRange>,
+        /// Byte offset (zero-width point).
+        #[arg(long, conflicts_with_all = ["line", "byte_range", "from_line"])]
+        offset: Option<usize>,
+        /// Byte range START..END (UTF-8, half-open).
+        #[arg(long, value_parser = parse_byte_range, conflicts_with_all = ["line", "offset", "from_line"])]
+        byte_range: Option<notist_service::ByteRange>,
+        /// 1-based starting line of a window; without --lines reads to the source end.
+        #[arg(long, conflicts_with_all = ["line", "offset", "byte_range"])]
         from_line: Option<usize>,
+        /// Line count for the --from-line window.
         #[arg(long, requires = "from_line")]
         lines: Option<usize>,
-        #[arg(long, conflicts_with_all = ["from_line", "lines"], value_parser = parse_byte_range)]
-        byte_range: Option<notist_service::ByteRange>,
+        /// Project only the attribute environment; omit the source lines.
+        #[arg(long)]
+        attrs_only: bool,
+        /// Show each entry's declaring annotation provenance (the layered
+        /// ancestor view) instead of the merged effective Dict.
+        #[arg(long)]
+        origins: bool,
     },
     /// Find references to a logical module.
     References {
@@ -230,30 +248,6 @@ enum InspectCommand {
         /// Byte range to resolve (uses its start).
         #[arg(long, value_parser = parse_byte_range, conflicts_with_all = ["line", "offset"])]
         byte_range: Option<notist_service::ByteRange>,
-    },
-    /// Project the attribute environment of an arbitrary region: cut the
-    /// range at governing annotation boundaries, merge adjacent pieces with
-    /// equal effective attributes, and report the common environment plus
-    /// each uniform segment.
-    Info {
-        /// Module selector (ModulePath, optionally with /ItemName).
-        selector: String,
-        /// 1-based inclusive line range START..END.
-        #[arg(long, value_parser = parse_line_range, conflicts_with_all = ["offset", "byte_range"])]
-        line: Option<notist_service::LineRange>,
-        /// Byte offset (zero-width point).
-        #[arg(long, conflicts_with_all = ["line", "byte_range"])]
-        offset: Option<usize>,
-        /// Byte range START..END (UTF-8, half-open).
-        #[arg(long, value_parser = parse_byte_range, conflicts_with_all = ["line", "offset"])]
-        byte_range: Option<notist_service::ByteRange>,
-        /// Omit the per-segment source lines.
-        #[arg(long)]
-        no_content: bool,
-        /// Show each entry's declaring annotation provenance (the layered
-        /// ancestor view) instead of the merged effective Dict.
-        #[arg(long)]
-        origins: bool,
     },
     /// Print the ancestor chain of a region with its attribute annotations,
     /// innermost first, ending at the module root.
@@ -905,57 +899,6 @@ fn run_inspect(
             }
             Ok(ExitCode::SUCCESS)
         }
-        InspectCommand::Read {
-            selector,
-            from_line,
-            lines,
-            byte_range,
-        } => {
-            let (_, client, view_id) = connect_cli(vault.clone(), no_daemon)?;
-            let reply = client.request(CoreRequest::ReadSource {
-                view_id,
-                query: notist_service::ReadQuery {
-                    selector: notist_service::Selector::parse(&selector),
-                    window: notist_service::ReadWindow {
-                        from_line,
-                        lines,
-                        byte_range,
-                    },
-                },
-            })?;
-            let CoreResponse::SourcePage(result) = reply.response else {
-                return query_response_error("read", reply.response);
-            };
-            if let Some(chunk) = result.records.first() {
-                let palette = Palette::stdout(color);
-                let start = chunk.location.line_range.map_or(1, |range| range.start);
-                for (offset, line) in chunk.source.lines().enumerate() {
-                    println!(
-                        "{} {} {}",
-                        palette.dim(&format!("{:>5}", start + offset)),
-                        palette.dim("|"),
-                        line
-                    );
-                }
-                // Citation footer: the path handoff to the host editor.
-                let location = &chunk.location;
-                let mut footer = format!(
-                    "-- {} {}",
-                    location.module,
-                    location.relative_path.display()
-                );
-                if let Some(range) = location.line_range {
-                    footer.push_str(&format!(" lines {}..{}", range.start, range.end));
-                }
-                footer.push_str(&format!(
-                    " bytes {}..{}",
-                    location.byte_range.start, location.byte_range.end
-                ));
-                footer.push_str(&format!(" fingerprint {}", location.source_fingerprint));
-                println!("{footer}");
-            }
-            Ok(ExitCode::SUCCESS)
-        }
         InspectCommand::References {
             selector,
             include_definition,
@@ -1086,12 +1029,14 @@ fn run_inspect(
             println!("{head} {position}");
             Ok(ExitCode::SUCCESS)
         }
-        InspectCommand::Info {
+        InspectCommand::Read {
             selector,
             line,
             offset,
             byte_range,
-            no_content,
+            from_line,
+            lines,
+            attrs_only,
             origins,
         } => {
             let (_, client, view_id) = connect_cli(vault.clone(), no_daemon)?;
@@ -1102,11 +1047,13 @@ fn run_inspect(
                     offset,
                     byte_range,
                     line_range: line,
-                    include_content: !no_content,
+                    from_line,
+                    lines,
+                    include_content: !attrs_only,
                 },
             })?;
             let CoreResponse::Region(page) = reply.response else {
-                return query_response_error("inspect info", reply.response);
+                return query_response_error("read", reply.response);
             };
             let palette = Palette::stdout(color);
             for record in &page.records {
@@ -1249,6 +1196,8 @@ fn print_region_record(
 ) {
     let header = [
         palette.cyan(&format!("<{}>", record.module)),
+        // The path handoff to the host editor: the identity-to-path bridge.
+        palette.dim(&record.relative_path.display().to_string()),
         palette.dim(&format!(
             "lines {}..{}",
             record.line_range.start, record.line_range.end

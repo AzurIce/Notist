@@ -49,12 +49,11 @@ nix profile install github:AzurIce/notist
 在 Vault 根（含 `Notist.toml` 的目录）下：
 
 ```sh
-notist status                              # Vault、快照、诊断与索引概览
-notist check                               # 校验模块与引用
-notist search "workspace snapshot" docs    # 检索（支持 --exact / --fuzzy）
-notist read docs/grammar.not               # 按 ModulePath / 路径 / id 读取有界源文
-notist outline docs/grammar.not            # 模块大纲
-notist references intro                    # 逻辑模块的引用
+notist inspect status --vault docs         # Vault、快照、诊断与索引概览
+notist check --vault docs                   # 校验模块与引用
+notist inspect search "workspace snapshot" --vault docs   # 检索（支持 --exact / --fuzzy）
+notist inspect read docs/grammar.not --vault docs    # 读取源文并标注生效属性环境
+notist inspect references vault::intro --vault docs   # 逻辑模块的引用
 ```
 
 命令面没有写命令：用任何编辑器修改 `.not` 文件，daemon 通过 watcher 感知变更，改完跑 `notist check` 验证。`notist build` 与 `notist preview` 负责站点产出，`notist lsp` 供编辑器接入（Zed / Obsidian 插件即基于它）。完整命令规范见 `docs/cli/README.not`。
@@ -67,11 +66,11 @@ notist references intro                    # 逻辑模块的引用
 notist skill init .agents/skills/notist
 ```
 
-Skill 覆盖查询与导航命令、Selector/Scope 寻址、有界输出与分页等约定，Agent 无需阅读源码或文档 Vault 就能正确驱动 CLI。
+Skill 覆盖查询与导航命令、Selector/Scope 寻址、完整结果契约（无翻页、无截断）等约定，Agent 无需阅读源码或文档 Vault 就能正确驱动 CLI。
 
 ## 文档
 
-`docs/README.not` 是文档 Vault 的入口：语法参考、内置构造器、类型系统、CLI 规范、设计记录都从那里引用。仓库访客可直接读文件，Agent 与本机用户建议通过 `notist` CLI 查询（`notist status` / `search` / `read` 等，见 `docs/cli/README.not`）。
+`docs/README.not` 是文档 Vault 的入口：语法参考、内置构造器、类型系统、CLI 规范、设计记录都从那里引用。仓库访客可直接读文件，Agent 与本机用户建议通过 `notist` CLI 查询（`notist inspect status` / `inspect search` / `inspect read` 等，见 `docs/cli/README.not`）。
 
 ## 相关项目
 

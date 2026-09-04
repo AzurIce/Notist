@@ -1,7 +1,7 @@
 @!(implementation: "partial")
 = CLI Inspect: Agent Query and Navigation
 
-本文是 `notist inspect` 调查组的逐命令规范，描述 2026-08-30 统合裁决（#<vault::ai::2026-08-30 inspect 命令面统合设计>）确立的*目标命令面*。实现状态 `partial`：ls/read/items/ancestors/locate/info 已落地（info 独立成篇：#<vault::cli::inspect::info>），attrs（并入 ancestors）、`--line` 坐标（ancestors 尚缺）、`--attr` 筛选与 `@!(...)` 继承在推进；标注语法已按 2026-08-31 统一数据模型裁决改写（#<vault::ai::2026-08-31 属性标记系统统一数据模型>），本文的注解面拼写为目标形态，现行二进制仍按旧语法运行，迁移完成前 `inspect --help` 是实际可执行面的最终依据。命令面治理、全局参数、错误与退出状态见 #<vault::cli>；查询契约与检索语义见 #<vault::designs::host::query-contract> 与 #<vault::designs::host::search-retrieval-index>。
+本文是 `notist inspect` 调查组的逐命令规范，描述 2026-08-30 统合裁决（#<vault::ai::2026-08-30 inspect 命令面统合设计>）确立的*目标命令面*。实现状态 `partial`：ls/read/items/ancestors/locate 已落地（read 独立成篇：#<vault::cli::inspect::read>），attrs（并入 ancestors）、`--line` 坐标（ancestors 尚缺）、`--attr` 筛选与 `@!(...)` 继承在推进；标注语法已按 2026-08-31 统一数据模型裁决改写（#<vault::ai::2026-08-31 属性标记系统统一数据模型>），本文的注解面拼写为目标形态，现行二进制仍按旧语法运行，迁移完成前 `inspect --help` 是实际可执行面的最终依据。命令面治理、全局参数、错误与退出状态见 #<vault::cli>；查询契约与检索语义见 #<vault::designs::host::query-contract> 与 #<vault::designs::host::search-retrieval-index>。
 
 本文的输出示例统一来自同一个示例 Vault 的实测，便于对照各命令视角：
 
@@ -30,7 +30,7 @@ assets/          资源目录：logo.png、notes.txt
 - `--line` 是面向 Agent 的一等坐标（行号是 grep/Read 的原生产出）；`--offset`/`--byte-range` 是协议流通坐标（UTF-8 半开区间），由 notist 的 citation 发放——Agent 不自造字节偏移。
 - 最小访问单位是 Item：可寻址的只有 Module 与有 ItemId 的 Item（#<vault::model/Notist 数据模型/Item 树>）。匿名 Item 不可寻址，但 ancestors 的坐标问法能看到它们承载的属性。
 - 短 basename、模糊路径不能静默解析；`not_found` 与 `ambiguous_selector` 是 typed error。身份位置出现 OS path 时报 `invalid_selector`，hint 指向 `inspect locate`。
-- 路径只出现在坐标载荷命令（search/definition/references）的输出里；身份命令（items/ancestors）的行内不出现文件路径——需要编辑某个模块时，宿主 Read/Edit 直接操作它的文件。
+- 路径只出现在坐标载荷命令（search/definition/references）的输出与 `read` 的 module header 里；身份命令（items/ancestors）的行内不出现文件路径——需要编辑某个模块时，把 `read` header 交付的路径与指纹交给宿主 Read/Edit。
 
 Scope 是集合过滤，属于查询语义本身：改变 scope 即是另一个查询。
 
@@ -45,7 +45,7 @@ notist inspect ls [MODULE] [--recursive] [--kind any|source|virtual] [--vault DI
 - 位置参数 = 目标 ModulePath，缺省 Vault 根；目标自身永不列出（ls 不显示 `.`）。
 - 单层只列直接孩子；叶子模块输出 `0 modules`（零命中即无孩子的证明）。不存在的目标报 `not_found`。
 - `--recursive`：目标的全部后代，扁平按 ModulePath 字典序——一次调用拿全库 sitemap 的形态。
-- 输出：首行计数头 `N modules`；此后一行 `ModulePath — 语义标题`。语义标题 = 文档序第一个 heading 的纯文本（不经 ItemName 解析，`id:` 标注覆盖不影响显示），无 heading 时整段省略；虚拟模块显示 ` — <virtual>`。行内不出现 `.not` 文件路径——路径由 `read` 的 citation footer 交付。
+- 输出：首行计数头 `N modules`；此后一行 `ModulePath — 语义标题`。语义标题 = 文档序第一个 heading 的纯文本（不经 ItemName 解析，`id:` 标注覆盖不影响显示），无 heading 时整段省略；虚拟模块显示 ` — <virtual>`。行内不出现 `.not` 文件路径——路径由 `read` 的 module header 交付。
 
 == search
 
@@ -105,30 +105,7 @@ score 只能在同 query、index stamp、ranking version 内比较，不是概�
 
 == read
 
-用途：按稳定地址读 authored source，并交付编辑所需的路径与指纹。
-
-```shell
-notist inspect read <MODULE[/ITEMNAME]> [--vault DIR]
-  [--from-line N [--lines N] | --byte-range START..END]
-```
-
-- 默认：读取 selector 选中的完整内容。
-- `--from-line N`：1-based 行号；单独使用读从该行到末尾。
-- `--lines N`：必须与 `--from-line` 同用，限制读取行数。
-- `--byte-range START..END`：半开 UTF-8 byte range；与 line 窗口互斥。
-- `MODULE/NAME`（ItemPath）：NAME 先按显式 `id:` 标注、后按标题默认名（标题文本）精确匹配；当前返回该标题自身的 range。
-
-text 输出 = 带行号 gutter 的 authored source，之后一行 citation footer：`-- Module path [lines A..B] bytes S..E fingerprint`（坐标对一律 `lines` 在前、单空格分隔）。footer 是编辑前置条件的直接来源——路径向宿主编辑工具的交接也在这里完成。
-
-```shell
-notist inspect read vault::guide
-```
-
-```text
-    1 | @!(status: "draft")
-```
-
-@(todo: "ItemPath 读取当前只返回标题自身 range；「读取整个节 subtree」语义待裁决")
+read 是带属性注解的读取，独立成篇：#<vault::cli::inspect::read>。
 
 == items
 
@@ -200,6 +177,7 @@ grep / Read 的产出（path:line）
   -> inspect status / ls / search 发现
   -> inspect items 看 Item 表
   -> inspect ancestors 看结构上下文
+  -> read 读取带属性注解的源文
   -> inspect references / definition 沿语义边导航
   -> check 验证状态
   -> 用宿主编辑工具直接修改 .not，修改后再次 check

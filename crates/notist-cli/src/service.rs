@@ -286,7 +286,6 @@ fn handshake(kind: ClientKind, vault_root: PathBuf) -> io::Result<Handshake> {
             "references".into(),
             "search".into(),
             "bounded_query".into(),
-            "read_source".into(),
             "symbols".into(),
         ],
     })
