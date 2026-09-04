@@ -27,12 +27,13 @@ notist inspect ls --vault <DOCS_ROOT> vault::designs                        # ch
 notist inspect locate ai/2026-07-11 x.not --line 45 --vault <DOCS_ROOT>       # host coordinate → module + scope breadcrumb
 notist inspect search "query terms" --vault <DOCS_ROOT>                       # ranked candidates — candidates, not evidence
 notist inspect items vault::designs::host::query-contract --vault <DOCS_ROOT>     # addressable items: @id nodes, headings, resources (with line ranges)
+notist inspect read vault::designs::host::query-contract --vault <DOCS_ROOT> --line 40..60   # source lines with the effective attribute environment
 notist inspect ancestors vault::designs::host::query-contract/Selector 与 Citation --vault <DOCS_ROOT>     # ancestor subtree with attribute annotations
 notist inspect references vault::designs::host::query-contract --vault <DOCS_ROOT>          # who links here
 ```
 
 - Results are complete: no paging, no output ceiling. A zero-hit search proves absence within the selected scopes.
-- Lexical/fuzzy search groups by source by default; `--group-by section|match`, `--operator any`, and the repeatable `--scope MODULE` adjust recall. Excerpts select candidates — `inspect read` is the evidence entry.
+- Lexical/fuzzy search groups by source by default; `--group-by section|match`, `--operator any`, and the repeatable `--scope MODULE` adjust recall. Excerpts select candidates — `inspect read` is the evidence entry: it embeds the source lines with the effective attribute environment (segments split exactly where attributes change) and its module header carries the relative path, ranges, and fingerprint for the edit handoff.
 - `inspect ancestors` accepts a selector, `--offset N`, or `--byte-range START..END` and returns the subtree of scopes overlapping that region, each with its attribute annotations and line range (feed the range to your host `Read`) — use it to learn which `@` annotations govern a position or region (including sibling scopes a range grazes) before editing it.
 - `notist check` is the whole-Vault health verdict (exit 1 on any error); it does not take a module scope.
 

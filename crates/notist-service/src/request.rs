@@ -156,15 +156,11 @@ pub enum CoreRequest {
         view_id: ServiceViewId,
         query: crate::query::AncestorsQuery,
     },
-    ReadSource {
-        view_id: ServiceViewId,
-        query: crate::query::ReadQuery,
-    },
     Locate {
         view_id: ServiceViewId,
         query: crate::query::LocateQuery,
     },
-    /// Region attribute projection (`inspect info`): cuts an arbitrary range
+    /// Region attribute projection (`inspect read`): cuts an arbitrary range
     /// at governing annotation boundaries and reports the uniform effective
     /// attribute segments.
     Region {
@@ -237,7 +233,6 @@ impl CoreRequest {
             | Self::DocumentSymbols { view_id, .. }
             | Self::Items { view_id, .. }
             | Self::Ancestors { view_id, .. }
-            | Self::ReadSource { view_id, .. }
             | Self::Locate { view_id, .. }
             | Self::Region { view_id, .. }
             | Self::ReferencesPage { view_id, .. }
@@ -403,7 +398,6 @@ pub enum CoreResponse {
     Hover(Option<HoverRecord>),
     DocumentSymbols(Vec<DocumentSymbolRecord>),
     Items(crate::query::QueryResult<crate::query::ItemRecord>),
-    SourcePage(crate::query::QueryResult<crate::query::SourceChunk>),
     Locate(crate::query::LocateRecord),
     Region(crate::query::QueryResult<crate::query::RegionRecord>),
     Ancestors(crate::query::QueryResult<crate::query::AncestorRecord>),
@@ -1490,19 +1484,6 @@ impl NotistService {
                     snapshot,
                     response: match result {
                         Ok(page) => CoreResponse::Ancestors(page),
-                        Err(error) => CoreResponse::QueryError(error),
-                    },
-                })
-            }
-            CoreRequest::ReadSource { view_id, query } => {
-                let (snapshot, result) = self
-                    .with_snapshot_identity(view_id, |workspace, identity| {
-                        crate::query::read_source(workspace, identity, &query)
-                    })?;
-                Ok(CoreReply {
-                    snapshot,
-                    response: match result {
-                        Ok(page) => CoreResponse::SourcePage(page),
                         Err(error) => CoreResponse::QueryError(error),
                     },
                 })

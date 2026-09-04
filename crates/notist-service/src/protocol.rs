@@ -13,7 +13,6 @@ pub const CAPABILITIES: &[&str] = &[
     "hover",
     "references",
     "search",
-    "read_source",
     "symbols",
 ];
 

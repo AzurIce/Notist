@@ -26,9 +26,9 @@ Lorem ipsum dolor sit amet, consectetur adipiscing elit. Donec efficitur ligula 
 上文 `|>` 与 `<|` 标出的范围即请求对象；下面每条 `$ notist` 命令都是本文件的可执行测试案例（从仓库根目录运行）。
 
 ```text
-$ notist inspect info vault::example::test --line 12..22 --vault docs
-$ notist inspect info vault::example::test --offset 900 --vault docs
-$ notist inspect info vault::example::test --vault docs
+$ notist inspect read vault::example::test --line 12..22 --vault docs
+$ notist inspect read vault::example::test --offset 900 --vault docs
+$ notist inspect read vault::example::test --vault docs
 ```
 
 == 多属性演示

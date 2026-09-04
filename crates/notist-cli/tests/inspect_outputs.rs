@@ -200,12 +200,13 @@ fn items_claims_prefix_annotations_on_headings() {
 }
 
 #[test]
-fn read_module_prints_line_numbered_source_with_citation_footer() {
+fn read_header_hands_off_module_identity_path_and_fingerprint() {
     let vault = fixture();
     let output = run(&vault, &["inspect", "read", "vault::guide"]);
     assert!(output.contains("= 安装"), "{output}");
+    // The module header is the identity-to-path bridge for the host editor.
     assert!(
-        output.contains("-- vault::guide guide.not lines 1.."),
+        output.contains("module <vault::guide> guide.not lines 1.."),
         "{output}"
     );
     assert!(output.contains("fingerprint"), "{output}");
@@ -360,7 +361,7 @@ fn check_summary_reports_whole_vault_health() {
 }
 
 #[test]
-fn info_splits_a_range_into_uniform_attribute_segments() {
+fn read_splits_a_range_into_uniform_attribute_segments() {
     let vault = fixture();
     let start = GUIDE_NOT.find("先读概述").unwrap();
     let end = GUIDE_NOT.find("完。").unwrap() + "完。".len();
@@ -368,7 +369,7 @@ fn info_splits_a_range_into_uniform_attribute_segments() {
         &vault,
         &[
             "inspect",
-            "info",
+            "read",
             "vault::guide",
             "--byte-range",
             &format!("{start}..{end}"),
@@ -387,21 +388,21 @@ fn info_splits_a_range_into_uniform_attribute_segments() {
         output.contains("[2] lines 10..14 bytes 154..172"),
         "{output}"
     );
-    // Editing handoff: header carries the module identity and fingerprint
-    // (the ModulePath is the file spelling, so no separate path echo).
-    assert!(output.contains("module <vault::guide>"), "{output}");
+    // Editing handoff: the header carries the module identity, the source
+    // path, and the fingerprint.
+    assert!(output.contains("module <vault::guide> guide.not"), "{output}");
     assert!(output.contains("fingerprint"), "{output}");
 }
 
 #[test]
-fn info_point_reports_the_full_effective_environment() {
+fn read_point_reports_the_full_effective_environment() {
     let vault = fixture();
     let offset = GUIDE_NOT.find("概述").unwrap();
     let output = run(
         &vault,
         &[
             "inspect",
-            "info",
+            "read",
             "vault::guide",
             "--offset",
             &offset.to_string(),
@@ -415,11 +416,11 @@ fn info_point_reports_the_full_effective_environment() {
 }
 
 #[test]
-fn info_line_range_validates_against_the_source() {
+fn read_line_range_validates_against_the_source() {
     let vault = fixture();
     let output = run(
         &vault,
-        &["inspect", "info", "vault::guide", "--line", "5..7"],
+        &["inspect", "read", "vault::guide", "--line", "5..7"],
     );
     assert!(output.contains("lines 5..7"), "{output}");
     let lines = GUIDE_NOT.lines().count();
@@ -429,7 +430,7 @@ fn info_line_range_validates_against_the_source() {
         .arg(vault.0.path())
         .args([
             "inspect",
-            "info",
+            "read",
             "vault::guide",
             "--line",
             &format!("{}..{}", lines + 5, lines + 9),
@@ -440,13 +441,81 @@ fn info_line_range_validates_against_the_source() {
     assert!(String::from_utf8_lossy(&failed.stderr).contains("outside the selected source"));
 }
 
+#[test]
+fn read_from_line_window_reads_to_the_end_and_clamps() {
+    let vault = fixture();
+    // Without --lines the window runs to the source end.
+    let tail = run(
+        &vault,
+        &["inspect", "read", "vault::guide", "--from-line", "12"],
+    );
+    assert!(tail.contains("lines 12..14"), "{tail}");
+    assert!(tail.contains("   14 | 完。"), "{tail}");
+    // A count past the end clamps instead of erroring (unlike --line,
+    // which validates strictly).
+    let clamped = run(
+        &vault,
+        &["inspect", "read", "vault::guide", "--from-line", "12", "--lines", "100"],
+    );
+    assert!(clamped.contains("lines 12..14"), "{clamped}");
+    // A bounded window inside the source selects exactly those lines.
+    let window = run(
+        &vault,
+        &["inspect", "read", "vault::guide", "--from-line", "8", "--lines", "2"],
+    );
+    assert!(window.contains("lines 8..9"), "{window}");
+    assert!(window.contains("    8 | == 故障排除"), "{window}");
+}
+
+#[test]
+fn read_lines_requires_from_line() {
+    let vault = fixture();
+    let failed = std::process::Command::new(env!("CARGO_BIN_EXE_notist"))
+        .arg("--no-daemon")
+        .arg("--vault")
+        .arg(vault.0.path())
+        .args(["inspect", "read", "vault::guide", "--lines", "3"])
+        .output()
+        .expect("failed to spawn the notist binary");
+    assert!(!failed.status.success(), "--lines without --from-line must fail");
+    assert!(String::from_utf8_lossy(&failed.stderr).contains("--from-line"));
+}
+
+#[test]
+fn read_byte_range_must_land_on_utf8_boundaries() {
+    let vault = fixture();
+    // One byte into the three-byte 概 character: not a UTF-8 boundary.
+    let start = GUIDE_NOT.find("概述").unwrap() + 1;
+    let end = GUIDE_NOT.len();
+    let failed = std::process::Command::new(env!("CARGO_BIN_EXE_notist"))
+        .arg("--no-daemon")
+        .arg("--vault")
+        .arg(vault.0.path())
+        .args([
+            "inspect",
+            "read",
+            "vault::guide",
+            "--byte-range",
+            &format!("{start}..{end}"),
+        ])
+        .output()
+        .expect("failed to spawn the notist binary");
+    assert!(!failed.status.success(), "mid-character ranges must fail");
+    let stderr = String::from_utf8_lossy(&failed.stderr);
+    assert!(
+        stderr.contains("invalid_argument"),
+        "typed error, not a panic: {stderr}"
+    );
+    assert!(stderr.contains("UTF-8 boundaries"));
+}
+
 /// `docs/example/test.not` is a standing test case: every `$ notist …` line
 /// in its trailing text block is an executable request. The fixture copies
 /// the example directory into a temporary vault (keeping the module at
 /// `vault::example::test`), rewrites the embedded `--vault docs` to the copy,
 /// and runs every request.
 #[test]
-fn info_executes_the_requests_embedded_in_the_example_fixture() {
+fn read_executes_the_requests_embedded_in_the_example_fixture() {
     let source_dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../docs/example");
     let text = std::fs::read_to_string(source_dir.join("test.not"))
         .expect("docs/example/test.not is part of the repo");
@@ -518,15 +587,15 @@ fn info_executes_the_requests_embedded_in_the_example_fixture() {
 }
 
 #[test]
-fn info_embeds_segment_content() {
+fn read_embeds_segment_content() {
     let vault = fixture();
     let start = GUIDE_NOT.find("先读概述").unwrap();
     let end = GUIDE_NOT.find("完。").unwrap() + "完。".len();
     let range = format!("{start}..{end}");
-    let run_info = |extra: &[&str]| {
+    let run_read = |extra: &[&str]| {
         let mut all = vec![
             "inspect",
-            "info",
+            "read",
             "vault::guide",
             "--byte-range",
             range.as_str(),
@@ -534,21 +603,21 @@ fn info_embeds_segment_content() {
         all.extend_from_slice(extra);
         run(&vault, &all)
     };
-    let output = run_info(&[]);
-    // Content is embedded per segment with the same gutter as read.
+    let output = run_read(&[]);
+    // Content is embedded per segment with the line-number gutter.
     assert!(output.contains("    6 | 先读概述"), "{output}");
     assert!(output.contains("   14 | 完。"), "{output}");
-    let quiet = run_info(&["--no-content"]);
+    let quiet = run_read(&["--attrs-only"]);
     assert!(!quiet.contains(" | "), "no gutter without content: {quiet}");
     assert!(!quiet.contains("先读概述"), "{quiet}");
 }
 
 #[test]
-fn info_color_changes_only_the_rendering() {
+fn read_color_changes_only_the_rendering() {
     let vault = fixture();
     let plain = run(
         &vault,
-        &["inspect", "info", "vault::guide", "--line", "5..7"],
+        &["inspect", "read", "vault::guide", "--line", "5..7"],
     );
     assert!(
         !plain.contains('\x1b'),
@@ -560,7 +629,7 @@ fn info_color_changes_only_the_rendering() {
         .arg("--no-daemon")
         .arg("--vault")
         .arg(vault.0.path())
-        .args(["inspect", "info", "vault::guide", "--line", "5..7"])
+        .args(["inspect", "read", "vault::guide", "--line", "5..7"])
         .output()
         .expect("failed to spawn the notist binary");
     let colored = String::from_utf8(output.stdout).unwrap();
