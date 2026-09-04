@@ -1,7 +1,7 @@
 @!(implementation: "aligned")
 = Reference and RefTarget
 
-本文是引用寻址与 RefTarget 的独立成篇，从归档的历史混合文档中独立成篇。Reference 元素的值层定义见 #<vault::designs::plugin-system::core/Core Constructors/内置构造器/link>。词汇——Module/ModulePath、Item/ItemId/ItemPath、匿名与具名、默认名规则——统一定义于 #<vault::model/Notist 数据模型/Item 树>（2026-08-31 起，取代 2026-08-28 的 ItemPath/ItemName/Item 词汇裁决，ItemName 更名 ItemId）；本文不再重复定义，只描述引用解析机制。
+本文是引用寻址与 RefTarget 的独立成篇，从归档的历史混合文档中独立成篇。Reference 元素的值层定义见 #<vault::designs::plugin-system::core/Core Constructors/内置构造器/link>。词汇——Module/ModulePath、Item/ItemId/ItemPath、匿名与具名、默认名规则——统一定义于 #<vault::model/Notist 数据模型/Item 树>；本文不再重复定义，只描述引用解析机制。
 
 == 引用与寻址
 

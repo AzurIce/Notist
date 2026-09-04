@@ -127,7 +127,6 @@ plugin-system/ 插件系统：package、ABI、贡献、信任模型与生命周�
 
 
 - #<vault::types>：`partial`（`T?` 归一为 union、期望类型下字面量逐成员 coercion、集合观察 builtin、rest 与实参交错未实现）
-- #<vault::designs::pipeline>：`aligned`（统一 Node 管线与 HTML target 二阶段投影已实现）
 - #<vault::designs::pipeline::evaluate>：`partial`（Node 值域已对齐；递归绑定与部分语言细节仍待实现）
 - #<vault::designs::plugin-system>：`partial`（完整 native/Wasm App API 与独立 runtime crate 尚未抽出）
 - #<vault::designs::plugin-system::package>：`partial`（package 模型与 core/native contribution 已实现；完整 package lifecycle/API 尚未收口）
@@ -136,13 +135,11 @@ plugin-system/ 插件系统：package、ABI、贡献、信任模型与生命周�
 - #<vault::designs::world::core-namespace-plugin-boundary>：`partial`（namespace policy 已明确；完整 package policy 校验仍需收口）
 - #<vault::designs::plugin-system::capability>：`partial`（backend 信任边界已裁定；统一 App composition 尚未收口）
 - #<vault::designs::plugin-system::safety>：`partial`（精确循环检测与完整 App 资源治理仍待收口）
-- #<vault::designs::pipeline::plugin-call-reduction>：`aligned`（统一 Node、handler 不动点与 target-side 投影边界已实现）
-- #<vault::designs::pipeline::project>：`aligned`（HTML target 已有独立 projection registry 与 serializer）
 - #<vault::designs::plugin-system::projection>：`partial`（Node 投影规约与 fallback 已实现；trusted/词表收口仍待定）
 - #<vault::designs::host::query-contract>：`partial`（text-only 投影与 `--exclude-scope` 尚未完整实现）
 - #<vault::designs::host::search-retrieval-index>：`partial`（`--exclude-scope` 未实现）
-- #<vault::designs::host::cli-command-surface-skill-distribution>：`partial`（2026-08-15 裁决的命令面未落地：`next`/`locate`/`refs`/`definition` 与 text-only 投影待实现）
-- #<vault::cli>：`partial`（完整 CLI 命令设计+使用规范；目标为 2026-08-15 裁决的命令面，当前 binary 仍为过渡 surface）
+- #<vault::designs::host::cli-command-surface-skill-distribution>：`partial`（命令面已落地为现行 inspect 面；`--scope`/`--exclude-scope` 集合过滤与 text-only 投影仍待实现）
+- #<vault::cli>：`partial`（完整 CLI 命令设计+使用规范；命令参考与 binary 已对齐现行 inspect 面，attrs 注解面目标形态仍在推进）
 - #<vault::lsp::test>：`partial`（错误规范接线、exit 非零码、cancel、跨文件联动、didSave 待补）
 
 位置本身表达治理状态：active 目录中的文档是现行设计；退休的文档直接移除。Git 是完整历史，不维护编号 ID 或 `Design:` trailer。
@@ -154,7 +151,3 @@ plugin-system/ 插件系统：package、ABI、贡献、信任模型与生命周�
 - 使用语义文件名；同名退休设计的区分交给 Git 历史。
 - 设计正文解释模型、边界与后果；实现状态只在文件头属性中声明，不写进行文。
 - 保持正文干练；判定规则用表，状态迁移用伪代码；每篇可独立 `notist check` 验证。
-
-== 历史编号
-
-本次重构前，设计文档使用 `D0001`–`D0036` 扁平编号。旧编号与语义路径的映射已随 archive 目录移除；旧提交仍可通过 Git 查看，不需要在当前树中保留编号壳。

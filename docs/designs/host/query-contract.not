@@ -26,7 +26,7 @@ text projection
   readable, same logical result, current public stdout
 ```
 
-完整结果契约（2026-08-29 裁决，推翻 2026-08-15 v3 的预算/cursor/next 制度）：collection 查询返回全部匹配，没有 item/byte 预算，没有翻页。契约护栏是输出形状而非截断器——输出正比于被查询的数据集，一行一记录，excerpt 不携带 full source；`--from-line`/`--depth` 型参数是语义窗口（调用者选择读取哪段），不是截断策略。无 scope 的宽查询灌入大量命中时，对策是收窄 `--scope` 与查询本身，如同 `rg` 的使用者。
+完整结果契约（2026-08-29 裁决）：collection 查询返回全部匹配，没有 item/byte 预算，没有翻页。契约护栏是输出形状而非截断器——输出正比于被查询的数据集，一行一记录，excerpt 不携带 full source；`--from-line`/`--depth` 型参数是语义窗口（调用者选择读取哪段），不是截断策略。无 scope 的宽查询灌入大量命中时，对策是收窄 `--scope` 与查询本身，如同 `rg` 的使用者。
 
 == Core Query Contract
 
@@ -97,7 +97,7 @@ PathSelector    { path: "types.not" }
 ItemSelector    { module: "vault::designs::language::property-table", name: "属性表" }
 ```
 
-规范输入是等价字符串：`vault::types`、`types.not` 或 `vault::designs::language::property-table/属性表`（Module 风格用 `/` 携带 ItemName，Path 风格因 `/` 是文件系统分隔符而用 `#`）。ItemName 的匹配顺序与引用寻址一致（#<vault::designs::world::reference-ref-target/Reference and RefTarget/引用与寻址/ItemId>）：先按显式 `id:` 标注，再按标题默认名（标题文本）精确匹配。短 basename、模糊路径与"最接近的 Module"不能静默解析；零匹配返回 `not_found`，多匹配返回 `ambiguous_selector` 和有界候选。模糊发现属于 search，不属于 selector resolution。
+规范输入是等价字符串：`vault::types`、`types.not` 或 `vault::designs::language::property-table/属性表`（Module 风格用 `/` 携带 ItemId，Path 风格因 `/` 是文件系统分隔符而用 `#`）。ItemId 的匹配顺序与引用寻址一致（#<vault::designs::world::reference-ref-target/Reference and RefTarget/引用与寻址/ItemId>）：先按显式 `id:` 标注，再按标题默认名（标题文本）精确匹配。短 basename、模糊路径与"最接近的 Module"不能静默解析；零匹配返回 `not_found`，多匹配返回 `ambiguous_selector` 和有界候选。模糊发现属于 search，不属于 selector resolution。
 
 所有可作为证据或编辑位置的 record 使用统一 location：
 
