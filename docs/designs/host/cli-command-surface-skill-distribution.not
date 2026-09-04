@@ -8,7 +8,7 @@
 
 完整的逐命令设计与使用文档在 #<vault::cli>；本文只固定 CLI 作为产品边界的治理规则，避免命令细节在这里形成第二真相。
 
-- 顶层命令只有 `inspect`、`check`、`index`、`daemon`、`lsp`、`skill`、`build`、`preview`（2026-08-29 裁决，实施中）。`inspect` 收纳 status、ls、search、locate、items、read、ancestors、refs、definition；`inspect --help` 是调查命令的唯一发现入口，日常知识工作只使用 inspect 与 check。命令面没有写命令（2026-08-28 裁决）：磁盘写入来自宿主编辑工具等外部进程，经 watcher 发布为新 snapshot，修改后用 `notist check` 验证。
+- 顶层命令只有 `inspect`、`check`、`index`、`daemon`、`lsp`、`skill`、`build`、`preview`（2026-08-29 裁决，实施中）。`inspect` 收纳 read、refs；`inspect --help` 是调查命令的唯一发现入口，日常知识工作只使用 inspect 与 check。命令面没有写命令（2026-08-28 裁决）：磁盘写入来自宿主编辑工具等外部进程，经 watcher 发布为新 snapshot，修改后用 `notist check` 验证。
 - 查询输出是完整结果，没有硬上界与翻页（2026-08-29 裁决）：输出正比于被查询的数据集，一行一记录；excerpt 是候选选择信息，不携带 full source。`--from-line`/`--depth` 型参数是语义窗口（选择读取哪段），不是截断策略，与截断器的边界见 #<vault::ai::2026-08-29 去上界输出与 inspect 命令面裁决>。
 - 全局参数只有 `--color auto|always|never`、`--no-daemon`、`--help`、`--version`；没有 `--format text|json`，也没有 `--pager`（2026-08-29 裁决）。
 - `debug` 与 `export` 移除（2026-08-29 裁决）：debug 是实现诊断工具且无外部引用；export 的"完整数据出口"职责随上界制度消失，stdout 本身已完整。
