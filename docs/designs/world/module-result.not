@@ -27,7 +27,7 @@ vault-root/
 
 === 资源目录
 
-资源文件（图片等）通过"目录模块 + 文件名 id"寻址：`vault::docs::images/logo.png` 指向 `docs/images/logo.png`。因此资源目录也进入 Module 树，作为虚拟模块：提供命名空间与 child identity（文件名即 ItemName），但没有 source、没有 Item、没有可 import 的 bindings。这是对旧设计"asset 目录不进 Module tree"的修正——寻址空间包含资源文件，求值与导入的语义仍只属于 `.not` source。
+资源文件（图片等）通过"目录模块 + 文件名 id"寻址：`vault::docs::images/logo.png` 指向 `docs/images/logo.png`。因此资源目录也进入 Module 树，作为虚拟模块：提供命名空间与 child identity（文件名即 ItemId），但没有 source、没有 Item、没有可 import 的 bindings；求值与导入的语义仍只属于 `.not` source。
 
 === ModuleResult
 
