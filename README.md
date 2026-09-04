@@ -49,11 +49,9 @@ nix profile install github:AzurIce/notist
 在 Vault 根（含 `Notist.toml` 的目录）下：
 
 ```sh
-notist inspect status --vault docs         # Vault、快照、诊断与索引概览
-notist check --vault docs                   # 校验模块与引用
-notist inspect search "workspace snapshot" --vault docs   # 检索（支持 --exact / --fuzzy）
 notist inspect read vault::grammar --vault docs    # 读取源文并标注生效属性环境
-notist inspect refs vault::intro --vault docs   # 谁在模块外部提及它（改名/移动/删除时的行动清单）
+notist inspect refs vault::intro --vault docs      # 谁在模块外部提及它（改名/移动/删除时的行动清单）
+notist check --vault docs                          # 校验模块与引用
 ```
 
 命令面没有写命令：用任何编辑器修改 `.not` 文件，daemon 通过 watcher 感知变更，改完跑 `notist check` 验证。`notist build` 与 `notist preview` 负责站点产出，`notist lsp` 供编辑器接入（Zed / Obsidian 插件即基于它）。完整命令规范见 `docs/cli/README.not`。
@@ -70,7 +68,7 @@ Skill 覆盖查询与导航命令、Selector/Scope 寻址、完整结果契约�
 
 ## 文档
 
-`docs/README.not` 是文档 Vault 的入口：语法参考、内置构造器、类型系统、CLI 规范、设计记录都从那里引用。仓库访客可直接读文件，Agent 与本机用户建议通过 `notist` CLI 查询（`notist inspect status` / `inspect search` / `inspect read` 等，见 `docs/cli/README.not`）。
+`docs/README.not` 是文档 Vault 的入口：语法参考、内置构造器、类型系统、CLI 规范、设计记录都从那里引用。仓库访客可直接读文件，Agent 与本机用户建议通过 `notist` CLI 查询（`notist inspect read` / `inspect refs` 等，见 `docs/cli/README.not`）。
 
 ## 相关项目
 
