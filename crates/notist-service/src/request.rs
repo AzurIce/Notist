@@ -167,9 +167,9 @@ pub enum CoreRequest {
         view_id: ServiceViewId,
         query: crate::query::RegionQuery,
     },
-    ReferencesPage {
+    RefsPage {
         view_id: ServiceViewId,
-        query: crate::query::ReferencesQuery,
+        query: crate::query::RefsQuery,
     },
     WorkspaceSymbols {
         view_id: ServiceViewId,
@@ -235,7 +235,7 @@ impl CoreRequest {
             | Self::Ancestors { view_id, .. }
             | Self::Locate { view_id, .. }
             | Self::Region { view_id, .. }
-            | Self::ReferencesPage { view_id, .. }
+            | Self::RefsPage { view_id, .. }
             | Self::WorkspaceSymbols { view_id, .. }
             | Self::Search { view_id, .. }
             | Self::SearchPage { view_id, .. }
@@ -401,7 +401,7 @@ pub enum CoreResponse {
     Locate(crate::query::LocateRecord),
     Region(crate::query::QueryResult<crate::query::RegionRecord>),
     Ancestors(crate::query::QueryResult<crate::query::AncestorRecord>),
-    ReferencesPage(crate::query::QueryResult<crate::query::ReferenceRecord>),
+    RefsPage(crate::query::QueryResult<crate::query::RefRecord>),
     WorkspaceSymbols(Vec<WorkspaceSymbolRecord>),
     ResolvedReference(RefTargetRecord),
     Search(Vec<SearchRecord>),
@@ -1514,15 +1514,15 @@ impl NotistService {
                     },
                 })
             }
-            CoreRequest::ReferencesPage { view_id, query } => {
+            CoreRequest::RefsPage { view_id, query } => {
                 let (snapshot, result) = self
                     .with_snapshot_identity(view_id, |workspace, identity| {
-                        crate::query::references(workspace, identity, &query)
+                        crate::query::refs(workspace, identity, &query)
                     })?;
                 Ok(CoreReply {
                     snapshot,
                     response: match result {
-                        Ok(page) => CoreResponse::ReferencesPage(page),
+                        Ok(page) => CoreResponse::RefsPage(page),
                         Err(error) => CoreResponse::QueryError(error),
                     },
                 })
@@ -3248,7 +3248,8 @@ mod tests {
     fn ancestors_response(
         service: &NotistService,
         view_id: ServiceViewId,
-        selector: &str,
+        module: &str,
+        item: Option<&str>,
         offset: Option<usize>,
         byte_range: Option<ByteRange>,
     ) -> CoreResponse {
@@ -3256,7 +3257,10 @@ mod tests {
             .execute(CoreRequest::Ancestors {
                 view_id,
                 query: crate::query::AncestorsQuery {
-                    selector: crate::query::Selector::parse(selector),
+                    selector: crate::query::Selector {
+                        module: module.to_owned(),
+                        item: item.map(str::to_owned),
+                    },
                     offset,
                     byte_range,
                 },
@@ -3279,6 +3283,7 @@ mod tests {
             &service,
             view_id,
             "vault::guide",
+            None,
             None,
             None,
         ));
@@ -3306,6 +3311,7 @@ mod tests {
             &service,
             view_id,
             "vault::guide",
+            None,
             Some(offset),
             None,
         ));
@@ -3334,6 +3340,7 @@ mod tests {
             &service,
             view_id,
             "vault::guide",
+            None,
             Some(offset),
             None,
         ));
@@ -3359,6 +3366,7 @@ mod tests {
             view_id,
             "vault::guide",
             None,
+            None,
             Some(ByteRange { start, end }),
         ));
         assert_eq!(records.len(), 1);
@@ -3380,7 +3388,8 @@ mod tests {
         let records = expect_ancestors(ancestors_response(
             &service,
             view_id,
-            "vault::guide/安装",
+            "vault::guide",
+            Some("安装"),
             None,
             None,
         ));
@@ -3403,6 +3412,7 @@ mod tests {
             &service,
             view_id,
             "vault::guide",
+            None,
             None,
             Some(ByteRange { start, end }),
         ));
@@ -3433,7 +3443,8 @@ mod tests {
         // ItemId: a genuine duplicate, reported as a typed query error.
         let (service, view_id, _root) =
             ancestors_fixture("dupe.not", "= 重复\n\n一段。\n\n= 重复\n\n另一段。\n");
-        let response = ancestors_response(&service, view_id, "vault::dupe/重复", None, None);
+        let response =
+            ancestors_response(&service, view_id, "vault::dupe", Some("重复"), None, None);
         let CoreResponse::QueryError(error) = response else {
             panic!("expected a query error")
         };
@@ -3446,7 +3457,8 @@ mod tests {
         // nested duplicate resolves through its title chain.
         let (service, view_id, _root) =
             ancestors_fixture("dupe.not", "= 重复\n\n一段。\n\n== 重复\n\n另一段。\n");
-        let response = ancestors_response(&service, view_id, "vault::dupe/重复/重复", None, None);
+        let response =
+            ancestors_response(&service, view_id, "vault::dupe", Some("重复/重复"), None, None);
         assert!(
             matches!(response, CoreResponse::Ancestors(_)),
             "title chain resolves the nested heading: {response:?}"
@@ -3457,7 +3469,14 @@ mod tests {
     fn ancestors_rejects_offsets_that_are_not_utf8_boundaries() {
         let (service, view_id, _root) = ancestors_fixture("guide.not", ANCESTORS_SOURCE);
         let offset = ANCESTORS_SOURCE.find("概述").unwrap() + 1;
-        let response = ancestors_response(&service, view_id, "vault::guide", Some(offset), None);
+        let response = ancestors_response(
+            &service,
+            view_id,
+            "vault::guide",
+            None,
+            Some(offset),
+            None,
+        );
         let CoreResponse::QueryError(error) = response else {
             panic!("expected a query error")
         };
@@ -3471,6 +3490,7 @@ mod tests {
             &service,
             view_id,
             "vault::guide",
+            None,
             Some(0),
             Some(ByteRange { start: 0, end: 4 }),
         );
@@ -3483,13 +3503,17 @@ mod tests {
     fn items_records(
         service: &NotistService,
         view_id: ServiceViewId,
-        selector: &str,
+        module: &str,
+        item: Option<&str>,
     ) -> Result<Vec<crate::query::ItemRecord>, crate::query::ToolError> {
         match service
             .execute(CoreRequest::Items {
                 view_id,
                 query: crate::query::ItemsQuery {
-                    selector: crate::query::Selector::parse(selector),
+                    selector: crate::query::Selector {
+                        module: module.to_owned(),
+                        item: item.map(str::to_owned),
+                    },
                 },
             })
             .unwrap()
@@ -3507,7 +3531,7 @@ mod tests {
             "mixed.not",
             "@(id: \"renamed\")#heading[原标题]\n\n正文。\n\n= 原标题\n\n另一节。\n",
         );
-        let records = items_records(&service, view_id, "vault::mixed").unwrap();
+        let records = items_records(&service, view_id, "vault::mixed", None).unwrap();
         assert_eq!(records.len(), 2);
         assert_eq!(records[0].name, "renamed");
         assert_eq!(records[0].origin, "id");
@@ -3518,7 +3542,8 @@ mod tests {
         assert_eq!(records[1].origin, "heading");
         assert!(records[1].ambiguous);
 
-        let error = items_records(&service, view_id, "vault::mixed/renamed").unwrap_err();
+        let error =
+            items_records(&service, view_id, "vault::mixed", Some("renamed")).unwrap_err();
         assert_eq!(error.code, "invalid_argument");
     }
 
@@ -3538,7 +3563,7 @@ mod tests {
         let CoreResponse::Opened { view_id, .. } = opened.response else {
             panic!("expected opened view")
         };
-        let records = items_records(&service, view_id, "vault::assets").unwrap();
+        let records = items_records(&service, view_id, "vault::assets", None).unwrap();
         assert_eq!(records.len(), 1);
         assert_eq!(records[0].name, "logo.png");
         assert_eq!(records[0].kind, "resource:image");

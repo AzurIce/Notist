@@ -13,15 +13,14 @@ Core request     CLI          LSP
 
 definition_at    definition   textDocument/definition
 references_to    refs         textDocument/references
-references_in    refs --outgoing —
+references_in    —            —
 document_symbols items        textDocument/documentSymbol
 search           search/locate workspace/symbol
 diagnostics      check        publishDiagnostics
 resolve_reference —      —
-references_in    references --direction outgoing —
 ```
 
-`resolve_reference` 把引用元素的 url 解析为 RefTarget（见 #<vault::designs::world::reference-ref-target/Reference and RefTarget/引用与寻址/解析产物：RefTarget>），`Missing` 目标如实进入诊断；它不设独立 CLI 命令，由 read、refs 与 build 内部消费。`references_in` 正向列出某段 Item 引用了什么，返回 `[{relation, url, target}]`，CLI 投影为 `refs --outgoing`。relation 与目标类型正交：relation 区分导航与嵌入（当前只有 Reference，Preview 预留），目标类型由分析层 resolve 给出——值层不解释 url。
+`resolve_reference` 把引用元素的 url 解析为 RefTarget（见 #<vault::designs::world::reference-ref-target/Reference and RefTarget/引用与寻址/解析产物：RefTarget>），`Missing` 目标如实进入诊断；它不设独立 CLI 命令，由 read、refs 与 build 内部消费。`references_in` 正向列出某段 Item 引用了什么，返回 `[{relation, url, target}]`；出链写在源文里，CLI 尚无投影。relation 与目标类型正交：relation 区分导航与嵌入（当前只有 Reference，Preview 预留），目标类型由分析层 resolve 给出——值层不解释 url。
 
 CLI 命令不直接扫描 Vault 或访问 parser 私有结构：它连接 daemon，把参数转换为 core request，再把 response 格式化为 bounded text projection。LSP 负责 URI、Position、document lifecycle 与 capability negotiation；Agent 侧的调用约定由 #<vault::cli> 与官方 Skill 定义。一个能力可以同时出现在多个 interface，但语义必须来自同一个 core operation——不能让 `notist refs` 与 LSP references 分别实现两套解析规则。
 

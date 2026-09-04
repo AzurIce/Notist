@@ -1,0 +1,22 @@
+@(id: "alias")
+= 二
+
+二的正文先自引 #<vault::test::refs/二/三> 。
+
+== 三
+
+@(id: "mid")
+三里的段落也是可寻址的 ScopeItem，能被单独引用。
+
+三的正文再自引 #<vault::test::refs/二> 。
+
+上文构造了 refs 的判定面：`refs_in` 从区域外用标题链与 `@id` 两种拼写提及 `二`，用 `super::` 相对拼写提及 `二/三`，再引用段中 ScopeItem `mid` 并直指模块自身；模块内部的两次自引各有职责——`二` 里的 `二/三` 自引对模块查询是内部边、对 `--item 二/三` 却是穿越入链（区域抬升改变边的身份），`三` 里的 `二` 自引则是任何查询都看不见的纯内部边。嵌套节按全链名寻址（`二/三`，裸 `三` 不是 ItemName）。下面每条 `$ notist` 命令都是本文件的可执行测试案例（从仓库根目录运行）。
+
+```text
+$ notist inspect refs vault::test::refs --vault docs
+$ notist inspect refs vault::test::refs --item 二 --vault docs
+$ notist inspect refs vault::test::refs --item alias --vault docs
+$ notist inspect refs vault::test::refs --item mid --vault docs
+$ notist inspect refs vault::test::refs --item 二/三 --vault docs
+$ notist inspect refs vault::test::refs_in --vault docs
+```

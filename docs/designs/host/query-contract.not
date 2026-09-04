@@ -112,6 +112,6 @@ Location {
 }
 ```
 
-snapshot 由所在 QueryResult 统一携带，Location 不再重复。普通 text 输出默认不显示 canonical absolute path，也不为每个 location 重复整篇 source。excerpt 是候选选择信息，不是独立事实来源；search 与 references 的结果必须引导调用者在形成事实性回答前使用 `read`。
+snapshot 由所在 QueryResult 统一携带，Location 不再重复。普通 text 输出默认不显示 canonical absolute path，也不为每个 location 重复整篇 source。excerpt 是候选选择信息，不是独立事实来源；search 与 refs 的结果必须引导调用者在形成事实性回答前使用 `read`。
 
 由于普通 CLI 不输出 JSON envelope，`read` 的 text 投影必须把 citation 所需的机器句柄显式打印出来：ModulePath、relative path、实际 UTF-8 byte range、line range 与 source fingerprint。读取结果保留这些精确值，使引用、后续 query 与外部写入方的前置校验能指向同一 authored source。

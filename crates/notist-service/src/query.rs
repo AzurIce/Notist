@@ -5,7 +5,7 @@ use std::time::{Duration, Instant};
 
 use notist_analysis::{
     DiagnosticKind, DiagnosticSeverity as AnalysisSeverity, MaterializedAttributes, MissingReason,
-    RefTarget, WorkspaceSnapshot, node_text,
+    ModuleId, RefTarget, WorkspaceSnapshot, node_text,
 };
 use notist_model::{ModulePath, Node, NodeValue, TextRange};
 use notist_syntax::ExpressionKind;
@@ -89,48 +89,15 @@ impl ToolError {
     }
 }
 
+/// A query target in identity space: an absolute ModulePath plus an
+/// optional ItemName selecting one item's region inside the module. OS
+/// paths have no selector form — the identity-to-path handoff is `read`'s
+/// header, the reverse bridge is `inspect locate` (2026-08-30 ruling).
 #[derive(Clone, Debug, Serialize, Deserialize)]
-#[serde(tag = "kind", rename_all = "snake_case")]
-pub enum Selector {
-    Module {
-        module: String,
-        #[serde(default)]
-        name: Option<String>,
-    },
-    Path {
-        path: PathBuf,
-        #[serde(default)]
-        name: Option<String>,
-    },
-}
-
-impl Selector {
-    pub fn parse(value: &str) -> Self {
-        // Module selectors use the source-level `/` ItemName separator:
-        // `vault::guide/install`. Path selectors keep `#` because `/` is the
-        // filesystem separator: `docs/guide.not#install`.
-        let module_style = value == "vault" || value.starts_with("vault::");
-        let (head, name) = if module_style {
-            value
-                .split_once('/')
-                .map_or((value, None), |(head, name)| (head, Some(name.to_owned())))
-        } else {
-            value
-                .split_once('#')
-                .map_or((value, None), |(head, name)| (head, Some(name.to_owned())))
-        };
-        if module_style {
-            Self::Module {
-                module: head.to_owned(),
-                name,
-            }
-        } else {
-            Self::Path {
-                path: PathBuf::from(head),
-                name,
-            }
-        }
-    }
+pub struct Selector {
+    pub module: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub item: Option<String>,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -331,31 +298,23 @@ pub enum ReferenceDirection {
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
-pub struct ReferencesQuery {
+pub struct RefsQuery {
     pub selector: Selector,
-    #[serde(default)]
-    pub direction: ReferenceDirection,
-    #[serde(default)]
-    pub include_definition: bool,
-    #[serde(default = "default_snippet_bytes")]
-    pub snippet_bytes: usize,
 }
 
+/// One incoming reference crossing the selected region's boundary: the
+/// resolved canonical target identity (folding makes edges target different
+/// items inside the region), the mentioning module, and the mention's full
+/// authored source lines in read's gutter grammar.
 #[derive(Clone, Debug, Serialize, Deserialize)]
-pub struct ReferenceRecord {
-    pub source: String,
+pub struct RefRecord {
+    /// Resolved target identity `ModulePath[/ItemName]`; a bare ModulePath
+    /// when the edge points at the module itself.
     pub target: String,
-    pub direction: String,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub relation: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub url: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub target_kind: Option<String>,
+    /// Logical path of the module carrying the mentioning span.
+    pub source: String,
     pub location: Location,
-    pub excerpt: String,
-    pub excerpt_truncated: bool,
-    pub is_definition: bool,
+    pub content: Vec<RegionLine>,
 }
 
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq, Serialize, Deserialize)]
@@ -565,7 +524,6 @@ pub struct DiagnosticsResult {
 struct ResolvedSource<'a> {
     module: &'a notist_analysis::Module,
     source: &'a notist_analysis::SourceInput,
-    name: Option<String>,
     selection: TextRange,
 }
 
@@ -604,55 +562,14 @@ pub fn items(
     snapshot: &SnapshotIdentity,
     query: &ItemsQuery,
 ) -> Result<QueryResult<ItemRecord>, ToolError> {
-    let module = match &query.selector {
-        Selector::Module { module, name } => {
-            if name.is_some() {
-                return Err(ToolError::new(
-                    "invalid_argument",
-                    "items takes a module or path selector without an item name",
-                ));
-            }
-            let path = parse_absolute_module_path(module).ok_or_else(|| {
-                ToolError::new(
-                    "invalid_selector",
-                    "module selector must be an absolute ModulePath",
-                )
-            })?;
-            workspace.module(&path).ok_or_else(|| {
-                ToolError::new("not_found", format!("module `{module}` was not found"))
-            })?
+    let module = {
+        if query.selector.item.is_some() {
+            return Err(ToolError::new(
+                "invalid_argument",
+                "items takes a module selector without an item name",
+            ));
         }
-        Selector::Path { path, name } => {
-            if name.is_some() {
-                return Err(ToolError::new(
-                    "invalid_argument",
-                    "items takes a module or path selector without an item name",
-                ));
-            }
-            let absolute = if path.is_absolute() {
-                path.clone()
-            } else {
-                workspace.root().join(path)
-            };
-            let absolute = dunce::canonicalize(&absolute).map_err(|_| {
-                ToolError::new(
-                    "not_found",
-                    format!("source `{}` was not found", path.display()),
-                )
-            })?;
-            if !absolute.starts_with(workspace.root()) {
-                return Err(ToolError::new(
-                    "invalid_selector",
-                    "source path escapes the Vault",
-                ));
-            }
-            workspace.module_for_source(&absolute).ok_or_else(|| {
-                ToolError::new(
-                    "not_found",
-                    format!("source `{}` is not a Notist module", path.display()),
-                )
-            })?
-        }
+        selector_module(workspace, &query.selector.module)?
     };
     let source = module.file_id.and_then(|file_id| workspace.source(file_id));
     let structured = module
@@ -2014,119 +1931,244 @@ pub fn ref_target_record(
     }
 }
 
-pub fn references(
+/// Canonical region one addressable item governs: a subtree range for
+/// scopes, no source region for resources.
+#[derive(Clone, Copy, Debug)]
+enum ItemRegion {
+    Scope(TextRange),
+    Resource,
+}
+
+/// Canonical regions of one module's addressable items. Heading-chain items
+/// and heading-bound `@id` labels resolve to their governing section's
+/// range, non-heading `@id` blocks govern their own block range, and
+/// resources carry no source region. `@id` names and heading chains are two
+/// spellings of the same node (chain ids are heading texts regardless of
+/// `id:` annotations), so both spellings must land on one region or subtree
+/// containment breaks on alias boundaries.
+#[derive(Clone, Debug)]
+struct ModuleRegions {
+    /// Target-side lookup: ItemName → canonical region. Insertion mirrors
+    /// `resolve_item_name` precedence: labels over heading chains over
+    /// resources.
+    by_name: HashMap<String, ItemRegion>,
+    /// Mention-side attribution: canonical region → ItemName, exactly one
+    /// name per region (heading chains as the default identity, `@id` names
+    /// only for blocks no chain names).
+    spans: Vec<(TextRange, String)>,
+}
+
+fn module_item_regions(
     workspace: &WorkspaceSnapshot,
-    snapshot: &SnapshotIdentity,
-    query: &ReferencesQuery,
-) -> Result<QueryResult<ReferenceRecord>, ToolError> {
-    validate_snippet(query.snippet_bytes)?;
-    let resolved = resolve_source(workspace, &query.selector)?;
-    let target_name = resolved.name.as_deref();
-    let mut records = Vec::new();
-    if matches!(
-        query.direction,
-        ReferenceDirection::Incoming | ReferenceDirection::Both
-    ) {
-        for reference in workspace.references().iter().filter(|reference| {
-            reference.target_module_id == resolved.module.id
-                && reference.target_name.as_deref() == target_name
-        }) {
-            if let Some(source) = workspace.source(reference.source_file_id)
-                && let Some(module) = workspace.module_at(reference.source_file_id)
-            {
-                let (excerpt, _, truncated) =
-                    excerpt(&source.text, reference.range, query.snippet_bytes);
-                records.push(ReferenceRecord {
-                    source: module.logical_path.to_string(),
-                    target: resolved.module.logical_path.to_string(),
-                    direction: "incoming".into(),
-                    relation: None,
-                    url: None,
-                    target_kind: None,
-                    location: location(workspace, module, source, reference.range, None),
-                    excerpt,
-                    excerpt_truncated: truncated,
-                    is_definition: false,
-                });
+    module: &notist_analysis::Module,
+) -> ModuleRegions {
+    let mut by_name: HashMap<String, ItemRegion> = HashMap::new();
+    let mut spans: Vec<(TextRange, String)> = Vec::new();
+    for resource in &module.resources {
+        by_name.insert(resource.name.clone(), ItemRegion::Resource);
+    }
+    let mut section_ranges: HashMap<String, TextRange> = HashMap::new();
+    if let Some(structured) = workspace.structured_module(module.id) {
+        let mut scopes = Vec::new();
+        collect_section_scopes(&structured.tree.roots, &mut scopes);
+        for (chain, range) in scopes {
+            by_name.insert(chain.clone(), ItemRegion::Scope(range));
+            section_ranges.insert(chain.clone(), range);
+            spans.push((range, chain));
+        }
+    }
+    let headings = workspace.module_heading_default_ids(&module.logical_path);
+    for label in workspace
+        .labels()
+        .iter()
+        .filter(|label| label.module == module.logical_path)
+    {
+        // A label bound to a heading folds into that heading's section (the
+        // heading node's block span covers the binding span, and it is the
+        // only heading that does) — the section entry already carries the
+        // attribution. Labels on non-heading blocks are regions of their
+        // own, named by the label.
+        let bound_section = headings
+            .iter()
+            .filter(|(_, heading)| {
+                heading.start <= label.scope_range.start
+                    && label.scope_range.end <= heading.end
+            })
+            .min_by_key(|(_, heading)| heading.end - heading.start)
+            .and_then(|(chain, _)| section_ranges.get(chain));
+        match bound_section {
+            Some(range) => {
+                by_name.insert(label.name.clone(), ItemRegion::Scope(*range));
+            }
+            None => {
+                by_name.insert(label.name.clone(), ItemRegion::Scope(label.scope_range));
+                spans.push((label.scope_range, label.name.clone()));
             }
         }
     }
-    if matches!(
-        query.direction,
-        ReferenceDirection::Outgoing | ReferenceDirection::Both
-    ) {
-        for reference in workspace.references().iter().filter(|reference| {
-            reference.source_module_id == resolved.module.id
-                && target_name.is_none_or(|name| {
-                    resolved.selection.start <= reference.range.start
-                        && reference.range.end <= resolved.selection.end
-                        && !name.is_empty()
-                })
-        }) {
-            let (excerpt, _, truncated) =
-                excerpt(&resolved.source.text, reference.range, query.snippet_bytes);
-            let target_kind = reference.target_name.as_deref().map_or("module", |name| {
-                match workspace.resolve_item_name(&reference.target_module, name) {
-                    RefTarget::Item { kind, .. } => match kind {
-                        notist_analysis::ItemKind::Scope => "scope",
-                        notist_analysis::ItemKind::Resource(_) => "resource",
-                    },
-                    _ => "scope",
-                }
-            });
-            records.push(ReferenceRecord {
-                source: resolved.module.logical_path.to_string(),
-                target: reference.target_module.to_string(),
-                direction: "outgoing".into(),
-                relation: Some("reference".into()),
-                url: Some(reference.url.clone()),
-                target_kind: Some(target_kind.into()),
-                location: location(
-                    workspace,
-                    resolved.module,
-                    resolved.source,
-                    reference.range,
-                    resolved.name.clone(),
+    ModuleRegions { by_name, spans }
+}
+
+/// The region a refs query folds references into: the whole module, one
+/// item's canonical subtree, or one resource item.
+#[derive(Clone, Debug)]
+enum RefsRegion {
+    Module,
+    Scope(TextRange),
+    Resource(String),
+}
+
+/// Lists the references crossing into the selected region (`inspect refs`):
+/// an edge qualifies when its resolved target lands inside the region and
+/// its mentioning span lies outside. Target membership is decided on
+/// canonical item regions — never on `target_range` overlap (a section's
+/// range covers its whole subtree, so overlap would read ancestor targets
+/// as members) and never on the target's surface spelling.
+pub fn refs(
+    workspace: &WorkspaceSnapshot,
+    snapshot: &SnapshotIdentity,
+    query: &RefsQuery,
+) -> Result<QueryResult<RefRecord>, ToolError> {
+    let module = selector_module(workspace, &query.selector.module)?;
+    // Canonical regions per module: the queried module's map serves both
+    // target-side membership and self-module source attribution; other
+    // mentioning modules are built lazily into the cache.
+    let queried = module_item_regions(workspace, module);
+    let mut module_cache: HashMap<ModuleId, ModuleRegions> = HashMap::new();
+    let region = match &query.selector.item {
+        None => RefsRegion::Module,
+        Some(name) => match workspace.resolve_item_name(&module.logical_path, name) {
+            RefTarget::Item {
+                kind: notist_analysis::ItemKind::Scope,
+                ..
+            } => match queried.by_name.get(name) {
+                Some(ItemRegion::Scope(range)) => RefsRegion::Scope(*range),
+                // The region map and `resolve_item_name` walk the same
+                // sources; a miss degrades to the block range rather than
+                // inventing members.
+                _ => RefsRegion::Scope(
+                    workspace
+                        .item_name_range(&module.logical_path, name)
+                        .unwrap_or(TextRange::new(0, 0)),
                 ),
-                excerpt,
-                excerpt_truncated: truncated,
-                is_definition: false,
-            });
+            },
+            RefTarget::Item {
+                kind: notist_analysis::ItemKind::Resource(_),
+                ..
+            } => RefsRegion::Resource(name.clone()),
+            RefTarget::Missing(MissingReason::Ambiguous) => {
+                return Err(ToolError::new(
+                    "ambiguous_selector",
+                    format!(
+                        "item name `{name}` in `{}` matches multiple headings; add an explicit `@id` to disambiguate",
+                        module.logical_path
+                    ),
+                )
+                .with_hint("use an explicit id or a more specific selector"));
+            }
+            _ => {
+                return Err(ToolError::new(
+                    "not_found",
+                    format!(
+                        "item name `{name}` was not found in {}",
+                        module.logical_path
+                    ),
+                ));
+            }
+        },
+    };
+    let mut records = Vec::new();
+    for reference in workspace.references() {
+        let target_inside = match &region {
+            RefsRegion::Module => reference.target_module_id == module.id,
+            RefsRegion::Scope(range) => {
+                reference.target_module_id == module.id
+                    && reference
+                        .target_name
+                        .as_deref()
+                        .and_then(|name| queried.by_name.get(name))
+                        .and_then(|member| match member {
+                            ItemRegion::Scope(member_range) => Some(*member_range),
+                            ItemRegion::Resource => None,
+                        })
+                        .is_some_and(|member_range| fully_contains(*range, member_range))
+            }
+            RefsRegion::Resource(name) => {
+                reference.target_module_id == module.id
+                    && reference.target_name.as_deref() == Some(name.as_str())
+            }
+        };
+        if !target_inside {
+            continue;
         }
-    }
-    if query.include_definition {
-        records.push(ReferenceRecord {
-            source: resolved.module.logical_path.to_string(),
-            target: resolved.module.logical_path.to_string(),
-            direction: "definition".into(),
-            relation: None,
-            url: None,
-            target_kind: None,
-            location: location(
-                workspace,
-                resolved.module,
-                resolved.source,
-                resolved.selection,
-                resolved.name.clone(),
-            ),
-            excerpt: String::new(),
-            excerpt_truncated: false,
-            is_definition: true,
+        let mention_inside = match &region {
+            RefsRegion::Module => reference.source_module_id == module.id,
+            RefsRegion::Scope(range) => {
+                reference.source_module_id == module.id && fully_contains(*range, reference.range)
+            }
+            RefsRegion::Resource(_) => false,
+        };
+        if mention_inside {
+            continue;
+        }
+        let Some(source) = workspace.source(reference.source_file_id) else {
+            continue;
+        };
+        let Some(source_module) = workspace.module_at(reference.source_file_id) else {
+            continue;
+        };
+        // Attribute the mention to the innermost canonical region containing
+        // its span; content outside every scope degrades to the module root.
+        let source_regions = if reference.source_module_id == module.id {
+            &queried
+        } else {
+            module_cache.entry(reference.source_module_id).or_insert_with(
+                || module_item_regions(workspace, source_module),
+            )
+        };
+        let source_identity = source_regions
+            .spans
+            .iter()
+            .filter(|(range, _)| fully_contains(*range, reference.range))
+            .min_by_key(|(range, _)| range.end - range.start)
+            .map_or_else(
+                || source_module.logical_path.to_string(),
+                |(_, name)| format!("{}/{}", source_module.logical_path, name),
+            );
+        let target = reference.target_name.as_deref().map_or_else(
+            || reference.target_module.to_string(),
+            |name| format!("{}/{}", reference.target_module, name),
+        );
+        let starts = line_starts(&source.text);
+        let content = content_lines(
+            &source.text,
+            &starts,
+            reference.range.start,
+            reference.range.end,
+        );
+        records.push(RefRecord {
+            target,
+            source: source_identity,
+            location: location(workspace, source_module, source, reference.range, None),
+            content,
         });
     }
     records.sort_by(|left, right| {
-        left.location.module.cmp(&right.location.module).then(
-            left.location
-                .byte_range
-                .start
-                .cmp(&right.location.byte_range.start),
-        )
+        left.location
+            .module
+            .cmp(&right.location.module)
+            .then(left.location.byte_range.start.cmp(&right.location.byte_range.start))
     });
+    let hints = if records.is_empty() {
+        vec!["nothing outside the selected region mentions this target".to_string()]
+    } else {
+        Vec::new()
+    };
     Ok(QueryResult {
         snapshot: snapshot.clone(),
         records,
         search: None,
-        hints: Vec::new(),
+        hints,
     })
 }
 
@@ -3604,50 +3646,40 @@ fn validate_snippet(bytes: usize) -> Result<(), ToolError> {
     Ok(())
 }
 
+/// Resolves the module half of a selector. A `/` in the string means the
+/// caller is using the retired inline ItemPath spelling (`module/item`) —
+/// a typed error with the `--item` migration, not a module lookup miss.
+fn selector_module<'a>(
+    workspace: &'a WorkspaceSnapshot,
+    module: &str,
+) -> Result<&'a notist_analysis::Module, ToolError> {
+    if let Some((head, item)) = module.split_once('/') {
+        if module.starts_with("vault") {
+            return Err(ToolError::new(
+                "invalid_selector",
+                format!(
+                    "`{module}` mixes the ModulePath and ItemPath spellings; ModulePath segments join with `::`"
+                ),
+            )
+            .with_hint(format!("pass the item separately: `{head}` --item {item}")));
+        }
+    }
+    let path = parse_absolute_module_path(module).ok_or_else(|| {
+        ToolError::new(
+            "invalid_selector",
+            "module selector must be an absolute ModulePath",
+        )
+    })?;
+    workspace.module(&path).ok_or_else(|| {
+        ToolError::new("not_found", format!("module `{module}` was not found"))
+    })
+}
+
 fn resolve_source<'a>(
     workspace: &'a WorkspaceSnapshot,
     selector: &Selector,
 ) -> Result<ResolvedSource<'a>, ToolError> {
-    let (module, name) = match selector {
-        Selector::Module { module, name } => {
-            let path = parse_absolute_module_path(module).ok_or_else(|| {
-                ToolError::new(
-                    "invalid_selector",
-                    "module selector must be an absolute ModulePath",
-                )
-            })?;
-            let module = workspace.module(&path).ok_or_else(|| {
-                ToolError::new("not_found", format!("module `{module}` was not found"))
-            })?;
-            (module, name.clone())
-        }
-        Selector::Path { path, name } => {
-            let absolute = if path.is_absolute() {
-                path.clone()
-            } else {
-                workspace.root().join(path)
-            };
-            let absolute = dunce::canonicalize(&absolute).map_err(|_| {
-                ToolError::new(
-                    "not_found",
-                    format!("source `{}` was not found", path.display()),
-                )
-            })?;
-            if !absolute.starts_with(workspace.root()) {
-                return Err(ToolError::new(
-                    "invalid_selector",
-                    "source path escapes the Vault",
-                ));
-            }
-            let module = workspace.module_for_source(&absolute).ok_or_else(|| {
-                ToolError::new(
-                    "not_found",
-                    format!("source `{}` is not a Notist module", path.display()),
-                )
-            })?;
-            (module, name.clone())
-        }
-    };
+    let module = selector_module(workspace, &selector.module)?;
     let file_id = module.file_id.ok_or_else(|| {
         ToolError::new(
             "not_found",
@@ -3655,14 +3687,28 @@ fn resolve_source<'a>(
         )
     })?;
     let source = workspace.source(file_id).unwrap();
-    let selection = if let Some(item_name) = &name {
+    let selection = if let Some(item_name) = &selector.item {
         match workspace.resolve_item_name(&module.logical_path, item_name) {
             RefTarget::Item {
                 kind: notist_analysis::ItemKind::Scope,
                 ..
-            } => workspace
-                .item_name_range(&module.logical_path, item_name)
-                .unwrap_or(TextRange::new(0, source.text.len())),
+            } => {
+                // An item selects its whole governing subtree — the same
+                // canonical regions refs folds by — not just the heading or
+                // annotation block the ItemName anchors to.
+                let subtree = module_item_regions(workspace, module)
+                    .by_name
+                    .get(item_name)
+                    .and_then(|region| match region {
+                        ItemRegion::Scope(range) => Some(*range),
+                        ItemRegion::Resource => None,
+                    });
+                subtree.unwrap_or_else(|| {
+                    workspace
+                        .item_name_range(&module.logical_path, item_name)
+                        .unwrap_or(TextRange::new(0, source.text.len()))
+                })
+            }
             RefTarget::Missing(MissingReason::Ambiguous) => {
                 return Err(ToolError::new(
                     "ambiguous_selector",
@@ -3698,7 +3744,6 @@ fn resolve_source<'a>(
     Ok(ResolvedSource {
         module,
         source,
-        name,
         selection,
     })
 }

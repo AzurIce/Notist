@@ -1,0 +1,6 @@
+= 一
+
+见 #<vault::test::refs/二> ，另有 #<vault::test::refs/alias> 锚点，
+相对拼写同样成立：#<super::refs/二/三> 。
+
+再引段中 ScopeItem #<vault::test::refs/mid> ，并直指模块 #<vault::test::refs> 。
