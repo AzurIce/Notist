@@ -1,7 +1,7 @@
 @!(implementation: "aligned")
 = CLI Inspect: Agent Query and Navigation
 
-本文是 `notist inspect` 调查组的跨命令契约：身份与坐标的寻址文法、Agent 工作流与停止规则。`inspect` 只保留两个命令，各自独立成页：read（#<vault::cli::inspect::read>）与 refs（#<vault::cli::inspect::refs>）。命令面治理、全局参数、错误与退出状态见 #<vault::cli>；查询契约见 #<vault::designs::host::query-contract>。
+本文是 `notist inspect` 调查组的跨命令契约：身份与坐标的寻址文法、Agent 工作流与停止规则。`inspect` 只保留两个命令，各自独立成页：read（#<vault::cli::inspect::read>）与 refs（#<vault::cli::inspect::refs>）。命令面治理、全局参数、错误与退出状态见 #<vault::cli>；查询契约见 #<vault::designs::host::search-retrieval-index>。
 
 #[]
 == 身份与坐标

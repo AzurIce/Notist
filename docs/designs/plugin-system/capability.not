@@ -1,7 +1,7 @@
 @!(implementation: "partial")
 = Trust Model
 
-本文记录插件信任模型（原 Capability Model 的裁决更新，2026-08-23）。内容语义对所有 backend 统一；安全边界则随 backend 而不同：Wasm 通过无 IO import、fuel 与内存预算、响应大小/节点上限获得沙箱隔离，native plugin 属于宿主进程级信任（#<vault::designs::plugin-system::safety>）。
+本文记录插件信任模型（原 Capability Model 的裁决更新，2026-08-23）。内容语义对所有 backend 统一；安全边界则随 backend 而不同：Wasm 通过无 IO import、fuel 与内存预算、响应大小/节点上限获得沙箱隔离，native plugin 属于宿主进程级信任（#<vault::designs::pipeline::plugin-call-reduction>）。
 
 == 裁决：内容组合不做 per-call 授权
 

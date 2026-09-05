@@ -56,7 +56,7 @@ ElementSchema / ShapingRegistry → structure
 4. #<vault::designs::plugin-system::abi>：Wasm backend 的共享类型与语义 ABI。
 5. #<vault::designs::plugin-system::eval-contribution>：native/Wasm Function contribution 与注册。
 6. #<vault::designs::plugin-system::capability>：信任模型——内容组合不授权，backend 各自承担执行边界。
-7. #<vault::designs::plugin-system::safety>：终止性、资源预算与确定性。
+7. #<vault::designs::pipeline::plugin-call-reduction>：终止性、资源预算与确定性。
 8. #<vault::designs::plugin-system::shaping>：ElementDecl 与成型 schema。
 9. #<vault::designs::plugin-system::projection>：target 投影贡献与 fallback。
 

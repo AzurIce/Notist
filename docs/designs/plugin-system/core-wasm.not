@@ -27,7 +27,7 @@ host 与 plugin 之间只传两种字节，均为 wire version byte + postcard�
 
 每次派发的时序：`alloc` → 宿主写入请求 → `evaluate` → 宿主读出结果 → `free`。所有权两条：请求缓冲随 `evaluate` 移交 guest，无论成败由 guest 释放；结果缓冲由 guest `shrink_to_fit` 后移交（不变量 `len == capacity`），宿主拷贝后 `free`。
 
-句柄是一个 i64 位模式：高 32 位 `ptr`，低 31 位 `len`，最高位为错误标志——置位时缓冲是 UTF-8 错误消息而非载荷。单次载荷上限 2 GiB − 1，实际先被宿主的 16 MiB 内存帽约束（#<vault::designs::plugin-system::safety>）。
+句柄是一个 i64 位模式：高 32 位 `ptr`，低 31 位 `len`，最高位为错误标志——置位时缓冲是 UTF-8 错误消息而非载荷。单次载荷上限 2 GiB − 1，实际先被宿主的 16 MiB 内存帽约束（#<vault::designs::pipeline::plugin-call-reduction>）。
 
 === 两条约束
 
