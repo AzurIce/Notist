@@ -1,0 +1,92 @@
+= zvec-grep 查询面调研
+
+对 zvec-grep（阿里 zvec 团队的 "local-first search across your workspace, built for humans and AI agents"）的系统性调查，目的为重开 notist 查询 CLI（`search`/`locate`）命令面提供参照。调查基线：commit `5265395`（其 v0.2.1），方法为通读其 `docs/01`–`08` 全部文档与核心源码（MCP schema/工具层、搜索管线 `src/engine/pipeline/search/index.ts`、服务编排 `src/engine/service/zvec-grep.ts`、输出格式化 `src/cli/format/context.ts`），并对照 ``现行设计``、``现行设计`` 与 `#<self::2026-08-30 inspect 寻址与范围设计困境>`。
+
+结论先行：zg 最有参考价值的不是向量检索本身，而是围绕「Agent 如何消费检索结果」的整套工程——显式声明结果覆盖性质的契约字段、freshness 与空结果原因内联进响应、多查询路由分组与 RRF 融合、极致的输出经济、把路由策略写成版本化指令文本。它与 notist 已裁决方向多处独立收敛（search/locate 分工、检索单元三层 range、excerpt 是候选信息不是事实来源），这些收敛本身即印证；其 limit/截断制度与 2026-08-29 完整结果契约裁决直接冲突，不可照搬。
+
+== 定位与架构
+
+- npm 分发的 Node 22+ CLI（`zg`），索引存项目根 `.zvec-grep/`（manifest + zvec 存储引擎），模型与数据不出本机；远程 embedding 需显式授权。这是第三方产品的版本号（v0.2.1），与 notist 无关。
+- 三种执行形态：CLI（人/脚本）、MCP server（Agent，默认 loopback `127.0.0.1:7999/mcp`）、共享 daemon。`--mode auto|server|direct`：auto 用现成 daemon、没有就进程内直跑——同一引擎只换进程生命周期，不换搜索行为。与 notist daemon/embedded 双后端同构。
+- 两条检索路径：索引检索（BM25 + 向量 + RRF 融合，结构感知抽取：tree-sitter 符号/面包屑、Markdown heading section、纯文本 chunk）与受管 ripgrep（无需索引、穷尽式）。受管 rg 不是透传：接管输出格式、拒绝改变输出形状的 rg flag（`--json`/`--count` 等），并用 AST 元数据把命中聚成「符号块」。
+
+== 查询输入模型：查询组而非单一 query
+
+MCP 工具 `zvec_grep_search` 的输入是多组路由（`src/mcp/schemas.ts`）：
+
+- `query`/`queries` 生成主组（hybrid：每条同时跑 FTS + 向量两条 route）；
+- `fts`/`vector` 是补充组（纯词法/纯语义，schema 描述明言「是检索路线，不是硬约束」）；
+- `fuse: true` 把所有组合并成单一 ranked plan，否则各组独立检索、保留组元数据。
+
+每组独立限深（`--limit`，上限 50，默认 7）。这让 Agent 一次请求同时表达「语义意图 + 精确锚点」（如 `{"query":"how are results ranked","fts":["RRF"],"fuse":true}`），不必串行多次调用。另有 freshness 语义二值 `eventual|wait_for_fresh` 与 `autoUpdate`（eventual 搜索可顺手排后台索引更新）。
+
+== 检索管线：自适应召回 + RRF + 符号桥接
+
+核心在 `src/engine/pipeline/search/index.ts`：
+
+- 自适应召回深度：200 起、不够则翻倍至 2000 上限，直到候选数达到 max(5×limit, 50)。小库召回不足、大库过度扫描两头都顾。
+- RRF 融合（k=60）：候选按「在哪些 route 排第几」累加 `1/(60+rank)`，天然融合 FTS 与向量、多查询组的名次。
+- `preferSymbol` 桥接：从自然语言查询提取符号状 token（按 `::` 拆、滤掉 where/find/explain 类停用词），追加一条限制在 symbolNames 字段的 FTS route。是「自然语言意图 → 精确标识符锚点」的桥，纯查询内部扩张，不加调用方负担。
+- 两层检索单元：fragment（chunk）聚合成 entity（一个符号/一节），命中以 entity 为单位、evidence fragment 附带 excerptRange（实际匹配子区间）。Markdown 按 heading section 切，超长节滑窗（3600 字符/540 重叠），多窗口时另造一条「大纲 fragment」作该 entity 的语义代理。
+- 可解释性一等公民：`--trace` 输出每命中完整召回轨迹（哪条 route、第几名、融合后第几名）；`trackEntityId` 强制追踪机制把指定候选强行纳入并解释它为何没排进来（路径被过滤/FTS 未命中/向量不可用）。既是内部调参工具也是用户 debug 面。
+
+== 结果契约：把「这是什么性质的结果」显式化
+
+响应头先行声明契约（`src/mcp/tools.ts`）：`freshness: fresh|possibly_stale`，stale 时附 `results: served_from_current_index` + `background_refresh: running (128/300)`——freshness 内联，免掉 status 预检往返。
+
+结果级字段：
+
+- `coverage` 枚举：`ranked_sample` / `rg_exhaustive` / `rg_truncated` / `lexical_exhaustive` / `lexical_truncated`，调用方一眼知道是样本还是全集。
+- `emptyReason`：`no_matches` / `no_searchable_files` / `index_unavailable` / `search_failed`，零命中可判事而非笼统 "nothing found"。
+- per-hit `matchedBy`：`fts` / `vector` / `fts+vector`；多组命中合并显示为 `groups: Q1#2 (fts), Q3#7 (vector)` 行。
+- 跨组呈现：多组去重合并后，先「每组贡献一个 top 命中」（coverage，上限 6）再全局补位（global_fill），每 hit 记录 `selectionReason`。注意这套挑选本质是截断器（见「不应照搬」）。
+
+== 输出经济
+
+`src/cli/format/context.ts` 的 agent 文本格式（MCP 与 CLI 共用）值得逐条看：
+
+- MCP 搜索只返回纯文本、故意丢弃 structuredContent（原话注释：per-item outline + full source 的结构化输出 otherwise dominates the agent's context）；结构化输出只留给内部 CLI 传输。
+- preview 三档 none/short/full；short 输出以匹配区间为中心的 10 行窗口（前后各 2 行、行宽截 160、省略号）。
+- 元数据字段只在 preview 里看不到时才输出（`previewLinesContain` 检查）——符号名已在源码行里就不重复一行。
+- 命中头部用 container（符号/节）的 range 而非匹配行；`outline:`（面包屑）给结构位置，`matched:` 给实际命中子区间。
+- rg 命中按符号聚块、去重冗余声明行。
+
+== 指令面与权限
+
+- 路由策略是版本化代码：`src/prompts/zvec-grep-guidance.ts` 把「Agent 何时用语义搜索、何时用 grep」写成决策表文本，注入三处——MCP server instructions、工具 description、`zg install` 写进各 Agent 的 AGENTS.md 管理块（带起止标记）。规则含：精确查找够用则用 grep；措辞/位置未知或跨文件综合则用 search；有锚点但要综合则先 search 后 grep 验证；语义探测不相关至多一次 probe 即停；证据够了就停搜。
+- 工具审批不等于数据出境授权：远程 embedding 走 MCP elicitation 表单，四选项 allow_once / allow_workspace / use_local_search / cancel；选 use_local_search 时服务端自动降级为纯 FTS 路由并关掉 autoUpdate——优雅降级路径是产品化的。
+- 默认 agent toolset 只暴露 search 一个工具；index 创建/重建/删除留在 full toolset 与 CLI，schema 描述反复写「agent 不得静默创建/重建/删除持久索引」，并用 destructiveHint 注解声明。
+- 索引生命周期靠 manifest 全量校验（schema/tokenizer/ranking version/source fingerprint），任一不匹配即重建；`status --check-ready` 用退出码供脚本判定。
+- 评测纪律：`benchmarks/` 下成对 A/B Agent 基准（SWE-QA-Bench、BrowseComp-Plus），控制任务/模型/提示不变只改检索接入，量化回答质量、input tokens、工具调用次数、耗时。
+
+== 与 notist 已裁决方向的对照
+
+| 设计点 | zg | notist | 关系 |
+| --- | --- | --- | --- |
+| 排名样本 vs 穷尽 | coverage 枚举显式声明 | search（ranked）与 locate（source order 穷尽）命令分工 | 独立收敛；zg 用结果字段表达，notist 用命令分工表达 |
+| excerpt 三层 range | entity range + excerptRange + matched range | SearchHit 的 `unit_range / excerpt_range / match_range` | 几乎逐字对应，验证该三元组模型 |
+| excerpt 地位 | 短 snippet 可直接当已读证据 | excerpt 是候选选择信息，read 才是事实来源 | 同一哲学，notist 更严格 |
+| 空结果 | emptyReason 分类 + hint | 零结果仍是成功、hint 只建议（已裁决） | 收敛，zg 给出分类学与渲染实现 |
+| 检索单元 | entity/fragment、节切分 + 滑窗重叠 + 大纲代理 | SearchUnitBuilder：paragraph/list/heading section 独立 unit、4 KiB 切分 + 256 B 重叠 | 收敛，参数量级一致 |
+| index lag | 默认 eventual：返回 possibly_stale + 后台刷新快照，不阻塞 | 等 2 s（上限 10 s）后 typed `index_not_ready` + exact fallback hint，绝不把 stale 当 current | 真分歧；notist 的正确性立场更强，zg 的「内联 freshness」手法值得学但语义应换成 index_not_ready 路径 |
+| 结果预算 | per-group limit + coverage 挑选 + global_fill | 2026-08-29 完整结果契约：无预算无翻页，截断器已撤 | 直接冲突，不要照搬 |
+| CLI 检索出口 | 完整（CLI/MCP 同引擎） | Tantivy 后端与 CoreRequest::Search 全在服务层，CLI 只有 read/refs | zg 正是重开 search/locate 时最完整的参照系 |
+
+== 可借鉴清单（按重开命令面的语境排序）
+
+1. 响应头契约行：首行打印 snapshot/freshness 性质（如 `snapshot: rev=N fresh` 或 index_not_ready 提示），把 ``现行设计`` 的 SnapshotStamp 从内部契约变成 text 投影的一行，Agent 免跑 index status。
+2. 空结果三行式渲染：`No matches.` + emptyReason 分类 + 一行建议（consider `--any` / consider locate）。方向已裁决，zg 是现成分类学与文案参照。
+3. preferSymbol 式查询内扩张：从自由文本 query 提取 ItemId/ModulePath 状 token，追加限制在 `id`/`module` 字段的补充 route（Tantivy field-restricted query 极廉价）。直接对症 2026-08-15 调研记录的「标题默认 id 只回标题行」召回缺口；应做成查询内部行为，不进 CLI 参数面。
+4. 多查询组 + fuse 的输入形状：若 Agent 场景需要「意图 + 锚点」一次表达，queries 数组 + 补充路由 + fuse 比串行调用省往返。可以只进 core 协议，CLI 保持单查询。
+5. trace 作为 debug 投影：per-hit 召回轨迹 + 「解释这个为什么没上榜」，是调 ranking version 与字段权重的必备工具；做成附加投影，不进默认契约。
+6. 输出经济手法：元数据仅在 preview 不可见时输出、命中头部用 container range、matched 子区间行、行宽/行数钳制，可直接在 text renderer 复用。
+7. 路由规则文本版本化：notist skill 将来引入 search 时，把「何时 search、何时 locate、何时 inspect refs、何时直接 grep」写成与实现同仓的规则文本（zg 的 zvec-grep-guidance.ts 是范式）。
+8. 评测基建：notist「向量/semantic 必须过版本化 benchmark」裁决缺落地载体，zg 的成对 A/B 基准（量化 answer quality / input tokens / tool calls / wall time）可直接仿效。
+9. `--check-ready` 退出码契约：`notist index status` 可加同款（正常输出 + 未就绪非零退出）。
+
+== 不应照搬
+
+- limit/每组截断/coverage 优先挑选/global_fill：整套是截断器制度，与 2026-08-29 完整结果契约裁决正面冲突。notist 的对策（收窄 scope 与查询本身，如同 rg 使用者）已裁决；多组命中的 queryGroups 元数据本身无害可留。
+- freshness 的 eventual 语义：zg 敢把 stale 结果带标签直接给出去；notist 的 index lag 立场（宁可 index_not_ready + exact fallback hint）对知识库场景更对，保持。
+- 远程 embedding 授权机器、模型池、图片抽取、GUI 路线：notist 已明确向量/semantic 不进默认契约，整块用不上；仅 use_local_search 式优雅降级形态在将来引入 semantic 时回看。
+- 受管 rg：zg 造它是通用工作区需要兜底；notist Vault 是纯结构化语料，exact/regex 直接扫 snapshot（locate）就是对应角色且不依赖索引健康——notist 已设计对。

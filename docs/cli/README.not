@@ -8,7 +8,7 @@
 
 ]
 
-本文是 `notist` CLI 命令面的单一真相，由两篇组成：本文固定全局治理与跨命令契约（三层分离、命令分组、全局参数、输出投影、错误与退出状态，以及 Validate/Maintenance/Runtime/Publishing 各组命令）；`inspect` 调查组（status/ls/search/locate/items/read/ancestors/refs/definition）的逐命令规范与身份/坐标寻址契约在 #<vault::cli::inspect>。高层分发边界（Skill、官方 docs Vault、发布边界）在 #<vault::designs::host::cli-command-surface-skill-distribution>，查询契约见 #<vault::designs::host::query-contract>，检索语义见 #<vault::designs::host::search-retrieval-index>，daemon 与协议见 #<vault::designs::host::daemon-process-views> 与 #<vault::designs::host::client-interface-protocol>。
+本文是 `notist` CLI 命令面的单一真相，由两篇组成：本文固定全局治理与跨命令契约（三层分离、命令分组、全局参数、输出投影、错误与退出状态，以及 Validate/Maintenance/Runtime/Publishing 各组命令）；`inspect` 调查组（status/ls/search/locate/items/read/ancestors/refs/definition）的逐命令规范与身份/坐标寻址契约在 #<vault::cli::inspect>。高层分发边界（Skill、官方 docs Vault、发布边界）在 #<vault::designs::host::cli-command-surface-skill-distribution>，查询契约见 #<vault::designs::host::search-retrieval-index>，检索语义见 #<vault::designs::host::search-retrieval-index>，daemon 与协议见 #<vault::designs::host::daemon-process-views> 与 #<vault::designs::host::client-interface-protocol>。
 
 当前实现状态：`partial`。本文描述最新裁决链确立的*目标命令面*：完整结果契约（无预算、无翻页，#<vault::ai::2026-08-29 去上界输出与 inspect 命令面裁决>）、顶层收敛为 inspect/check/index/daemon/lsp/skill/build/preview，以及 2026-08-30 的 inspect 统合（#<vault::ai::2026-08-30 inspect 命令面统合设计>：身份/坐标分离、locate 桥、items/attrs 四视角、`@!(class: ..)` 继承）。迁移完成前，已安装二进制的 `--help` 是实际可执行面的最终依据。2026-08-15 v3 的预算/cursor/next 制度已被推翻，其表述不应再被当作长期契约。
 
@@ -52,7 +52,7 @@ Publishing
 ```shell
 notist inspect status
 notist inspect search "type system" --vault docs
-notist check --vault docs/designs/host/query-contract.not
+notist check --vault docs
 ```
 
 === Selector 与 Scope
@@ -129,7 +129,7 @@ text source frame：
 
 ```text
 error[unresolved-module]: target module was not found
-  --> designs/host/query-contract.not:12
+  --> designs/host/search-retrieval-index.not:12
    |
 12 | #<vault::does::not::exist>
    |    ^^^^^^^^^^^^^^^^^^^^^^

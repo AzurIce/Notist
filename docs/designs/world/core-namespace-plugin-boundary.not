@@ -87,7 +87,7 @@ styles = ["assets/user.css"]
 - language revision 决定语法、core/prelude 与诊断 surface；
 - plugins 是显式加载表；
 - `[site]` 是站点级呈现配置：`styles` 列出额外样式表，条目必须是 vault 根内的相对 `.css` 路径（拒绝绝对路径、`\` 分隔与 `..` 逃逸），解析在 notist-plugin-host 的配置读取处统一校验；
-- 配置变更进入 source-set fingerprint（#<vault::designs::host::query-contract>）。
+- 配置变更进入 source-set fingerprint（#<vault::designs::host::search-retrieval-index>）。
 
 具体字段 schema、版本迁移与插件加载协议由实现切片补齐；在实现前，Notist.toml 保持空标记或未知键预留。
 

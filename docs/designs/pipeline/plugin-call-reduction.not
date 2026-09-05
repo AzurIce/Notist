@@ -48,7 +48,7 @@ text("world")
 由此推出：
 
 - *遍历策略无关*。规则是 confluent 的：先规约父还是先规约子只影响诊断出现的顺序，不影响最终森林。（实现按 descend-first：先规约参数与 body 子流，再 dispatch 当前 call。）
-- *预算只记在 handler 调用上*。每次 dispatch 计一次 depth 与一次 call；没有 handler 的 call 不参与规约，不消耗预算。限额见 #<vault::designs::plugin-system::safety>。
+- *预算只记在 handler 调用上*。每次 dispatch 计一次 depth 与一次 call；没有 handler 的 call 不参与规约，不消耗预算。限额见 #<vault::designs::pipeline::plugin-call-reduction>。
 - *输入函数式、输出宏式*。handler 收到的参数与 body 总是规约完成的；返回的森林是未规约的，重新进入不动点。规约纯且 total（无副作用、未知名字不报错），输入侧先规约永远安全——模型因此不需要 quote。
 - *诊断*。类型错误、向不接受 body 的函数传 body 产生诊断；未知名字不产生规约诊断。单个 call 的失败只收集诊断并跳过它，兄弟节点继续（sibling recovery）；诊断不伪装成成功。
 
@@ -114,7 +114,7 @@ source
 
 handler 通过返回包含新 call 的森林表达组合；组件返回后，宿主把整片森林统一送回同一个规约不动点。插件不在组件调用期间嵌套执行宿主规约，也不需要第二套组合 API。
 
-内容组合不做 per-call 授权：名字的语义由宿主 registry 决定，执行信任边界是 wasm 沙箱本身，见 #<vault::designs::plugin-system::capability>；预算约束见 #<vault::designs::plugin-system::safety>。
+内容组合不做 per-call 授权：名字的语义由宿主 registry 决定，执行信任边界是 wasm 沙箱本身，见 #<vault::designs::plugin-system::capability>；预算约束见 #<vault::designs::pipeline::plugin-call-reduction>。
 
 == 示例：组合 details
 

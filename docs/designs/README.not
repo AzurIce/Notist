@@ -71,7 +71,6 @@ plugin-system/ 插件系统：package、ABI、贡献、信任模型与生命周�
 4. #<vault::designs::plugin-system::abi>：共享类型、WIT 边界与语义 ABI。
 5. #<vault::designs::plugin-system::eval-contribution>：语义函数贡献与 FunctionRegistry。
 6. #<vault::designs::plugin-system::capability>：插件信任模型与能力系统删除裁决。
-7. #<vault::designs::plugin-system::safety>：终止性、资源预算与确定性。
 8. #<vault::designs::plugin-system::shaping>：成型 schema 贡献。
 9. #<vault::designs::plugin-system::projection>：target 投影贡献与 fallback。
 
@@ -84,7 +83,7 @@ plugin-system/ 插件系统：package、ABI、贡献、信任模型与生命周�
 3. #<vault::types>：类型系统、调用模型与集合类型的权威规范（逐节标注实现状态）。
 4. #<vault::designs::language::property-table>：旁置属性表。
 5. #<vault::grammar::annotation>：标注语法。
-6. #<vault::grammar::markup>：Markup 语法糖规格。
+6. #<vault::designs::plugin-system::core>：内置构造器与 Markup 语法糖的目标语义。
 
 === Vault 层
 
@@ -97,15 +96,14 @@ plugin-system/ 插件系统：package、ABI、贡献、信任模型与生命周�
 === 宿主层
 
 1. #<vault::designs::host::analyzer-snapshot>：分析层与 WorkspaceSnapshot。
-2. #<vault::designs::host::query-contract>：查询契约与 Selector/Citation。
-3. #<vault::designs::host::search-retrieval-index>：Search 模式与检索索引。
-4. #<vault::designs::host::daemon-process-views>：daemon 进程与 Analyzer View。
-5. #<vault::designs::host::client-interface-protocol>：client interface、本地协议与生命周期。
-6. #<vault::designs::host::cli-command-surface-skill-distribution>：CLI 产品边界与官方 Skill 分发；完整逐命令规范和使用文档在 #<vault::cli>。
-7. #<vault::lsp>：LSP 设计（vault 根下的独立目录）。
-8. #<vault::lsp::test>：LSP 无头契约测试：黑箱层判据、harness 确定性规则与场景目录。
-9. #<vault::designs::host::html-renderer>：HTML 渲染。
-10. #<vault::designs::host::build-preview>：静态构建与本地预览。
+2. #<vault::designs::host::search-retrieval-index>：Search 模式与检索索引。
+3. #<vault::designs::host::daemon-process-views>：daemon 进程与 Analyzer View。
+4. #<vault::designs::host::client-interface-protocol>：client interface、本地协议与生命周期。
+5. #<vault::designs::host::cli-command-surface-skill-distribution>：CLI 产品边界与官方 Skill 分发；完整逐命令规范和使用文档在 #<vault::cli>。
+6. #<vault::lsp>：LSP 设计（vault 根下的独立目录）。
+7. #<vault::lsp::test>：LSP 无头契约测试：黑箱层判据、harness 确定性规则与场景目录。
+8. #<vault::designs::host::html-renderer>：HTML 渲染。
+9. #<vault::designs::host::build-preview>：静态构建与本地预览。
 
 == 状态属性
 
@@ -134,9 +132,7 @@ plugin-system/ 插件系统：package、ABI、贡献、信任模型与生命周�
 - #<vault::designs::plugin-system::eval-contribution>：`partial`（native/Wasm 已走统一 contribution；高层 native Plugin trait 尚未提供）
 - #<vault::designs::world::core-namespace-plugin-boundary>：`partial`（namespace policy 已明确；完整 package policy 校验仍需收口）
 - #<vault::designs::plugin-system::capability>：`partial`（backend 信任边界已裁定；统一 App composition 尚未收口）
-- #<vault::designs::plugin-system::safety>：`partial`（精确循环检测与完整 App 资源治理仍待收口）
 - #<vault::designs::plugin-system::projection>：`partial`（Node 投影规约与 fallback 已实现；trusted/词表收口仍待定）
-- #<vault::designs::host::query-contract>：`partial`（text-only 投影与 `--exclude-scope` 尚未完整实现）
 - #<vault::designs::host::search-retrieval-index>：`partial`（`--exclude-scope` 未实现）
 - #<vault::designs::host::cli-command-surface-skill-distribution>：`partial`（命令面已落地为现行 inspect 面；`--scope`/`--exclude-scope` 集合过滤与 text-only 投影仍待实现）
 - #<vault::cli>：`partial`（完整 CLI 命令设计+使用规范；命令参考与 binary 已对齐现行 inspect 面，attrs 注解面目标形态仍在推进）
