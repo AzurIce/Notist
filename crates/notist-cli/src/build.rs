@@ -1618,7 +1618,10 @@ button { font: inherit; }
   gap: 56px;
   padding: 44px 48px 96px;
 }
-.page-main { width: min(100%, 46rem); }
+/* min-width: 0 lets the column shrink under tight viewports; without it the
+   unbreakable <pre> lines pin its automatic minimum above the available space
+   and the centered flex line spills under the sidebar and past the rail. */
+.page-main { min-width: 0; width: min(100%, 46rem); }
 .page-rail {
   flex: none;
   width: 15rem;

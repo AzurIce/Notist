@@ -1361,9 +1361,7 @@ pub fn region_info(
     let item_path = |name: String| format!("{module_path}/{name}");
     let names = {
         let mut map: HashMap<(usize, usize), String> = HashMap::new();
-        for (name, range) in
-            workspace.module_heading_default_ids(&resolved.module.logical_path)
-        {
+        for (name, range) in workspace.module_heading_default_ids(&resolved.module.logical_path) {
             map.insert((range.start, range.end), item_path(name));
         }
         let mut section_scopes: Vec<(String, TextRange)> = Vec::new();
@@ -1374,8 +1372,7 @@ pub fn region_info(
             }
         }
         for label in workspace.labels().iter().filter(|label| {
-            label.module == resolved.module.logical_path
-                && label.file_id == resolved.source.file_id
+            label.module == resolved.module.logical_path && label.file_id == resolved.source.file_id
         }) {
             map.insert(
                 (label.scope_range.start, label.scope_range.end),
@@ -1441,8 +1438,11 @@ pub fn region_info(
         .map(|(index, entry)| (entry.range.start, entry.range.end, index))
         .collect();
     ordered.sort_unstable();
-    let blank_gap =
-        |gap: std::ops::Range<usize>| text[gap.clone()].bytes().all(|byte| byte.is_ascii_whitespace());
+    let blank_gap = |gap: std::ops::Range<usize>| {
+        text[gap.clone()]
+            .bytes()
+            .all(|byte| byte.is_ascii_whitespace())
+    };
     for pair in ordered.windows(2) {
         let (_, prev_end, prev_index) = pair[0];
         let (next_start, _, _) = pair[1];
@@ -1604,8 +1604,16 @@ pub fn region_info(
         });
     }
 
-    let top_container = innermost_container(&collected, selection.start, selection.end, point)
-        .map(|node| container_record(resolved.source, &names, node, selection.start, selection.end));
+    let top_container =
+        innermost_container(&collected, selection.start, selection.end, point).map(|node| {
+            container_record(
+                resolved.source,
+                &names,
+                node,
+                selection.start,
+                selection.end,
+            )
+        });
 
     Ok(QueryResult {
         snapshot: snapshot.clone(),
@@ -1773,9 +1781,7 @@ fn container_record(
 ) -> RegionContainer {
     RegionContainer {
         kind: node.kind.clone(),
-        path: names
-            .get(&(node.range.start, node.range.end))
-            .cloned(),
+        path: names.get(&(node.range.start, node.range.end)).cloned(),
         level: node.level,
         byte_range: super::request::ByteRange {
             start: node.range.start,
@@ -1802,13 +1808,7 @@ fn entry_groups(
         if let Some(group) = groups.iter_mut().find(|(set, _)| set == indexes) {
             group.1.entries.push((key.clone(), value.clone()));
         } else {
-            let origins = origin_records(
-                source,
-                &resolved_module_path,
-                governing,
-                indexes,
-                names,
-            );
+            let origins = origin_records(source, &resolved_module_path, governing, indexes, names);
             groups.push((
                 indexes.clone(),
                 RegionEntryGroup {
@@ -1991,8 +1991,7 @@ fn module_item_regions(
         let bound_section = headings
             .iter()
             .filter(|(_, heading)| {
-                heading.start <= label.scope_range.start
-                    && label.scope_range.end <= heading.end
+                heading.start <= label.scope_range.start && label.scope_range.end <= heading.end
             })
             .min_by_key(|(_, heading)| heading.end - heading.start)
             .and_then(|(chain, _)| section_ranges.get(chain));
@@ -2122,9 +2121,9 @@ pub fn refs(
         let source_regions = if reference.source_module_id == module.id {
             &queried
         } else {
-            module_cache.entry(reference.source_module_id).or_insert_with(
-                || module_item_regions(workspace, source_module),
-            )
+            module_cache
+                .entry(reference.source_module_id)
+                .or_insert_with(|| module_item_regions(workspace, source_module))
         };
         let source_identity = source_regions
             .spans
@@ -2154,10 +2153,12 @@ pub fn refs(
         });
     }
     records.sort_by(|left, right| {
-        left.location
-            .module
-            .cmp(&right.location.module)
-            .then(left.location.byte_range.start.cmp(&right.location.byte_range.start))
+        left.location.module.cmp(&right.location.module).then(
+            left.location
+                .byte_range
+                .start
+                .cmp(&right.location.byte_range.start),
+        )
     });
     let hints = if records.is_empty() {
         vec!["nothing outside the selected region mentions this target".to_string()]
@@ -3670,9 +3671,9 @@ fn selector_module<'a>(
             "module selector must be an absolute ModulePath",
         )
     })?;
-    workspace.module(&path).ok_or_else(|| {
-        ToolError::new("not_found", format!("module `{module}` was not found"))
-    })
+    workspace
+        .module(&path)
+        .ok_or_else(|| ToolError::new("not_found", format!("module `{module}` was not found")))
 }
 
 fn resolve_source<'a>(

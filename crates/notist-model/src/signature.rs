@@ -152,7 +152,8 @@ impl fmt::Display for Type {
             Self::Target => formatter.write_str("Target"),
             // `T | Unit` reads as the optional sugar (C4).
             Self::Union(members)
-                if members.len() == 2 && members.iter().any(|member| matches!(member, Type::Unit)) =>
+                if members.len() == 2
+                    && members.iter().any(|member| matches!(member, Type::Unit)) =>
             {
                 let other = members
                     .iter()

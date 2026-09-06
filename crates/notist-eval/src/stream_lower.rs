@@ -489,7 +489,7 @@ impl LowerState<'_> {
                     Value::Content(forest) => forest,
                     other => {
                         return self
-                            .insert_value(other, embedded.scope_range.shifted(self.base_offset))
+                            .insert_value(other, embedded.scope_range.shifted(self.base_offset));
                     }
                 };
                 let mut node = Node::block_call("scope", block.range.shifted(self.base_offset));

@@ -1179,22 +1179,27 @@ impl NotistService {
                 offset,
                 expected_fingerprint,
             } => {
-                let (snapshot, definition) = self.with_snapshot(view_id, |workspace| -> io::Result<Option<LocationRecord>> {
-                    let Some(file_id) =
-                        gated_file_id(workspace, &path, expected_fingerprint.as_deref())?
-                    else {
-                        return Ok(None);
-                    };
-                    Ok(workspace.definition_at(file_id, offset).and_then(|definition| {
-                        let source = workspace.source(definition.file_id?)?;
-                        Some(LocationRecord {
-                            path: source.canonical_path.clone(),
-                            source: source.text.to_string(),
-                            range: definition.range.unwrap_or(TextRange::new(0, 0)).into(),
-                            is_definition: true,
-                        })
-                    }))
-                })?;
+                let (snapshot, definition) = self.with_snapshot(
+                    view_id,
+                    |workspace| -> io::Result<Option<LocationRecord>> {
+                        let Some(file_id) =
+                            gated_file_id(workspace, &path, expected_fingerprint.as_deref())?
+                        else {
+                            return Ok(None);
+                        };
+                        Ok(workspace
+                            .definition_at(file_id, offset)
+                            .and_then(|definition| {
+                                let source = workspace.source(definition.file_id?)?;
+                                Some(LocationRecord {
+                                    path: source.canonical_path.clone(),
+                                    source: source.text.to_string(),
+                                    range: definition.range.unwrap_or(TextRange::new(0, 0)).into(),
+                                    is_definition: true,
+                                })
+                            }))
+                    },
+                )?;
                 Ok(CoreReply {
                     snapshot,
                     response: CoreResponse::Definition(definition?),
@@ -1207,25 +1212,29 @@ impl NotistService {
                 include_definition,
                 expected_fingerprint,
             } => {
-                let (snapshot, references) = self.with_snapshot(view_id, |workspace| -> io::Result<Vec<LocationRecord>> {
-                    let Some(file_id) =
-                        gated_file_id(workspace, &path, expected_fingerprint.as_deref())?
-                    else {
-                        return Ok(Vec::new());
-                    };
-                    Ok(workspace
-                        .symbol_locations_at(file_id, offset, include_definition)
-                        .into_iter()
-                        .filter_map(|location| {
-                            Some(LocationRecord {
-                                path: workspace.source(location.file_id)?.canonical_path.clone(),
-                                source: workspace.source(location.file_id)?.text.to_string(),
-                                range: location.range.into(),
-                                is_definition: location.is_definition,
+                let (snapshot, references) =
+                    self.with_snapshot(view_id, |workspace| -> io::Result<Vec<LocationRecord>> {
+                        let Some(file_id) =
+                            gated_file_id(workspace, &path, expected_fingerprint.as_deref())?
+                        else {
+                            return Ok(Vec::new());
+                        };
+                        Ok(workspace
+                            .symbol_locations_at(file_id, offset, include_definition)
+                            .into_iter()
+                            .filter_map(|location| {
+                                Some(LocationRecord {
+                                    path: workspace
+                                        .source(location.file_id)?
+                                        .canonical_path
+                                        .clone(),
+                                    source: workspace.source(location.file_id)?.text.to_string(),
+                                    range: location.range.into(),
+                                    is_definition: location.is_definition,
+                                })
                             })
-                        })
-                        .collect::<Vec<_>>())
-                })?;
+                            .collect::<Vec<_>>())
+                    })?;
                 Ok(CoreReply {
                     snapshot,
                     response: CoreResponse::References(references?),
@@ -1384,25 +1393,28 @@ impl NotistService {
                 offset,
                 expected_fingerprint,
             } => {
-                let (snapshot, completion) = self.with_snapshot(view_id, |workspace| -> io::Result<Vec<CompletionRecord>> {
-                    let Some(file_id) =
-                        gated_file_id(workspace, &path, expected_fingerprint.as_deref())?
-                    else {
-                        return Ok(Vec::new());
-                    };
-                    Ok(workspace
-                        .completions_at(file_id, offset)
-                        .into_iter()
-                        .map(|candidate| CompletionRecord {
-                            label: candidate.label,
-                            kind: completion_kind(candidate.kind).into(),
-                            detail: candidate.detail,
-                            documentation: candidate.documentation,
-                            replacement: candidate.replacement.into(),
-                            insert_text: candidate.insert_text,
-                        })
-                        .collect::<Vec<_>>())
-                })?;
+                let (snapshot, completion) = self.with_snapshot(
+                    view_id,
+                    |workspace| -> io::Result<Vec<CompletionRecord>> {
+                        let Some(file_id) =
+                            gated_file_id(workspace, &path, expected_fingerprint.as_deref())?
+                        else {
+                            return Ok(Vec::new());
+                        };
+                        Ok(workspace
+                            .completions_at(file_id, offset)
+                            .into_iter()
+                            .map(|candidate| CompletionRecord {
+                                label: candidate.label,
+                                kind: completion_kind(candidate.kind).into(),
+                                detail: candidate.detail,
+                                documentation: candidate.documentation,
+                                replacement: candidate.replacement.into(),
+                                insert_text: candidate.insert_text,
+                            })
+                            .collect::<Vec<_>>())
+                    },
+                )?;
                 Ok(CoreReply {
                     snapshot,
                     response: CoreResponse::Completion(completion?),
@@ -1414,17 +1426,20 @@ impl NotistService {
                 offset,
                 expected_fingerprint,
             } => {
-                let (snapshot, hover) = self.with_snapshot(view_id, |workspace| -> io::Result<Option<HoverRecord>> {
-                    let Some(file_id) =
-                        gated_file_id(workspace, &path, expected_fingerprint.as_deref())?
-                    else {
-                        return Ok(None);
-                    };
-                    Ok(workspace.hover_at(file_id, offset).map(|hover| HoverRecord {
-                        range: hover.range.into(),
-                        markdown: hover.contents,
-                    }))
-                })?;
+                let (snapshot, hover) =
+                    self.with_snapshot(view_id, |workspace| -> io::Result<Option<HoverRecord>> {
+                        let Some(file_id) =
+                            gated_file_id(workspace, &path, expected_fingerprint.as_deref())?
+                        else {
+                            return Ok(None);
+                        };
+                        Ok(workspace
+                            .hover_at(file_id, offset)
+                            .map(|hover| HoverRecord {
+                                range: hover.range.into(),
+                                markdown: hover.contents,
+                            }))
+                    })?;
                 Ok(CoreReply {
                     snapshot,
                     response: CoreResponse::Hover(hover?),
@@ -3457,8 +3472,14 @@ mod tests {
         // nested duplicate resolves through its title chain.
         let (service, view_id, _root) =
             ancestors_fixture("dupe.not", "= 重复\n\n一段。\n\n== 重复\n\n另一段。\n");
-        let response =
-            ancestors_response(&service, view_id, "vault::dupe", Some("重复/重复"), None, None);
+        let response = ancestors_response(
+            &service,
+            view_id,
+            "vault::dupe",
+            Some("重复/重复"),
+            None,
+            None,
+        );
         assert!(
             matches!(response, CoreResponse::Ancestors(_)),
             "title chain resolves the nested heading: {response:?}"
@@ -3469,14 +3490,8 @@ mod tests {
     fn ancestors_rejects_offsets_that_are_not_utf8_boundaries() {
         let (service, view_id, _root) = ancestors_fixture("guide.not", ANCESTORS_SOURCE);
         let offset = ANCESTORS_SOURCE.find("概述").unwrap() + 1;
-        let response = ancestors_response(
-            &service,
-            view_id,
-            "vault::guide",
-            None,
-            Some(offset),
-            None,
-        );
+        let response =
+            ancestors_response(&service, view_id, "vault::guide", None, Some(offset), None);
         let CoreResponse::QueryError(error) = response else {
             panic!("expected a query error")
         };
@@ -3542,8 +3557,7 @@ mod tests {
         assert_eq!(records[1].origin, "heading");
         assert!(records[1].ambiguous);
 
-        let error =
-            items_records(&service, view_id, "vault::mixed", Some("renamed")).unwrap_err();
+        let error = items_records(&service, view_id, "vault::mixed", Some("renamed")).unwrap_err();
         assert_eq!(error.code, "invalid_argument");
     }
 

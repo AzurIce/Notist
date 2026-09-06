@@ -233,10 +233,12 @@ fn queries_right_after_did_change_wait_for_the_snapshot_to_catch_up() {
     );
     client.expect_diagnostics(
         &readme,
-        |params| params
-            .diagnostics
-            .iter()
-            .any(|diagnostic| diagnostic.message.contains("unknown function")),
+        |params| {
+            params
+                .diagnostics
+                .iter()
+                .any(|diagnostic| diagnostic.message.contains("unknown function"))
+        },
         "the diagnostics push for the opened overlay",
     );
 

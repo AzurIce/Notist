@@ -1451,10 +1451,7 @@ mod tests {
         let functions = parse.user_functions();
         assert_eq!(functions.len(), 1);
         let parameters = &functions[0].parameters;
-        assert_eq!(
-            parameters[0].ty,
-            Type::Array(Some(Box::new(Type::Int)))
-        );
+        assert_eq!(parameters[0].ty, Type::Array(Some(Box::new(Type::Int))));
         assert_eq!(
             parameters[1].ty,
             Type::Dict(
@@ -1462,10 +1459,7 @@ mod tests {
                 Some(Box::new(Type::union([Type::Int, Type::Bool])))
             )
         );
-        assert_eq!(
-            parameters[2].ty,
-            Type::Optional(Box::new(Type::Content))
-        );
+        assert_eq!(parameters[2].ty, Type::Optional(Box::new(Type::Content)));
         assert_eq!(parameters[3].ty, Type::Array(None));
         assert_eq!(
             parameters[4].ty,
@@ -1581,7 +1575,6 @@ mod tests {
             MarkupItem::List(sugar) if sugar.rows.len() == 1
         ));
     }
-
 }
 
 impl MarkupItem {

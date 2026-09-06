@@ -561,16 +561,15 @@ impl Checker<'_> {
             | Type::Never
             | Type::Inferred => true,
             Type::Optional(inner) => Self::is_annotation_value(inner),
-            Type::Union(members) => members.iter().all(|member| Self::is_annotation_value(member)),
+            Type::Union(members) => members
+                .iter()
+                .all(|member| Self::is_annotation_value(member)),
             Type::Array(element) => element
                 .as_deref()
                 .map(Self::is_annotation_value)
                 .unwrap_or(true),
             Type::Dict(key, value) => {
-                let keys_ok = key
-                    .as_deref()
-                    .map(Self::is_dict_key_type)
-                    .unwrap_or(true);
+                let keys_ok = key.as_deref().map(Self::is_dict_key_type).unwrap_or(true);
                 let values_ok = value
                     .as_deref()
                     .map(Self::is_annotation_value)
@@ -661,9 +660,7 @@ impl Checker<'_> {
                                         if !Self::is_dict_key_type(&key_type) {
                                             self.push(
                                                 DiagnosticKind::TypeMismatch,
-                                                format!(
-                                                    "cannot use {key_type} as a Dict key"
-                                                ),
+                                                format!("cannot use {key_type} as a Dict key"),
                                                 key.range,
                                             );
                                             clean = false;
@@ -693,10 +690,7 @@ impl Checker<'_> {
                     0 => Type::Never,
                     _ => Type::union(values),
                 };
-                CheckedType::known(Type::Dict(
-                    Some(Box::new(key)),
-                    Some(Box::new(value)),
-                ))
+                CheckedType::known(Type::Dict(Some(Box::new(key)), Some(Box::new(value))))
             }
             ExpressionKind::Bool(_) => CheckedType::known(Type::Bool),
             ExpressionKind::Int(_) => CheckedType::known(Type::Int),
@@ -1229,9 +1223,9 @@ mod tests {
         // expectation's coercion hole (C2: Array<Int> is not Array<Float>).
         let diagnostics = check("#let xs: Array<Float> = (1, 2)");
         assert!(
-            diagnostics
-                .iter()
-                .any(|d| d.message.contains("expected Array<Float>, found Array<Int>")),
+            diagnostics.iter().any(|d| d
+                .message
+                .contains("expected Array<Float>, found Array<Int>")),
             "{diagnostics:?}"
         );
         let diagnostics = check("#let n: Int = \"a\"");
@@ -1271,7 +1265,6 @@ mod tests {
             "{diagnostics:?}"
         );
     }
-
 
     #[test]
     fn accepts_well_typed_documents() {

@@ -277,9 +277,8 @@ impl Parser<'_> {
                     // A leading annotation belongs to the block it declares
                     // (2026-09-01 ruling): the binding span starts at the
                     // annotation itself, not at the bound block.
-                    annotation.target_range = target.map(|target| {
-                        TextRange::new(annotation.range.start, target.end)
-                    });
+                    annotation.target_range =
+                        target.map(|target| TextRange::new(annotation.range.start, target.end));
                 }
             }
         }

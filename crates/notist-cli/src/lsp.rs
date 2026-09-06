@@ -913,7 +913,11 @@ impl RequestContext {
     /// Conversion source for one file: open documents convert through the
     /// adapter's local text; vault tables (utf-8) or downlinked texts
     /// (utf-16) serve everything else.
-    fn source_for<'a>(&'a self, workspace: &'a QueryVault, path: &Path) -> Option<&'a ClientSource> {
+    fn source_for<'a>(
+        &'a self,
+        workspace: &'a QueryVault,
+        path: &Path,
+    ) -> Option<&'a ClientSource> {
         self.documents
             .get(path)
             .or_else(|| workspace.sources.get(path))
@@ -1067,7 +1071,12 @@ fn compute_build_inner(job: &BuildJob) -> Result<Vec<BuiltVault>, Box<dyn Error>
         };
         let sources = tables
             .into_iter()
-            .map(|record| (record.path.clone(), ClientSource::from_record(record, job.codec)))
+            .map(|record| {
+                (
+                    record.path.clone(),
+                    ClientSource::from_record(record, job.codec),
+                )
+            })
             .collect::<BTreeMap<_, _>>();
         built.push(BuiltVault {
             root: root.clone(),
@@ -1241,7 +1250,10 @@ impl LspSession {
                 .documents
                 .iter()
                 .map(|(path, document)| {
-                    (path.clone(), ClientSource::from_text(document.source.clone()))
+                    (
+                        path.clone(),
+                        ClientSource::from_text(document.source.clone()),
+                    )
                 })
                 .collect(),
             builds: self.builds.clone(),
@@ -1273,7 +1285,8 @@ impl LspSession {
             );
             return Ok(false);
         };
-        let new_text = apply_document_changes(self.codec, &document.source, &params.content_changes);
+        let new_text =
+            apply_document_changes(self.codec, &document.source, &params.content_changes);
         let mut changed = false;
         if new_text != document.source.as_ref() {
             document.source = Arc::from(new_text.as_str());
@@ -2020,7 +2033,13 @@ fn hover(
 fn source_position<'a>(
     context: &'a RequestContext,
     params: &lsp_types::TextDocumentPositionParams,
-) -> Option<(PathBuf, &'a QueryVault, &'a ClientSource, usize, Option<String>)> {
+) -> Option<(
+    PathBuf,
+    &'a QueryVault,
+    &'a ClientSource,
+    usize,
+    Option<String>,
+)> {
     let path = normalize_uri_path(&params.text_document.uri).ok()?;
     let workspace = workspace_for_source(context, &path)?;
     // Inbound positions belong to an open document by LSP semantics, so the
@@ -2175,7 +2194,8 @@ mod tests {
         // combining mark (one UTF-16 unit each for `e` and `\u{301}`).
         let text = "a😀中\r\n次e\u{301}\n";
         let source = ClientSource::from_text(Arc::from(text));
-        let offset = |line, character| source.offset(Position::new(line, character), PositionCodec::Utf16);
+        let offset =
+            |line, character| source.offset(Position::new(line, character), PositionCodec::Utf16);
 
         assert_eq!(offset(0, 0), 0);
         assert_eq!(offset(0, 1), 1, "a");
@@ -2199,7 +2219,10 @@ mod tests {
                 "offset {byte_offset} roundtrips through {position:?}"
             );
         }
-        assert_eq!(source.position(5, PositionCodec::Utf16), Position::new(0, 3));
+        assert_eq!(
+            source.position(5, PositionCodec::Utf16),
+            Position::new(0, 3)
+        );
         assert_eq!(
             source.position(text.len(), PositionCodec::Utf16),
             Position::new(2, 0)
@@ -2210,7 +2233,8 @@ mod tests {
     fn utf8_text_carrier_keeps_byte_columns_with_boundary_flooring() {
         let text = "a😀中\r\nnext";
         let source = ClientSource::from_text(Arc::from(text));
-        let offset = |line, character| source.offset(Position::new(line, character), PositionCodec::Utf8);
+        let offset =
+            |line, character| source.offset(Position::new(line, character), PositionCodec::Utf8);
 
         assert_eq!(offset(0, 8), 8);
         assert_eq!(offset(1, 2), "a😀中\r\nne".len());
@@ -2218,10 +2242,7 @@ mod tests {
         assert_eq!(offset(0, 2), 1);
         assert_eq!(offset(0, 99), 8, "clamps to the content end");
         assert_eq!(offset(9, 0), text.len(), "past the document");
-        assert_eq!(
-            source.position(8, PositionCodec::Utf8),
-            Position::new(0, 8)
-        );
+        assert_eq!(source.position(8, PositionCodec::Utf8), Position::new(0, 8));
     }
 
     #[test]
@@ -3074,7 +3095,8 @@ mod tests {
         // falls back to disk content and publishes an empty set.
         // Hover over a `let` binding resolves through the semantic index.
         let state = {
-            let mut session = LspSession::new(root_path.clone(), true, PositionCodec::Utf8).unwrap();
+            let mut session =
+                LspSession::new(root_path.clone(), true, PositionCodec::Utf8).unwrap();
             session.documents.insert(
                 readme_path.clone(),
                 OpenDocument {

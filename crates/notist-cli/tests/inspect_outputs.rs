@@ -200,11 +200,22 @@ fn refs_executes_the_requests_embedded_in_the_refs_fixture() {
             // The nested section folds its block-scope item: the external
             // mid/relative mentions plus the intra-module crossing from
             // section 二, attributed to its innermost scope.
-            assert!(stdout.starts_with("vault::test::refs/二/三: 3 references"), "{stdout}");
-            assert!(stdout.contains("[1] <vault::test::refs/二/三> <- <vault::test::refs/二>  test/refs.not:4"), "{stdout}");
+            assert!(
+                stdout.starts_with("vault::test::refs/二/三: 3 references"),
+                "{stdout}"
+            );
+            assert!(
+                stdout.contains(
+                    "[1] <vault::test::refs/二/三> <- <vault::test::refs/二>  test/refs.not:4"
+                ),
+                "{stdout}"
+            );
         } else if command.contains("--item alias") {
             // `@id` and heading chain spellings are aliases: one region.
-            assert!(stdout.starts_with("vault::test::refs/alias: 4 references"), "{stdout}");
+            assert!(
+                stdout.starts_with("vault::test::refs/alias: 4 references"),
+                "{stdout}"
+            );
             let by_chain = run(
                 &vault,
                 &["inspect", "refs", "vault::test::refs", "--item", "二"],
@@ -215,20 +226,38 @@ fn refs_executes_the_requests_embedded_in_the_refs_fixture() {
             );
         } else if command.contains("--item mid") {
             // A mid-section block scope is addressable on its own.
-            assert!(stdout.starts_with("vault::test::refs/mid: 1 reference"), "{stdout}");
+            assert!(
+                stdout.starts_with("vault::test::refs/mid: 1 reference"),
+                "{stdout}"
+            );
         } else if command.contains("--item") {
-            assert!(stdout.starts_with("vault::test::refs/二: 4 references"), "{stdout}");
+            assert!(
+                stdout.starts_with("vault::test::refs/二: 4 references"),
+                "{stdout}"
+            );
         } else if command.contains("vault::test::refs_in") {
             // Zero crossings are a proof, with an actionable hint.
-            assert!(stdout.starts_with("vault::test::refs_in: 0 references"), "{stdout}");
+            assert!(
+                stdout.starts_with("vault::test::refs_in: 0 references"),
+                "{stdout}"
+            );
             assert!(stdout.contains("hint:"), "{stdout}");
         } else {
             // Module region: all five external mentions cross in; the
             // self-mentions are internal and never surface. Each row names
             // its resolved target, including the module-root one.
-            assert!(stdout.starts_with("vault::test::refs: 5 references"), "{stdout}");
-            assert!(stdout.contains("[1] <vault::test::refs/二> <- <vault::test::refs_in/一>"), "{stdout}");
-            assert!(stdout.contains("[5] <vault::test::refs> <- <vault::test::refs_in/一>"), "{stdout}");
+            assert!(
+                stdout.starts_with("vault::test::refs: 5 references"),
+                "{stdout}"
+            );
+            assert!(
+                stdout.contains("[1] <vault::test::refs/二> <- <vault::test::refs_in/一>"),
+                "{stdout}"
+            );
+            assert!(
+                stdout.contains("[5] <vault::test::refs> <- <vault::test::refs_in/一>"),
+                "{stdout}"
+            );
             assert!(!stdout.contains(" <- <vault::test::refs>"), "{stdout}");
         }
     }
@@ -260,10 +289,16 @@ fn read_splits_a_range_into_uniform_attribute_segments() {
     // The module attribute merges into every segment's Dict; the wip
     // annotation holds only for the leading segment (后记's sibling lacks
     // it), so the two segments carry different Dicts.
-    assert!(output.contains("(status: \"draft\", wip: true)"), "{output}");
+    assert!(
+        output.contains("(status: \"draft\", wip: true)"),
+        "{output}"
+    );
     assert!(output.contains("(status: \"draft\")"), "{output}");
     assert!(output.contains("segments 2"), "{output}");
-    assert!(output.contains("[1] <vault::guide/安装> lines 6..10 bytes 44..154"), "{output}");
+    assert!(
+        output.contains("[1] <vault::guide/安装> lines 6..10 bytes 44..154"),
+        "{output}"
+    );
     // Segment 2 starts on the boundary byte where 安装 (and its nested
     // 故障排除) end, so no addressable item contains its start.
     assert!(
@@ -272,7 +307,10 @@ fn read_splits_a_range_into_uniform_attribute_segments() {
     );
     // Editing handoff: the header carries the module identity, the source
     // path, and the fingerprint.
-    assert!(output.contains("module <vault::guide> guide.not"), "{output}");
+    assert!(
+        output.contains("module <vault::guide> guide.not"),
+        "{output}"
+    );
     assert!(output.contains("fingerprint"), "{output}");
 }
 
@@ -291,7 +329,10 @@ fn read_point_reports_the_full_effective_environment() {
         ],
     );
     assert!(output.contains("segments 1"), "{output}");
-    assert!(output.contains("(status: \"draft\", wip: true)"), "{output}");
+    assert!(
+        output.contains("(status: \"draft\", wip: true)"),
+        "{output}"
+    );
     // The point resolves to the innermost node: the text run inside the
     // paragraph; the header container line is the single source for it.
     assert!(output.contains("container <anonymous>"), "{output}");
@@ -337,13 +378,29 @@ fn read_from_line_window_reads_to_the_end_and_clamps() {
     // which validates strictly).
     let clamped = run(
         &vault,
-        &["inspect", "read", "vault::guide", "--from-line", "12", "--lines", "100"],
+        &[
+            "inspect",
+            "read",
+            "vault::guide",
+            "--from-line",
+            "12",
+            "--lines",
+            "100",
+        ],
     );
     assert!(clamped.contains("lines 12..14"), "{clamped}");
     // A bounded window inside the source selects exactly those lines.
     let window = run(
         &vault,
-        &["inspect", "read", "vault::guide", "--from-line", "8", "--lines", "2"],
+        &[
+            "inspect",
+            "read",
+            "vault::guide",
+            "--from-line",
+            "8",
+            "--lines",
+            "2",
+        ],
     );
     assert!(window.contains("lines 8..9"), "{window}");
     assert!(window.contains("    8 | == 故障排除"), "{window}");
@@ -359,7 +416,10 @@ fn read_lines_requires_from_line() {
         .args(["inspect", "read", "vault::guide", "--lines", "3"])
         .output()
         .expect("failed to spawn the notist binary");
-    assert!(!failed.status.success(), "--lines without --from-line must fail");
+    assert!(
+        !failed.status.success(),
+        "--lines without --from-line must fail"
+    );
     assert!(String::from_utf8_lossy(&failed.stderr).contains("--from-line"));
 }
 
@@ -452,12 +512,13 @@ fn read_executes_the_requests_embedded_in_the_example_fixture() {
             // Heading 2.2's segments opens on its declaring annotation.
             assert!(stdout.contains("segments 3"), "{stdout}");
             assert!(
-                stdout.contains(
-                    "[1] <vault::test::read/Heading 1/Heading 2.1> lines",
-                ),
+                stdout.contains("[1] <vault::test::read/Heading 1/Heading 2.1> lines",),
                 "{stdout}"
             );
-            assert!(stdout.contains("(b: \"b\", c: \"c\", o: \"o\")"), "{stdout}");
+            assert!(
+                stdout.contains("(b: \"b\", c: \"c\", o: \"o\")"),
+                "{stdout}"
+            );
             // The segment's authored lines ride along (attribute-annotated
             // read), and the list-item boundary lands cleanly — no cut line.
             assert!(stdout.contains("   22 | - List<|"), "{stdout}");

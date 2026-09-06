@@ -4187,7 +4187,8 @@ mod tests {
             );
         }
         assert_eq!(
-            index.offset_utf8_saturating(source, 1, 0), line1_start,
+            index.offset_utf8_saturating(source, 1, 0),
+            line1_start,
             "line start offset equals the byte length of the previous lines"
         );
         assert_eq!(

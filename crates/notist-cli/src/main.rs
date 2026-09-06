@@ -18,12 +18,7 @@ mod service;
 mod skill;
 
 #[derive(Debug, Parser)]
-#[command(
-    name = "notist",
-    version,
-    about,
-    arg_required_else_help = true
-)]
+#[command(name = "notist", version, about, arg_required_else_help = true)]
 struct Cli {
     /// Control colored diagnostic output.
     #[arg(long, value_enum, default_value_t = clap::ColorChoice::Auto, global = true)]
@@ -169,7 +164,6 @@ enum SkillCommand {
         force: bool,
     },
 }
-
 
 #[derive(Clone, Copy, Debug, Default, ValueEnum)]
 enum DiagnosticSeverityArg {
@@ -455,7 +449,13 @@ fn run_inspect(
                             record.location.byte_range.end
                         )
                     },
-                    |range| format!("{}:{}", record.location.relative_path.display(), range.start),
+                    |range| {
+                        format!(
+                            "{}:{}",
+                            record.location.relative_path.display(),
+                            range.start
+                        )
+                    },
                 );
                 println!(
                     "{} {} {} {}  {}",
@@ -568,11 +568,7 @@ impl Palette {
 /// inside origins), green = attribute keys,
 /// dim = all metadata (paths, fingerprints, every line/byte range, node
 /// kinds, levels, the gutter), body = segment source bodies.
-fn print_region_record(
-    record: &notist_service::RegionRecord,
-    palette: &Palette,
-    origins: bool,
-) {
+fn print_region_record(record: &notist_service::RegionRecord, palette: &Palette, origins: bool) {
     let header = [
         palette.cyan(&format!("<{}>", record.module)),
         // The path handoff to the host editor: the identity-to-path bridge.
@@ -636,23 +632,19 @@ fn print_region_record(
                         .map(|(key, value)| (key.clone(), value.clone()))
                         .collect::<Vec<_>>()
                 })
-                .chain(
-                    record
-                        .common
+                .chain(record.common.iter().flat_map(|group| {
+                    group
+                        .entries
                         .iter()
-                        .flat_map(|group| {
-                            group
-                                .entries
+                        .filter(|(key, _)| {
+                            !segment
+                                .attributes
                                 .iter()
-                                .filter(|(key, _)| {
-                                    !segment.attributes.iter().any(|group| {
-                                        group.entries.iter().any(|(k, _)| k.as_str() == *key)
-                                    })
-                                })
-                                .map(|(key, value)| (key.clone(), value.clone()))
-                                .collect::<Vec<_>>()
-                        }),
-                )
+                                .any(|group| group.entries.iter().any(|(k, _)| k.as_str() == *key))
+                        })
+                        .map(|(key, value)| (key.clone(), value.clone()))
+                        .collect::<Vec<_>>()
+                }))
                 .collect();
             entries.sort_by(|a, b| a.0.cmp(&b.0));
             entries.dedup_by(|a, b| a.0 == b.0);
@@ -687,12 +679,9 @@ fn dict_literal(entries: &[(String, String)]) -> String {
 
 fn dict_key(key: &str) -> String {
     let identifier = !key.is_empty()
-        && key
-            .chars()
-            .enumerate()
-            .all(|(index, c)| {
-                c == '_' || c.is_alphanumeric() && !c.is_numeric() || (index > 0 && c.is_numeric())
-            });
+        && key.chars().enumerate().all(|(index, c)| {
+            c == '_' || c.is_alphanumeric() && !c.is_numeric() || (index > 0 && c.is_numeric())
+        });
     if identifier {
         key.to_owned()
     } else {
