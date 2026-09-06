@@ -65,13 +65,13 @@ segments 3
 模块 `@!` 继承的呈现（实测于 CLI 设计文档 lines 40..45，`--origins --no-content`；`agents` 条目值过长，此处截断）：
 
 ```text
-module <vault::cli> lines 40..45 bytes 2730..3236 fingerprint 01b26c5dd518e9be
-container <vault::cli/Notist CLI: Command Design and Reference/设计总览/命令分组> lines 29..46 bytes 2555..3445
+module <vault::05-cli> lines 40..45 bytes 2730..3236 fingerprint 01b26c5dd518e9be
+container <vault::05-cli/Notist CLI: Command Design and Reference/设计总览/命令分组> lines 29..46 bytes 2555..3445
 common 2
     @(agents: 所有 CLI 命令的输出示例必须来自实测，并完整体现字段说明声称的每一种形态——虚拟模块、@id 标记、ambiguous、definition 标记、省略等边界；…) <- module lines 1..249 bytes 0..13519
     @(implementation: partial) <- module lines 1..249 bytes 0..13519
 segments 1
-[1] <vault::cli/Notist CLI: Command Design and Reference/设计总览/命令分组> lines 40..45 bytes 2730..3236
+[1] <vault::05-cli/Notist CLI: Command Design and Reference/设计总览/命令分组> lines 40..45 bytes 2730..3236
 ```
 
 == 裁决

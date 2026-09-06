@@ -7,7 +7,7 @@
 
 == 未决设计
 
-- Notist.toml 未知键策略两处来源矛盾（不静默忽略 vs 按预留策略忽略）；language revision、plugins/site 等配置字段的语义模型需要归属（plugins 或 cli/build 侧认领）。
+- Notist.toml 未知键策略两处来源矛盾（不静默忽略 vs 按预留策略忽略）；language revision、plugins/site 等配置字段的语义模型需要归属（07-plugins 或 05-cli/build 侧认领）。
 - whitespace-only `core::text` 段与成型不变量 I1 的张力。
 - `let rec` 递归绑定语义。
 - `#let x = #f(...)` 的绑定值规约状态。

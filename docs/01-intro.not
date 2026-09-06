@@ -1,0 +1,203 @@
+= 认识 Notist
+
+@(type: "user", class: "user")
+#[
+
+*Note + -ist -> notist(also not an -ist)*
+
+Notist，一门带有静态类型系统的文档编程语言，它为取代 Markdown 而生，它的目的是解决 Markdown 存在的诸多问题：
+- 没有“官方”实现
+- 内容表达能力弱，扩展靠方言，各种方言语法混乱
+- 引用受路径影响且粒度粗
+- 缺少 Agent 原生设计
+
+它在语法和设计上有很多地方受 Rust 和 Typst 启发，文件扩展名为 `.not`。
+
+]
+
+Notist 是一门带有静态类型系统的文档编程语言，它具有两个语法模式：Markup 和 Code（类似 typst）。默认处于 Markup 模式，此时体验与简单的标记语言基本无异；在 `#` 字符后的内容会进入到 Code 模式，Code 模式可以绑定变量与函数，也可以把求值结果直接插入文档。写法与感受像标记语言，能力却来自真实的求值。
+
+一个 `.not` 文件既是可读的文本，也是一个有类型的文档程序：解析、静态检查、求值三个阶段把源码变成一棵 `Item` 树（文档）、一个环境（bindings）与一张属性表（annotations）。检查、预览与静态站点构建都消费这同一份求值结果。
+
+本文从写作者的角度介绍核心机制。精确的字符、空白与分隔规则见 #<vault::03-language::grammar>；类型与求值规则见 #<vault::03-language::types>；内置构造器见 #<vault::03-language::functions>；日常速查见 #<vault::02-cheatsheet>；命令行见 #<vault::05-cli>。
+
+== 最小示例
+
+下面这段代码同时展示了三种能力：`let` 绑定变量、函数定义与调用、把计算结果插入正文：
+
+```not
+#let accent = "violet"
+
+= #accent
+
+#let warning(body: Item) -> Item =
+  callout(kind: "warning", body)
+
+#warning[这是一段可以通过函数构造的内容。]
+```
+
+它求值后得到三个产物：
+
+```text
+bindings = {
+  accent = "violet"
+  warning = (body: Item) -> Item
+}
+
+content = [
+  标题，内容为 "violet"
+  callout(kind: "warning")，内容为 "这是一段可以通过函数构造的内容。"
+]
+
+annotations = {}   // 示例中没有标注，属性表为空
+```
+
+标题来自变量 `accent` 的值，callout 的内容由函数调用构造——文档里的每一处内容都来自同一次求值。`bindings` 是程序的一面——跨模块复用的入口；`content` 是文档的一面——渲染与查询消费的产物；`annotations` 是属性的一面——标注与模块元数据的唯一入口。三者来自同一次求值，却承担不同职责。这个结果如何产生：类型见 #<vault::03-language::types>，属性表见 #<vault::04-world::annotation>，求值模型与名称环境见 #<vault::03-language::evaluation>。
+
+== 一篇 Notist 文档
+
+下面的示例包含标题、模块引用、标注、折叠内容与代码围栏：
+
+````not
+= Project Notes
+
+The language reference is #<vault::03-language::grammar>.
+
+== Status
+
+@(status: true, verified: true, owner: "Alice")#[The documentation build passes. 
+#callout(kind: "warning", title: [发布前检查])[
+Run `cargo test` before publishing.
+]
+
+#details(summary: [构建方式], open: false)[
+```text
+notist build docs
+```
+]
+````
+
+这仍然是一篇以普通文字为主体的文档：`= ` 与 `== ` 是 `heading` 的语法糖；`#callout` 与 `#details` 是产生内容的构造器；行内反引号与围栏是内置 Raw 语法；`#<vault::03-language::grammar>` 是跨文档引用；`@(todo: "...")` 为一段内容附加可查询的元数据。
+
+== Vault 与 Module
+
+Vault 是运行边界：一个目录通过根目录下的 `Notist.toml` 声明为 vault 根（存在即声明）；跨 Vault 一律不解析名称与引用。Vault 中的每个 `.not` 文件对应一个逻辑 Module：
+
+```text
+docs/README.not          -> vault
+docs/intro.not           -> vault::01-intro
+docs/guide/setup.not     -> vault::guide::setup
+docs/guide/README.not    -> vault::guide
+```
+
+Module 是求值单元：每个 Module 独立求值，产生 bindings、content 与 annotations 三面。跨模块的连接有两条边：程序面的 import（取目标 Module 的 root bindings）与知识面的 Reference（链接内容）。Vault 边界与发现规则见 #<vault::04-world::boundary>，Module 模型见 #<vault::04-world::model>，import 见 #<vault::04-world::import>。
+
+== 引用其他 Module
+
+使用 `<...>` Target 字面量引用 Module。假设当前文档是 `vault::guide`：
+
+```not
+#<setup>                        # 相对 ModulePath：从当前模块解析
+#<self::setup>                  # 当前模块路径前缀
+#<super::intro>                 # 父级
+#<vault::03-language::grammar>               # 绝对路径
+#<vault::guide/install>         # 绝对 ModulePath + ItemName（ItemPath）
+```
+
+- `#<setup>` 从当前 Module 查找 child，即 `vault::guide::setup`；
+- `#<self::setup>` 同样从当前 Module 开始，只是把起点写得更明确；
+- `#<super::intro>` 先回到父 Module，再找到 `vault::01-intro`；
+- `#<vault::03-language::grammar>` 从 Vault 根开始，不受当前文档位置影响。
+
+`/ItemName` 后缀指向目标模块内的 Item（模块内实体：带 `id:` 标注的 scope 或标题）。标题额外拥有默认名——标题文本本身即可作为 ItemName 使用：`#<vault::guide/安装>` 可以直达标题为「安装」的节。重复标题产生歧义诊断，作者用显式 `id:` 标注 消歧。带 scheme 的外部 URL（`https://` 等）语法合法，当前渲染为未解析的可见文本并产生 info 级诊断。目标空间与寻址的完整规则见 #<vault::04-world::reference>。
+
+== 用构造器产生内容
+
+内置元素以 first-class 构造器函数的形式存在。命名实参写作 `name: value`，trailing Item 写在方括号里：
+
+```not
+#heading(level: 2)[标题]
+
+#callout(
+  kind: "warning",
+)[
+Read #<vault::03-language::grammar> before editing the syntax.
+Run `notist check docs` after editing.
+]
+```
+
+`#name(args)[Item]` 中的 `[...]` 先递归求值为结构化 `Item`，再绑定到签名声明的 trailing 形参：`#f(kind: "warning")[内容]` 与 `#f(kind: "warning", [内容])` 等价——trailing block 只是追加一个位置实参的语法糖，它是唯一允许跟在具名实参之后的位置实参。
+
+位置实参必须全部出现在具名实参之前；重复实参、未知实参、缺失必填实参与类型不匹配都产生指向调用位置的诊断。签名记号的完整规则见 #<vault::03-language::types>，内置构造器的逐一说明见 #<vault::03-language::functions>。
+
+== Markup 语法糖
+
+标题、代码围栏、分割线、列表、引用与强调等都是内置构造器的语法糖：
+
+````not
+= 一级标题
+== 二级标题
+
+```rust
+println!("Hello");
+```
+
+---
+
+- 无序条目
++ 有序条目
+
+#<target>  *加粗*  _斜体_  __下划线__  ~~删除线~~
+````
+
+糖的语义不经过名字查找：`= 标题` 不是「调用名为 heading 的函数」，而是语法层构造。每个糖的完整规格见 #<vault::03-language::grammar::markup>，速查见 #<vault::02-cheatsheet>。
+
+== 标注
+
+标注把属性绑定到求值结果（值）上，用于分类与查询：
+
+```not
+@(status: true, verified: true, class: "highlight", owner: "Alice")#[The documentation build passes.]
+```
+
+四种条目：`@id` 赋 ItemName（模块内唯一）；`#tag` 是标签；`.class` 是类名；`key = value` 是键值属性。三种挂载位置：行内 postfix（紧贴在值之后）、块级前缀 `@(class: ..)`（修饰下一个块级节点）、模块属性 `@!(class: ..)`（文件开头）。完整语法见 #<vault::03-language::grammar::annotation>。
+
+== 编译管线
+
+一篇 Notist 文档从源码到可见结果经过五个阶段：
+
+```text
+source
+  → parse       语法解析：Markup 与 Code 交替扫描，产出语法树与语法错误
+  → check       静态检查：名称解析、类型检查、调用解析
+  → evaluate    求值：lower 成 call 森林，规约到不动点
+  → structure   成型：段落、列表与节的折叠归组
+  → project     投影：按 target（HTML 等）输出最终结果
+```
+
+阶段之间是数据流：每个阶段只消费上一阶段的产物。求值之前，静态类型系统先完成名称解析与类型检查，求值器只消费这份语义输入。一篇 Notist 文档的正文是隐式的 Item quotation——等价于整段正文都被包裹在一段 Item 字面量中；它的求值结果除了一段 Item 值（call 森林）以外，还包含带有函数、变量等符号的环境，以及旁置的属性表（标注与模块元数据）。
+
+解析见 #<vault::03-language::parse>，静态检查见 #<vault::03-language::types>，求值见 #<vault::03-language::evaluation>，成型见 #<vault::03-language::structure>，构建与发布见 #<vault::05-cli::build>。插件在求值与投影两个阶段介入：自定义元素与内置构造器走同一套规约，投影 handler 把内容投影到目标词表——见 #<vault::07-plugins>。
+
+== 检查、构建与预览
+
+Notist CLI 以一个 Vault 目录为输入：
+
+```text
+notist check docs
+notist build docs -o dist
+notist preview docs
+```
+
+`check` 检查模块、引用、调用与类型问题；`build` 把整个 Vault 构建为静态站点；`preview` 在本地展示相同的页面并在文档变化后刷新。命令的完整规范见 #<vault::05-cli>，常驻 daemon 见 #<vault::05-cli::daemon>。
+
+== 下一步
+
+- 日常速查：#<vault::02-cheatsheet>
+- 语法三面：#<vault::03-language::grammar>——#<vault::03-language::grammar::markup> / #<vault::03-language::grammar::code> / #<vault::03-language::grammar::annotation>
+- 类型系统：#<vault::03-language::types>
+- 内置构造器：#<vault::03-language::functions>
+- 求值模型：#<vault::03-language::evaluation>
+- Vault 世界：#<vault::04-world::model> / #<vault::04-world::boundary> / #<vault::04-world::import> / #<vault::04-world::reference> / #<vault::04-world::annotation>
+- 命令行：#<vault::05-cli>
+- 插件系统：#<vault::07-plugins>

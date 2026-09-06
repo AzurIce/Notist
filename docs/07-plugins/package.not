@@ -1,0 +1,119 @@
+@!(implementation: "partial")
+= Plugin Package and Lifecycle
+
+本文定义插件 package 的形态、manifest、core package 与装载生命周期。插件 call 的求值语义见 #<vault::03-language::evaluation>；共享类型与模块 ABI 见 #<vault::07-plugins::abi>；core namespace 与包命名边界见 #<vault::07-plugins::namespace>。
+
+== Package 模型
+
+```text
+PluginPackage {
+  id: PackageId              // shader / core
+  namespace: String          // shader:: / core::
+  api-version: String
+  backend: Native | Wasm
+  functions: Vec<FunctionDecl>
+  elements: Vec<ElementDecl>
+  render: Vec<RenderContribution>
+  artifact: NativeRegistration | WasmModule
+}
+```
+
+- package identity、namespace 和 contribution 是语义契约；`backend` 只描述实现与装载方式。
+- `Native` package 由宿主直接加载 Rust registration；`Wasm` package 提供零导入 core wasm module，导出 `init` 与 `evaluate` 的裸内存 ABI。
+- `core` 是 package id 为 `core` 的标准 package，默认 App 预装它，但不因此成为 eval engine 的特权对象。
+- `PackageId` 成为 `ElementName` 的 namespace：插件节点写作 `shader::canvas`。
+
+== Manifest
+
+插件包是目录或 zip，根下是 `plugin.json`。manifest 只是信封：身份、Wasm 装载参数与投影资产；semantic 接口由模块的 `init` 注册提供（#<vault::07-plugins::abi>），不写入 manifest：
+
+```json
+{
+  "package": "shader",
+  "version": "0.1.0",
+  "api-version": "0.1",
+  "wasm": {
+    "module": "semantic.wasm"
+  },
+  "render": {
+    "html": {
+      "contributions": [
+        {
+          "element": "canvas",
+          "trusted": true,
+          "web-component": {
+            "tag": "notist-shader",
+            "module": "assets/shader.js",
+            "style": "assets/shader.css"
+          }
+        }
+      ]
+    }
+  }
+}
+```
+
+- 出现 `wasm.module` 就表示该 artifact 是零导入 core wasm module；宿主以 wasmi 实例化并调用 `init` / `evaluate`，信封没有格式分流 flag。
+- 顶层 `render` 描述投影面；投影贡献是静态文件引用，保留在信封里，细节见 #<vault::07-plugins::projection>。
+- JSON 只承担人工编辑的 `plugin.json` 信封；semantic declarations、defaults、节点与调用载荷不进入 manifest，统一由 wire version byte + postcard 承载。
+
+== core package
+
+`core` 是标准 package，不是 eval engine 内部的一组特殊 handler：
+
+```text
+CorePluginContribution {
+  package: core
+  functions: 所有 core::* 构造器实现
+  signatures: core 内容词表
+  elements: core 成型 schema
+  projections: 由 target package 提供
+}
+```
+
+默认 Notist App 预装这个 contribution，因此普通文档可以使用 `core::*`。一个不安装它的自定义 App 仍然合法；此时 `core::*` 按普通未注册 call 处理。
+
+core 与其它 package 共享：`FunctionRegistry`；`ElementSchema`；target projection registry；namespace、signature、schema 的原子校验。
+
+core namespace 的保留属于语言 / package policy：其它 package 不能注册或覆盖 `core::*`，但这不授予 core handler 特殊的 reduction 权限。逐构造器的用户侧语义见 #<vault::03-language::functions>；core namespace、prelude 与命名边界见 #<vault::07-plugins::namespace>。
+
+== Notist.toml 配置
+
+Vault 在 `Notist.toml` 中声明要加载的 package：
+
+```toml
+[plugins.shader]
+path = "../plugins/shader"
+
+[plugins.component-echo]
+path = "../plugins/component-echo"
+```
+
+- `path` 指向相对 Vault root 的 package 目录或 zip；registry 形式的 `package` 字段为未来入口保留。
+- Vault 配置容器的整体模型见 #<vault::04-world::boundary>。
+
+== 装载与生命周期
+
+package 的组合只有一条语义路径，backend 的装载步骤可以不同：
+
+```text
+native package                  Wasm package
+  → construct/register            → manifest
+                                  → instantiate core module
+                                  → init() declarations
+             \                  /
+              → validate package / namespace / signature / schema
+              → atomically register contribution
+              → WorkspaceSnapshot identity
+```
+
+- native plugin 的 `register` 与 Wasm plugin 的 `init` 都必须产生同一种 contribution；任一校验失败都不得留下部分注册。
+- Wasm `init` 消耗与 `evaluate` 相同的 fuel 预算且要求确定性；native plugin 不需要 Wasm fuel，但属于进程级信任边界。
+- 插件失败是 host boundary diagnostic，不伪装成 `Unit` 成功。
+- 插件 namespace 冲突在加载时拒绝；backend 不改变 namespace policy。
+- package、manifest、native surface、Wasm module 或 assets 变化进入 source-set / plugin fingerprint，分配新的 `FunctionEnvironmentId` 并发布新 snapshot revision。
+- daemon 递归 watch 外部 package 目录；`plugin.json` / wasm / assets 变化触发 disk view reload（#<vault::05-cli::daemon>）。
+
+== 开放问题
+
+- registry 形式 package 的解析、校验与缓存协议待定。

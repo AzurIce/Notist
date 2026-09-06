@@ -5,14 +5,14 @@ description: Use Notist to create, edit, validate, search, and navigate `.not` k
 
 # Notist
 
-Notist manages knowledge-base *Vaults*. A Vault is a directory containing a `Notist.toml`; its content lives in `.not` files, organized into Modules addressed by `ModulePath` (for example `vault::world::reference`). The installed `notist` executable ships the full tool suite — attribute-annotated reading, cross-reference lookups, validation, site publishing — with output shapes tuned for agents (count headers, line ranges, attribute spellings). The official docs Vault (a regular Vault itself) documents the full surface.
+Notist manages knowledge-base *Vaults*. A Vault is a directory containing a `Notist.toml`; its content lives in `.not` files, organized into Modules addressed by `ModulePath` (for example `vault::04-world::reference`). The installed `notist` executable ships the full tool suite — attribute-annotated reading, cross-reference lookups, validation, site publishing — with output shapes tuned for agents (count headers, line ranges, attribute spellings). The official docs Vault (a regular Vault itself) documents the full surface.
 
 ## `.not` syntax
 
 `.not` is not Markdown, and it differs in ways that matter: emphasis is `*strong*` (not `**bold**`), a single newline is a soft break while a blank line starts a new paragraph, annotations are `@id` / `#tag` / `key = value`, links are `#<vault::module/target>`, and source has separate markup and code contexts. Before writing or editing `.not` files, read the authoritative quick reference:
 
 ```shell
-notist inspect read vault::cheatsheet --vault <DOCS_ROOT>
+notist inspect read vault::02-cheatsheet --vault <DOCS_ROOT>
 ```
 
 After editing, validate with `notist check --vault <DOCS_ROOT>`. The grammar overview is `grammar.not` (details in `grammar/`: `markup`, `code`, `annotation`); the per-constructor reference is `functions.not`.

@@ -1,0 +1,246 @@
+@!(implementation: "partial")
+= Evaluation
+
+本文定义 Notist 的求值阶段：静态检查的产物被 lower 成 call 森林，规约（reduction）把森林化简到不动点；名称环境（名称解析与词法边界）也是本文的定义对象。静态检查见 #<vault::03-language::types/Type System/静态检查>，成型交给 #<vault::03-language::structure>；插件 package、ABI 与信任模型见 #<vault::07-plugins>，插件的注册与贡献声明见 #<vault::07-plugins::contributions>。
+
+```text
+静态检查产物（type system）
+  → lower
+  → call 森林                 // Call 由 lowering 引入
+  → reduce                   // 声明式不动点
+  → call 森林（无可规约的 call）// 可能包含 core::parbreak
+  → shape
+  → 成型后的森林              // 无 core::parbreak，已归组
+```
+
+求值器只消费静态检查的产物：不重新解析名称、不重新绑定实参、不重新猜测函数身份。
+
+规约必须在成型之前：`raw(block:)`、插件返回内容、`heading` / `item` 的运行时参数都会影响成型，不执行函数就无法判断 inline/block 与归组关系。成型前的流只是 eval 内部工作区，对外公开的规范树是成型后的结果。
+
+== 值的宇宙
+
+求值处理的值宇宙与类型一一对应：Unit / Bool / Int / Float / String / Item / Target / Array / Dict / Function。完整的类型与值表见 #<vault::03-language::types/Type System/Type 与 Value 对应>。
+
+每个公开类型都必须具有相应的值构造、观察与操作——进入语言的类型就是普通值，可以绑定、传递与运算。
+
+== Call 与 Node
+
+所有内容节点统一为一种表示：call。`name` 标识构造器身份，`args` 保存"名称 + 带类型的参数"，`children` 保存递归的子森林：
+
+```text
+Node {
+  name      // qualified name
+  args      // 名称 + 带类型的参数（Unit / Bool / Int / Float / String / Item / Array）
+  children  // 递归 call 森林
+  block     // 是否中断段落流
+}
+```
+
+不存在 Rust 侧的 `Element` 枚举或内置变体：内置与插件内容都是 `Node`。"已规约 / 未规约"是同一节点的两个阶段，不是两种类型——没有 handler 的名字不被触碰，它自己就是规约结果。"Leaf" 只是"未被规约的 call"的阶段别名，不对应任何类型。名字词表分四类：
+
+```text
+构造器来源：core::text / core::reference / core::heading / core::raw /
+          core::rule / core::item / core::table-cell / core::table /
+          core::figure / core::callout / core::details /
+          core::strong / core::emph / core::underline / core::strike / ...
+
+流控制：    core::parbreak / whitespace-only core::text
+
+成型来源：  core::paragraph / core::list / core::section
+
+插件来源：  {package}::{element}
+```
+
+- 内置集合的封闭性由 `core::` namespace 与构造器签名保证——封闭的是注册侧，`core::*` 的 handler 永远由宿主提供；
+- 提及自由：handler 的输出森林可以写任何名字，包括 `core::*` 与其他 package 的名字；名字的语义由注册方决定，没有 handler 的名字只是数据；
+- 每个构造器的参数类型与 body 模式由其签名校验，例如 `core::heading` 要求 `level: Int` 与 `body: Item`（内置构造器的签名与校验见 #<vault::03-language::functions>）；
+- 容器子元素不变量在构造器校验，例如 Table 的填行/span；
+- 数据型元素（如 `declare`，无运行时 handler）不注册 handler，它的 call 天然就是最终结果，投影按 name + 参数直接出标签。
+
+== Lowering：Call 的来源
+
+`Call` 不是 parse 的直接产物。parse 输出 mode-aware 语法树（#<vault::03-language::parse>），其中显式调用是 `syntax::Call`，标题/列表等是糖节点；check 把调用点解析为确定的函数身份。lower 消费 check 后的语法树，把各节点统一翻译为 call 森林：
+
+| parse / check 产物 | lowering 输出 |
+|---|---|
+| Markup 普通文字 | `core::text` 节点 |
+| 空行 | `core::parbreak` 节点 |
+| 显式 `#heading(...)[...]` | `core::heading` call（arguments + body 子森林） |
+| `= Title` 糖 | 同一个 `core::heading` call |
+| `- item` 糖 | `core::item` call（ordered: false） |
+| Item literal `[...]` | 嵌套子森林 |
+| 插件函数调用 | `{package}::{element}` call |
+| 普通实参表达式 | 求值为值 |
+| Item 实参 / trailing body | 保持为子森林 |
+
+注意区分两个 Call：
+
+```text
+syntax::Call      parse 阶段的语法节点；参数仍是 Expression。
+Node              lowering 后的规约节点；参数是值，children 是子森林。
+```
+
+因此完整形状是：
+
+```text
+parse  →  syntax::Call（语法）
+check  →  resolved call（身份与绑定计划）
+lower  →  Node（统一规约 IR）
+reduce →  Node（无可规约的 call）
+```
+
+== 文档流
+
+文档先被 lower 成一段流，而不是直接生成结构树。写作文档时，作者写的就是一个顺序流：
+
+```text
+text("hello")
+parbreak()
+text("world")
+```
+
+`core::parbreak` 是流中合法的 transient 节点：它参与成型，但在 #<vault::03-language::structure> 中被消费，不进入最终森林。
+
+下面是一个 lowering 示例：
+
+```text
+= Title
+
+Hello
+```
+
+parse / check 后，lower 产出：
+
+```text
+[
+  Call(core::heading,
+    arguments: { level: 1 },
+    body: [ Call(core::text, "Title") ],
+  ),
+  Call(core::parbreak),
+  Call(core::text, "Hello"),
+]
+```
+
+`core::heading` 有 handler，规约继续；`core::text` 与 `core::parbreak` 没有 handler，原样留存。最终森林进入 structure。
+
+== Item 值
+
+`Item` 是 call 森林的值类型。它是不透明的文档流/子树，类型系统不追踪内部结构：值的"形状"由规约不动点与提及自由决定，静态检查不可预测——森林表示不泄露为语言操作，Item 不可模式匹配、不可比较相等。
+
+Item 值的规约状态分两侧：
+
+- *输入侧恒为规约完成*：函数收到的 Item 实参与 trailing body 总是规约完的（输入函数式）；`let` 绑定与 content literal `[...]` 持有的也是规约完成的森林；
+- *输出侧可以是未规约森林*：函数返回的 Item 可以仍含有 handler 的 call（输出宏式），由不动点继续规约——函数没有"规约完再返回"的义务。
+
+需要延迟计算的地方使用 `fn() -> Item`。
+
+Item 值不是散落的数据：它们组合在同一棵 Item 树上（#<vault::04-world::model>）。节点既装内容，也装名字；属性不挂在树上，见 #<vault::04-world::annotation>。
+
+== 名称环境
+
+binding 挂在 Item 树的节点上，名称解析沿节点链自内向外——词法环境不是树之外的平行结构，就是树本身（#<vault::04-world::model>）。
+
+- *N1 节点链*：名称解析沿节点链自内向外进行；求值器消费静态检查给出的 resolved name，不重新猜测名字指向（#<vault::03-language::types/Type System/静态检查>）。
+- *N2 遮蔽*：最近绑定者胜出（shadowing）；同名 `let` 允许在后续声明处建立新绑定并遮蔽外层或先前的同名绑定。
+- *N3 let 可见性*：`let` 绑定从声明处开始对同一节点的后续内容可见，声明之前的节点不可见。
+- *N4 递归暂缓*：`let` 的右侧看不到正在声明的名字；递归绑定待 `let rec` 引入。
+- *N5 根 bindings*：求值结束后，根节点自有的 binding 进入求值结果 `bindings`（见求值结果）；其他节点上的 binding 只是求值期的环境事实，成型后的结构树消费者不依赖它们。
+
+词法边界：`#[...]`、Item literal 与 Code block 是词法边界，其内部 `let` 不出块。`#[...]` 与 Item literal 的产物是 ScopeItem——树上的匿名 Item，查询面覆盖全部 Item，寻址面只覆盖有 ItemId 的 Item（#<vault::04-world::model>）。
+
+== Item 组合与插入规则
+
+求值在 Item 树上进行：名字沿节点链解析，内容按源码顺序组合成 `Item`。文档正文是隐式的 Item quotation——普通文字、引用、标注与嵌入的计算按源码顺序组合成 call 森林。
+
+Markup insertion 边界上，嵌入表达式的结果按插入规则转换后进入外层 Item——哪个值能插入、如何转换，见 #<vault::03-language::types/Type System/插入规则>。
+
+插入转换只存在于 Markup insertion 边界；普通函数要求 Item 参数时仍然拒绝 String——"可展示"不会渗透成所有 API 的隐式转换规则（#<vault::03-language::types/Type System/Type 与 Value 对应/Item 类型>）。
+
+== 规约：声明式不动点
+
+规约的语义只有一条规则：
+
+```text
+重复：找到森林中存在 handler 的 call，用 handler 的输出森林替换它
+直到：一整轮不再有任何变化
+```
+
+由此推出：
+
+- *遍历策略无关*。规则是 confluent 的：先规约父还是先规约子只影响诊断出现的顺序，不影响最终森林。（实现按 descend-first：先规约参数与 body 子流，再 dispatch 当前 call。）
+- *预算只记在 handler 调用上*。每次 dispatch 计一次 depth 与一次 call；没有 handler 的 call 不参与规约，不消耗预算。
+- *输入函数式、输出宏式*。handler 收到的参数与 body 总是规约完成的；返回的森林是未规约的，重新进入不动点。规约纯且 total（无副作用、未知名字不报错），输入侧先规约永远安全——模型因此不需要 quote。
+- *诊断分层*。名字拼错归 check 层报告（对照签名集）；规约层对未知名字保持 total——未注册名字留在森林里，不阻塞整篇。类型错误、向不接受 body 的函数传 body 产生诊断，不静默丢弃、不通过 accessor panic 假装成功；单个 call 的失败只收集诊断并跳过它，兄弟节点继续（sibling recovery），诊断不伪装成成功。
+
+单次 dispatch 的形状：
+
+```text
+查 FunctionRegistry（无 handler → 原样留存，不耗预算）
+  → 规约参数中的嵌套流与 trailing body
+  → 按签名绑定实参
+  → 调用函数
+  → 返回的森林重新进入不动点
+```
+
+所有内置函数与插件函数注册在同一个 `FunctionRegistry` 中，在 registry 中地位相同——插件因此可以返回指向 `core::details`、`core::raw` 等名字的 call 获得组合能力。
+
+identity 契约：注册了 handler 的名字意味着"这个 call 需要计算"。handler 返回与输入完全相同的 call 表示 identity，本轮停止；若持续产生新的自返 call，则是作者 bug，由深度与调用预算兜底。需要组合时返回其它名字的 call，规约继续。
+
+== 名字与边界
+
+call 的名字分两类：
+
+```text
+core::*            宿主注册的内置构造器与基础操作
+{package}::*       插件注册的元素
+```
+
+名字的所有权只体现在*注册*侧：插件 `init` 注册时元素名必须落在自己 package 的 namespace 内，`core::*` 永远由宿主注册、不可覆盖。*提及完全自由*：任何 handler 都可以在输出森林里写任何名字——写 `core::paragraph` 与写 `other-package::foo` 没有任何区别。提及不是伪造：名字的语义永远由注册方决定，没有 handler 的名字只是数据。
+
+插件可见的 IR 就是 call 森林：handler 通过返回包含新 call 的森林表达组合；组件返回后，宿主把整片森林统一送回同一个规约不动点。插件不在组件调用期间嵌套执行宿主规约，也不需要第二套组合 API。内容组合不做 per-call 授权：名字的语义由宿主 registry 决定，执行信任边界是 wasm 沙箱本身。组件 ABI 与 `init` / `evaluate` 契约见 #<vault::07-plugins>。
+
+组合示例——一个 `shader` 包的 handler 收到：
+
+```text
+#shader(source: wgsl)[fallback]
+```
+
+返回：
+
+```text
+[
+  Call(core::details,
+    arguments: { summary: [text("Shader")], open: false },
+    body: [
+      Call(core::raw, source: wgsl, lang: "wgsl", block: true),
+      Call(shader::canvas, source: wgsl),
+    ],
+  ),
+]
+```
+
+不动点继续规约 `core::details` 与 `core::raw`；`shader::canvas` 是数据型元素，没有 handler，作为数据留存，最终由投影层按名字出 Web Component 标签。插件不返回指向自己的 call。
+
+投影本身是 target 侧的第二阶段规约：target package（如 html）注册投影 handler，把语义名字规约为目标词表节点，与语义规约分属两个独立的 registry——见 #<vault::05-cli::build>。
+
+== 求值规则
+
+- *E1 顺序*：声明与正文按源码顺序求值；`let` 绑定扩展后续节点的环境（见名称环境），可展示的 Markup 与嵌入表达式通过 Item insertion 追加节点。
+- *E2 函数应用顺序*：求值 callee 表达式 → 按源码顺序求值显式实参与 trailing Item → 按形参声明顺序建立绑定（应用解析结果中的 coercion，或代入缺省形参的默认值）→ 调用函数值 → 校验返回值满足声明的结果类型。签名不表达返回森林的规约状态：`-> Item` 的函数可以返回含有 handler 的 call，规约由不动点继续。
+- *E3 单次求值*：每个表达式只求值一次；默认值表达式在定义时求值，捕获定义处环境，不随调用环境变化（#<vault::03-language::types/Type System/函数类型与调用模型>）。
+- *E4 错误恢复*：错误实参不使用默认值，错误 callee 不伪装成返回 `Unit` 的成功函数（#<vault::03-language::types/Type System/静态检查>）。
+
+== 求值结果
+
+求值结束产生三元组：
+
+```text
+求值结果 {
+  bindings:    Environment,      // 根节点自有的 binding
+  content:     Item,          // call 森林（值层真相），交给 shaping 递归成型
+  annotations: AnnotationTable,  // 属性表：节点区间 → 属性集（property table）
+}
+```
+
+#<vault::01-intro/认识 Notist/最小示例> 的最小示例中：`accent` 与 `warning` 进入 `bindings`，标题与 callout 组合成 `content`——此时它还是 call 森林，求值收尾按 #<vault::03-language::structure> 把它递归成型。每个 source-backed Module 独立求值出一份这样的三元组，成为 ModuleResult，见 #<vault::04-world::model>。

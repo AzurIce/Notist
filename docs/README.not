@@ -1,16 +1,16 @@
 = Notist Docs
 
-Notist 官方文档库。本文是全库地图：分区、阅读路径与写作规范。定位与心智模型从 #<vault::intro> 开始。
+Notist 官方文档库。本文是全库地图：分区、阅读路径与写作规范。定位与心智模型从 #<vault::01-intro> 开始。
 
 == 地图
 
-- #<vault::intro> —— 定位、三面一体心智模型、能力采样器、编译管线主线（叙事层，从这里开始）
-- #<vault::cheatsheet> —— 书写面速查：糖 → 构造器映射（Agent 的第一跳）
-- #<vault::language> —— 语言规范：grammar（markup / code / annotation）、parse、types、functions、evaluation、structure
-- #<vault::world> —— 组织面：model、boundary、import、reference、annotation
-- #<vault::cli> —— 命令面单一真相（inspect / check / index / daemon / lsp / skill / build / preview）+ daemon、protocol、search、build 运行时架构
-- #<vault::lsp> —— 编辑器集成：README（协议 gateway 行为）、checktable（逐方法支持面）、test（无头契约测试判据）
-- #<vault::plugins> —— 扩展面：README、package、abi、contributions、projection、namespace、shader 实例
+- #<vault::01-intro> —— 定位、三面一体心智模型、能力采样器、编译管线主线（叙事层，从这里开始）
+- #<vault::02-cheatsheet> —— 书写面速查：糖 → 构造器映射（Agent 的第一跳）
+- #<vault::03-language> —— 语言规范：grammar（markup / code / annotation）、parse、types、functions、evaluation、structure
+- #<vault::04-world> —— 组织面：model、boundary、import、reference、annotation
+- #<vault::05-cli> —— 命令面单一真相（inspect / check / index / daemon / lsp / skill / build / preview）+ daemon、protocol、search、build 运行时架构
+- #<vault::06-lsp> —— 编辑器集成：README（协议 gateway 行为）、checktable（逐方法支持面）、test（无头契约测试判据）
+- #<vault::07-plugins> —— 扩展面：README、package、abi、contributions、projection、namespace、shader 实例
 - #<vault::ai> —— 调查档案（log 性质，自包含，不引用 vault::ai 外部模块；治理见其目录 AGENTS.md）
 - #<vault::example> —— 活示例与常驻 fixture
 
@@ -18,28 +18,28 @@ Notist 官方文档库。本文是全库地图：分区、阅读路径与写作�
 
 == 阅读路径
 
-按角色给三条入口路径；编号是阅读顺序，不是模块路径的一部分。
+按角色给三条入口路径；阅读顺序编码在顶层分区的文件名前缀里（`01-` 起，自然序排序）。
 
 === 写作者
 
-1. #<vault::intro> —— 全貌采样：语言能力各亮一手，建立三面一体（bindings / content / annotations）与编译管线的心智模型
-2. #<vault::cheatsheet> —— 两页认清全部书写面，先用起来
-3. #<vault::language> 的 grammar 三面（markup → code → annotation）—— 三个书写面
-4. #<vault::language> 的 types → functions —— 写作对象的语义域与内置构造器
-5. #<vault::language> 的 evaluation → structure —— 糖的真相：call 森林、规约与成型
-6. #<vault::world> 的 model → boundary → import → reference → annotation —— 文件如何长成知识库
-7. #<vault::cli> 的 README 与 inspect —— 检查与查询
-8. #<vault::cli> 的 build —— 发布为站点
-9. #<vault::lsp> —— 编辑器集成
-10. #<vault::plugins> —— 扩展入口
+1. #<vault::01-intro> —— 全貌采样：语言能力各亮一手，建立三面一体（bindings / content / annotations）与编译管线的心智模型
+2. #<vault::02-cheatsheet> —— 两页认清全部书写面，先用起来
+3. #<vault::03-language> 的 grammar 三面（markup → code → annotation）—— 三个书写面
+4. #<vault::03-language> 的 types → functions —— 写作对象的语义域与内置构造器
+5. #<vault::03-language> 的 evaluation → structure —— 糖的真相：call 森林、规约与成型
+6. #<vault::04-world> 的 model → boundary → import → reference → annotation —— 文件如何长成知识库
+7. #<vault::05-cli> 的 README 与 inspect —— 检查与查询
+8. #<vault::05-cli> 的 build —— 发布为站点
+9. #<vault::06-lsp> —— 编辑器集成
+10. #<vault::07-plugins> —— 扩展入口
 
 === Agent
 
-cheatsheet → cli/README → cli/inspect/read → cli/inspect/refs → world/reference → world/annotation；语法按需查 language/grammar。
+02-cheatsheet → 05-cli/README → 05-cli/inspect/read → 05-cli/inspect/refs → 04-world/reference → 04-world/annotation；语法按需查 03-language/grammar。
 
 === 插件作者
 
-intro → language/types → plugins/README → package → abi → contributions → projection → namespace → plugins/shader（完整实例）。
+01-intro → 03-language/types → 07-plugins/README → package → abi → contributions → projection → namespace → 07-plugins/shader（完整实例）。
 
 == 写作规范
 
@@ -47,5 +47,5 @@ intro → language/types → plugins/README → package → abi → contribution
 - spec 文体：陈述现势规则，不写裁决叙事与沿革；判定规则用表，状态迁移用伪代码；每篇可独立 `notist check`。
 - use/define 分离：叙事与速查文档可以"用而不定义"；规范文档一次定义，允许有界前向引用。
 - 实现状态用 `@!(implementation: "...")`（aligned / partial / missing）在文件头声明，可逐节标注；不设中心状态清单。
-- 模块路径一旦发布，不因标题或阅读顺序调整而重命名；阅读顺序是本页的数据，不是文件名。
+- 顶层分区的阅读顺序编码在文件名前缀里（`01-`、`02-`……站点与编辑器按自然序排列，`2-` 先于 `10-`）；重排 = 调整前缀。子模块路径一旦发布不再重命名。
 - 语义文件名；退休文档直接删除，Git 是完整历史。

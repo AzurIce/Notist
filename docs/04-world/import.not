@@ -1,0 +1,27 @@
+@!(implementation: "aligned")
+= Import
+
+import 把另一个 Module 的 root bindings 接进当前 Module 的名字环境。Module root bindings 的定义见 #<vault::04-world::model/数据模型/Module 求值单元与 ModuleResult>；import 的文法位置见 #<vault::03-language::grammar::code/Code/Code 核心语法/声明>。
+
+== 显式 import
+
+```not
+#import <self::theme>::{warning, accent}
+#import <super::shared>::{format as shared_format}
+```
+
+- 花括号左侧是 ModulePath，selector 是目标 root 的 Code name——显式选择，*无 wildcard*：分析器、review 与缓存必须能看见每条依赖边；
+- import 扩展当前根 scope 后续节点的环境，产生空 Item；
+- ModulePath 是静态语法：即使 import 写在嵌套 scope 里，依赖边也在求值前进入 import graph；
+- ModulePath 与 Code name 使用不同 grammar：路径段容纳人类知识库名（`design-notes`），代码名参与词法绑定（`design_notes`）；`as` 把 root name 映射为合法 Code identifier；`vault`、`self`、`super` 是 Module 引用前缀，不是普通变量；
+- import 不插入目标 Module 的 content——*没有跨模块 Item insertion*：知识导航、代码依赖与文档组合是三条不同的边，不合并。
+
+== 依赖图与环语义
+
+import graph 是求值前的静态依赖图：
+
+- 请求一个 ModuleResult 时，先完成它的全部传递依赖——图必须是 DAG；
+- 同一求值 snapshot 下，每个有 source 的 Module 至多求值一次并复用相同结果；互不依赖的 Module 没有语言可观察的初始化顺序，host 可以串行或并行计算；
+- import 环不能由「恰好先加载到哪个文件」决定，一律是诊断。
+
+import graph 与 reference graph 共用同一 Module identity，而环语义不同：import 边承载 Value 初始化，环是诊断；reference 边承载 Item 链接，环合法。引用侧的寻址与解析见 #<vault::04-world::reference>。

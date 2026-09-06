@@ -1,3 +1,4 @@
+use std::cmp::Ordering;
 use std::error::Error;
 use std::fmt::Write;
 use std::fs;
@@ -27,8 +28,6 @@ const URL_PATH_SEGMENT_ENCODE_SET: &AsciiSet = &CONTROLS
     .add(b'>')
     .add(b'"');
 
-/// Module attribute key for explicit sibling ordering.
-const NAV_ORDER_KEY: &str = "order";
 /// Module tag (or bare id) that pins a module to the top of its sibling list.
 const NAV_TOP_MARKER: &str = "top";
 
@@ -44,35 +43,91 @@ fn module_attributes_pinned(attributes: &[AttributeRecord]) -> bool {
     })
 }
 
-/// Returns the explicit sibling order from a module's attributes.
-fn module_attributes_order(attributes: &[AttributeRecord]) -> Option<i64> {
-    attributes.iter().find_map(|attribute| {
-        attribute.properties.iter().find_map(|(key, value)| {
-            if key == NAV_ORDER_KEY {
-                value.parse::<i64>().ok()
-            } else {
-                None
-            }
-        })
-    })
+/// Ordering used only by the CLI site/preview layer.
+///
+/// The vault root comes first, then pinned modules, then everything else by
+/// module path in natural order: digit runs compare numerically, so numbered
+/// filenames (`2-x` before `10-x`) encode the reading order without padding.
+fn module_nav_cmp(
+    left: (&[String], &[AttributeRecord]),
+    right: (&[String], &[AttributeRecord]),
+) -> Ordering {
+    let rank = |segments: &[String], attributes: &[AttributeRecord]| {
+        if segments.is_empty() {
+            0u8
+        } else if module_attributes_pinned(attributes) {
+            1
+        } else {
+            2
+        }
+    };
+    rank(left.0, left.1)
+        .cmp(&rank(right.0, right.1))
+        .then_with(|| natural_cmp_segments(left.0, right.0))
 }
 
-/// Sort key used only by the CLI site/preview layer.
-///
-/// Pinned modules come first, then explicit `order` values ascending, then
-/// modules without `order` (still deterministic by path). The vault root stays
-/// at the top of rendered pages/navigation.
-fn module_nav_sort_key(
-    module_segments: &[String],
-    attributes: &[AttributeRecord],
-) -> (bool, bool, i64, ModulePath) {
-    let path = ModulePath::from_segments(module_segments.to_vec());
-    if module_segments.is_empty() {
-        return (false, false, i64::MIN, path);
+/// Compares module paths segment by segment in natural order.
+fn natural_cmp_segments(left: &[String], right: &[String]) -> Ordering {
+    for (l, r) in left.iter().zip(right) {
+        let ord = natural_cmp(l, r);
+        if ord != Ordering::Equal {
+            return ord;
+        }
     }
-    let pinned = module_attributes_pinned(attributes);
-    let order = module_attributes_order(attributes);
-    (!pinned, order.is_none(), order.unwrap_or(0), path)
+    left.len().cmp(&right.len())
+}
+
+/// Compares strings by digit runs numerically and every other byte
+/// bytewise (UTF-8 byte order equals code point order), so `2-x` precedes
+/// `10-x` and `01-a` precedes `1-a` (the zero run compares equal, then the
+/// longer run wins).
+fn natural_cmp(left: &str, right: &str) -> Ordering {
+    let (mut l, mut r) = (left.as_bytes(), right.as_bytes());
+    loop {
+        match (l.first(), r.first()) {
+            (None, None) => return Ordering::Equal,
+            (None, Some(_)) => return Ordering::Less,
+            (Some(_), None) => return Ordering::Greater,
+            (Some(&a), Some(&b)) => {
+                if a.is_ascii_digit() && b.is_ascii_digit() {
+                    let (ln, lrest) = split_digit_run(l);
+                    let (rn, rrest) = split_digit_run(r);
+                    let ord = numeric_run_cmp(ln, rn);
+                    if ord != Ordering::Equal {
+                        return ord;
+                    }
+                    l = lrest;
+                    r = rrest;
+                } else if a == b {
+                    l = &l[1..];
+                    r = &r[1..];
+                } else {
+                    return a.cmp(&b);
+                }
+            }
+        }
+    }
+}
+
+fn split_digit_run(bytes: &[u8]) -> (&[u8], &[u8]) {
+    let end = bytes
+        .iter()
+        .take_while(|&&byte| byte.is_ascii_digit())
+        .count();
+    (&bytes[..end], &bytes[end..])
+}
+
+/// Compares digit runs numerically: strip leading zeros, then the shorter
+/// run is the smaller number, then bytewise.
+fn numeric_run_cmp(left: &[u8], right: &[u8]) -> Ordering {
+    let l = strip_leading_zeros(left);
+    let r = strip_leading_zeros(right);
+    l.len().cmp(&r.len()).then_with(|| l.cmp(r))
+}
+
+fn strip_leading_zeros(bytes: &[u8]) -> &[u8] {
+    let start = bytes.iter().take_while(|&&byte| byte == b'0').count();
+    &bytes[start..]
 }
 
 /// Builds a module-path -> navigation attributes map from an Inspect record.
@@ -179,10 +234,10 @@ pub(crate) fn render_workspace(
             .get(&ModulePath::from_segments(right.module_segments.clone()))
             .map(Vec::as_slice)
             .unwrap_or(&[]);
-        module_nav_sort_key(&left.module_segments, left_attributes).cmp(&module_nav_sort_key(
-            &right.module_segments,
-            right_attributes,
-        ))
+        module_nav_cmp(
+            (&left.module_segments, left_attributes),
+            (&right.module_segments, right_attributes),
+        )
     });
 
     Ok(rendered)
@@ -2847,14 +2902,14 @@ mod tests {
     }
 
     #[test]
-    fn render_workspace_orders_pages_from_module_attributes() {
+    fn render_workspace_orders_pages_by_natural_filename() {
         let root = tempfile::TempDir::new_in(std::env::current_dir().unwrap()).unwrap();
         fs::write(root.path().join("Notist.toml"), "").unwrap();
         fs::write(root.path().join("README.not"), "= Home").unwrap();
         fs::write(root.path().join("alpha.not"), "@!(top: true)\n= Alpha").unwrap();
-        fs::write(root.path().join("beta.not"), "@!(order: 10)\n= Beta").unwrap();
-        fs::write(root.path().join("gamma.not"), "@!(order: 5)\n= Gamma").unwrap();
-        fs::write(root.path().join("delta.not"), "= Delta").unwrap();
+        fs::write(root.path().join("2-gamma.not"), "= Gamma").unwrap();
+        fs::write(root.path().join("10-beta.not"), "= Beta").unwrap();
+        fs::write(root.path().join("3-delta.not"), "= Delta").unwrap();
         fs::write(root.path().join("zeta.not"), "= Zeta").unwrap();
 
         let rendered = render(root.path());
@@ -2872,13 +2927,15 @@ mod tests {
                     .collect::<Vec<_>>()
             })
             .collect();
+        // Pinned first, then natural order: 2 before 3 before 10 without
+        // padding, unprefixed names last.
         assert_eq!(
             top_level,
             vec![
                 vec!["alpha"],
-                vec!["gamma"],
-                vec!["beta"],
-                vec!["delta"],
+                vec!["2-gamma"],
+                vec!["3-delta"],
+                vec!["10-beta"],
                 vec!["zeta"],
             ]
         );

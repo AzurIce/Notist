@@ -1,0 +1,117 @@
+@!(implementation: "partial")
+= Contributions: Functions and Shaping
+
+本文定义插件对语义层的两类贡献：语义函数（进入 `FunctionRegistry`）与成型 schema（进入 `ShapingRegistry`）。规约机制本身——不动点、预算、组合——由 #<vault::03-language::evaluation> 定义；成型算法由 #<vault::03-language::structure> 拥有。本篇只定义声明与注册。
+
+== 元素声明
+
+每个语义元素对应一份声明。签名不由 manifest 声明，而是在装载时由 Wasm `init` 注册提供（#<vault::07-plugins::abi>）；WIT 不镜像声明结构，`init` 的 opaque bytes 解码为共享的 `PluginElementDecl`：
+
+```text
+PluginElementDecl {
+  name, version, block, computed,
+  parameters: [ PluginParamDecl { name, ty, default: Option<DefaultValue> } ],
+  trailing_content, body_mode, role, kind
+}
+```
+
+宿主用它提供静态检查、completion、诊断和 runtime 校验所需的全部签名信息。
+
+== 语义函数贡献
+
+- 函数注册为 `{package}::{name}`，例如 `shader::canvas`；当 package 名与 element 名相同（如 `shader::shader`）时，host 额外注册短名 alias `shader`，该 alias 不进入 `core`。
+- 注册结果进入 `SignatureSet`，check / completion 与 runtime 消费同一份数据，不存在漂移面。
+- runtime 在 host 边界做参数绑定、默认值填充与返回类型检查。
+
+=== 实现形态
+
+registry 中的 Function 实现按 backend 区分，而不是按语义 package 区分：
+
+1. *Native function*：任何 package 都可以由 Rust native 实现，直接提供 `Function` 并注册 contribution；core 只是其中的默认 package。
+2. *Core-module function*：零导入 core wasm module；装载时 `init` 返回 version byte + postcard declarations，`evaluate` 以相同 frame 承载共享 `Node` 森林，按 dispatcher 名字分发一次规约后由宿主统一继续 fixpoint。所有声明、默认值与调用载荷都来自共享 `notist-model` 类型，不经过 JSON 转换。
+
+所有实现都实现同一 `Function` trait 并进入同一 `FunctionRegistry`；registry 的 owner 是 package identity，native / Wasm 不改变 call 的语义。
+
+`computed` 字段区分两种元素：`computed=true` 注册 `evaluate` dispatcher 条目；`computed=false` 是数据型元素——签名与成型 schema 全量注册、无运行时 handler，文档 call 即终态，web-component 投影直接可用。
+
+=== 装载与签名可见性
+
+- 装载统一为「实例化 + init」一条路径：`init` 在 fuel 界内执行一次，注册即得到全部签名与成型 schema。
+- LSP / completion / diagnostics 读到的就是这份装载产物；`init` 要求确定性且受资源预算约束，装载成本是毫秒级一次性开销。
+- 插件失败在装载边界产生 diagnostic：未通过校验的 package 不产生任何函数与 schema。
+
+=== 注册与别名
+
+- 装载器按 `init` 声明逐个生成函数并 `register_arc`；重名在加载时拒绝。
+- `core::*` qualified alias 指向 `core` package 的注册实现；插件只能占用自己的 namespace，不能覆盖受保留的 `core::*`。
+- namespace policy 由 #<vault::07-plugins::namespace> 定义；这属于注册策略，不是 reducer 的特殊分支。
+
+== 成型 schema 贡献
+
+插件元素通过声明参与成型；成型算法本身由宿主拥有（#<vault::03-language::structure>）。装载时每个元素声明投影为 `ElementSchema { name, kind, body_mode, role }` 并注册进 `ShapingRegistry`：
+
+```json
+{
+  "name": "canvas",
+  "block": true,
+  "body-mode": "flow",
+  "role": "none",
+  "kind": "block"
+}
+```
+
+=== kind
+
+`kind` 是段落流分类；未声明时由 `block` 推导：
+
+| kind | 成型行为 |
+|---|---|
+| `inline` | 加入当前 paragraph buffer |
+| `block` | flush 周围 inline run 后独立成块 |
+| `separator` | flush 周围 inline run 并被消费，不产出节点 |
+| `unspecified` | 回退到节点的 `block` 字段 |
+
+`core::parbreak` 是默认 core contribution 注册的 `separator`；`separator` 行为来自 schema 与宿主成型算法，不来自 core 的 reducer 特权。
+
+=== body-mode
+
+`body-mode` 决定 body 的递归成型方式：
+
+| body-mode | 成型行为 |
+|---|---|
+| `inline` | body 是 inline 流，不产生 paragraph |
+| `flow` | body 执行完整 paragraph / list / section 折叠 |
+| `cells` | body 保持 cell 序列，不做段落组合 |
+| `()` | body 不参与成型 |
+
+=== role
+
+| role | 成型行为 |
+|---|---|
+| `()` | 普通节点 |
+| `heading` | 开启 `core::section` 归组 |
+| `item` | 相邻同类合并为 `core::list` |
+
+=== 成型所有权
+
+宿主成型引擎固定，规则全部来自 schema：
+
+```text
+成型引擎(call 森林, shaping registry)
+```
+
+- 插件不能重写成型算法，只能通过 `kind` / `body-mode` / `role` 声明参与。
+- 每个 body 都按其容器模式递归成型，而不是只处理文档顶层。
+- `core::parbreak` / `core::heading` / `core::item` 只是该 registry 中由标准 package 提供的 schema；其它 package 也可按同一 schema 契约声明对应成型行为。
+
+== 实现映射
+
+- `ElementFunction` 实现于 `notist-eval`，是声明式 schema 元素的通用 handler。
+- Wasm `init` 注册装载路径实现于 `notist-plugin-host`（wasmi 执行）；`notist-plugin-sdk` 提供作者侧 `Plugin::init(reg)` + `ElementFn::reduce` + `export_plugin!`。
+- `FunctionRegistry` 与 `core::*` 别名已实现；core 与 Wasm package 都映射为 `PluginContribution`，经事务式安装路径进入 registry。
+- `ShapingRegistry` / `ElementSchema` 已实现；core schema 内置，插件 schema 由 `init` 注册；声明支持 `block`、`body-mode`、`role`、`kind`。
+
+== 开放问题
+
+- 插件 Function 的复杂值类型（Array / Dict）何时进入 element field 值域，待定。
+- 自定义 body shaping 若有需要，作为 additive 的 shaping contribution 单独设计；当前插件不提供 shaping hook。

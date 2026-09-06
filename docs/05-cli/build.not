@@ -1,0 +1,154 @@
+@!(implementation: "aligned")
+= Build, Preview, and HTML Target
+
+本文定义静态构建、本地预览与 HTML target 的序列化行为。命令参数与 stdout 边界见 #<vault::05-cli>；daemon、watcher 与 snapshot 见 #<vault::05-cli::daemon>；Module 树与资源目录见 #<vault::04-world::model>；RefTarget 见 #<vault::04-world::reference>；投影 registry 与插件 target contribution 的契约见 #<vault::07-plugins::projection>。
+
+== 产品模型
+
+Notist 的基本单位是 vault/module，HTML 输出以整个 Vault 为单位：
+
+- 每个 Module 有稳定页面；
+- 引用变成模块之间的导航链接；
+- 没有 `README.not` 的虚拟目录模块也有索引页面；
+- 页面共享 vault 导航与静态资源；
+- build 与 preview 使用相同的页面结构与 URL 规则——二者不发展两套渲染语义。
+
+== 渲染管线
+
+```text
+.not source
+  -> 静态检查与类型（#<vault::03-language::types>）
+  -> 求值（#<vault::03-language::evaluation>）
+  -> 成型结构树 + 属性表（#<vault::03-language::structure>）
+  -> project：HTML target 投影
+  -> notist-html serializer
+```
+
+语法、函数、scope、引用与属性的语义只在语言管线中定义一次；build、preview 与编辑器 hover 只是这些结果的不同消费者，HTML 层不重新解释源码。
+
+project 是 target package 注册的第二阶段规约：按节点名字分发，插件 handler 与未知 call fallback 被 projection registry 规约为 `html::*` 数据节点，再由 serializer 直出；语义规约与投影规约是两个独立 registry，core 的原生映射由同一 target 的内置 serializer 分支提供。registry 与 contribution 契约见 #<vault::07-plugins::projection>。
+
+== Static build
+
+```shell
+notist build [ROOT] -o DIR [--clean]
+```
+
+构建器遍历整个 Vault，把 ModulePath 映射为 clean URL：
+
+```text
+vault                        -> index.html
+vault::03-language::grammar     -> language/grammar/index.html
+vault::04-world::model          -> world/model/index.html
+```
+
+URL 中的路径 segment 单独 percent encode；页面之间使用相对链接，使构建结果可直接从任意静态文件服务器或子路径部署。
+
+- *资源复制*：资源目录虚拟模块（#<vault::04-world::model>）中的文件按引用复制到输出（`vault::docs::images/logo.png` → 输出下对应路径），Reference 指向复制后的相对路径；未被引用的资源文件也可以整体复制（站点资源），由 CLI 决定——值层只有 Reference，资源解析属于构建层。当前 CLI 默认整体复制所有模块资源，无额外旗标；
+- *虚拟目录模块*生成索引页（列出子模块与资源）；
+- 引用在构建时 resolve 为 RefTarget（#<vault::04-world::reference>）：目标存在输出链接，`Missing` 保留可见文本与 unresolved 样式；
+- syntax/analysis/evaluation diagnostics 不阻止生成其他可用页面，但 `notist build` 输出 diagnostics 并在存在 error 时返回非零退出码；
+- 默认不清空整个输出目录（只创建或覆盖本次 Vault 对应的页面与 `_notist` 资源），删除旧产物必须显式 `--clean`；`--clean` 只允许清理已解析、验证位于目标 output root 内的 artifact。
+
+站点级职责——完整 HTML page shell、vault 名称与模块导航、`_notist/style.css` 等共享资源——属于 CLI build 层，不进入 fragment serializer。
+
+Vault 可通过 `Notist.toml` 的 `[site] styles` 声明额外站点样式表：CLI 站点层把每个文件复制到 `_notist/styles/<相对路径>` 并在每个页面 head 注入 link，位置在内置 `_notist/style.css` 之后、插件资源之前——用户样式可以覆盖默认样式。build 与 preview 走同一条注入路径。文件缺失时降级为 warning 并从页面 head 中省略，不阻塞构建。daemon watcher 把声明的样式文件变化视为 reload 事件，preview 因此能在纯 CSS 编辑后自动重建。
+
+== HTML target 序列化
+
+`notist-html` 是纯渲染层：接收一个 Module 的结构树（含 Section 节归组与段落/列表组合）、属性表与解析上下文（RefTarget），输出可嵌入页面的 semantic HTML fragment。
+
+它负责：渲染结构与节点、转义文本/属性/Raw 内容、把引用解析为链接或锚点、把区间属性投影到 DOM、输出 source range metadata、为未注册投影的名字与 Missing 引用提供安全且可见的降级。它不负责：读取文件或扫描 Vault、执行 parser/求值、判断目标 Module 是否存在、生成完整页面/导航/主题、启动 HTTP 服务。
+
+=== 元素映射
+
+```text
+core::section             -> <section>（嵌套，节级属性投影到该节点）
+core::heading             -> <h1>..<h6>（level > 6 折叠为 <h6>）
+core::paragraph           -> <p>
+core::list                -> <ul> / <ol> + <li>
+core::text                -> escaped text
+core::strong / emph / underline / strike -> <strong> / <em> / <u> / <s>
+core::raw(block: true)    -> <pre><code>；core::raw(block: false) -> <code>
+core::rule                -> <hr>
+core::reference           -> <a class="notist-reference">（解析后）
+core::callout             -> <aside class="notist-callout" data-notist-kind="...">
+core::details             -> <details><summary>...</summary>...
+core::table               -> <div class="notist-table-wrapper"><table>；header 行 -> <thead><th>，body 行 -> <tbody><td>；align 映射为 notist-table-align-{left,center,right}，span 映射为 colspan/rowspan；caption 不在 Table 上
+core::table-cell          -> <div class="notist-table-cell">（兜底；正常由 core::table 消费）
+core::figure              -> <figure class="notist-figure" data-notist-kind="...">；body 按 flow 渲染（仅裁掉 framing 的纯空白/parbreak），caption 渲染为 <figcaption>，supplement 为 caption 前缀
+插件节点                   -> manifest 声明的 web-component 标签
+未注册投影的名字           -> <{package}-{element}> 标签（fallback，保留字段与可见内容）
+Missing 引用              -> 不可点击的 span（保留可见文本）
+```
+
+`core::parbreak` 不渲染（段落结构已由成型给出）。本表是 core 节点集合在 HTML target 的封闭映射：每增加一行都以新 core 节点进入语言为前提（#<vault::07-plugins::package>）；映射随新 core 节点补充。core 节点投影为原生语义标签，不为每个 core 节点强制创建 web component。
+
+=== 锚点与引用链接
+
+- 显式 scope id 与标题默认 id（#<vault::04-world::reference>）投影为 HTML `id` 锚点。id 满足 HTML id 语法（Unicode 字母/数字/连字符/下划线，不以数字或连字符开头）时直接使用；否则用确定性规则生成稳定锚点——回退锚点是元素起始字节偏移的纯函数（`loc-<offset>`，如 `loc-140`）。锚点与源码位置可互相推导，不依赖随机数或文档序历史。
+- Reference 在构建/渲染时 resolve 为 RefTarget（#<vault::04-world::reference>）：
+  - `Module(path)` → 目标页面相对 URL；
+  - `Scope(module, id)` → 目标页面 URL + `#锚点`（含标题默认 id 定位到节）；
+  - `Resource(module, name, kind)` → 构建时复制的资源路径；
+  - `Missing` → 不可点击 span，保留目标文本并带 unresolved 样式；
+  - `External` 不在当前渲染范围内（#<vault::04-world::reference>）。
+- relation 只有 Reference（导航）一种，Preview 预留；relation 模型见 #<vault::05-cli::protocol>。
+
+=== 区间属性投影
+
+属性表是旁置的（#<vault::03-language::structure>），渲染时投影到 DOM：
+
+- 单元素区间的属性投影到该元素节点：`.class` → HTML `class`；id → 锚点；`#tag` 与 `key = value` → `data-notist-*` 属性（查询与样式钩子，不改变可见语义）；
+- 节级属性（节条目）投影到 Section 节点；
+- *跨元素/跨段的区间属性*不能直接映射为合法嵌套的 DOM 节点：通过 range events 把区间内的内容切分为 `<span class="notist-annotated" ...>` 包裹的片段，保持正确嵌套。
+
+=== Source range 与安全
+
+语义元素输出原始 byte range（`data-notist-start` / `data-notist-end`），为点击跳转源码、hover fragment 与选择同步保留稳定接口。source range 与属性表条目只投影到 DOM metadata，不改变语义树。
+
+Raw 的文本与插件节点内容都不是可信 HTML：全部转义，不能让 Raw 内容绕过转义。serializer 的 trusted 词表边界由 target projection 契约定义（#<vault::07-plugins::projection>）。
+
+== Snapshot 一致性
+
+Parse 的 byte range、源码文本、分析结果与诊断必须来自同一个 WorkspaceSnapshot（#<vault::05-cli::daemon>）——不能在分析完成后由 renderer 重新读取可能已经变化的文件。Preview、diagnostics、hover 与 definition 共享同一个文档版本，而不是分别读盘。渲染器是 snapshot 的只读消费者：它消费结构树、属性表与解析结果，不新增语义阶段。
+
+== Local preview
+
+本地预览复用 static build，不维护独立的动态渲染 API：
+
+```shell
+notist preview [ROOT] [--host IP] [--port N] [--no-open]
+```
+
+默认行为：
+
+- 通过 daemon 或 embedded service 打开 disk View（#<vault::05-cli::daemon>）；
+- 观察 disk View 的 snapshot publication 并 debounce；
+- 重新构建带 live reload 资源的完整站点（staging 完整构建后原子替换服务目录）；
+- 使用系统分配的空闲端口；
+- analysis 与 evaluation diagnostics 输出到 CLI；
+- 默认只监听 `127.0.0.1`。
+
+结构：
+
+```text
+filesystem event or explicit rebuild
+  -> VaultEngine / Analyzer View
+  -> publish WorkspaceSnapshot
+  -> debounce snapshot generation
+  -> build complete staging site
+  -> replace served site
+  -> publish preview generation over SSE
+  -> browser reloads current clean URL
+```
+
+HTTP 服务只有两个表面：`GET /` 与各 Module clean URL（静态目录服务）；`GET /_notist/events`（SSE，发送当前 revision 与后续更新）。页面中的 `_notist/reload.js` 用 EventSource 订阅 revision；连接建立与重连时先收到当前值，浏览器可以发现断线期间错过的构建。完整页面 reload 不需要 WebSocket、DOM diff 或自定义文档协议。
+
+=== Atomic rebuild 与失败
+
+文件变化后先在 staging 目录生成完整站点，成功后再替换当前服务目录；致命错误时旧站点继续可见，CLI 输出 rebuild failed。可恢复的 diagnostics 不属于构建基础设施失败——页面仍以降级语义生成。目录替换必须保证浏览器读不到写了一半的页面集合；需要更严格的跨平台原子切换时，服务状态持有不可变 generation 目录，而不是让请求观察原地删除后 rename 的中间状态。
+
+=== Network boundary
+
+Preview 暴露用户正在编辑的文档内容，默认只监听 loopback；显式使用非 loopback 地址必须显示警告。源码读取、编辑操作或远程共享需要随机访问 token、Origin 检查与独立授权边界；只读静态页面与 revision stream 不应被自然扩展成无认证的编辑 API。

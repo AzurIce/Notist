@@ -1,0 +1,14 @@
+@!(implementation: "aligned")
+= World
+
+World 分区定义 Notist 的数据模型与跨模块语义：Vault 边界内的文件如何成为 Module，一次求值产出什么，模块之间以哪几种边连接。语言自身的规则（文法、类型、求值）在 #<vault::03-language::grammar> 与 #<vault::03-language::types>；本分区定义它们所操作的实体。
+
+按以下顺序阅读：
+
+- #<vault::04-world::model>——数据模型：Module 树与 Item 树两层结构、ModulePath 与 ItemId 的拍平标识、一切皆 call 的 ScopeItem 模型、Module 求值单元与 ModuleResult。
+- #<vault::04-world::boundary>——Vault 边界与发现：Notist.toml marker、嵌套与隐式 vault 的发现规则、Vault 决定什么。
+- #<vault::04-world::import>——显式 import：取得目标 Module 的 root bindings，import graph 的求值前解析与环语义。
+- #<vault::04-world::reference>——引用寻址：目标书写形式、RefTarget 解析产物、结构地址与词法绑定两个寻址世界。
+- #<vault::04-world::annotation>——Annotation Table：旁置属性表数据模型、条目与挂载位置的语义、继承与查询面。
+
+与其他分区的分工：标注的书写语法在 #<vault::03-language::grammar::annotation>，其数据模型与语义在 #<vault::04-world::annotation>；Target 字面量的文法在 #<vault::03-language::grammar::code/Code/Target 引用>，引用解析的语义在 #<vault::04-world::reference>；Vault 边界的 CLI/LSP 行为（`--vault` 选取、overlay 归属）在 #<vault::05-cli> 与 #<vault::06-lsp>，归属规则本身在 #<vault::04-world::boundary>。
