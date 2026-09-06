@@ -1,7 +1,7 @@
 = Typst import / 包 / 缓存机制：实现思路与对 Notist 的可借鉴面
 
 #callout(kind="note", title=[文档定位])[
-本文对 Typst 0.14 的 import 与包缓存机制做源码级调查。Typst 示例与 AST 形态不等于 Notist 语义；与 Notist 的对照段已结合 `#<vault::designs::D0021-import>`（import 语法）、`#<vault::designs::D0029-core-namespace-plugin-boundary>`（核心/插件边界）以及 `#<2026-08-23 plugin system design evolution and roadmap summary>`（plugin 形态已定型为 SDK 编译 + wasm 通道）校正。Notist 的 plugin 走源码 crate 路线，与 Typst 的「运行时下载预编译 tarball」机制不直接同构；但 import/path 解析、文件系统分层、依赖缓存与锁、Module 共享等基础设施技术对未来的 Notist 资源/引用/主题系统有直接借鉴价值。
+本文对 Typst 0.14 的 import 与包缓存机制做源码级调查。Typst 示例与 AST 形态不等于 Notist 语义；与 Notist 的对照段已结合现行 import 语法设计、核心/插件边界设计以及 `#<2026-08-23 plugin system design evolution and roadmap summary>`（plugin 形态已定型为 SDK 编译 + wasm 通道）校正。Notist 的 plugin 走源码 crate 路线，与 Typst 的「运行时下载预编译 tarball」机制不直接同构；但 import/path 解析、文件系统分层、依赖缓存与锁、Module 共享等基础设施技术对未来的 Notist 资源/引用/主题系统有直接借鉴价值。
 ]
 
 #callout(kind="info", title=[引用源码])[
@@ -91,7 +91,7 @@ pub enum VirtualRoot {
 
 - Notist `D0021-import` 的 `ModulePath`（`vault::theme::warning`）在结构上与 `VirtualRoot + VirtualPath` 同构。
 - D0021 显式说明「无 wildcard」「显式 selector」——这比 typst 还严格（typst 支持 `import "*.typ"` 与 `import "utils.typ": *`），意味着分析器天然能枚举所有依赖边。
-- *可借鉴面*：把 `ModulePath` 拆为 `Root` + `Path` 两层，并在 `Root` 枚举里区分"vault 内 / vault 外 / 共享 / 包"。*根的隔离是文件系统层强制的*——目前 D0029 应该有 boundary 设计但未在此文档中详述，建议审查 D0029 是否处理了"跨 vault 引用"的越权。
+- *可借鉴面*：把 `ModulePath` 拆为 `Root` + `Path` 两层，并在 `Root` 枚举里区分"vault 内 / vault 外 / 共享 / 包"。*根的隔离是文件系统层强制的*——核心/插件边界设计是否处理了"跨 vault 引用"的越权，目前未在此文档中详述，待审查。
 
 === `PackageSpec` / `VersionlessPackageSpec`
 
@@ -291,8 +291,8 @@ enum FileSlot {
 
 *Notist 映射（高优）*：
 
-- 你 `#<vault::designs::D0025-analyzer-and-workspace-snapshot>` 的 `WorkspaceSnapshot::structured_module()` 当前「写死 `Evaluator::default()`」（8-18 §当前差距），意味着*没有按 file 维度的增量*。引入 `FileStore` 是把「按 FileId 缓存 + reset 触发重算」的下沉。
-- 8-18 `#<vault::designs::plugin-system::runtime-composition>` 提到 `FunctionEnvironmentId` 绑定插件集指纹，*变更分配新 ID*。如果加上 `FileStore`，就可以在 plugin 重载时*只 reset 受影响的 file*（按 plugin_id 过滤）——而不是整个 snapshot。
+- 你的 `WorkspaceSnapshot::structured_module()` 当前「写死 `Evaluator::default()`」（8-18 §当前差距），意味着*没有按 file 维度的增量*。引入 `FileStore` 是把「按 FileId 缓存 + reset 触发重算」的下沉。
+- 8-18 设计提到 `FunctionEnvironmentId` 绑定插件集指纹，*变更分配新 ID*。如果加上 `FileStore`，就可以在 plugin 重载时*只 reset 受影响的 file*（按 plugin_id 过滤）——而不是整个 snapshot。
 - 8-22 已经实现的 `Evaluator::evaluate_nodes`（fixpoint 引擎）天然适合这个模式：`reset()` → 改 plugin 集 → `evaluate_nodes` 自动只走 pending。
 
 == 模块共享：`Module` 是 `Arc<ModuleInner>`（`crates/typst/src/foundations/module.rs`）
@@ -324,8 +324,8 @@ A module can
 
 *Notist 映射*：
 
-- 你的 `D0029-core-namespace-plugin-boundary` 实际上和这个完全同构——core 内置函数 = builtin module，第三方 plugin（wasm 或 native rlib 双通道）= dynamic module，vault 内 import = file module。
-- 8-22 收敛的「*init 注册自描述、core 走 native 通道、第三方走 wasm 通道、共享同一契约*」正是这一思想。但你目前*没有 Module 这个值类型作为统一返回*——PluginSet 直接吐出 Node 树。是否需要补一个 `Module` 值类型，取决于 LSP 等消费者要不要"按 module 拉定义"——参考 `#<vault::designs::D0020-module-and-module-result>`。
+- 你的核心/插件边界设计实际上和这个完全同构——core 内置函数 = builtin module，第三方 plugin（wasm 或 native rlib 双通道）= dynamic module，vault 内 import = file module。
+- 8-22 收敛的「*init 注册自描述、core 走 native 通道、第三方走 wasm 通道、共享同一契约*」正是这一思想。但你目前*没有 Module 这个值类型作为统一返回*——PluginSet 直接吐出 Node 树。是否需要补一个 `Module` 值类型，取决于 LSP 等消费者要不要"按 module 拉定义"。
 - 关键点：*"4 种后端 → 1 个类型"*——别在 type system 里留"builtin module 走 A 路径、wasm module 走 B 路径"这种分支。
 
 == Path 类型与跨根保护（`crates/typst/src/foundations/path.rs`）
@@ -369,7 +369,7 @@ match err {
 
 *Notist 映射*：
 
-- 你的 `D0021` 显式说「vault / self / super 是 Module 引用前缀，不是普通变量」——类型上已经区分了。D0029 应该有 boundary 描述。
+- 你的 `D0021` 显式说「vault / self / super 是 Module 引用前缀，不是普通变量」——类型上已经区分了。
 - *可借鉴面*：
   - 给 import path 错误加一个"kind"维度：vault boundary / scope boundary / version conflict / 找不到。诊断能告诉用户到底是"无权访问"还是"真的不存在"。
   - 8-14 已有「实现-设计一致性审查与裁决」`#<2026-08-14 implementation design audit and rulings>`，看一下 boundary 设计是不是已经覆盖了"跨 vault 逃逸"的检测——typst 是*在 `VirtualPath::realize` 这一层强制*的，编译期 + 解析期双拦截，Notist 需要对应实现。
@@ -409,7 +409,7 @@ let data = self.downloader.download(spec, &url)?;
 | 包存储 | `$XDG_DATA_HOME/typst/packages` + `$XDG_CACHE_HOME/typst/packages` | （未设计；目前 plugin 直接随仓部署） |
 | 锁 | FileStore 内部 `parking_lot::Mutex` per-file-slot | （未涉及） |
 | 原子写入 | `Tempdir + rename`，容忍并发 | （未涉及） |
-| Path 隔离 | `VirtualRoot` 枚举 + `VirtualPath::realize` 强校验 | `ModulePath` 静态语法；D0029 boundary 强校验未详 |
+| Path 隔离 | `VirtualRoot` 枚举 + `VirtualPath::realize` 强校验 | `ModulePath` 静态语法；boundary 强校验未详 |
 | 进度 | `Downloader::key` 分类 + `ProgressDownloader` 装饰器 | （未涉及） |
 | Mirror | `UniversePackages::with_url(url)` | （未涉及） |
 | 协议稳定性 | 注释明确「not specified or stabilized」 | `plugin.json` 私有协议，SDK 版本即 ABI 版本（8-23 §5） |
@@ -422,7 +422,7 @@ let data = self.downloader.download(spec, &url)?;
 
 理由：
 
-- 当前 `notist-eval` / `notist-html` / `notist-analysis` 各自实现 import graph（`#<vault::designs::D0025-analyzer-and-workspace-snapshot>` 提到的 `WorkspaceSnapshot::structured_module()`），但缺统一的"按 FileId 加载 + 缓存 + reset"机制。
+- 当前 `notist-eval` / `notist-html` / `notist-analysis` 各自实现 import graph（`WorkspaceSnapshot::structured_module()`），但缺统一的"按 FileId 加载 + 缓存 + reset"机制。
 - 8-26 `#<2026-08-26 build wasm plugin reload regression>` 已经在做 plugin reload，*reload 的 cache 失效*是同构问题。
 
 === P1：cache 写入用 Tempdir + rename
@@ -442,13 +442,13 @@ let data = self.downloader.download(spec, &url)?;
 - `reset()` —— 失效（plugin reload 时调用）
 - `dependencies()` —— 自上次 reset 以来被访问的 FileId 集合（增量编译的依赖图）
 
-`reset()` 后的 stale Source 复用（`files.rs:99-103`）能直接迁移到 Notist——`#<vault::designs::D0013-evaluation-model-and-content-sequence>` 的求值结果同样能 cache-and-edit。
+`reset()` 后的 stale Source 复用（`files.rs:99-103`）能直接迁移到 Notist——现有求值模型的结果同样能 cache-and-edit。
 
 === P2：Path 错误按 root 分类
 
 `format_resolve_error` 把 `PathError::Escapes` 按 `VirtualRoot::Project` vs `Package(_)` 区分（`path.rs:177-188`），并给项目根加一个「`--root` 调整」hint，包根不给 hint（*因为包根不可调整*）。
 
-Notist 的 D0029 boundary 错误可以采纳这种"按 kind 给 hint"的形式——例如：
+Notist 的 boundary 错误可以采纳这种"按 kind 给 hint"的形式——例如：
 
 - 跨 vault 逃逸：hint 改用 `\@vault-alias` 引用
 - 跨 scope 越权：hint 用 super:: 升级

@@ -1,7 +1,7 @@
 @!(implementation: "aligned")
 = LSP
 
-`notist lsp` 是编辑器与 `notist-analysis` 之间的协议 gateway：负责文档同步、坐标换算、请求路由与结果发布，不重新实现 parser、模块解析、类型检查或求值。core 协议与 transport 无关，LSP 与 CLI 投影到同一组 core request（#<vault::designs::host::client-interface-protocol>），共享 daemon 进程与 snapshot（#<vault::designs::host::daemon-process-views>、#<vault::designs::host::analyzer-snapshot>），不维护第二套 module graph。逐方法支持面见 #<vault::lsp::checktable>；对外行为的黑箱验证见 #<vault::lsp::test>。
+`notist lsp` 是编辑器与 `notist-analysis` 之间的协议 gateway：负责文档同步、坐标换算、请求路由与结果发布，不重新实现 parser、模块解析、类型检查或求值。core 协议与 transport 无关，LSP 与 CLI 投影到同一组 core request（#<vault::cli::protocol>），共享 daemon 进程与 snapshot（#<vault::cli::daemon>），不维护第二套 module graph。逐方法支持面见 #<vault::lsp::checktable>；对外行为的黑箱验证见 #<vault::lsp::test>。
 
 == 进程与传输
 
@@ -9,7 +9,7 @@ stdio transport；stdout 专用于 LSP JSON-RPC（不输出日志、进度或诊
 
 == Vault 发现与 Overlay
 
-编辑器提供的 workspace root 只是 worktree，不一定是 vault。初始化时在 worktree 内发现所有 Notist.toml marker（#<vault::designs::world::boundary-discovery/Vault Boundary and Discovery/Vault/发现规则>），为每个 root 建立独立的 vault 状态；source 归属最近祖先 marker，嵌套 marker 建立新 vault 且外层停止递归；没有 marker 时 worktree root 作为单个 implicit vault。
+编辑器提供的 workspace root 只是 worktree，不一定是 vault。初始化时在 worktree 内发现所有 Notist.toml marker（#<vault::world::boundary>），为每个 root 建立独立的 vault 状态；source 归属最近祖先 marker，嵌套 marker 建立新 vault 且外层停止递归；没有 marker 时 worktree root 作为单个 implicit vault。
 
 每个 vault 的 Analyzer View 接收自己的 overlays：
 

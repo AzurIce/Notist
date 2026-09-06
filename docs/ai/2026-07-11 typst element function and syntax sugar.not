@@ -1,7 +1,7 @@
 = Typst 的 Element Function 与语法糖设计
 
 #callout(kind="note", title=[文档定位])[
-本文是 Typst 机制调查，Typst 示例不等于 Notist 语法。文末的 Notist 建议已按当前实现校正；完整现行规则以 #<vault::cheatsheet>、#<vault::functions> 和 #<vault::grammar> 为准。
+本文是 Typst 机制调查，Typst 示例不等于 Notist 语法。文末的 Notist 建议已按当前实现校正。
 ]
 
 == 核心结论

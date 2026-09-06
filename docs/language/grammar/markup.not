@@ -1,0 +1,144 @@
+@!(implementation: "aligned")
+= Markup
+
+Markup 是文档的默认模式，产生 Item 片段。它只定义最小骨架——文本流、段落分隔、`#` 嵌入、块构造与转义；其余一切构造（标题、围栏、列表、表格、强调等）都是语法糖。Code 模式见 #<vault::language::grammar::code>，标注见 #<vault::language::grammar::annotation>，模式概览见 #<vault::language::grammar>。
+
+== 最小骨架
+
+- *文本流*：连续文本成为 `core::text` 节点——表达式嵌入、标注、构造调用、段间分隔处切开；
+- *段落分隔*：空行产生 `core::parbreak`；单个换行仍属于同一段；
+- *`#` 嵌入式表达式*：边界规则见下；
+- *块构造*：`{...}` Code block 与 `#[...]` 手动 scope（Markup 中 Item literal 的书写形式）；裸 `[` 与 `]` 是普通文本；
+- *转义*：`\` 转义 `#`、`[`、`]`、`@` 与 `\` 本身；转义不产生额外输出（`\#` 输出一个 `#`）。
+
+=== 嵌入的边界
+
+`#` 后的表达式有自己的边界规则。标识符由 Unicode 字母（含中文）、数字、`-`、`_` 组成，表达式到标识符字符集结束处为止：`#ver。` 中全角标点不是标识符字符，`。` 作为文本继续（中文标点天然断开表达式）；紧跟汉字、字母或数字时需要 `;` 或括号结束表达式——`第一段#accent;文字`、`第一段#(accent)文字`，`;` 不产生输出。二元运算等完整表达式用括号嵌入：`#(1 + 2)` 输出 3，而 `#1 + 2` 的 `1` 在空格处结束，` + 2` 是文本。空格不是语法工具：它终止表达式，同时自身成为文本内容。
+
+== 语法糖
+
+每个糖在语法层直接降低为构造器调用，语义不经过名字查找——`= 标题` 不受 `#let heading = ...` 遮蔽影响，显式 `#heading[...]` 则是普通名字解析。全部糖都不产生假节点：parser 不依赖函数签名判断 `[` 或 `-` 的含义，求值器不扫描 Text 重新识别糖。新增糖须满足 Sugar budget：高频、边界局部可判、有稳定的 core 语义等价。
+
+=== heading
+
+糖：行首 `=` 序列，`=` 数量即 level。
+
+- syntax boundary：行首 `=` 连续出现一个或多个，其后必须跟空白（或行尾），再后是标题 body；`=foo` 是普通文本；
+- core equivalence：`=` 数量 n → `heading(level: n, [...])`；
+- error recovery：行首 `=` 后无内容 → 空 body Heading；level 无上限；
+- editor consequence：标题进入 DocumentSymbol 与大纲；增减 `=` 即编辑 level。
+
+=== raw
+
+糖：行内 backtick run 与行首围栏代码块。
+
+*行内*：一对相同长度的 backtick run 包裹 payload，产生 `raw("...", block: false)`；payload 含反引号时用更长的 run。
+
+*围栏*：行首三个以上反引号开始，闭合围栏长度不得小于 opener；opening line 上的非空文本是 lang。
+
+```text
+`code`                ~= raw("code", block: false)
+```lang ... ```      ~= raw("...", lang: "lang", block: true)
+```
+
+- syntax boundary：行内到相同长度的 backtick run 闭合；围栏内容到行首的闭合围栏；Raw 语法内不扫描任何 Markup/Code 构造——payload 中的 `#`、`<...>`、`[...]`、`@...` 都保持原文；
+- error recovery：未闭合围栏 → 内容到文件尾并诊断；
+- editor consequence：围栏内按 `lang` 注入高亮。
+
+=== rule
+
+糖：行首三个以上连续 `-`，其后只有空白。
+
+- core equivalence：`---` ~= `rule()`；
+- error recovery：不足三个连字符按普通文本，不产生诊断。
+
+=== item
+
+糖：行首 `- ` 或 `+ `。
+
+```text
+- A ~= item([A])
++ A ~= item(ordered: true, [A])
+```
+
+- syntax boundary：行首空白 + `-`/`+` + 空白 + 内容，内容到行尾；
+- error recovery：符号后无内容 → 空条目；缩进嵌套由 parser 结构化处理；
+- editor consequence：条目符号显示；缩进由格式化处理。
+
+item 是 structural sugar：相邻同类条目由成型组合为 List/Enum；动态 `item` 进入同一算法（#<vault::language::structure>）。
+
+=== table
+
+糖：pipe table。行首 `|` 开始连续行，第一行 header，第二行分隔行，之后 body：
+
+```not
+| Name  | Value |
+| :---- | ----: |
+| one   | 1     |
+```
+
+- syntax boundary：候选行以第一个非空白字符 `|` 开始并存在未转义闭合 `|`；分隔行与 header 同列数，分隔 cell 形如 `:?-+:?`；
+- core equivalence：逐 cell 降低为 `table-cell[...]`，分隔行映射为 `align` 串，整体等价于 `table(columns: n, header: true, align: "...", [...])`；
+- cell payload：行内 Markup，首尾水平空白裁掉；`\|` 是字面 `|`；Raw、Code 表达式与 Item literal 内的 `|` 是载荷；
+- error recovery：body 缺 cell 补空；多 cell 诊断并截断；分隔行不合法时整段为文本；
+- editor consequence：cell 是 Markup 子文档；编辑器维护 `|` 对齐并提供 cell 导航。
+
+=== link
+
+Target 字面量 `<...>` 与构造器 `link(target: Target | String)`。
+
+```text
+#<vault::guide/install>            ~= link(<vault::guide/install>)
+#link("https://example.com")       # String 分支只表示外部 url
+```
+
+- syntax boundary：`<` 与 `>` 之间是 Target 字面量，完整文法见 #<vault::language::grammar::code/Code/Target 引用>；`/` 后是模块内 ItemId；
+- error recovery：未闭合 `<` → 诊断并按文本恢复；
+- editor consequence：vault 路径补全与目标存在性检查。
+目标空间与解析产物见 #<vault::world::reference>。
+
+=== strong / emph / underline / strike
+
+```text
+*text*    ~= strong([text])
+_text_    ~= emph([text])
+__text__  ~= underline([text])
+~~text~~  ~= strike([text])
+```
+
+- syntax boundary：开符后必须跟非空白、非同符字符，闭符前必须是非空白；`__` 优先匹配 underline；
+- 可嵌套其他强调；
+- error recovery：行尾未闭合 → 恢复为普通文本并诊断。
+
+=== 暂缓与候选
+
+- `task`：`- [ ]` / `- [x]`；
+- `math`：`$...$`；
+- `kbd`：无糖内置函数；
+- `insert`：`++...++`；
+- `quote`：无糖构造器；
+- `link`：外部链接与裸 URL 自动链接；
+- `preview`：`!<...>`。
+
+它们进入设计时须满足 Sugar budget、四要素与 #<vault::language::functions/Built-in Functions/构造器校验>。
+
+== 语法糖总表
+
+````text
+= Title             ~= heading(level: 1, [Title])
+== Title            ~= heading(level: 2, [Title])
+`code`              ~= raw("code", block: false)
+```lang ... ```      ~= raw("...", lang: "lang", block: true)
+---                 ~= rule()
+- A                 ~= item([A])
++ A                 ~= item(ordered: true, [A])
+| a | b |
+| - | - |           ~= table(columns: n, header: true, [table-cell[...] ...])
+#<target>          ~= ref("target")
+*text*              ~= strong([text])
+_text_              ~= emph([text])
+__text__            ~= underline([text])
+~~text~~            ~= strike([text])
+````
+
+糖在 syntax frontend 建立节点，lowering 获得构造器的 intrinsic identity 后，与显式调用走完全相同的解析、检查与求值路径；structural sugar（item）在求值后由成型组合（#<vault::language::structure>）。

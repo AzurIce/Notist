@@ -19,11 +19,11 @@
                 "state": {
                   "type": "notist-view",
                   "state": {
-                    "file": "cli/inspect/info.not",
+                    "file": "cli/inspect.not",
                     "mode": "source"
                   },
                   "icon": "file-text",
-                  "title": "info"
+                  "title": "inspect"
                 }
               }
             ]
@@ -129,7 +129,6 @@
                       "designs/pipeline",
                       "designs/host",
                       "assets",
-                      "ai",
                       "lsp",
                       "cli/inspect"
                     ],
@@ -149,10 +148,26 @@
       "right": {
         "id": "f8d03a7322595300",
         "type": "split",
-        "children": [],
+        "children": [
+          {
+            "id": "c3f5f858e959f5ed",
+            "type": "tabs",
+            "children": [
+              {
+                "id": "5373b9295edd2ece",
+                "type": "leaf",
+                "state": {
+                  "type": "notist-outgoing-links",
+                  "state": {},
+                  "icon": "links-going-out",
+                  "title": "Notist outgoing links"
+                }
+              }
+            ]
+          }
+        ],
         "direction": "horizontal",
-        "width": 300,
-        "collapsed": true
+        "width": 300
       },
       "left-ribbon": {
         "hiddenItems": {
@@ -166,7 +181,7 @@
           "bases:新建数据库": false
         }
       },
-      "active": "75552d4d3f465603"
+      "active": "0a4775e371031b5c"
     },
     "md": {
       "main": {

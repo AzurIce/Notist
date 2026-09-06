@@ -1,9 +1,9 @@
 @!(author: "gpt-5.6-sol")
 = LSP daemon 与 SaaS Web 服务统一架构分析
 
-本文整理 2026-09-03 对当前 `lsp-daemon`、UTF-16 支持和未来 SaaS/Web 编辑器方向的结构审查。本文是调研与架构建议，不是新的 governing design；其中的倾向只有在用户明确确认后，才应写入 `docs/designs/` 的现行设计。
+本文整理 2026-09-03 对当前 `lsp-daemon`、UTF-16 支持和未来 SaaS/Web 编辑器方向的结构审查。本文是调研与架构建议，不是新的 governing design；其中的倾向只有在用户明确确认后，才应写入现行设计。
 
-当前代码与设计的证据主要来自 `crates/notist-cli/src/lsp.rs`、`crates/notist-service/src/lib.rs`、`crates/notist-service/src/request.rs`、`crates/notist-service/src/transport.rs` 与 `crates/notist-analysis/src/lib.rs`。现行边界见 #<vault::lsp>、#<vault::designs::host::daemon-process-views>、#<vault::designs::host::client-interface-protocol> 与 #<vault::designs::host::analyzer-snapshot>。
+当前代码与设计的证据主要来自 `crates/notist-cli/src/lsp.rs`、`crates/notist-service/src/lib.rs`、`crates/notist-service/src/request.rs`、`crates/notist-service/src/transport.rs` 与 `crates/notist-analysis/src/lib.rs`。
 
 == 结论先行
 
@@ -90,7 +90,7 @@ daemon 已经能在 View 内生成 revision，analysis 也能从两个 snapshot 
 
 这套实现与当前测试一致：lifecycle 测试把拒绝 UTF-16-only 客户端视为成功，所有 LSP 黑箱测试也只用 UTF-8。
 
-但现行 `lsp-adapter.not` 仍要求 UTF-16 必须正确支持，Obsidian/CodeMirror 客户端也保留了 UTF-8 wire 与 UTF-16 editor offset 的转换代码。仓库因此出现实现、设计和下游客户端契约不一致。
+但现行 LSP 设计文档仍要求 UTF-16 必须正确支持，Obsidian/CodeMirror 客户端也保留了 UTF-8 wire 与 UTF-16 editor offset 的转换代码。仓库因此出现实现、设计和下游客户端契约不一致。
 
 === 为什么恢复 UTF-16 不需要改核心坐标
 
@@ -260,7 +260,7 @@ LSP 不应成为 Web API。LSP 的 position、editor lifecycle 和有限的代�
 - #<vault::ai::2026-08-30 LSP incremental sync 设计> 说明了 INCREMENTAL `didChange` 的应用语义；本文指出其 UTF-8-only 落地不应成为长期边界。
 - #<vault::ai::2026-08-30 LSP 健壮性并发与数据面设计> 记录了 `UpdateViewDelta`、`SourceTables` 和 daemon multiplexing 的落地；本文把它们放回 Session Runtime 与 Gateway 的更大分层中。
 - #<vault::ai::2026-08-17 web ui obsidian-like editor research> 已提出 daemon + HTTP/WS 与 LSP-over-WS 的方向；本文进一步区分可复用 runtime、Web API 和 SaaS host，不把 LSP 当唯一远程协议。
-- #<vault::designs::host::analyzer-snapshot> 已定义 immutable snapshot、View 和 WorkspaceDelta；本文建议把这些对象真正提升为 service event/query contract，而不是只在 analysis crate 内部使用。
+- 既有设计已定义 immutable snapshot、View 和 WorkspaceDelta；本文建议把这些对象真正提升为 service event/query contract，而不是只在 analysis crate 内部使用。
 
 == 验证记录
 

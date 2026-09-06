@@ -1,7 +1,7 @@
 \@!(implementation: "partial")
 = obsidian-notist 语义面板设计
 
-本文调查 Notist World 中大纲、入链、出链与符号导航应如何替换 Obsidian 的 Markdown 数据源，并给出隐藏策略、客户端分层、数据新鲜度与落地顺序。总原则承接 #<vault::obsidian-notist>：Obsidian 只提供 workspace 壳层，Notist 语义的唯一权威仍是 notist-service；既不能把 `.not` 伪装成 Markdown 元数据，也不能在插件端另写一套 Wiki Reference 解释器。
+本文调查 Notist World 中大纲、入链、出链与符号导航应如何替换 Obsidian 的 Markdown 数据源，并给出隐藏策略、客户端分层、数据新鲜度与落地顺序。总原则：Obsidian 只提供 workspace 壳层，Notist 语义的唯一权威仍是 notist-service；既不能把 `.not` 伪装成 Markdown 元数据，也不能在插件端另写一套 Wiki Reference 解释器。
 
 结论先行：*隐藏错误数据与接入正确数据是两条独立工作流*。Notist World 无条件隔离原生语义叶子与 Quick Switcher 入口；正确数据只复用现有 LSP session，不向 Obsidian Markdown metadata 注入 `.not`，也不另起 CLI 或客户端解析器。
 
@@ -31,11 +31,11 @@
 | 全局 / 文件属性 | `all-properties` / `file-properties` | `properties:open` / `properties:open-local` |
 | Excalidraw 侧栏 | `excalidraw-sidepanel` | 第三方命令 |
 
-同一实机还确认 `switcher:open` 的默认快捷键是 `Mod+O`；它是 modal 而不是 leaf，不能由 `purgeForeignLeaves` 处理。现有 #<vault::obsidian-notist::dual-world> 也把 Quick Switcher 列为跨 World 泄漏点。
+同一实机还确认 `switcher:open` 的默认快捷键是 `Mod+O`；它是 modal 而不是 leaf，不能由 `purgeForeignLeaves` 处理。Quick Switcher 同样被列为已知的跨 World 泄漏点。
 
 === LSP 客户端有传输与同步骨架，缺语义面板请求面
 
-`src/lsp/*` 不 import Obsidian，壳层位于 `main.ts` / `notist-view.ts`，符合既有 #<vault::obsidian-notist::lsp>：
+`src/lsp/*` 不 import Obsidian，壳层位于 `main.ts` / `notist-view.ts`，符合既有分层纪律：
 
 - `src/lsp/transport.ts:40-125` 已有通用 request、带 id request、notification 与取消，不需要为面板另起 CLI 进程。
 - `src/lsp/session.ts:128-145` initialize 时声明 diagnostics、completion、hover、definition 与 references 客户端能力；session 实际只封装 completion、hover、definition（`src/lsp/session.ts:294-362`）。
@@ -365,9 +365,6 @@ definition 原先私有的 `openLspLocation` 已提升为所有语义导航共�
 
 == 参考
 
-- #<vault::obsidian-notist>：借壳架空与语义唯一权威。
-- #<vault::obsidian-notist::dual-world>：World 布局、CSS、purge 与已知泄漏点。
-- #<vault::obsidian-notist::lsp>：LSP 四层架构、同步契约与“语义面板阶段”落地顺序。
 - #<vault::ai::2026-08-26 obsidian-notist lsp client implementation>：现有 transport / session / CM / shell 实现与实机验证。
 - #<vault::ai::2026-08-24 obsidian plugin feasibility research>：核心 backlinks / graph 的宿主边界与自建路线。
 - notist CLI 实机对照：`notist --help`、`notist outline --help`、`notist references --help`、`notist search --help`、`notist query --help`；JSON schema v2 的 outline / references 输出用于本文数据模型核对。

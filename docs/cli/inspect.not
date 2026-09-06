@@ -1,7 +1,7 @@
 @!(implementation: "aligned")
 = CLI Inspect: Agent Query and Navigation
 
-本文是 `notist inspect` 调查组的跨命令契约：身份与坐标的寻址文法、Agent 工作流与停止规则。`inspect` 只保留两个命令，各自独立成页：read（#<vault::cli::inspect::read>）与 refs（#<vault::cli::inspect::refs>）。命令面治理、全局参数、错误与退出状态见 #<vault::cli>；查询契约见 #<vault::designs::host::search-retrieval-index>。
+本文是 `notist inspect` 调查组的跨命令契约：身份与坐标的寻址文法、Agent 工作流与停止规则。`inspect` 只保留两个命令，各自独立成页：read（#<vault::cli::inspect::read>）与 refs（#<vault::cli::inspect::refs>）。命令面治理、全局参数、错误与退出状态见 #<vault::cli>；查询契约见 #<vault::cli::search>。
 
 #[]
 == 身份与坐标
@@ -15,7 +15,7 @@
 
 - 文档模块的 source 与文件 1:1，坐标挂在 ModulePath 上即无歧义。OS path 不是 selector：`X/Y.not` 即 `vault::X::Y` 是机械换算，配上 `--line` 就能从宿主坐标走到身份；反方向由 read 的 module header 交付相对路径与指纹，闭环回宿主文件。
 - `--line` 是面向 Agent 的一等坐标（行号是 grep/Read 的原生产出）；`--offset`/`--byte-range` 是协议流通坐标（UTF-8 半开区间），由 notist 的 citation 发放——Agent 不自造字节偏移。
-- 最小访问单位是 Item：可寻址的只有 Module 与有 ItemId 的 Item（ItemPath = `ModulePath/ItemId`，经 `--item <NAME>` 传入，#<vault::model/Notist 数据模型/Item 树>）。匿名 Item 不可寻址，但 read 的分段投影会呈现它们承载的属性。
+- 最小访问单位是 Item：可寻址的只有 Module 与有 ItemId 的 Item（ItemPath = `ModulePath/ItemId`，经 `--item <NAME>` 传入，#<vault::world::model/数据模型/Item 树>）。匿名 Item 不可寻址，但 read 的分段投影会呈现它们承载的属性。
 - 短 basename、模糊路径不能静默解析；`not_found` 与 `ambiguous_selector` 是 typed error。身份位置出现 OS path 或 `module/item` 混拼时报 `invalid_selector`，后者 hint 给出 `--item` 迁移。
 - 路径只出现在 read 的 module header 里：需要编辑某个模块时，把 header 交付的路径与指纹交给宿主 Read/Edit。
 

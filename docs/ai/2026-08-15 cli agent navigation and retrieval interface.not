@@ -1,6 +1,6 @@
 = CLI Agent Navigation and Retrieval Interface
 
-本文是 dated research：调查 Notist CLI 面向 Agent 的最佳接口形式。它不替代 #<vault::designs::host::cli-command-surface-skill-distribution> 与 #<vault::designs::host::query-contract>；本文的结论是它们的下一轮增量修订建议，以及对当前实现的可复现实测记录。最终稳定接口仍以 #<vault::cli> 与当前 `notist --help` 为准。
+本文是 dated research：调查 Notist CLI 面向 Agent 的最佳接口形式。它不替代现行设计裁决；本文的结论是对现行命令面与查询契约设计的下一轮增量修订建议，以及对当前实现的可复现实测记录。最终稳定接口仍以当前 `notist --help` 为准。
 
 == 摘要
 
@@ -28,10 +28,10 @@ status -> modules -> search -> outline -> read -> references -> check -> edit
 - #<vault::ai::2026-07-27 cli token cost and search ergonomics evaluation>：默认预算从 20×512B 收紧到 8×256B，引入 source/section/match grouping；同一 query 从 23,974 B 降到 6,647 B。
 - #<vault::ai::2026-08-14 implementation design audit and rulings>：确认 service/CLI 层已对齐设计序列，并完成 RefTarget、标题默认 id、cursor v3、MCP 移除等收敛。
 - #<vault::ai::2026-08-15 design record separation audit>：设计文档完成 L/V/A 分离；本报告基于分离后的 D0023/D0024/D0032/D0035/D0036。
-- #<vault::designs::host::query-contract>：ordinary query / human rendering / full export 三形态，PageRequest 与 selector/cursor 契约。
-- #<vault::designs::host::cli-command-surface-skill-distribution>：当前 CLI 命令面、Skill 分发与 docs-as-Vault。
-- #<vault::designs::host::search-retrieval-index>：四 search mode、字段权重、SearchUnit、Tantivy 索引边界。
-- #<vault::designs::host::client-interface-protocol>：core request 到 CLI/LSP 的投影，snapshot 与写入前置条件。
+- 现行查询契约设计：ordinary query / human rendering / full export 三形态，PageRequest 与 selector/cursor 契约。
+- 现行 CLI 命令面设计：当前 CLI 命令面、Skill 分发与 docs-as-Vault。
+- 现行检索索引设计：四 search mode、字段权重、SearchUnit、Tantivy 索引边界。
+- 现行客户端接口协议设计：core request 到 CLI/LSP 的投影，snapshot 与写入前置条件。
 
 === 外部对照（转引自上述 dated notes）
 
@@ -46,7 +46,7 @@ status -> modules -> search -> outline -> read -> references -> check -> edit
 
 === 方法
 
-- 审计当前 `crates/notist-cli`、`crates/notist-service` 与 #<vault::cli> 的一致性。
+- 审计当前 `crates/notist-cli`、`crates/notist-service` 与当前命令面的一致性。
 - 用加入本文前的 75 source docs Vault 实测所有普通命令的 JSON envelope 大小与典型耗时。
 - 模拟 6 个 Agent 查询轨迹和 14 个“概念 -> 设计文档”检索查询，记录目标模块排名。
 - 与 `ls`/`find`/`grep` 的同任务输出字节数对照，说明结构信息与 token 成本的关系。
@@ -71,7 +71,7 @@ status -> modules -> search -> outline -> read -> references -> check -> edit
 
 === 命令面
 
-当前命令面与 #<vault::designs::host::cli-command-surface-skill-distribution> 基本一致：
+当前命令面与现行命令面设计基本一致：
 
 ```text
 status [ROOT]
@@ -171,7 +171,7 @@ D0016 core type system             1
 
 === G1 标题默认 id 的节范围错误
 
-`read 'vault::designs::language::property-table#属性表'` 当前只返回标题行（byte range 237..249），而不是 #<vault::designs::host::cli-command-surface-skill-distribution> 承诺的“对应节”。根因是标题默认 id 的 scope range 来自 heading range 本身，没有展开到下一个同级/上级 heading 前的节子树；`references --direction outgoing` 使用同一 selection，因此对节的选择也会漏掉节内引用。修复应在 core 复用 outline 已经计算的 subtree range：heading default id 的 selection = 标题起点 .. 下一同级或更高级 heading 起点（或 module 末尾）；显式 scope id 继续使用 annotation 的 scope_range。
+`read module#属性表` 当前只返回标题行（byte range 237..249），而不是现行设计承诺的“对应节”。根因是标题默认 id 的 scope range 来自 heading range 本身，没有展开到下一个同级/上级 heading 前的节子树；`references --direction outgoing` 使用同一 selection，因此对节的选择也会漏掉节内引用。修复应在 core 复用 outline 已经计算的 subtree range：heading default id 的 selection = 标题起点 .. 下一同级或更高级 heading 起点（或 module 末尾）；显式 scope id 继续使用 annotation 的 scope_range。
 
 === G2 多概念 AND 作用在 unit 而非 module
 
@@ -187,7 +187,7 @@ grouping: source 返回该 Module 最佳 unit；section 返回每个最近 Headi
 
 === G3 默认排序缺少来源权威先验
 
-当前纯 BM25 让 `vault::designs::archive::D0008-...` 和 `vault::old-designs::archive::D0011-...` 压过现行 D0023/D0025；dated AI 文档也会压过当前规范。对任意用户 Vault 不应按路径魔法排序，但 Notist 语言已经提供更好的通用信号：模块属性（`\@!(class: ..)`）。建议把 `status=archived`、`status=draft`、`doc-kind=reference` 等模块属性纳入索引字段与 ranking version，定义可解释的来源先验；官方 docs 通过模块属性表达 authority，其他 Vault 用同一机制自描述。过渡期可在官方 docs Vault 的 ranking profile 中给 active designs/reference docs 一个温和 boost，并明确这是 profile 不是语言语义。
+当前纯 BM25 让 archive 中的旧设计文档压过现行 D0023/D0025；dated AI 文档也会压过当前规范。对任意用户 Vault 不应按路径魔法排序，但 Notist 语言已经提供更好的通用信号：模块属性（`\@!(class: ..)`）。建议把 `status=archived`、`status=draft`、`doc-kind=reference` 等模块属性纳入索引字段与 ranking version，定义可解释的来源先验；官方 docs 通过模块属性表达 authority，其他 Vault 用同一机制自描述。过渡期可在官方 docs Vault 的 ranking profile 中给 active designs/reference docs 一个温和 boost，并明确这是 profile 不是语言语义。
 
 === G4 exact scan 与 lexical index 的字段语义不一致
 
@@ -200,7 +200,7 @@ lexical 查询已经执行 `Count`，但 QueryPage 没有返回 `matched_sources
 
 === G6 scope 只有正向前缀，无法排除 archive
 
-`--scope vault::designs` 会包含 `vault::designs::archive`。对“现行规范是否提到 X”这类否定/穷举任务，Agent 无法只圈住 active designs。建议增加可重复的 `--exclude-scope MODULE`（段边界语义，进入 query fingerprint），并在 Skill 中教常用组合：
+`--scope` 前缀会连带包含其 archive 子前缀（如指定 `vault::a` 时 `vault::a::archive` 也在范围内）。对“现行规范是否提到 X”这类否定/穷举任务，Agent 无法只圈住 active designs。建议增加可重复的 `--exclude-scope MODULE`（段边界语义，进入 query fingerprint），并在 Skill 中教常用组合：
 
 ```shell
 notist search "MCP" docs --scope vault::designs --exclude-scope vault::designs::archive
@@ -259,7 +259,7 @@ edit        如何安全变更
 
 === 命令面增量
 
-在 #<vault::designs::host::cli-command-surface-skill-distribution> 的命令面上做最小增量：
+在现行命令面设计上做最小增量：
 
 ```text
 search <QUERY> [ROOT]
@@ -294,7 +294,7 @@ bm25-v4
   cursor fingerprint    包含 ranking/index/tokenizer/schema version
 ```
 
-公开语义仍与 #<vault::designs::host::search-retrieval-index> 一致：lexical 是 fielded token match + BM25，默认 `operator=all`；只是把“all 作用域”从 unit 修正为 module candidate，并把排序依据从单个 unit document 改成 module 聚合。exact/fuzzy/regex 的模式语义不变。
+公开语义仍与现行检索索引设计一致：lexical 是 fielded token match + BM25，默认 `operator=all`；只是把“all 作用域”从 unit 修正为 module candidate，并把排序依据从单个 unit document 改成 module 聚合。exact/fuzzy/regex 的模式语义不变。
 
 === Output schema v3 的边界
 
@@ -309,7 +309,7 @@ bm25-v4
 === Skill 需要同步的教学
 
 - 查询词用 2–4 个判别性概念，不用完整自然语言问句；概念词太多时先去掉一个词或改用 exact。
-- 问现行规范：`--scope vault::designs --exclude-scope vault::designs::archive`；问历史：`--scope vault::old-designs` 或 archive。
+- 问现行规范：`--scope` 圈住现行设计模块，用 `--exclude-scope` 排除其 archive 子前缀；问历史：`--scope` 圈住归档模块。
 - search excerpt 只选候选；read 之后才下事实结论。
 - 否定/穷举：必须沿 cursor 读到 `coverage.complete=true`；lexical 页的 `matched_sources` 可用于提前判断，但只有 complete 才能作为 absence 证据。
 - 使用 daemon 默认路径；`--no-daemon` 只用于隔离，不改变分析语义。

@@ -1,6 +1,6 @@
 = obsidian-notist LSP 客户端实现记录
 
-obsidian-notist 插件接入 notist LSP 的实现记录（2026-08-26），方案见 #<vault::obsidian-notist::lsp>，server 侧行为依据 #<vault::ai::2026-08-25 notist lsp audit follow-up> 核实过的 main \@ 39f6086。实现范围超出原「落地顺序」的前两步：diagnostics、completion、hover、definition 四项一次落地（references/symbols 仍留给语义面板阶段）。
+obsidian-notist 插件接入 notist LSP 的实现记录（2026-08-26），server 侧行为依据 #<vault::ai::2026-08-25 notist lsp audit follow-up> 核实过的 main \@ 39f6086。实现范围超出原「落地顺序」的前两步：diagnostics、completion、hover、definition 四项一次落地（references/symbols 仍留给语义面板阶段）。
 
 == 结构
 
@@ -47,5 +47,4 @@ obsidian-notist 插件接入 notist LSP 的实现记录（2026-08-26），方案
 
 == 参考
 
-- #<vault::obsidian-notist::lsp>：设计方案本文档（含 server 行为约束与降级策略）。
 - #<vault::ai::2026-08-24 obsidian-notist editor cm6 migration>：Compartment 热切换与 update 周期 dispatch 异常的先例（本次 setLspExtension 沿用同款模式）。

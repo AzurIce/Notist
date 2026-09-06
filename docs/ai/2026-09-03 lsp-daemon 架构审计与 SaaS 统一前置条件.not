@@ -3,7 +3,7 @@
 
 用户提出三个问题：lsp-daemon 架构感觉凌乱；LSP 目前只支持 utf-8，要支持 utf-16 似乎会造成复杂变更而更加凌乱；未来打算做 SaaS + Web 编辑器，想统一到时的服务端与如今的 daemon。本文是对这三个问题的核实性审计存档，*不是裁决*——文中的倾向与排序建议尚未经用户拍板。
 
-审计基准：`crates/notist-service`（lib/request/query/transport/protocol/watcher）、`crates/notist-cli/src/lsp.rs` 与 `service.rs`、`notist-analysis` 的 `LineIndex`/`LineTable`，对照 #<vault::lsp>、#<vault::designs::host::daemon-process-views>、#<vault::designs::host::client-interface-protocol>、#<vault::designs::host::analyzer-snapshot> 与 #<super::2026-08-30 LSP 健壮性并发与数据面设计>。行号为审计时状态，会随实现漂移。
+审计基准：`crates/notist-service`（lib/request/query/transport/protocol/watcher）、`crates/notist-cli/src/lsp.rs` 与 `service.rs`、`notist-analysis` 的 `LineIndex`/`LineTable`，对照 #<super::2026-08-30 LSP 健壮性并发与数据面设计>。行号为审计时状态，会随实现漂移。
 
 == 结论概览
 
@@ -35,7 +35,7 @@ apply_outcome 换上新行表后            新      新           自洽
 
 第二行窗口横跨一次完整的 `SourceTables` IPC 往返。窗口不长，但触发它的是最常见的编辑模式：敲字符后立刻 hover 或补全。后果是静默的错误位置（偏移落到别处），不是崩溃。CJK 密集文档上更容易同时落到字符中间——因为列即字节列，而 `LineTable::offset` 不做字符边界取整。
 
-lsp.rs:703-705 的注释"A concurrent build swaps `sources` wholesale, so workers keep serving from the snapshot they captured"只对行表成立；语义答案来自另一个时刻。这正是 #<vault::designs::host::analyzer-snapshot/Analyzer and WorkspaceSnapshot/分析层：Analyzer 与 WorkspaceSnapshot> 禁止的"混合两个 revision 的对象"。
+lsp.rs:703-705 的注释"A concurrent build swaps `sources` wholesale, so workers keep serving from the snapshot they captured"只对行表成立；语义答案来自另一个时刻。这正是既有快照设计禁止的"混合两个 revision 的对象"。
 
 机制其实已经齐备但未接线：每个 `CoreReply` 都带 `SnapshotIdentity`（含 revision 与 `source_fingerprint`），`SourceTableRecord` 带 `document_version`——适配层把两者都丢弃了（lsp.rs:800-872）。
 
@@ -66,7 +66,7 @@ Search                              SearchPage { query }
 
 `execute_cancellable` 的 `match` 约 829 行（request.rs:868-1696），同时兼任路由、HTML 渲染管线（request.rs:1766-2385）、索引线程协调（request.rs:670-851）与原子写盘（request.rs:1700-1753）。
 
-这与 #<vault::designs::host::client-interface-protocol/Client Interface and Protocol/Client Interface> 明文要求相违："不能让 `notist refs` 与 LSP references 分别实现两套解析规则。"设计说所有 client 投影到同一组协议无关 core request，代码里是两组。
+这与既有设计的明文要求相违："不能让 `notist refs` 与 LSP references 分别实现两套解析规则。"设计说所有 client 投影到同一组协议无关 core request，代码里是两组。
 
 === 与第一节的连接：安全属性落在了错的一族
 
@@ -134,7 +134,7 @@ CLI 侧每条命令都是 connect + `OpenView` + 一次查询 + 断开；`OpenVi
 
 推送通道的缺失同时解释了一个既有怪象：*存在两个文件系统 watcher*。service 侧每 vault 一个（lib.rs:309-337，reload 磁盘视图后逐个刷新 live session 并保住 overlay），LSP 侧另一个盯整个 workspace（lsp.rs:88-93，250ms 去抖后投 `WorkspaceChanged`）。两者用同一个 `PassiveDebouncedWatcher`、监视范围重叠。这不是疏忽而是被协议形状逼出来的：daemon 那个负责改快照，LSP 那个负责*知道该去取新快照*。`--no-daemon` 下两者跑在同一进程。
 
-`preview` 之所以有 SSE，是因为它是完全独立的 axum 进程、自带 rebuild 循环（preview.rs:81 自行轮询 `SnapshotSummary`），根本没走这条协议。因此"加 WS 即可"需要收紧为：*加 WS 容易，但协议本身没有可推的东西*——需要先有 `Subscribe` 或服务端 notification 形状，而 #<vault::designs::host::analyzer-snapshot/Analyzer and WorkspaceSnapshot/分析层：Analyzer 与 WorkspaceSnapshot/Delta 从两个 Snapshot 推导> 的 `WorkspaceDelta` 正是为此设计、但尚无对应协议 variant。
+`preview` 之所以有 SSE，是因为它是完全独立的 axum 进程、自带 rebuild 循环（preview.rs:81 自行轮询 `SnapshotSummary`），根本没走这条协议。因此"加 WS 即可"需要收紧为：*加 WS 容易，但协议本身没有可推的东西*——需要先有 `Subscribe` 或服务端 notification 形状，而 analysis 层既有的 `WorkspaceDelta` 正是为此设计、但尚无对应协议 variant。
 
 后三条同源：都源于"客户端自己能看文件系统、自己能写盘、进程随时可重启"这一前提，而 Web 客户端三样都不成立。*建议放进同一次设计讨论*——分开裁会各自局部合理、合起来不自洽。
 
@@ -188,10 +188,8 @@ P0 与 P1 是同一根线：最小的一步是给 `Definition`/`References`/`Com
 == 参考
 
 - #<super::2026-09-03 lsp daemon 与 SaaS Web 服务统一架构分析>：*同日同题的并行记录*，由另一会话写成。两篇独立得出了同一条核心结论（查询未固定 snapshot 造成的 revision 混用；utf-16 不需改核心坐标）。分工上那篇给出正向的目标形态（Session Runtime / Vault Runtime / Gateway 三层与迁移顺序），本篇偏证据与前置条件（请求面双族与 `request`/`query` 循环依赖、`expected_fingerprint` 落在错的一族、SaaS 五条本地性假设、独立小修清单）。一处表述差异：那篇将 utf-16 能力删除归因于 `SourceTables` 传输优化，本篇按 #<super::2026-08-30 LSP 健壮性并发与数据面设计> 的记录视为 2026-08-31 用户 utf-8-only 裁决的推论——`adebd80` 确实删除了 `notist-analysis` 中已存在的 utf16 换算。两篇是否合并为唯一权威记录待用户决定。
-- #<vault::lsp>：LSP 适配契约，含文本同步与 Position 节、并发节。
-- #<vault::designs::host::analyzer-snapshot>：快照与 revision 纪律、`WorkspaceDelta` 形状——第一节与推送通道两项的设计依据。
-- #<vault::designs::host::client-interface-protocol>：core request 单一来源要求、本地协议与 daemon 生命周期。
-- #<vault::designs::host::daemon-process-views>：每 vault 一 daemon、共享 Engine 不共享 Overlay。
+- 快照与 revision 纪律、`WorkspaceDelta` 形状——第一节与推送通道两项的设计依据。
+- 现行 daemon 形态：每 vault 一 daemon、共享 Engine 不共享 Overlay。
 - #<super::2026-08-30 LSP incremental sync 设计>：增量同步落地形态与文末整体问题面附录（本文 D/E/F 项承接其分类）。
 - #<super::2026-08-30 LSP 健壮性并发与数据面设计>：多路复用、真取消、`UpdateViewDelta` 与 `SourceTables` 的落地记录，及 utf-8-only 裁决。
 - #<super::2026-08-17 web ui obsidian-like editor research>：CM6 选型与"daemon 加 HTTP/WS 服务层"的原始判断——本文第五节收紧了其中的 transport 乐观估计。

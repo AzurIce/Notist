@@ -1,7 +1,7 @@
 \@!(implementation: "aligned")
 = core wasm 插件后端统一与 wasmi 落地
 
-本文记录 wasm 插件后端从 wasip2 组件（wasmtime JIT）整体迁往零导入 core module（wasmi 解释执行）的完整过程：性能归因、ABI 设计、两端字节级验证、重构范围、实测数据与遗留事项。现行规范见 #<vault::designs::plugin-system::core-wasm> 与 #<vault::designs::plugin-system::abi>；实验资产（协议 fixtures + Node/Worker 一致性测试）曾位于 `experiments/core-wasm-plugin/`，2026-08-29 清理移除，需要时从 Git 历史找回。合并 commit `e6128db`（worktree 分支 `experiment/freestanding-core-wasm`，含 `7b32d7d`/`e21bb99` 两个前置实验 commit）。
+本文记录 wasm 插件后端从 wasip2 组件（wasmtime JIT）整体迁往零导入 core module（wasmi 解释执行）的完整过程：性能归因、ABI 设计、两端字节级验证、重构范围、实测数据与遗留事项。实验资产（协议 fixtures + Node/Worker 一致性测试）曾位于 `experiments/core-wasm-plugin/`，2026-08-29 清理移除，需要时从 Git 历史找回。合并 commit `e6128db`（worktree 分支 `experiment/freestanding-core-wasm`，含 `7b32d7d`/`e21bb99` 两个前置实验 commit）。
 
 == 归因：为什么动插件后端
 
@@ -11,7 +11,7 @@ perf 采样（samply 在本机符号化失败，改用 `perf record -F1000 -g --
 
 == 形态裁决：零导入 core module
 
-组件模型对 `plugin` world 是零收益仪式：接口已窄到"字节进字节出"（#<vault::ai::2026-08-23 boundary transport benchmark> 的 postcard 裁决），canonical ABI 的类型层没有东西可校验，却带来 trampoline、component-model/p2 依赖、wasip2 幽灵导入（浏览器侧因此要 jco + preview2 shim）与 wasmtime 版本锁定。裁决：插件统一为*零导入 core module*，wasm 零导入是 wasm 生态的兼容性地板，任何能实例化 wasm 的 embedder 都能装载，web 未来路径由此打开（引擎编到 wasm + 两个无逻辑 syscall 原语实例化插件，加载策略全留引擎 Rust 侧；wasmi-in-engine 是完全自包含的备选）。内存 ABI 全文见 #<vault::designs::plugin-system::core-wasm>：`notist_abi/alloc/free/init/evaluate` 五导出，i64 句柄 `(ptr<<32)|len`、错误位在长度半段最高位、`len==capacity` 移交不变量；载荷与组件形态逐字节共享（wire version byte + postcard）。作者侧仍只写 `Plugin`/`ElementFn`，`export_plugin!` 宏挡住全部细节（组件宏已删除，仅剩这一个）。
+组件模型对 `plugin` world 是零收益仪式：接口已窄到"字节进字节出"（#<vault::ai::2026-08-23 boundary transport benchmark> 的 postcard 裁决），canonical ABI 的类型层没有东西可校验，却带来 trampoline、component-model/p2 依赖、wasip2 幽灵导入（浏览器侧因此要 jco + preview2 shim）与 wasmtime 版本锁定。裁决：插件统一为*零导入 core module*，wasm 零导入是 wasm 生态的兼容性地板，任何能实例化 wasm 的 embedder 都能装载，web 未来路径由此打开（引擎编到 wasm + 两个无逻辑 syscall 原语实例化插件，加载策略全留引擎 Rust 侧；wasmi-in-engine 是完全自包含的备选）。内存 ABI：`notist_abi/alloc/free/init/evaluate` 五导出，i64 句柄 `(ptr<<32)|len`、错误位在长度半段最高位、`len==capacity` 移交不变量；载荷与组件形态逐字节共享（wire version byte + postcard）。作者侧仍只写 `Plugin`/`ElementFn`，`export_plugin!` 宏挡住全部细节（组件宏已删除，仅剩这一个）。
 
 执行端选定 *wasmi 1.1*（v0.32 重写型寄存器机解释器，Parity 链上生产 + 0.31 安全审计，fuel 锚定输入 wasm 字节码故跨平台确定；API 与 wasmtime 同构，迁移极小）。不选它的短板恰好对我们无伤：不支持组件模型（我们不再需要）、SIMD 未支持（rustc wasm32 默认不开 `+simd128`，*插件构建必须保持不开*）。统一 wasmi 后 native/web 是同一执行器、同一 fuel 口径。
 

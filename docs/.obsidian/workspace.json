@@ -13,11 +13,11 @@
             "state": {
               "type": "notist-view",
               "state": {
-                "file": "cli/inspect/info.not",
+                "file": "cli/inspect.not",
                 "mode": "source"
               },
               "icon": "file-text",
-              "title": "info"
+              "title": "inspect"
             }
           }
         ]
@@ -123,7 +123,6 @@
                   "designs/pipeline",
                   "designs/host",
                   "assets",
-                  "ai",
                   "lsp",
                   "cli/inspect"
                 ],
@@ -143,10 +142,26 @@
   "right": {
     "id": "f8d03a7322595300",
     "type": "split",
-    "children": [],
+    "children": [
+      {
+        "id": "c3f5f858e959f5ed",
+        "type": "tabs",
+        "children": [
+          {
+            "id": "5373b9295edd2ece",
+            "type": "leaf",
+            "state": {
+              "type": "notist-outgoing-links",
+              "state": {},
+              "icon": "links-going-out",
+              "title": "Notist outgoing links"
+            }
+          }
+        ]
+      }
+    ],
     "direction": "horizontal",
-    "width": 300,
-    "collapsed": true
+    "width": 300
   },
   "left-ribbon": {
     "hiddenItems": {
@@ -160,19 +175,19 @@
       "bases:新建数据库": false
     }
   },
-  "active": "75552d4d3f465603",
+  "active": "0a4775e371031b5c",
   "lastOpenFiles": [
-    "designs/lsp",
-    "designs/host/lsp-adapter.not",
-    "cli/inspect/info.not.tmp.3619102.cfbbb95bb94d",
-    "cli/README.not",
-    "cli/inspect/info.not",
-    "ai/2026-08-31 区域属性投影与 inspect info 命令.not.tmp.3619102.691dc6e051d9",
-    "cli/inspect/info.not.tmp.3619102.844ad82390a5",
+    "ai/2026-09-05 zvec-grep 查询面调研.not",
+    "cli/README.not.tmp.3619102.237be5d62e1e",
+    "designs/host/cli-command-surface-skill-distribution.not.tmp.3619102.602d831807bb",
+    "cli/inspect.not.tmp.3619102.4c87fa08955a",
+    "cli/attr.not",
+    "cli/inspect/refs.not",
+    "cli/inspect/read.not",
     "cli/inspect.not",
-    "cli/inspect.not.tmp.3619102.efe9e5dfaa99",
-    "cli/inspect.not.tmp.3619102.685f51123b0d",
-    "cli/inspect",
+    "cli/README.not",
+    "model.not",
+    "ai/2026-07-17 typed document analysis and lsp migration.not",
     "ai/AGENTS.md",
     "AGENTS.md",
     "fx2.md",

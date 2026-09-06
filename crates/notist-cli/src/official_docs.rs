@@ -295,7 +295,7 @@ mod tests {
         let data = tempfile::tempdir().unwrap();
         let root = ensure_synced_to(data.path()).unwrap();
         assert!(root.join("Notist.toml").is_file());
-        assert!(root.join("designs/host/build-preview.not").is_file());
+        assert!(root.join("world/model.not").is_file());
         assert_eq!(read_manifest(&root).unwrap(), Some(expected_manifest()));
 
         fs::write(root.join(MANIFEST_NAME), b"{}").unwrap();
@@ -311,8 +311,8 @@ mod tests {
         assert!(safe_relative_path("/absolute.not").is_err());
         assert!(safe_relative_path("nested\\windows.not").is_err());
         assert_eq!(
-            safe_relative_path("designs/D0013.not").unwrap(),
-            PathBuf::from("designs/D0013.not")
+            safe_relative_path("world/model.not").unwrap(),
+            PathBuf::from("world/model.not")
         );
     }
 }

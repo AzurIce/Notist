@@ -1,6 +1,6 @@
 = 基于 Web UI 的类 Obsidian 编辑器技术预调研
 
-回应 #<vault::designs::thoughts> 中「Web Editor：基于 Web 实现编辑能力」与「Web UI 信息增强」两条想法，预调研用 Web 技术栈做出类 Obsidian 编辑器的技术方案。与 #<vault::ai::2026-07-20 notist native desktop architecture research> 的关系：那篇以原生桌面为目标、把「编辑器 pane 换成 CodeMirror 6 WebView」列为保底路线；本文反过来以 Web 为第一目标。两篇在「编辑器内核选 CodeMirror 6」与「预览渲染复用 notist-html、前端不重新解释 .not 源码」两点上结论一致。
+回应设计构想中「Web Editor：基于 Web 实现编辑能力」与「Web UI 信息增强」两条想法，预调研用 Web 技术栈做出类 Obsidian 编辑器的技术方案。与 #<vault::ai::2026-07-20 notist native desktop architecture research> 的关系：那篇以原生桌面为目标、把「编辑器 pane 换成 CodeMirror 6 WebView」列为保底路线；本文反过来以 Web 为第一目标。两篇在「编辑器内核选 CodeMirror 6」与「预览渲染复用 notist-html、前端不重新解释 .not 源码」两点上结论一致。
 
 == 仓库现状（与 Web UI 相关的既有资产）
 
@@ -8,7 +8,7 @@
 - 唯一 HTTP 服务是 `notist preview`（axum，`crates/notist-cli/src/preview.rs`）：整站静态构建 + SSE 整页 live reload，只读，无 WebSocket、无增量 DOM、无编辑。
 - `notist-html` 输出 HTML fragment，`ReferenceResolver` 把模块引用解析为 URL，`RenderedAnnotation` 把源码 TextRange 投影到 DOM（`data-notist-*`）；站点 CSS/JS 内嵌在 `crates/notist-cli/src/build.rs`。
 - `notist-syntax` 是一次性手写解析器：整篇 parse，无增量 reparse 接口；但 AST 节点全带 byte TextRange，错误可恢复且带精确 range。增量性目前由上层 overlay/snapshot 按整文档替换处理。
-- 全 workspace 无任何 WASM 构建配置；没有专门的编辑器或 Web UI 设计文档（`docs/designs/host/` 下最接近的是 `client-interface-protocol`、`build-preview`、`lsp-adapter`）。
+- 全 workspace 无任何 WASM 构建配置；没有专门的编辑器或 Web UI 设计文档。
 
 == 编辑器内核选型
 
@@ -78,7 +78,7 @@
 - 阶段 0（spike）：CM6 + .not 语法接入（Lezer grammar 与 syntax-WASM 各做一次），验证 Live Preview 装饰对 `=` 标题、wiki 引用、annotation、函数调用的覆盖与编辑延迟。
 - 阶段 1：daemon 加 HTTP/WS 服务层，Web UI 只读浏览——复用 notist-html 渲染结果与 data-notist-* 投影（维持「前端不重新解释 .not」原则），替代/升级现有 preview 的整页 SSE 重载。
 - 阶段 2：接入 CM6 编辑器，编辑走 service 已有的编辑计划/应用记录与 byte range 协议；诊断/补全/引用跳转走 WS（可顺带以 LSP-over-WS 暴露）。
-- 阶段 3：thoughts.not 的信息增强（符号表、出链入链、scope 与属性显示）；Tauri 壳；可选 Yjs/yrs 协同。
+- 阶段 3：信息增强（符号表、出链入链、scope 与属性显示）；Tauri 壳；可选 Yjs/yrs 协同。
 
 == 主要风险与开放问题
 

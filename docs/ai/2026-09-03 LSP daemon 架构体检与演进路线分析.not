@@ -26,18 +26,18 @@
 
 资产（SaaS 视角下仍成立的部分）：
 
-- *core 协议 transport 无关*：35 个 `CoreRequest` 变体（`request.rs:26-28`）语义全在 `NotistService::execute`，CLI/LSP/preview 只做投影（#<vault::designs::host::client-interface-protocol>）。换 transport 不动语义。
-- *`SnapshotIdentity` 随每个 reply 下发*（`request.rs:397-400`）：天然的缓存失效/乐观并发令牌；snapshot 不可变 + `Arc` 共享（#<vault::designs::host::analyzer-snapshot>）适合多副本读。
+- *core 协议 transport 无关*：35 个 `CoreRequest` 变体（`request.rs:26-28`）语义全在 `NotistService::execute`，CLI/LSP/preview 只做投影。换 transport 不动语义。
+- *`SnapshotIdentity` 随每个 reply 下发*（`request.rs:397-400`）：天然的缓存失效/乐观并发令牌；snapshot 不可变 + `Arc` 共享，适合多副本读。
 - *View/overlay 模型*（disk view + 每会话 session view，`lib.rs:132-166`）就是多用户编辑会话雏形，view handle 已有 per-connection 租约检查（`transport.rs:503-515`）。
 - *wasmi 插件沙箱*（fuel + 内存限额）注释明言可编译进 web-deployed engine（`notist-plugin-host/src/lib.rs:660-662`），与 Web 计划是伏笔呼应（见 #<super::2026-08-28 core wasm 插件后端统一与 wasmi 落地>）。
 
 凌乱点（多为折返残留）：
 
-- *delta 推送链断裂*：analysis 层有 `SnapshotPublication`/`WorkspaceDelta`（`notist-analysis/src/lib.rs:778-797`），service 层全用丢弃 delta 的 `reload()`/`replace_inputs()`；`ServerMessage` 连 notification 变体都没有（`transport.rs:40-59`）。结果 preview 靠 250ms 轮询（`preview.rs:77-91`）、LSP 靠自身事件驱动 build——设计文档（#<vault::designs::host::daemon-process-views>）的「有界 notification 推送」没有实现载体。
+- *delta 推送链断裂*：analysis 层有 `SnapshotPublication`/`WorkspaceDelta`（`notist-analysis/src/lib.rs:778-797`），service 层全用丢弃 delta 的 `reload()`/`replace_inputs()`；`ServerMessage` 连 notification 变体都没有（`transport.rs:40-59`）。结果 preview 靠 250ms 轮询（`preview.rs:77-91`）、LSP 靠自身事件驱动 build——既有设计的「有界 notification 推送」没有实现载体。
 - *request/query 分层泄漏*：`ModuleRecord`/`ReferenceRecord` 两个文件各定义一份，`lib.rs:24-27` 注释自认 "for different wire shapes"。
 - *死依赖与矛盾结构*：workspace 声明的 `wasmtime = 47` 全库无引用（组件模型折返 wasmi 的残留）；`vaults` 是多 Vault map 但 daemon 进程级拒绝第二个 root（`lib.rs:138-143`）——多 Vault 能力只在 embedded 模式可用。
 - *无语义级增量*：每次发布全量 `WorkspaceSnapshot::build`，增量只有 parse cache（按文件内容复用，`analysis/lib.rs:3004-3011`）与 `same_source_content` 防自激（`analysis/lib.rs:3197-3202`）；每次 build 重扫全 Vault（`analysis/lib.rs:1498-1542`）并重新实例化所有 wasm 插件（`analysis/lib.rs:903-915`），render 时再装一次（`analysis/lib.rs:1795-1838`）。
-- *写入语义空缺是裁决而非缺陷*：daemon 明确不做写路径，真相 = 磁盘 + watcher（client-interface-protocol，2026-08-28 裁决）。SaaS 需要服务端写仲裁，这要重议裁决。
+- *写入语义空缺是裁决而非缺陷*：daemon 明确不做写路径，真相 = 磁盘 + watcher（2026-08-28 裁决）。SaaS 需要服务端写仲裁，这要重议裁决。
 
 == UTF-16 改动面评估
 
@@ -73,5 +73,4 @@
 
 == 关联文档
 
-- 现行设计：#<vault::lsp>、#<vault::designs::host::daemon-process-views>、#<vault::designs::host::client-interface-protocol>、#<vault::designs::host::analyzer-snapshot>
 - 前序记录：#<super::2026-08-30 LSP 健壮性并发与数据面设计>（utf-8-only 裁决与双模式原始设计）、#<super::2026-08-25 lsp architecture redesign>、#<super::2026-08-24 notist lsp implementation audit>、#<super::2026-08-17 web ui obsidian-like editor research>

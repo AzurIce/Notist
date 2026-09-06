@@ -1,6 +1,6 @@
 = obsidian-notist preview mode design
 
-回应「编辑器所见即所得」讨论的第二步：先镜像 Markdown world 的 source/preview 双模式，把渲染权威（notist-html 求值管线）接进 Obsidian，为后续 live preview（CM6 decoration 路线，见 #<super::2026-08-17 web ui obsidian-like editor research> 的阶段 0 spike）定下视觉基线。与 #<vault::obsidian-notist> 的落地顺序一致（view + 渲染先行）。跨 notist 与 obsidian-notist 两仓库。
+回应「编辑器所见即所得」讨论的第二步：先镜像 Markdown world 的 source/preview 双模式，把渲染权威（notist-html 求值管线）接进 Obsidian，为后续 live preview（CM6 decoration 路线，见 #<super::2026-08-17 web ui obsidian-like editor research> 的阶段 0 spike）定下视觉基线。插件落地顺序为 view + 渲染先行。跨 notist 与 obsidian-notist 两仓库。
 
 == 决策
 
@@ -22,7 +22,7 @@
 - *LSP 重启后已开视图不重注册*（实机首验发现）：重启后 session 对象新建、doc registry 已空，但视图残留的 `lspPath` 使 `lspViewSync` 的 `view.lspPath === path` 守卫误判「已注册」走 externalChange 分支，永远不发 didOpen——该视图上 hover/渲染等一切请求静默返回 null。是 todo 里 session generation 缺口的具体切面；当前修复：onLspState ready 循环先清 `view.lspPath` 再 lspViewSync（强制重注册），并让 renderPreview 对当前渲染的 null 结果显示失败说明（此前完全静默）。
 - iframe 为 same-origin srcdoc，后续 `data-notist-start/end`「点击渲染跳源码」反向桥不需要 postMessage。
 - 已知边界：daemon 路径 RenderDocument 每请求全 vault 预计算（与整站同成本），大 vault 需先做 revision 缓存再谈更高频刷新；iframe 内主题只在 css-change/渲染时同步；纯锚点滚动与 resolved 资源链接保持默认行为。开发流建议维持 `--no-daemon`：daemon 路径仍是 per-vault Mutex 串行 + 假取消（见 #<super::2026-08-25 notist lsp audit follow-up> 的遗留项），重型渲染会堵整个 vault 的请求；待取消多路复用落地后再把 preview 切到 daemon 并在 daemon 侧做 revision 缓存。
-- 手动验证路径：`bun run sync` → 开 LSP → 打开 .not → 头部书本图标或命令切换 → 编辑保存观察刷新 → 关 LSP 观察降级 → 双 World 切换观察 mode 保留。实机验证（docs vault，cli/inspect.not）已通过：渲染、链接、代码块样式、主题桥接、LSP 重启后恢复。
+- 手动验证路径：`bun run sync` → 开 LSP → 打开 .not → 头部书本图标或命令切换 → 编辑保存观察刷新 → 关 LSP 观察降级 → 双 World 切换观察 mode 保留。实机验证（docs vault，CLI 参考页）已通过：渲染、链接、代码块样式、主题桥接、LSP 重启后恢复。
 
 == 参考
 

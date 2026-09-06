@@ -29,7 +29,7 @@
 - *顺序语义文档化*：连接内请求并发执行、完成序不保证；快照派发语义使读查询天然安全，需要顺序的调用方（LSP 的 single-flight builder）自行串行。CLI 本就逐个请求。
 - *bug ② 的处置*：B 落地后 `publish_diagnostics` 的等待收敛为 Diagnostics 自身计算（不再排在长请求后面），主循环冻结问题消解；「publish 挪 worker」的加固降级为可选后续项，实测有需要再做。
 
-测试：transport 单测（并发交错请求按 id 各自应答、取消在途请求返回 cancelled、断连令全部 pending 失败）；`lsp/test.not` 挂账的「双模式二阶段」——`common::Client` 增加 daemon 变体（去掉 `--no-daemon`），现有 headless 场景套跑 daemon 模式。工作量 1-2 天。
+测试：transport 单测（并发交错请求按 id 各自应答、取消在途请求返回 cancelled、断连令全部 pending 失败）；此前挂账的「双模式二阶段」——`common::Client` 增加 daemon 变体（去掉 `--no-daemon`），现有 headless 场景套跑 daemon 模式。工作量 1-2 天。
 
 == 三、数据面：UpdateViewDelta + 位置表
 
@@ -48,7 +48,7 @@
 - *utf-8 连接*（VS Code languageclient / Zed 均可协商；前提是把我们的编码偏好从 utf-16 翻转为 utf-8 优先）：新增 `SourceTables` 响应——每文件 `{ path, document_version, line_starts: Vec<u32>, content_ends: Vec<u32> }`，替换 `Sources` 全文拉取。v1 全量返回（行表 ≈ 每行 8 字节，docs 全库约几十 KB，已比全文小一个量级），按需再做差量。adapter 保留现有换算代码，数据源从 `ClientSource`（全文+索引）换成行表；入站饱和钳位退化到行边界（字符边界校验归 core，与 CLI 裸 offset 同一纪律——core 对任意 offset 本就健壮）。
 - *utf-16 连接*（obsidian 插件：CM6 内部就是 utf-16，改造它做列换算是独立客户端工程，不在本期）：回退现行 `Sources` 全文模式，行为与今天完全一致。模式选择在 adapter（initialize 协商后定死整条连接）。
 
-对照总结：ra 的 LSP 层用 line-index 表在文本旁换算；我们把表跨进程流动、换算逻辑不动——形态与 ra 对齐，同时保住 daemon 共享层。核心协议全程保持字节偏移，编辑器编码不泄漏进 CLI 消费的共享协议（client-interface-protocol 的「参数投影与返回格式」边界）。效果在 docs 规模用户无感，价值在规模化与架构诚实；排在 B 之后从容做。
+对照总结：ra 的 LSP 层用 line-index 表在文本旁换算；我们把表跨进程流动、换算逻辑不动——形态与 ra 对齐，同时保住 daemon 共享层。核心协议全程保持字节偏移，编辑器编码不泄漏进 CLI 消费的共享协议。效果在 docs 规模用户无感，价值在规模化与架构诚实；排在 B 之后从容做。
 
 == 落地记录（2026-08-30，全部四点已实现）
 
@@ -68,7 +68,7 @@
 
 - *抓到一个真 bug*：watcher 触发的构建（overlay 无变化）走全量 `UpdateView` 分支时发了**空** overlay 集——整组替换语义下，外部磁盘改动后的第一次重建会把所有打开文档的 overlay 清空（编辑器未保存内容丢失）。修复为发送完整的 per-vault overlay 集，回归测试 `watcher_rebuilds_preserve_open_overlays`（mutation 验证：还原 bug 测试变红）。教训：删除「未读」字段前要确认语义，`BuildJob.documents` 恰是 watcher 路径所需的。
 - 编译告警清零（4 处：negotiation 死闭锁、lsp_position 死 shim、lsp_sync 未用变量、BuildJob.documents 往返）；代码格式整理到 rustfmt 干净。
-- 文档：附录问题清单行号已随实现漂移，改为按状态描述（C-①② 标记已修复、A/B 标记已解）；checktable 的 `$/cancelRequest` 行更新为双路径真取消；`lsp/test.not` 双模式行标记已覆盖。
+- 文档：附录问题清单行号已随实现漂移，改为按状态描述（C-①② 标记已修复、A/B 标记已解）；行为对照表的 `$/cancelRequest` 行更新为双路径真取消；测试判据文档的双模式行标记已覆盖。
 
 == 推进顺序
 

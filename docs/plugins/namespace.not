@@ -1,0 +1,71 @@
+@!(implementation: "partial")
+= Core Namespace and Package Boundary
+
+本文定义 `core` namespace、prelude 与插件包命名边界。内置构造器的用户侧语义——逐构造器签名、参数与校验——以 #<vault::language::functions> 为权威，本文不重复；函数类型与调用模型见 #<vault::language::types>；Vault 配置容器见 #<vault::world::boundary>。
+
+== Core Namespace
+
+`core` 是语言标准 package 的保留 namespace，保存语言 surface 定义的标准构造器与基础操作。它由默认 App 预装，但不属于 eval engine 的内建 dispatch 表：
+
+```text
+core::link
+core::heading
+core::raw
+core::rule
+core::callout
+core::details
+core::item
+core::table-cell
+core::table
+core::figure
+core::strong / emph / underline / strike
+```
+
+- `core` 的保留 namespace 与标准 surface 由 language policy 定义；具体 handler 来自 `core` package contribution；
+- `core` 不能成为 `let` binding、import alias 或其他 plugin namespace；
+- 短名 prelude 把已安装 core package 的常用构造器以裸名带入当前 Module scope；
+- 短名遵守普通 lexical shadowing；qualified `core::...` 永远指向标准 package 名字，即使当前 App 尚未安装对应 handler。
+
+宿主语法糖（`= Title`、pipe table 等）始终取得对应 core intrinsic identity，不经过名字查找，因此 local binding 不影响糖。
+
+== core package 视角
+
+`core` 是标准 package，不是 eval engine 内部的一组特殊 handler：它的 handlers、signatures、`ElementSchema` 与 alias 都由 `core` package 的 contribution 提供，与任何第三方 package 走同一注册路径（#<vault::plugins::package>）。默认 Notist App 预装这份 contribution，因此普通文档可以使用 `core::*`；一个不安装 core 的自定义 App 仍然合法，此时 `core::*` 按普通未注册 call 处理。
+
+core 与其它 package 共享 `FunctionRegistry`、`ElementSchema`、target projection registry，以及 namespace / signature / schema 的原子校验。core namespace 的保留属于 language / package policy，它不授予 core handler 特殊的 reduction 权限；core 的 target 投影由 target package 提供，语义 core 不携带任何 target 的知识。core 的内容词表随语言 surface 发布，经 prelude 进入每个 module。
+
+== Prelude
+
+Prelude 是每个 Module root 自动获得的普通 binding 层，不是第二套全局环境：
+
+- prelude 名字可以被 author `let` 或 import 遮蔽；
+- import 显式 selector 可以引入非 prelude 的 core 短名（import 规则见 #<vault::world::import>）；
+- prelude 内容随语言版本变化，并记录在 WorkspaceSnapshot 的 function environment identity 中。
+
+== 名字与 call
+
+- 内置内容使用 `core::*` 名字；插件内容使用 `{package}::*` 名字；`name` 与参数 schema 由构造器或插件 `init` 注册声明，进入索引与渲染兜底；
+- 名字的所有权只在注册侧，提及完全自由：任何 handler 都可以在输出森林里写任何名字；没有 handler 的名字只是数据，由投影 fallback 保底（#<vault::plugins::projection>）；
+- 规约模型——一切皆 call、声明式不动点、预算——见 #<vault::language::evaluation>。
+
+== 信任与加载边界
+
+- 插件 Function 是带 signature 与 implementation 的普通 Function Value；内容组合不做 per-call 授权，Wasm 沙箱（无 IO import + 资源预算）是唯一执行边界，信任模型见 #<vault::plugins>；
+- 插件通过显式 namespace 与 import / prelude 进入环境，不注册到 `core`；
+- 插件 schema 由 Vault 配置声明（见下节），Analyzer 在 snapshot 中捕获 schema identity；
+- plugin runtime 默认不在普通编辑 / 诊断路径执行；
+- 插件失败是 host boundary diagnostic，不伪装成 `Unit` 成功；
+- 插件不能修改 parser、不能重新解释已有 token。语义层的"宏"由规约模型吸收：handler 把 call 重写为新 call 就是宏展开，不存在独立的 macro design。记号层新语法属于文法扩展（#<vault::language::grammar>），普通 Function / plugin registration 永远不授予修改 parser 的能力。
+
+== Notist.toml 配置
+
+Vault marker 是受限配置容器，容器模型与字段全集见 #<vault::world::boundary>。与插件相关的字段：
+
+```toml
+[plugins.shader]
+path = "../plugins/shader"
+```
+
+- `plugins` 是显式加载表，`path` 指向 package 目录或 zip（装载协议见 #<vault::plugins::package>）；
+- `language-revision` 决定语法、core / prelude 与诊断 surface；
+- 配置变更进入 source-set fingerprint，驱动语义世界更替。

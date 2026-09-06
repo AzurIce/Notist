@@ -11,19 +11,19 @@
 + embedding 输入应该用确定性结构前缀（Module、HeadingPath、Tags、属性、Kind）替代 Anthropic Contextual Retrieval 式的 LLM 生成上下文。前者的语义注入质量未必更差，但可版本化、可重建、零成本，完全符合"向量索引只是派生数据"的纪律。
 + 属性在检索里有三重角色：embedding_text 的前缀成分、检索期 pre-filter（过滤在候选生成前生效）、结果投影的解释信息。属性挂在绝对 source range 上，粒度比 frontmatter 细一档——可以精确到"这个 scope 是草稿"而不是"这篇文档是草稿"。
 + link 扩展应放在查询引擎内部做一跳扩展加 RRF 融合，等效于用显式 resolved 边替代 HippoRAG 2 的图传播，不引入 LLM 抽图的成本与错误。命中条目直接给出 `read`/`refs` 可用的 ItemPath selector，让 Agent 从"相似文本"一步跳到"结构导航"。
-+ 结合方式必须尊重两条现行裁决：向量/semantic/hybrid mode 不属于默认契约，须先过版本化 benchmark（#<vault::designs::host::search-retrieval-index>）；向量化属于 Vault 运行时状态，CLI 二进制不嵌模型与预计算向量（#<vault::designs::host::cli-command-surface-skill-distribution>）。落点是 `search --mode semantic|hybrid` 显式 mode、`index status/rebuild` 扩展、embedding provider 走 daemon 侧外部进程。
++ 结合方式必须尊重两条现行裁决：向量/semantic/hybrid mode 不属于默认契约，须先过版本化 benchmark；向量化属于 Vault 运行时状态，CLI 二进制不嵌模型与预计算向量。落点是 `search --mode semantic|hybrid` 显式 mode、`index status/rebuild` 扩展、embedding provider 走 daemon 侧外部进程。
 + 2025–2026 agent 社区的教训（Claude Code 等 coding agent 转向 grep 优先的 agentic search）划定了 embedding 的定位：不是替代词项检索与结构化导航，而是"召回放大器 + token 节省器"——它的产出物是让 Agent 用更少的调用次数进入 `read`/`refs`/`outline`。
 
 == 既有裁决与本文的位置
 
 开始选型前先固定约束。现行设计里与向量检索直接相关的裁决有四条：
 
-- #<vault::designs::host::search-retrieval-index>：检索单元由 `SearchUnitBuilder` 从 snapshot 的 source、parse、Module/Heading/属性 facts 构造，普通 paragraph、list item、Heading section 与 Raw block 优先成为独立 unit，超过 4 KiB 按 source-safe boundary 切分（至多 256 bytes overlap）；每个 unit 存 FileId、ModuleId、ModulePath、source range、Heading ancestry 与 typed field text。九个加权字段（id/module 6.0、title 5.0、heading/tag 4.0、body 1.0……）。tokenizer 是 versioned pipeline（NFKC、Han overlapping bigram、path segment）。关键裁决原文："向量、semantic 与 hybrid mode 不属于默认契约：未来只有在版本化 benchmark 上相对 lexical 明确提升 Recall、nDCG 与 Agent task success，并保留 citation、ACL、snapshot 与 output budget 后，才能增加显式 mode。"
-- #<vault::designs::host::cli-command-surface-skill-distribution>：向量化属于 Vault 运行时状态，CLI 二进制不嵌模型权重与预计算向量；daemon 为每个 vault 维护可重建派生索引。
-- #<vault::designs::host::daemon-process-views>：per-vault 隔离的清单里已经明确写入"全文与向量索引、embedding 模型与权限互不相关"——即设计上早已为每个 vault 挂自己的向量索引与模型配置留了位置，本文的方案是对这一预留的填充而非新方向。
-- #<vault::designs::host::query-contract>：统一 `Location{module, relative_path, byte_range, …}`、opaque cursor、`SnapshotStamp`。任何向量检索结果都必须投影成同一形态，不能另开一种返回结构。
+- 现行检索索引设计：检索单元由 `SearchUnitBuilder` 从 snapshot 的 source、parse、Module/Heading/属性 facts 构造，普通 paragraph、list item、Heading section 与 Raw block 优先成为独立 unit，超过 4 KiB 按 source-safe boundary 切分（至多 256 bytes overlap）；每个 unit 存 FileId、ModuleId、ModulePath、source range、Heading ancestry 与 typed field text。九个加权字段（id/module 6.0、title 5.0、heading/tag 4.0、body 1.0……）。tokenizer 是 versioned pipeline（NFKC、Han overlapping bigram、path segment）。关键裁决原文："向量、semantic 与 hybrid mode 不属于默认契约：未来只有在版本化 benchmark 上相对 lexical 明确提升 Recall、nDCG 与 Agent task success，并保留 citation、ACL、snapshot 与 output budget 后，才能增加显式 mode。"
+- 现行 CLI 命令面设计：向量化属于 Vault 运行时状态，CLI 二进制不嵌模型权重与预计算向量；daemon 为每个 vault 维护可重建派生索引。
+- 现行 daemon 进程与视图设计：per-vault 隔离的清单里已经明确写入"全文与向量索引、embedding 模型与权限互不相关"——即设计上早已为每个 vault 挂自己的向量索引与模型配置留了位置，本文的方案是对这一预留的填充而非新方向。
+- 现行查询契约：统一 `Location{module, relative_path, byte_range, …}`、opaque cursor、`SnapshotStamp`。任何向量检索结果都必须投影成同一形态，不能另开一种返回结构。
 
-实现现状（2026-08-28 实机核对，`db18b26`）：CLI 已有 `status/modules/search/locate/outline/read/references/index` 命令；`search --mode lexical|exact|fuzzy|regex` 带 `--scope`、`--fields`；`index status/rebuild` 管理派生索引；Tantivy lexical 索引已在 daemon 内按 generation 原子发布。目标命令面（`docs/cli/README.not`）中 search 的 `--field title|heading|id|module|path|tag|body|raw|comment` 已覆盖 tag 检索，属性 class/key=value 字段"随属性索引扩展"尚未实现。
+实现现状（2026-08-28 实机核对，`db18b26`）：CLI 已有 `status/modules/search/locate/outline/read/references/index` 命令；`search --mode lexical|exact|fuzzy|regex` 带 `--scope`、`--fields`；`index status/rebuild` 管理派生索引；Tantivy lexical 索引已在 daemon 内按 generation 原子发布。目标命令面中 search 的 `--field title|heading|id|module|path|tag|body|raw|comment` 已覆盖 tag 检索，属性 class/key=value 字段"随属性索引扩展"尚未实现。
 
 == 外部证据：2025–2026 的三波进展
 
@@ -81,7 +81,7 @@ Markdown 世界只有 heading 一种结构边界，且是"工具从 `#` 字符�
 notist 属性是一套语法三种挂载（行内 postfix `\@note` 绑定前一个值、块级前缀 `\@(class: ..)` 绑定下一个块级节点、模块级 `\@!(class: ..)`），条目形态是 `#tag`、`.class`、`key = value`。求值后由 `structured_module()` 产出挂在绝对 source range 上的 AnnotationEntry 表。检索视角下它同时是：
 
 + embedding_text 的前缀成分。`status = "draft"`、`#design`、`#deprecated` 进入向量空间的位置——同样一段文字，标注为裁决的与标注为草稿的应该在语义上可区分。前缀要给 token 预算（建议不超过 25%），否则稀释正文。
-+ 检索期过滤器。`#wip`、`#outdated` 默认排除；`#design` 限定范围。过滤在候选生成之前生效（pre-filter），这既是精度手段也是权限模型的雏形。实现入口是 search-retrieval-index 已预留的"属性检索字段（class、key=value）随属性索引扩展"。
++ 检索期过滤器。`#wip`、`#outdated` 默认排除；`#design` 限定范围。过滤在候选生成之前生效（pre-filter），这既是精度手段也是权限模型的雏形。实现入口是现行检索索引设计已预留的"属性检索字段（class、key=value）随属性索引扩展"。
 + 结果解释。命中结果投影属性，Agent 自行决定信任级别——`#deprecated` 的命中应该触发"找替代方案"而非直接引用。
 
 与 frontmatter 的本质差别是粒度：frontmatter 只能给整篇文档贴标签，notist 属性挂在 source range 上，可以精确到"这个 scope 是草稿、这段是结论"。文档级的裁决与段落级的备注可以在同一篇内混合，检索时分别对待。
@@ -124,7 +124,7 @@ Text: SearchUnitBuilder 从 snapshot 已捕获的 source、parse、Module/Headin
 
 - 首选候选对：本地 Qwen3-Embedding-0.6B（CPU 可跑、Apache、多语言、与开源 reranker 同族）作为默认与离线基线；一个强 API（Gemini Embedding 或 Qwen3-4B/8B）作为质量上界参照。最终以 benchmark 定，不预设赢家。
 - manifest 纪律：model id、revision、dims、distance metric、normalization、license 写入 index manifest；模型升级等于全量重算，由 EmbeddingKey 保证不出现新旧向量混存。
-- 推理进程：embedding provider 放 daemon 侧的外部进程——fastembed-rs 子进程或 ollama HTTP 二选一，以 trait 隔离。理由即 daemon-process-views 已写明的：模型生命周期（本地或远程）与索引生命周期（随 snapshot 增量）不同，崩溃域与升级域必须分开。CLI 二进制与 notist core 都不碰模型——这是裁决不是偏好。
+- 推理进程：embedding provider 放 daemon 侧的外部进程——fastembed-rs 子进程或 ollama HTTP 二选一，以 trait 隔离。理由即现行 daemon 进程与视图设计已写明的：模型生命周期（本地或远程）与索引生命周期（随 snapshot 增量）不同，崩溃域与升级域必须分开。CLI 二进制与 notist core 都不碰模型——这是裁决不是偏好。
 - 向量存储：跟随 lexical index 放同一 user cache 分区（按 Vault identity 分区），首版用文件 + 内存精确扫描（千级 unit 毫秒级）；ANN（SQLite Vec1/HNSW）等规模或过滤选择性证明必要时再引入。工程重点是 metadata pre-filter 与增量 tombstone，不是 ANN 参数。
 
 === 增量更新
@@ -183,7 +183,7 @@ $ notist read "vault::ai::2026-08-25 notist lsp audit follow-up/诊断推送模�
 
 风险与对策：
 
-- docs vault 太小（千级 unit），dense 优势可能不显著。对策：合成同义改述对（从 ai/ 与 designs/ 的摘要句反向构造 query），并接受"小库上 lexical 已够"的结论——那本身就是有价值的 benchmark 证据。
+- docs vault 太小（千级 unit），dense 优势可能不显著。对策：合成同义改述对（从 ai/ 与库内其余模块的摘要句反向构造 query），并接受"小库上 lexical 已够"的结论——那本身就是有价值的 benchmark 证据。
 - 现行 tokenizer 的 Han bigram 已经部分覆盖中文语义匹配，dense 在中文 query 上的增量要单独看，不能只报总分。
 - embedding 对标识符、路径、数字、否定天然弱，精确匹配通道（exact/id/module 字段，权重 6.0）必须保持，hybrid 而非 semantic 才是默认方向。
 - 属性前缀过长会稀释正文语义，前缀 token 预算与字段取舍要进消融。
@@ -209,8 +209,3 @@ $ notist read "vault::ai::2026-08-25 notist lsp audit follow-up/诊断推送模�
 内部：
 
 - #<vault::ai::2026-07-21 notist agent mcp semantic retrieval and vector indexing>：完整综述与阶段路线（本文的上篇）
-- #<vault::designs::host::search-retrieval-index>：SearchUnit、字段权重、tokenizer、向量 mode 门槛裁决
-- #<vault::designs::host::cli-command-surface-skill-distribution>：向量化属于 vault 运行时状态
-- #<vault::designs::host::daemon-process-views>：per-vault 隔离与向量索引的预留位置
-- #<vault::designs::host::query-contract>：Location、cursor、SnapshotStamp 契约
-- #<vault::designs::world::reference-ref-target>：ItemPath/ItemName/Item 词汇

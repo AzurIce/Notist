@@ -1,7 +1,7 @@
 @!(implementation: "aligned")
 = LSP 请求支持对照
 
-对 `notist lsp`（`crates/notist-cli/src/lsp.rs`，设计见 #<vault::lsp>）与 LSP 客户端可达方法面的逐项对照，方法全集以仓库依赖 `lsp-types 0.97.0`（对应 LSP 3.17 规范面）的 request/notification 模块为准。所有未支持的方法一律回 `MethodNotFound (-32601)`，客户端可安全探测。目的：给后续补充能力一份清单——哪些是缺口、哪些是有意不做。协议契约的权威设计见 #<vault::designs::host::client-interface-protocol>（core request 与 CLI 的映射在其「Client Interface」一节）；客户端依赖侧记录在 obsidian-notist `src/lsp/session.ts` 头注释。
+对 `notist lsp`（`crates/notist-cli/src/lsp.rs`，设计见 #<vault::lsp>）与 LSP 客户端可达方法面的逐项对照，方法全集以仓库依赖 `lsp-types 0.97.0`（对应 LSP 3.17 规范面）的 request/notification 模块为准。所有未支持的方法一律回 `MethodNotFound (-32601)`，客户端可安全探测。目的：给后续补充能力一份清单——哪些是缺口、哪些是有意不做。协议契约的权威设计见 #<vault::cli::protocol>；客户端依赖侧记录在 obsidian-notist `src/lsp/session.ts` 头注释。
 
 == 能力声明（initialize 结果）
 
@@ -41,10 +41,10 @@ capabilities 全静态声明，无 `client/registerCapability` 动态注册；�
 | `textDocument/documentLink` / `documentLink/resolve` | 未支持 | resolved `#<...>` 引用与属性 url 可自然映射；候选 |
 | `textDocument/documentColor` / `colorPresentation` | — | 无颜色字面量语法 |
 | `textDocument/formatting` / `rangeFormatting` / `onTypeFormatting` | 未支持 | 无格式化器，独立工程 |
-| `textDocument/rename` / `prepareRename` | 未支持 | 返回 WorkspaceEdit 由客户端应用，不违反 daemon 无写路径（2026-08-28 裁决）；语义重命名是独立工程 |
+| `textDocument/rename` / `prepareRename` | 未支持 | 返回 WorkspaceEdit 由客户端应用，不违反 daemon 无写路径；语义重命名是独立工程 |
 | `textDocument/foldingRange` | 未支持 | 标题层级 + 代码块天然可折叠；低成本候选 |
 | `textDocument/selectionRange` | 未支持 | AST 可派生，低优先 |
-| `textDocument/linkedEditingRange` | 未支持 | target literal 配对；`<>` 自动配对已裁决定为编辑器侧（2026-08-28），LSP 通道是另一形态 |
+| `textDocument/linkedEditingRange` | 未支持 | target literal 配对；`<>` 自动配对属编辑器侧，LSP 通道是另一形态 |
 | `textDocument/moniker` | 未支持 | `vault::module::item` 天然是 moniker，暂无消费方 |
 | `textDocument/prepareCallHierarchy` / `callHierarchy/incomingCalls` / `callHierarchy/outgoingCalls` | — | 引用图已由 references / documentReferences 覆盖，语义不符 |
 | `textDocument/prepareTypeHierarchy` / `typeHierarchy/supertypes` / `typeHierarchy/subtypes` | — | 无子类型层级 |
@@ -56,7 +56,7 @@ capabilities 全静态声明，无 `client/registerCapability` 动态注册；�
 | `workspace/symbol` | 支持 | `WorkspaceSymbols`；多 vault 合并排序；Flat SymbolInformation（KEY/FILE） |
 | `workspaceSymbol/resolve` | — | 返回自包含 SymbolInformation，无 stale-resolve 语义 |
 | `workspace/executeCommand` | — | 操作面归 CLI，无写路径 |
-| `workspace/willCreateFiles` / `willRenameFiles` / `willDeleteFiles` | 未支持 | 只读校验（改名是否破坏引用）与无写路径裁决兼容；候选 |
+| `workspace/willCreateFiles` / `willRenameFiles` / `willDeleteFiles` | 未支持 | 只读校验（改名是否破坏引用）与 daemon 无写路径兼容；候选 |
 
 == 通知（client → server）
 
@@ -65,7 +65,7 @@ capabilities 全静态声明，无 `client/registerCapability` 动态注册；�
 | `initialized` | 忽略 | 无动态注册需求；协议允许 |
 | `exit` | 支持 | 退出主循环，io_threads join 后以 0 退出 |
 | `textDocument/didOpen` | 支持 | 进 overlay，标记 dirty 触发 latest-wins 重建 |
-| `textDocument/didChange` | 支持 | INCREMENTAL：ranged 与整文档混批依序应用（整文档取最后一个为基）；越界钳位、start>end 跳过；版本仅记录不做门控；未打开文档丢弃（2026-08-30 起，见 `#<vault::ai::2026-08-30 LSP incremental sync 设计>`） |
+| `textDocument/didChange` | 支持 | INCREMENTAL：ranged 与整文档混批依序应用（整文档取最后一个为基）；越界钳位、start>end 跳过；版本仅记录不做门控；未打开文档丢弃 |
 | `textDocument/willSave` | 忽略 | 可选通知，无消费场景（`willSaveWaitUntil` 同） |
 | `textDocument/didSave` | 部分 | 仅当携带 text 时应用；不带则不动作，磁盘变化交给 watcher |
 | `textDocument/didClose` | 支持 | 丢 overlay，诊断回落磁盘态并推空集清除 |
@@ -74,7 +74,7 @@ capabilities 全静态声明，无 `client/registerCapability` 动态注册；�
 | `workspace/didChangeWorkspaceFolders` | 忽略 | 根集 initialize 时固定；root 下按最近 Notist.toml 路由多 vault |
 | `workspace/didCreateFiles` / `didRenameFiles` / `didDeleteFiles` | 忽略 | watcher 已覆盖磁盘感知；改名引用修复属 `will*` 域 |
 | `notebookDocument/*` | 忽略 | 无 notebook 概念 |
-| `$/cancelRequest` | 支持 | 两条路径都是真取消（2026-08-31 起客户端多路复用接线，daemon 侧 `Cancel` 帧直达 `execute_cancellable`）；命中回 `RequestCanceled (-32800)` |
+| `$/cancelRequest` | 支持 | 两条路径都是真取消（客户端多路复用接线，daemon 侧 `Cancel` 帧直达 `execute_cancellable`）；命中回 `RequestCanceled (-32800)` |
 | `$/setTrace` | 忽略 | 从不发送 `$/logTrace` |
 | `window/workDoneProgress/cancel` | — | 从不创建 progress token |
 
@@ -97,8 +97,8 @@ capabilities 全静态声明，无 `client/registerCapability` 动态注册；�
 
 == 实验扩展（capabilities.experimental.notist）
 
-- *`notist/documentReferences`*：模块级引用，无位置歧义（文档以标题开头时 `textDocument/references` 会解析到标题符号而非模块）；`direction = incoming|outgoing|both`（默认 incoming）+ `includeDefinition`；返回 `{ revision, items[] }`（uri/range/direction/sourceModule/targetModule/targetName/targetKind/url/isDefinition）。消费方是 obsidian-notist 入链/出链面板（见 #<vault::ai::2026-08-27 obsidian-notist ux polish and document references>）。
-- *`notist/renderDocument`*：单文档渲染，与 preview site 同一求值管线；返回 `{ revision, page, resources }`；非 `.not` 或未归属 vault 的路径返回 null（见 #<vault::ai::2026-08-30 obsidian-notist preview mode design>）。
+- *`notist/documentReferences`*：模块级引用，无位置歧义（文档以标题开头时 `textDocument/references` 会解析到标题符号而非模块）；`direction = incoming|outgoing|both`（默认 incoming）+ `includeDefinition`；返回 `{ revision, items[] }`（uri/range/direction/sourceModule/targetModule/targetName/targetKind/url/isDefinition）。消费方是 obsidian-notist 入链/出链面板。
+- *`notist/renderDocument`*：单文档渲染，与 preview site 同一求值管线；返回 `{ revision, page, resources }`；非 `.not` 或未归属 vault 的路径返回 null。
 
 == 错误码分类
 
@@ -124,8 +124,8 @@ capabilities 全静态声明，无 `client/registerCapability` 动态注册；�
 - `$/progress` + `window/workDoneProgress/create`：latest-wins 重建期间的 busy 指示（现在客户端只能从诊断延迟间接感知）。
 - `textDocument/codeAction`：从诊断 code 的 quick fix 起步。
 
-待裁决/独立工程：
+开放问题/独立工程：
 
-- `rename` / `prepareRename`、`will*Files` 只读校验：与「daemon 无写路径」裁决兼容（编辑由客户端应用），但语义重命名与引用修复是独立工程。
+- `rename` / `prepareRename`、`will*Files` 只读校验：与「daemon 无写路径」兼容（编辑由客户端应用），但语义重命名与引用修复是独立工程。
 - pull 诊断（`textDocument/diagnostic`、`workspace/diagnostic`）、`inlayHint`、`selectionRange`、`moniker`：按客户端需求再启。
 - `semanticTokens`：与姊妹项目高亮栈（zed queries / obsidian tree-sitter）冗余，暂无 tree-sitter 之外的高亮消费方，不主动做。
