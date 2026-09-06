@@ -2,6 +2,7 @@
 dist
 .direnv
 result
+plugins/target/
 plugins/*/lib/
 plugins/*/target/
 .env
