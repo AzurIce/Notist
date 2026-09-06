@@ -1,5 +1,7 @@
 本仓库的 `docs/` 下是文档目录，注意不要出现 `.md` 都使用我们的 `.not`。
 
+对本目录的 `docs/` Notist Vault 操作时应使用 `cargo run -p notist-cli` 运行开发版本以与 skill 对齐。
+
 当用户要求整理文档到 `docs/` 下时，应该整理到 `docs/ai` 下，以 `yyyy-mm-dd xxx` 命名。
 整理后要求在 `docs/ai/README.not` 中进行引用，且附带一段简短的摘要，方便后续 Agent 查找复用。
 
@@ -11,9 +13,9 @@
 
 用户在对话中提出方案、质疑、反驳或指出矛盾时，默认处于设计讨论状态，此时的产出是分析和讨论本身，不是文档变更：
 
-- **不要把讨论当裁决。** 自己的分析结论、倾向、推荐都不构成决定。只有用户明确同意某个方案（如"就用 X""按这个改"）才算裁决；"我觉得不好"是继续讨论的信号，不是改另一版的指令。不要宣布"收口""定稿"，不要在讨论中途去重写或回滚设计文档。
-- **用户指出矛盾时先讨论矛盾。** 正确动作是把矛盾摆开：有哪些处理选项、各自代价、倾向哪个并说清理由，然后等用户拍板。不要默认保留旧设计，也不要急着改成新设计——两个方向都是替用户做决定。
-- **写文档要凭明确指令。** 只有用户要求"落盘 / 存档 / 更新文档 / 改掉"时才动设计文档，且修改范围与指令一致；讨论推进导致文档暂时过时是可以接受的，比替用户把文档改到他自己没同意的状态要好。
+- *不要把讨论当裁决。* 自己的分析结论、倾向、推荐都不构成决定。只有用户明确同意某个方案（如"就用 X""按这个改"）才算裁决；"我觉得不好"是继续讨论的信号，不是改另一版的指令。不要宣布"收口""定稿"，不要在讨论中途去重写或回滚设计文档。
+- *用户指出矛盾时先讨论矛盾。* 正确动作是把矛盾摆开：有哪些处理选项、各自代价、倾向哪个并说清理由，然后等用户拍板。不要默认保留旧设计，也不要急着改成新设计——两个方向都是替用户做决定。
+- *写文档要凭明确指令。* 只有用户要求"落盘 / 存档 / 更新文档 / 改掉"时才动设计文档，且修改范围与指令一致；讨论推进导致文档暂时过时是可以接受的，比替用户把文档改到他自己没同意的状态要好。
 
 ## 姊妹项目
 
@@ -27,8 +29,8 @@
 
 notist 是这些项目的上游。当本仓库发生下列核心变动时，必须同时审查各姊妹项目的设计与实现影响，不要只凭记忆判断"应该没关系"：
 
-- **语法/文法变更**（notist-syntax、新构造器、解析规则）→ tree-sitter-notist 的 grammar 与 queries 需同步；zed-notist 内嵌 grammar 快照（extension.toml 钉 rev）需升级；obsidian-notist 高亮依赖同一产物；vscode-notist 的 TextMate grammar 是移植近似，需对照其 `scripts/fixtures/sample.not` 与 `just tm-smoke` 更新。
-- **LSP 协议契约变更**（capabilities、FULL sync 规则、诊断推送模型、错误码、方法集、编码协商）→ obsidian-notist 的 `src/lsp/session.ts` 头注释逐条记录了它依赖的服务端契约，需核对更新；vscode-notist 的 `src/protocol.ts` 头注释同理（可用其 `just lsp-smoke` 对真实 server 回归）；zed-notist 的 language server 接入同理。
-- **分析/诊断语义、CLI 面、插件 ABI 变更** → 按需检查各项目的调用点与文档。
+- *语法/文法变更*（notist-syntax、新构造器、解析规则）→ tree-sitter-notist 的 grammar 与 queries 需同步；zed-notist 内嵌 grammar 快照（extension.toml 钉 rev）需升级；obsidian-notist 高亮依赖同一产物；vscode-notist 的 TextMate grammar 是移植近似，需对照其 `scripts/fixtures/sample.not` 与 `just tm-smoke` 更新。
+- *LSP 协议契约变更*（capabilities、FULL sync 规则、诊断推送模型、错误码、方法集、编码协商）→ obsidian-notist 的 `src/lsp/session.ts` 头注释逐条记录了它依赖的服务端契约，需核对更新；vscode-notist 的 `src/protocol.ts` 头注释同理（可用其 `just lsp-smoke` 对真实 server 回归）；zed-notist 的 language server 接入同理。
+- *分析/诊断语义、CLI 面、插件 ABI 变更* → 按需检查各项目的调用点与文档。
 
 审查方式建议并行派子代理（explore 或 general），每个项目一个：输入为本次变动的摘要与相关文件清单，要求返回"受影响的设计文档 + 代码位置"清单；汇总后再决定跟进修复。涉及 LSP 客户端行为假设的改动，还应实机回归（如经 obsidian CLI 驱动验证）。

@@ -19,7 +19,7 @@ fn build_resources() -> io::Result<()> {
     let manifest_dir = PathBuf::from(env::var_os("CARGO_MANIFEST_DIR").unwrap());
     let repository = manifest_dir.join("../..");
     let docs_root = repository.join("docs");
-    let skill_root = repository.join("skills/notist");
+    let skill_root = repository.join(".agents/skills/notist");
     println!("cargo:rerun-if-changed={}", docs_root.display());
     println!("cargo:rerun-if-changed={}", skill_root.display());
 
@@ -37,7 +37,7 @@ fn build_resources() -> io::Result<()> {
     if skill_files.len() != 1 || skill_files[0].0 != "SKILL.md" {
         return Err(io::Error::new(
             io::ErrorKind::InvalidData,
-            "skills/notist must contain exactly SKILL.md",
+            ".agents/skills/notist must contain exactly SKILL.md",
         ));
     }
     fs::write(output.join("notist-skill.md"), &skill_files[0].1)?;

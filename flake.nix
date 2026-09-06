@@ -45,7 +45,7 @@
         # 打包用 stable 工具链即可（CI 也是 stable）
         craneLib = crane.mkLib pkgs;
 
-        # build.rs 会把 docs/ 与 skills/notist 嵌入二进制，
+        # build.rs 会把 docs/ 与 .agents/skills/notist 嵌入二进制，
         # 因此除了 Cargo 源码外还需要保留这两个目录。
         src = lib.cleanSourceWith {
           src = ./.;

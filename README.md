@@ -1,6 +1,6 @@
 # Notist
 
-**Note + -ist → notist（also not an -ist）**
+*Note + -ist → notist（also not an -ist）*
 
 Notist 是一门带静态类型系统的文档编程语言，为取代 Markdown 而生，文件扩展名为 `.not`。它针对 Markdown 的几个根本问题：
 
@@ -25,7 +25,7 @@ Notist 是一门带静态类型系统的文档编程语言，为取代 Markdown 
 
 - `crates/` — Rust 工作区：`notist-syntax`（文法）、`notist-analysis`（分析）、`notist-service`（服务核心）、`notist-cli`（CLI 与 LSP）、`notist-plugin-host` / `notist-plugin-sdk`（插件系统）、`notist-html`（站点产出）、`notist-eval` / `notist-model`
 - `plugins/` — 官方插件（core、mermaid、shader 等）
-- `docs/` — 用 Notist 自举维护的文档 Vault（`Notist.toml` 为根），**文档一律 `.not`，不使用 `.md`**
+- `docs/` — 用 Notist 自举维护的文档 Vault（`Notist.toml` 为根），*文档一律 `.not`，不使用 `.md`*
 - `skills/` — 面向 Agent 的 notist 使用技能（也可由 `notist skill` 生成）
 
 ## 安装
@@ -58,7 +58,7 @@ notist check --vault docs                          # 校验模块与引用
 
 ## Agent 接入
 
-`notist skill init <dir>` 从二进制内嵌资源生成官方 Agent Skill（单文件 `SKILL.md`，与本仓库 `skills/notist` 同源），放进你的 Agent 技能目录即可：
+`notist skill init <dir>` 从二进制内嵌资源生成官方 Agent Skill（单文件 `SKILL.md`，与本仓库 `.agents/skills/notist` 同源），放进你的 Agent 技能目录即可：
 
 ```sh
 notist skill init .agents/skills/notist
