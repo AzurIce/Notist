@@ -1303,7 +1303,8 @@ impl Renderer<'_, '_> {
 
         match href.as_deref() {
             Some(href) => {
-                self.output.push_str("<a class=\"notist-view-label\" href=\"");
+                self.output
+                    .push_str("<a class=\"notist-view-label\" href=\"");
                 escape_attribute(&mut self.output, href);
                 self.output.push_str("\">");
                 escape_text(&mut self.output, &label);
@@ -1320,7 +1321,8 @@ impl Renderer<'_, '_> {
         if kind == "image"
             && let Some(href) = href
         {
-            self.output.push_str("<img class=\"notist-view-content\" src=\"");
+            self.output
+                .push_str("<img class=\"notist-view-content\" src=\"");
             escape_attribute(&mut self.output, &href);
             self.output.push_str("\" alt=\"");
             escape_attribute(&mut self.output, &label);

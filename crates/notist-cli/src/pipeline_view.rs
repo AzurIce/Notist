@@ -30,9 +30,7 @@ pub fn pipeline_page(module: &str, revision: u64, record: &ModulePipelineRecord)
         let encoded = record
             .module_segments
             .iter()
-            .map(|segment| {
-                utf8_percent_encode(segment, HREF_SEGMENT_ENCODE_SET).to_string()
-            })
+            .map(|segment| utf8_percent_encode(segment, HREF_SEGMENT_ENCODE_SET).to_string())
             .collect::<Vec<_>>()
             .join("/");
         format!("/{encoded}/")

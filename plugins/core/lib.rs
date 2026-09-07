@@ -363,13 +363,12 @@ impl Function for ViewFunction {
         _context: &FunctionContext<'_>,
         input: FunctionInput<'_>,
     ) -> Result<Value, Vec<EvalDiagnostic>> {
-        let Value::Target(target) = input
-            .arguments
-            .get("target")
-            .ok_or_else(|| vec![EvalDiagnostic {
+        let Value::Target(target) = input.arguments.get("target").ok_or_else(|| {
+            vec![EvalDiagnostic {
                 message: "view requires a target".into(),
                 range: input.range,
-            }])?
+            }]
+        })?
         else {
             return Err(vec![EvalDiagnostic {
                 message: "view target must be a `<...>` target literal, not a String".into(),
