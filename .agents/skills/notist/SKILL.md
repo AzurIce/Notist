@@ -9,19 +9,19 @@ Notist manages knowledge-base *Vaults*. A Vault is a directory containing a `Not
 
 ## Querying a Vault
 
-A ModulePath is the file's own path under the Vault root, spelled mechanically: every directory segment becomes a `::` segment — `X/Y.not` is `vault::X::Y`, and a `README.not` is its directory's module (`X/README.not` is `vault::X`). Locate with ordinary host tools (`ls`, `find`, `grep` over plain files), convert the hit mechanically, then use notist for what grep cannot see:
+A ModulePath is the file's own path under the Vault root, spelled mechanically: every directory segment becomes a `::` segment — `X/Y.not` is `vault::X::Y`, and a `README.not` is its directory's module (`X/README.not` is `vault::X`). Locate with ordinary host tools (`ls`, `find`, `grep` over plain files), convert the hit mechanically, then cut regions with notist — `notist inspect --help` is the authority for flags and selectors:
+
+- Read one section with the attributes in effect (`--item "Section/Sub"`; Item names are heading chains joined by `/`, never mixed into a ModulePath), or cut exactly the lines grep hit (`--line A..B`) — never pour a whole `.not` file into context to find one fact.
+- List what a document references (`refs --out`: outbound targets with resolved identities), or who mentions it from outside (the rename/move/delete checklist).
+- Zero hits are a proof, not an empty result; results are complete — never re-read a file to double-check a notist answer.
 
 ```shell
-notist inspect read vault::X::Y --line 40..80 --vault <VAULT>  # the lines grep found, plus the attribute environment in effect
-notist inspect read vault::X::Y --item "Section/Sub" --vault <VAULT>  # one Item's canonical subtree; Item names are heading chains joined by /
-notist inspect refs vault::X::Y --vault <VAULT>                # every outside mention: the rename/move/delete checklist
-notist inspect refs vault::X::Y --out --vault <VAULT>          # the region's outside targets: its outbound dependencies
-notist check --vault <VAULT>                                   # whole-Vault health verdict (exit 1 on any error)
+notist inspect read vault::X::Y --item "Section/Sub" --vault <VAULT>
+notist inspect read vault::X::Y --line 40..80 --vault <VAULT>
+notist inspect refs vault::X::Y --out --vault <VAULT>
+notist inspect refs vault::X::Y --vault <VAULT>
+notist check --vault <VAULT>
 ```
-
-- `read` answers "what am I looking at, and what is in effect": the region is cut into maximal segments of uniform effective attributes, each with its attribute Dict and embedded source lines. Its header hands back the relative path, ranges, and fingerprint — the bridge between notist identity and host `path:line` coordinates, and your precondition for editing.
-- `refs` lists references that cross the queried region's boundary: by default the incoming half ("what must change if this target changes" — every row is a rename/move/delete action item), with `--out` the outgoing half (what the region points to outside itself, identities resolved). Internal mentions are invisible by design; zero hits are a proof, not an empty result.
-- Selectors have one grammar: absolute ModulePath plus flags. Never mix `/` into a ModulePath — `/` belongs to Item names, passed via `--item`. `notist inspect --help` is the authority for flags and selectors.
 
 ## `.not` syntax
 
