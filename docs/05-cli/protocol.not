@@ -20,7 +20,7 @@ resolve_reference  —               —
 module_pipeline    —               —
 ```
 
-`resolve_reference` 把引用元素的 url 解析为 RefTarget（#<vault::04-world::reference>），`Missing` 目标如实进入诊断；它不设独立 CLI 命令，由 read、refs 与 build 内部消费。`references_in` 正向列出某个 Item 引用了什么，返回 `[{relation, url, target}]`；出链写在源文里，CLI 尚无投影。relation 与目标类型正交：relation 区分导航与嵌入（当前只有 Reference，Preview 预留），目标类型由分析层 resolve 给出——值层不解释 url。
+`resolve_reference` 把引用元素的 url 解析为 RefTarget（#<vault::04-world::reference>），`Missing` 目标如实进入诊断；它不设独立 CLI 命令，由 read、refs 与 build 内部消费。`references_in` 正向列出某个 Item 引用了什么，返回 `[{relation, url, target}]`；出链的 CLI 投影是 `inspect refs --out`（#<vault::05-cli::inspect::refs>），与入链共用穿越语义与规范身份拼写。relation 与目标类型正交：relation 区分导航与嵌入（当前只有 Reference，Preview 预留），目标类型由分析层 resolve 给出——值层不解释 url。
 
 `module_pipeline` 是 pipeline 检查请求：按 ModulePath 字符串选址，返回该模块一次求值 pass 的全部中间阶段——lowered 调用森林、reduced 森林、shaped 树、投影后树与渲染 HTML 片段，外加旁置标注表与求值诊断。它与渲染请求共用同一 snapshot 捕获与同一投影 registry，`html` 阶段与 build/preview 写出的页面 fragment 逐字节一致；请求只读，不进入缓存路径。当前唯一消费方是 preview 的 pipeline debug 视图（#<vault::05-cli::build>），不投影为 CLI 命令。
 

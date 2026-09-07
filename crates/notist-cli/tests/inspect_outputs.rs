@@ -144,6 +144,51 @@ fn refs_lists_incoming_crossings_with_positions() {
     );
 }
 
+#[test]
+fn refs_out_lists_the_region_mentions_pointing_outside() {
+    let vault = fixture();
+    // The guide's 日志 mention is outgoing from guide; the flipped row keeps
+    // the same endpoints and gutter grammar as the incoming view.
+    let out = run(&vault, &["inspect", "refs", "vault::guide", "--out"]);
+    assert!(
+        out.starts_with("vault::guide: 1 outgoing reference"),
+        "{out}"
+    );
+    assert!(
+        out.contains("[1] <vault::troubleshoot/日志> <- <vault::guide/安装>  guide.not:6"),
+        "{out}"
+    );
+    assert!(out.contains("    6 | 先读概述"), "{out}");
+
+    // `--item` restricts the mention side of the outgoing half.
+    let item = run(
+        &vault,
+        &["inspect", "refs", "vault::guide", "--item", "安装", "--out"],
+    );
+    assert!(
+        item.starts_with("vault::guide/安装: 1 outgoing reference"),
+        "{item}"
+    );
+
+    // Internal mentions never surface: troubleshoot's link to its own
+    // 手册 heading has both ends inside, so its outgoing half is empty.
+    let none = run(&vault, &["inspect", "refs", "vault::troubleshoot", "--out"]);
+    assert!(
+        none.starts_with("vault::troubleshoot: 0 outgoing references"),
+        "{none}"
+    );
+    assert!(none.contains("hint:"), "{none}");
+
+    // The default stays incoming: nothing outside mentions guide, so the
+    // plain query is a zero-hit proof where --out is not.
+    let incoming = run(&vault, &["inspect", "refs", "vault::guide"]);
+    assert!(
+        incoming.starts_with("vault::guide: 0 references"),
+        "{incoming}"
+    );
+    assert!(incoming.contains("hint:"), "{incoming}");
+}
+
 /// `docs/test/refs.not` is the standing `inspect refs` fixture: `refs_in`
 /// mentions the target from outside through both item spellings (heading
 /// chain and `@id`), a `super::` relative spelling, a mid-section block
@@ -162,8 +207,8 @@ fn refs_executes_the_requests_embedded_in_the_refs_fixture() {
         .map(|line| line["$ notist ".len()..].to_owned())
         .collect();
     assert!(
-        commands.len() >= 6,
-        "the fixture should embed module, item, alias, block-scope, nested, and zero-hit requests"
+        commands.len() >= 7,
+        "the fixture should embed module, item, alias, block-scope, nested, zero-hit, and outgoing requests"
     );
 
     let vault = fixture();
@@ -233,6 +278,17 @@ fn refs_executes_the_requests_embedded_in_the_refs_fixture() {
         } else if command.contains("--item") {
             assert!(
                 stdout.starts_with("vault::test::refs/二: 4 references"),
+                "{stdout}"
+            );
+        } else if command.contains("--out") {
+            // The outgoing half of the same crossing set: identical rows,
+            // viewed from the mentioning side.
+            assert!(
+                stdout.starts_with("vault::test::refs_in: 5 outgoing references"),
+                "{stdout}"
+            );
+            assert!(
+                stdout.contains("[1] <vault::test::refs/二> <- <vault::test::refs_in/一>"),
                 "{stdout}"
             );
         } else if command.contains("vault::test::refs_in") {

@@ -300,12 +300,17 @@ pub enum ReferenceDirection {
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct RefsQuery {
     pub selector: Selector,
+    /// Which crossing half to list: `Incoming` (default) lists edges whose
+    /// resolved target lands inside the queried region, `Outgoing` lists
+    /// edges whose mentioning span lands inside it.
+    #[serde(default)]
+    pub direction: ReferenceDirection,
 }
 
-/// One incoming reference crossing the selected region's boundary: the
-/// resolved canonical target identity (folding makes edges target different
-/// items inside the region), the mentioning module, and the mention's full
-/// authored source lines in read's gutter grammar.
+/// One reference crossing the selected region's boundary: the resolved
+/// canonical target identity (folding makes edges target different items
+/// inside the region), the mentioning region identity, and the mention's
+/// full authored source lines in read's gutter grammar.
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct RefRecord {
     /// Resolved target identity `ModulePath[/ItemName]`; a bare ModulePath
@@ -2097,9 +2102,6 @@ pub fn refs(
                     && reference.target_name.as_deref() == Some(name.as_str())
             }
         };
-        if !target_inside {
-            continue;
-        }
         let mention_inside = match &region {
             RefsRegion::Module => reference.source_module_id == module.id,
             RefsRegion::Scope(range) => {
@@ -2107,7 +2109,15 @@ pub fn refs(
             }
             RefsRegion::Resource(_) => false,
         };
-        if mention_inside {
+        // An edge crosses when exactly one of its ends lands inside the
+        // region; the two directions are the same set split by which end is
+        // the insider.
+        let crossing = match query.direction {
+            ReferenceDirection::Incoming => target_inside && !mention_inside,
+            ReferenceDirection::Outgoing => mention_inside && !target_inside,
+            ReferenceDirection::Both => target_inside != mention_inside,
+        };
+        if !crossing {
             continue;
         }
         let Some(source) = workspace.source(reference.source_file_id) else {
@@ -2161,7 +2171,17 @@ pub fn refs(
         )
     });
     let hints = if records.is_empty() {
-        vec!["nothing outside the selected region mentions this target".to_string()]
+        vec![match query.direction {
+            ReferenceDirection::Incoming => {
+                "nothing outside the selected region mentions this target".to_string()
+            }
+            ReferenceDirection::Outgoing => {
+                "nothing inside the selected region mentions a target outside it".to_string()
+            }
+            ReferenceDirection::Both => {
+                "no reference crosses the selected region's boundary".to_string()
+            }
+        }]
     } else {
         Vec::new()
     };

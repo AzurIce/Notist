@@ -137,14 +137,18 @@ enum InspectCommand {
         #[arg(long)]
         origins: bool,
     },
-    /// List the references that cross into a module or item's region from
-    /// outside it.
+    /// List the references that cross a module or item region's boundary.
     Refs {
-        /// Exact ModulePath whose region's incoming references are listed.
+        /// Exact ModulePath whose region's crossings are listed.
         module: String,
         /// Restrict the region to one Item's canonical subtree.
         #[arg(long)]
         item: Option<String>,
+        /// List the outgoing half instead: mentions inside the region whose
+        /// resolved target lies outside it. The default lists the incoming
+        /// half.
+        #[arg(long)]
+        out: bool,
     },
 }
 
@@ -416,7 +420,7 @@ fn run_inspect(
     color: clap::ColorChoice,
 ) -> Result<ExitCode, Box<dyn std::error::Error>> {
     match command {
-        InspectCommand::Refs { module, item } => {
+        InspectCommand::Refs { module, item, out } => {
             let identity = item
                 .as_deref()
                 .map_or_else(|| module.clone(), |name| format!("{module}/{name}"));
@@ -425,6 +429,11 @@ fn run_inspect(
                 view_id,
                 query: notist_service::RefsQuery {
                     selector: notist_service::Selector { module, item },
+                    direction: if out {
+                        notist_service::ReferenceDirection::Outgoing
+                    } else {
+                        notist_service::ReferenceDirection::Incoming
+                    },
                 },
             })?;
             let CoreResponse::RefsPage(page) = reply.response else {
@@ -435,10 +444,15 @@ fn run_inspect(
             // authored source lines. Each row names the resolved target —
             // folding puts different items behind one region query.
             let palette = Palette::stdout(color);
+            let noun = if out {
+                "outgoing reference"
+            } else {
+                "reference"
+            };
             println!(
                 "{}: {}",
                 palette.cyan(&identity),
-                palette.bold(&plural(page.records.len(), "reference"))
+                palette.bold(&plural(page.records.len(), noun))
             );
             for (index, record) in page.records.iter().enumerate() {
                 let position = record.location.line_range.map_or_else(
