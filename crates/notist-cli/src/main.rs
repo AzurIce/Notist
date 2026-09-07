@@ -12,6 +12,7 @@ mod build;
 mod logging;
 mod lsp;
 mod official_docs;
+mod pipeline_view;
 mod preview;
 mod resources;
 mod service;

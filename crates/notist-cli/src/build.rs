@@ -570,8 +570,20 @@ fn page_shell(
             html.push_str(" disabled title=\"This virtual module has no .not source file\"");
         }
         html.push_str(
-            "><span class=\"chrome-switch\" aria-hidden=\"true\"></span><span>Source</span></button><button class=\"chrome-toggle\" id=\"inspect-toggle\" type=\"button\" role=\"switch\" aria-checked=\"false\"><span class=\"chrome-switch\" aria-hidden=\"true\"></span><span>Enhanced</span></button></div>\n",
+            "><span class=\"chrome-switch\" aria-hidden=\"true\"></span><span>Source</span></button><button class=\"chrome-toggle\" id=\"inspect-toggle\" type=\"button\" role=\"switch\" aria-checked=\"false\"><span class=\"chrome-switch\" aria-hidden=\"true\"></span><span>Enhanced</span></button>",
         );
+        // Pipeline debug view: per-stage lowering/reduction/shaping/projection
+        // of this page's module, served by the preview HTTP server.
+        let mut page_url = page.module.segments().join("/");
+        if !page_url.is_empty() {
+            page_url.push('/');
+        }
+        html.push_str("<a class=\"chrome-toggle\" id=\"pipeline-link\" href=\"");
+        html.push_str(&asset_prefix);
+        html.push_str("_notist/pipeline?page=");
+        let encoded_page = utf8_percent_encode(&page_url, URL_PATH_SEGMENT_ENCODE_SET).to_string();
+        escape_attribute(&mut html, &encoded_page);
+        html.push_str("\">Pipeline</a></div>\n");
         // The module's root bindings, consumed by inspect.js for the Symbols
         // tab. `</` is escaped so a string value can never close the tag.
         let bindings_json = serde_json::to_string(page.bindings)

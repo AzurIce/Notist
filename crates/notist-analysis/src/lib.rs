@@ -761,6 +761,22 @@ pub struct StructuredModule {
     pub annotations: Vec<notist_eval::AnnotationEntry>,
 }
 
+/// Every intermediate stage of one module's evaluation pass, for pipeline
+/// inspection tools. Produced by the same pass as
+/// [`WorkspaceSnapshot::structured_module_with_runtime_plugins`]; the
+/// canonical `structured` result is identical.
+#[derive(Clone, Debug)]
+pub struct ModulePipelineStages {
+    /// Call forest as lowered from source, before reduction: sugar expanded,
+    /// expressions already evaluated, unregistered names left pending.
+    pub lowered: Vec<Node>,
+    /// Reduced call forest: fixpoint reached, unknown names survived as
+    /// leaves, failed calls dropped with sibling recovery.
+    pub forest: Vec<Node>,
+    /// The canonical structured result (same as the plain entry point).
+    pub structured: StructuredModule,
+}
+
 /// The App-side composition root handle for one projection pass (render,
 /// preview, export): plugin packages freshly loaded from disk exactly once
 /// by [`WorkspaceSnapshot::runtime_plugins`], with their handlers installed
@@ -1881,6 +1897,44 @@ impl WorkspaceSnapshot {
             tree: evaluation.tree,
             diagnostics: evaluation.diagnostics,
             annotations: evaluation.annotations,
+        })
+    }
+
+    /// Pipeline-inspection variant of
+    /// [`Self::structured_module_with_runtime_plugins`]: the same single
+    /// evaluation pass, retaining the lowered and reduced forests alongside
+    /// the canonical structured result. Read-only debugging surface; the
+    /// cached `StructuredModule` path stays untouched.
+    pub fn structured_module_pipeline_with_runtime_plugins(
+        &self,
+        module_id: ModuleId,
+        runtime: &RuntimePlugins,
+    ) -> Option<ModulePipelineStages> {
+        let module = self.module_by_id(module_id)?;
+        let source = module.source.as_deref()?;
+        let seeds = self
+            .module_import_seeds
+            .get(&module_id)
+            .cloned()
+            .unwrap_or_default();
+        let parse = module.parse.as_ref()?;
+        let evaluation = runtime.evaluator.evaluate_parsed_with_shaping(
+            source,
+            parse,
+            seeds,
+            &self.shaping_registry,
+        );
+        Some(ModulePipelineStages {
+            lowered: evaluation.lowered,
+            forest: evaluation.forest,
+            structured: StructuredModule {
+                revision: self.revision,
+                module_id,
+                function_environment: self.function_environment,
+                tree: evaluation.tree,
+                diagnostics: evaluation.diagnostics,
+                annotations: evaluation.annotations,
+            },
         })
     }
 

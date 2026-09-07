@@ -11,14 +11,16 @@ use std::time::Duration;
 
 use axum::Router;
 use axum::body::Body;
-use axum::extract::{Request, State};
+use axum::extract::{Query, Request, State};
 use axum::http::{Response, StatusCode, header};
 use axum::response::IntoResponse;
 use axum::response::sse::{Event, KeepAlive, Sse};
 use axum::routing::get;
 use clap::ColorChoice;
 use notist_service::protocol::ClientKind;
-use notist_service::{CoreRequest, CoreResponse, ProtocolViewKind, ServiceViewId};
+use notist_service::{
+    CoreRequest, CoreResponse, ProtocolViewKind, RenderedPageRecord, ServiceViewId,
+};
 use percent_encoding::percent_decode_str;
 use tokio::sync::broadcast;
 use tokio_stream::wrappers::BroadcastStream;
@@ -27,7 +29,7 @@ use tokio_stream::{StreamExt, once};
 use crate::build::{
     SiteOptions, merge_diagnostics, render_workspace, write_rendered_site_with_plugins,
 };
-use crate::service::LocalNotistClient;
+use crate::service::{LocalNotistClient, RequestHandle};
 
 /// One event on the live-reload channel: a published site revision, or the
 /// shutdown signal that ends every live-reload stream.
@@ -60,13 +62,18 @@ pub fn run(
         return Err("service returned an unexpected open-view response".into());
     };
     let initial_snapshot_revision = opened.snapshot.revision;
-    let diagnostics = rebuild_preview_site(&mut client, view_id, &site, &root, color)?;
+    // The server-side pipeline debug view drives its own requests through a
+    // cloned shareable handle while the rebuild thread keeps the client.
+    let pipeline_handle = client.request_handle();
+    let pages: Arc<RwLock<Vec<RenderedPageRecord>>> = Arc::new(RwLock::new(Vec::new()));
+    let diagnostics = rebuild_preview_site(&mut client, view_id, &site, &root, color, &pages)?;
     print_rebuild_status(1, &diagnostics)?;
 
     let rebuild_site = site.clone();
     let rebuild_root = root.clone();
     let rebuild_revision = revision.clone();
     let rebuild_updates = updates.clone();
+    let rebuild_pages = pages.clone();
     let rebuild_stop = Arc::new(AtomicBool::new(false));
     let thread_stop = rebuild_stop.clone();
     let rebuild_thread = std::thread::Builder::new()
@@ -89,8 +96,14 @@ pub fn run(
                     continue;
                 }
                 snapshot_revision = summary.snapshot.revision;
-                let rebuilt =
-                    rebuild_preview_site(&mut client, view_id, &rebuild_site, &rebuild_root, color);
+                let rebuilt = rebuild_preview_site(
+                    &mut client,
+                    view_id,
+                    &rebuild_site,
+                    &rebuild_root,
+                    color,
+                    &rebuild_pages,
+                );
                 match rebuilt {
                     Ok(diagnostics) => {
                         let revision = rebuild_revision.fetch_add(1, Ordering::SeqCst) + 1;
@@ -116,6 +129,9 @@ pub fn run(
         revision,
         updates,
         rebuild_stop.clone(),
+        pipeline_handle,
+        view_id,
+        pages,
     ));
 
     rebuild_stop.store(true, Ordering::Release);
@@ -132,11 +148,13 @@ fn rebuild_preview_site(
     site: &PublishedSite,
     root: &Path,
     _color: ColorChoice,
+    pages: &Arc<RwLock<Vec<RenderedPageRecord>>>,
 ) -> Result<Vec<notist_service::DiagnosticRecord>, Box<dyn Error>> {
     let staging = site.next_generation_path();
     fs::create_dir_all(&staging)?;
 
     let rendered = render_workspace(client, view_id)?;
+    *pages.write().unwrap() = rendered.pages.clone();
     let config_text = fs::read_to_string(root.join("Notist.toml")).ok();
     let plugin_assets = notist_plugin_host::plugin_html_assets(root, config_text.as_deref())
         .map_err(|error| {
@@ -188,6 +206,11 @@ struct PreviewState {
     revision: Arc<AtomicU64>,
     updates: broadcast::Sender<PreviewEvent>,
     site: PublishedSite,
+    pipeline: RequestHandle,
+    view_id: ServiceViewId,
+    /// Latest rendered page table: maps page URLs to module segments for the
+    /// pipeline debug view.
+    pages: Arc<RwLock<Vec<RenderedPageRecord>>>,
 }
 
 #[derive(Clone)]
@@ -277,6 +300,9 @@ async fn serve(
     revision: Arc<AtomicU64>,
     updates: broadcast::Sender<PreviewEvent>,
     rebuild_stop: Arc<AtomicBool>,
+    pipeline: RequestHandle,
+    view_id: ServiceViewId,
+    pages: Arc<RwLock<Vec<RenderedPageRecord>>>,
 ) -> Result<(), Box<dyn Error>> {
     if !host.is_loopback() {
         eprintln!(
@@ -307,9 +333,13 @@ async fn serve(
         revision,
         updates: updates.clone(),
         site,
+        pipeline,
+        view_id,
+        pages,
     };
     let app = Router::new()
         .route("/_notist/events", get(events_response))
+        .route("/_notist/pipeline", get(pipeline_response))
         .fallback(serve_static)
         .with_state(state);
     let browser_address = if address.ip().is_unspecified() {
@@ -415,6 +445,89 @@ async fn shutdown_signal(updates: broadcast::Sender<PreviewEvent>, rebuild_stop:
     let _ = updates.send(PreviewEvent::Shutdown);
 }
 
+#[derive(serde::Deserialize)]
+struct PipelineQuery {
+    page: Option<String>,
+}
+
+/// Pipeline debug view for one page (`/_notist/pipeline?page=<page-url>`):
+/// resolves the page URL to its module through the latest rendered page
+/// table, asks the service for every pipeline stage, and renders them as
+/// expandable sections. Linked from the preview chrome's Pipeline button.
+async fn pipeline_response(
+    State(state): State<PreviewState>,
+    Query(query): Query<PipelineQuery>,
+) -> axum::response::Response {
+    let Some(module) = pipeline_page_module(&state.pages.read().unwrap(), query.page.as_deref())
+    else {
+        return (
+            StatusCode::NOT_FOUND,
+            "unknown page (or no pages rendered yet)",
+        )
+            .into_response();
+    };
+    let handle = state.pipeline.clone();
+    let view_id = state.view_id;
+    let request = CoreRequest::ModulePipeline {
+        view_id,
+        module: module.clone(),
+    };
+    // RequestHandle::request blocks (embedded execute or daemon block_on), so
+    // it must leave the async runtime's worker threads.
+    let reply = match tokio::task::spawn_blocking(move || handle.request(request)).await {
+        Ok(Ok(reply)) => reply,
+        Ok(Err(error)) => {
+            return (
+                StatusCode::BAD_GATEWAY,
+                format!("pipeline request failed: {error}"),
+            )
+                .into_response();
+        }
+        Err(error) => {
+            return (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                format!("pipeline task failed: {error}"),
+            )
+                .into_response();
+        }
+    };
+    let CoreResponse::ModulePipeline(record) = reply.response else {
+        return (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            "unexpected pipeline reply",
+        )
+            .into_response();
+    };
+    axum::response::Response::builder()
+        .status(StatusCode::OK)
+        .header(header::CONTENT_TYPE, "text/html; charset=utf-8")
+        .body(Body::from(crate::pipeline_view::pipeline_page(
+            &module,
+            reply.snapshot.revision,
+            &record,
+        )))
+        .unwrap()
+}
+
+/// Resolves a page URL parameter (`notes/today/`, empty for the home page)
+/// to the module path string of the matching rendered page. Unknown URLs
+/// resolve to `None`.
+fn pipeline_page_module(pages: &[RenderedPageRecord], page: Option<&str>) -> Option<String> {
+    let requested = page.unwrap_or_default();
+    let decoded = percent_decode_str(requested).decode_utf8().ok()?;
+    let mut segments = Vec::new();
+    for segment in decoded.trim_matches('/').split('/') {
+        if segment.is_empty() {
+            continue;
+        }
+        if segment == "." || segment == ".." || segment.contains(['\\', '\0']) {
+            return None;
+        }
+        segments.push(segment.to_owned());
+    }
+    let page = pages.iter().find(|page| page.module_segments == segments)?;
+    Some(notist_model::ModulePath::from_segments(page.module_segments.clone()).to_string())
+}
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -446,12 +559,19 @@ mod tests {
             })
             .unwrap();
         let CoreResponse::Opened { view_id, .. } = opened.response else {
-            panic!("expected open view")
+            panic!("expected opened view")
         };
+        let pages: Arc<RwLock<Vec<RenderedPageRecord>>> = Arc::new(RwLock::new(Vec::new()));
 
-        let diagnostics =
-            rebuild_preview_site(&mut client, view_id, &site, root.path(), ColorChoice::Never)
-                .unwrap();
+        let diagnostics = rebuild_preview_site(
+            &mut client,
+            view_id,
+            &site,
+            root.path(),
+            ColorChoice::Never,
+            &pages,
+        )
+        .unwrap();
 
         assert!(diagnostics.is_empty());
         let first_generation = site.capture();
@@ -482,7 +602,15 @@ mod tests {
         client
             .request(CoreRequest::ReloadDiskView { view_id })
             .unwrap();
-        rebuild_preview_site(&mut client, view_id, &site, root.path(), ColorChoice::Never).unwrap();
+        rebuild_preview_site(
+            &mut client,
+            view_id,
+            &site,
+            root.path(),
+            ColorChoice::Never,
+            &pages,
+        )
+        .unwrap();
         let second_generation = site.capture();
         let second = fs::read_to_string(second_generation.path.join("index.html")).unwrap();
         assert!(second.contains(">Second</span>"));

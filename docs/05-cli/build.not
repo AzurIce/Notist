@@ -143,7 +143,23 @@ filesystem event or explicit rebuild
   -> browser reloads current clean URL
 ```
 
-HTTP 服务只有两个表面：`GET /` 与各 Module clean URL（静态目录服务）；`GET /_notist/events`（SSE，发送当前 revision 与后续更新）。页面中的 `_notist/reload.js` 用 EventSource 订阅 revision；连接建立与重连时先收到当前值，浏览器可以发现断线期间错过的构建。完整页面 reload 不需要 WebSocket、DOM diff 或自定义文档协议。
+HTTP 服务表面：`GET /` 与各 Module clean URL（静态目录服务）；`GET /_notist/events`（SSE，发送当前 revision 与后续更新）；`GET /_notist/pipeline?page=<page-url>`（pipeline debug 视图）。页面中的 `_notist/reload.js` 用 EventSource 订阅 revision；连接建立与重连时先收到当前值，浏览器可以发现断线期间错过的构建。完整页面 reload 不需要 WebSocket、DOM diff 或自定义文档协议。
+
+=== Pipeline debug 视图
+
+预览 chrome 的 Pipeline 按钮链接到 `/_notist/pipeline?page=<page-url>`。视图把 page URL 解析为 Module（经最近一次渲染的页面表），经 `module_pipeline` core request（#<vault::05-cli::protocol>）取回该模块一次求值 pass 的全部阶段，按阶段 tab 呈现：
+
+```text
+Lowered          lowering 产物：糖展开、表达式已求值、未决名待规约
+Reduced          规约不动点之后的调用森林（未知名存活为叶子）
+Shaped           成型后的 canonical 树
+Projected        scope 透明化 + HTML 投影 registry 之后的 target 数据树
+HTML             页面 fragment 的 iframe 实况与转义源码
+Annotations      旁置属性表（range → 条目）
+Diagnostics      该模块的求值诊断
+```
+
+树视图逐节点可折叠，节点按名字空间着色（core/html/插件包/裸名——裸名即未解析或未规约名，是每个阶段最需要看见的东西）；支持按名字或字符串值过滤（命中高亮、祖先上下文保留）、阶段内名字计数摘要、整树展开/收起与 range 显隐。各阶段来自同一 snapshot 捕获；`HTML` 阶段与 build/preview 写出的 fragment 一致。视图是只读的检查面：不进 CLI 命令契约，不做鉴权替代（受 Network boundary 约束），静态 build 不产生对应产物。完整页面 reload 不需要 WebSocket、DOM diff 或自定义文档协议。
 
 === Atomic rebuild 与失败
 

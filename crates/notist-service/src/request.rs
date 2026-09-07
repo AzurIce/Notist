@@ -13,9 +13,10 @@ use notist_analysis::{
 };
 use notist_html::{
     HtmlRendererRegistry, RenderOptions, RenderedAnnotation, module_anchors_tree,
-    outline_entries_tree, register_web_component_renderer, render_element_tree_with_renderers,
+    outline_entries_tree, project_element_tree, register_web_component_renderer,
+    render_element_tree_with_renderers,
 };
-use notist_model::{DefaultValue, FunctionSignature, ModulePath, Parameter, TextRange, Type};
+use notist_model::{DefaultValue, FunctionSignature, ModulePath, Node, Parameter, TextRange, Type};
 use percent_encoding::{AsciiSet, CONTROLS, NON_ALPHANUMERIC, utf8_percent_encode};
 use serde::{Deserialize, Serialize};
 
@@ -199,6 +200,14 @@ pub enum CoreRequest {
         view_id: ServiceViewId,
         path: PathBuf,
     },
+    /// Per-stage pipeline inspection for one module (preview pipeline debug
+    /// view): lowered forest, reduced forest, shaped tree, projected tree and
+    /// rendered HTML, all from one snapshot. `module` is the ModulePath
+    /// string (`vault::guide::setup`).
+    ModulePipeline {
+        view_id: ServiceViewId,
+        module: String,
+    },
     ResolveReference {
         view_id: ServiceViewId,
         source_module: String,
@@ -242,7 +251,8 @@ impl CoreRequest {
             | Self::IndexStatus { view_id }
             | Self::IndexRebuild { view_id, .. }
             | Self::RenderWorkspace { view_id }
-            | Self::RenderDocument { view_id, .. } => Some(*view_id),
+            | Self::RenderDocument { view_id, .. }
+            | Self::ModulePipeline { view_id, .. } => Some(*view_id),
         }
     }
 }
@@ -410,6 +420,7 @@ pub enum CoreResponse {
     QueryError(crate::query::ToolError),
     RenderedWorkspace(RenderedWorkspaceRecord),
     RenderedDocument(RenderedDocumentRecord),
+    ModulePipeline(ModulePipelineRecord),
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -643,6 +654,36 @@ pub struct RenderedDocumentRecord {
     pub page: RenderedPageRecord,
     /// Resource files of the rendered module, for fragment URL rewriting.
     pub resources: Vec<RenderedResourceRecord>,
+}
+
+/// Per-stage pipeline inspection for one module, consumed by the preview
+/// pipeline debug view. Every stage comes from one snapshot: `lowered` is the
+/// call forest as lowered from source (sugar expanded, expressions evaluated,
+/// unregistered names pending), `forest` is the reduced fixpoint forest,
+/// `tree` the shaped canonical ElementTree roots, `projected` the target data
+/// tree after the HTML projection (scope nodes unfolded, handlers applied),
+/// and `html` the serialized page fragment exactly as build/preview write it.
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct ModulePipelineRecord {
+    pub module_segments: Vec<String>,
+    pub lowered: Vec<Node>,
+    pub forest: Vec<Node>,
+    pub tree: Vec<Node>,
+    pub projected: Vec<Node>,
+    pub html: String,
+    pub annotations: Vec<PipelineAnnotationRecord>,
+    pub diagnostics: Vec<DiagnosticRecord>,
+}
+
+/// Wire projection of one side-table annotation entry for the pipeline view.
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+pub struct PipelineAnnotationRecord {
+    pub start: usize,
+    pub end: usize,
+    pub id: Option<String>,
+    pub classes: Vec<String>,
+    pub tags: Vec<String>,
+    pub properties: Vec<(String, String)>,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -1738,6 +1779,15 @@ impl NotistService {
                     response: CoreResponse::RenderedDocument(rendered?),
                 })
             }
+            CoreRequest::ModulePipeline { view_id, module } => {
+                let (snapshot, record) = self.with_snapshot(view_id, |workspace| {
+                    module_pipeline(workspace, &module, cancelled)
+                })?;
+                Ok(CoreReply {
+                    snapshot,
+                    response: CoreResponse::ModulePipeline(record?),
+                })
+            }
         }
     }
 }
@@ -2112,6 +2162,83 @@ fn render_document(
         .cloned()
         .collect();
     Ok(RenderedDocumentRecord { page, resources })
+}
+
+/// Per-stage pipeline inspection for one module (preview pipeline debug
+/// view): the same cross-module anchor precompute the render requests use,
+/// then every intermediate stage of the target module's evaluation pass.
+/// `module` addresses the module by its ModulePath string; NotFound means no
+/// such module, and a virtual (source-less) module has no evaluation stages.
+fn module_pipeline(
+    workspace: &notist_analysis::WorkspaceSnapshot,
+    requested: &str,
+    cancelled: &AtomicBool,
+) -> io::Result<ModulePipelineRecord> {
+    let _span = tracing::debug_span!(
+        target: "notist_service",
+        "module_pipeline",
+        revision = workspace.revision().raw(),
+        module = %requested
+    )
+    .entered();
+    let precompute = precompute_render(workspace, cancelled)?;
+    let index = precompute
+        .modules
+        .iter()
+        .position(|module| module.logical_path.to_string() == requested)
+        .ok_or_else(|| {
+            io::Error::new(io::ErrorKind::NotFound, format!("no module `{requested}`"))
+        })?;
+    let module = precompute.modules[index];
+    let Some(prepared) = precompute.prepared[index].as_ref() else {
+        return Err(io::Error::new(
+            io::ErrorKind::NotFound,
+            format!("module `{requested}` is virtual and has no source to inspect"),
+        ));
+    };
+    let runtime_plugins = workspace.runtime_plugins()?;
+    let stages = workspace
+        .structured_module_pipeline_with_runtime_plugins(module.id, &runtime_plugins)
+        .expect("source-backed modules have pipeline stages");
+    // The rendered fragment comes from the same precompute the page records
+    // use, so the `html` stage is byte-identical with what build/preview
+    // write; the projection stage mirrors its preprocess (scope unfold, then
+    // the projection registry).
+    let html = render_module_page(module, Some(prepared), &precompute).fragment;
+    let projected = project_element_tree(&stages.structured.tree, &precompute.renderers);
+    Ok(ModulePipelineRecord {
+        module_segments: module.logical_path.segments().to_vec(),
+        lowered: stages.lowered,
+        forest: stages.forest,
+        tree: stages.structured.tree.roots,
+        projected: projected.roots,
+        html,
+        annotations: prepared
+            .annotations
+            .iter()
+            .map(|annotation| PipelineAnnotationRecord {
+                start: annotation.scope.start,
+                end: annotation.scope.end,
+                id: annotation.id.clone(),
+                classes: annotation.classes.clone(),
+                tags: annotation.tags.clone(),
+                properties: annotation.properties.clone(),
+            })
+            .collect(),
+        diagnostics: stages
+            .structured
+            .diagnostics
+            .iter()
+            .map(|diagnostic| DiagnosticRecord {
+                path: module.source_path.clone(),
+                source: module.source.as_deref().map(str::to_owned),
+                range: Some(diagnostic.range.into()),
+                code: "evaluation".into(),
+                severity: "error".into(),
+                message: diagnostic.message.clone(),
+            })
+            .collect(),
+    })
 }
 
 /// Wire projection of one module's resource files.
@@ -2890,6 +3017,82 @@ mod tests {
             home.fragment
         );
         assert!(home.fragment.contains("data-message=\"Hello\""));
+    }
+
+    #[test]
+    fn module_pipeline_exposes_every_stage_for_one_module() {
+        let root = tempfile::TempDir::new_in(std::env::current_dir().unwrap()).unwrap();
+        fs::write(root.path().join("Notist.toml"), "").unwrap();
+        fs::write(
+            root.path().join("README.not"),
+            "#let accent = \"violet\"\n\n= #accent Title\n\n@(status: \"ok\")#[checked]\n",
+        )
+        .unwrap();
+        let service = NotistService::new();
+        let opened = service
+            .execute(CoreRequest::OpenView {
+                root: root.path().to_path_buf(),
+                kind: ProtocolViewKind::Disk,
+            })
+            .unwrap();
+        let CoreResponse::Opened { view_id, .. } = opened.response else {
+            panic!("expected opened view")
+        };
+
+        let reply = service
+            .execute(CoreRequest::ModulePipeline {
+                view_id,
+                module: "vault".into(),
+            })
+            .unwrap();
+        let CoreResponse::ModulePipeline(record) = reply.response else {
+            panic!("expected module pipeline")
+        };
+        // Lowered: sugar stays a bare call; the embedded expression is
+        // already evaluated into text.
+        assert!(record.lowered.iter().any(|node| node.name == "heading"));
+        fn contains_text(nodes: &[notist_model::Node], expected: &str) -> bool {
+            nodes.iter().any(|node| {
+                let matched = node.args.iter().any(|(key, value)| {
+                    key == "text"
+                        && matches!(value, notist_model::NodeValue::String(text) if text == expected)
+                });
+                matched || contains_text(&node.children, expected)
+            })
+        }
+        assert!(contains_text(&record.lowered, "violet"));
+        // Reduced: the prelude resolved the bare name to its qualified form.
+        assert!(
+            record
+                .forest
+                .iter()
+                .any(|node| node.name == "core::heading")
+        );
+        // Shaped: the heading folds into a section.
+        assert!(record.tree.iter().any(|node| node.name == "core::section"));
+        // Projected: core nodes pass through, so projection keeps the tree.
+        assert!(
+            record
+                .projected
+                .iter()
+                .any(|node| node.name == "core::section")
+        );
+        // Rendered fragment matches what build/preview write.
+        assert!(record.html.contains("Title"));
+        // The side annotation table travels alongside the stages.
+        assert_eq!(record.annotations.len(), 1);
+        assert_eq!(
+            record.annotations[0].properties,
+            vec![("status".into(), "ok".into())]
+        );
+
+        let error = service
+            .execute(CoreRequest::ModulePipeline {
+                view_id,
+                module: "vault::missing".into(),
+            })
+            .unwrap_err();
+        assert_eq!(error.kind(), io::ErrorKind::NotFound);
     }
 
     #[test]

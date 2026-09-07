@@ -193,7 +193,8 @@ impl HtmlRendererRegistry {
         self.projections.register(handler);
     }
 
-    fn project_tree(&self, tree: &ElementTree) -> ElementTree {
+    /// Projects a formed tree into its target data-node form.
+    pub fn project_tree(&self, tree: &ElementTree) -> ElementTree {
         self.projections.project_tree(tree)
     }
 }
@@ -405,6 +406,17 @@ pub fn render_element_tree(tree: &ElementTree) -> String {
         &[],
         &HtmlRendererRegistry::default(),
     )
+}
+
+/// Projects a canonical tree exactly the way [`render_element_tree_with_renderers`]
+/// preprocesses it before serialization: `scope` nodes unfold transparently,
+/// then the registry's projection handlers rewrite the forest into target
+/// data nodes. Pipeline inspection tools use this to show the stage the
+/// serializer actually consumes.
+pub fn project_element_tree(tree: &ElementTree, renderers: &HtmlRendererRegistry) -> ElementTree {
+    let mut working = tree.clone();
+    unfold_scope_items(&mut working.roots);
+    renderers.project_tree(&working)
 }
 
 /// Renders an [`ElementTree`] with caller-provided projection options,

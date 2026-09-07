@@ -116,6 +116,19 @@ impl LocalNotistClient {
             ClientBackend::Daemon { runtime, client } => RequestHandle::Daemon { runtime, client },
         }
     }
+
+    /// Clones a shareable request handle while the client keeps serving its
+    /// owner (preview: the rebuild thread keeps the client, the HTTP server
+    /// drives pipeline queries through the cloned handle).
+    pub fn request_handle(&self) -> RequestHandle {
+        match &self.backend {
+            ClientBackend::Embedded(service) => RequestHandle::Embedded(service.clone()),
+            ClientBackend::Daemon { runtime, client } => RequestHandle::Daemon {
+                runtime: runtime.clone(),
+                client: client.clone(),
+            },
+        }
+    }
 }
 
 const DAEMON_CONNECT_DEADLINE: Duration = Duration::from_secs(5);
