@@ -32,8 +32,7 @@
 (table_delimiter_row) @punctuation.special
 (pipe) @punctuation.delimiter
 
-[(block_attributes_open)
- (module_attributes_open)] @attribute
+["@" "@!"] @attribute
 
 (let_expression
   parameters: (parameters)
@@ -102,14 +101,15 @@
 (fence_content) @string.special
 (fence_close) @punctuation.bracket
 
-(id_attribute
-  name: (identifier) @label)
+(annotation
+  payload: (qualified_name) @label)
 
-(tag_attribute
-  name: (identifier) @tag)
+(module_annotation
+  payload: (qualified_name) @label)
 
-(class_attribute
-  name: (identifier) @type)
-
-(property_attribute
+(dict_entry
   key: (identifier) @property)
+
+(dict_spread
+  ".." @punctuation.special
+  value: (identifier) @label)

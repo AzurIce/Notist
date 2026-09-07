@@ -2695,17 +2695,15 @@ impl WorkspaceSnapshot {
                 module_references.push(((**reference).clone(), expression.range));
             }
             for call in parse.calls() {
-                if call.name.value == "link" {
-                    match link_call_target(call) {
-                        Some(Ok(reference)) => module_references.push((reference, call.range)),
-                        Some(Err(message)) => diagnostics.push(Diagnostic {
-                            kind: DiagnosticKind::InvalidArguments,
-                            message,
-                            source_path: Some(source_path.clone()),
-                            range: Some(call.range),
-                        }),
-                        None => {}
-                    }
+                match builtin_call_target(call) {
+                    Some(Ok(reference)) => module_references.push((reference, call.range)),
+                    Some(Err(message)) => diagnostics.push(Diagnostic {
+                        kind: DiagnosticKind::InvalidArguments,
+                        message,
+                        source_path: Some(source_path.clone()),
+                        range: Some(call.range),
+                    }),
+                    None => {}
                 }
             }
 
@@ -3822,14 +3820,15 @@ fn changed_diagnostic_files(
         .collect()
 }
 
-/// Extracts a static reference from a `link` call: a Target literal, or a
-/// String literal that parses as an external url. Internal target strings are
-/// rejected with a migration diagnostic; dynamic arguments stay unindexed.
-fn link_call_target(call: &Call) -> Option<Result<Target, String>> {
-    if call.name.value != "link" || !call.trailing.is_empty() || call.arguments.len() != 1 {
+/// Extracts a static reference from a Target-consuming builtin call (`link`,
+/// `view`): a Target literal, or — for `link` only — a String literal that
+/// parses as an external url. Internal target strings are rejected with a
+/// migration diagnostic; dynamic arguments stay unindexed.
+fn builtin_call_target(call: &Call) -> Option<Result<Target, String>> {
+    if !matches!(call.name.value.as_str(), "link" | "view") || !call.trailing.is_empty() {
         return None;
     }
-    let argument = &call.arguments[0];
+    let argument = call.arguments.first()?;
     if argument
         .name
         .as_ref()
@@ -3837,12 +3836,17 @@ fn link_call_target(call: &Call) -> Option<Result<Target, String>> {
     {
         return None;
     }
+    let external_urls_allowed = call.name.value == "link";
     match &argument.expression.kind {
         ExpressionKind::Target(reference) => Some(Ok((**reference).clone())),
-        ExpressionKind::String(literal) => Some(parse_link_url(&literal.value)),
+        ExpressionKind::String(literal) if external_urls_allowed => {
+            Some(parse_link_url(&literal.value))
+        }
         ExpressionKind::Parenthesized(inner) => match &inner.kind {
             ExpressionKind::Target(reference) => Some(Ok((**reference).clone())),
-            ExpressionKind::String(literal) => Some(parse_link_url(&literal.value)),
+            ExpressionKind::String(literal) if external_urls_allowed => {
+                Some(parse_link_url(&literal.value))
+            }
             _ => None,
         },
         _ => None,
@@ -3975,17 +3979,10 @@ fn is_notist_file(path: &Path) -> bool {
 
 /// Classifies a resource file by its extension, case-insensitively.
 fn resource_kind(path: &Path) -> ResourceKind {
-    const IMAGE_EXTENSIONS: [&str; 10] = [
-        "png", "apng", "gif", "jpg", "jpeg", "webp", "svg", "avif", "ico", "bmp",
-    ];
     let is_image = path
         .extension()
         .and_then(|extension| extension.to_str())
-        .is_some_and(|extension| {
-            IMAGE_EXTENSIONS
-                .iter()
-                .any(|image| extension.eq_ignore_ascii_case(image))
-        });
+        .is_some_and(notist_model::is_image_extension);
     if is_image {
         ResourceKind::Image
     } else {
@@ -4404,6 +4401,40 @@ mod tests {
                 diagnostic.kind == DiagnosticKind::InvalidArguments
                     && diagnostic.message.contains("empty segment")
             }),
+            "{:?}",
+            workspace.diagnostics()
+        );
+    }
+
+    #[test]
+    fn indexes_view_target_literals_into_the_reference_graph() {
+        let root = TempDir::new().unwrap();
+        fs::create_dir(root.path().join("assets")).unwrap();
+        fs::write(
+            root.path().join("README.not"),
+            "#view(<assets/logo.png>, label: \"Logo\")",
+        )
+        .unwrap();
+        fs::write(root.path().join("assets/logo.png"), "").unwrap();
+
+        let workspace = WorkspaceSnapshot::load(root.path()).unwrap();
+        assert!(workspace.diagnostics().is_empty());
+        assert_eq!(workspace.references().len(), 1);
+        let reference = &workspace.references()[0];
+        assert_eq!(
+            reference.target_module,
+            ModulePath::from_segments(["assets".into()])
+        );
+        assert_eq!(reference.target_name.as_deref(), Some("logo.png"));
+
+        // Renaming or deleting the image is caught through the same graph.
+        fs::remove_file(root.path().join("assets/logo.png")).unwrap();
+        let workspace = WorkspaceSnapshot::load(root.path()).unwrap();
+        assert!(
+            workspace
+                .diagnostics()
+                .iter()
+                .any(|diagnostic| diagnostic.kind == DiagnosticKind::UnresolvedModule),
             "{:?}",
             workspace.diagnostics()
         );

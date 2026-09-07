@@ -14,7 +14,7 @@ pub use signature::{
     DefaultValue, FunctionSignature, Parameter, Type, builtin_signatures, callout_signature,
     details_signature, empty_content_signature, figure_signature, heading_signature,
     inline_body_signature, item_signature, link_signature, raw_signature, table_cell_signature,
-    table_signature,
+    table_signature, view_signature,
 };
 
 /// A half-open byte range in a source file.
@@ -160,4 +160,16 @@ impl std::fmt::Display for ModuleReference {
 pub struct Target {
     pub module: ModuleReference,
     pub name: Option<String>,
+}
+
+/// Whether a file-name extension classifies the file as an image resource
+/// (`ResourceKind::Image` in the analysis layer). Shared by resource
+/// classification and HTML projection of `core::view`.
+pub fn is_image_extension(extension: &str) -> bool {
+    const IMAGE_EXTENSIONS: [&str; 10] = [
+        "png", "apng", "gif", "jpg", "jpeg", "webp", "svg", "avif", "ico", "bmp",
+    ];
+    IMAGE_EXTENSIONS
+        .iter()
+        .any(|image| extension.eq_ignore_ascii_case(image))
 }

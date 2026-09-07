@@ -6,7 +6,7 @@
 
 - *grammar*（#<vault::03-language::grammar>）：语法面总入口——三个模式、引用索引与错误恢复；精确文法在三个子篇：#<vault::03-language::grammar::markup>（最小骨架、嵌入边界、语法糖）、#<vault::03-language::grammar::code>（字面量、运算符、表达式、声明、Target 引用）、#<vault::03-language::grammar::annotation>（标注的求值与挂载位置）。
 - *types*（#<vault::03-language::types>）：类型系统的唯一权威规范——类型与值、可空与 Union、集合、Target、函数类型与调用绑定、静态检查。
-- *functions*（#<vault::03-language::functions>）：内置构造器的唯一权威——14 个构造器的签名、语义与校验。
+- *functions*（#<vault::03-language::functions>）：内置构造器的唯一权威——15 个构造器的签名、语义与校验。
 - *evaluation*（#<vault::03-language::evaluation>）：求值——lowering、call 森林、规约不动点、名称环境、名字与插件边界。
 - *structure*（#<vault::03-language::structure>）：成型——元素分类、段落与列表组合、Section 归组、区间稳定不变量。
 - *parse*（#<vault::03-language::parse>）：解析——mode-aware 语法树、Markup/Code 交替、受保护扫描与错误恢复。

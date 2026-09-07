@@ -36,6 +36,7 @@ fn is_parbreak(node: &Node) -> bool {
 pub fn contribution() -> PluginContribution {
     let functions: Vec<Arc<dyn Function>> = vec![
         Arc::new(LinkFunction),
+        Arc::new(ViewFunction),
         Arc::new(HeadingFunction),
         Arc::new(RawFunction),
         Arc::new(CalloutFunction),
@@ -58,6 +59,7 @@ pub fn contribution() -> PluginContribution {
         .collect();
     let aliases = [
         ("core::link", "link"),
+        ("core::view", "view"),
         ("core::heading", "heading"),
         ("core::raw", "raw"),
         ("core::callout", "callout"),
@@ -123,6 +125,13 @@ fn core_schemas() -> Vec<ElementSchema> {
         &mut registry,
         "reference",
         ShapingKind::Inline,
+        BodyMode::None,
+        ShapingRole::None,
+    );
+    core(
+        &mut registry,
+        "view",
+        ShapingKind::Block,
         BodyMode::None,
         ShapingRole::None,
     );
@@ -335,6 +344,57 @@ impl Function for LinkFunction {
                 range: input.range,
             }]),
         }
+    }
+}
+
+struct ViewFunction;
+
+impl Function for ViewFunction {
+    fn name(&self) -> &str {
+        "view"
+    }
+
+    fn signature(&self) -> FunctionSignature {
+        notist_model::view_signature()
+    }
+
+    fn call(
+        &self,
+        _context: &FunctionContext<'_>,
+        input: FunctionInput<'_>,
+    ) -> Result<Value, Vec<EvalDiagnostic>> {
+        let Value::Target(target) = input
+            .arguments
+            .get("target")
+            .ok_or_else(|| vec![EvalDiagnostic {
+                message: "view requires a target".into(),
+                range: input.range,
+            }])?
+        else {
+            return Err(vec![EvalDiagnostic {
+                message: "view target must be a `<...>` target literal, not a String".into(),
+                range: input.range,
+            }]);
+        };
+        let label = match input.arguments.optional_string("label") {
+            Some(label) => {
+                let label = label.trim().to_owned();
+                if label.is_empty() {
+                    return Err(vec![EvalDiagnostic {
+                        message: "view label cannot be empty".into(),
+                        range: input.range,
+                    }]);
+                }
+                Some(label)
+            }
+            None => None,
+        };
+        let mut node = Node::block_call("core::view", input.range)
+            .arg("target", NodeValue::Target(target.clone()));
+        if let Some(label) = label {
+            node.args.push(("label".into(), NodeValue::String(label)));
+        }
+        Ok(Value::Content(vec![node]))
     }
 }
 
@@ -956,6 +1016,51 @@ mod tests {
                 .diagnostics
                 .iter()
                 .any(|diagnostic| { diagnostic.message.contains("empty segment") })
+        );
+    }
+
+    #[test]
+    fn evaluates_view_call_into_view_node_with_derived_parts() {
+        let evaluator = evaluator();
+
+        let plain = evaluator.evaluate("#view(<vault::assets/logo.png>)");
+        assert!(plain.diagnostics.is_empty(), "{:?}", plain.diagnostics);
+        let node = &plain.forest[0];
+        assert!(node.is_core("view"));
+        assert!(node.block);
+        assert_eq!(
+            node.get("target"),
+            Some(&NodeValue::Target(notist_model::Target {
+                module: notist_model::ModuleReference::Absolute(vec!["assets".into()]),
+                name: Some("logo.png".into()),
+            }))
+        );
+        assert!(node.get("label").is_none());
+
+        let labeled = evaluator.evaluate("#view(<vault::assets/logo.png>, label: \"Logo\")");
+        assert!(labeled.diagnostics.is_empty(), "{:?}", labeled.diagnostics);
+        let node = &labeled.forest[0];
+        assert_eq!(node.get("label"), Some(&NodeValue::String("Logo".into())));
+
+        // The String branch is link's external-url escape hatch; view is
+        // vault-internal only. Argument binding rejects the type mismatch
+        // before the constructor runs.
+        let string_target = evaluator.evaluate("#view(\"vault::assets/logo.png\")");
+        assert!(
+            string_target
+                .diagnostics
+                .iter()
+                .any(|diagnostic| diagnostic.message.contains("expected Target, found String")),
+            "{:?}",
+            string_target.diagnostics
+        );
+
+        let empty_label = evaluator.evaluate("#view(<vault::assets/logo.png>, label: \"  \")");
+        assert!(
+            empty_label
+                .diagnostics
+                .iter()
+                .any(|diagnostic| diagnostic.message.contains("label cannot be empty"))
         );
     }
 

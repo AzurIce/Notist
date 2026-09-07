@@ -151,7 +151,7 @@ key 约束：Dict key 只能是 Unit / Bool / Int / String 或它们的 union；
 
 - `link(target: Target | String) -> Item`：`Target` 分支解析模块内引用（module/scope/resource），进静态引用图；`String` 分支只表示外部 url（必须带 scheme），无 scheme 字符串报「内部目标请用 `<...>` 字面量」诊断。`#<...>` 是 `link(<...>)` 的语法糖；
 - 插入规则：Target 插入 Item 自动包成 `core::reference(target)` 节点，与 `String → core::text` 同级；
-- 静态引用图：check 只索引两类静态证据——直接插入的 Target 字面量（含 Item block 内部）与 `link(...)` 的字面量实参；`let` 绑定的 Target 传给 `link` 是受控动态洞：值层照常渲染，但不进静态引用图。RefTarget 解析见 #<vault::04-world::reference>。
+- 静态引用图：check 只索引两类静态证据——直接插入的 Target 字面量（含 Item block 内部）与消费 Target 的内置构造器（`link`、`view`）的字面量实参；`let` 绑定的 Target 传给这些构造器是受控动态洞：值层照常渲染，但不进静态引用图。RefTarget 解析见 #<vault::04-world::reference>。
 
 @(implementation: "partial")
 == 函数类型与调用模型

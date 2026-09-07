@@ -37,6 +37,7 @@ table(columns: Int, header: Bool = false, align: String? = (),
       trailing body: Item) -> Item
 figure(kind: String? = (), supplement: Item? = (),
        caption: Item? = (), trailing body: Item) -> Item
+view(target: Target, label: String? = ()) -> Item
 strong / emph / underline / strike
   (trailing body: Item) -> Item
 ```

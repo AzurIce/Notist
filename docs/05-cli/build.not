@@ -77,6 +77,7 @@ core::details             -> <details><summary>...</summary>...
 core::table               -> <div class="notist-table-wrapper"><table>；header 行 -> <thead><th>，body 行 -> <tbody><td>；align 映射为 notist-table-align-{left,center,right}，span 映射为 colspan/rowspan；caption 不在 Table 上
 core::table-cell          -> <div class="notist-table-cell">（兜底；正常由 core::table 消费）
 core::figure              -> <figure class="notist-figure" data-notist-kind="...">；body 按 flow 渲染（仅裁掉 framing 的纯空白/parbreak），caption 渲染为 <figcaption>，supplement 为 caption 前缀
+core::view                -> <notist-view class="notist-view" data-notist-kind="image|file|item">：壳 = 框 + 标签链接 + kind 分派内容。Image Resource 内容区为 <img>（src 复用 Resource 的复制路径解析），其余为空内容区；标签点击跳转 target 的规范 URL，图片内容点击放大。结构由 serializer 输出，放大交互由 `_notist/site.js` 的 `notist-view` 组件定义提供，无 JS 时结构与跳转照常可用
 插件节点                   -> manifest 声明的 web-component 标签
 未注册投影的名字           -> <{package}-{element}> 标签（fallback，保留字段与可见内容）
 Missing 引用              -> 不可点击的 span（保留可见文本）

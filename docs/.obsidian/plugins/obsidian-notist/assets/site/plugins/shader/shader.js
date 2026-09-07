@@ -1,6 +1,7 @@
 // Shadertoy-like Web Component for Notist shader plugin.
-// The HTML renderer emits <notist-shader data-shader-source="...">; this
-// module upgrades it into a real custom element with Shadow DOM.
+// The generic manifest-driven HTML projection emits the plugin call's args as
+// data-* attributes (<notist-shader data-source="..." data-width data-height>);
+// this module upgrades it into a real custom element with Shadow DOM.
 
 const VERT = `@vertex fn vs_main(@builtin(vertex_index) vid: u32) -> @builtin(position) vec4<f32> {
   var pos = array<vec2<f32>, 3>(vec2<f32>(-1.0, -1.0), vec2<f32>(3.0, -1.0), vec2<f32>(-1.0, 3.0));
@@ -14,7 +15,7 @@ const FRAG_TAIL = `
 
 class NotistShader extends HTMLElement {
   connectedCallback() {
-    const source = this.dataset.shaderSource || '';
+    const source = this.dataset.source || this.dataset.shaderSource || '';
     const width = parseInt(this.dataset.width || '800', 10);
     const height = parseInt(this.dataset.height || '600', 10);
 
@@ -49,11 +50,21 @@ class NotistShader extends HTMLElement {
       return;
     }
 
-    this._run(shadow.querySelector('canvas'), source);
+    this._run(shadow.querySelector('canvas'), source, shadow);
   }
 
-  async _run(canvas, source) {
+  _reportError(shadow, message) {
+    const error = document.createElement('p');
+    error.textContent = message;
+    shadow.appendChild(error);
+  }
+
+  async _run(canvas, source, shadow) {
     const adapter = await navigator.gpu.requestAdapter();
+    if (!adapter) {
+      this._reportError(shadow, 'No suitable GPU adapter was found for WebGPU.');
+      return;
+    }
     const device = await adapter.requestDevice();
     const context = canvas.getContext('webgpu');
     const format = navigator.gpu.getPreferredCanvasFormat();
@@ -62,6 +73,16 @@ class NotistShader extends HTMLElement {
     const module = device.createShaderModule({
       code: source + '\n' + VERT + '\n' + FRAG_TAIL,
     });
+    const info = await module.getCompilationInfo();
+    const errors = info.messages.filter((message) => message.type === 'error');
+    if (errors.length > 0) {
+      this._reportError(
+        shadow,
+        'Shader compilation failed:\n' +
+          errors.map((m) => `${m.lineNum}:${m.linePos} ${m.message}`).join('\n'),
+      );
+      return;
+    }
 
     const pipeline = device.createRenderPipeline({
       layout: 'auto',

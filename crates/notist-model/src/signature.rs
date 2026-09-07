@@ -271,6 +271,27 @@ pub fn link_signature() -> FunctionSignature {
     }
 }
 
+/// The signature of the built-in `view` function: a vault `Target` with an
+/// optional display-label override.
+pub fn view_signature() -> FunctionSignature {
+    FunctionSignature {
+        parameters: vec![
+            Parameter {
+                name: "target".into(),
+                ty: Type::Target,
+                default: None,
+            },
+            Parameter {
+                name: "label".into(),
+                ty: Type::Optional(Box::new(Type::String)),
+                default: Some(DefaultValue::None),
+            },
+        ],
+        trailing_content: None,
+        result: Type::Content,
+    }
+}
+
 /// The signature of the built-in `heading` function.
 pub fn heading_signature() -> FunctionSignature {
     FunctionSignature {
@@ -494,9 +515,10 @@ pub fn empty_content_signature() -> FunctionSignature {
 }
 
 /// The names and signatures of all built-in functions.
-pub fn builtin_signatures() -> [(&'static str, FunctionSignature); 14] {
+pub fn builtin_signatures() -> [(&'static str, FunctionSignature); 15] {
     [
         ("link", link_signature()),
+        ("view", view_signature()),
         ("heading", heading_signature()),
         ("raw", raw_signature()),
         ("rule", empty_content_signature()),

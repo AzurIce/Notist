@@ -43,7 +43,7 @@ var import_obsidian7 = require("obsidian");
 // src/notist-view.ts
 var import_obsidian2 = require("obsidian");
 var import_state5 = require("@codemirror/state");
-var import_view7 = require("@codemirror/view");
+var import_view8 = require("@codemirror/view");
 var import_commands3 = require("@codemirror/commands");
 
 // node_modules/@replit/codemirror-vim-core/vim.js
@@ -12168,6 +12168,30 @@ function notistRefJump(hooks) {
   ];
 }
 
+// src/multi-cursor.ts
+var import_view5 = require("@codemirror/view");
+function notistMultiCursor() {
+  return [
+    // Routes alt clicks/drag into basicMouseSelection's `multiple` branch
+    // (addRange instead of replacing the selection). Requires
+    // allowMultipleSelections (enabled in notist-view for vim).
+    import_view5.EditorView.clickAddsSelectionRange.of(
+      (event) => event.altKey && event.button === 0
+    ),
+    // Platform defaults turn alt+drag on macOS into a content drag
+    // (drag-copy); keep the pointer selecting whenever alt is held.
+    // Non-mac default (!ctrl) is unchanged.
+    import_view5.EditorView.dragMovesSelection.of(
+      (event) => event.altKey || !event.ctrlKey
+    ),
+    // Column select on alt+shift+drag. Not CM's default filter (plain
+    // alt), which would swallow the alt+click gesture above.
+    (0, import_view5.rectangularSelection)({
+      eventFilter: (event) => event.altKey && event.shiftKey && event.button === 0
+    })
+  ];
+}
+
 // src/lsp/source-map.ts
 var utf8BytesOf = (codePoint) => codePoint <= 127 ? 1 : codePoint <= 2047 ? 2 : codePoint <= 65535 ? 3 : 4;
 var SourceMap = class _SourceMap {
@@ -12287,7 +12311,7 @@ var SourceMap = class _SourceMap {
 };
 
 // src/lsp/cm.ts
-var import_view5 = require("@codemirror/view");
+var import_view6 = require("@codemirror/view");
 var import_lint = require("@codemirror/lint");
 var import_autocomplete = require("@codemirror/autocomplete");
 function posFromOffset(doc, offset) {
@@ -12371,7 +12395,7 @@ function notistLsp(hooks) {
     }, ctx.pos);
     return { from, options, validFor: /^[\w-]*$/ };
   };
-  const hover = (0, import_view5.hoverTooltip)(async (view, pos) => {
+  const hover = (0, import_view6.hoverTooltip)(async (view, pos) => {
     const literal = targetLiteralAt(view.state, pos);
     if (literal && isImageTargetRef(literal.target))
       return null;
@@ -12397,7 +12421,7 @@ function notistLsp(hooks) {
       }
     };
   });
-  const definitionKeymap = import_view5.keymap.of([
+  const definitionKeymap = import_view6.keymap.of([
     {
       key: "F12",
       run: (view) => {
@@ -12414,7 +12438,7 @@ function notistLsp(hooks) {
       }
     }
   ]);
-  const diagnosticsKeymap = import_view5.keymap.of([
+  const diagnosticsKeymap = import_view6.keymap.of([
     ...import_lint.lintKeymap,
     { key: "Shift-F8", run: import_lint.previousDiagnostic }
   ]);
@@ -12434,7 +12458,7 @@ function notistLsp(hooks) {
 var import_obsidian = require("obsidian");
 var import_state4 = require("@codemirror/state");
 var import_commands2 = require("@codemirror/commands");
-var import_view6 = require("@codemirror/view");
+var import_view7 = require("@codemirror/view");
 var NotistEditorAdapter = class extends import_obsidian.Editor {
   constructor(view) {
     super();
@@ -12544,7 +12568,7 @@ var NotistEditorAdapter = class extends import_obsidian.Editor {
       this.posToOffset(range.to)
     );
     this.view.dispatch({
-      effects: import_view6.EditorView.scrollIntoView(selection, {
+      effects: import_view7.EditorView.scrollIntoView(selection, {
         y: center ? "center" : "nearest"
       })
     });
@@ -12816,7 +12840,7 @@ var _NotistTextView = class _NotistTextView extends import_obsidian2.TextFileVie
     );
     this.contentEl.toggleClass("notist-mode-preview", this.mode === "preview");
     const vimMode = this.plugin.data.vimMode;
-    this.editorView = new import_view7.EditorView({
+    this.editorView = new import_view8.EditorView({
       parent: editorWrapEl,
       state: import_state5.EditorState.create({
         extensions: [
@@ -12830,17 +12854,17 @@ var _NotistTextView = class _NotistTextView extends import_obsidian2.TextFileVie
           // multi-selection; CM defaults to a single range and
           // would silently clip per-line block selections.
           import_state5.EditorState.allowMultipleSelections.of(true),
-          (0, import_view7.lineNumbers)(),
-          (0, import_view7.highlightActiveLineGutter)(),
-          (0, import_view7.highlightActiveLine)(),
+          (0, import_view8.lineNumbers)(),
+          (0, import_view8.highlightActiveLineGutter)(),
+          (0, import_view8.highlightActiveLine)(),
           // CM-drawn caret/selection: the vim extension is built for
           // drawSelection (it hides CM's cursor layer in normal mode);
           // without it insert mode depends on the flaky native caret.
-          (0, import_view7.drawSelection)(),
+          (0, import_view8.drawSelection)(),
           (0, import_commands3.history)(),
           // defaultKeymap deliberately omits Tab; without indentWithTab
           // the browser moves focus out of the editor instead.
-          import_view7.keymap.of([...import_commands3.defaultKeymap, ...import_commands3.historyKeymap, import_commands3.indentWithTab]),
+          import_view8.keymap.of([...import_commands3.defaultKeymap, ...import_commands3.historyKeymap, import_commands3.indentWithTab]),
           // tree-sitter highlighting; [] when wasm init failed.
           notistHighlight(),
           // Image-reference hover previews (shell glue below).
@@ -12851,18 +12875,20 @@ var _NotistTextView = class _NotistTextView extends import_obsidian2.TextFileVie
           notistRefJump({
             follow: (target, pos) => this.followRef(target, pos)
           }),
+          // Alt+click/alt+drag to add cursors/selection ranges.
+          notistMultiCursor(),
           // LSP (diagnostics/completion/hover/definition); [] when
           // the server is disabled or failed to start.
           this.lspCompartment.of(this.plugin.lspExtension(this)),
-          import_view7.EditorView.lineWrapping,
-          import_view7.EditorView.contentAttributes.of({
+          import_view8.EditorView.lineWrapping,
+          import_view8.EditorView.contentAttributes.of({
             spellcheck: "false",
             tabindex: "0"
           }),
-          import_view7.EditorView.domEventHandlers({
+          import_view8.EditorView.domEventHandlers({
             paste: (event) => this.handlePaste(event)
           }),
-          import_view7.EditorView.updateListener.of((update) => {
+          import_view8.EditorView.updateListener.of((update) => {
             if (update.docChanged && !this.settingData) {
               this.requestSave();
               this.plugin.lspDocChanged(this);
@@ -13428,7 +13454,7 @@ var _NotistTextView = class _NotistTextView extends import_obsidian2.TextFileVie
     const to = offsetFromPos(view.state.doc, end);
     view.dispatch({
       selection: { anchor: from, head: to },
-      effects: import_view7.EditorView.scrollIntoView(from, { y: "center" })
+      effects: import_view8.EditorView.scrollIntoView(from, { y: "center" })
     });
     view.focus();
   }
@@ -13443,7 +13469,7 @@ var _NotistTextView = class _NotistTextView extends import_obsidian2.TextFileVie
  * kept on permanently below (also: removing tabindex from a focused
  * element blurs it in Chrome).
  */
-_NotistTextView.vimNonEditable = import_view7.EditorView.editable.of(false);
+_NotistTextView.vimNonEditable = import_view8.EditorView.editable.of(false);
 var NotistTextView = _NotistTextView;
 
 // src/explorer-view.ts
@@ -13991,6 +14017,7 @@ var NotistExplorerView = class extends import_obsidian3.ItemView {
     if (!row || !label)
       return;
     this.renaming = true;
+    row.draggable = false;
     const input = document.createElement("input");
     input.type = "text";
     input.value = label.textContent ?? "";
@@ -14011,6 +14038,7 @@ var NotistExplorerView = class extends import_obsidian3.ItemView {
         return;
       finished = true;
       this.renaming = false;
+      row.draggable = true;
       if (commit) {
         void this.commitRename(path, input.value.trim());
         return;

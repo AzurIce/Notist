@@ -371,6 +371,15 @@ async fn serve_static(State(state): State<PreviewState>, request: Request) -> im
             let content_type = match path.extension().and_then(|extension| extension.to_str()) {
                 Some("css") => "text/css; charset=utf-8",
                 Some("js") => "text/javascript; charset=utf-8",
+                Some("png") => "image/png",
+                Some("apng") => "image/apng",
+                Some("gif") => "image/gif",
+                Some("jpg") | Some("jpeg") => "image/jpeg",
+                Some("webp") => "image/webp",
+                Some("svg") => "image/svg+xml",
+                Some("avif") => "image/avif",
+                Some("ico") => "image/x-icon",
+                Some("bmp") => "image/bmp",
                 _ => "text/html; charset=utf-8",
             };
             Response::builder()

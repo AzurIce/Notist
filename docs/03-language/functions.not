@@ -1,11 +1,12 @@
 = Built-in Functions
 
-本文是内置构造器签名的唯一权威规范：14 个内置构造器构成标准 `core` package 的内容词表。`core` 是默认预装的 package，词表随语言 surface 发布、经 prelude 进入每个 Module，调用时写裸名字，产生的节点身份落在 `core::` 名字空间（节点模型见 #<vault::03-language::evaluation/Evaluation/Call 与 Node>）。未列出的名称不是内置构造器：未注册名称由 check 层报 unknown function 诊断，调用本身保留为内容节点（渲染有 fallback 标签兜底）；加载插件后 `{package}::{element}` 是注册名，不报 unknown。调用模型与类型规则见 #<vault::03-language::types>，语法细节见 #<vault::03-language::grammar>，速查见 #<vault::02-cheatsheet>。
+本文是内置构造器签名的唯一权威规范：15 个内置构造器构成标准 `core` package 的内容词表。`core` 是默认预装的 package，词表随语言 surface 发布、经 prelude 进入每个 Module，调用时写裸名字，产生的节点身份落在 `core::` 名字空间（节点模型见 #<vault::03-language::evaluation/Evaluation/Call 与 Node>）。未列出的名称不是内置构造器：未注册名称由 check 层报 unknown function 诊断，调用本身保留为内容节点（渲染有 fallback 标签兜底）；加载插件后 `{package}::{element}` 是注册名，不报 unknown。调用模型与类型规则见 #<vault::03-language::types>，语法细节见 #<vault::03-language::grammar>，速查见 #<vault::02-cheatsheet>。
 
 == 签名总览
 
 ```text
 link(target: Target | String) -> Item
+view(target: Target, label: String? = ()) -> Item
 heading(level: Int = 1, trailing body: Item) -> Item
 raw(source: String, lang: String? = (), block: Bool = false) -> Item
 rule() -> Item
@@ -58,6 +59,26 @@ link(target: Target | String) -> Item
 - 目标空间：文档模块（`vault::path::to::file`）、模块内目标（`... #id`，标题默认 id 亦匹配）、资源文件（`vault::path::to::assets/logo.png`，完整文件名精确匹配）；
 - 带 scheme（`https://` 等）的外部 URL 语法合法：解析为 External 目标，当前渲染为未解析的可见文本并产生 info 级 `external-reference-unsupported` 诊断；
 - 目标解析产物与引用图见 #<vault::04-world::reference>。
+
+== view
+
+```text
+view(target: Target, label: String? = ()) -> Item
+```
+
+产生 View 元素：target 的通用查看器。呈现为统一的壳——框、名/路径标签、内容区；壳对所有 target 一致，内容区由 target 类别分派：
+
+- Image Resource（完整文件名的扩展名属图片类）→ 内容区内嵌图片本身；
+- 其余类别（File Resource、模块、模块内 Item）→ 内容分派尚未定义，统一渲染为空内容区，壳照常呈现；
+- 标签默认从 target 派生——资源取完整文件名，Item 取 ItemName，模块取路径末段；`label` 实参覆盖显示文字。点击标签跳转 target 的规范 URL（资源为构建复制后的文件路径）；
+- View 是 Block 元素，不接受 trailing body：内容只来自 target，壳不由作者填充。
+
+```not
+#view(<vault::assets/logo.png>)
+#view(<vault::04-world/model/数据模型>, label: "数据模型")
+```
+
+`target` 只接受 Target（`<...>` 字面量糖或字面量实参），与 `link` 的 Target 分支共享同一解析入口与目标空间，字面量实参进静态引用图，`let` 绑定的 Target 同为受控动态洞（#<vault::03-language::types/Type System/Target 与 link>）。壳与交互的投影实操见 #<vault::05-cli::build/Build, Preview, and HTML Target/HTML target 序列化/元素映射>。
 
 == heading
 

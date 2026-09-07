@@ -2,6 +2,7 @@
 
 use std::collections::{HashMap, HashSet};
 use std::fmt::Write;
+use std::path::Path;
 
 use notist_eval::ElementTree;
 use notist_model::{
@@ -453,6 +454,24 @@ pub fn render_element_tree_with_renderers(
     renderer.output
 }
 
+/// The projected `data-notist-kind` of a `core::view` target, derived from
+/// the target spelling: an image-extension name is `image`, any other
+/// extension-bearing name is `file`, and everything else (sections, modules)
+/// is `item`.
+fn view_target_kind(name: Option<&str>) -> &'static str {
+    let Some(extension) = name.and_then(|name| Path::new(name).extension()) else {
+        return "item";
+    };
+    let Some(extension) = extension.to_str() else {
+        return "file";
+    };
+    if notist_model::is_image_extension(extension) {
+        "image"
+    } else {
+        "file"
+    }
+}
+
 /// Unfolds `scope` nodes in place: their children splice into the parent's
 /// node list, recursively. The Item tree keeps ScopeItems; the HTML
 /// projection does not give them a visible element of their own.
@@ -715,6 +734,7 @@ impl Renderer<'_, '_> {
                 }
                 self.output.push_str("</figure>");
             }
+            "view" => self.view_element(node),
             "unresolved-call" => {
                 let Some(NodeValue::String(name)) = node.get("name") else {
                     return;
@@ -1239,6 +1259,78 @@ impl Renderer<'_, '_> {
         self.output.push('>');
         escape_text(&mut self.output, url);
         self.output.push_str("</span>");
+    }
+
+    /// The `core::view` shell: a frame with a label link and kind-dispatched
+    /// content. The serializer emits the full light-DOM structure so the
+    /// shell works without JavaScript; the `notist-view` custom element
+    /// (site.js) only adds the zoom behavior for image content.
+    fn view_element(&mut self, node: &Node) {
+        let Some(NodeValue::Target(target)) = node.get("target") else {
+            return;
+        };
+        let resolved = match &target.module {
+            ModuleReference::Absolute(_) => target.module.resolve_from(&ModulePath::root()),
+            _ => self
+                .options
+                .current_module
+                .and_then(|current| target.module.resolve_from(current)),
+        };
+        let href = resolved.as_ref().and_then(|resolved| {
+            self.reference_resolver
+                .and_then(|resolver| resolver(resolved, target.name.as_deref()))
+        });
+        let label = match node.get("label") {
+            Some(NodeValue::String(label)) => label.clone(),
+            _ => target
+                .name
+                .clone()
+                .or_else(|| {
+                    resolved
+                        .as_ref()
+                        .and_then(|module| module.segments().last().cloned())
+                })
+                .unwrap_or_else(|| target.module.to_string()),
+        };
+        let kind = view_target_kind(target.name.as_deref());
+
+        self.output.push_str("<notist-view class=\"notist-view\"");
+        self.output.push_str(" data-notist-kind=\"");
+        escape_attribute(&mut self.output, kind);
+        self.output.push('"');
+        self.range_attributes_range(node.range);
+        self.output.push('>');
+
+        match href.as_deref() {
+            Some(href) => {
+                self.output.push_str("<a class=\"notist-view-label\" href=\"");
+                escape_attribute(&mut self.output, href);
+                self.output.push_str("\">");
+                escape_text(&mut self.output, &label);
+                self.output.push_str("</a>");
+            }
+            None => {
+                self.output
+                    .push_str("<span class=\"notist-view-label notist-view-label-unresolved\">");
+                escape_text(&mut self.output, &label);
+                self.output.push_str("</span>");
+            }
+        }
+
+        if kind == "image"
+            && let Some(href) = href
+        {
+            self.output.push_str("<img class=\"notist-view-content\" src=\"");
+            escape_attribute(&mut self.output, &href);
+            self.output.push_str("\" alt=\"");
+            escape_attribute(&mut self.output, &label);
+            self.output.push_str("\" loading=\"lazy\">");
+        } else {
+            self.output
+                .push_str("<div class=\"notist-view-content notist-view-content-empty\"></div>");
+        }
+
+        self.output.push_str("</notist-view>");
     }
 
     fn reference_text(&mut self, reference: &Target, slash: bool) {
@@ -2135,6 +2227,51 @@ mod tests {
 
         assert!(html.contains("href=\"child/\""));
         assert!(html.contains("notist-reference-unresolved"));
+    }
+
+    #[test]
+    fn projects_view_shells_with_kind_dispatched_content() {
+        let evaluation = evaluate(
+            "#view(<assets/logo.png>) #view(<assets/logo.png>, label: \"Logo\") \
+             #view(<assets/data.csv>) #view(<vault::guide>) #view(<missing/ghost.png>)",
+        );
+        let current = ModulePath::root();
+        let options = RenderOptions {
+            current_module: Some(&current),
+            module_url_prefix: "",
+        };
+        let resolver = |target: &ModulePath, label: Option<&str>| {
+            if target.segments() == ["assets"] {
+                label.map(|name| format!("assets/{name}"))
+            } else if target.segments() == ["guide"] && label.is_none() {
+                Some("guide/".into())
+            } else {
+                None
+            }
+        };
+
+        let html = render_element_tree_with_renderers(
+            &evaluation.tree,
+            &options,
+            Some(&resolver),
+            &[],
+            &HtmlRendererRegistry::default(),
+        );
+
+        assert!(html.contains("<notist-view class=\"notist-view\" data-notist-kind=\"image\""));
+        assert!(
+            html.contains(
+                "<img class=\"notist-view-content\" src=\"assets/logo.png\" alt=\"logo.png\" loading=\"lazy\">"
+            )
+        );
+        assert!(html.contains(">Logo</a>"));
+        assert!(html.contains("alt=\"Logo\""));
+        assert!(html.contains("data-notist-kind=\"file\""));
+        assert!(html.contains("data-notist-kind=\"item\""));
+        assert!(html.contains("<a class=\"notist-view-label\" href=\"guide/\">guide</a>"));
+        // An unresolved image target degrades to a bare shell, not a broken img.
+        assert!(html.contains("notist-view-label-unresolved\">ghost.png</span>"));
+        assert!(html.contains("notist-view-content-empty"));
     }
 
     #[test]

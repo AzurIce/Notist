@@ -134,7 +134,10 @@ button { font: inherit; }
   gap: 56px;
   padding: 44px 48px 96px;
 }
-.page-main { width: min(100%, 46rem); }
+/* min-width: 0 lets the column shrink under tight viewports; without it the
+   unbreakable <pre> lines pin its automatic minimum above the available space
+   and the centered flex line spills under the sidebar and past the rail. */
+.page-main { min-width: 0; width: min(100%, 46rem); }
 .page-rail {
   flex: none;
   width: 15rem;
@@ -737,6 +740,46 @@ body.enhanced .notist-document .notist-annotated.inspect-hover {
 .notist-math { font-family: "Cambria Math", "STIX Two Math", serif; }
 div.notist-math { margin: 1.1em 0; overflow-x: auto; text-align: center; }
 .notist-citation { font-style: normal; white-space: nowrap; }
+
+/* content views (core::view) */
+.notist-document notist-view {
+  display: block;
+  margin: 1.2em 0;
+  border: 1px solid var(--border-soft);
+  border-radius: 8px;
+  background: var(--surface);
+  overflow: hidden;
+}
+notist-view .notist-view-label {
+  display: block;
+  padding: 7px 13px;
+  border-bottom: 1px solid var(--border-soft);
+  color: var(--muted);
+  font-size: 0.86em;
+  font-family: ui-monospace, monospace;
+  text-decoration: none;
+}
+notist-view .notist-view-label:hover { color: var(--accent-strong); }
+notist-view .notist-view-label-unresolved {
+  color: var(--danger);
+  text-decoration: underline wavy;
+  text-decoration-thickness: 1px;
+}
+notist-view .notist-view-content { display: block; max-width: 100%; margin: 0 auto; }
+notist-view .notist-view-content-empty { min-height: 64px; }
+.notist-lightbox {
+  position: fixed;
+  inset: 0;
+  z-index: 999;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 32px;
+  background: color-mix(in srgb, var(--bg) 86%, transparent);
+  backdrop-filter: blur(4px);
+  cursor: zoom-out;
+}
+.notist-lightbox img { max-width: 100%; max-height: 100%; border-radius: var(--radius); }
 
 /* references */
 .notist-reference-unresolved,

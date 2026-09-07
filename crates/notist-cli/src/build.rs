@@ -1020,6 +1020,37 @@ const SITE_SCRIPT: &str = r#"(() => {
         : "smooth",
     }),
   );
+  // --- content views: zoomable image shells ---
+  class NotistViewElement extends HTMLElement {
+    connectedCallback() {
+      if (this.dataset.zoomBound) return;
+      this.dataset.zoomBound = "true";
+      const image = this.querySelector("img.notist-view-content");
+      if (!image) return;
+      image.style.cursor = "zoom-in";
+      image.addEventListener("click", () => openViewLightbox(image));
+    }
+  }
+  const openViewLightbox = (image) => {
+    const overlay = document.createElement("div");
+    overlay.className = "notist-lightbox";
+    const zoomed = document.createElement("img");
+    zoomed.src = image.currentSrc || image.src;
+    zoomed.alt = image.alt;
+    overlay.append(zoomed);
+    const close = () => {
+      overlay.remove();
+      removeEventListener("keydown", onKey);
+    };
+    const onKey = (event) => {
+      if (event.key === "Escape") close();
+    };
+    overlay.addEventListener("click", close);
+    addEventListener("keydown", onKey);
+    document.body.append(overlay);
+  };
+  customElements.define("notist-view", NotistViewElement);
+
   updateScrollEffects();
 })();
 "#;
@@ -2291,6 +2322,46 @@ body.enhanced .notist-document .notist-annotated.inspect-hover {
 .notist-math { font-family: "Cambria Math", "STIX Two Math", serif; }
 div.notist-math { margin: 1.1em 0; overflow-x: auto; text-align: center; }
 .notist-citation { font-style: normal; white-space: nowrap; }
+
+/* content views (core::view) */
+.notist-document notist-view {
+  display: block;
+  margin: 1.2em 0;
+  border: 1px solid var(--border-soft);
+  border-radius: 8px;
+  background: var(--surface);
+  overflow: hidden;
+}
+notist-view .notist-view-label {
+  display: block;
+  padding: 7px 13px;
+  border-bottom: 1px solid var(--border-soft);
+  color: var(--muted);
+  font-size: 0.86em;
+  font-family: ui-monospace, monospace;
+  text-decoration: none;
+}
+notist-view .notist-view-label:hover { color: var(--accent-strong); }
+notist-view .notist-view-label-unresolved {
+  color: var(--danger);
+  text-decoration: underline wavy;
+  text-decoration-thickness: 1px;
+}
+notist-view .notist-view-content { display: block; max-width: 100%; margin: 0 auto; }
+notist-view .notist-view-content-empty { min-height: 64px; }
+.notist-lightbox {
+  position: fixed;
+  inset: 0;
+  z-index: 999;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 32px;
+  background: color-mix(in srgb, var(--bg) 86%, transparent);
+  backdrop-filter: blur(4px);
+  cursor: zoom-out;
+}
+.notist-lightbox img { max-width: 100%; max-height: 100%; border-radius: var(--radius); }
 
 /* references */
 .notist-reference-unresolved,
