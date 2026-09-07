@@ -586,6 +586,45 @@ fn read_executes_the_requests_embedded_in_the_example_fixture() {
 }
 
 #[test]
+fn read_hints_crossing_reference_counts_for_region_reads() {
+    let vault = fixture();
+    // A whole-module read advertises its crossing set: guide's only edge is
+    // outbound (the 日志 mention), so the hint names the --out follow-up.
+    let whole = run(&vault, &["inspect", "read", "vault::guide"]);
+    assert!(
+        whole.contains(
+            "hint: 1 outgoing reference — notist inspect refs vault::guide --out lists them"
+        ),
+        "{whole}"
+    );
+    // An Item read is the same region machinery: the mention sits inside 安装.
+    let item = run(
+        &vault,
+        &["inspect", "read", "vault::guide", "--item", "安装"],
+    );
+    assert!(
+        item.contains(
+            "hint: 1 outgoing reference — notist inspect refs vault::guide --out lists them"
+        ),
+        "{item}"
+    );
+    // troubleshoot's single edge points in; the hint drops the --out flag.
+    let incoming = run(&vault, &["inspect", "read", "vault::troubleshoot"]);
+    assert!(
+        incoming.contains(
+            "hint: 1 incoming reference — notist inspect refs vault::troubleshoot lists them"
+        ),
+        "{incoming}"
+    );
+    // Coordinate windows are surgical cuts, not refs regions: no hint.
+    let window = run(
+        &vault,
+        &["inspect", "read", "vault::guide", "--line", "5..7"],
+    );
+    assert!(!window.contains("hint:"), "{window}");
+}
+
+#[test]
 fn read_embeds_segment_content() {
     let vault = fixture();
     let start = GUIDE_NOT.find("先读概述").unwrap();
