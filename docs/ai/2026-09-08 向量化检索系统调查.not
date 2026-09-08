@@ -1,0 +1,127 @@
+= 向量化检索系统调查
+
+围绕「如何充分利用 Item 树（尤其 scope item）与属性标注元信息改善向量化检索」的系统调查，为后续独立分支上的设计尝试与验证做准备。方法：五路并行——仓库代码现状、docs 先行调研与现行裁决、外部结构感知分块与嵌入技术（2024–2026 证据）、嵌入模型与本地向量基础设施、agentic 检索实践。本文是设计讨论的准备材料，不携带裁决。
+
+== 核心结论
+
+- notist 想做的「结构感知向量化」在外部证据里全部有对应物且方向被确认：Item 树切块对应 structure-aware chunking，标题路径前缀对应 Contextual Chunk Headers，refs 扩展对应 link-expanded retrieval。#<vault::ai::2026-07-21 notist agent mcp semantic retrieval and vector indexing> 与 #<vault::ai::2026-08-28 structure aware embedding and link expanded retrieval research> 的大方向成立，本次调查的价值在量化校准与暴露新设计点。
+- 最大的一条外部校准：ECIR 2025 受控对比 Reconstructing Context（`arXiv:2504.19754`）发现 contextual retrieval 的增益大头来自 rank fusion + rerank，上下文化本身贡献不稳——benchmark 的消融因子必须拆开，不能把混合收益记在前缀头上。
+- 模型选型建议修正：08-28 定的本地默认 Qwen3-Embedding-0.6B，从工程成熟度看 BGE-M3（MIT、ONNX 一等、fastembed-rs 内置、一套权重同出 dense+sparse+ColBERT）更适合默认，Qwen3 降为质量升级项。
+- 规模物理量确认既有裁决：万级 chunk 暴力扫描足够，ANN 的必要门槛约 10^5 向量，外部向量库与 ANN 第一版都不需要。
+- 定位证据双向印证：Cursor 实测语义检索让 agent 问答准确率平均 +12.5%（增益随语料规模放大），而 Claude Code/Sourcegraph/Zed 坚持 grep-first——向量是「召回放大器 + token 节省器」，benchmark 门槛裁决既是纪律也是收益曲线的必然。
+
+== 仓库现状：向量检索要吃的数据已经全部存在
+
+代码调查确认没有任何 embedding/vector 实现代码（全 crates 无命中），但向量管线需要的输入全部已存在且带稳定身份：
+
+| 向量化需要什么 | 现状 |
+| --- | --- |
+| 切块边界 | Item 树（`ElementTree` + `heading_default_ids` 返回标题链与区间）、`module_item_regions` 规范区域，与 refs 用同一套 |
+| 上下文前缀原料 | 标题链、ModulePath、ItemName 全部可机械取得 |
+| 属性元数据 | `AnnotationEntry` 侧表 + `region_info` 区域属性投影（区间 stabbing、逐 key 最内层胜），任意区域可取得生效属性环境 |
+| 引用边 | `ResolvedReference` 已是解析后的图边（非字符串链接），refs 命令复用 |
+| 身份与增量 | `FileId`/`ModuleId`/`Revision`、`source_fingerprint`、`WorkspaceDelta`、tantivy 索引代际缓存与增量更新先例、daemon watcher |
+| 检索单元 | tantivy `SearchUnit` 带 stored 字节区间与 kind |
+
+三个缺口值得注意：
+
+- 词法索引的 body 单元目前是空行分段而非 Item 边界（`crates/notist-service/src/query.rs` 的 `semantic_units`），与 search 规范（paragraph/list item/heading section/Raw block 独立 unit）不一致。向量切块要做对，须先把共享的 `SearchUnitBuilder` 升级为结构感知，这笔投入同时修好词法侧。
+- 属性进索引的前提设施有已知缺口：块级前导注解条目不进 read 的段环境（read 文档内嵌 todo，与 2026-08-31 属性统一模型的实施清单同源）。属性要成为检索级数据必须先修。
+- search 命令面尚未投影到 CLI：四模式搜索语义在 daemon 协议层（`CoreRequest::SearchPage`），CLI 目前只有 `inspect read/refs`。向量模式按既有裁决以 `search --mode` 落地，search 命令面是前置。
+
+== 先行调研与现行裁决
+
+三篇构成既有方案：#<vault::ai::2026-07-21 notist agent mcp semantic retrieval and vector indexing>（863 行综述：三层身份、embedding_text 结构前缀、分层语义索引、检索管线次序、七阶段路线）、#<vault::ai::2026-08-28 structure aware embedding and link expanded retrieval research>（落地续篇：scope 是第三切分原语、属性三重角色、模型与增量选型、最小实验设计）、#<vault::ai::2026-09-05 zvec-grep 查询面调研>（结果契约与输出工程参照）。约束性裁决：
+
+- benchmark 门槛：向量/semantic/hybrid 不进默认契约，须先过版本化 benchmark（Recall、nDCG、agent task success）。
+- 向量化是 Vault 运行时状态：CLI 二进制不嵌模型与预计算向量，daemon 侧派生索引，manifest 全量版本校验，可从 source 重建；per-vault 隔离。
+- 检索单元与 SearchUnit 对齐，复用 `SearchUnitBuilder`，不另造切分器；embedding_text 用确定性结构前缀（Module/HeadingPath/Tags/Kind/Body），不用 LLM 生成上下文；query 侧裸 query；前缀 token 预算建议不超过 25%。
+- 链接扩展 = resolved 边一跳 + RRF，查询引擎内部实现；不做 LLM 抽图 GraphRAG。
+- 身份三层：逻辑身份（ItemPath）、版本身份（content hash）、EmbeddingKey（含 chunker_version 与模型指纹）分离；manifest 任一要素不匹配即重建。
+- 不做：外部向量数据库、第一版 ColBERT 多向量、agentic loop 进 daemon、`ask` 式问答命令。
+
+== 外部技术全景（量化证据）
+
+=== 上下文注入
+
+Anthropic Contextual Retrieval（2024-09）分级数据：检索失败率基线 5.7% → 上下文化嵌入 3.7%（-35%）→ 加 contextual BM25 2.9%（-49%）→ 加 rerank 1.9%（-67%）。确定性替代是 Contextual Chunk Headers（标题路径前缀拼进 chunk 再嵌入），零成本。但 Reconstructing Context（`arXiv:2504.19754`）拆解发现真正稳定带来收益的是 fusion + rerank 组合，上下文化单独增益不稳定（Jina-V3 上甚至略降）。query 侧对应技术是 HyDE（生成假设文档做 doc-doc 匹配），依赖 LLM 生成质量，第一版不必。
+
+=== 切块
+
+Chroma《Evaluating Chunking》（2024-07）：不同切分策略 recall 差距可达 9%，但朴素的小尺寸无 overlap 递归切分表现稳定地好，LLM 语义切点的收益没有宣传的大，大 overlap 权衡很差。这反过来强化 notist 路线：与其在检索时推断语义切点，不如让作者在写作时用结构声明——notist 把语义切块从检索时的推断问题变成写作时的既成事实。Docling 的 `HybridChunker`（tokenizer 感知、同 headings 兄弟块合并、嵌入前拼接 headings/captions 前缀）是工业参考实现。
+
+=== 层次化
+
+RAPTOR（递归聚类摘要建树）在聚合型问题上 +20% 绝对准确率，但对精确定位类查询是有损的；small-to-big（检索小块、返回父节）是工程共识；Dense X（`arXiv:2312.06648`）证明粒度显著影响检索，命题级胜过 passage 级，但下游生成收益依赖计算预算。
+
+=== 属性过滤
+
+pgvector 官方警告共享 HNSW 索引会造成跨过滤组召回污染，推荐物理分区；Qdrant filterable HNSW 用渗流理论说明高选择性 post-filter 会让图断裂；LanceDB 经验法则：过滤后低于 1000 行直接精确扫描。共识是高选择性属性应做成物理分区/子索引，而不是全库大索引 + 过滤。
+
+=== 链接增强
+
+LARAG（`arXiv:2605.07517`）把文档间超链接存为 chunk 元数据、查询时沿链接做受控扩展——技术文档语料上以更少 token 取得更优 F1，是与 notist refs 最同构的工作；IIER（`arXiv:2408.02907`）的 chunk 交互图在多跳 QA 上 +15%（2WikiMQA）；ORAN 语料受控对比显示图+向量 hybrid 在困难问题上最稳。失败模式明确：链接密度与质量是前提，notist 的 resolved 边质量天然高。GraphRAG 一类 LLM 抽图路线继续排除。
+
+=== 反方证据
+
+Sourcegraph Cody 2024 年弃用 embedding 管线转 BM25 + code graph，理由是索引新鲜度、搭建成本、大规模检索质量三者不划算；Anthropic 给出「语料低于 200K token 直接整库塞 prompt」的判据；grep 论文（`arXiv:2605.15184`）显示标识符类查询 grep 稳定占优（注意局限：测的是长对话历史检索而非代码检索）。
+
+=== 模型与本地栈
+
+- 本地首选 BGE-M3（MIT，1024 维，8K ctx，中英强，fastembed-rs 内置）；升级项 Qwen3-Embedding-0.6B（Apache-2.0，GGUF 需 `--pooling last` 与 instruct 模板）；极端轻量 EmbeddingGemma-300m；避开 jina 系（CC-BY-NC 禁商用）。
+- 运行时：fastembed-rs 本身是进程内库（ort/ONNX，零 server）；ollama/llama.cpp 作为「用户已有本地 server」的旁路。
+- 存储：SQLite + 内容寻址缓存（模型指纹 + chunk hash 唯一索引），向量可 int8/binary 量化；sqlite-vec 维护停滞不作唯一依赖；超过 10^5 chunk 再插 usearch 一类 ANN 后端。
+- 融合 RRF（k=60）免调参，规避 BM25 分与余弦相似度不可比问题；rerank 用 bge-reranker-v2-m3（Apache-2.0）只作用于 top 20–50；sparse 学习向量第二阶段再考虑（BGE-M3 可直接输出）。
+- 增量索引的最大坑是 chunk 边界漂移：中间改一句话，其后所有 chunk 的缓存失效。结构化切块（标题/锚点边界）是社区公认解法，notist 天然免疫；模型/模板/维度变更等于全量重嵌入，缓存键必须含模型指纹。
+
+=== agentic 检索实践
+
+- Cursor 实测（2025-11）：语义检索让 agent 问答准确率平均 +12.5%（按模型 6.5%–23.5%），grep + 语义双轨组合最优；增益随语料规模放大（低于 1000 文件保留率 +0.3%，不低于 1000 文件 +2.6%）。
+- Claude Code 官方立场：agentic search 优先，语义检索「更快但更不准、更难维护、更不透明」，仅在需要速度或更多查询变体时叠加。Zed 的 agent 工具面目前没有语义检索；Aider 用 tree-sitter 引用图 + PageRank 排序，完全不用向量。
+- 直接对标物：qmd（Tobi Lütke 开源）——面向 markdown 知识库与 agentic flows 的本地检索：BM25 + 向量 + HyDE + 类型化路由 + RRF + 本地 LLM rerank，`search`/`vsearch`/`query` 三档命令 + `get` 取全文，可给集合挂树状 context 描述。
+- 工具面收敛于两段式：search 返回「结构化地址 + 标题路径 + 属性 + 分数」的轻量条目，read 按地址取证——notist 的 `SearchHit` + `inspect read` 已经就是这个形态。可读标识符直接提升模型检索精度、减少幻觉（Anthropic writing tools）。
+- 易忽视的失败模式：模型有习惯性回归 grep 的偏置，语义工具的命名与描述工程直接决定它会不会被闲置（zvec-grep 调研的「版本化 guidance 文本」借鉴点在此再次命中）。
+- 评估方法：合成「问题 → 目标 ItemPath」对 + `1 - recall@20` 失败率主指标（Anthropic 模板）+ LLM-as-judge；Cursor 用 agent 实际 search→read 轨迹回溯「本应检索到什么」，作为上线后的调优数据。
+
+== notist 结构到向量化手法的映射
+
+| notist 结构 | 手法 | 证据强度 | 增量成本 |
+| --- | --- | --- | --- |
+| Item 树与 `core::section` 边界 | 结构切块单元（对抗边界漂移，天然增量） | 强（工程共识 + Chroma 量化） | 低：升级 `SearchUnitBuilder` |
+| 标题链 | 确定性上下文前缀（CCH） | 中强（Anthropic -35%，Reconstructing Context 校准归属） | 极低 |
+| `#[...]` scope | 第三切分原语：作者声明的语义分组，渲染不可见但可索引 | 佐证（Docling merge_peers 同构） | 低 |
+| 属性（求值后属性表） | embedding_text 前缀成分 / 检索期 pre-filter / 结果解释投影；高选择性属性（如 `status = archived`）可作向量库分区键 | 强（pgvector 分区污染警告 + 2026-08-15 G3 权威先验缺口） | 中 |
+| refs（`ResolvedReference`） | 查询期一跳扩展 + RRF；出链目标名作为 embedding_text 成分（需消融验证） | 中（LARAG/IIER） | 低到中 |
+| 稳定身份（ItemPath/fingerprint） | 三层 EmbeddingKey + 内容寻址增量 | 工程共识 | 已有先例 |
+| 模块粒度（含人写摘要如本目录 README） | rollup 层（module summary 嵌入），可作者声明而非 LLM 生成，出现全局型查询需求再加 | 中（RAPTOR / document summary index） | 按需 |
+
+表里没出现的手法都是被有意排除的：late chunking（模型依赖性太强，BGE-M3 上有灾难性失败案例：`NDCG@5` 0.070 对 early chunking 的 0.246）、ColBERT 多向量（存储爆炸，第一版无必要）、GraphRAG（LLM 抽图成本，notist 有真边）。
+
+== 向量在整个工具箱里的位置
+
+grep/exact 管标识符与精确匹配（agent 第一入口，不会被替代）；lexical/fuzzy 管词法变体；向量管同义改述与跨模块概念关联；refs 管结构关联；read 是唯一证据来源。向量检索的产出物是「让 agent 用更少的调用次数进入 read/refs」。Cursor 双轨数据（平均 +12.5% 但仅大语料显著）、Anthropic 小语料判据、Cody 反例共同给出冷静预期：docs vault 当前量级（数十模块、千级 unit）向量收益可能不大，目标场景是 vault 长大后的概念型查询。benchmark 门槛裁决因此不只是纪律，而是这个收益曲线的必然要求。
+
+== 本次调查新暴露的设计点（既有调研未覆盖）
+
+- 前缀变更与增量缓存的矛盾：标题链进 embedding_text 时，改一个祖先标题会使全部后代 chunk 的 embedding 缓存失效（body 未变但嵌入文本变了）。选项：(a) 接受（改名少见，重嵌子树）；(b) 前缀只进 BM25 字段不进向量，放弃前缀的向量增益；(c) 双档向量（裸 body 向量 + 带前缀向量），成本翻倍不推荐。需量化祖先改名频率再定。
+- 出链目标名入嵌入文本：既有 embedding_text 成分清单没有链接目标。把 chunk 的出链 target ItemName（如指向 `vault::cli::search` 的链接给出 "cli/search"）作为高信号 token 拼入，是 notist 独有的免费上下文化，LARAG 类证据支持，但必须作为独立消融因子验证。
+- 属性分区键：向量库按高选择性属性（status、draft、模块类别）物理分区/子索引，而非全库索引 + 过滤——同时改善召回（分区隔离）与 2026-08-15 G3 提出的权威先验问题（archived 天然不污染默认查询）。与 scope/属性系统同构，是 notist 特色设计点。
+- 模型运行时形态的事实修正：08-28 写「fastembed-rs 子进程或 ollama HTTP」，但 fastembed-rs 本身是进程内库（零 server）。「子进程」若是出于隔离 ONNX native 依赖的稳健性考虑是有意为之，若属误解则进程内直链更简单，代价是二进制体积与 ort 依赖。这是待确认的取舍。
+
+== 对最小实验设计的修正建议
+
+在 08-28 的四组对比（lexical-only / dense-only / hybrid / hybrid+link）+ 两组消融（结构前缀 / 属性过滤）基础上：
+
+- 因子拆解：Reconstructing Context 证明融合/重排的贡献可能大于上下文化，对比应升级为因子化消融（切块方式 × 前缀 × 融合 × 扩展），至少加入「结构切块 + BM25（无向量）」一组——它可能拿下大部分增益，是「向量是否值得上」的真正基线。
+- query 合成：从 Item 内容与属性半自动生成「问题 → 目标 ItemPath」对（Anthropic 合成评测模板），notist 的结构让这件事比任何 markdown 库都容易。
+- 分语料规模跑：docs vault（千级）+ 一个放大的测试 vault（万级），验证「收益随规模增长」曲线，决定推广时机。
+- 指标：`1 - recall@20` 失败率为主指标（Anthropic 模板），加「标识符类 query 不回退」守护组。
+
+== 开放问题（待裁决）
+
+- 本地默认模型：BGE-M3 还是 Qwen3-Embedding-0.6B。
+- 运行时形态：进程内 fastembed-rs、子进程隔离、还是 ollama 旁路（或编译 feature + 运行时探测的组合）。
+- 前缀变更的重嵌入策略：接受重嵌子树、前缀不进向量、还是其他。
+- 出链目标名是否进 embedding_text。
+- 属性分区键是否进第一版。
+- 词法侧 `SearchUnitBuilder` 结构化升级（空行分段到 Item 边界）是向量工作的前置还是平行工作。
