@@ -36,6 +36,11 @@ pub enum ChunkGranularity {
     /// Heading sections split further at blank lines; every block carries its
     /// heading chain as context.
     Paragraph,
+    /// Heading sections partitioned at their direct `#[...]` scope children:
+    /// a scope block becomes its own unit, the section text around the scopes
+    /// forms head/tail remainder units. Falls back to plain sections where a
+    /// document declares no scopes.
+    Scope,
 }
 
 impl ChunkGranularity {
@@ -43,12 +48,62 @@ impl ChunkGranularity {
         match value {
             "section" => Ok(Self::Section),
             "paragraph" => Ok(Self::Paragraph),
+            "scope" => Ok(Self::Scope),
             other => Err(io::Error::new(
                 io::ErrorKind::InvalidInput,
                 format!(
-                    "unknown embedding granularity `{other}` (expected `section` or `paragraph`)"
+                    "unknown embedding granularity `{other}` (expected `section`, `paragraph`, or `scope`)"
                 ),
             )),
+        }
+    }
+
+    fn as_str(self) -> &'static str {
+        match self {
+            Self::Section => "section",
+            Self::Paragraph => "paragraph",
+            Self::Scope => "scope",
+        }
+    }
+}
+
+/// Extra context prepended to every block's embedding text. The body of a
+/// section chunk already contains its own heading line; the chain adds the
+/// full ancestor path, and attributes fold the block's effective annotation
+/// environment (module `@!` plus the governing section's annotations) into
+/// the text.
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ChunkContext {
+    /// Body text only.
+    #[default]
+    None,
+    /// `heading/chain` line, then body.
+    Chain,
+    /// `heading/chain` line, then `key = value` attribute tokens, then body.
+    ChainAttrs,
+}
+
+impl ChunkContext {
+    fn parse(value: &str) -> io::Result<Self> {
+        match value {
+            "none" => Ok(Self::None),
+            "chain" => Ok(Self::Chain),
+            "chain-attrs" => Ok(Self::ChainAttrs),
+            other => Err(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                format!(
+                    "unknown embedding context `{other}` (expected `none`, `chain`, or `chain-attrs`)"
+                ),
+            )),
+        }
+    }
+
+    fn as_str(self) -> &'static str {
+        match self {
+            Self::None => "none",
+            Self::Chain => "chain",
+            Self::ChainAttrs => "chain-attrs",
         }
     }
 }
@@ -68,6 +123,9 @@ pub struct EmbeddingConfig {
     /// Environment variable carrying the endpoint bearer token.
     pub api_key_env: Option<String>,
     pub granularity: ChunkGranularity,
+    pub context: ChunkContext,
+    /// Inference thread cap for the built-in provider; `None` = default 4.
+    pub threads: Option<usize>,
 }
 
 impl EmbeddingConfig {
@@ -113,12 +171,22 @@ impl EmbeddingConfig {
             None => ChunkGranularity::default(),
             Some(value) => ChunkGranularity::parse(value)?,
         };
+        let context = match table.get("context").and_then(|value| value.as_str()) {
+            None => ChunkContext::default(),
+            Some(value) => ChunkContext::parse(value)?,
+        };
+        let threads = table
+            .get("threads")
+            .and_then(|value| value.as_integer())
+            .map(|value| value as usize);
         let config = Self {
             model,
             endpoint,
             dims,
             api_key_env,
             granularity,
+            context,
+            threads,
         };
         config.validate()?;
         Ok(Some(config))
@@ -169,22 +237,19 @@ pub struct BuiltinEmbedder {
 fn parse_builtin_model(model: &str) -> io::Result<fastembed::EmbeddingModel> {
     use fastembed::EmbeddingModel as M;
     let variant = match model {
-        "bge-m3" => M::BGEM3,
         "bge-small-zh-v1.5" => M::BGESmallZHV15,
-        "bge-large-zh-v1.5" => M::BGELargeZHV15,
         "bge-small-en-v1.5" => M::BGESmallENV15,
         "bge-base-en-v1.5" => M::BGEBaseENV15,
-        "bge-large-en-v1.5" => M::BGELargeENV15,
         "multilingual-e5-small" => M::MultilingualE5Small,
         "multilingual-e5-base" => M::MultilingualE5Base,
-        "multilingual-e5-large" => M::MultilingualE5Large,
         other => {
             return Err(io::Error::new(
                 io::ErrorKind::InvalidInput,
                 format!(
-                    "unknown built-in embedding model `{other}` (supported: bge-m3, \
-                     bge-small-zh-v1.5, bge-large-zh-v1.5, bge-small/base/large-en-v1.5, \
-                     multilingual-e5-small/base/large)"
+                    "unknown built-in embedding model `{other}` (supported: bge-small-zh-v1.5, \
+                     bge-small-en-v1.5, bge-base-en-v1.5, multilingual-e5-small/base) — larger \
+                     models are excluded from the built-in lane by performance ruling; point \
+                     [embedding].endpoint at a server instead"
                 ),
             ));
         }
@@ -193,21 +258,26 @@ fn parse_builtin_model(model: &str) -> io::Result<fastembed::EmbeddingModel> {
 }
 
 impl BuiltinEmbedder {
-    pub fn new(model: &str) -> io::Result<Self> {
+    pub fn new(model: &str, threads: Option<usize>) -> io::Result<Self> {
         // fastembed's default cache directory is `./.fastembed_cache` in the
         // current working directory; pin it to the user cache so models are
         // downloaded once and never litter the Vault or the shell's cwd.
         let model_cache = user_cache_base()
             .map(|base| base.join("Notist").join("models"))
             .ok_or_else(|| io::Error::other("cannot locate the user cache directory"))?;
+        // Inference threads default to a conservative 4: a full-vault build
+        // is a one-off (~500 core-seconds for a small model), and pinning
+        // every core turns it into a machine-wide stall. Override with
+        // `[embedding] threads`.
+        let threads = threads.unwrap_or(4).min(
+            std::thread::available_parallelism()
+                .map(|parallelism| parallelism.get())
+                .unwrap_or(4),
+        );
         let options = fastembed::TextInitOptions::new(parse_builtin_model(model)?)
             .with_show_download_progress(false)
             .with_cache_dir(model_cache)
-            .with_intra_threads(
-                std::thread::available_parallelism()
-                    .map(|parallelism| parallelism.get())
-                    .unwrap_or(4),
-            );
+            .with_intra_threads(threads);
         let mut inner = fastembed::TextEmbedding::try_new(options)
             .map_err(|error| io::Error::other(format!("embedding model load failed: {error}")))?;
         // The vector width follows from the checkpoint; probe it once so the
@@ -261,6 +331,13 @@ pub struct EndpointEmbedder {
 
 const ENDPOINT_BATCH: usize = 32;
 
+/// Endpoint inputs are clipped to this many characters: built-in models
+/// truncate silently at their context window (bge-small-zh: 512 tokens) and
+/// several endpoint servers reject over-long inputs outright. 400 chars is
+/// ≈ under 512 tokens for both CJK-dense and ASCII text, matching what the
+/// built-in lane effectively embeds.
+const ENDPOINT_MAX_INPUT_CHARS: usize = 400;
+
 impl EndpointEmbedder {
     pub fn new(config: &EmbeddingConfig) -> io::Result<Self> {
         let endpoint = config
@@ -305,8 +382,12 @@ impl Embedder for EndpointEmbedder {
     }
 
     fn embed(&mut self, texts: &[String]) -> io::Result<Vec<Vec<f32>>> {
-        let mut vectors = Vec::with_capacity(texts.len());
-        for batch in texts.chunks(ENDPOINT_BATCH) {
+        let clipped: Vec<String> = texts
+            .iter()
+            .map(|text| text.chars().take(ENDPOINT_MAX_INPUT_CHARS).collect())
+            .collect();
+        let mut vectors = Vec::with_capacity(clipped.len());
+        for batch in clipped.chunks(ENDPOINT_BATCH) {
             let mut request = self
                 .agent
                 .post(&self.url)
@@ -365,7 +446,10 @@ impl Embedder for EndpointEmbedder {
 /// Builds the provider selected by the config.
 pub fn make_embedder(config: &EmbeddingConfig) -> io::Result<Box<dyn Embedder>> {
     match &config.endpoint {
-        None => Ok(Box::new(BuiltinEmbedder::new(&config.model)?)),
+        None => Ok(Box::new(BuiltinEmbedder::new(
+            &config.model,
+            config.threads,
+        )?)),
         Some(_) => Ok(Box::new(EndpointEmbedder::new(config)?)),
     }
 }
@@ -393,6 +477,7 @@ struct DraftChunk {
 fn content_hash(
     model_id: &str,
     granularity: ChunkGranularity,
+    context: ChunkContext,
     heading: &str,
     text: &str,
 ) -> String {
@@ -403,6 +488,8 @@ fn content_hash(
     hasher.update([0]);
     hasher.update(granularity.as_str().as_bytes());
     hasher.update([0]);
+    hasher.update(context.as_str().as_bytes());
+    hasher.update([0]);
     hasher.update(heading.as_bytes());
     hasher.update([0]);
     hasher.update(text.as_bytes());
@@ -412,15 +499,6 @@ fn content_hash(
         .map(|byte| format!("{byte:02x}"))
         .collect::<String>()[..24]
         .to_string()
-}
-
-impl ChunkGranularity {
-    fn as_str(self) -> &'static str {
-        match self {
-            Self::Section => "section",
-            Self::Paragraph => "paragraph",
-        }
-    }
 }
 
 /// 1-based inclusive line range covering a byte range of `text`.
@@ -503,21 +581,204 @@ fn paragraph_drafts(
             make_draft(
                 model_id,
                 ChunkGranularity::Paragraph,
+                ChunkContext::None,
                 module,
                 relative,
                 chain,
                 (start, end),
                 source,
+                body,
                 text,
             )
         })
         .collect()
 }
 
+/// One embeddable heading section with its evaluated node, so scope-aware
+/// granularities can partition it.
+struct SectionUnit<'a> {
+    chain: String,
+    range: TextRange,
+    node: &'a notist_model::Node,
+}
+
+fn collect_section_units<'a>(
+    nodes: &'a [notist_model::Node],
+    chain: &mut Vec<String>,
+    out: &mut Vec<SectionUnit<'a>>,
+) {
+    for node in nodes {
+        if node.is_core("section") {
+            let title = node
+                .children
+                .first()
+                .filter(|child| child.is_core("heading"))
+                .map(|heading| notist_analysis::node_text(&heading.children))
+                .unwrap_or_default();
+            chain.push(title);
+            out.push(SectionUnit {
+                chain: chain.join("/"),
+                range: node.range,
+                node,
+            });
+            collect_section_units(&node.children, chain, out);
+            for (_, value) in &node.args {
+                if let notist_model::NodeValue::Stream(stream) = value {
+                    collect_section_units(stream, chain, out);
+                }
+            }
+            chain.pop();
+            continue;
+        }
+        collect_section_units(&node.children, chain, out);
+        for (_, value) in &node.args {
+            if let notist_model::NodeValue::Stream(stream) = value {
+                collect_section_units(stream, chain, out);
+            }
+        }
+    }
+}
+
+/// Partitions a section at its direct `#[...]` scope children: heading head,
+/// each scope block, the gaps between them, and the tail. Sections without
+/// scope children degrade to a single whole-section unit.
+fn scope_partition(unit: &SectionUnit) -> Vec<(TextRange, String)> {
+    let scopes: Vec<&notist_model::Node> = unit
+        .node
+        .children
+        .iter()
+        .skip(1) // the heading
+        .filter(|child| child.block && child.name == "scope")
+        .collect();
+    if scopes.is_empty() {
+        return vec![(unit.range, unit.chain.clone())];
+    }
+    let mut units = Vec::new();
+    let mut cursor = unit.range.start;
+    for scope in scopes {
+        if scope.range.start > cursor {
+            units.push((
+                TextRange::new(cursor, scope.range.start),
+                unit.chain.clone(),
+            ));
+        }
+        units.push((scope.range, unit.chain.clone()));
+        cursor = cursor.max(scope.range.end);
+    }
+    if cursor < unit.range.end {
+        units.push((TextRange::new(cursor, unit.range.end), unit.chain.clone()));
+    }
+    units
+}
+
+/// Effective annotation environment of one section: the module's `@![...]`
+/// attributes plus annotation entries governing the section. An entry
+/// governs the smallest section that starts at or after the entry's own
+/// bytes — a pre-heading `@( ... )` therefore lands on the section it binds,
+/// and mid-section entries land on the subsection they precede.
+fn section_attributes(
+    workspace: &WorkspaceSnapshot,
+    module_id: notist_analysis::ModuleId,
+    units: &[SectionUnit],
+) -> HashMap<usize, Vec<(String, String)>> {
+    let mut by_unit: HashMap<usize, Vec<(String, String)>> = HashMap::new();
+    for batch in workspace.module_attributes(module_id) {
+        for (key, value) in batch {
+            by_unit
+                .entry(usize::MAX) // module attributes apply everywhere
+                .or_default()
+                .push((key.clone(), value.clone()));
+        }
+    }
+    let structured = workspace.structured_module(module_id);
+    let annotations = structured.as_ref().map(|s| s.annotations.as_slice());
+    if let Some(annotations) = annotations {
+        // Units are sorted by range.start; each entry binds the first unit
+        // that starts at or after the annotation itself.
+        for entry in annotations {
+            match units
+                .iter()
+                .enumerate()
+                .find(|(_, unit)| unit.range.start >= entry.range.start)
+            {
+                Some((index, _)) => {
+                    for (key, value) in &entry.attributes {
+                        by_unit
+                            .entry(units[index].range.start)
+                            .or_default()
+                            .push((key.clone(), value.clone()));
+                    }
+                }
+                None => continue,
+            }
+        }
+    }
+    by_unit
+}
+
+/// Serializes an effective attribute environment into compact embedding-text
+/// tokens. Long free-text values (todo notes) are clipped: the token's job
+/// is status signal, not content.
+fn attribute_tokens(attributes: &[(String, String)]) -> String {
+    let mut tokens: Vec<String> = Vec::new();
+    let mut budget = 240usize;
+    for (key, value) in attributes {
+        if budget == 0 {
+            break;
+        }
+        let value = value.trim();
+        let mut token = if value.is_empty() {
+            format!("@{key}")
+        } else {
+            let clipped: String = value.chars().take(60).collect();
+            let ellipsis = if value.chars().count() > 60 {
+                "…"
+            } else {
+                ""
+            };
+            format!("@{key} = {clipped}{ellipsis}")
+        };
+        if token.len() > budget {
+            token = token.chars().take(budget).collect();
+            budget = 0;
+        } else {
+            budget -= token.len();
+        }
+        tokens.push(token);
+    }
+    tokens.join(" ")
+}
+
+/// Assembles the embedding text for one block under the configured context:
+/// heading chain line and attribute tokens precede the body, each on its own
+/// line, only when selected.
+fn embedding_text(
+    context: ChunkContext,
+    chain: &str,
+    attributes: Option<&[(String, String)]>,
+    body: &str,
+) -> String {
+    match context {
+        ChunkContext::None => body.to_string(),
+        ChunkContext::Chain => format!("{chain}\n{body}"),
+        ChunkContext::ChainAttrs => {
+            let tokens = attributes
+                .filter(|attributes| !attributes.is_empty())
+                .map(attribute_tokens)
+                .unwrap_or_default();
+            if tokens.is_empty() {
+                format!("{chain}\n{body}")
+            } else {
+                format!("{chain}\n{tokens}\n{body}")
+            }
+        }
+    }
+}
+
 /// Cuts every source module into embeddable blocks on the evaluated Item
 /// tree. Section granularity takes whole heading sections; paragraph
-/// granularity splits sections at blank lines and prefixes each block with
-/// its heading chain so the context survives the cut.
+/// granularity splits sections at blank lines; scope granularity partitions
+/// sections at their declared `#[...]` scope children.
 fn build_chunks(
     workspace: &WorkspaceSnapshot,
     config: &EmbeddingConfig,
@@ -535,38 +796,75 @@ fn build_chunks(
         let Some(structured) = workspace.structured_module(module.id) else {
             continue;
         };
-        let mut scopes = Vec::new();
-        crate::query::collect_section_scopes(&structured.tree.roots, &mut scopes);
-        scopes.sort_by_key(|(_, range)| range.start);
+        let mut units: Vec<SectionUnit> = Vec::new();
+        let mut chain = Vec::new();
+        collect_section_units(&structured.tree.roots, &mut chain, &mut units);
+        units.sort_by_key(|unit| unit.range.start);
         let comments = crate::query::comment_ranges(&source.text);
         let relative = crate::query::relative_path(workspace.root(), &source.canonical_path);
         let module_name = module.logical_path.to_string();
-        for (chain, range) in scopes {
-            match config.granularity {
-                ChunkGranularity::Section => {
-                    let text = crate::query::text_excluding(&source.text, range, &comments);
-                    if text.trim().is_empty() {
-                        continue;
+        let attributes = section_attributes(workspace, module.id, &units);
+        let module_wide = attributes.get(&usize::MAX).cloned().unwrap_or_default();
+
+        let emit = |drafts: &mut Vec<DraftChunk>,
+                    granularity: ChunkGranularity,
+                    chain: &str,
+                    unit_start: usize,
+                    byte_range: (usize, usize),
+                    body: String| {
+            if body.trim().is_empty() {
+                return;
+            }
+            let env = match config.context {
+                ChunkContext::ChainAttrs => {
+                    let mut owned = module_wide.clone();
+                    if let Some(own) = attributes.get(&unit_start) {
+                        owned.extend(own.iter().cloned());
                     }
-                    let byte_range = (range.start, range.end);
-                    drafts.push(make_draft(
-                        &model_id,
-                        config.granularity,
-                        &module_name,
-                        &relative,
-                        &chain,
-                        byte_range,
-                        &source.text,
-                        text,
-                    ));
+                    Some(owned)
+                }
+                _ => None,
+            };
+            let text = embedding_text(config.context, chain, env.as_deref(), &body);
+            drafts.push(make_draft(
+                &model_id,
+                granularity,
+                config.context,
+                &module_name,
+                &relative,
+                chain,
+                byte_range,
+                &source.text,
+                body,
+                text,
+            ));
+        };
+
+        for unit in &units {
+            match config.granularity {
+                ChunkGranularity::Section | ChunkGranularity::Scope => {
+                    // Scope granularity partitions sections at their declared
+                    // `#[...]` scope children; without any, both cut the same
+                    // whole-section units.
+                    for (range, chain) in scope_partition(unit) {
+                        let body = crate::query::text_excluding(&source.text, range, &comments);
+                        emit(
+                            &mut drafts,
+                            config.granularity,
+                            &chain,
+                            unit.range.start,
+                            (range.start, range.end),
+                            body,
+                        );
+                    }
                 }
                 ChunkGranularity::Paragraph => {
                     drafts.extend(paragraph_drafts(
                         &model_id,
                         &module_name,
                         &relative,
-                        &chain,
-                        range,
+                        &unit.chain,
+                        unit.range,
                         &source.text,
                         &comments,
                     ));
@@ -581,11 +879,13 @@ fn build_chunks(
 fn make_draft(
     model_id: &str,
     granularity: ChunkGranularity,
+    context: ChunkContext,
     module: &str,
     relative: &Path,
     chain: &str,
     byte_range: (usize, usize),
     source: &str,
+    body: String,
     text: String,
 ) -> DraftChunk {
     let line_range = line_range_of(source, byte_range);
@@ -596,8 +896,8 @@ fn make_draft(
             heading_path: chain.to_string(),
             byte_range,
             line_range,
-            excerpt: excerpt_of(&text),
-            hash: content_hash(model_id, granularity, chain, &text),
+            excerpt: excerpt_of(&body),
+            hash: content_hash(model_id, granularity, context, chain, &text),
         },
         text,
     }
@@ -614,6 +914,7 @@ pub struct DenseManifest {
     pub dims: usize,
     pub chunker_version: String,
     pub granularity: ChunkGranularity,
+    pub context: ChunkContext,
     pub source_fingerprint: String,
     pub count: usize,
 }
@@ -623,6 +924,7 @@ impl DenseManifest {
         self.model_id == config.model_id()
             && self.chunker_version == CHUNKER_VERSION
             && self.granularity == config.granularity
+            && self.context == config.context
             && self.source_fingerprint == identity.source_fingerprint
     }
 }
@@ -823,6 +1125,7 @@ pub fn build_dense_index(
         dims,
         chunker_version: CHUNKER_VERSION.to_string(),
         granularity: config.granularity,
+        context: config.context,
         source_fingerprint: identity.source_fingerprint.clone(),
         count: drafts.len(),
     };
@@ -907,12 +1210,6 @@ pub fn vector_search(
     identity: &SnapshotIdentity,
     query: &VectorSearchQuery,
 ) -> Result<QueryResult<VectorHit>, ToolError> {
-    if query.text.trim().is_empty() {
-        return Err(ToolError::new(
-            "invalid_argument",
-            "the query text is empty",
-        ));
-    }
     let config = EmbeddingConfig::from_vault_root(workspace.root())
         .map_err(|error| {
             ToolError::new("embedding_config_error", error.to_string())
@@ -923,29 +1220,51 @@ pub fn vector_search(
                 "embedding_not_configured",
                 "the Vault declares no [embedding] table",
             )
-            .with_hint("add an [embedding] table with at least `model = \"bge-m3\"` to Notist.toml")
+            .with_hint("add an [embedding] table with at least `model = \"bge-small-zh-v1.5\"` to Notist.toml")
         })?;
-
-    let dir = dense_dir(workspace.root())
-        .ok_or_else(|| ToolError::new("internal", "cannot locate the user cache directory"))?;
-    let fresh = match DenseIndex::load(&dir) {
-        Some(index) => index.manifest.matches(&config, identity),
-        None => false,
-    };
-    let index = if fresh {
-        DenseIndex::load(&dir).expect("checked fresh above")
-    } else {
-        build_dense_index(workspace, identity, &config).map_err(|error| {
-            ToolError::new("dense_index_build_failed", error.to_string()).retryable(
-                "correct the error and retry; `notist index status` shows the dense lane",
-            )
-        })?
-    };
-
     let mut embedder = make_embedder(&config).map_err(|error| {
         ToolError::new("embedding_provider_unavailable", error.to_string())
             .retryable("check the [embedding] endpoint/model configuration and retry")
     })?;
+    let index = prepare_index(workspace, identity, &config).map_err(|error| {
+        ToolError::new("dense_index_build_failed", error.to_string())
+            .retryable("correct the error and retry; `notist index status` shows the dense lane")
+    })?;
+    search_index_with(&index, embedder.as_mut(), identity, query)
+}
+
+/// Loads or rebuilds the dense index for `config`, reusing cached vectors
+/// for every block whose content hash is unchanged.
+pub fn prepare_index(
+    workspace: &WorkspaceSnapshot,
+    identity: &SnapshotIdentity,
+    config: &EmbeddingConfig,
+) -> io::Result<DenseIndex> {
+    let dir = dense_dir(workspace.root())
+        .ok_or_else(|| io::Error::other("cannot locate the user cache directory"))?;
+    if let Some(index) = DenseIndex::load(&dir) {
+        if index.manifest.matches(config, identity) {
+            return Ok(index);
+        }
+    }
+    build_dense_index(workspace, identity, config)
+}
+
+/// Ranks a prepared index against one query with a caller-held embedder
+/// (bench harnesses load the model once per arm; the CLI path goes through
+/// [`vector_search`]).
+pub fn search_index_with(
+    index: &DenseIndex,
+    embedder: &mut dyn Embedder,
+    identity: &SnapshotIdentity,
+    query: &VectorSearchQuery,
+) -> Result<QueryResult<VectorHit>, ToolError> {
+    if query.text.trim().is_empty() {
+        return Err(ToolError::new(
+            "invalid_argument",
+            "the query text is empty",
+        ));
+    }
     let embedded = embedder
         .embed(&[query.text.clone()])
         .map_err(|error| ToolError::new("embedding_failed", error.to_string()))?;
@@ -1032,14 +1351,14 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         write_manifest(
             dir.path(),
-            "[embedding]\nmodel = \"bge-m3\"\ngranularity = \"paragraph\"\n",
+            "[embedding]\nmodel = \"bge-small-zh-v1.5\"\ngranularity = \"paragraph\"\n",
         );
         let config = EmbeddingConfig::from_vault_root(dir.path())
             .unwrap()
             .unwrap();
-        assert_eq!(config.model, "bge-m3");
+        assert_eq!(config.model, "bge-small-zh-v1.5");
         assert_eq!(config.granularity, ChunkGranularity::Paragraph);
-        assert_eq!(config.model_id(), "builtin:bge-m3");
+        assert_eq!(config.model_id(), "builtin:bge-small-zh-v1.5");
         assert!(config.endpoint.is_none());
     }
 
@@ -1113,12 +1432,13 @@ mod tests {
         // line ranges are 1-based inclusive against the whole source
         assert_eq!(one.chunk.line_range, (3, 4));
         assert_eq!(two.chunk.line_range, (7, 7));
-        assert!(two.chunk.excerpt.starts_with("Title/Section"));
+        assert!(two.chunk.excerpt.starts_with("para two"));
         assert_eq!(
             one.chunk.hash,
             content_hash(
                 "builtin:test",
                 ChunkGranularity::Paragraph,
+                ChunkContext::None,
                 "Title/Section",
                 &one.text
             )
@@ -1128,10 +1448,34 @@ mod tests {
 
     #[test]
     fn hashes_differ_by_content_and_model() {
-        let a = content_hash("builtin:m", ChunkGranularity::Section, "H", "body");
-        let b = content_hash("builtin:m", ChunkGranularity::Section, "H", "body2");
-        let c = content_hash("builtin:other", ChunkGranularity::Section, "H", "body");
-        let d = content_hash("builtin:m", ChunkGranularity::Paragraph, "H", "body");
+        let a = content_hash(
+            "builtin:m",
+            ChunkGranularity::Section,
+            ChunkContext::None,
+            "H",
+            "body",
+        );
+        let b = content_hash(
+            "builtin:m",
+            ChunkGranularity::Section,
+            ChunkContext::None,
+            "H",
+            "body2",
+        );
+        let c = content_hash(
+            "builtin:other",
+            ChunkGranularity::Section,
+            ChunkContext::None,
+            "H",
+            "body",
+        );
+        let d = content_hash(
+            "builtin:m",
+            ChunkGranularity::Paragraph,
+            ChunkContext::None,
+            "H",
+            "body",
+        );
         assert_ne!(a, b);
         assert_ne!(a, c);
         assert_ne!(a, d);
@@ -1155,6 +1499,7 @@ mod tests {
                 dims: 2,
                 chunker_version: CHUNKER_VERSION.into(),
                 granularity: ChunkGranularity::Section,
+                context: ChunkContext::None,
                 source_fingerprint: "fp".into(),
                 count: 3,
             },
