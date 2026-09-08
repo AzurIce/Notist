@@ -16,11 +16,11 @@ A ModulePath is the file's own path under the Vault root, spelled mechanically: 
 - Zero hits are a proof, not an empty result; results are complete — never re-read a file to double-check a notist answer.
 
 ```shell
-notist inspect read vault::X::Y --item "Section/Sub" --vault <VAULT>
-notist inspect read vault::X::Y --line 40..80 --vault <VAULT>
-notist inspect refs vault::X::Y --out --vault <VAULT>
-notist inspect refs vault::X::Y --vault <VAULT>
-notist check --vault <VAULT>
+notist inspect read vault::X::Y --item "Section/Sub" --vault <VAULT>  # section + attributes in effect
+notist inspect read vault::X::Y --line 40..80 --vault <VAULT>         # the lines grep hit
+notist inspect refs vault::X::Y --out --vault <VAULT>                 # what it references
+notist inspect refs vault::X::Y --vault <VAULT>                       # who mentions it
+notist check --vault <VAULT>                                          # health verdict
 ```
 
 ## `.not` syntax
