@@ -525,9 +525,6 @@ fn run_inspect(
             for record in &page.records {
                 print_region_record(record, &palette, origins);
             }
-            for hint in &page.hints {
-                println!("hint: {hint}");
-            }
             Ok(ExitCode::SUCCESS)
         }
     }

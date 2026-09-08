@@ -29,8 +29,6 @@ notist inspect read <MODULE> [--vault DIR]
 
 header 一行（module、相对路径、行区间、字节区间、fingerprint）；`container` 一行（最深包含整段范围的 Item）；`segments N`；默认模式每段依次为 `[i]` header（`<ItemPath>` + 行区间 + 字节区间）、合并环境 Dict 行、该段的行号源文。Dict 为 notist 字面量 `(k1: "v1", k2: "v2")`，key 排序、字符串值带引号、空环境为 `(:)`。`--origins` 模式以 `common N` 块 + `@(k: v) <- <ItemPath> lines a..b bytes s..e` 形式的分层溯源行取代各段 Dict 行。身份一律为可复制进 selector 的 ItemPath；颜色由全局 `--color` 控制且只影响渲染（见 #<vault::05-cli>）。
 
-区域读取——整模块或 `--item`，不带坐标窗口——在穿越引用非零时以一行 `hint:` 收尾：报告该区域的穿越计数并给出 `inspect refs` 跟进命令，入/出计数与 `refs` 对同一区域的两个方向一致（`hint: 14 crossing references (7 in, 7 out) — notist inspect refs vault::05-cli::inspect [--out] lists them`；单向时退化为 `1 outgoing reference — … --out` 或 `1 incoming reference — …`）。hint 是元信息行，不是记录；零穿越与坐标窗口读取不出现。
-
 == 实测示例
 
 示例 Vault `docs/test/read.not` 是常驻测试案例（`|>`/`<|` 标出请求范围 lines 12..22）：

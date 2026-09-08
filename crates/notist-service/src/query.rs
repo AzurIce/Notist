@@ -1620,24 +1620,6 @@ pub fn region_info(
             )
         });
 
-    // A region read (whole module or one Item's subtree) advertises its
-    // crossing references — the exact edges `refs` lists — so the follow-up
-    // query surfaces while the region is open. Coordinate windows are
-    // surgical cuts, not refs regions, and stay hint-free.
-    let hints = if provided == 0 {
-        let region = match &query.selector.item {
-            Some(_) => RefsRegion::Scope(selection),
-            None => RefsRegion::Module,
-        };
-        let queried = module_item_regions(workspace, resolved.module);
-        match crossing_counts(workspace, resolved.module, &queried, &region) {
-            (0, 0) => Vec::new(),
-            (i, o) => vec![crossing_hint(&module_string, i, o)],
-        }
-    } else {
-        Vec::new()
-    };
-
     Ok(QueryResult {
         snapshot: snapshot.clone(),
         records: vec![RegionRecord {
@@ -1654,7 +1636,7 @@ pub fn region_info(
             segments,
         }],
         search: None,
-        hints,
+        hints: Vec::new(),
     })
 }
 
@@ -2101,8 +2083,32 @@ pub fn refs(
     };
     let mut records = Vec::new();
     for reference in workspace.references() {
-        let target_inside = target_inside_region(module, &queried, &region, reference);
-        let mention_inside = mention_inside_region(module.id, &region, reference);
+        let target_inside = match &region {
+            RefsRegion::Module => reference.target_module_id == module.id,
+            RefsRegion::Scope(range) => {
+                reference.target_module_id == module.id
+                    && reference
+                        .target_name
+                        .as_deref()
+                        .and_then(|name| queried.by_name.get(name))
+                        .and_then(|member| match member {
+                            ItemRegion::Scope(member_range) => Some(*member_range),
+                            ItemRegion::Resource => None,
+                        })
+                        .is_some_and(|member_range| fully_contains(*range, member_range))
+            }
+            RefsRegion::Resource(name) => {
+                reference.target_module_id == module.id
+                    && reference.target_name.as_deref() == Some(name.as_str())
+            }
+        };
+        let mention_inside = match &region {
+            RefsRegion::Module => reference.source_module_id == module.id,
+            RefsRegion::Scope(range) => {
+                reference.source_module_id == module.id && fully_contains(*range, reference.range)
+            }
+            RefsRegion::Resource(_) => false,
+        };
         // An edge crosses when exactly one of its ends lands inside the
         // region; the two directions are the same set split by which end is
         // the insider.
@@ -2185,103 +2191,6 @@ pub fn refs(
         search: None,
         hints,
     })
-}
-
-/// Whether the edge's resolved target anchor lands inside `region`, judged
-/// on canonical node identity rather than range overlap.
-fn target_inside_region(
-    module: &notist_analysis::Module,
-    queried: &ModuleRegions,
-    region: &RefsRegion,
-    reference: &notist_analysis::ResolvedReference,
-) -> bool {
-    match region {
-        RefsRegion::Module => reference.target_module_id == module.id,
-        RefsRegion::Scope(range) => {
-            reference.target_module_id == module.id
-                && reference
-                    .target_name
-                    .as_deref()
-                    .and_then(|name| queried.by_name.get(name))
-                    .and_then(|member| match member {
-                        ItemRegion::Scope(member_range) => Some(*member_range),
-                        ItemRegion::Resource => None,
-                    })
-                    .is_some_and(|member_range| fully_contains(*range, member_range))
-        }
-        RefsRegion::Resource(name) => {
-            reference.target_module_id == module.id
-                && reference.target_name.as_deref() == Some(name.as_str())
-        }
-    }
-}
-
-/// Whether the edge's mentioning span lands inside `region`.
-fn mention_inside_region(
-    module_id: ModuleId,
-    region: &RefsRegion,
-    reference: &notist_analysis::ResolvedReference,
-) -> bool {
-    match region {
-        RefsRegion::Module => reference.source_module_id == module_id,
-        RefsRegion::Scope(range) => {
-            reference.source_module_id == module_id && fully_contains(*range, reference.range)
-        }
-        RefsRegion::Resource(_) => false,
-    }
-}
-
-/// Incoming/outgoing crossing counts for a refs region — the same edges
-/// `refs` would list per direction, without building rows.
-fn crossing_counts(
-    workspace: &WorkspaceSnapshot,
-    module: &notist_analysis::Module,
-    queried: &ModuleRegions,
-    region: &RefsRegion,
-) -> (usize, usize) {
-    let (mut incoming, mut outgoing) = (0usize, 0usize);
-    for reference in workspace.references() {
-        match (
-            target_inside_region(module, queried, region, reference),
-            mention_inside_region(module.id, &region, reference),
-        ) {
-            (true, false) => incoming += 1,
-            (false, true) => outgoing += 1,
-            _ => {}
-        }
-    }
-    (incoming, outgoing)
-}
-
-/// The read hint advertising the refs follow-up for a queried region.
-fn crossing_hint(module_path: &str, incoming: usize, outgoing: usize) -> String {
-    let plural = |count: usize, noun: &str| {
-        if count == 1 {
-            format!("{count} {noun}")
-        } else {
-            format!("{count} {noun}s")
-        }
-    };
-    let refs_command = |flag: &str| format!("notist inspect refs {module_path}{flag}");
-    match (incoming, outgoing) {
-        (i, 0) => format!(
-            "{} — {} lists them",
-            plural(i, "incoming reference"),
-            refs_command("")
-        ),
-        (0, o) => format!(
-            "{} — {} lists them",
-            plural(o, "outgoing reference"),
-            refs_command(" --out")
-        ),
-        (i, o) => format!(
-            "{} ({} in, {} out) — {} [--out] lists them",
-            plural(i + o, "crossing reference"),
-            i,
-            o,
-            refs_command("")
-        ),
-    }
 }
 
 pub fn definition(

@@ -82,7 +82,6 @@ Text 投影契约：
 
 - stdout 包含当前查询的完整结果，一行一记录；输出正比于被查询的数据集，没有 item/byte 截断。
 - collection 命令以计数头开头（如 `4 modules`、`1 reference (incoming)`）；计数头是元信息行，不是记录。
-- `hint:` 行是 stdout 上的可选元信息，指引后续查询（refs 的零命中证明、read 的穿越计数跟进）；它不改变 logical result。
 - 错误写 stderr：`error[code]: message`，hint 与 candidates 逐行跟随。
 - 颜色、TTY 只能改变渲染，不能改变 logical result、排序或 exit status。
 - excerpt 只用于挑选候选；形成事实结论前用宿主 Read 读取 authored source。
