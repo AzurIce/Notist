@@ -132,6 +132,16 @@ fn arms() -> Vec<Arm> {
             context: NoContext,
             endpoint: Some("http://127.0.0.1:11434/v1"),
         },
+        // 8935 = the user's own NixOS llama-server (llama-cpp 10408, CUDA
+        // build) serving the same f16 GGUF with -ngl 99: identical binary to
+        // llama-cpu-sec, GPU execution instead of CPU.
+        Arm {
+            name: "llama-gpu-sec",
+            model: "bge-small-zh-v1.5",
+            granularity: Section,
+            context: NoContext,
+            endpoint: Some("http://127.0.0.1:8935/v1"),
+        },
     ]
 }
 
