@@ -53,4 +53,4 @@ notist-plugin-core = { path = "plugins/core" }
 notist-analysis = { path = "crates/notist-analysis" }
 notist-html = { path = "crates/notist-html" }
 notist-plugin-host = { path = "crates/notist-plugin-host" }
-notist-service = { path = "crates/notist-service" }
+notist-service = { path = "crates/notist-service", default-features = false }

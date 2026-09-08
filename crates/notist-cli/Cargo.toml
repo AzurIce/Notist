@@ -8,6 +8,15 @@ license.workspace = true
 name = "notist"
 path = "src/main.rs"
 
+# Dense-lane backend selection: forwarded to notist-service. `dense-download`
+# (default) acquires ONNX Runtime at compile time via ort's build script;
+# `dense-system` dlopens a system ONNX Runtime at runtime (sandboxed/Nix
+# builds pair it with onnxruntime in the environment).
+[features]
+default = ["dense-download"]
+dense-download = ["notist-service/dense-download"]
+dense-system = ["notist-service/dense-system"]
+
 [dependencies]
 tracing.workspace = true
 tracing-subscriber.workspace = true

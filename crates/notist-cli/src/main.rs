@@ -101,6 +101,19 @@ enum Command {
         #[arg(long)]
         open: bool,
     },
+    /// Semantic vector search over Vault content blocks (experimental).
+    ///
+    /// Embeds the query and ranks structurally chunked blocks by cosine
+    /// similarity. Requires an `[embedding]` table in Notist.toml; first use
+    /// downloads the embedding model and builds the vector index.
+    #[command(display_order = 9, name = "vsearch")]
+    VSearch {
+        /// Query text.
+        query: String,
+        /// Number of hits to return.
+        #[arg(short = 'k', long, default_value_t = 20)]
+        k: usize,
+    },
 }
 
 #[derive(Debug, Subcommand)]
@@ -363,6 +376,20 @@ fn run(cli: Cli) -> Result<ExitCode, Box<dyn std::error::Error>> {
             }
             println!("Index  {}", status.health);
             println!("Units  {}", status.unit_count);
+            if let Some(dense) = &status.dense {
+                let mut line = format!("Dense  {}", dense.state);
+                if let Some(model) = &dense.model {
+                    line.push_str(&format!("  model={model}"));
+                }
+                if let Some(dims) = dense.dims {
+                    line.push_str(&format!("  dims={dims}"));
+                }
+                line.push_str(&format!("  units={}", dense.unit_count));
+                println!("{line}");
+                if let Some(message) = &dense.message {
+                    println!("Note   {message}");
+                }
+            }
             if let Some(stamp) = status.stamp {
                 println!(
                     "Stamp  {} / {} / {}",
@@ -374,6 +401,36 @@ fn run(cli: Cli) -> Result<ExitCode, Box<dyn std::error::Error>> {
             }
             if let Some(message) = status.message {
                 println!("Note   {message}");
+            }
+            Ok(ExitCode::SUCCESS)
+        }
+        Command::VSearch { query, k } => {
+            let (_, client, view_id) = connect_cli(cli.vault.clone(), cli.no_daemon)?;
+            let reply = client.request(CoreRequest::VectorSearch {
+                view_id,
+                query: notist_service::vector::VectorSearchQuery { text: query, k },
+            })?;
+            let CoreResponse::VectorSearch(result) = reply.response else {
+                return query_response_error("vsearch", reply.response);
+            };
+            if result.records.is_empty() {
+                println!("No matches.");
+                return Ok(ExitCode::SUCCESS);
+            }
+            for (rank, hit) in result.records.iter().enumerate() {
+                let range = hit
+                    .location
+                    .line_range
+                    .unwrap_or(notist_service::LineRange { start: 0, end: 0 });
+                println!(
+                    "{:>3}  {:.3}  {}  {}..{}  {}",
+                    rank + 1,
+                    hit.score,
+                    hit.location.relative_path.display(),
+                    range.start,
+                    range.end,
+                    hit.excerpt
+                );
             }
             Ok(ExitCode::SUCCESS)
         }

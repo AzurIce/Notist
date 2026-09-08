@@ -461,6 +461,25 @@ pub struct IndexStatusRecord {
     pub operation_handle: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub message: Option<String>,
+    /// Dense (vsearch) lane health; `None` when the Vault declares no
+    /// `[embedding]` configuration.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub dense: Option<DenseStatusRecord>,
+}
+
+/// Dense-lane line of `index status`: provider identity and stored vector
+/// coverage, computed from the config and manifest without loading a model.
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct DenseStatusRecord {
+    /// `missing` | `fresh` | `stale`.
+    pub state: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub model: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub dims: Option<usize>,
+    pub unit_count: usize,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub message: Option<String>,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -763,7 +782,7 @@ impl AncestorSelection {
 
 /// Walks the evaluated tree collecting section scopes named by their
 /// heading, keyed for ancestor-chain assembly.
-fn collect_section_scopes(nodes: &[Node], scopes: &mut Vec<(String, TextRange)>) {
+pub(crate) fn collect_section_scopes(nodes: &[Node], scopes: &mut Vec<(String, TextRange)>) {
     let mut chain: Vec<String> = Vec::new();
     collect_section_scopes_in_nodes(nodes, &mut chain, scopes);
 }
@@ -2716,6 +2735,7 @@ impl SearchIndex {
         let manifest_path = path.join("notist-index.json");
         if !manifest_path.exists() {
             return Some(IndexStatusRecord {
+                dense: None,
                 health: "building".into(),
                 stamp: None,
                 unit_count: 0,
@@ -2732,6 +2752,7 @@ impl SearchIndex {
             });
         let Ok(manifest) = manifest else {
             return Some(IndexStatusRecord {
+                dense: None,
                 health: "error".into(),
                 stamp: None,
                 unit_count: 0,
@@ -2755,6 +2776,7 @@ impl SearchIndex {
                 == Some(vault_fingerprint.as_str());
         if !valid {
             return Some(IndexStatusRecord {
+                dense: None,
                 health: "stale".into(),
                 stamp: None,
                 unit_count: 0,
@@ -2763,6 +2785,7 @@ impl SearchIndex {
             });
         }
         Some(IndexStatusRecord {
+            dense: None,
             health: "ready".into(),
             stamp: Some(IndexStamp {
                 source_fingerprint: source_fingerprint.into(),
@@ -3905,7 +3928,7 @@ fn semantic_units(source: &str) -> Vec<TextRange> {
     units
 }
 
-fn comment_ranges(source: &str) -> Vec<TextRange> {
+pub(crate) fn comment_ranges(source: &str) -> Vec<TextRange> {
     let bytes = source.as_bytes();
     let mut ranges = Vec::new();
     let mut index = 0usize;
@@ -3977,7 +4000,7 @@ fn comment_ranges(source: &str) -> Vec<TextRange> {
     ranges
 }
 
-fn merge_ranges(mut ranges: Vec<TextRange>) -> Vec<TextRange> {
+pub(crate) fn merge_ranges(mut ranges: Vec<TextRange>) -> Vec<TextRange> {
     ranges.sort_by_key(|range| (range.start, range.end));
     let mut merged: Vec<TextRange> = Vec::new();
     for range in ranges {
@@ -4007,7 +4030,7 @@ fn complement_ranges(length: usize, excluded: &[TextRange]) -> Vec<TextRange> {
     ranges
 }
 
-fn text_excluding(source: &str, range: TextRange, excluded: &[TextRange]) -> String {
+pub(crate) fn text_excluding(source: &str, range: TextRange, excluded: &[TextRange]) -> String {
     let mut output = String::new();
     let mut start = range.start;
     for excluded in excluded {
@@ -4130,7 +4153,7 @@ fn in_scope(module: &str, scopes: &[String]) -> bool {
         })
 }
 
-fn relative_path(root: &Path, path: &Path) -> PathBuf {
+pub(crate) fn relative_path(root: &Path, path: &Path) -> PathBuf {
     path.strip_prefix(root).unwrap_or(path).to_path_buf()
 }
 
@@ -4142,7 +4165,7 @@ pub fn fingerprint(source: &str) -> String {
     digest(source.as_bytes())[..16].to_owned()
 }
 
-fn digest(bytes: &[u8]) -> String {
+pub(crate) fn digest(bytes: &[u8]) -> String {
     let mut hasher = Sha256::new();
     hasher.update(bytes);
     hasher
