@@ -94,3 +94,14 @@ Lexical/fuzzy query 只在 `IndexStamp.source_set_fingerprint` 与捕获 snapsho
 == 向量与 semantic mode 的门槛
 
 向量、semantic 与 hybrid mode 不属于默认契约：只有在版本化 benchmark 上相对 lexical 明确提升 Recall、nDCG 与 Agent task success，并保留 citation、ACL 与 snapshot 一致性之后，才能增加显式 mode。
+
+== 向量 lane：vsearch（experimental）
+
+语义向量检索以独立实验命令 `notist vsearch QUERY [-k N]` 存在，不进入上一节的四模式与稳定命令分组，排名语义、配置面与一致性条款均为实验性质；进入默认契约仍以上一节的门槛裁决为准。
+
+- 配置在 Vault `Notist.toml` 的 `[embedding]` 表：`model`，可选 `endpoint`（OpenAI 兼容 `/v1/embeddings` 基址）、`dims`、`api_key_env`、`granularity`、`context`、`threads`。表缺席即整条 lane 关闭，`vsearch` 报 typed error。
+- 内置 provider 为 fastembed 进程内 ONNX，模型表只收录 small/base 级检查点（`bge-small-zh-v1.5` 等）；更大模型被性能裁决排除在可内置范围外，经 `endpoint` 接入外部 server（GPU 随 server 而来）。模型与向量都是运行时状态：模型下载进用户缓存，向量索引可从 source 全量重建。
+- 检索单元从求值后 Item 树切出：`granularity = section | paragraph | scope`。`section` 是一块一节；`paragraph` 在节内按空行细分并携带标题链；`scope` 在节的直接 `#[...]` scope 子块处分区，无 scope 时退化为 section。`context = none | chain | chain-attrs` 决定嵌入文本的确定性前缀——标题链与生效属性 token（模块 `@!` 条目与管辖节注解，经求值后属性表取得）。
+- 存储在用户缓存、按 Vault 身份分区；manifest 记录 model/chunker/上下文/source fingerprint，任一不匹配即弃置重建；内容 hash 未变的块复用已缓存向量，仅变更块重嵌。
+- 输出契约：一行一 hit（名次、余弦分、相对路径、1-based 行区间、一行摘录），摘录是候选信息不是证据；`-k` 是排名语义的召回深度，不是输出截断；零命中输出 `No matches.`。`index status` 附带 dense 通道行（状态/模型/维度/块数）。
+- 实测基线（docs vault、46 条标注查询、2026-09-08）：section 优于 paragraph（strict R\@10 0.39 对 0.26）；`chain-attrs` 前缀使概念查询 R\@5 由 0.19 升至 0.42；标识符类查询最高 0.83 仍不达标，归 exact/grep。数据与 bench 工具见实验记录，不随契约发布。
