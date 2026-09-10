@@ -39,6 +39,7 @@ pub fn contribution() -> PluginContribution {
         Arc::new(ViewFunction),
         Arc::new(HeadingFunction),
         Arc::new(RawFunction),
+        Arc::new(MathFunction),
         Arc::new(CalloutFunction),
         Arc::new(DetailsFunction),
         Arc::new(ItemFunction),
@@ -62,6 +63,7 @@ pub fn contribution() -> PluginContribution {
         ("core::view", "view"),
         ("core::heading", "heading"),
         ("core::raw", "raw"),
+        ("core::math", "math"),
         ("core::callout", "callout"),
         ("core::details", "details"),
         ("core::item", "item"),
@@ -201,6 +203,13 @@ fn core_schemas() -> Vec<ElementSchema> {
     core(
         &mut registry,
         "raw",
+        ShapingKind::Unspecified,
+        BodyMode::None,
+        ShapingRole::None,
+    );
+    core(
+        &mut registry,
+        "math",
         ShapingKind::Unspecified,
         BodyMode::None,
         ShapingRole::None,
@@ -458,6 +467,38 @@ impl Function for RawFunction {
             language,
             input.range,
         )]))
+    }
+}
+
+struct MathFunction;
+
+impl Function for MathFunction {
+    fn name(&self) -> &str {
+        "math"
+    }
+
+    fn signature(&self) -> FunctionSignature {
+        notist_model::math_signature()
+    }
+
+    fn call(
+        &self,
+        _context: &FunctionContext<'_>,
+        input: FunctionInput<'_>,
+    ) -> Result<Value, Vec<EvalDiagnostic>> {
+        let source = input.arguments.string("source").to_owned();
+        let block = input.arguments.bool("block");
+        if !block && source.contains('\n') {
+            return Err(vec![EvalDiagnostic {
+                message: "inline math source must not contain line breaks".into(),
+                range: input.range,
+            }]);
+        }
+        let mut node = Node::call("core::math", input.range)
+            .arg("source", source)
+            .arg("block", block);
+        node.block = block;
+        Ok(Value::Content(vec![node]))
     }
 }
 

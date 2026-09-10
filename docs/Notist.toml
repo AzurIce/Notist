@@ -4,5 +4,8 @@ path = "../plugins/shader"
 [plugins.mermaid]
 path = "../plugins/mermaid"
 
+[plugins.math]
+path = "../plugins/math"
+
 [site]
 styles = ["assets/main.css"]

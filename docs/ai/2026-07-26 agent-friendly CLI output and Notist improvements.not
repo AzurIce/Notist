@@ -14,10 +14,10 @@
 
 | 条件 | 720 run 合计成本 | input | cacheRead |
 | --- | ---: | ---: | ---: |
-| md-shell | $2.51 | 870K | 3.4M |
-| not-shell | $2.71 | 930K | 3.7M |
-| not-cli-skill | $103.65 | 34M | 298M |
-| not-mcp | $75.73 | 17M | 305M |
+| md-shell | \$2.51 | 870K | 3.4M |
+| not-shell | \$2.71 | 930K | 3.7M |
+| not-cli-skill | \$103.65 | 34M | 298M |
+| not-mcp | \$75.73 | 17M | 305M |
 
 高成本不是来自模型多写了答案，而是来自无界结果：
 
@@ -374,7 +374,7 @@ snapshot_revision
 - cacheRead、tool output bytes 和 cost per successful task 至少下降一个数量级。
 - common-query、unanswerable 和 multi-hop 分开报告，防止 top-k 过小掩盖召回损失。
 
-`cost-forensics.md` 粗估 P0 落地可把同规模 720 run 从约 $240 降到约 $30。这个数字是待验证假设；真正的 release gate 应是固定任务、固定模型、固定 seed 的复跑结果。
+`cost-forensics.md` 粗估 P0 落地可把同规模 720 run 从约 \$240 降到约 \$30。这个数字是待验证假设；真正的 release gate 应是固定任务、固定模型、固定 seed 的复跑结果。
 
 == 不应该采用的捷径
 

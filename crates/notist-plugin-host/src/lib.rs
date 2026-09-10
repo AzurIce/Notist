@@ -451,10 +451,32 @@ pub fn load_package(package_dir: &Path) -> Result<LoadedPlugin, String> {
         package = %manifest.package,
         "manifest read"
     );
-    let wasm = manifest
-        .wasm
-        .as_ref()
-        .ok_or_else(|| format!("plugin `{}` declares no wasm module", manifest.package))?;
+    // A manifest without a wasm module is purely declarative: it contributes
+    // nothing to evaluation but may still declare render projections (e.g. a
+    // math renderer claiming `core::math` with only browser-side assets).
+    let Some(wasm) = manifest.wasm.as_ref() else {
+        let html_contributions = manifest
+            .render
+            .as_ref()
+            .and_then(|render| render.html.as_ref())
+            .map(|html| html.contributions.clone())
+            .unwrap_or_default();
+        tracing::debug!(
+            target: "notist_plugin_host",
+            package = %manifest.package,
+            html_contributions = html_contributions.len(),
+            "declarative package loaded (no wasm module)"
+        );
+        return Ok(LoadedPlugin {
+            id: manifest.package.clone(),
+            version: manifest.version,
+            api_version: manifest.api_version,
+            functions: Vec::new(),
+            signatures: Vec::new(),
+            elements: Vec::new(),
+            html_contributions,
+        });
+    };
     let wasm_path = package_dir.join(&wasm.module);
     let wasm_bytes = std::fs::read(&wasm_path)
         .map_err(|error| format!("cannot read {}: {error}", wasm_path.display()))?;

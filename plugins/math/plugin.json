@@ -1,0 +1,19 @@
+{
+  "package": "math",
+  "version": "0.1.0",
+  "api-version": "0.1",
+  "render": {
+    "html": {
+      "contributions": [
+        {
+          "element": "core::math",
+          "trusted": true,
+          "web-component": {
+            "tag": "notist-math",
+            "module": "assets/math.js"
+          }
+        }
+      ]
+    }
+  }
+}

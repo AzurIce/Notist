@@ -161,6 +161,7 @@ impl LowerState<'_> {
                     }
                 }
                 MarkupItem::Raw(raw) => self.lower_raw(raw),
+                MarkupItem::Math(math) => self.lower_math(math),
                 MarkupItem::List(sugar) => self.lower_list_sugar(sugar),
                 MarkupItem::Table(sugar) => self.lower_table_sugar(sugar),
             }
@@ -373,6 +374,23 @@ impl LowerState<'_> {
         let mut node = Node::call("core::raw", range)
             .arg("source", source)
             .arg("lang", language)
+            .arg("block", block);
+        node.block = block;
+        self.push_node(node);
+    }
+
+    fn lower_math(&mut self, math: &notist_syntax::MathSpan) {
+        let range = math.range.shifted(self.base_offset);
+        let source_start = math.source.range.start.saturating_sub(self.base_offset);
+        let source_end = math.source.range.end.saturating_sub(self.base_offset);
+        let source = self
+            .source
+            .get(source_start..source_end)
+            .unwrap_or_default()
+            .to_owned();
+        let block = matches!(math.form, notist_syntax::MathForm::Block);
+        let mut node = Node::call("core::math", range)
+            .arg("source", source)
             .arg("block", block);
         node.block = block;
         self.push_node(node);

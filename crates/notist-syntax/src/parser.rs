@@ -176,6 +176,32 @@ impl Parser<'_> {
                     text_start = self.cursor;
                     at_line_start = false;
                 }
+                // Math sugar: `$...$` inline spans and `$$`-fenced blocks.
+                // A `$` that opens nothing stays ordinary text.
+                Some(b'$') => match crate::math::scan_at(self.source, self.cursor, at_line_start) {
+                    crate::math::MathScan::Span(math, error) => {
+                        self.push_text(&mut items, text_start, self.cursor);
+                        self.cursor = math.range.end.max(self.cursor + 1);
+                        self.errors.extend(error);
+                        items.push(MarkupItem::Math(math));
+                        text_start = self.cursor;
+                        at_line_start = false;
+                    }
+                    crate::math::MathScan::Misplaced(range) => {
+                        self.errors.push(SyntaxError {
+                            message: "block math delimiter `$$` must stand alone on its line"
+                                .into(),
+                            range,
+                        });
+                        // Degrade the `$$` to ordinary text.
+                        at_line_start = false;
+                        self.cursor = (self.cursor + 2).min(self.source.len());
+                    }
+                    crate::math::MathScan::Plain => {
+                        at_line_start = false;
+                        self.cursor = self.next_char_end(self.cursor);
+                    }
+                },
                 Some(b'#') => {
                     self.push_text(&mut items, text_start, self.cursor);
                     let embedded = self.parse_embedded_expression();
@@ -2280,6 +2306,7 @@ fn trim_trailing_framing_newline(
 fn is_content_item(item: &MarkupItem, source: &str) -> bool {
     match item {
         MarkupItem::Annotation(annotation) => !annotation.module,
+        MarkupItem::Math(_) => true,
         MarkupItem::Embedded(embedded) => !matches!(
             embedded.expression.kind,
             ExpressionKind::Let { .. }

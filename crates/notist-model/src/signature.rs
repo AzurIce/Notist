@@ -337,6 +337,27 @@ pub fn raw_signature() -> FunctionSignature {
     }
 }
 
+/// The signature of the built-in `math` function (constructor for the
+/// `core::math` element the `$...$` / `$$` sugar lowers to).
+pub fn math_signature() -> FunctionSignature {
+    FunctionSignature {
+        parameters: vec![
+            Parameter {
+                name: "source".into(),
+                ty: Type::String,
+                default: None,
+            },
+            Parameter {
+                name: "block".into(),
+                ty: Type::Bool,
+                default: Some(DefaultValue::Bool(false)),
+            },
+        ],
+        trailing_content: None,
+        result: Type::Content,
+    }
+}
+
 /// The signature of the built-in `callout` function.
 pub fn callout_signature() -> FunctionSignature {
     FunctionSignature {
@@ -515,12 +536,13 @@ pub fn empty_content_signature() -> FunctionSignature {
 }
 
 /// The names and signatures of all built-in functions.
-pub fn builtin_signatures() -> [(&'static str, FunctionSignature); 15] {
+pub fn builtin_signatures() -> [(&'static str, FunctionSignature); 16] {
     [
         ("link", link_signature()),
         ("view", view_signature()),
         ("heading", heading_signature()),
         ("raw", raw_signature()),
+        ("math", math_signature()),
         ("rule", empty_content_signature()),
         ("callout", callout_signature()),
         ("details", details_signature()),

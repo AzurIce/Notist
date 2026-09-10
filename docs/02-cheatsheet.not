@@ -17,7 +17,9 @@
 _text_                     → emph([text])
 __text__                   → underline([text])
 ~~text~~                   → strike([text])
-`code`（行内反引号）        → Raw（block: false）
+$x^2$（行内数学）          → math("x^2", block: false)
+$$ ... $$（数学块）        → math("...", block: true)
+`code`（行内反引号）       → Raw（block: false）
 ````
 
 糖的语义不经过名字查找：`= 标题` 是语法层构造，显式 `#heading[...]` 才是普通名字解析。
@@ -28,6 +30,7 @@ __text__                   → underline([text])
 link(target: Target | String) -> Item
 heading(level: Int = 1, trailing body: Item) -> Item
 raw(source: String, lang: String? = (), block: Bool = false) -> Item
+math(source: String, block: Bool = false) -> Item
 rule() -> Item
 callout(kind: String = "note", title: Item? = (), trailing body: Item) -> Item
 details(summary: Item? = (), open: Bool = false, trailing body: Item) -> Item

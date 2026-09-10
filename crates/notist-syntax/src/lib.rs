@@ -1,6 +1,7 @@
 use notist_model::{ModuleReference, TableAlignment, Target, TextRange};
 
 mod argument;
+mod math;
 mod parser;
 mod raw;
 mod scope;
@@ -9,6 +10,7 @@ pub use argument::{
     Argument, BinaryOperator, DictEntry, Expression, ExpressionKind, ImportSelector, StringLiteral,
     StringLiteralForm, StringLiteralStyle, UnaryOperator, UserFunctionDefinition, UserParameter,
 };
+pub use math::{MathForm, MathSpan};
 pub use raw::{RawLiteral, RawLiteralForm, SpannedText};
 pub use scope::{BodyForm, SpannedName};
 
@@ -40,6 +42,9 @@ impl Default for Markup {
 pub enum MarkupItem {
     Text(SpannedText),
     Raw(RawLiteral),
+    /// A `$...$` inline span or `$$`-fenced block of raw math source (math
+    /// sugar). The payload is opaque to Markup.
+    Math(MathSpan),
     Embedded(EmbeddedExpression),
     /// A line-leading `= ...` heading sugar (D0003). The body is Markup up
     /// to the line end.
@@ -1583,6 +1588,7 @@ impl MarkupItem {
         match self {
             Self::Text(text) => text.range,
             Self::Raw(raw) => raw.range,
+            Self::Math(math) => math.range,
             Self::Embedded(embedded) => embedded.range,
             Self::Heading(sugar) => sugar.range,
             Self::Rule(range) => *range,

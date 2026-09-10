@@ -39,7 +39,7 @@
 | documentSymbol / workspaceSymbol | 仅 handler 直调 |
 | initialize/shutdown/exit、capabilities 内容 | 零覆盖 |
 | publishDiagnostics 增量去重、跨文件联动 | 仅 baseline 与 close 清空 |
-| $/cancelRequest、UTF-16 编码端到端（emoji/CJK 文本上发 position） | 零覆盖 |
+| \$/cancelRequest、UTF-16 编码端到端（emoji/CJK 文本上发 position） | 零覆盖 |
 
 == 方案对比
 
@@ -84,7 +84,7 @@ crates/notist-cli/tests/
 | 编码端到端 | emoji/CJK 行上 hover/completion 的 UTF-16 position | 结果 range 以 UTF-16 回读校验 |
 | 错误规范 | 畸形 JSON 帧 | 解析容错不断流 |
 | 错误规范 | 未知方法 / 坏参数 | -32601 / -32602 |
-| 取消 | $/cancelRequest | 会话不崩、后续请求 id 不串 |
+| 取消 | \$/cancelRequest | 会话不崩、后续请求 id 不串 |
 | 未声明面 | references / documentSymbol / workspaceSymbol / didSave 经真实循环走通 | 补齐矩阵零覆盖项 |
 
 == 价值与后续

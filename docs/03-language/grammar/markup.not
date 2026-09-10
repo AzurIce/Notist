@@ -110,10 +110,24 @@ __text__  ~= underline([text])
 - 可嵌套其他强调；
 - error recovery：行尾未闭合 → 恢复为普通文本并诊断。
 
+=== math
+
+```text
+$x^2$    ~= math("x^2", block: false)
+
+$$
+a^2 + b^2 = c^2
+$$        ~= math("a^2 + b^2 = c^2", block: true)
+```
+
+- syntax boundary：行内开符 `$` 后必须紧跟非空白、非 `$` 字符，闭符 `$` 前必须是非空白；`\$` 不闭合且原样保留在 payload 里；行内不跨行；
+- block form：开行是仅含 `$$` 的行（行首可有空白），闭行同构；`$$` 不独占一行 → 诊断并按文本降级；
+- payload 是 raw text：不解释任何 Markup（`*`/`_`/`#` 原样保留），数学语法由渲染侧解释（math 插件按 Typst 数学语法排版；无插件时降级为逐字源码文本）；
+- error recovery：行内未闭合 → 诊断，span 止于行尾；块级未闭合 → 诊断，payload 吃到 EOF。
+
 === 暂缓与候选
 
 - `task`：`- [ ]` / `- [x]`；
-- `math`：`$...$`；
 - `kbd`：无糖内置函数；
 - `insert`：`++...++`；
 - `quote`：无糖构造器；
@@ -139,6 +153,8 @@ __text__  ~= underline([text])
 _text_              ~= emph([text])
 __text__            ~= underline([text])
 ~~text~~            ~= strike([text])
+$x^2$               ~= math("x^2", block: false)
+$$ ... $$           ~= math("...", block: true)
 ````
 
 糖在 syntax frontend 建立节点，lowering 获得构造器的 intrinsic identity 后，与显式调用走完全相同的解析、检查与求值路径；structural sugar（item）在求值后由成型组合（#<vault::03-language::structure>）。

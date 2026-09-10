@@ -120,7 +120,16 @@ impl HtmlProjectionRegistry {
             *value = self.reduce_value(std::mem::replace(value, NodeValue::None), 0);
         }
 
-        if node.name.starts_with("core::") || node.name.starts_with("html::") {
+        if node.name.starts_with("html::") {
+            return vec![node];
+        }
+        if node.name.starts_with("core::") {
+            // Core nodes take the native built-in branch, except when a
+            // registered handler claims the element by its exact qualified
+            // name (e.g. a math renderer claiming `core::math`).
+            if let Some(projected) = self.try_exact_handler(&node, depth) {
+                return projected;
+            }
             return vec![node];
         }
         if depth >= Self::MAX_PROJECTION_DEPTH {
@@ -152,6 +161,25 @@ impl HtmlProjectionRegistry {
                 vec![fallback_projection_node(node)]
             }
         }
+    }
+
+    /// Consults handlers for a core node; only an exact qualified match
+    /// counts, so plugins can claim `core::math` but can never hijack
+    /// `core::heading` by declaring the bare local name.
+    fn try_exact_handler(&self, node: &Node, depth: usize) -> Option<Vec<Node>> {
+        let handler = self
+            .handlers
+            .iter()
+            .find(|handler| handler.element_name() == node.name)?;
+        tracing::trace!(
+            target: "notist_html",
+            element = %node.name,
+            handler = handler.element_name(),
+            "projection handler claimed core element"
+        );
+        handler
+            .project(node)
+            .map(|nodes| self.reduce_nodes(nodes, depth + 1))
     }
 
     fn reduce_value(&self, value: NodeValue, depth: usize) -> NodeValue {
@@ -670,6 +698,28 @@ impl Renderer<'_, '_> {
                     _ => None,
                 };
                 self.raw_range(text, block, language, node.range);
+            }
+            // Native math mapping: the no-plugin degradation renders the
+            // source verbatim; a math renderer plugin claims the element via
+            // projection and upgrades it to a web component.
+            "math" => {
+                let Some(NodeValue::String(text)) = node.get("source") else {
+                    return;
+                };
+                let block = matches!(node.get("block"), Some(NodeValue::Bool(true)));
+                let class = if block {
+                    "notist-math notist-math-block"
+                } else {
+                    "notist-math"
+                };
+                self.output.push_str(if block { "<div" } else { "<span" });
+                self.output.push_str(" class=\"");
+                self.output.push_str(class);
+                self.output.push('"');
+                self.range_attributes_range(node.range);
+                self.output.push('>');
+                escape_text(&mut self.output, text);
+                self.output.push_str(if block { "</div>" } else { "</span>" });
             }
             "callout" => {
                 let kind = match node.get("kind") {
@@ -2026,6 +2076,65 @@ mod tests {
         let html = render_element_tree(&projected);
         assert!(html.contains("<article"), "{html}");
         assert!(html.contains("data-title=\"&lt;&amp;&gt;\""), "{html}");
+    }
+
+    #[test]
+    fn plugin_handler_claims_core_element_by_qualified_name() {
+        // A math renderer claims `core::math` via its exact qualified name;
+        // the projection upgrades the core node to a web component.
+        let mut renderers = HtmlRendererRegistry::new();
+        register_web_component_renderer(&mut renderers, "core::math", "notist-math");
+
+        let inline = Node::call("core::math", TextRange::new(0, 5))
+            .arg("source", "e^{i\\pi}")
+            .arg("block", false);
+        let html = render_element_tree_with_renderers(
+            &tree(vec![inline]),
+            &RenderOptions::default(),
+            Some(&|_, _| None),
+            &[],
+            &renderers,
+        );
+        assert!(html.contains("<notist-math"), "{html}");
+        assert!(html.contains("data-notist-element=\"core::math\""));
+        assert!(html.contains("data-source=\"e^{i\\pi}\""), "{html}");
+        assert!(html.contains("</notist-math>"));
+    }
+
+    #[test]
+    fn bare_plugin_declarations_cannot_hijack_core_elements() {
+        // Declaring the bare local name must not let a plugin claim a core
+        // element; `core::heading` still takes the native branch.
+        let mut renderers = HtmlRendererRegistry::new();
+        register_web_component_renderer(&mut renderers, "heading", "notist-heading");
+
+        let heading = Node::block_call("core::heading", TextRange::new(0, 5))
+            .arg("level", 1_i64)
+            .arg("text", "Title");
+        let html = render_element_tree_with_renderers(
+            &tree(vec![heading]),
+            &RenderOptions::default(),
+            Some(&|_, _| None),
+            &[],
+            &renderers,
+        );
+        assert!(html.contains("<h1"), "{html}");
+        assert!(!html.contains("notist-heading"), "{html}");
+    }
+
+    #[test]
+    fn core_math_degrades_to_native_source_without_a_handler() {
+        let inline = Node::call("core::math", TextRange::new(0, 5))
+            .arg("source", "e^{i\\pi} + 1 = 0")
+            .arg("block", false);
+        let block = Node::block_call("core::math", TextRange::new(6, 11))
+            .arg("source", "a^2 + b^2 = c^2")
+            .arg("block", true);
+        let html = render_element_tree(&tree(vec![inline, block]));
+        assert!(html.contains("<span class=\"notist-math\""), "{html}");
+        assert!(html.contains("<div class=\"notist-math notist-math-block\""), "{html}");
+        assert!(html.contains("e^{i\\pi} + 1 = 0"), "{html}");
+        assert!(html.contains("a^2 + b^2 = c^2"), "{html}");
     }
 
     #[test]
