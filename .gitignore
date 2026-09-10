@@ -1,5 +1,7 @@
 target/
-dist
+# notist build 的默认输出目录；只锚定仓库根，vendored 插件资产里的
+# dist/（如 plugins/math/assets/vendor/typst-ts/dist）不受影响。
+/dist/
 .direnv
 result
 plugins/*/lib/
