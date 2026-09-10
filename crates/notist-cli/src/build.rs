@@ -468,6 +468,15 @@ impl PageView<'_> {
     }
 }
 
+/// Whether a page's fragment references a web component: through the
+/// renderer's `data-notist-element` marker (qualified or bare element name)
+/// or the raw custom-element tag from a hand-written `html::` call.
+fn fragment_uses_component(fragment: &str, package: &str, element: &str, tag: &str) -> bool {
+    fragment.contains(&format!("data-notist-element=\"{package}::{element}\""))
+        || fragment.contains(&format!("data-notist-element=\"{element}\""))
+        || fragment.contains(&format!("<{}", tag))
+}
+
 fn page_shell(
     site_name: &str,
     page: &PageView<'_>,
@@ -511,6 +520,12 @@ fn page_shell(
             let Some(component) = &contribution.web_component else {
                 continue;
             };
+            // Load a component's assets only on pages that actually use it:
+            // plugin modules and their wasm can weigh tens of megabytes.
+            if !fragment_uses_component(page.fragment, &package.name, &contribution.element, &component.tag)
+            {
+                continue;
+            }
             if let Some(style) = &component.style
                 && let Some(file_name) = Path::new(style).file_name().and_then(|name| name.to_str())
             {
@@ -2569,6 +2584,54 @@ notist-view .notist-view-content-empty { min-height: 64px; }
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn page_shell_injects_plugin_assets_only_when_fragment_uses_the_component() {
+        let headings: Vec<RenderedHeadingRecord> = Vec::new();
+        let bindings: Vec<RenderedBindingRecord> = Vec::new();
+        let plugin_assets = vec![notist_plugin_host::PluginHtmlAssets {
+            name: "mermaid".to_owned(),
+            contributions: vec![notist_plugin_host::HtmlContribution {
+                element: "diagram".to_owned(),
+                trusted: false,
+                web_component: Some(notist_plugin_host::WebComponentDecl {
+                    tag: "notist-mermaid".to_owned(),
+                    module: "assets/mermaid.js".to_owned(),
+                    style: None,
+                }),
+            }],
+        }];
+        let (plain_page, using_page) = (
+            PageView {
+                module: ModulePath::root(),
+                title: Some("Plain"),
+                headings: &headings,
+                fragment: "<p>plain</p>",
+                bindings: &bindings,
+                source: None,
+                plugin_assets: &plugin_assets,
+                site_styles: &[],
+            },
+            PageView {
+                module: ModulePath::root(),
+                title: None,
+                headings: &headings,
+                fragment: "<notist-mermaid class=\"notist-web-component\" \
+                            data-notist-element=\"mermaid::diagram\"></notist-mermaid>",
+                bindings: &bindings,
+                source: None,
+                plugin_assets: &plugin_assets,
+                site_styles: &[],
+            },
+        );
+        let pages = vec![using_page, plain_page];
+
+        let html = page_shell("site", &pages[0], &pages, SiteOptions::default());
+        assert!(html.contains("_notist/plugins/mermaid/mermaid.js"));
+
+        let plain_html = page_shell("site", &pages[1], &pages, SiteOptions::default());
+        assert!(!plain_html.contains("_notist/plugins/"));
+    }
 
     fn render(root: &Path) -> RenderedWorkspaceRecord {
         let mut client =

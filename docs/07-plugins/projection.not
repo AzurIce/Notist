@@ -68,7 +68,7 @@ WebComponentDecl {
 ```
 
 - 宿主由 manifest 合成投影 handler：输出 custom element，并把标量字段转义为 `data-*` 属性；字段与 body 值保持与其他 HTML 投影相同的转义规则。
-- JS module 与 CSS 由 CLI build / preview 复制到 `_notist/plugins/<package>/` 并注入页面 head（实操见 #<vault::05-cli::build>）。
+- JS module 与 CSS 由 CLI build / preview 复制到 `_notist/plugins/<package>/`；页面 head 只注入本页用到的组件——按片段中的 `data-notist-element` 标记或组件标签判定，组件与配套 wasm 可重达数十 MB，不用的页面不加载（实操见 #<vault::05-cli::build>）。
 - `tag` 必须是包含 `-` 的 lowercase custom-element 名，manifest 校验时拒绝非法 tag。
 - 任意 HTML 字符串 renderer 暂不开放；`trusted` 是 manifest 声明的信任标记，预定用于 Wasm HTML renderer 的 gate。
 

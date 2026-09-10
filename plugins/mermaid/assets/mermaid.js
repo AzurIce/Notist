@@ -7,11 +7,24 @@
 
 import { initMerman, renderSvgToElement } from './merman-web-render/dist/package-entries/render.js';
 
+// Wasm bytes normally resolve through the dist's own relative URL. Inside
+// sandboxed preview iframes the module runs as a blob:, where relative URLs
+// cannot reach plugin files; the host then exposes a path -> blob URL map
+// (site-root-relative) before this module loads, and we hand the bytes to
+// initMerman explicitly.
+const ASSET_URLS = globalThis.__NOTIST_ASSET_URLS__ || null;
+const WASM_ASSET_KEY = 'plugins/mermaid/merman-web-render/artifacts/wasm/merman_wasm_bg.wasm';
+
 let rendererReady = null;
 
 function loadRenderer() {
   if (!rendererReady) {
-    rendererReady = initMerman();
+    const assetUrl = ASSET_URLS && ASSET_URLS[WASM_ASSET_KEY];
+    rendererReady = assetUrl
+      ? fetch(assetUrl)
+          .then((response) => response.arrayBuffer())
+          .then((wasm) => initMerman({ wasm }))
+      : initMerman();
   }
   return rendererReady;
 }
