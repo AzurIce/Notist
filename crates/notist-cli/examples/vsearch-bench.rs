@@ -129,6 +129,15 @@ fn arms() -> Vec<Arm> {
             context: ChunkContext::ChainAttrs,
             endpoint: "http://192.168.2.11:1234/v1",
         },
+        // Same bge-m3 weights served by ollama on the same Mac mini:
+        // isolates LM Studio's llama.cpp build from ollama's (0.32.13).
+        Arm {
+            name: "ollama-m4-bgem3-attrs",
+            model: "bge-m3",
+            granularity: Section,
+            context: ChunkContext::ChainAttrs,
+            endpoint: "http://192.168.2.11:11434/v1",
+        },
     ]
 }
 
