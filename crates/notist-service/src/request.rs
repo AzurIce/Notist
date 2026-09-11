@@ -184,6 +184,12 @@ pub enum CoreRequest {
         view_id: ServiceViewId,
         query: crate::query::SearchQuery,
     },
+    /// Dense (vector) similarity search. Experimental `vsearch` lane; the
+    /// query text is embedded and ranked against structurally chunked blocks.
+    VectorSearch {
+        view_id: ServiceViewId,
+        query: crate::vector::VectorSearchQuery,
+    },
     IndexStatus {
         view_id: ServiceViewId,
     },
@@ -248,6 +254,7 @@ impl CoreRequest {
             | Self::WorkspaceSymbols { view_id, .. }
             | Self::Search { view_id, .. }
             | Self::SearchPage { view_id, .. }
+            | Self::VectorSearch { view_id, .. }
             | Self::IndexStatus { view_id }
             | Self::IndexRebuild { view_id, .. }
             | Self::RenderWorkspace { view_id }
@@ -416,6 +423,7 @@ pub enum CoreResponse {
     ResolvedReference(RefTargetRecord),
     Search(Vec<SearchRecord>),
     SearchPage(crate::query::QueryResult<crate::query::SearchHit>),
+    VectorSearch(crate::query::QueryResult<crate::vector::VectorHit>),
     IndexStatus(crate::query::IndexStatusRecord),
     QueryError(crate::query::ToolError),
     RenderedWorkspace(RenderedWorkspaceRecord),
@@ -833,7 +841,7 @@ impl NotistService {
         }
     }
 
-    fn index_status(
+    fn lexical_index_status(
         &self,
         workspace: &WorkspaceSnapshot,
         identity: &SnapshotIdentity,
@@ -842,6 +850,7 @@ impl NotistService {
         let key = Self::index_cache_key(identity);
         if let Some(index) = self.search_indexes.lock().unwrap().get(&key).cloned() {
             return crate::query::IndexStatusRecord {
+                dense: None,
                 health: "ready".into(),
                 stamp: Some(index.stamp.clone()),
                 unit_count: index.unit_count,
@@ -853,6 +862,7 @@ impl NotistService {
             let result = build.result.lock().unwrap();
             return match result.as_ref() {
                 None => crate::query::IndexStatusRecord {
+                    dense: None,
                     health: "building".into(),
                     stamp: None,
                     unit_count: 0,
@@ -860,6 +870,7 @@ impl NotistService {
                     message: Some("the current snapshot index is being built".into()),
                 },
                 Some(Ok(index)) => crate::query::IndexStatusRecord {
+                    dense: None,
                     health: "ready".into(),
                     stamp: Some(index.stamp.clone()),
                     unit_count: index.unit_count,
@@ -867,6 +878,7 @@ impl NotistService {
                     message: None,
                 },
                 Some(Err(error)) => crate::query::IndexStatusRecord {
+                    dense: None,
                     health: "error".into(),
                     stamp: None,
                     unit_count: 0,
@@ -898,6 +910,7 @@ impl NotistService {
             .next()
         {
             return crate::query::IndexStatusRecord {
+                dense: None,
                 health: "stale".into(),
                 stamp: Some(index.stamp.clone()),
                 unit_count: index.unit_count,
@@ -906,12 +919,26 @@ impl NotistService {
             };
         }
         crate::query::IndexStatusRecord {
+            dense: None,
             health: "not_built".into(),
             stamp: None,
             unit_count: 0,
             operation_handle: None,
             message: Some(not_built_message.into()),
         }
+    }
+
+    /// Lexical index health plus the dense (vsearch) lane line, when the
+    /// Vault declares an `[embedding]` configuration.
+    fn index_status(
+        &self,
+        workspace: &WorkspaceSnapshot,
+        identity: &SnapshotIdentity,
+        not_built_message: &str,
+    ) -> crate::query::IndexStatusRecord {
+        let mut status = self.lexical_index_status(workspace, identity, not_built_message);
+        status.dense = crate::vector::dense_status(workspace, identity);
+        status
     }
 
     pub fn execute(&self, request: CoreRequest) -> io::Result<CoreReply> {
@@ -1710,6 +1737,19 @@ impl NotistService {
                     },
                 })
             }
+            CoreRequest::VectorSearch { view_id, query } => {
+                let (snapshot, result) = self
+                    .with_snapshot_identity(view_id, |workspace, identity| {
+                        crate::vector::vector_search(workspace, identity, &query)
+                    })?;
+                Ok(CoreReply {
+                    snapshot,
+                    response: match result {
+                        Ok(result) => CoreResponse::VectorSearch(result),
+                        Err(error) => CoreResponse::QueryError(error),
+                    },
+                })
+            }
             CoreRequest::IndexStatus { view_id } => {
                 let (snapshot, status) =
                     self.with_snapshot_identity(view_id, |workspace, identity| {
@@ -1730,6 +1770,7 @@ impl NotistService {
                         let build = self.start_index_build(workspace, identity, true)?;
                         if !wait {
                             return Ok(crate::query::IndexStatusRecord {
+                                dense: None,
                                 health: "building".into(),
                                 stamp: None,
                                 unit_count: 0,
@@ -1739,6 +1780,7 @@ impl NotistService {
                         }
                         match Self::wait_for_index(&build, None) {
                             IndexBuildWait::Ready(index) => Ok(crate::query::IndexStatusRecord {
+                                dense: None,
                                 health: "ready".into(),
                                 stamp: Some(index.stamp.clone()),
                                 unit_count: index.unit_count,

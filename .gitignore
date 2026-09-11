@@ -9,3 +9,6 @@ plugins/*/lib/
 
 # ZCode session state
 .zcode/
+
+# fastembed 的默认模型缓存（已被用户缓存目录取代，防误提交）
+.fastembed_cache/

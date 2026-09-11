@@ -1,0 +1,50 @@
+@!(implementation: "partial")
+= vsearch: Semantic Vector Query
+
+`notist inspect vsearch` 是 inspect 组的实验性语义向量命令：查询文本嵌入为向量，与按结构切块的全库内容块算余弦相似度，按分数返回前 k 条。它与 #<vault::05-cli::search> 的四模式检索不共享命令、排名契约或索引；进入稳定命令面须先在版本化 benchmark 上证明相对词法基线的明确提升，且不破坏 citation 与 snapshot 一致性。inspect 组的跨命令契约见 #<vault::05-cli::inspect>；命令面治理、全局参数与错误退出状态见 #<vault::05-cli>。
+
+```shell
+notist inspect vsearch "属性的继承语义是怎么定义的"          # 默认 k=20
+notist inspect vsearch "..." -k 5                          # 召回深度
+```
+
+== 配置
+
+`[embedding]` 表在 Vault `Notist.toml` 中声明；表缺席即整条命令关闭（typed `embedding_not_configured`），其余命令不受影响。
+
+```toml
+[embedding]
+model    = "bge-small-zh-v1.5"     # 内置模型名
+# endpoint = "http://127.0.0.1:8934/v1"   # 给出即改走 OpenAI 兼容 /v1/embeddings
+# dims     = 512                          # endpoint 模式必填
+# api_key_env = "OPENAI_API_KEY"
+# granularity = "section"                # section | paragraph | scope
+# context     = "chain-attrs"            # none | chain | chain-attrs
+# threads     = 4                        # 推理线程上限
+```
+
+== 内置 provider 与模型表边界
+
+内置 provider 是 fastembed 进程内 ONNX 推理，无外部依赖；模型表只收录 small/base 级检查点（`bge-small-zh-v1.5`、`bge-small-en-v1.5`、`bge-base-en-v1.5`、`multilingual-e5-small/base`）。更大的模型按性能裁决排除在可内置范围外，经 `endpoint` 接入外部 server（GPU 随 server 而来）。模型是运行时状态：首次使用下载进用户缓存，绝不进入二进制。
+
+== 检索单元与上下文
+
+检索单元从求值后 Item 树切出，边界是作者声明的结构边界而非固定窗口：
+
+- `granularity = section`：一块一节，默认。
+- `granularity = paragraph`：节内按空行细分，块携带标题链；碎片分数虚高，实测劣于 section。
+- `granularity = scope`：节按其直接 `#[...]` scope 子块分区，无 scope 时退化为 section。
+
+`context` 决定嵌入文本的确定性前缀：`none` 为块正文；`chain` 加标题链行；`chain-attrs` 再加生效属性 token（模块 `@!` 条目与管辖节注解，经求值后属性表取得）。实测 `chain-attrs` 使概念查询 R\@5 翻倍，是推荐默认。
+
+== 存储与增量
+
+向量索引存用户缓存、按 Vault 身份分区；manifest 记录 model、chunker 版本、上下文、source fingerprint，任一不匹配即弃置重建。块内容 hash 未变者复用已缓存向量，仅变更块重嵌；索引滞后或缺失时查询内联重建（阻塞），模型不可用时报 typed error，绝不返回降质的静默结果。`index status` 附带 dense 通道行（状态/模型/维度/块数）。
+
+== 输出契约
+
+一行一 hit：名次、余弦分、相对路径、1-based 行区间、一行摘录。摘录与 `-k` 的语义同 #<vault::05-cli::search> 的纪律：摘录是候选信息不是证据，形成结论前用 read 取证；`-k` 是排名语义的召回深度，不是输出截断。零命中输出 `No matches.`。
+
+== 实测基线
+
+docs vault（1228 块、46 条标注查询、2026-09-08）：section 优于 paragraph（strict R\@10 0.39 对 0.26）；`chain-attrs` 使概念查询 R\@5 由 0.19 升至 0.42；标识符类查询最高 0.83 仍不达标，归 exact/grep。数据与 bench 工具见实验记录，不随契约发布。

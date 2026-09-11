@@ -4,6 +4,26 @@ version.workspace = true
 edition.workspace = true
 license.workspace = true
 
+# Both dense features enable in-process ONNX inference (fastembed); they
+# differ only in how ort acquires the ONNX Runtime library. Enable exactly
+# one — the two acquisition modes are mutually exclusive.
+# - dense-download (default): ort's build script downloads prebuilt ONNX
+#   Runtime at compile time; needs build-time network (plain cargo builds).
+# - dense-system: ort dlopens a system ONNX Runtime at runtime; for Nix and
+#   other sandboxed builds (pair with onnxruntime in the environment).
+[features]
+default = ["dense-download"]
+dense-download = [
+    "dep:fastembed",
+    "fastembed/ort-download-binaries-rustls-tls",
+    "fastembed/hf-hub-rustls-tls",
+]
+dense-system = [
+    "dep:fastembed",
+    "fastembed/ort-load-dynamic",
+    "fastembed/hf-hub-rustls-tls",
+]
+
 [dependencies]
 tracing.workspace = true
 base64.workspace = true
@@ -22,6 +42,13 @@ notist-plugin-host.workspace = true
 notist-syntax.workspace = true
 notist-html.workspace = true
 percent-encoding.workspace = true
+postcard.workspace = true
+toml.workspace = true
+# Dense (vsearch) lane: in-process ONNX inference. Models are runtime state
+# downloaded on first use, never carried in the binary; the acquisition mode
+# is chosen by the dense-download / dense-system feature above.
+fastembed = { version = "5", optional = true, default-features = false }
+ureq = { version = "2", default-features = false, features = ["json", "tls"] }
 
 [target.'cfg(unix)'.dependencies]
 libc = "0.2"

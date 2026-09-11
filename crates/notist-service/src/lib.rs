@@ -17,6 +17,7 @@ pub mod protocol;
 pub mod query;
 mod request;
 pub mod transport;
+pub mod vector;
 pub mod watcher;
 
 pub use query::*;

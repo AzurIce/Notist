@@ -1,7 +1,7 @@
 @!(implementation: "aligned")
 = CLI Inspect: Agent Query and Navigation
 
-本文是 `notist inspect` 调查组的跨命令契约：身份与坐标的寻址文法、Agent 工作流与停止规则。`inspect` 只保留两个命令，各自独立成页：read（#<vault::05-cli::inspect::read>）与 refs（#<vault::05-cli::inspect::refs>）。命令面治理、全局参数、错误与退出状态见 #<vault::05-cli>；查询契约见 #<vault::05-cli::search>。
+本文是 `notist inspect` 调查组的跨命令契约：身份与坐标的寻址文法、Agent 工作流与停止规则。inspect 的稳定命令各自独立成页：read（#<vault::05-cli::inspect::read>）与 refs（#<vault::05-cli::inspect::refs>）；实验性语义向量命令 vsearch（#<vault::05-cli::inspect::vsearch>）在 benchmark 过门前不属于稳定命令面。命令面治理、全局参数、错误与退出状态见 #<vault::05-cli>；查询契约见 #<vault::05-cli::search>。
 
 #[]
 == 身份与坐标
@@ -27,6 +27,10 @@ read 是带属性注解的读取，独立成篇：#<vault::05-cli::inspect::read
 
 遍历穿越查询区域边界的引用，默认列出指入的一半（"谁从区域之外引用这个目标"），`--out` 列出指出的一半（"区域内提及了哪些边界之外的目标"），独立成篇：#<vault::05-cli::inspect::refs>。
 
+== vsearch
+
+语义向量检索（experimental），独立成篇：#<vault::05-cli::inspect::vsearch>。
+
 == Agent 工作流
 
 ```text
@@ -37,6 +41,8 @@ grep / 宿主 Read 的产出（path:line）
   -> check 验证状态
   -> 用宿主编辑工具直接修改 .not，修改后再次 check
 ```
+
+（experimental）概念型、改述型问题——没有关键词可 grep 时——可试 `notist inspect vsearch`；其输出同样是候选列表，取证仍走 read。
 
 停止规则：
 
