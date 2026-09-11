@@ -60,10 +60,6 @@
           inherit src;
           pname = "notist";
           strictDeps = true;
-          # dense-system：ort 在运行时 dlopen 系统 ONNX Runtime。默认的
-          # dense-download 会在编译期联网下载预编译 ONNX Runtime，沙箱里
-          # 无法工作（见 notist-service 的 [features]）。
-          cargoExtraArgs = "--locked --package notist-cli --no-default-features --features dense-system";
         };
 
         cargoArtifacts = craneLib.buildDepsOnly commonArgs;
@@ -72,10 +68,7 @@
           commonArgs
           // {
             inherit cargoArtifacts;
-            nativeBuildInputs = [ pkgs.makeWrapper ];
-            postInstall = ''
-              wrapProgram $out/bin/notist --set ORT_DYLIB_PATH "${lib.makeLibraryPath [ pkgs.onnxruntime ]}/libonnxruntime.so"
-            '';
+            cargoExtraArgs = "--locked --package notist-cli";
             # 测试需要两处可写目录，沙箱里 HOME（/homeless-shelter）不可写：
             # - XDG_CACHE_HOME：搜索索引缓存（见 notist-service 的 search_cache_path）
             # - NOTIST_DATA_DIR：内嵌官方文档的同步根（见 notist-cli 的 notist_data_root，

@@ -1,5 +1,6 @@
 [embedding]
 model = "bge-small-zh-v1.5"
+endpoint = "http://127.0.0.1:8934/v1"
 
 [plugins.shader]
 path = "../plugins/shader"

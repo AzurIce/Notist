@@ -1,9 +1,9 @@
 //! Experiment harness for the dense (vsearch) lane: runs a labeled query set
-//! against multiple chunking / context / model arms and emits one JSON blob
-//! of rankings for offline scoring. Not part of the CLI contract — this is
-//! worktree experiment tooling.
+//! against embedding-server arms and emits one JSON blob of rankings for
+//! offline scoring (with `experiments/vsearch-bench/score.py`). Not part of
+//! the CLI contract — this is experiment tooling.
 //!
-//! Usage: vsearch-bench <VAULT> <QUERIES.json> <OUT.json>
+//! Usage: vsearch-bench <VAULT> <QUERIES.json> <OUT.json> [--only SUBSTR]
 
 use std::path::PathBuf;
 use std::time::Instant;
@@ -63,84 +63,71 @@ struct Arm {
     model: &'static str,
     granularity: ChunkGranularity,
     context: ChunkContext,
-    /// When set, embeddings come from an OpenAI-compatible endpoint instead
-    /// of the in-process ONNX runtime (llama-server comparison arms).
-    endpoint: Option<&'static str>,
+    /// OpenAI-compatible `/v1` base URL of the embedding server.
+    endpoint: &'static str,
 }
 
 fn arms() -> Vec<Arm> {
-    use ChunkContext::{ChainAttrs, None as NoContext};
-    use ChunkGranularity::{Paragraph, Scope, Section};
+    use ChunkContext::None as NoContext;
+    use ChunkGranularity::Section;
+    // Same model weights (bge-small-zh-v1.5 f16 GGUF) across servers:
+    // 8934 = llama-server `-ngl 0 -t 4` (CPU), 8935 = the same binary with
+    // `-ngl 99` (CUDA), 11434 = ollama. Isolates runtime + hardware cost
+    // from chunking quality; the chunking/context factor study lives in the
+    // experiment record.
     vec![
-        Arm {
-            name: "s-sec-none",
-            model: "bge-small-zh-v1.5",
-            granularity: Section,
-            context: NoContext,
-            endpoint: None,
-        },
-        Arm {
-            name: "s-sec-chain",
-            model: "bge-small-zh-v1.5",
-            granularity: Section,
-            context: ChunkContext::Chain,
-            endpoint: None,
-        },
-        Arm {
-            name: "s-sec-attrs",
-            model: "bge-small-zh-v1.5",
-            granularity: Section,
-            context: ChainAttrs,
-            endpoint: None,
-        },
-        Arm {
-            name: "s-para",
-            model: "bge-small-zh-v1.5",
-            granularity: Paragraph,
-            context: NoContext,
-            endpoint: None,
-        },
-        Arm {
-            name: "s-scope-none",
-            model: "bge-small-zh-v1.5",
-            granularity: Scope,
-            context: NoContext,
-            endpoint: None,
-        },
-        Arm {
-            name: "s-scope-attrs",
-            model: "bge-small-zh-v1.5",
-            granularity: Scope,
-            context: ChainAttrs,
-            endpoint: None,
-        },
-        // Same model weights served by llama-server (bge-small-zh-v1.5-f16.gguf):
-        // 8934 = llama-server CPU build (-ngl 0, -t 4); 11434 = ollama serving the
-        // same f16 GGUF on the RTX 4070 (CUDA). Isolates
-        // runtime + hardware cost from chunking quality.
         Arm {
             name: "llama-cpu-sec",
             model: "bge-small-zh-v1.5",
             granularity: Section,
             context: NoContext,
-            endpoint: Some("http://127.0.0.1:8934/v1"),
+            endpoint: "http://127.0.0.1:8934/v1",
+        },
+        Arm {
+            name: "llama-gpu-sec",
+            model: "bge-small-zh-v1.5",
+            granularity: Section,
+            context: NoContext,
+            endpoint: "http://127.0.0.1:8935/v1",
         },
         Arm {
             name: "ollama-gpu-sec",
             model: "bge-small-zh-v1.5",
             granularity: Section,
             context: NoContext,
-            endpoint: Some("http://127.0.0.1:11434/v1"),
+            endpoint: "http://127.0.0.1:11434/v1",
         },
-        // 8935 = the user's own NixOS llama-server (llama-cpp 10408, CUDA
-        // build) serving the same f16 GGUF with -ngl 99: identical binary to
-        // llama-cpu-sec, GPU execution instead of CPU.
+        // 2026-09-11 embedding-model shootout on the LAN Mac mini M4: LM
+        // Studio headless, OpenAI /v1/embeddings. All arms run the
+        // 2026-09-08-winning recipe (section + chain-attrs) so model quality
+        // is the only variable; dims are probed from the first response.
         Arm {
-            name: "llama-gpu-sec",
-            model: "bge-small-zh-v1.5",
+            name: "lmstudio-nomic-attrs",
+            model: "text-embedding-nomic-embed-text-v1.5",
             granularity: Section,
-            context: NoContext,
-            endpoint: Some("http://127.0.0.1:8935/v1"),
+            context: ChunkContext::ChainAttrs,
+            endpoint: "http://192.168.2.11:1234/v1",
+        },
+        Arm {
+            name: "lmstudio-bgem3-attrs",
+            model: "text-embedding-bge-m3",
+            granularity: Section,
+            context: ChunkContext::ChainAttrs,
+            endpoint: "http://192.168.2.11:1234/v1",
+        },
+        Arm {
+            name: "lmstudio-qwen3-06b-attrs",
+            model: "text-embedding-qwen3-embedding-0.6b",
+            granularity: Section,
+            context: ChunkContext::ChainAttrs,
+            endpoint: "http://192.168.2.11:1234/v1",
+        },
+        Arm {
+            name: "lmstudio-embgemma-attrs",
+            model: "text-embedding-embeddinggemma-300m-qat",
+            granularity: Section,
+            context: ChunkContext::ChainAttrs,
+            endpoint: "http://192.168.2.11:1234/v1",
         },
     ]
 }
@@ -161,7 +148,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     };
 
     let mut results: Vec<ArmResult> = Vec::new();
-    let (_, outcome) = service.with_snapshot_identity(view_id, |workspace, identity| {
+    let outcome = service.with_snapshot_identity(view_id, |workspace, identity| {
         for arm in arms() {
             if let Some(only) = &args.only
                 && !arm.name.contains(only.as_str())
@@ -171,12 +158,11 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             eprintln!("=== arm {} ===", arm.name);
             let config = EmbeddingConfig {
                 model: arm.model.to_string(),
-                endpoint: arm.endpoint.map(str::to_string),
-                dims: arm.endpoint.map(|_| 512),
+                endpoint: arm.endpoint.to_string(),
+                dims: None,
                 api_key_env: None,
                 granularity: arm.granularity,
                 context: arm.context,
-                threads: None,
             };
             let build_started = Instant::now();
             let index = match vector::prepare_index(workspace, identity, &config) {
@@ -187,7 +173,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 }
             };
             let build_ms = build_started.elapsed().as_millis();
-            let mut embedder = vector::make_embedder(&config)?;
+            let mut embedder = vector::EndpointEmbedder::new(&config)?;
             eprintln!(
                 "arm {}: {} chunks (dims {}), built in {} ms",
                 arm.name, index.manifest.count, index.manifest.dims, build_ms
@@ -198,7 +184,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 let started = Instant::now();
                 let result = vector::search_index_with(
                     &index,
-                    embedder.as_mut(),
+                    &mut embedder,
                     identity,
                     &VectorSearchQuery {
                         text: query.text.clone(),
@@ -234,7 +220,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             });
         }
         Ok::<(), Box<dyn std::error::Error>>(())
-    })?;
+    });
+    let (_, outcome) = outcome?;
     outcome?;
 
     std::fs::write(&args.output, serde_json::to_vec_pretty(&results)?)?;

@@ -2,9 +2,11 @@
 //! abstraction, a rebuildable local vector file, and brute-force cosine
 //! queries. This is the `notist vsearch` experiment lane — it shares no
 //! contract with the lexical search family and touches nothing there.
-
-#[cfg(not(any(feature = "dense-download", feature = "dense-system")))]
-compile_error!("select exactly one dense backend feature: dense-download or dense-system");
+//!
+//! Embeddings come exclusively from a user-provided OpenAI-compatible
+//! endpoint (ollama, llama-server, cloud APIs): the binary embeds nothing
+//! itself and carries no inference engine — not even a model download
+//! path. Provisioning the server is the user's setup.
 
 use std::collections::{HashMap, HashSet};
 use std::fs;
@@ -112,20 +114,18 @@ impl ChunkContext {
 /// simply disables the dense lane.
 #[derive(Clone, Debug, PartialEq)]
 pub struct EmbeddingConfig {
-    /// Built-in fastembed model name (`bge-m3`, `bge-small-zh-v1.5`, …), or
-    /// the model identifier forwarded to `endpoint`.
+    /// Model identifier forwarded to the endpoint verbatim.
     pub model: String,
-    /// OpenAI-compatible `/v1` base URL. When set, embeddings are served
-    /// over HTTP instead of the in-process ONNX runtime.
-    pub endpoint: Option<String>,
-    /// Vector width; required for `endpoint`, derived by probing built-ins.
+    /// OpenAI-compatible `/v1` base URL (ollama, llama-server, cloud APIs).
+    pub endpoint: String,
+    /// Expected vector width. Optional: when unset, the width is learned
+    /// from the first embedding response and verified against the stored
+    /// index.
     pub dims: Option<usize>,
     /// Environment variable carrying the endpoint bearer token.
     pub api_key_env: Option<String>,
     pub granularity: ChunkGranularity,
     pub context: ChunkContext,
-    /// Inference thread cap for the built-in provider; `None` = default 4.
-    pub threads: Option<usize>,
 }
 
 impl EmbeddingConfig {
@@ -158,7 +158,13 @@ impl EmbeddingConfig {
         let endpoint = table
             .get("endpoint")
             .and_then(|value| value.as_str())
-            .map(str::to_string);
+            .ok_or_else(|| {
+                io::Error::new(
+                    io::ErrorKind::InvalidInput,
+                    "[embedding] endpoint must be a string — the lane ships no built-in                      inference; point it at an OpenAI-compatible /v1 server, e.g.                      \"http://127.0.0.1:11434/v1\" for ollama",
+                )
+            })?
+            .to_string();
         let dims = table
             .get("dims")
             .and_then(|value| value.as_integer())
@@ -175,10 +181,6 @@ impl EmbeddingConfig {
             None => ChunkContext::default(),
             Some(value) => ChunkContext::parse(value)?,
         };
-        let threads = table
-            .get("threads")
-            .and_then(|value| value.as_integer())
-            .map(|value| value as usize);
         let config = Self {
             model,
             endpoint,
@@ -186,19 +188,16 @@ impl EmbeddingConfig {
             api_key_env,
             granularity,
             context,
-            threads,
         };
         config.validate()?;
         Ok(Some(config))
     }
 
     fn validate(&self) -> io::Result<()> {
-        if self.endpoint.is_none() {
-            parse_builtin_model(&self.model)?;
-        } else if self.dims.is_none() || self.dims == Some(0) {
+        if self.dims == Some(0) {
             return Err(io::Error::new(
                 io::ErrorKind::InvalidInput,
-                "[embedding] endpoint provider requires an integer `dims`",
+                "[embedding] dims must be a positive integer",
             ));
         }
         Ok(())
@@ -207,126 +206,33 @@ impl EmbeddingConfig {
     /// Stable identity of the embedding function; any change invalidates the
     /// stored vectors (different models produce incomparable spaces).
     pub fn model_id(&self) -> String {
-        match &self.endpoint {
-            None => format!("builtin:{}", self.model),
-            Some(endpoint) => format!("endpoint:{}#{}", endpoint.trim_end_matches('/'), self.model),
-        }
+        format!(
+            "endpoint:{}#{}",
+            self.endpoint.trim_end_matches('/'),
+            self.model
+        )
     }
 }
 
-/// The embedding function abstraction: one implementation per provider
-/// shape. `dims` is known up front so the vector file can be sized before
-/// any batch round-trip.
+/// The embedding function abstraction. The vector width is learned from the
+/// first response rather than declared up front: provisioning belongs to
+/// the server, and `dims` in the config is a check, not a requirement.
 pub trait Embedder {
     fn model_id(&self) -> String;
-    fn dims(&self) -> usize;
     /// Embeds a batch of texts, returning one vector per input in order.
     fn embed(&mut self, texts: &[String]) -> io::Result<Vec<Vec<f32>>>;
 }
 
-// ---------------------------------------------------------------- built-in
+// ---------------------------------------------------------------- endpoint
 
-/// In-process ONNX inference via `fastembed`. The model itself is runtime
-/// state: first use downloads it from HuggingFace into the user cache.
-pub struct BuiltinEmbedder {
-    inner: fastembed::TextEmbedding,
-    id: String,
-    dims: usize,
-}
-
-fn parse_builtin_model(model: &str) -> io::Result<fastembed::EmbeddingModel> {
-    use fastembed::EmbeddingModel as M;
-    let variant = match model {
-        "bge-small-zh-v1.5" => M::BGESmallZHV15,
-        "bge-small-en-v1.5" => M::BGESmallENV15,
-        "bge-base-en-v1.5" => M::BGEBaseENV15,
-        "multilingual-e5-small" => M::MultilingualE5Small,
-        "multilingual-e5-base" => M::MultilingualE5Base,
-        other => {
-            return Err(io::Error::new(
-                io::ErrorKind::InvalidInput,
-                format!(
-                    "unknown built-in embedding model `{other}` (supported: bge-small-zh-v1.5, \
-                     bge-small-en-v1.5, bge-base-en-v1.5, multilingual-e5-small/base) — larger \
-                     models are excluded from the built-in lane by performance ruling; point \
-                     [embedding].endpoint at a server instead"
-                ),
-            ));
-        }
-    };
-    Ok(variant)
-}
-
-impl BuiltinEmbedder {
-    pub fn new(model: &str, threads: Option<usize>) -> io::Result<Self> {
-        // fastembed's default cache directory is `./.fastembed_cache` in the
-        // current working directory; pin it to the user cache so models are
-        // downloaded once and never litter the Vault or the shell's cwd.
-        let model_cache = user_cache_base()
-            .map(|base| base.join("Notist").join("models"))
-            .ok_or_else(|| io::Error::other("cannot locate the user cache directory"))?;
-        // Inference threads default to a conservative 4: a full-vault build
-        // is a one-off (~500 core-seconds for a small model), and pinning
-        // every core turns it into a machine-wide stall. Override with
-        // `[embedding] threads`.
-        let threads = threads.unwrap_or(4).min(
-            std::thread::available_parallelism()
-                .map(|parallelism| parallelism.get())
-                .unwrap_or(4),
-        );
-        let options = fastembed::TextInitOptions::new(parse_builtin_model(model)?)
-            .with_show_download_progress(false)
-            .with_cache_dir(model_cache)
-            .with_intra_threads(threads);
-        let mut inner = fastembed::TextEmbedding::try_new(options)
-            .map_err(|error| io::Error::other(format!("embedding model load failed: {error}")))?;
-        // The vector width follows from the checkpoint; probe it once so the
-        // store can be sized without a per-model lookup table.
-        let probe = inner
-            .embed(vec!["dimension probe".to_string()], None)
-            .map_err(|error| io::Error::other(format!("embedding probe failed: {error}")))?;
-        let dims = probe
-            .first()
-            .map(|vector| vector.len())
-            .ok_or_else(|| io::Error::other("embedding probe returned no vector"))?;
-        Ok(Self {
-            inner,
-            id: format!("builtin:{model}"),
-            dims,
-        })
-    }
-}
-
-impl Embedder for BuiltinEmbedder {
-    fn model_id(&self) -> String {
-        self.id.clone()
-    }
-
-    fn dims(&self) -> usize {
-        self.dims
-    }
-
-    fn embed(&mut self, texts: &[String]) -> io::Result<Vec<Vec<f32>>> {
-        if texts.is_empty() {
-            return Ok(Vec::new());
-        }
-        self.inner
-            .embed(texts.to_vec(), None)
-            .map_err(|error| io::Error::other(format!("embedding failed: {error}")))
-    }
-}
-
-// ----------------------------------------------------------------- endpoint
-
-/// OpenAI-compatible `/v1/embeddings` client (ollama, llama.cpp, vLLM, cloud
-/// providers all speak this shape).
+/// OpenAI-compatible `/v1/embeddings` client (ollama, llama-server, cloud
+/// APIs all speak this shape).
 pub struct EndpointEmbedder {
     agent: ureq::Agent,
     url: String,
     model: String,
     auth: Option<String>,
     id: String,
-    dims: usize,
 }
 
 const ENDPOINT_BATCH: usize = 32;
@@ -334,19 +240,11 @@ const ENDPOINT_BATCH: usize = 32;
 /// Endpoint inputs are clipped to this many characters: built-in models
 /// truncate silently at their context window (bge-small-zh: 512 tokens) and
 /// several endpoint servers reject over-long inputs outright. 400 chars is
-/// ≈ under 512 tokens for both CJK-dense and ASCII text, matching what the
-/// built-in lane effectively embeds.
+/// ≈ under 512 tokens for both CJK-dense and ASCII text.
 const ENDPOINT_MAX_INPUT_CHARS: usize = 400;
 
 impl EndpointEmbedder {
     pub fn new(config: &EmbeddingConfig) -> io::Result<Self> {
-        let endpoint = config
-            .endpoint
-            .as_deref()
-            .ok_or_else(|| io::Error::other("endpoint provider requires [embedding].endpoint"))?;
-        let dims = config
-            .dims
-            .ok_or_else(|| io::Error::other("endpoint provider requires [embedding].dims"))?;
         let auth = match &config.api_key_env {
             None => None,
             Some(var) => match std::env::var(var) {
@@ -363,11 +261,10 @@ impl EndpointEmbedder {
             agent: ureq::AgentBuilder::new()
                 .timeout(Duration::from_secs(120))
                 .build(),
-            url: format!("{}/embeddings", endpoint.trim_end_matches('/')),
+            url: format!("{}/embeddings", config.endpoint.trim_end_matches('/')),
             model: config.model.clone(),
             auth,
             id: config.model_id(),
-            dims,
         })
     }
 }
@@ -375,10 +272,6 @@ impl EndpointEmbedder {
 impl Embedder for EndpointEmbedder {
     fn model_id(&self) -> String {
         self.id.clone()
-    }
-
-    fn dims(&self) -> usize {
-        self.dims
     }
 
     fn embed(&mut self, texts: &[String]) -> io::Result<Vec<Vec<f32>>> {
@@ -440,17 +333,6 @@ impl Embedder for EndpointEmbedder {
             vectors.extend(data.into_iter().map(|(_, vector)| vector));
         }
         Ok(vectors)
-    }
-}
-
-/// Builds the provider selected by the config.
-pub fn make_embedder(config: &EmbeddingConfig) -> io::Result<Box<dyn Embedder>> {
-    match &config.endpoint {
-        None => Ok(Box::new(BuiltinEmbedder::new(
-            &config.model,
-            config.threads,
-        )?)),
-        Some(_) => Ok(Box::new(EndpointEmbedder::new(config)?)),
     }
 }
 
@@ -1069,21 +951,28 @@ pub fn build_dense_index(
     config: &EmbeddingConfig,
 ) -> io::Result<DenseIndex> {
     let drafts = build_chunks(workspace, config)?;
-    let mut embedder = make_embedder(config)?;
-    let dims = embedder.dims();
+    let mut embedder = EndpointEmbedder::new(config)?;
     let dir = dense_dir(workspace.root())
         .ok_or_else(|| io::Error::other("cannot locate the user cache directory"))?;
     fs::create_dir_all(&dir)?;
     let mut reuse: HashMap<String, Vec<f32>> = load_reuse_cache(&dir)?;
 
-    let mut vectors = vec![0.0f32; drafts.len() * dims];
+    // The vector width is learned, not declared: from a cached vector when
+    // one exists, otherwise from the first embedded batch. A configured
+    // `dims` seeds the expectation and every other width is rejected.
+    let mut dims: Option<usize> = config.dims;
+    let mut rows: Vec<Option<Vec<f32>>> = Vec::with_capacity(drafts.len());
     let mut misses = Vec::new();
     for (row, draft) in drafts.iter().enumerate() {
         match reuse.get(&draft.chunk.hash) {
-            Some(vector) if vector.len() == dims => {
-                vectors[row * dims..(row + 1) * dims].copy_from_slice(vector);
+            Some(vector) if !vector.is_empty() && dims.is_none_or(|d| vector.len() == d) => {
+                dims.get_or_insert(vector.len());
+                rows.push(Some(vector.clone()));
             }
-            _ => misses.push(row),
+            _ => {
+                rows.push(None);
+                misses.push(row);
+            }
         }
     }
 
@@ -1101,17 +990,25 @@ pub fn build_dense_index(
         }
         for (slot, &row) in batch.iter().enumerate() {
             let vector = &out[slot];
-            if vector.len() != dims {
-                return Err(io::Error::other(format!(
-                    "embedder returned {}-dim vectors, expected {dims}",
-                    vector.len()
-                )));
-            }
-            vectors[row * dims..(row + 1) * dims].copy_from_slice(vector);
+            match dims {
+                Some(d) if vector.len() != d => {
+                    return Err(io::Error::other(format!(
+                        "embedder returned {}-dim vectors, expected {d}",
+                        vector.len()
+                    )));
+                }
+                _ => dims.get_or_insert(vector.len()),
+            };
+            rows[row] = Some(vector.clone());
             reuse.insert(drafts[row].chunk.hash.clone(), vector.clone());
         }
         embedded_total += texts.len();
         eprintln!("dense: embedded {embedded_total}/{}", misses.len());
+    }
+    let dims = dims.unwrap_or(0);
+    let mut vectors = Vec::with_capacity(drafts.len() * dims);
+    for row in &rows {
+        vectors.extend(row.as_deref().unwrap_or(&[]).iter().copied());
     }
 
     let live: HashSet<&str> = drafts
@@ -1220,17 +1117,23 @@ pub fn vector_search(
                 "embedding_not_configured",
                 "the Vault declares no [embedding] table",
             )
-            .with_hint("add an [embedding] table with at least `model = \"bge-small-zh-v1.5\"` to Notist.toml")
+            .with_hint(
+                "add an [embedding] table to Notist.toml: `model` plus `endpoint` pointing \
+                 at an OpenAI-compatible /v1 server (e.g. \"http://127.0.0.1:11434/v1\" for ollama)",
+            )
         })?;
-    let mut embedder = make_embedder(&config).map_err(|error| {
+    let mut embedder = EndpointEmbedder::new(&config).map_err(|error| {
         ToolError::new("embedding_provider_unavailable", error.to_string())
-            .retryable("check the [embedding] endpoint/model configuration and retry")
+            .retryable(
+                "check the [embedding] endpoint/model configuration and retry; \
+                 the lane ships no built-in inference — an OpenAI-compatible server must be running",
+            )
     })?;
     let index = prepare_index(workspace, identity, &config).map_err(|error| {
         ToolError::new("dense_index_build_failed", error.to_string())
             .retryable("correct the error and retry; `notist index status` shows the dense lane")
     })?;
-    search_index_with(&index, embedder.as_mut(), identity, query)
+    search_index_with(&index, &mut embedder, identity, query)
 }
 
 /// Loads or rebuilds the dense index for `config`, reusing cached vectors
@@ -1347,31 +1250,35 @@ mod tests {
     }
 
     #[test]
-    fn config_parses_builtin_and_granularity() {
+    fn config_parses_endpoint_and_granularity() {
         let dir = tempfile::tempdir().unwrap();
         write_manifest(
             dir.path(),
-            "[embedding]\nmodel = \"bge-small-zh-v1.5\"\ngranularity = \"paragraph\"\n",
+            "[embedding]\nmodel = \"bge-small-zh-v1.5\"\nendpoint = \"http://127.0.0.1:11434/v1\"\ngranularity = \"paragraph\"\n",
         );
         let config = EmbeddingConfig::from_vault_root(dir.path())
             .unwrap()
             .unwrap();
         assert_eq!(config.model, "bge-small-zh-v1.5");
         assert_eq!(config.granularity, ChunkGranularity::Paragraph);
-        assert_eq!(config.model_id(), "builtin:bge-small-zh-v1.5");
-        assert!(config.endpoint.is_none());
+        assert_eq!(
+            config.model_id(),
+            "endpoint:http://127.0.0.1:11434/v1#bge-small-zh-v1.5"
+        );
+        assert!(config.dims.is_none());
     }
 
     #[test]
-    fn config_rejects_unknown_model_and_incomplete_endpoint() {
+    fn config_requires_endpoint_and_positive_dims() {
+        // The lane ships no built-in inference: a model alone is invalid.
         let dir = tempfile::tempdir().unwrap();
-        write_manifest(dir.path(), "[embedding]\nmodel = \"nope\"\n");
+        write_manifest(dir.path(), "[embedding]\nmodel = \"bge-small-zh-v1.5\"\n");
         assert!(EmbeddingConfig::from_vault_root(dir.path()).is_err());
 
         let dir = tempfile::tempdir().unwrap();
         write_manifest(
             dir.path(),
-            "[embedding]\nmodel = \"qwen3-embedding:0.6b\"\nendpoint = \"http://127.0.0.1:11434/v1\"\n",
+            "[embedding]\nmodel = \"m\"\nendpoint = \"http://127.0.0.1:11434/v1\"\ndims = 0\n",
         );
         assert!(EmbeddingConfig::from_vault_root(dir.path()).is_err());
     }

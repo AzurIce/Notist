@@ -522,8 +522,12 @@ fn page_shell(
             };
             // Load a component's assets only on pages that actually use it:
             // plugin modules and their wasm can weigh tens of megabytes.
-            if !fragment_uses_component(page.fragment, &package.name, &contribution.element, &component.tag)
-            {
+            if !fragment_uses_component(
+                page.fragment,
+                &package.name,
+                &contribution.element,
+                &component.tag,
+            ) {
                 continue;
             }
             if let Some(style) = &component.style
