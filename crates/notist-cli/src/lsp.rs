@@ -1501,9 +1501,10 @@ struct RenderDocumentParams {
     text_document: TextDocumentIdentifier,
 }
 
-/// The service's page record verbatim (snake_case fields on the wire, same
-/// shapes RenderWorkspace produces) plus the snapshot revision and the
-/// module's resource table for fragment URL rewriting.
+/// The service's page record verbatim (camelCase fields on the wire — the
+/// records carry the rename, matching the contract in both editor plugins)
+/// plus the snapshot revision and the module's resource table for fragment
+/// URL rewriting.
 #[derive(serde::Serialize)]
 #[serde(rename_all = "camelCase")]
 struct LspRenderDocumentResult {

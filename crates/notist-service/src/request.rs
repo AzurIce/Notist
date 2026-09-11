@@ -694,7 +694,9 @@ pub struct PipelineAnnotationRecord {
     pub properties: Vec<(String, String)>,
 }
 
+/// camelCase on the wire, for the same reason as [`RenderedPageRecord`].
 #[derive(Clone, Debug, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub struct RenderedResourceRecord {
     pub module_segments: Vec<String>,
     /// The real on-disk file name, used verbatim for the copied artifact.
@@ -704,7 +706,11 @@ pub struct RenderedResourceRecord {
     pub source_path: PathBuf,
 }
 
+/// camelCase on the wire: this record crosses `notist/renderDocument` to the
+/// editor plugins verbatim, and both clients (obsidian-notist, vscode-notist)
+/// define the contract as camelCase.
 #[derive(Clone, Debug, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub struct RenderedPageRecord {
     pub module_segments: Vec<String>,
     pub fragment: String,
