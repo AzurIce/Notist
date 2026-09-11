@@ -32,7 +32,7 @@ CLI 是命令面与 daemon 之间的最薄适配层：参数解析 → core requ
 
 ```text
 Inspect
-  status ls search locate items read ancestors refs definition
+  status ls search locate items read ancestors refs definition vsearch(experimental)
 Validate
   check
 Maintenance
@@ -41,11 +41,9 @@ Runtime & tooling
   daemon lsp skill
 Publishing
   build preview
-Experimental
-  vsearch
 ```
 
-`inspect --help` 是调查命令的唯一发现入口；普通知识工作只使用 inspect 与 check。`vsearch` 是实验性语义向量命令，独立于 search 四模式，不进入稳定分组：规范见 #<vault::05-cli::vsearch>，过 benchmark 门槛裁决前不构成契约。内容访问与目录列举由宿主 Read/ls 承担——模块映射是机械规则：Vault 根下的路径逐段对应 `::`，`X/Y.not` 即模块 `vault::X::Y`；`README.not` 即其所在目录的模块（`X/README.not` 即 `vault::X`，`X/Y/README.not` 即 `vault::X::Y`）；inspect 只收录语义查询。命令面没有写命令：磁盘写入来自宿主编辑工具或其他外部进程，daemon 通过 watcher 观察并发布新 snapshot；修改 Vault 后运行 `notist check` 验证。
+`inspect --help` 是调查命令的唯一发现入口；普通知识工作只使用 inspect 与 check。`vsearch` 是 inspect 组的实验性语义向量命令，独立于 search 四模式：规范见 #<vault::05-cli::inspect::vsearch>，过 benchmark 门槛裁决前不构成契约。内容访问与目录列举由宿主 Read/ls 承担——模块映射是机械规则：Vault 根下的路径逐段对应 `::`，`X/Y.not` 即模块 `vault::X::Y`；`README.not` 即其所在目录的模块（`X/README.not` 即 `vault::X`，`X/Y/README.not` 即 `vault::X::Y`）；inspect 只收录语义查询。命令面没有写命令：磁盘写入来自宿主编辑工具或其他外部进程，daemon 通过 watcher 观察并发布新 snapshot；修改 Vault 后运行 `notist check` 验证。
 
 === Vault 发现与 --vault
 

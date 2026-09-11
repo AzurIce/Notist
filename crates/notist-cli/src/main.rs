@@ -101,19 +101,6 @@ enum Command {
         #[arg(long)]
         open: bool,
     },
-    /// Semantic vector search over Vault content blocks (experimental).
-    ///
-    /// Embeds the query and ranks structurally chunked blocks by cosine
-    /// similarity. Requires an `[embedding]` table in Notist.toml; first use
-    /// downloads the embedding model and builds the vector index.
-    #[command(display_order = 9, name = "vsearch")]
-    VSearch {
-        /// Query text.
-        query: String,
-        /// Number of hits to return.
-        #[arg(short = 'k', long, default_value_t = 20)]
-        k: usize,
-    },
 }
 
 #[derive(Debug, Subcommand)]
@@ -162,6 +149,19 @@ enum InspectCommand {
         /// half.
         #[arg(long)]
         out: bool,
+    },
+    /// Semantic vector search over Vault content blocks (experimental).
+    ///
+    /// Embeds the query and ranks structurally chunked blocks by cosine
+    /// similarity. Requires an `[embedding]` table in Notist.toml; first use
+    /// downloads the embedding model and builds the vector index.
+    #[command(name = "vsearch")]
+    Vsearch {
+        /// Query text.
+        query: String,
+        /// Number of hits to return.
+        #[arg(short = 'k', long, default_value_t = 20)]
+        k: usize,
     },
 }
 
@@ -404,36 +404,6 @@ fn run(cli: Cli) -> Result<ExitCode, Box<dyn std::error::Error>> {
             }
             Ok(ExitCode::SUCCESS)
         }
-        Command::VSearch { query, k } => {
-            let (_, client, view_id) = connect_cli(cli.vault.clone(), cli.no_daemon)?;
-            let reply = client.request(CoreRequest::VectorSearch {
-                view_id,
-                query: notist_service::vector::VectorSearchQuery { text: query, k },
-            })?;
-            let CoreResponse::VectorSearch(result) = reply.response else {
-                return query_response_error("vsearch", reply.response);
-            };
-            if result.records.is_empty() {
-                println!("No matches.");
-                return Ok(ExitCode::SUCCESS);
-            }
-            for (rank, hit) in result.records.iter().enumerate() {
-                let range = hit
-                    .location
-                    .line_range
-                    .unwrap_or(notist_service::LineRange { start: 0, end: 0 });
-                println!(
-                    "{:>3}  {:.3}  {}  {}..{}  {}",
-                    rank + 1,
-                    hit.score,
-                    hit.location.relative_path.display(),
-                    range.start,
-                    range.end,
-                    hit.excerpt
-                );
-            }
-            Ok(ExitCode::SUCCESS)
-        }
         Command::Daemon {
             action: Some(DaemonAction::Stop),
             ..
@@ -581,6 +551,36 @@ fn run_inspect(
             let palette = Palette::stdout(color);
             for record in &page.records {
                 print_region_record(record, &palette, origins);
+            }
+            Ok(ExitCode::SUCCESS)
+        }
+        InspectCommand::Vsearch { query, k } => {
+            let (_, client, view_id) = connect_cli(vault.clone(), no_daemon)?;
+            let reply = client.request(CoreRequest::VectorSearch {
+                view_id,
+                query: notist_service::vector::VectorSearchQuery { text: query, k },
+            })?;
+            let CoreResponse::VectorSearch(result) = reply.response else {
+                return query_response_error("vsearch", reply.response);
+            };
+            if result.records.is_empty() {
+                println!("No matches.");
+                return Ok(ExitCode::SUCCESS);
+            }
+            for (rank, hit) in result.records.iter().enumerate() {
+                let range = hit
+                    .location
+                    .line_range
+                    .unwrap_or(notist_service::LineRange { start: 0, end: 0 });
+                println!(
+                    "{:>3}  {:.3}  {}  {}..{}  {}",
+                    rank + 1,
+                    hit.score,
+                    hit.location.relative_path.display(),
+                    range.start,
+                    range.end,
+                    hit.excerpt
+                );
             }
             Ok(ExitCode::SUCCESS)
         }
