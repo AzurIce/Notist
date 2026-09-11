@@ -1,4 +1,3 @@
-@!(implementation: "aligned")
 = Core Requests and Local Protocol
 
 本文定义 CLI 与 LSP 共同投影的 core request 契约、与 transport 无关的本地协议，以及 daemon 的生命周期管理。daemon 进程模型、Analyzer View 与 snapshot 语义见 #<vault::05-cli::daemon>；命令面与全局参数见 #<vault::05-cli>；LSP adapter 的对外行为见 #<vault::06-lsp>；RefTarget 见 #<vault::04-world::reference>。

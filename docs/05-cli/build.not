@@ -1,4 +1,3 @@
-@!(implementation: "aligned")
 = Build, Preview, and HTML Target
 
 本文定义静态构建、本地预览与 HTML target 的序列化行为。命令参数与 stdout 边界见 #<vault::05-cli>；daemon、watcher 与 snapshot 见 #<vault::05-cli::daemon>；Module 树与资源目录见 #<vault::04-world::model>；RefTarget 见 #<vault::04-world::reference>；投影 registry 与插件 target contribution 的契约见 #<vault::07-plugins::projection>。

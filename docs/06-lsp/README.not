@@ -1,4 +1,3 @@
-@!(implementation: "aligned")
 = LSP
 
 `notist lsp` 是编辑器与 `notist-analysis` 之间的协议 gateway：负责文档同步、坐标换算、请求路由与结果发布，不重新实现 parser、模块解析、类型检查或求值。core 协议与 transport 无关，LSP 与 CLI 投影到同一组 core request（#<vault::05-cli::protocol>），共享 daemon 进程与 snapshot（#<vault::05-cli::daemon>），不维护第二套 module graph。逐方法支持面见 #<vault::06-lsp::checktable>；对外行为的黑箱验证见 #<vault::06-lsp::test>。
@@ -77,7 +76,7 @@ Hover、completion 与 diagnostics 需要 lexical/import environment、函数签
 
 == Capabilities
 
-capabilities 全静态声明，无 `client/registerCapability` 动态注册；未声明的方法一律回 `MethodNotFound (-32601)`，客户端可安全探测。逐项支持面、有意不做的方法与补能力候选见 #<vault::06-lsp::checktable>。LSP 面向代码智能，不是搜索、双链、渲染与持久化的 API 面；这些能力属于 core request 与各自的宿主，不经 LSP 暴露。
+capabilities 全静态声明，无 `client/registerCapability` 动态注册；未声明的方法一律回 `MethodNotFound (-32601)`，客户端可安全探测。逐项支持面与有意不做的方法见 #<vault::06-lsp::checktable>。LSP 面向代码智能，不是搜索、双链、渲染与持久化的 API 面；这些能力属于 core request 与各自的宿主，不经 LSP 暴露。
 
 == 测试
 

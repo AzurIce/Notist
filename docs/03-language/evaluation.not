@@ -1,4 +1,3 @@
-@!(implementation: "partial")
 = Evaluation
 
 本文定义 Notist 的求值阶段：静态检查的产物被 lower 成 call 森林，规约（reduction）把森林化简到不动点；名称环境（名称解析与词法边界）也是本文的定义对象。静态检查见 #<vault::03-language::types/Type System/静态检查>，成型交给 #<vault::03-language::structure>；插件 package、ABI 与信任模型见 #<vault::07-plugins>，插件的注册与贡献声明见 #<vault::07-plugins::contributions>。
@@ -144,7 +143,7 @@ binding 挂在 Item 树的节点上，名称解析沿节点链自内向外——
 - *N1 节点链*：名称解析沿节点链自内向外进行；求值器消费静态检查给出的 resolved name，不重新猜测名字指向（#<vault::03-language::types/Type System/静态检查>）。
 - *N2 遮蔽*：最近绑定者胜出（shadowing）；同名 `let` 允许在后续声明处建立新绑定并遮蔽外层或先前的同名绑定。
 - *N3 let 可见性*：`let` 绑定从声明处开始对同一节点的后续内容可见，声明之前的节点不可见。
-- *N4 递归暂缓*：`let` 的右侧看不到正在声明的名字；递归绑定待 `let rec` 引入。
+- *N4 非递归*：`let` 的右侧看不到正在声明的名字。
 - *N5 根 bindings*：求值结束后，根节点自有的 binding 进入求值结果 `bindings`（见求值结果）；其他节点上的 binding 只是求值期的环境事实，成型后的结构树消费者不依赖它们。
 
 词法边界：`#[...]`、Item literal 与 Code block 是词法边界，其内部 `let` 不出块。`#[...]` 与 Item literal 的产物是 ScopeItem——树上的匿名 Item，查询面覆盖全部 Item，寻址面只覆盖有 ItemId 的 Item（#<vault::04-world::model>）。

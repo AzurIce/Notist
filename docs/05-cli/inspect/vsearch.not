@@ -1,7 +1,6 @@
-@!(implementation: "partial")
 = vsearch: Semantic Vector Query
 
-`notist inspect vsearch` 是 inspect 组的实验性语义向量命令：查询文本经用户提供的 embedding endpoint 嵌入为向量，与按结构切块的全库内容块算余弦相似度，按分数返回前 k 条。它与 #<vault::05-cli::search> 的四模式检索不共享命令、排名契约或索引；进入稳定命令面须先在版本化 benchmark 上证明相对词法基线的明确提升，且不破坏 citation 与 snapshot 一致性。inspect 组的跨命令契约见 #<vault::05-cli::inspect>；命令面治理、全局参数与错误退出状态见 #<vault::05-cli>。
+`notist inspect vsearch` 是 inspect 组的实验性语义向量命令：查询文本经用户提供的 embedding endpoint 嵌入为向量，与按结构切块的全库内容块算余弦相似度，按分数返回前 k 条。进入稳定命令面须先在版本化 benchmark 上证明相对词法基线的明确提升，且不破坏 citation 与 snapshot 一致性。inspect 组的跨命令契约见 #<vault::05-cli::inspect>；命令面治理、全局参数与错误退出状态见 #<vault::05-cli>。
 
 ```shell
 notist inspect vsearch "属性的继承语义是怎么定义的"          # 默认 k=20
@@ -40,8 +39,8 @@ endpoint = "http://127.0.0.1:11434/v1"
 
 == 输出契约
 
-一行一 hit：名次、余弦分、相对路径、1-based 行区间、一行摘录。摘录与 `-k` 的语义同 #<vault::05-cli::search> 的纪律：摘录是候选信息不是证据，形成结论前用 read 取证；`-k` 是排名语义的召回深度，不是输出截断。零命中输出 `No matches.`。
+一行一 hit：名次、余弦分、相对路径、1-based 行区间、一行摘录。摘录与 `-k` 的纪律：摘录是候选信息不是证据，形成结论前用 read 取证；`-k` 是排名语义的召回深度，不是输出截断。零命中输出 `No matches.`。
 
 == 实测基线
 
-docs vault（1228 块、46 条标注查询、2026-09-08）：section 优于 paragraph（strict R\@10 0.39 对 0.26）；`chain-attrs` 使概念查询 R\@5 由 0.19 升至 0.42；标识符类查询最好 0.83 仍不达标，归 exact/grep。实验当日在内置 ONNX 与 llama.cpp（CPU/GPU）三类运行时上测得，结构因子跨运行时成立；数据与 bench 工具见实验记录，不随契约发布。
+docs vault（1228 块、46 条标注查询）：section 优于 paragraph（strict R\@10 0.39 对 0.26）；`chain-attrs` 使概念查询 R\@5 由 0.19 升至 0.42；标识符类查询最好 0.83 仍不达标，归 exact/grep。结构因子跨 embedding 运行时成立。

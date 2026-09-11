@@ -1,4 +1,3 @@
-@!(implementation: "aligned")
 = Parse
 
 本文定义 Notist 的解析阶段：把 source text 解析为 mode-aware 语法树。parse 是纯函数，不做名称解析、不查函数签名、不执行用户代码。Markup 与 Code 的完整表面语法见 #<vault::03-language::grammar::markup> 与 #<vault::03-language::grammar::code>；语法糖的规格见 #<vault::03-language::grammar::markup>。

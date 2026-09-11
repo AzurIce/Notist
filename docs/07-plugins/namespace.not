@@ -1,4 +1,3 @@
-@!(implementation: "partial")
 = Core Namespace and Package Boundary
 
 本文定义 `core` namespace、prelude 与插件包命名边界。内置构造器的用户侧语义——逐构造器签名、参数与校验——以 #<vault::03-language::functions> 为权威，本文不重复；函数类型与调用模型见 #<vault::03-language::types>；Vault 配置容器见 #<vault::04-world::boundary>。

@@ -1,4 +1,3 @@
-@!(implementation: "partial")
 @!(agents: "所有 CLI 命令的输出示例必须来自实测，并完整体现字段说明声称的每一种形态——虚拟模块、@id 标记、ambiguous、definition 标记、省略等边界；能共现的形态在同一样例中出现，互斥形态以括注说明")
 
 = Notist CLI: Command Design and Reference
@@ -8,9 +7,7 @@
 
 ]
 
-本文是 `notist` CLI 命令面的单一真相，由两篇组成：本文固定全局治理与跨命令契约（三层分离、命令分组、全局参数、输出投影、错误与退出状态，以及 Validate/Maintenance/Runtime/Publishing 各组命令）；`inspect` 调查组（status/ls/search/locate/items/read/ancestors/refs/definition）的逐命令规范与身份/坐标寻址契约在 #<vault::05-cli::inspect>。高层分发边界（Skill、官方 docs Vault、发布边界）在本文「高层分发边界」一节；检索语义与派生索引见 #<vault::05-cli::search>；daemon 运行时见 #<vault::05-cli::daemon>，core request 与本地协议见 #<vault::05-cli::protocol>。
-
-当前实现状态：`partial`。本文描述*目标命令面*：完整结果契约（无预算、无翻页）、顶层命令收敛为 inspect/check/index/daemon/lsp/skill/build/preview，以及 inspect 统合（身份/坐标分离、locate 桥、items/attrs 四视角、`@!(class: ..)` 继承）。实现补齐之前，已安装二进制的 `--help` 是实际可执行面的最终依据。notist 从未发布过版本，命令面不保留兼容窗口。
+本文是 `notist` CLI 命令面的单一真相，由两篇组成：本文固定全局治理与跨命令契约（三层分离、命令分组、全局参数、输出投影、错误与退出状态，以及 Validate/Maintenance/Runtime/Publishing 各组命令）；`inspect` 调查组（status/ls/items/read/ancestors/refs/definition）的逐命令规范与身份/坐标寻址契约在 #<vault::05-cli::inspect>。高层分发边界（Skill、官方 docs Vault、发布边界）在本文「高层分发边界」一节；daemon 运行时见 #<vault::05-cli::daemon>，core request 与本地协议见 #<vault::05-cli::protocol>。命令面不保留兼容窗口。
 
 == 设计总览
 
@@ -19,7 +16,7 @@
 CLI 只保留三层，且每层只有一个入口：
 
 ```text
-语义命令    我想做什么            inspect status/ls/search/locate/items/read/ancestors/refs/definition、check
+语义命令    我想做什么            inspect status/ls/items/read/ancestors/refs/definition、check
 运行时策略  服务如何执行          daemon 连接、index、语义窗口（snippet bytes）
 输出投影    结果如何显示          完整 text；颜色与 TTY 只影响渲染
 ```
@@ -291,7 +288,7 @@ CLI 的共享启动路径在进入正常工作流前执行一次廉价的 manife
 
 === 向量化属于 Vault 运行时状态
 
-完整 docs source 可以嵌入 CLI，向量模型和向量索引不能据此一起嵌入：它们有不同生命周期（模型可能本地或远程；embedding 随 model identity、chunking、normalization 与 schema 变化；索引随 snapshot 增量更新）。官方 docs 同步成普通 Vault 后，向量检索自然沿用普通 Vault 边界——daemon 为这个 root 维护派生索引，索引记录 canonical vault identity、docs fingerprint、provider/model identity、chunking schema 与 indexed revision。CLI 二进制不包含大模型权重与预计算向量；删除 cache 后可从 `.not` source 重建。
+完整 docs source 可以嵌入 CLI，向量索引不能据此一起嵌入：索引有与 source 不同的生命周期（embedding 随 provider/model identity、chunking、normalization 与 schema 变化；索引随 snapshot 增量更新）。官方 docs 同步成普通 Vault 后，向量检索自然沿用普通 Vault 边界——daemon 为这个 root 维护派生索引，索引记录 canonical vault identity、docs fingerprint、provider/model identity、chunking schema 与 indexed revision。CLI 二进制不包含预计算向量；删除 cache 后可从 `.not` source 重建。
 
 === 发布边界
 
@@ -308,7 +305,7 @@ docs/** -> deterministic bundle -> notist binary
                                    -> disposable per-Vault indexes
 ```
 
-`notist skill init` 不接受用户 Vault root，也不把当前目录导出为 Skill——个人 Vault 可能包含 secrets、prompt injection 与不明确的发布权限；未来若支持这种发布，应使用独立命令与设计。
+`notist skill init` 不接受用户 Vault root，也不把当前目录导出为 Skill——个人 Vault 可能包含 secrets、prompt injection 与不明确的发布权限。
 
 == Conformance
 

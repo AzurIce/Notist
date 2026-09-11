@@ -1,4 +1,3 @@
-@!(implementation: "aligned")
 = Plugin ABI
 
 本文定义宿主与 Wasm guest 之间的共享类型、载荷帧与模块调用约定。package 如何声明 Wasm module 见 #<vault::07-plugins::package>；call 森林在 reduce 阶段的求值语义见 #<vault::03-language::evaluation>。

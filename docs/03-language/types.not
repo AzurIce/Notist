@@ -1,8 +1,7 @@
-@!(implementation: "partial")
 
 = Type System
 
-本文是类型系统的唯一权威规范：类型与值、可空与 Union、集合、Target、函数类型与调用绑定、静态检查。规范描述完整模型，实现进度逐节以 `implementation` 标注区分：`aligned` 已实现、`partial` 部分实现、`missing` 已裁定未实现。精确语法见 #<vault::03-language::grammar>，内置构造器签名见 #<vault::03-language::functions>，日常速查见 #<vault::02-cheatsheet>。求值模型见 #<vault::03-language::evaluation>，属性表见 #<vault::04-world::annotation>。
+本文是类型系统的唯一权威规范：类型与值、可空与 Union、集合、Target、函数类型与调用绑定、静态检查。精确语法见 #<vault::03-language::grammar>，内置构造器签名见 #<vault::03-language::functions>，日常速查见 #<vault::02-cheatsheet>。求值模型见 #<vault::03-language::evaluation>，属性表见 #<vault::04-world::annotation>。
 
 == 三个阶段
 
@@ -80,11 +79,11 @@ source Document
 
 accept 规则：union 期望接受任一成员；union 实际值必须整体可被期望接受。
 
-`Never` 是内部的 bottom 类型：没有 runtime 值、不可书写，可赋值给任意期望类型；当前唯一来源是空集合的成员类型（见集合类型）。（未实现）
+`Never` 是内部的 bottom 类型：没有 runtime 值、不可书写，可赋值给任意期望类型；唯一来源是空集合的成员类型（见集合类型）。
 
 「可省略」与可空正交：可省略由形参是否带默认值决定（见函数类型与调用模型）；`?` 只用于可空，有 default 的形参用 `=`（不带值）标记。
 
-实现状态：union 的 surface 语法、归一化与 accept/contains 规则已实现；`Never` 已实现（空集合的成员类型）。`T?` 归一化为 `T | Unit` 尚未落地——当前实现仍以独立的 Optional 构造表示可空。
+可空以独立的 Optional 构造表示；`T?` 不归一化为 `T | Unit`。
 
 === Item 类型
 
@@ -225,7 +224,7 @@ rest 形参接收剩余位置实参（未实现）：
 求值之前先执行静态检查，三个职责：
 
 1. 名称解析：名字绑定到 scope 链上的哪一个 binding——解析结果使用稳定的 Symbol identity，不反复按字符串查表；
-2. 类型推断与检查：为每个表达式推断类型，检查 `let` 绑定、实参与签名是否一致；形参必须声明类型；嵌套非递归函数的结果可由 body 推断，根级函数必须声明结果类型（递归绑定暂缓，待 `let rec` 引入）；
+2. 类型推断与检查：为每个表达式推断类型，检查 `let` 绑定、实参与签名是否一致；形参必须声明类型；嵌套非递归函数的结果可由 body 推断，根级函数必须声明结果类型（绑定非递归）；
 3. 调用解析：把每个调用点解析为确定的已解析调用——callee 身份、实参到形参的绑定、默认值、coercion、trailing/rest 目标与结果类型。
 
 静态检查的产物——名称解析结果、类型与已解析调用——构成求值器唯一的语义输入：求值器不重新猜测名字指向哪个函数、实参如何绑定，只执行这份输入。

@@ -69,7 +69,7 @@ view(target: Target, label: String? = ()) -> Item
 产生 View 元素：target 的通用查看器。呈现为统一的壳——框、名/路径标签、内容区；壳对所有 target 一致，内容区由 target 类别分派：
 
 - Image Resource（完整文件名的扩展名属图片类）→ 内容区内嵌图片本身；
-- 其余类别（File Resource、模块、模块内 Item）→ 内容分派尚未定义，统一渲染为空内容区，壳照常呈现；
+- 其余类别（File Resource、模块、模块内 Item）→ 统一渲染为空内容区，壳照常呈现；
 - 标签默认从 target 派生——资源取完整文件名，Item 取 ItemName，模块取路径末段；`label` 实参覆盖显示文字。点击标签跳转 target 的规范 URL（资源为构建复制后的文件路径）；
 - View 是 Block 元素，不接受 trailing body：内容只来自 target，壳不由作者填充。
 
@@ -255,7 +255,7 @@ figure(kind: String? = (), supplement: Item? = (),
 ]
 ```
 
-Typst figure 的 `placement` / `scope` / `gap` / `outlined` / `numbering` 依赖尚未进入 Notist 的 float、counter 与 outline；当前只提供 caption/kind/supplement 子集。无语法糖。
+Typst figure 的 `placement` / `scope` / `gap` / `outlined` / `numbering` 不在 Notist 的支持面：figure 只提供 caption/kind/supplement 子集。无语法糖。
 
 == strong / emph / underline / strike
 

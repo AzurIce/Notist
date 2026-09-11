@@ -1,4 +1,3 @@
-@!(implementation: "aligned")
 = Annotation Table
 
 标注把属性绑定到求值结果上；求值收尾时，这些绑定转写为旁置的*属性表*（annotation table）：以节点序列区间为键、属性集为值的映射。树（scope 树、结构树）本身不携带属性——属性是位置注解，与结构解耦。标注的书写语法（`@`/`@!` 前缀、Dict 载荷、挂载位置的字面形式）见 #<vault::03-language::grammar::annotation>；本文定义数据模型与语义。

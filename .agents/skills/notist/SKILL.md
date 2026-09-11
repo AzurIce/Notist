@@ -14,12 +14,14 @@ A ModulePath is the file's own path under the Vault root, spelled mechanically: 
 - Read one section with the attributes in effect (`--item "Section/Sub"`; Item names are heading chains joined by `/`, never mixed into a ModulePath), or cut exactly the lines grep hit (`--line A..B`) — never pour a whole `.not` file into context to find one fact.
 - List what a document references (`refs --out`: outbound targets with resolved identities), or who mentions it from outside (the rename/move/delete checklist).
 - Zero hits are a proof, not an empty result; results are complete — never re-read a file to double-check a notist answer.
+- Concept or paraphrase questions leave grep nothing to bite on; when the Vault declares an `[embedding]` table and the endpoint is up, `inspect vsearch` returns semantic block candidates. Excerpts are candidates, not evidence — `read` settles it.
 
 ```shell
 notist inspect read vault::X::Y --item "Section/Sub" --vault <VAULT>  # section + attributes in effect
 notist inspect read vault::X::Y --line 40..80 --vault <VAULT>         # the lines grep hit
 notist inspect refs vault::X::Y --out --vault <VAULT>                 # what it references
 notist inspect refs vault::X::Y --vault <VAULT>                       # who mentions it
+notist inspect vsearch "how do attributes inherit" --vault <VAULT>    # semantic candidates (needs [embedding] endpoint)
 notist check --vault <VAULT>                                          # health verdict
 ```
 

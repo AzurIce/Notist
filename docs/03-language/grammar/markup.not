@@ -1,4 +1,3 @@
-@!(implementation: "aligned")
 = Markup
 
 Markup 是文档的默认模式，产生 Item 片段。它只定义最小骨架——文本流、段落分隔、`#` 嵌入、块构造与转义；其余一切构造（标题、围栏、列表、表格、强调等）都是语法糖。Code 模式见 #<vault::03-language::grammar::code>，标注见 #<vault::03-language::grammar::annotation>，模式概览见 #<vault::03-language::grammar>。
@@ -124,17 +123,6 @@ $$        ~= math("a^2 + b^2 = c^2", block: true)
 - block form：开行是仅含 `$$` 的行（行首可有空白），闭行同构；`$$` 不独占一行 → 诊断并按文本降级；
 - payload 是 raw text：不解释任何 Markup（`*`/`_`/`#` 原样保留），数学语法由渲染侧解释（math 插件按 Typst 数学语法排版；无插件时降级为逐字源码文本）；
 - error recovery：行内未闭合 → 诊断，span 止于行尾；块级未闭合 → 诊断，payload 吃到 EOF。
-
-=== 暂缓与候选
-
-- `task`：`- [ ]` / `- [x]`；
-- `kbd`：无糖内置函数；
-- `insert`：`++...++`；
-- `quote`：无糖构造器；
-- `link`：外部链接与裸 URL 自动链接；
-- `preview`：`!<...>`。
-
-它们进入设计时须满足 Sugar budget、四要素与 #<vault::03-language::functions/Built-in Functions/构造器校验>。
 
 == 语法糖总表
 

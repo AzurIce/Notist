@@ -719,7 +719,8 @@ impl Renderer<'_, '_> {
                 self.range_attributes_range(node.range);
                 self.output.push('>');
                 escape_text(&mut self.output, text);
-                self.output.push_str(if block { "</div>" } else { "</span>" });
+                self.output
+                    .push_str(if block { "</div>" } else { "</span>" });
             }
             "callout" => {
                 let kind = match node.get("kind") {
@@ -2132,7 +2133,10 @@ mod tests {
             .arg("block", true);
         let html = render_element_tree(&tree(vec![inline, block]));
         assert!(html.contains("<span class=\"notist-math\""), "{html}");
-        assert!(html.contains("<div class=\"notist-math notist-math-block\""), "{html}");
+        assert!(
+            html.contains("<div class=\"notist-math notist-math-block\""),
+            "{html}"
+        );
         assert!(html.contains("e^{i\\pi} + 1 = 0"), "{html}");
         assert!(html.contains("a^2 + b^2 = c^2"), "{html}");
     }

@@ -1,7 +1,6 @@
-@!(implementation: "aligned")
 = Daemon and Analyzer Views
 
-本文定义 daemon 的进程模型、每个 Vault 的 Analyzer View，以及 WorkspaceSnapshot 的身份、发布与查询语义。请求如何被 CLI 与 LSP 投影到 core request、本地协议与 daemon 生命周期见 #<vault::05-cli::protocol>；检索语义与派生索引见 #<vault::05-cli::search>；Vault 边界与发现规则见 #<vault::04-world::boundary>；LSP adapter 的对外行为见 #<vault::06-lsp>。
+本文定义 daemon 的进程模型、每个 Vault 的 Analyzer View，以及 WorkspaceSnapshot 的身份、发布与查询语义。请求如何被 CLI 与 LSP 投影到 core request、本地协议与 daemon 生命周期见 #<vault::05-cli::protocol>；Vault 边界与发现规则见 #<vault::04-world::boundary>；LSP adapter 的对外行为见 #<vault::06-lsp>。
 
 == 为什么需要 daemon
 
@@ -205,7 +204,7 @@ snapshot.references_in(module_id)    // 正向引用，见 #<vault::05-cli::prot
 
 查询结果携带 snapshot revision，优先返回 FileId、ModuleId、显式 ItemId 与 TextRange；Path、ModulePath、标题与 snippet 是展示与序列化信息，不取代核心 identity。查询不修改 Analyzer 输入、不推进 revision；completion 或 search 的 memoization cache 可丢弃，只影响性能。
 
-SnapshotStamp 的 `source_set_fingerprint` 由 source set 的 identity 与内容确定性派生；source-order 查询的稳定 key（ModulePath、relative path、range、record kind）与 ranked 查询的量化 score key 由 snapshot 内的 identity 保证——Analyzer 是这些稳定性的实现者，检索索引的就绪判定（`index_not_ready`）建立在它的 fingerprint 上（#<vault::05-cli::search>）。
+SnapshotStamp 的 `source_set_fingerprint` 由 source set 的 identity 与内容确定性派生；source-order 查询的稳定 key（ModulePath、relative path、range、record kind）与 ranked 查询的量化 score key 由 snapshot 内的 identity 保证——Analyzer 是这些稳定性的实现者，检索索引的就绪判定（`index_not_ready`）建立在它的 fingerprint 上。
 
 == Overlay 与 watcher
 

@@ -1,4 +1,3 @@
-@!(implementation: "partial")
 = Code
 
 本文是 Code 模式语法的权威定义：字面量、运算符、表达式、声明、类型语法与 Target 引用。Markup 模式见 #<vault::03-language::grammar::markup>；标注见 #<vault::03-language::grammar::annotation>；模式概览见 #<vault::03-language::grammar>。函数声明语义见 #<vault::03-language::types/Type System/函数类型与调用模型>；类型语义见 #<vault::03-language::types/Type System/Type 与 Value 对应>。
@@ -11,7 +10,7 @@
 
 === 注释
 
-`//` 行注释与 `/* ... */` 嵌套块注释是 Code 上下文的词法 trivia；Markup 文本流中 `//` 与 `/*` 是普通文本，不做注释剥离。注释不进入值或 Item（检索字段见 #<vault::05-cli::search/Search Semantics and Retrieval Index/检索单元与索引> 的 `comment` 字段）。
+`//` 行注释与 `/* ... */` 嵌套块注释是 Code 上下文的词法 trivia；Markup 文本流中 `//` 与 `/*` 是普通文本，不做注释剥离。注释不进入值或 Item。
 
 === 字面量
 
@@ -24,7 +23,7 @@ String    见下（四种形态）
 Item   [...]（回到 Markup）
 ```
 
-负数是一元 `-` 运算符（字面量本身无符号）。科学计数法暂缓。
+负数是一元 `-` 运算符（字面量本身无符号）。科学计数法不支持。
 
 集合字面量与括号判别（Array `(a, b)`、Dict `(k: v)`、空形式 `(,)` / `(:)`；`()` 是 Unit 的字面量，不是集合）见 #<vault::03-language::types/Type System/集合类型>。
 
@@ -86,7 +85,7 @@ primary：字面量、名字、括号表达式、调用、Item literal、Code bl
 ```
 
 - 形参必须声明类型（与命名函数一致，#<vault::03-language::types/Type System/函数类型与调用模型>）；返回类型由 body 推断；
-- 参数列表括号必写（单参数省略括号暂不支持）；
+- 参数列表括号必写（单参数省略括号不支持）；
 - `let f(形参表) -> R = body` 定义糖与 `let f = (形参表) => body` 等价（定义糖的返回类型声明与推断结果一致）；
 - lambda 是普通 Function 值：可以绑定、传递、调用（#<vault::03-language::types/Type System/函数类型与调用模型>）。
 
@@ -100,7 +99,7 @@ primary：字面量、名字、括号表达式、调用、Item literal、Code bl
 
 *模块属性*：`@!(...)` 见 #<vault::03-language::grammar::annotation/Annotation/两种前缀对应两种挂载位置>。
 
-（递归绑定暂缓：`let` 的右侧看不到正在声明的名字，递归函数待引入 `let rec` 时再设计——见 #<vault::03-language::types/Type System/静态检查>。）
+（递归绑定不支持：`let` 的右侧看不到正在声明的名字——见 #<vault::03-language::types/Type System/静态检查>。）
 
 === 类型语法
 
@@ -116,8 +115,6 @@ Type
 ```
 
 标注位置：`let name: T = ...`、函数形参、函数返回类型、lambda 形参。类型语义（值空间、归一化与 accept 规则）见 #<vault::03-language::types/Type System/Type 与 Value 对应>。
-
-（Item 形状 refinement（Inline/Block）是类型系统的未来扩展，暂不进入本语法。）
 
 == 字面量载荷
 

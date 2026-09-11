@@ -1,4 +1,3 @@
-@!(implementation: "planned")
 @!(type: "user")
 = Annotation
 

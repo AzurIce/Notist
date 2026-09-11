@@ -8,7 +8,7 @@ Notist 官方文档库。本文是全库地图：分区、阅读路径与写作�
 - #<vault::02-cheatsheet> —— 书写面速查：糖 → 构造器映射（Agent 的第一跳）
 - #<vault::03-language> —— 语言规范：grammar（markup / code / annotation）、parse、types、functions、evaluation、structure
 - #<vault::04-world> —— 组织面：model、boundary、import、reference、annotation
-- #<vault::05-cli> —— 命令面单一真相（inspect / check / index / daemon / lsp / skill / build / preview）+ daemon、protocol、search、build 运行时架构
+- #<vault::05-cli> —— 命令面单一真相（inspect / check / index / daemon / lsp / skill / build / preview）+ daemon、protocol、build 运行时架构
 - #<vault::06-lsp> —— 编辑器集成：README（协议 gateway 行为）、checktable（逐方法支持面）、test（无头契约测试判据）
 - #<vault::07-plugins> —— 扩展面：README、package、abi、contributions、projection、namespace、shader 实例
 - #<vault::ai> —— 调查档案（log 性质，自包含，不引用 vault::ai 外部模块；治理见其目录 AGENTS.md）
@@ -46,6 +46,5 @@ Notist 官方文档库。本文是全库地图：分区、阅读路径与写作�
 - 一篇文档回答一个部件或一组强耦合概念；目录层级只到顶层分区。
 - spec 文体：陈述现势规则，不写裁决叙事与沿革；判定规则用表，状态迁移用伪代码；每篇可独立 `notist check`。
 - use/define 分离：叙事与速查文档可以"用而不定义"；规范文档一次定义，允许有界前向引用。
-- 实现状态用 `@!(implementation: "...")`（aligned / partial / missing）在文件头声明，可逐节标注；不设中心状态清单。
 - 顶层分区的阅读顺序编码在文件名前缀里（`01-`、`02-`……站点与编辑器按自然序排列，`2-` 先于 `10-`）；重排 = 调整前缀。子模块路径一旦发布不再重命名。
 - 语义文件名；退休文档直接删除，Git 是完整历史。

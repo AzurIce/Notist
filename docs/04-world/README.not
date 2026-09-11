@@ -1,4 +1,3 @@
-@!(implementation: "aligned")
 = World
 
 World 分区定义 Notist 的数据模型与跨模块语义：Vault 边界内的文件如何成为 Module，一次求值产出什么，模块之间以哪几种边连接。语言自身的规则（文法、类型、求值）在 #<vault::03-language::grammar> 与 #<vault::03-language::types>；本分区定义它们所操作的实体。

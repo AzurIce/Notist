@@ -1,4 +1,3 @@
-@!(implementation: "aligned")
 = Reference 与 RefTarget
 
 Reference 连接知识：`#<target>` 产生 Reference 元素（糖的文法见 #<vault::03-language::grammar::markup/Markup/语法糖/link>，构造器签名见 #<vault::03-language::functions/Built-in Functions/link>）。解析针对 ModulePath 与可选的 ItemId，不针对磁盘路径；引用不执行目标 Module、不读取其 bindings、不内联其 content。词汇——Module/ModulePath、Item/ItemId/ItemPath、匿名与具名——统一定义于 #<vault::04-world::model/数据模型/Item 树>；本文描述引用解析机制。
@@ -45,14 +44,14 @@ RefTarget
 ├─ Item(id, kind)               # 模块内 Item；kind: Scope | Resource
 │                               #   Resource 再携带 ResourceKind: Image | File
 │                               # 解析到节头部时，查询返回整棵节子树与节属性
-├─ External(url)                # 外部目标（暂缓）
+├─ External(url)                # 外部目标
 └─ Missing(...)                 # 不存在/歧义/不支持——不吞掉，进入诊断
 ```
 
 两条关键原则：
 
 - 目标类型是解析产物，不是元素字段：ItemPath 后缀命名的是 scope 还是资源文件，只有解析才知道；值层的 Reference 元素不携带目标类型；
-- 「是什么目标」（分析层）与「以什么关系引用」（元素层）正交：relation 是引用元素自己的属性——当前只有 Reference（导航），Preview（嵌入预览）预留分支，`!<...>` 糖暂缓。
+- 「是什么目标」（分析层）与「以什么关系引用」（元素层）正交：relation 是引用元素自己的属性，当前只有 Reference（导航）。
 
 == 两个寻址世界：结构地址与词法绑定
 
@@ -63,11 +62,11 @@ RefTarget
 词法世界（Code 寻址）     Binding（let/fn/参数）—— 允许遮蔽，只按位置导航
 ```
 
-ItemId 要求模块内唯一；绑定名允许遮蔽（最近绑定者胜出），没有稳定的模块内身份，因此不能成为地址。引用解析不读取绑定环境，与 Rust 路径不解析局部变量同构。LSP 是两个世界之间唯一的桥：`definition/hover/references/completion` 按位置分派——在 `#<...>` 上走结构解析，在代码标识符上走词法解析（见 #<vault::06-lsp>）。若未来需要文档引用 code 实体（如 API 文档链接函数），唯一入口是把绑定升格进名空间（挂 `id:` 标注并接受唯一性约束），而不是让引用读取绑定环境。
+ItemId 要求模块内唯一；绑定名允许遮蔽（最近绑定者胜出），没有稳定的模块内身份，因此不能成为地址。引用解析不读取绑定环境，与 Rust 路径不解析局部变量同构。LSP 是两个世界之间唯一的桥：`definition/hover/references/completion` 按位置分派——在 `#<...>` 上走结构解析，在代码标识符上走词法解析（见 #<vault::06-lsp>）。文档引用 code 实体（如 API 文档链接函数）的唯一入口是把绑定升格进名空间（挂 `id:` 标注并接受唯一性约束），而不是让引用读取绑定环境。
 
-== 外部 URL（暂缓）
+== 外部 URL
 
-带 scheme（`https://`、`mailto:` 等）的外部目标暂缓进入语言：当前的引用目标空间只包含 vault 内部目标。RefTarget 预留 External 分支，待外部目标进入时启用。`#link("https://...")` 语法合法（target 是字面 url 字符串）：解析产物为 `External(url)`，当前渲染为未解析的可见文本并产生 info 级 `external-reference-unsupported` 诊断——不是语法错误。
+带 scheme（`https://`、`mailto:` 等）的外部目标不在引用目标空间内：引用目标只包含 vault 内部目标。`#link("https://...")` 语法合法（target 是字面 url 字符串）：解析产物为 `External(url)`，渲染为未解析的可见文本并产生 info 级 `external-reference-unsupported` 诊断——不是语法错误。
 
 == 引用图
 
