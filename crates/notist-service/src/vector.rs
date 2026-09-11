@@ -1075,7 +1075,7 @@ pub fn dense_status(
             model: Some(config.model_id()),
             dims: None,
             unit_count: 0,
-            message: Some("run `notist index rebuild` or issue a vsearch query".into()),
+            message: Some("a vsearch query builds the dense lane on demand".into()),
         },
         Some(index) if index.manifest.matches(&config, identity) => {
             crate::query::DenseStatusRecord {

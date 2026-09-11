@@ -153,8 +153,10 @@ enum InspectCommand {
     /// Semantic vector search over Vault content blocks (experimental).
     ///
     /// Embeds the query and ranks structurally chunked blocks by cosine
-    /// similarity. Requires an `[embedding]` table in Notist.toml; first use
-    /// downloads the embedding model and builds the vector index.
+    /// similarity. Requires an `[embedding]` table in Notist.toml with
+    /// `model` and `endpoint` pointing at an OpenAI-compatible /v1 server;
+    /// first use embeds every block through that endpoint and builds the
+    /// vector index.
     #[command(name = "vsearch")]
     Vsearch {
         /// Query text.

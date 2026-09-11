@@ -942,8 +942,19 @@ impl NotistService {
         identity: &SnapshotIdentity,
         not_built_message: &str,
     ) -> crate::query::IndexStatusRecord {
-        let mut status = self.lexical_index_status(workspace, identity, not_built_message);
-        status.dense = crate::vector::dense_status(workspace, identity);
+        let dense = crate::vector::dense_status(workspace, identity);
+        // The caller-supplied message addresses lexical-search users; with a
+        // configured dense lane, vsearch works without a lexical index, and
+        // `index rebuild` does not serve the dense lane.
+        let message = match &dense {
+            Some(_) => {
+                "`inspect vsearch` does not need the lexical index; \
+                 run `notist index rebuild` only for lexical search"
+            }
+            None => not_built_message,
+        };
+        let mut status = self.lexical_index_status(workspace, identity, message);
+        status.dense = dense;
         status
     }
 
