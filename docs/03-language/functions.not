@@ -1,6 +1,6 @@
 = Built-in Functions
 
-本文是内置构造器签名的唯一权威规范：15 个内置构造器构成标准 `core` package 的内容词表。`core` 是默认预装的 package，词表随语言 surface 发布、经 prelude 进入每个 Module，调用时写裸名字，产生的节点身份落在 `core::` 名字空间（节点模型见 #<vault::03-language::evaluation/Evaluation/Call 与 Node>）。未列出的名称不是内置构造器：未注册名称由 check 层报 unknown function 诊断，调用本身保留为内容节点（渲染有 fallback 标签兜底）；加载插件后 `{package}::{element}` 是注册名，不报 unknown。调用模型与类型规则见 #<vault::03-language::types>，语法细节见 #<vault::03-language::grammar>，速查见 #<vault::02-cheatsheet>。
+本文是内置构造器签名的唯一权威规范：15 个内置构造器构成标准 `core` package 的内容词表。`core` 是默认预装的 package，词表随语言 surface 发布、经 prelude alias 进入每个 Module，调用时写裸名字，解析后产生的节点身份落在 `core::` 名字空间（节点模型见 #<vault::03-language::evaluation/Evaluation/Call 与 Node>）。未列出的名称不是内置构造器：未注册名称由 check 层报 unknown function 诊断，调用本身保留为内容节点（渲染有 fallback 标签兜底）；加载插件后 `{package}::{element}` 是注册名，不报 unknown。调用模型与类型规则见 #<vault::03-language::types>，语法细节见 #<vault::03-language::grammar>，速查见 #<vault::02-cheatsheet>。
 
 == 签名总览
 

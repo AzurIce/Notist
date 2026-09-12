@@ -240,13 +240,13 @@ impl ExpressionState<'_> {
                     .find_map(|scope| scope.get(&name.value))
                     .cloned()
                     .or_else(|| {
-                        self.registry.get(&name.value).map(|function| {
-                            Value::Function(Box::new(FunctionValue {
-                                signature: function.signature(),
-                                implementation: FunctionImplementation::Builtin(name.value.clone()),
-                                captured: self.variables.first().cloned().unwrap_or_default(),
-                            }))
-                        })
+                        let canonical = self.registry.canonical_name(&name.value)?;
+                        let function = self.registry.get(&canonical)?;
+                        Some(Value::Function(Box::new(FunctionValue {
+                            signature: function.signature(),
+                            implementation: FunctionImplementation::Builtin(canonical),
+                            captured: self.variables.first().cloned().unwrap_or_default(),
+                        })))
                     });
                 match value {
                     Some(value) => (value, ValueOrigin::Default, Vec::new()),
@@ -730,7 +730,7 @@ impl ExpressionState<'_> {
 
     /// Reduces a lowered forest to the fixpoint with a fresh budget.
     fn reduce_forest(&self, nodes: Vec<Node>) -> (Vec<Node>, Vec<EvalDiagnostic>) {
-        let limits = ReduceLimits::default();
+        let limits = ReduceLimits::for_forest(&nodes);
         let mut frame = ReduceFrame::root(&limits);
         node_engine::reduce_nodes_recovering(nodes, self.registry, &limits, &mut frame)
     }
@@ -764,7 +764,7 @@ impl ExpressionState<'_> {
             };
         }
 
-        let Some(function) = self.registry.get(name) else {
+        let Some(canonical) = self.registry.canonical_name(name) else {
             // Fixpoint rule: an unhandled name IS a leaf. The unresolved call
             // is preserved as content; check-phase owns unknown-name
             // diagnostics.
@@ -795,6 +795,10 @@ impl ExpressionState<'_> {
             node.block = block;
             return (Value::Content(vec![node]), diagnostics);
         };
+        let function = self
+            .registry
+            .get(&canonical)
+            .expect("canonical_name resolved a registered function");
         self.evaluate_builtin(function, name, call, site_range)
     }
 

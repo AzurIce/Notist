@@ -23,6 +23,32 @@ pub struct ElementTree {
     pub roots: Vec<Node>,
 }
 
+/// Counts every node in a forest, including nested argument streams.
+fn count_forest_nodes(nodes: &[Node]) -> usize {
+    fn push_value<'a>(value: &'a NodeValue, stack: &mut Vec<&'a Node>) {
+        match value {
+            NodeValue::Stream(stream) => stack.extend(stream.iter()),
+            NodeValue::Array(values) => {
+                for value in values {
+                    push_value(value, stack);
+                }
+            }
+            _ => {}
+        }
+    }
+
+    let mut stack: Vec<&Node> = nodes.iter().collect();
+    let mut count = 0usize;
+    while let Some(node) = stack.pop() {
+        count = count.saturating_add(1);
+        for (_, value) in &node.args {
+            push_value(value, &mut stack);
+        }
+        stack.extend(node.children.iter());
+    }
+    count
+}
+
 /// Resource limits for one reduction run.
 #[derive(Clone, Debug)]
 pub struct ReduceLimits {
@@ -41,6 +67,26 @@ impl Default for ReduceLimits {
     }
 }
 
+impl ReduceLimits {
+    /// Builds limits for a lowered forest.
+    ///
+    /// The input forest is prepaid: normalizing a document of any size is not
+    /// an expansion failure. `max_calls` then contributes proportional
+    /// expansion headroom (clamped to an absolute ceiling), so macros and
+    /// plugins have room to generate new calls while pathological expansion
+    /// remains bounded.
+    pub fn for_forest(nodes: &[Node]) -> Self {
+        let prepaid = count_forest_nodes(nodes);
+        let expansion = prepaid
+            .saturating_mul(4)
+            .clamp(Self::default().max_calls, 1_048_576);
+        Self {
+            max_depth: Self::default().max_depth,
+            max_calls: prepaid.saturating_add(expansion),
+        }
+    }
+}
+
 /// Mutable reduction budget.
 #[derive(Clone, Debug)]
 pub struct ReduceFrame {
@@ -48,6 +94,12 @@ pub struct ReduceFrame {
     pub depth: usize,
     /// Remaining dispatch budget.
     pub remaining_calls: usize,
+    /// Set when the dispatch budget is exhausted.
+    ///
+    /// Budget exhaustion is a resource failure, not a per-call diagnostic:
+    /// reduction stops at the first exhausted frame instead of retrying every
+    /// remaining sibling.
+    pub budget_exhausted: bool,
 }
 
 impl ReduceFrame {
@@ -56,6 +108,7 @@ impl ReduceFrame {
         Self {
             depth: 0,
             remaining_calls: limits.max_calls,
+            budget_exhausted: false,
         }
     }
 
@@ -76,6 +129,7 @@ impl ReduceFrame {
             }]);
         }
         if self.remaining_calls == 0 {
+            self.budget_exhausted = true;
             return Err(vec![EvalDiagnostic {
                 message: format!(
                     "call reduction exceeded the maximum budget of {} calls",
@@ -582,7 +636,7 @@ Body text",
         let list = evaluator.evaluate("- a\n  - b\n- c");
         assert!(list.diagnostics.is_empty(), "{:?}", list.diagnostics);
         assert!(
-            list.lowered.iter().any(|node| node.name == "item"),
+            list.lowered.iter().any(|node| node.name == "core::item"),
             "{:#?}",
             list.lowered
         );
@@ -598,7 +652,7 @@ Body text",
         let table = evaluator.evaluate("| a | b |\n|---|---|\n| 1 | 2 |");
         assert!(table.diagnostics.is_empty(), "{:?}", table.diagnostics);
         assert!(
-            table.lowered.iter().any(|node| node.name == "table"),
+            table.lowered.iter().any(|node| node.name == "core::table"),
             "{:#?}",
             table.lowered
         );
@@ -612,7 +666,10 @@ Body text",
         let evaluation = evaluator.evaluate("= Title\n\nHello");
 
         assert!(
-            evaluation.lowered.iter().any(|node| node.name == "heading"),
+            evaluation
+                .lowered
+                .iter()
+                .any(|node| node.name == "core::heading"),
             "{:#?}",
             evaluation.lowered
         );
@@ -631,7 +688,10 @@ Body text",
         let evaluation = evaluator.evaluate("#details[hello]");
 
         assert!(
-            evaluation.lowered.iter().any(|node| node.name == "details"),
+            evaluation
+                .lowered
+                .iter()
+                .any(|node| node.name == "core::details"),
             "{:#?}",
             evaluation.lowered
         );
@@ -758,7 +818,12 @@ pub mod node_engine {
         for node in nodes {
             match reduce_node(node, registry, limits, frame) {
                 Ok(mut reduced) => output.append(&mut reduced),
-                Err(mut errors) => diagnostics.append(&mut errors),
+                Err(mut errors) => {
+                    diagnostics.append(&mut errors);
+                    if frame.budget_exhausted {
+                        break;
+                    }
+                }
             }
         }
         (output, diagnostics)
@@ -789,6 +854,12 @@ pub mod node_engine {
         limits: &ReduceLimits,
         frame: &mut ReduceFrame,
     ) -> Result<Vec<Node>, Vec<EvalDiagnostic>> {
+        // Normal-form cache: a node marked by a completed reduction pass no
+        // longer participates in dispatch. This is what lets Content values
+        // be reused without walking their already-normal forests again.
+        if node.normalized {
+            return Ok(vec![node]);
+        }
         // Descend first: pending argument streams and children always reduce,
         // independent of whether this node itself has a handler.
         for (_, value) in node.args.iter_mut() {
@@ -816,24 +887,37 @@ pub mod node_engine {
 
         // Fixpoint rule: nobody handles this name → it already is a leaf.
         let Some(function) = registry.get(&node.name) else {
+            node.normalized = true;
             return Ok(vec![node]);
         };
 
-        frame.dispatch_entry(limits, &node.name, node.range)?;
+        // Dispatch under the handler's canonical identity. Lowering already
+        // resolves registered calls, but handler outputs and plugin payloads
+        // may still carry a prelude or legacy alias. Resolving here is a name
+        // normalization boundary, not a second semantic call.
+        let call_name = node.name.clone();
+        if let Some(canonical) = registry.canonical_name(&call_name)
+            && canonical != node.name
+        {
+            node.name = canonical;
+        }
+
+        frame.dispatch_entry(limits, &call_name, node.range)?;
         tracing::trace!(
             target: "notist_eval",
-            element = %node.name,
+            element = %call_name,
             depth = frame.depth,
             budget_left = frame.remaining_calls,
             "dispatch"
         );
-        let result = dispatch_handler(node, function, registry, limits, frame);
+        let result = dispatch_handler(node, &call_name, function, registry, limits, frame);
         frame.depth -= 1;
         result
     }
 
     fn dispatch_handler(
         node: Node,
+        call_name: &str,
         function: &dyn crate::Function,
         registry: &FunctionRegistry,
         limits: &ReduceLimits,
@@ -866,7 +950,7 @@ pub mod node_engine {
             }
         } else if !node.children.is_empty() {
             return Err(vec![EvalDiagnostic {
-                message: format!("function `{}` does not accept trailing content", node.name),
+                message: format!("function `{call_name}` does not accept trailing content"),
                 range: node.range,
             }]);
         }
@@ -875,7 +959,7 @@ pub mod node_engine {
         let values = bind_validated_arguments(
             &signature,
             &provided,
-            &node.name,
+            call_name,
             node.range,
             &mut diagnostics,
         );
@@ -884,7 +968,7 @@ pub mod node_engine {
         }
 
         let input = FunctionInput {
-            name: &node.name,
+            name: call_name,
             arguments: BoundArguments::from_values(values),
             range: node.range,
         };
@@ -903,6 +987,8 @@ pub mod node_engine {
                 // fresh self-addressed calls is an author bug caught by the
                 // depth/call budget.
                 if forest.len() == 1 && forest.first() == Some(&node) {
+                    let mut forest = forest;
+                    forest[0].normalized = true;
                     return Ok(forest);
                 }
                 let (reduced, errors) = reduce_nodes_recovering(forest, registry, limits, frame);
@@ -914,8 +1000,7 @@ pub mod node_engine {
             }
             Ok(value) => Err(vec![EvalDiagnostic {
                 message: format!(
-                    "function `{}` returned {}, expected Content",
-                    node.name,
+                    "function `{call_name}` returned {}, expected Content",
                     value.ty()
                 ),
                 range: node.range,
@@ -947,7 +1032,7 @@ pub mod node_engine {
         registry: &FunctionRegistry,
         shaping: &ShapingRegistry,
     ) -> NodeEvaluation {
-        let limits = ReduceLimits::default();
+        let limits = ReduceLimits::for_forest(&nodes);
         let mut frame = ReduceFrame::root(&limits);
         let (forest, diagnostics) = reduce_nodes_recovering(nodes, registry, &limits, &mut frame);
         let tree = shape_flat_with(&forest, shaping);
@@ -981,13 +1066,18 @@ pub mod node_engine {
         names
     }
 
-    /// Whether every argument stream in the forest is empty (fully reduced).
+    /// Whether every node in the forest is in normal form.
+    ///
+    /// The structural check guards the invariant; the cached `normalized`
+    /// bit is the evaluator's fast path.
     pub fn fully_reduced(nodes: &[Node]) -> bool {
         fn walk(node: &Node) -> bool {
-            node.args.iter().all(|(_, v)| match v {
-                NodeValue::Stream(stream) => stream.is_empty(),
-                _ => true,
-            }) && node.children.iter().all(walk)
+            node.normalized
+                && node.args.iter().all(|(_, v)| match v {
+                    NodeValue::Stream(stream) => stream.iter().all(walk),
+                    _ => true,
+                })
+                && node.children.iter().all(walk)
         }
         nodes.iter().all(walk)
     }
@@ -1149,5 +1239,102 @@ mod engine_tests {
             output[0].get("text"),
             Some(NodeValue::String(value)) if value == "kept"
         ));
+    }
+
+    #[test]
+    fn alias_dispatch_resolves_to_one_canonical_call() {
+        use crate::{
+            EvalDiagnostic, Function, FunctionContext, FunctionInput, FunctionSignature, Value,
+        };
+        use std::sync::Arc;
+        use std::sync::atomic::{AtomicUsize, Ordering};
+
+        struct Counting {
+            calls: Arc<AtomicUsize>,
+        }
+
+        impl Function for Counting {
+            fn name(&self) -> &str {
+                "demo::canonical"
+            }
+
+            fn signature(&self) -> FunctionSignature {
+                FunctionSignature {
+                    parameters: Vec::new(),
+                    trailing_content: None,
+                    result: crate::Type::Content,
+                }
+            }
+
+            fn call(
+                &self,
+                _context: &FunctionContext<'_>,
+                input: FunctionInput<'_>,
+            ) -> Result<Value, Vec<EvalDiagnostic>> {
+                self.calls.fetch_add(1, Ordering::SeqCst);
+                Ok(Value::Content(vec![Node::call(
+                    "demo::canonical",
+                    input.range,
+                )]))
+            }
+        }
+
+        let calls = Arc::new(AtomicUsize::new(0));
+        let mut registry = FunctionRegistry::with_builtins();
+        registry
+            .register(Counting {
+                calls: Arc::clone(&calls),
+            })
+            .unwrap();
+        registry
+            .register_alias("demo-alias", "demo::canonical")
+            .unwrap();
+        let limits = ReduceLimits::default();
+        let mut frame = ReduceFrame::root(&limits);
+        let node = Node::call("demo-alias", TextRange::new(0, 0));
+
+        let (output, errors) = reduce_nodes_recovering(vec![node], &registry, &limits, &mut frame);
+
+        assert!(errors.is_empty(), "{errors:?}");
+        assert_eq!(output.len(), 1);
+        assert_eq!(output[0].name, "demo::canonical");
+        assert!(output[0].normalized);
+        assert_eq!(calls.load(Ordering::SeqCst), 1);
+    }
+
+    #[test]
+    fn budget_exhaustion_is_fatal_and_stops_siblings() {
+        let registry = FunctionRegistry::with_builtins();
+        let limits = ReduceLimits {
+            max_depth: 64,
+            max_calls: 1,
+        };
+        let mut frame = ReduceFrame::root(&limits);
+        let nodes = (0..3)
+            .map(|index| {
+                Node::call("core::text", TextRange::new(index, index + 1)).arg("text", "x")
+            })
+            .collect();
+
+        let (output, errors) = reduce_nodes_recovering(nodes, &registry, &limits, &mut frame);
+
+        // The first dispatch consumes the only budget unit. The second reports
+        // one fatal diagnostic and the third sibling is not attempted.
+        assert_eq!(output.len(), 1, "{output:#?}");
+        assert_eq!(errors.len(), 1, "{errors:#?}");
+        assert!(errors[0].message.contains("maximum budget"));
+        assert!(frame.budget_exhausted);
+    }
+
+    #[test]
+    fn adaptive_limits_prepay_the_input_forest() {
+        let nodes = (0..1000)
+            .map(|index| {
+                Node::call("core::text", TextRange::new(index, index + 1)).arg("text", "x")
+            })
+            .collect::<Vec<_>>();
+        let limits = ReduceLimits::for_forest(&nodes);
+        assert!(limits.max_calls >= nodes.len());
+        assert!(limits.max_calls > ReduceLimits::default().max_calls);
     }
 }

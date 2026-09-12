@@ -136,7 +136,7 @@ $$        ~= math("a^2 + b^2 = c^2", block: true)
 + A                 ~= item(ordered: true, [A])
 | a | b |
 | - | - |           ~= table(columns: n, header: true, [table-cell[...] ...])
-#<target>          ~= ref("target")
+#<target>          ~= link(<target>)
 *text*              ~= strong([text])
 _text_              ~= emph([text])
 __text__            ~= underline([text])

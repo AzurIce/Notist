@@ -1,11 +1,12 @@
 //! Direct Markup → `Node` forest lowering.
 //!
 //! This pass walks the parse tree and emits the unified reduction IR before
-//! any function is dispatched. Explicit calls and constructor sugar become
-//! call nodes; text, wiki links, raw literals, heading/rule sugar, list
-//! sugar, and table sugar lower directly into `core::*` nodes. A call
-//! awaiting reduction and a terminal leaf share the single [`Node`] shape —
-//! the fixpoint decides which names reduce.
+//! any function is dispatched. Name resolution (lexical bindings first, then
+//! canonical registry names and prelude/plugin aliases) happens here, so
+//! explicit calls and constructor sugar both carry canonical call targets.
+//! Text, references, raw literals, math, and inline markers lower directly
+//! into `core::*` nodes; a call awaiting reduction and a terminal leaf share
+//! the single [`Node`] shape — the fixpoint decides which names reduce.
 
 use std::collections::{HashMap, VecDeque};
 
@@ -16,7 +17,7 @@ use notist_syntax::{
 
 use crate::lower;
 use crate::type_system::{DictKey, Value};
-use crate::{AnnotationEntry, EvalDiagnostic, FunctionRegistry};
+use crate::{AnnotationEntry, EvalDiagnostic, FunctionImplementation, FunctionRegistry};
 
 /// A materialized attribute set: canonical `key = display` pairs, ready for
 /// the property table and every query consumer.
@@ -147,13 +148,16 @@ impl LowerState<'_> {
                 MarkupItem::Heading(sugar) => {
                     let body = self.lower_markup_body(&sugar.body);
                     let mut node =
-                        Node::block_call("heading", sugar.range.shifted(self.base_offset))
+                        Node::block_call("core::heading", sugar.range.shifted(self.base_offset))
                             .arg("level", sugar.level as i64);
                     node.children = body;
                     self.push_node(node);
                 }
                 MarkupItem::Rule(range) => {
-                    self.push_node(Node::block_call("rule", range.shifted(self.base_offset)));
+                    self.push_node(Node::block_call(
+                        "core::rule",
+                        range.shifted(self.base_offset),
+                    ));
                 }
                 MarkupItem::Text(text) => {
                     for node in lower_inline_text(text, self.base_offset) {
@@ -210,7 +214,7 @@ impl LowerState<'_> {
             }
 
             let row = rows.pop_front().unwrap();
-            let mut node = Node::block_call("item", row.range).arg("ordered", row.ordered);
+            let mut node = Node::block_call("core::item", row.range).arg("ordered", row.ordered);
             node.children = row.body;
             nodes.push(node);
         }
@@ -220,7 +224,8 @@ impl LowerState<'_> {
     fn lower_table_sugar(&mut self, sugar: &notist_syntax::TableSugar) {
         let mut body = Vec::new();
         for cell in sugar.header.iter().chain(sugar.rows.iter().flatten()) {
-            let mut node = Node::block_call("table-cell", cell.range.shifted(self.base_offset));
+            let mut node =
+                Node::block_call("core::table-cell", cell.range.shifted(self.base_offset));
             node.children = self.lower_markup_body(&cell.body);
             body.push(node);
         }
@@ -236,7 +241,7 @@ impl LowerState<'_> {
             })
             .collect::<Vec<_>>()
             .join(",");
-        let mut node = Node::block_call("table", sugar.range.shifted(self.base_offset))
+        let mut node = Node::block_call("core::table", sugar.range.shifted(self.base_offset))
             .arg("columns", sugar.header.len() as i64)
             .arg("header", true)
             .arg("align", alignments);
@@ -472,19 +477,49 @@ impl LowerState<'_> {
                     Value::Function(Box::new(function)),
                 );
             }
-            ExpressionKind::Call(call)
-                if !self.variables.iter().rev().any(|scope| {
-                    scope
-                        .get(&call.name.value)
-                        .is_some_and(|value| matches!(value, Value::Function(_)))
-                }) =>
-            {
-                if self.registry.get(&call.name.value).is_some() {
-                    self.lower_registry_call(call, embedded);
-                } else {
-                    // Unknown/data-only name: emit a pending call node. The
-                    // reducer decides — handler dispatch or terminal leaf.
-                    self.lower_unknown_call(call);
+            ExpressionKind::Call(call) => {
+                let local = self
+                    .variables
+                    .iter()
+                    .rev()
+                    .find_map(|scope| scope.get(&call.name.value))
+                    .cloned();
+                match local {
+                    Some(Value::Function(function)) => match &function.implementation {
+                        // A first-class alias of a registered handler in
+                        // markup position is still a content call: lower it
+                        // under the canonical target and let reduction run
+                        // the handler once, rather than executing it eagerly
+                        // and then normalizing its output again.
+                        FunctionImplementation::Builtin(canonical) => {
+                            if let Some(builtin) = self.registry.get(canonical) {
+                                self.lower_registry_call_with(
+                                    call,
+                                    embedded,
+                                    builtin,
+                                    canonical.clone(),
+                                );
+                            } else {
+                                self.lower_embedded_value(embedded);
+                            }
+                        }
+                        FunctionImplementation::User { .. } => {
+                            self.lower_embedded_value(embedded);
+                        }
+                    },
+                    // Any lexical binding shadows the prelude. A non-callable
+                    // binding is diagnosed by expression evaluation; it must
+                    // not fall through to the registry.
+                    Some(_) => self.lower_embedded_value(embedded),
+                    None => {
+                        if self.registry.get(&call.name.value).is_some() {
+                            self.lower_registry_call(call, embedded);
+                        } else {
+                            // Unknown/data-only name: emit a pending call node.
+                            // The reducer decides — handler dispatch or leaf.
+                            self.lower_unknown_call(call);
+                        }
+                    }
                 }
             }
             ExpressionKind::Content(block) => {
@@ -519,20 +554,24 @@ impl LowerState<'_> {
                 node.children = forest;
                 self.push_node(node);
             }
-            _ => {
-                let (value, mut diagnostics) = lower::evaluate_expression_fragment(
-                    self.source,
-                    &embedded.expression,
-                    self.base_offset,
-                    self.registry,
-                    0,
-                    &self.user_functions,
-                    self.variables.clone(),
-                );
-                self.diagnostics.append(&mut diagnostics);
-                self.insert_value(value, embedded.scope_range.shifted(self.base_offset));
-            }
+            _ => self.lower_embedded_value(embedded),
         }
+    }
+
+    /// Evaluates one embedded expression in value position and inserts its
+    /// result into the surrounding markup.
+    fn lower_embedded_value(&mut self, embedded: &EmbeddedExpression) {
+        let (value, mut diagnostics) = lower::evaluate_expression_fragment(
+            self.source,
+            &embedded.expression,
+            self.base_offset,
+            self.registry,
+            0,
+            &self.user_functions,
+            self.variables.clone(),
+        );
+        self.diagnostics.append(&mut diagnostics);
+        self.insert_value(value, embedded.scope_range.shifted(self.base_offset));
     }
 
     /// Lowers a call whose name has no registered handler.
@@ -577,12 +616,23 @@ impl LowerState<'_> {
     }
 
     fn lower_registry_call(&mut self, call: &Call, embedded: &EmbeddedExpression) {
-        let range = embedded.scope_range.shifted(self.base_offset);
-        let signature = self
+        let function = self
             .registry
             .get(&call.name.value)
-            .expect("caller checked the registry")
-            .signature();
+            .expect("caller checked the registry");
+        let canonical_name = function.name().to_owned();
+        self.lower_registry_call_with(call, embedded, function, canonical_name);
+    }
+
+    fn lower_registry_call_with(
+        &mut self,
+        call: &Call,
+        embedded: &EmbeddedExpression,
+        function: &dyn crate::Function,
+        canonical_name: String,
+    ) {
+        let range = embedded.scope_range.shifted(self.base_offset);
+        let signature = function.signature();
         // Positional arguments bind parameters in declaration order, including
         // parameters with defaults; only the trailing Content slot is excluded.
         let positional = signature
@@ -595,7 +645,7 @@ impl LowerState<'_> {
             .collect::<Vec<_>>();
         let mut positional_index = 0usize;
 
-        let mut node = Node::call(call.name.value.clone(), range);
+        let mut node = Node::call(canonical_name, range);
         for argument in &call.arguments {
             match &argument.expression.kind {
                 ExpressionKind::Content(block) => {
@@ -700,11 +750,11 @@ impl LowerState<'_> {
                 }
             }
             Value::String(text) => {
-                self.push_node(Node::call("core::text", range).arg("text", text));
+                self.push_node(Node::leaf("core::text", range).arg("text", text));
             }
             Value::Target(reference) => {
                 self.push_node(
-                    Node::call("core::reference", range)
+                    Node::leaf("core::reference", range)
                         .arg("target", NodeValue::Target(reference)),
                 );
             }
@@ -720,7 +770,7 @@ impl LowerState<'_> {
     }
 
     fn push_text_leaf(&mut self, text: String, range: TextRange) {
-        self.push_node(Node::call("core::text", range).arg("text", text));
+        self.push_node(Node::leaf("core::text", range).arg("text", text));
     }
 }
 
@@ -770,7 +820,7 @@ impl InlineTextLowerer<'_> {
             }
             self.push_inline_text(segment_start, cursor);
             self.nodes
-                .push(Node::call("core::parbreak", self.text_range(cursor, after)));
+                .push(Node::leaf("core::parbreak", self.text_range(cursor, after)));
             segment_start = after;
             cursor = after;
         }
@@ -819,7 +869,7 @@ impl InlineTextLowerer<'_> {
             {
                 self.push_plain_text(plain_start, cursor);
                 self.nodes.push(
-                    Node::call("core::text", self.text_range(cursor, cursor + 2))
+                    Node::leaf("core::text", self.text_range(cursor, cursor + 2))
                         .arg("text", (escaped as char).to_string()),
                 );
                 cursor += 2;
@@ -862,7 +912,7 @@ impl InlineTextLowerer<'_> {
     fn push_plain_text(&mut self, start: usize, end: usize) {
         if start < end {
             self.nodes.push(
-                Node::call("core::text", self.text_range(start, end))
+                Node::leaf("core::text", self.text_range(start, end))
                     .arg("text", self.text.value[start..end].to_owned()),
             );
         }

@@ -4,15 +4,17 @@
 
 ```text
 静态检查产物（type system）
-  → lower
-  → call 森林                 // Call 由 lowering 引入
-  → reduce                   // 声明式不动点
-  → call 森林（无可规约的 call）// 可能包含 core::parbreak
+  → lower                    // 名称解析 + 语法糖展开，产出 canonical call
+  → call 森林                // Content 可为 pending
+  → reduce                   // Content 归一化到 normal form
+  → call 森林（无可规约的 call）// 无 pending call，可能包含 core::parbreak
   → shape
   → 成型后的森林              // 无 core::parbreak，已归组
 ```
 
-求值器只消费静态检查的产物：不重新解析名称、不重新绑定实参、不重新猜测函数身份。
+lower 与 reduce 共享同一套名字解析、canonical target 与函数调用语义：名字只在进入 dispatch 前解析；表达式求值是 lowering 内部需要 Value 时使用的同一套名字解析与调用语义，不是与 reduce 并列的第二套名字系统。content 归一的 depth 与预算统一由 reduce frame 承担，包括 lowering 中 content literal 的提前 reduce。
+
+求值器只消费静态检查的产物：不重新解析源码、不重新猜测函数身份。
 
 规约必须在成型之前：`raw(block:)`、插件返回内容、`heading` / `item` 的运行时参数都会影响成型，不执行函数就无法判断 inline/block 与归组关系。成型前的流只是 eval 内部工作区，对外公开的规范树是成型后的结果。
 
@@ -35,7 +37,9 @@ Node {
 }
 ```
 
-不存在 Rust 侧的 `Element` 枚举或内置变体：内置与插件内容都是 `Node`。"已规约 / 未规约"是同一节点的两个阶段，不是两种类型——没有 handler 的名字不被触碰，它自己就是规约结果。"Leaf" 只是"未被规约的 call"的阶段别名，不对应任何类型。名字词表分四类：
+不存在 Rust 侧的 `Element` 枚举或内置变体：内置与插件内容都是 `Node`。"已规约 / 未规约"是同一节点的两个阶段，不是两种类型——没有 handler 的名字不被触碰，它自己就是规约结果。"Leaf" 只是"未被规约的 call"的阶段别名，不对应任何类型。
+
+`Content` 是值：`Value::Content` 内部是一段 `Node` 森林。但 Content 内部可能仍有待规约的 call，因此每个 `Node` 带 evaluator-local 的 normal-form cache：`normalized = true` 表示该子树已经到达规约不动点，可以直接作为输入值或最终内容使用；`false` 表示还可能需要 dispatch。这个 bit 不进入插件 wire，解码后的插件节点默认从 pending 开始。名字词表分四类：
 
 ```text
 构造器来源：core::text / core::reference / core::heading / core::raw /
@@ -58,7 +62,7 @@ Node {
 
 == Lowering：Call 的来源
 
-`Call` 不是 parse 的直接产物。parse 输出 mode-aware 语法树（#<vault::03-language::parse>），其中显式调用是 `syntax::Call`，标题/列表等是糖节点；check 把调用点解析为确定的函数身份。lower 消费 check 后的语法树，把各节点统一翻译为 call 森林：
+`Call` 不是 parse 的直接产物。parse 输出 mode-aware 语法树（#<vault::03-language::parse>），其中显式调用是 `syntax::Call`，标题/列表等是糖节点。lower 消费 check 后的语法树，先通过共享 resolver 把 call-site name 解析为 canonical target（词法绑定 → canonical → prelude/plugin alias），再统一翻译为 call 森林：
 
 | parse / check 产物 | lowering 输出 |
 |---|---|
@@ -69,6 +73,7 @@ Node {
 | `- item` 糖 | `core::item` call（ordered: false） |
 | Item literal `[...]` | 嵌套子森林 |
 | 插件函数调用 | `{package}::{element}` call |
+| `#heading(...)` / `#plugin-heading(...)` | 解析 alias 后写 canonical `core::heading` / `{package}::{element}` call |
 | 普通实参表达式 | 求值为值 |
 | Item 实参 / trailing body | 保持为子森林 |
 
@@ -121,7 +126,7 @@ parse / check 后，lower 产出：
 ]
 ```
 
-`core::heading` 有 handler，规约继续；`core::text` 与 `core::parbreak` 没有 handler，原样留存。最终森林进入 structure。
+`core::heading` 有 handler，规约继续；`core::text` 与 `core::parbreak` 由 lowering 直接产出已经 normal 的叶子（或经一次 identity dispatch 后标记 normal），不产生新的结构。最终森林进入 structure。
 
 == Item 值
 
@@ -136,6 +141,15 @@ Item 值的规约状态分两侧：
 
 Item 值不是散落的数据：它们组合在同一棵 Item 树上（#<vault::04-world::model>）。节点既装内容，也装名字；属性不挂在树上，见 #<vault::04-world::annotation>。
 
+== Content 的规约状态
+
+Content 不是“已经算完”的同义词。任何 Content 值都可能处于两种状态：
+
+- *Normal*：内部每个节点都已标记 `normalized = true`，没有 handler 能再改变它；函数输入、content literal 与最终 forest 都收敛到 Normal。
+- *Pending*：handler 刚返回、尚未重新进入不动点的森林；只能作为内部工作区存在，不能作为函数实参或最终内容。
+
+边界规则只有一条：**任何消费者在观察 Content 前调用 `ensure_normal`**——函数绑定时把实参规约到 Normal，宏输出重新进入 reduce，插入 Markup 的输出在进入成型前收敛到 Normal。这样 expression evaluator 和 content normalizer 不需要两套“值是否算完”的判断。
+
 == 名称环境
 
 binding 挂在 Item 树的节点上，名称解析沿节点链自内向外——词法环境不是树之外的平行结构，就是树本身（#<vault::04-world::model>）。
@@ -145,6 +159,13 @@ binding 挂在 Item 树的节点上，名称解析沿节点链自内向外——
 - *N3 let 可见性*：`let` 绑定从声明处开始对同一节点的后续内容可见，声明之前的节点不可见。
 - *N4 非递归*：`let` 的右侧看不到正在声明的名字。
 - *N5 根 bindings*：求值结束后，根节点自有的 binding 进入求值结果 `bindings`（见求值结果）；其他节点上的 binding 只是求值期的环境事实，成型后的结构树消费者不依赖它们。
+
+canonical identity：
+
+- *解析优先级*：词法 binding 优先；任何同名 binding 都遮蔽 prelude/plugin alias。未命中词法 binding 后才查 registry 的 canonical name 与 alias。qualified name（`core::heading`、`{package}::{element}`）直接按 canonical 解析，不受 bare 遮蔽影响。
+- *alias 不是身份*：`heading -> core::heading`、legacy `{package} -> {package}::{element}` 只是名字解析；进入 dispatch 的唯一 key 是 `Function::name()` 返回的 canonical name。
+- *函数值*：`#let f = heading` 创建一等 `FunctionValue`，其中 Builtin backend 保存 canonical target；在 markup 位置调用 `#f(...)` 时仍 lower 成同一个 canonical call，交给 reduce 执行一次。
+- *未命中*：无词法 binding、无 canonical、无 alias 的名字保留为 unresolved call；check 层负责报名字错误，reduce 不处理也不为它消耗预算。
 
 词法边界：`#[...]`、Item literal 与 Code block 是词法边界，其内部 `let` 不出块。`#[...]` 与 Item literal 的产物是 ScopeItem——树上的匿名 Item，查询面覆盖全部 Item，寻址面只覆盖有 ItemId 的 Item（#<vault::04-world::model>）。
 
@@ -168,34 +189,36 @@ Markup insertion 边界上，嵌入表达式的结果按插入规则转换后进
 由此推出：
 
 - *遍历策略无关*。规则是 confluent 的：先规约父还是先规约子只影响诊断出现的顺序，不影响最终森林。（实现按 descend-first：先规约参数与 body 子流，再 dispatch 当前 call。）
-- *预算只记在 handler 调用上*。每次 dispatch 计一次 depth 与一次 call；没有 handler 的 call 不参与规约，不消耗预算。
-- *输入函数式、输出宏式*。handler 收到的参数与 body 总是规约完成的；返回的森林是未规约的，重新进入不动点。规约纯且 total（无副作用、未知名字不报错），输入侧先规约永远安全——模型因此不需要 quote。
+- *预算只记在 canonical dispatch 上*。没有 handler 的 call 不参与规约，不消耗预算；identity 返回也会消耗一次，因为 handler 已经执行。
+- *预算由输入预付费与扩张额度组成*。lower 后的输入森林节点数先记为 baseline；额外的 handler 展开受 `expansion_budget` 与绝对上限约束。合法的大文档不因节点多而必然超预算，病理宽爆仍有界。预算耗尽是一次全局 fatal：停止当前 forest 的规约并只报一条诊断，不对剩余 sibling 重试。
+- *输入函数式、输出宏式*。handler 收到的参数与 body 总是 normal form；返回的森林可以是 pending，重新进入不动点。规约纯且 total（无副作用、未知名字不报错），输入侧先规约永远安全——模型因此不需要 quote。
 - *诊断分层*。名字拼错归 check 层报告（对照签名集）；规约层对未知名字保持 total——未注册名字留在森林里，不阻塞整篇。类型错误、向不接受 body 的函数传 body 产生诊断，不静默丢弃、不通过 accessor panic 假装成功；单个 call 的失败只收集诊断并跳过它，兄弟节点继续（sibling recovery），诊断不伪装成成功。
 
 单次 dispatch 的形状：
 
 ```text
-查 FunctionRegistry（无 handler → 原样留存，不耗预算）
-  → 规约参数中的嵌套流与 trailing body
+canonicalize name（无 handler → 原样留存，不耗预算）
+  → 规约参数中的嵌套流与 trailing body 到 Normal
   → 按签名绑定实参
   → 调用函数
-  → 返回的森林重新进入不动点
+  → 森林如果等于输入 → 标记 Normal，停止
+  → 否则作为 Pending 重新进入不动点
 ```
 
 所有内置函数与插件函数注册在同一个 `FunctionRegistry` 中，在 registry 中地位相同——插件因此可以返回指向 `core::details`、`core::raw` 等名字的 call 获得组合能力。
 
-identity 契约：注册了 handler 的名字意味着"这个 call 需要计算"。handler 返回与输入完全相同的 call 表示 identity，本轮停止；若持续产生新的自返 call，则是作者 bug，由深度与调用预算兜底。需要组合时返回其它名字的 call，规约继续。
+identity 契约：注册了 handler 的名字意味着"这个 call 需要计算"。handler 返回与输入完全相同的 call 表示 identity，本轮停止并把结果标记为 Normal；若持续产生新的自返 call，则是作者 bug，由深度与调用预算兜底。需要组合时返回其它名字的 call，规约继续。`core::link → core::reference` 这类 call target 与输出 element 不同的操作会正常换名再进一次不动点；`core::reference` 没有 handler，因此作为数据叶子停下。
 
 == 名字与边界
 
-call 的名字分两类：
+call 的 canonical 名字分两类：
 
 ```text
 core::*            宿主注册的内置构造器与基础操作
 {package}::*       插件注册的元素
 ```
 
-名字的所有权只体现在*注册*侧：插件 `init` 注册时元素名必须落在自己 package 的 namespace 内，`core::*` 永远由宿主注册、不可覆盖。*提及完全自由*：任何 handler 都可以在输出森林里写任何名字——写 `core::paragraph` 与写 `other-package::foo` 没有任何区别。提及不是伪造：名字的语义永远由注册方决定，没有 handler 的名字只是数据。
+surface 写法（bare prelude、legacy plugin alias、qualified spelling）在进入 dispatch 前解析为 canonical name；alias 不注册第二套 handler，也不进入 reduction。名字的所有权只体现在*注册*侧：插件 `init` 注册时元素名必须落在自己 package 的 namespace 内，`core::*` 永远由宿主注册、不可覆盖。*提及完全自由*：任何 handler 都可以在输出森林里写任何名字——写 `core::paragraph` 与写 `other-package::foo` 没有任何区别；提及不是伪造：名字的语义永远由注册方决定，没有 handler 的名字只是数据，但会被解析边界标准化为 canonical name（若它命中 alias）。
 
 插件可见的 IR 就是 call 森林：handler 通过返回包含新 call 的森林表达组合；组件返回后，宿主把整片森林统一送回同一个规约不动点。插件不在组件调用期间嵌套执行宿主规约，也不需要第二套组合 API。内容组合不做 per-call 授权：名字的语义由宿主 registry 决定，执行信任边界是 wasm 沙箱本身。组件 ABI 与 `init` / `evaluate` 契约见 #<vault::07-plugins>。
 

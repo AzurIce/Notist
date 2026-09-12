@@ -94,7 +94,7 @@ accept 规则：union 期望接受任一成员；union 实际值必须整体可�
 | `core::*` | 内置节点：`core::text` / `core::heading` / `core::callout` / ...，以及成型产生的 `core::paragraph` / `core::list` / `core::section` |
 | `{package}::*` | 插件节点：插件元素就是普通内容节点 |
 
-不存在封闭的元素集合：封闭的只是注册侧——`core::*` 的 handler 永远由宿主提供；没有 handler 的名字不被规约触碰，它自己就是终态内容。内置构造器以 first-class 函数的形式存在——`callout(kind: ..., body: ...)` 产生一个 `core::callout` 节点，其类型就是 `Item`；用户函数与内置构造器因此同构，渲染与查询按节点身份消费结果，不区分来源。节点名字词表的具体分类见 #<vault::03-language::evaluation/Evaluation/Call 与 Node>。
+不存在封闭的元素集合：封闭的只是注册侧——`core::*` 的 handler 永远由宿主提供；没有 handler 的名字不被规约触碰，它自己就是终态内容。内置构造器以 first-class 函数的形式存在——`callout(kind: ..., body: ...)` 产生一个 `core::callout` 节点，其类型就是 `Item`；builtin backend 保存 canonical target，用户函数与内置构造器在同一套名字解析与调用语义下执行，渲染与查询按节点身份消费结果，不区分来源。节点名字词表的具体分类见 #<vault::03-language::evaluation/Evaluation/Call 与 Node>。
 
 森林的内部形状由规约不动点与提及自由决定，因此不泄露为语言操作：`Item` 不可模式匹配、不可比较相等。
 

@@ -22,7 +22,7 @@ core::strong / emph / underline / strike
 
 - `core` 的保留 namespace 与标准 surface 由 language policy 定义；具体 handler 来自 `core` package contribution；
 - `core` 不能成为 `let` binding、import alias 或其他 plugin namespace；
-- 短名 prelude 把已安装 core package 的常用构造器以裸名带入当前 Module scope；
+- core 的 handler 以 `core::*` canonical name 注册；短名 prelude 是 `bare -> core::*` 的 alias，把常用构造器以裸名带入当前 Module scope；
 - 短名遵守普通 lexical shadowing；qualified `core::...` 永远指向标准 package 名字，即使当前 App 尚未安装对应 handler。
 
 宿主语法糖（`= Title`、pipe table 等）始终取得对应 core intrinsic identity，不经过名字查找，因此 local binding 不影响糖。

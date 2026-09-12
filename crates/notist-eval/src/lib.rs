@@ -37,6 +37,10 @@ pub use type_system::{
 };
 
 /// The result of the full evaluation pipeline: lower → reduce → shape.
+///
+/// `lowered` is the resolved call forest (canonical call targets); `forest`
+/// is the same forest at the reduction fixpoint, where every node carries the
+/// normal-form cache.
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct Evaluation {
     /// Lowering output before reduction: the call forest as written.
@@ -337,6 +341,47 @@ mod tests {
                 .forest
                 .iter()
                 .any(|node| text(node) == Some("42"))
+        );
+    }
+
+    #[test]
+    fn local_builtin_aliases_lower_to_canonical_content_calls() {
+        let evaluation =
+            Evaluator::default().evaluate("#let make_title = heading\n#make_title[标题]");
+        assert!(
+            evaluation.diagnostics.is_empty(),
+            "{:?}",
+            evaluation.diagnostics
+        );
+        // The alias is resolved when the function value is created, so the
+        // content call is lowered under the canonical target and dispatched
+        // once by reduction.
+        assert!(
+            evaluation
+                .lowered
+                .iter()
+                .any(|node| node.name == "core::heading"),
+            "{:#?}",
+            evaluation.lowered
+        );
+        assert!(
+            evaluation
+                .forest
+                .iter()
+                .any(|node| node.is_core("heading") && texts(&node.children) == ["标题"])
+        );
+    }
+
+    #[test]
+    fn non_callable_lexical_bindings_shadow_the_prelude() {
+        let evaluation = Evaluator::default().evaluate("#let heading = 1\n#heading[Title]");
+        assert!(
+            evaluation
+                .diagnostics
+                .iter()
+                .any(|diagnostic| diagnostic.message.contains("is not callable")),
+            "{:?}",
+            evaluation.diagnostics
         );
     }
 

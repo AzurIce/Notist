@@ -3107,9 +3107,14 @@ mod tests {
         let CoreResponse::ModulePipeline(record) = reply.response else {
             panic!("expected module pipeline")
         };
-        // Lowered: sugar stays a bare call; the embedded expression is
-        // already evaluated into text.
-        assert!(record.lowered.iter().any(|node| node.name == "heading"));
+        // Lowered: sugar is resolved to its core identity; the embedded
+        // expression is already evaluated into text.
+        assert!(
+            record
+                .lowered
+                .iter()
+                .any(|node| node.name == "core::heading")
+        );
         fn contains_text(nodes: &[notist_model::Node], expected: &str) -> bool {
             nodes.iter().any(|node| {
                 let matched = node.args.iter().any(|(key, value)| {

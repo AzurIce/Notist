@@ -59,24 +59,24 @@ pub fn contribution() -> PluginContribution {
         .map(|function| (function.name().to_owned(), function.signature()))
         .collect();
     let aliases = [
-        ("core::link", "link"),
-        ("core::view", "view"),
-        ("core::heading", "heading"),
-        ("core::raw", "raw"),
-        ("core::math", "math"),
-        ("core::callout", "callout"),
-        ("core::details", "details"),
-        ("core::item", "item"),
-        ("core::table-cell", "table-cell"),
-        ("core::table", "table"),
-        ("core::figure", "figure"),
-        ("core::strong", "strong"),
-        ("core::emph", "emph"),
-        ("core::strike", "strike"),
-        ("core::underline", "underline"),
-        ("core::rule", "rule"),
-        ("core::text", "text"),
-        ("core::parbreak", "parbreak"),
+        ("link", "core::link"),
+        ("view", "core::view"),
+        ("heading", "core::heading"),
+        ("raw", "core::raw"),
+        ("math", "core::math"),
+        ("callout", "core::callout"),
+        ("details", "core::details"),
+        ("item", "core::item"),
+        ("table-cell", "core::table-cell"),
+        ("table", "core::table"),
+        ("figure", "core::figure"),
+        ("strong", "core::strong"),
+        ("emph", "core::emph"),
+        ("strike", "core::strike"),
+        ("underline", "core::underline"),
+        ("rule", "core::rule"),
+        ("text", "core::text"),
+        ("parbreak", "core::parbreak"),
     ]
     .into_iter()
     .map(|(alias, target)| (alias.into(), target.into()))
@@ -246,7 +246,7 @@ struct TextFunction;
 
 impl Function for TextFunction {
     fn name(&self) -> &str {
-        "text"
+        "core::text"
     }
 
     fn signature(&self) -> FunctionSignature {
@@ -277,7 +277,7 @@ struct ParbreakFunction;
 
 impl Function for ParbreakFunction {
     fn name(&self) -> &str {
-        "parbreak"
+        "core::parbreak"
     }
 
     fn signature(&self) -> FunctionSignature {
@@ -300,7 +300,7 @@ struct LinkFunction;
 
 impl Function for LinkFunction {
     fn name(&self) -> &str {
-        "link"
+        "core::link"
     }
 
     fn signature(&self) -> FunctionSignature {
@@ -360,7 +360,7 @@ struct ViewFunction;
 
 impl Function for ViewFunction {
     fn name(&self) -> &str {
-        "view"
+        "core::view"
     }
 
     fn signature(&self) -> FunctionSignature {
@@ -410,7 +410,7 @@ struct HeadingFunction;
 
 impl Function for HeadingFunction {
     fn name(&self) -> &str {
-        "heading"
+        "core::heading"
     }
 
     fn signature(&self) -> FunctionSignature {
@@ -440,7 +440,7 @@ struct RawFunction;
 
 impl Function for RawFunction {
     fn name(&self) -> &str {
-        "raw"
+        "core::raw"
     }
 
     fn signature(&self) -> FunctionSignature {
@@ -474,7 +474,7 @@ struct MathFunction;
 
 impl Function for MathFunction {
     fn name(&self) -> &str {
-        "math"
+        "core::math"
     }
 
     fn signature(&self) -> FunctionSignature {
@@ -506,7 +506,7 @@ struct CalloutFunction;
 
 impl Function for CalloutFunction {
     fn name(&self) -> &str {
-        "callout"
+        "core::callout"
     }
 
     fn signature(&self) -> FunctionSignature {
@@ -538,7 +538,7 @@ struct DetailsFunction;
 
 impl Function for DetailsFunction {
     fn name(&self) -> &str {
-        "details"
+        "core::details"
     }
 
     fn signature(&self) -> FunctionSignature {
@@ -565,7 +565,7 @@ struct ItemFunction;
 
 impl Function for ItemFunction {
     fn name(&self) -> &str {
-        "item"
+        "core::item"
     }
 
     fn signature(&self) -> FunctionSignature {
@@ -589,7 +589,7 @@ struct StrongFunction;
 
 impl Function for StrongFunction {
     fn name(&self) -> &str {
-        "strong"
+        "core::strong"
     }
     fn signature(&self) -> FunctionSignature {
         notist_model::inline_body_signature()
@@ -609,7 +609,7 @@ struct EmphFunction;
 
 impl Function for EmphFunction {
     fn name(&self) -> &str {
-        "emph"
+        "core::emph"
     }
     fn signature(&self) -> FunctionSignature {
         notist_model::inline_body_signature()
@@ -629,7 +629,7 @@ struct StrikeFunction;
 
 impl Function for StrikeFunction {
     fn name(&self) -> &str {
-        "strike"
+        "core::strike"
     }
 
     fn signature(&self) -> FunctionSignature {
@@ -673,7 +673,7 @@ macro_rules! inline_wrapper_function {
     };
 }
 
-inline_wrapper_function!(UnderlineFunction, "underline", "core::underline");
+inline_wrapper_function!(UnderlineFunction, "core::underline", "core::underline");
 
 fn image_dimension(
     value: Option<i64>,
@@ -696,7 +696,7 @@ struct TableCellFunction;
 
 impl Function for TableCellFunction {
     fn name(&self) -> &str {
-        "table-cell"
+        "core::table-cell"
     }
 
     fn signature(&self) -> FunctionSignature {
@@ -734,7 +734,7 @@ struct TableFunction;
 
 impl Function for TableFunction {
     fn name(&self) -> &str {
-        "table"
+        "core::table"
     }
 
     fn signature(&self) -> FunctionSignature {
@@ -819,7 +819,7 @@ struct FigureFunction;
 
 impl Function for FigureFunction {
     fn name(&self) -> &str {
-        "figure"
+        "core::figure"
     }
 
     fn signature(&self) -> FunctionSignature {
@@ -927,7 +927,7 @@ struct RuleFunction;
 
 impl Function for RuleFunction {
     fn name(&self) -> &str {
-        "rule"
+        "core::rule"
     }
 
     fn signature(&self) -> FunctionSignature {
@@ -1291,7 +1291,7 @@ mod tests {
         let wrong_body = evaluator.evaluate("#raw[parsed]");
         assert_eq!(
             wrong_body.diagnostics[0].message,
-            "function `raw` does not accept trailing content"
+            "function `core::raw` does not accept trailing content"
         );
 
         // Unknown arguments are reported by the check layer against the

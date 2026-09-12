@@ -150,7 +150,7 @@ HTTP 服务表面：`GET /` 与各 Module clean URL（静态目录服务）；`G
 预览 chrome 的 Pipeline 按钮链接到 `/_notist/pipeline?page=<page-url>`。视图把 page URL 解析为 Module（经最近一次渲染的页面表），经 `module_pipeline` core request（#<vault::05-cli::protocol>）取回该模块一次求值 pass 的全部阶段，按阶段 tab 呈现：
 
 ```text
-Lowered          lowering 产物：糖展开、表达式已求值、未决名待规约
+Lowered          lowering 产物：糖展开、canonical name 已解析、表达式值已求出、pending call 待规约
 Reduced          规约不动点之后的调用森林（未知名存活为叶子）
 Shaped           成型后的 canonical 树
 Projected        scope 透明化 + HTML 投影 registry 之后的 target 数据树

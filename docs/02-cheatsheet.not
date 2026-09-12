@@ -12,7 +12,7 @@
 + A                        → item(ordered: true, [A])
 | a | b |
 | - | - |                  → table(columns: n, header: true, [table-cell[...] ...])
-#<target/id>              → ref("target#id")
+#<target/id>              → link(<target/id>)
 *text*                     → strong([text])
 _text_                     → emph([text])
 __text__                   → underline([text])
@@ -22,7 +22,7 @@ $$ ... $$（数学块）        → math("...", block: true)
 `code`（行内反引号）       → Raw（block: false）
 ````
 
-糖的语义不经过名字查找：`= 标题` 是语法层构造，显式 `#heading[...]` 才是普通名字解析。
+糖直接取得 core intrinsic identity，不参与 prelude/plugin alias 解析；显式 `#heading[...]` 才走普通名字解析。
 
 == 内置构造器签名
 

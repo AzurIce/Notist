@@ -59,7 +59,7 @@ pub enum TableLayoutError {
 /// - **leaf phase**: no handler answers for `name`; `args` are concrete data,
 ///   `children` are already-reduced nodes, and the projection layer renders
 ///   the node from its name and args alone.
-#[derive(Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
+#[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
 pub struct Node {
     /// Qualified constructor identity (`core::text`, `demo::box`).
     pub name: String,
@@ -74,6 +74,25 @@ pub struct Node {
     /// subtrees retain diagnostics, but never participates in call semantics.
     #[serde(default)]
     pub range: TextRange,
+    /// Normal-form phase cache.
+    ///
+    /// `true` means this node (and its nested argument/child content) has
+    /// already reached the reduction fixpoint and does not need another
+    /// dispatch. This is evaluator-local state: it is never serialized, so
+    /// plugin wire payloads keep the same shape and decoded nodes start
+    /// pending.
+    #[serde(skip)]
+    pub normalized: bool,
+}
+
+impl PartialEq for Node {
+    fn eq(&self, other: &Self) -> bool {
+        self.name == other.name
+            && self.args == other.args
+            && self.children == other.children
+            && self.block == other.block
+            && self.range == other.range
+    }
 }
 
 impl Node {
@@ -85,12 +104,27 @@ impl Node {
             children: Vec::new(),
             block: false,
             range,
+            normalized: false,
         }
     }
 
     /// Creates an empty block node addressed to `name`.
     pub fn block_call(name: impl Into<String>, range: TextRange) -> Self {
         let mut node = Self::call(name, range);
+        node.block = true;
+        node
+    }
+
+    /// Creates an already-normalized inline leaf.
+    pub fn leaf(name: impl Into<String>, range: TextRange) -> Self {
+        let mut node = Self::call(name, range);
+        node.normalized = true;
+        node
+    }
+
+    /// Creates an already-normalized block leaf.
+    pub fn block_leaf(name: impl Into<String>, range: TextRange) -> Self {
+        let mut node = Self::leaf(name, range);
         node.block = true;
         node
     }

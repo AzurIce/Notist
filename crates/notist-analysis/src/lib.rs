@@ -2695,7 +2695,7 @@ impl WorkspaceSnapshot {
                 module_references.push(((**reference).clone(), expression.range));
             }
             for call in parse.calls() {
-                match builtin_call_target(call) {
+                match builtin_call_target(call, &self.function_registry) {
                     Some(Ok(reference)) => module_references.push((reference, call.range)),
                     Some(Err(message)) => diagnostics.push(Diagnostic {
                         kind: DiagnosticKind::InvalidArguments,
@@ -3824,8 +3824,12 @@ fn changed_diagnostic_files(
 /// `view`): a Target literal, or — for `link` only — a String literal that
 /// parses as an external url. Internal target strings are rejected with a
 /// migration diagnostic; dynamic arguments stay unindexed.
-fn builtin_call_target(call: &Call) -> Option<Result<Target, String>> {
-    if !matches!(call.name.value.as_str(), "link" | "view") || !call.trailing.is_empty() {
+fn builtin_call_target(call: &Call, registry: &FunctionRegistry) -> Option<Result<Target, String>> {
+    // Resolve aliases first: `link` / `core::link` are two spellings of the
+    // same call target, and the same rule applies to plugin aliases.
+    let canonical = registry.canonical_name(&call.name.value)?;
+    let local = canonical.strip_prefix("core::").unwrap_or(&canonical);
+    if !matches!(local, "link" | "view") || !call.trailing.is_empty() {
         return None;
     }
     let argument = call.arguments.first()?;
@@ -3836,7 +3840,7 @@ fn builtin_call_target(call: &Call) -> Option<Result<Target, String>> {
     {
         return None;
     }
-    let external_urls_allowed = call.name.value == "link";
+    let external_urls_allowed = local == "link";
     match &argument.expression.kind {
         ExpressionKind::Target(reference) => Some(Ok((**reference).clone())),
         ExpressionKind::String(literal) if external_urls_allowed => {

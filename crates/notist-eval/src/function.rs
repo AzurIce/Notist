@@ -171,6 +171,7 @@ impl Function for ElementFunction {
             children: Vec::new(),
             block: self.block,
             range: input.range,
+            normalized: false,
         };
         for parameter in &self.signature.parameters {
             if Some(parameter.name.as_str()) == trailing {
@@ -209,6 +210,10 @@ fn value_to_node_value(value: &Value) -> NodeValue {
 }
 
 /// A native or plugin callable that consumes and produces runtime values.
+///
+/// `name()` is the canonical identity used by dispatch, aliases, and the
+/// normal-form `Node` produced by constructors. Call-site spellings live in
+/// lowering diagnostics, not in this identity.
 pub trait Function: Send + Sync {
     /// Returns the globally unique function name.
     fn name(&self) -> &str;
@@ -466,6 +471,16 @@ impl FunctionRegistry {
             current = self.aliases.get(current)?;
         }
         None
+    }
+
+    /// Resolves a call-site name to the canonical handler name.
+    ///
+    /// Aliases are a name-resolution concern: the returned string is the
+    /// stable `Function::name()` identity used by dispatch, diagnostics, and
+    /// equality of handler output. Callers that preserve the source spelling
+    /// must do so separately.
+    pub fn canonical_name(&self, name: &str) -> Option<String> {
+        Some(self.get(name)?.name().to_owned())
     }
 
     /// Iterates over all registered functions in unspecified order.
