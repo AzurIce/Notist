@@ -805,3 +805,22 @@ fn outline_color_changes_only_the_rendering() {
     assert!(colored.contains('\x1b'), "always must color: {colored:?}");
     assert_eq!(plain, strip_ansi(&colored));
 }
+
+/// The command surface is exactly what `inspect --help` prints. This is the
+/// guard for deleting protocol/service code: if a removal breaks a command
+/// that is part of the surface, this test says so.
+#[test]
+fn the_advertised_inspect_surface_all_runs() {
+    let vault = fixture();
+    for args in [
+        vec!["inspect", "read", "vault::guide"],
+        vec!["inspect", "read", "vault::guide", "--line", "1..3"],
+        vec!["inspect", "read", "vault::guide", "--item", "安装"],
+        vec!["inspect", "refs", "vault::guide"],
+        vec!["inspect", "refs", "vault::guide", "--out"],
+        vec!["inspect", "outline", "vault::guide"],
+        vec!["check", "--vault", "."],
+    ] {
+        run(&vault, &args);
+    }
+}

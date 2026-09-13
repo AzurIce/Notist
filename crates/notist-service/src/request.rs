@@ -110,11 +110,6 @@ pub enum CoreRequest {
         #[serde(default)]
         expected_fingerprint: Option<String>,
     },
-    ReferencesTo {
-        view_id: ServiceViewId,
-        module: String,
-        include_definition: bool,
-    },
     /// Document-level references without position ambiguity: resolves the
     /// module owning `path` and returns every resolved reference to/from it
     /// (consumed by the obsidian-notist backlinks/outgoing panels; the
@@ -145,27 +140,11 @@ pub enum CoreRequest {
         view_id: ServiceViewId,
         path: PathBuf,
     },
-    DefinitionLocation {
-        view_id: ServiceViewId,
-        query: crate::query::DefinitionQuery,
-    },
-    Items {
-        view_id: ServiceViewId,
-        query: crate::query::ItemsQuery,
-    },
     /// Item tree projection (`inspect outline`): where a module's addressable
     /// Items are and what environment each sits in, without source lines.
     Outline {
         view_id: ServiceViewId,
         query: crate::query::OutlineQuery,
-    },
-    Ancestors {
-        view_id: ServiceViewId,
-        query: crate::query::AncestorsQuery,
-    },
-    Locate {
-        view_id: ServiceViewId,
-        query: crate::query::LocateQuery,
     },
     /// Region attribute projection (`inspect read`): cuts an arbitrary range
     /// at governing annotation boundaries and reports the uniform effective
@@ -245,17 +224,12 @@ impl CoreRequest {
             | Self::ResolveReference { view_id, .. }
             | Self::Inspect { view_id }
             | Self::Definition { view_id, .. }
-            | Self::DefinitionLocation { view_id, .. }
             | Self::References { view_id, .. }
-            | Self::ReferencesTo { view_id, .. }
             | Self::DocumentReferences { view_id, .. }
             | Self::Completion { view_id, .. }
             | Self::Hover { view_id, .. }
             | Self::DocumentSymbols { view_id, .. }
-            | Self::Items { view_id, .. }
             | Self::Outline { view_id, .. }
-            | Self::Ancestors { view_id, .. }
-            | Self::Locate { view_id, .. }
             | Self::Region { view_id, .. }
             | Self::RefsPage { view_id, .. }
             | Self::WorkspaceSymbols { view_id, .. }
@@ -415,17 +389,13 @@ pub enum CoreResponse {
     DiagnosticsPage(crate::query::DiagnosticsResult),
     Inspect(InspectRecord),
     Definition(Option<LocationRecord>),
-    DefinitionLocation(Option<crate::query::Location>),
     References(Vec<LocationRecord>),
     DocumentReferences(DocumentReferencesResult),
     Completion(Vec<CompletionRecord>),
     Hover(Option<HoverRecord>),
     DocumentSymbols(Vec<DocumentSymbolRecord>),
-    Items(crate::query::QueryResult<crate::query::ItemRecord>),
     Outline(crate::query::QueryResult<crate::query::OutlineRecord>),
-    Locate(crate::query::LocateRecord),
     Region(crate::query::QueryResult<crate::query::RegionRecord>),
-    Ancestors(crate::query::QueryResult<crate::query::AncestorRecord>),
     RefsPage(crate::query::QueryResult<crate::query::RefRecord>),
     WorkspaceSymbols(Vec<WorkspaceSymbolRecord>),
     ResolvedReference(RefTargetRecord),
@@ -1333,46 +1303,6 @@ impl NotistService {
                     response: CoreResponse::References(references?),
                 })
             }
-            CoreRequest::ReferencesTo {
-                view_id,
-                module,
-                include_definition,
-            } => {
-                let (snapshot, references) = self.with_snapshot(view_id, |workspace| {
-                    let Some(module_path) = parse_absolute_module_path(&module) else {
-                        return Vec::new();
-                    };
-                    let Some(module) = workspace.module(&module_path) else {
-                        return Vec::new();
-                    };
-                    let mut locations = Vec::new();
-                    if include_definition
-                        && let Some(file_id) = module.file_id
-                        && let Some(source) = workspace.source(file_id)
-                    {
-                        locations.push(LocationRecord {
-                            path: source.canonical_path.clone(),
-                            source: source.text.to_string(),
-                            range: TextRange::new(0, 0).into(),
-                            is_definition: true,
-                        });
-                    }
-                    locations.extend(workspace.references_to(module.id).filter_map(|reference| {
-                        let source = workspace.source(reference.source_file_id)?;
-                        Some(LocationRecord {
-                            path: source.canonical_path.clone(),
-                            source: source.text.to_string(),
-                            range: reference.range.into(),
-                            is_definition: false,
-                        })
-                    }));
-                    locations
-                })?;
-                Ok(CoreReply {
-                    snapshot,
-                    response: CoreResponse::References(references),
-                })
-            }
             CoreRequest::DocumentReferences {
                 view_id,
                 path,
@@ -1558,19 +1488,6 @@ impl NotistService {
                     response: CoreResponse::DocumentSymbols(symbols),
                 })
             }
-            CoreRequest::Items { view_id, query } => {
-                let (snapshot, result) = self
-                    .with_snapshot_identity(view_id, |workspace, identity| {
-                        crate::query::items(workspace, identity, &query)
-                    })?;
-                Ok(CoreReply {
-                    snapshot,
-                    response: match result {
-                        Ok(page) => CoreResponse::Items(page),
-                        Err(error) => CoreResponse::QueryError(error),
-                    },
-                })
-            }
             CoreRequest::Outline { view_id, query } => {
                 let (snapshot, result) = self
                     .with_snapshot_identity(view_id, |workspace, identity| {
@@ -1580,44 +1497,6 @@ impl NotistService {
                     snapshot,
                     response: match result {
                         Ok(page) => CoreResponse::Outline(page),
-                        Err(error) => CoreResponse::QueryError(error),
-                    },
-                })
-            }
-            CoreRequest::DefinitionLocation { view_id, query } => {
-                let (snapshot, result) = self.with_snapshot(view_id, |workspace| {
-                    crate::query::definition(workspace, &query)
-                })?;
-                Ok(CoreReply {
-                    snapshot,
-                    response: match result {
-                        Ok(location) => CoreResponse::DefinitionLocation(location),
-                        Err(error) => CoreResponse::QueryError(error),
-                    },
-                })
-            }
-            CoreRequest::Ancestors { view_id, query } => {
-                let (snapshot, result) = self
-                    .with_snapshot_identity(view_id, |workspace, identity| {
-                        crate::query::ancestors(workspace, identity, &query)
-                    })?;
-                Ok(CoreReply {
-                    snapshot,
-                    response: match result {
-                        Ok(page) => CoreResponse::Ancestors(page),
-                        Err(error) => CoreResponse::QueryError(error),
-                    },
-                })
-            }
-            CoreRequest::Locate { view_id, query } => {
-                let (snapshot, result) = self
-                    .with_snapshot_identity(view_id, |workspace, identity| {
-                        crate::query::locate(workspace, identity, &query)
-                    })?;
-                Ok(CoreReply {
-                    snapshot,
-                    response: match result {
-                        Ok(record) => CoreResponse::Locate(record),
                         Err(error) => CoreResponse::QueryError(error),
                     },
                 })
@@ -2672,19 +2551,6 @@ fn completion_kind(kind: CompletionKind) -> &'static str {
     }
 }
 
-fn parse_absolute_module_path(value: &str) -> Option<ModulePath> {
-    if value == "vault" {
-        return Some(ModulePath::root());
-    }
-    let tail = value.strip_prefix("vault::")?;
-    let segments = tail
-        .split("::")
-        .map(str::trim)
-        .filter(|segment| !segment.is_empty())
-        .map(str::to_owned)
-        .collect::<Vec<_>>();
-    (!segments.is_empty()).then(|| ModulePath::from_segments(segments))
-}
 
 #[cfg(test)]
 mod tests {
@@ -3527,9 +3393,8 @@ mod tests {
         }
     }
 
-    const ANCESTORS_SOURCE: &str = "@!(status: \"draft\")\n\n@(id: \"wip\")\n= 安装\n\n先读概述。\n\n== 故障排除\n\n出问题时看日志。\n\n= 后记\n\n完。\n";
-
-    fn ancestors_fixture(
+    /// A one-file vault opened as a disk view.
+    fn vault_fixture(
         file_name: &str,
         source: &str,
     ) -> (NotistService, ServiceViewId, tempfile::TempDir) {
@@ -3548,245 +3413,8 @@ mod tests {
         (service, view_id, root)
     }
 
-    fn ancestors_response(
-        service: &NotistService,
-        view_id: ServiceViewId,
-        module: &str,
-        item: Option<&str>,
-        offset: Option<usize>,
-        byte_range: Option<ByteRange>,
-    ) -> CoreResponse {
-        service
-            .execute(CoreRequest::Ancestors {
-                view_id,
-                query: crate::query::AncestorsQuery {
-                    selector: crate::query::Selector {
-                        module: module.to_owned(),
-                        item: item.map(str::to_owned),
-                    },
-                    offset,
-                    byte_range,
-                },
-            })
-            .unwrap()
-            .response
-    }
-
-    fn expect_ancestors(response: CoreResponse) -> Vec<crate::query::AncestorRecord> {
-        match response {
-            CoreResponse::Ancestors(result) => result.records,
-            other => panic!("expected ancestors response, got {other:?}"),
-        }
-    }
-
-    #[test]
-    fn ancestors_module_selector_returns_the_full_tree_with_module_attributes_at_the_root() {
-        let (service, view_id, _root) = ancestors_fixture("guide.not", ANCESTORS_SOURCE);
-        let records = expect_ancestors(ancestors_response(
-            &service,
-            view_id,
-            "vault::guide",
-            None,
-            None,
-            None,
-        ));
-        assert_eq!(records.len(), 1);
-        assert_eq!(records[0].kind, "module");
-        assert_eq!(records[0].location.module, "vault::guide");
-        assert_eq!(records[0].attributes.len(), 1);
-        assert_eq!(
-            records[0].attributes[0].properties,
-            vec![("status".to_owned(), "draft".to_owned())]
-        );
-        let sections = records[0]
-            .children
-            .iter()
-            .map(|child| child.name.as_deref())
-            .collect::<Vec<_>>();
-        assert_eq!(sections, vec![Some("安装"), Some("后记")]);
-    }
-
-    #[test]
-    fn ancestors_point_in_section_body_claims_heading_annotations_on_the_section() {
-        let (service, view_id, _root) = ancestors_fixture("guide.not", ANCESTORS_SOURCE);
-        let offset = ANCESTORS_SOURCE.find("概述").unwrap();
-        let records = expect_ancestors(ancestors_response(
-            &service,
-            view_id,
-            "vault::guide",
-            None,
-            Some(offset),
-            None,
-        ));
-        assert_eq!(records.len(), 1);
-        assert_eq!(records[0].kind, "module");
-        assert_eq!(records[0].attributes[0].properties[0].0, "status");
-        assert_eq!(records[0].children.len(), 1);
-        let section = &records[0].children[0];
-        assert_eq!(section.kind, "core::section");
-        assert_eq!(section.level, Some(1));
-        assert_eq!(section.name.as_deref(), Some("安装"));
-        assert_eq!(section.attributes.len(), 1);
-        assert_eq!(section.attributes[0].id.as_deref(), Some("wip"));
-        assert_eq!(section.children.len(), 1);
-        let paragraph = &section.children[0];
-        assert_eq!(paragraph.kind, "core::paragraph");
-        assert!(paragraph.attributes.is_empty());
-        assert_eq!(paragraph.children[0].kind, "core::text");
-    }
-
-    #[test]
-    fn ancestors_point_inside_a_heading_claims_on_the_heading_node() {
-        let (service, view_id, _root) = ancestors_fixture("guide.not", ANCESTORS_SOURCE);
-        let offset = ANCESTORS_SOURCE.find("安装").unwrap();
-        let records = expect_ancestors(ancestors_response(
-            &service,
-            view_id,
-            "vault::guide",
-            None,
-            Some(offset),
-            None,
-        ));
-        assert_eq!(records.len(), 1);
-        let section = &records[0].children[0];
-        assert!(section.attributes.is_empty());
-        assert_eq!(section.children.len(), 1);
-        let heading = &section.children[0];
-        assert_eq!(heading.kind, "core::heading");
-        assert_eq!(heading.name.as_deref(), Some("安装"));
-        assert_eq!(heading.level, Some(1));
-        assert_eq!(heading.attributes[0].id.as_deref(), Some("wip"));
-        assert_eq!(heading.children[0].kind, "core::text");
-    }
-
-    #[test]
-    fn ancestors_region_inside_a_nested_section_reports_every_ancestor_level() {
-        let (service, view_id, _root) = ancestors_fixture("guide.not", ANCESTORS_SOURCE);
-        let start = ANCESTORS_SOURCE.find("出问题").unwrap();
-        let end = ANCESTORS_SOURCE.find("看日志").unwrap() + "看日志".len();
-        let records = expect_ancestors(ancestors_response(
-            &service,
-            view_id,
-            "vault::guide",
-            None,
-            None,
-            Some(ByteRange { start, end }),
-        ));
-        assert_eq!(records.len(), 1);
-        let outer = &records[0].children[0];
-        assert_eq!(outer.name.as_deref(), Some("安装"));
-        assert_eq!(outer.attributes[0].id.as_deref(), Some("wip"));
-        assert_eq!(outer.children.len(), 1);
-        let inner = &outer.children[0];
-        assert_eq!(inner.name.as_deref(), Some("故障排除"));
-        assert_eq!(inner.level, Some(2));
-        assert!(inner.attributes.is_empty());
-        assert_eq!(inner.children[0].kind, "core::paragraph");
-        assert_eq!(inner.children[0].children[0].kind, "core::text");
-    }
-
-    #[test]
-    fn ancestors_item_name_selector_starts_at_the_named_heading() {
-        let (service, view_id, _root) = ancestors_fixture("guide.not", ANCESTORS_SOURCE);
-        // The fixture's `@(id: "wip")` label *replaces* the heading's default
-        // title id: `安装` is no longer an ItemId, `wip` is.
-        let records = expect_ancestors(ancestors_response(
-            &service,
-            view_id,
-            "vault::guide",
-            Some("wip"),
-            None,
-            None,
-        ));
-        assert_eq!(records.len(), 1);
-        assert_eq!(records[0].kind, "module");
-        let section = &records[0].children[0];
-        assert_eq!(section.kind, "core::section");
-        let heading = &section.children[0];
-        assert_eq!(heading.kind, "core::heading");
-        assert_eq!(heading.name.as_deref(), Some("安装"));
-        assert_eq!(heading.attributes[0].id.as_deref(), Some("wip"));
-    }
-
-    #[test]
-    fn ancestors_region_across_sibling_sections_reports_every_grazed_scope() {
-        let (service, view_id, _root) = ancestors_fixture("guide.not", ANCESTORS_SOURCE);
-        let start = ANCESTORS_SOURCE.find("出问题").unwrap();
-        let end = ANCESTORS_SOURCE.find("完。").unwrap() + "完。".len();
-        let records = expect_ancestors(ancestors_response(
-            &service,
-            view_id,
-            "vault::guide",
-            None,
-            None,
-            Some(ByteRange { start, end }),
-        ));
-        // The region grazes the tail of the nested 故障排除 scope and the head
-        // of the sibling 后记 scope: three scopes, each with its path to the
-        // module root.
-        let names = records[0]
-            .children
-            .iter()
-            .map(|child| child.name.as_deref())
-            .collect::<Vec<_>>();
-        assert_eq!(names, vec![Some("安装"), Some("后记")]);
-        let nested = &records[0].children[0];
-        assert_eq!(nested.attributes[0].id.as_deref(), Some("wip"));
-        assert_eq!(nested.children.len(), 1);
-        let inner = &nested.children[0];
-        assert_eq!(inner.name.as_deref(), Some("故障排除"));
-        assert_eq!(inner.children[0].kind, "core::paragraph");
-        let sibling = &records[0].children[1];
-        assert!(sibling.attributes.is_empty());
-        assert_eq!(sibling.children[0].name.as_deref(), Some("后记"));
-        assert_eq!(sibling.children[1].kind, "core::paragraph");
-    }
-
-    #[test]
-    fn duplicate_item_ids_resolve_to_the_first_occurrence() {
-        // Two same-titled top-level sections derive the same title-chain
-        // ItemId. The name resolves to the first occurrence rather than
-        // erroring: a name that exists has to be usable, and `check` reports
-        // the collision once as a diagnostic instead.
-        let (service, view_id, _root) =
-            ancestors_fixture("dupe.not", "= 重复\n\n一段。\n\n= 重复\n\n另一段。\n");
-        let records = expect_ancestors(ancestors_response(
-            &service,
-            view_id,
-            "vault::dupe",
-            Some("重复"),
-            None,
-            None,
-        ));
-        assert_eq!(records.len(), 1);
-        // The first section's body, not the second's: its paragraph reads
-        // 「一段。」.
-        let section = &records[0].children[0];
-        let paragraph = section
-            .children
-            .iter()
-            .find(|child| child.kind == "core::paragraph")
-            .expect("the first section has a paragraph");
-        let first = paragraph
-            .children
-            .iter()
-            .find(|child| child.name.is_some())
-            .and_then(|child| child.name.clone())
-            .unwrap_or_default();
-        assert_ne!(first, "另一段。", "resolved to the second section");
-    }
-
-    /// A heading whose title *text* contains the chain separator collides with
-    /// a genuinely nested heading: both derive `Root/A/B`. Neither is a label,
-    /// so this only surfaces if collisions are judged on the derived identity
-    /// rather than on repeated title text.
-    #[test]
-    fn chain_collisions_between_distinct_blocks_are_reported() {
-        let (service, view_id, _root) = ancestors_fixture(
-            "collide.not",
-            "= Root\n\n== A/B\n\n一段。\n\n== A\n\n=== B\n\n另一段。\n",
-        );
-        let diagnostics = match service
+    fn diagnostics_of(service: &NotistService, view_id: ServiceViewId) -> Vec<String> {
+        match service
             .execute(CoreRequest::DiagnosticsPage {
                 view_id,
                 query: crate::query::DiagnosticsQuery::default(),
@@ -3794,50 +3422,47 @@ mod tests {
             .unwrap()
             .response
         {
-            CoreResponse::DiagnosticsPage(page) => page.diagnostics.records,
+            CoreResponse::DiagnosticsPage(page) => page
+                .diagnostics
+                .records
+                .into_iter()
+                .filter(|record| record.code == "duplicate-item-id")
+                .map(|record| record.message)
+                .collect(),
             other => panic!("expected diagnostics, got {other:?}"),
-        };
-        let duplicate: Vec<_> = diagnostics
-            .iter()
-            .filter(|record| record.code == "duplicate-item-id")
-            .collect();
-        assert_eq!(duplicate.len(), 1, "{diagnostics:?}");
-        assert!(duplicate[0].message.contains("Root/A/B"), "{duplicate:?}");
+        }
     }
 
-    /// A reference's `/` splits the ModulePath from the ItemId, and the ItemId
-    /// it hands over may itself contain `/` (a title chain's separator). So a
-    /// nested module `vault::a::b` does not change how `#<vault::a/b/Deep>`
-    /// reads: the module is everything before the first `/`, and `b/Deep` is
-    /// then looked up as a chain — which starts at the document's root heading,
-    /// so `b/Deep` alone is *not* a chain and does not resolve.
+    /// Two headings whose chains coincide collide even though their title texts
+    /// differ (`= A/B` against a nested `A > B`), and the collision is reported
+    /// against the derived identity rather than against repeated text.
     #[test]
-    fn target_syntax_splits_the_module_path_at_the_first_slash() {
-        let root = tempfile::TempDir::new_in(std::env::current_dir().unwrap()).unwrap();
-        std::fs::create_dir_all(root.path().join("a")).unwrap();
-        std::fs::write(root.path().join("a/b.not"), "= Root\n\n深层模块。\n").unwrap();
-        std::fs::write(
-            root.path().join("a.not"),
-            "= Root\n\n== b\n\n=== Deep\n\n同名节。\n",
-        )
-        .unwrap();
-        let service = NotistService::new();
-        let opened = service
-            .execute(CoreRequest::OpenView {
-                root: root.path().to_path_buf(),
-                kind: ProtocolViewKind::Disk,
-            })
-            .unwrap();
-        let CoreResponse::Opened { view_id, .. } = opened.response else {
-            panic!("expected opened view")
-        };
-        let resolve = |module: &str, item: &str| {
+    fn duplicate_item_ids_are_reported_from_the_derived_identity() {
+        let (service, view_id, _root) = vault_fixture(
+            "collide.not",
+            "= Root\n\n== A/B\n\n一段。\n\n== A\n\n=== B\n\n另一段。\n",
+        );
+        let duplicates = diagnostics_of(&service, view_id);
+        assert_eq!(duplicates.len(), 1, "{duplicates:?}");
+        assert!(duplicates[0].contains("Root/A/B"), "{duplicates:?}");
+        assert!(duplicates[0].contains("first wins"), "{duplicates:?}");
+    }
+
+    /// An `@id` over a heading replaces that heading's ItemId: the chain reads
+    /// through the label, and the title is no longer an address.
+    #[test]
+    fn heading_label_replaces_the_title_chain_segment() {
+        let (service, view_id, _root) = vault_fixture(
+            "relabel.not",
+            "= Root\n\n@(id: \"short\")\n== D\n\n正文。\n\n=== E\n\n更深。\n",
+        );
+        let resolve = |item: &str| {
             service
                 .execute(CoreRequest::Region {
                     view_id,
                     query: crate::query::RegionQuery {
                         selector: crate::query::Selector {
-                            module: module.to_owned(),
+                            module: "vault::relabel".to_owned(),
                             item: Some(item.to_owned()),
                         },
                         offset: None,
@@ -3851,237 +3476,17 @@ mod tests {
                 .unwrap()
                 .response
         };
-
-        // The chain in `vault::a` is `Root/b/Deep`; `b/Deep` is not one.
-        assert!(
-            matches!(resolve("vault::a", "Root/b/Deep"), CoreResponse::Region(_)),
-            "the chain resolves"
-        );
-        assert!(
-            matches!(resolve("vault::a", "b/Deep"), CoreResponse::QueryError(_)),
-            "a chain missing its root segment must not resolve"
-        );
-        // The nested module is addressed as a module, not through the slash.
-        assert!(matches!(
-            resolve("vault::a::b", "Root"),
-            CoreResponse::Region(_)
-        ));
-    }
-
-    /// The collision is still surfaced — as a diagnostic, not by bricking the
-    /// name.
-    #[test]
-    fn duplicate_item_ids_are_reported_by_check() {
-        let (service, view_id, _root) =
-            ancestors_fixture("dupe.not", "= 重复\n\n一段。\n\n= 重复\n\n另一段。\n");
-        let diagnostics = match service
-            .execute(CoreRequest::DiagnosticsPage {
-                view_id,
-                query: crate::query::DiagnosticsQuery::default(),
-            })
-            .unwrap()
-            .response
-        {
-            CoreResponse::DiagnosticsPage(page) => page.diagnostics.records,
-            other => panic!("expected diagnostics, got {other:?}"),
-        };
-        let duplicate: Vec<_> = diagnostics
-            .iter()
-            .filter(|record| record.code == "duplicate-item-id")
-            .collect();
-        assert_eq!(duplicate.len(), 1, "{diagnostics:?}");
-        assert!(duplicate[0].message.contains("first wins"), "{duplicate:?}");
-    }
-
-    #[test]
-    fn ancestors_resolves_nested_headings_by_title_chain() {
-        // Same title at a different nesting level is a different ItemId: the
-        // nested duplicate resolves through its title chain.
-        let (service, view_id, _root) =
-            ancestors_fixture("dupe.not", "= 重复\n\n一段。\n\n== 重复\n\n另一段。\n");
-        let response = ancestors_response(
-            &service,
-            view_id,
-            "vault::dupe",
-            Some("重复/重复"),
-            None,
-            None,
-        );
-        assert!(
-            matches!(response, CoreResponse::Ancestors(_)),
-            "title chain resolves the nested heading: {response:?}"
-        );
-    }
-
-    #[test]
-    fn ancestors_rejects_offsets_that_are_not_utf8_boundaries() {
-        let (service, view_id, _root) = ancestors_fixture("guide.not", ANCESTORS_SOURCE);
-        let offset = ANCESTORS_SOURCE.find("概述").unwrap() + 1;
-        let response =
-            ancestors_response(&service, view_id, "vault::guide", None, Some(offset), None);
-        let CoreResponse::QueryError(error) = response else {
-            panic!("expected a query error")
-        };
-        assert_eq!(error.code, "invalid_argument");
-    }
-
-    #[test]
-    fn ancestors_rejects_offset_and_byte_range_together() {
-        let (service, view_id, _root) = ancestors_fixture("guide.not", ANCESTORS_SOURCE);
-        let response = ancestors_response(
-            &service,
-            view_id,
-            "vault::guide",
-            None,
-            Some(0),
-            Some(ByteRange { start: 0, end: 4 }),
-        );
-        let CoreResponse::QueryError(error) = response else {
-            panic!("expected a query error")
-        };
-        assert_eq!(error.code, "invalid_argument");
-    }
-
-    fn items_records(
-        service: &NotistService,
-        view_id: ServiceViewId,
-        module: &str,
-        item: Option<&str>,
-    ) -> Result<Vec<crate::query::ItemRecord>, crate::query::ToolError> {
-        match service
-            .execute(CoreRequest::Items {
-                view_id,
-                query: crate::query::ItemsQuery {
-                    selector: crate::query::Selector {
-                        module: module.to_owned(),
-                        item: item.map(str::to_owned),
-                    },
-                },
-            })
-            .unwrap()
-            .response
-        {
-            CoreResponse::Items(result) => Ok(result.records),
-            CoreResponse::QueryError(error) => Err(error),
-            other => panic!("expected items response, got {other:?}"),
-        }
-    }
-
-    #[test]
-    fn items_override_ambiguity_and_name_selectors() {
-        let (service, view_id, _root) = ancestors_fixture(
-            "mixed.not",
-            "@(id: \"renamed\")#heading[原标题]\n\n正文。\n\n= 原标题\n\n另一节。\n",
-        );
-        let records = items_records(&service, view_id, "vault::mixed", None).unwrap();
-        // The labelled heading is one Item, listed under the label that names
-        // it; the module-level `= 原标题` is a different Item whose own title id
-        // collides with nothing, because the label took the first one out of
-        // the title namespace.
-        assert_eq!(records.len(), 2);
-        assert_eq!(records[0].name, "renamed");
-        assert_eq!(records[0].origin, "id");
-        assert!(!records[0].ambiguous);
-        assert_eq!(records[0].attributes.len(), 1);
-        assert_eq!(records[0].attributes[0].id.as_deref(), Some("renamed"));
-        assert_eq!(records[1].name, "原标题");
-        assert_eq!(records[1].origin, "heading");
-        assert!(!records[1].ambiguous);
-
-        let error = items_records(&service, view_id, "vault::mixed", Some("renamed")).unwrap_err();
-        assert_eq!(error.code, "invalid_argument");
-    }
-
-    /// An `@id` on a heading replaces that heading's ItemId outright: the title
-    /// text stops resolving, the label does, and descendants chain through the
-    /// label rather than the title.
-    #[test]
-    fn heading_label_replaces_the_title_chain_segment() {
-        let (service, view_id, _root) = ancestors_fixture(
-            "relabel.not",
-            "= Root\n\n@(id: \"short\")\n== D\n\n正文。\n\n=== E\n\n更深。\n",
-        );
-        let headings: Vec<String> =
-            items_records(&service, view_id, "vault::relabel", None)
-                .unwrap()
-                .into_iter()
-                .map(|record| record.name)
-                .collect();
-        assert_eq!(headings, ["Root", "short", "Root/short/E"]);
-
-        // The title text is no longer an address; the label and the chain that
-        // goes through it are.
         for name in ["Root/short", "Root/short/E", "short"] {
-            let query = crate::query::RegionQuery {
-                selector: crate::query::Selector {
-                    module: "vault::relabel".to_owned(),
-                    item: Some(name.to_owned()),
-                },
-                offset: None,
-                byte_range: None,
-                line_range: None,
-                from_line: None,
-                lines: None,
-                include_content: false,
-            };
-            let records = match service
-                .execute(CoreRequest::Region { view_id, query })
-                .unwrap()
-                .response
-            {
-                CoreResponse::Region(result) => result.records,
-                other => panic!("expected a region response for `{name}`, got {other:?}"),
-            };
-            assert_eq!(records.len(), 1, "`{name}` should resolve");
+            assert!(
+                matches!(resolve(name), CoreResponse::Region(_)),
+                "`{name}` should resolve"
+            );
         }
-        let response = service
-            .execute(CoreRequest::Region {
-                view_id,
-                query: crate::query::RegionQuery {
-                    selector: crate::query::Selector {
-                        module: "vault::relabel".to_owned(),
-                        item: Some("Root/D".to_owned()),
-                    },
-                    offset: None,
-                    byte_range: None,
-                    line_range: None,
-                    from_line: None,
-                    lines: None,
-                    include_content: false,
-                },
-            })
-            .unwrap()
-            .response;
-        let CoreResponse::QueryError(error) = response else {
-            panic!("`Root/D` must no longer resolve, got {response:?}")
-        };
-        assert_eq!(error.code, "not_found");
+        assert!(
+            matches!(resolve("Root/D"), CoreResponse::QueryError(_)),
+            "the replaced title is no longer an ItemId"
+        );
+        assert!(diagnostics_of(&service, view_id).is_empty());
     }
 
-    #[test]
-    fn items_lists_resources_for_virtual_modules() {
-        let root = tempfile::TempDir::new_in(std::env::current_dir().unwrap()).unwrap();
-        fs::write(root.path().join("readme.not"), "hello\n").unwrap();
-        fs::create_dir_all(root.path().join("assets")).unwrap();
-        fs::write(root.path().join("assets/logo.png"), "png\n").unwrap();
-        let service = NotistService::new();
-        let opened = service
-            .execute(CoreRequest::OpenView {
-                root: root.path().to_path_buf(),
-                kind: ProtocolViewKind::Disk,
-            })
-            .unwrap();
-        let CoreResponse::Opened { view_id, .. } = opened.response else {
-            panic!("expected opened view")
-        };
-        let records = items_records(&service, view_id, "vault::assets", None).unwrap();
-        assert_eq!(records.len(), 1);
-        assert_eq!(records[0].name, "logo.png");
-        assert_eq!(records[0].kind, "resource:image");
-        assert_eq!(records[0].origin, "resource");
-        assert_eq!(
-            records[0].location.relative_path,
-            std::path::PathBuf::from("assets/logo.png")
-        );
-    }
 }

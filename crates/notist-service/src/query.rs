@@ -249,9 +249,6 @@ pub struct ItemRecord {
     /// Heading level, for heading-derived Items.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub level: Option<u8>,
-    /// The default name collides with another heading, so the Item cannot be
-    /// addressed by this name alone; authors disambiguate with `@id`.
-    pub ambiguous: bool,
     pub location: Location,
     /// Attribute annotations fully contained in the Item's range (D0006).
     pub attributes: Vec<super::request::AttributeRecord>,
@@ -675,14 +672,6 @@ pub fn items(
         }
     }
     rows.sort_by_key(|row| row.range.start);
-    // Ambiguity follows resolve_item_name: a default name is ambiguous when
-    // several headings carry it, even if one of them is covered by an `@id`
-    // (the covered row then displays the id, but the plain name still fails).
-    let mut default_name_counts: HashMap<&str, usize> = HashMap::new();
-    for (name, _) in &defaults {
-        *default_name_counts.entry(name.as_str()).or_default() += 1;
-    }
-
     // Claim annotations innermost first so a row only reports annotations no
     // smaller row fully contains.
     let annotations = structured
@@ -714,11 +703,6 @@ pub fn items(
                 kind: "scope".into(),
                 origin: row.origin.into(),
                 level: row.level,
-                ambiguous: row.origin == "heading"
-                    && default_name_counts
-                        .get(row.name.as_str())
-                        .copied()
-                        .is_some_and(|count| count > 1),
                 location: location(workspace, module, source, row.range, None),
                 attributes: attribute_records(&claims[index]),
             });
@@ -734,7 +718,6 @@ pub fn items(
             kind: kind.into(),
             origin: "resource".into(),
             level: None,
-            ambiguous: false,
             location: Location {
                 module: module.logical_path.to_string(),
                 relative_path: relative_path(workspace.root(), &resource.path),
@@ -2189,7 +2172,6 @@ pub fn ref_target_record(
             reason: Some(
                 match reason {
                     MissingReason::Nonexistent => "nonexistent",
-                    MissingReason::Ambiguous => "ambiguous",
                     MissingReason::Unsupported => "unsupported",
                 }
                 .into(),
@@ -2323,16 +2305,7 @@ pub fn refs(
                 kind: notist_analysis::ItemKind::Resource(_),
                 ..
             } => RefsRegion::Resource(name.clone()),
-            RefTarget::Missing(MissingReason::Ambiguous) => {
-                return Err(ToolError::new(
-                    "ambiguous_selector",
-                    format!(
-                        "item name `{name}` in `{}` matches multiple headings; add an explicit `@id` to disambiguate",
-                        module.logical_path
-                    ),
-                )
-                .with_hint("use an explicit id or a more specific selector"));
-            }
+
             _ => {
                 return Err(ToolError::new(
                     "not_found",
@@ -3996,16 +3969,6 @@ fn resolve_source<'a>(
                         .item_name_range(&module.logical_path, item_name)
                         .unwrap_or(TextRange::new(0, source.text.len()))
                 })
-            }
-            RefTarget::Missing(MissingReason::Ambiguous) => {
-                return Err(ToolError::new(
-                    "ambiguous_selector",
-                    format!(
-                        "item name `{item_name}` in `{}` matches multiple headings; add an explicit `@id` to disambiguate",
-                        module.logical_path
-                    ),
-                )
-                .with_hint("use an explicit id or a more specific selector"));
             }
             RefTarget::Missing(_) => {
                 return Err(ToolError::new(

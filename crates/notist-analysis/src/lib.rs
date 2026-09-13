@@ -646,7 +646,6 @@ pub enum RefTarget {
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum MissingReason {
     Nonexistent,
-    Ambiguous,
     Unsupported,
 }
 
