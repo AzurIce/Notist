@@ -11,11 +11,11 @@ notist inspect read <MODULE> [--vault DIR]
   [--origins] [--attrs-only]
 ```
 
-- 位置参数为绝对 ModulePath；区域由 flag 给出，全部缺省 = 整个模块。`--item NAME` 选中该 Item 及其子树的源文范围（标题 Item 归一到所在节的子树，`@id` 绑定其他块时为该块自身；ItemName 为标题链 ItemId 或 `@id` 标注名，先按显式 `id:` 标注、后按标题默认名精确匹配）；四种坐标 flag 互斥，给出时覆盖 `--item`（与 ancestors 同一优先级）。OS path 不是 selector 形态——身份位置出现路径报 `invalid_selector`，hint 指向 `inspect locate`。
+- 位置参数为绝对 ModulePath；区域由 flag 给出，全部缺省 = 整个模块。`--item NAME` 选中该 Item 及其子树的源文范围（标题 Item 归一到所在节的子树，`@id` 绑定其他块时为该块自身；ItemName 为标题链 ItemId 或 `@id` 标注名，先按显式 `id:` 标注、后按标题默认名精确匹配）；四种坐标 flag 互斥，给出时覆盖 `--item`（与 ancestors 同一优先级）。OS path 不是 selector 形态——身份位置出现路径报 `invalid_selector`。
 - `--line` 是面向 Agent 的一等坐标（行号是 grep/Read 的原生产出）：1-based 闭区间；`--byte-range` 为 UTF-8 半开区间（由 notist 的 citation 发放，Agent 不自造字节偏移）；`--offset` 为零宽点查询；`--from-line N [--lines M]` 为行窗口（与宿主 Read 的 offset+limit 习惯同构），窗口在源文末尾钳制而非报错。越界或非 UTF-8 边界报 `invalid_argument`，模块或 item 不存在报 `not_found`。
 - 每段默认内嵌其覆盖的完整源文行，行号 gutter 为 1-based 源文行号，与 grep/宿主 Read 的坐标一致；`--attrs-only` 只投影属性面。
 - 属性默认显示为合并后的最终 Dict——直接回答"这些行上什么在生效"；`--origins` 切换到分层溯源视图（`common` 块 + 按声明分组的条目行，各带出处区间），`common` 块仅在 origins 模式出现。
-- header 携带 module 身份、源文相对路径、行/字节区间与 fingerprint——路径向宿主编辑工具的交接在这里完成（身份→路径的唯一反向出口；`inspect locate` 是路径→身份的正向桥）。除 header 外的行内不出现文件路径（与 items/ancestors 同规）。
+- header 携带 module 身份、源文相对路径、行/字节区间与 fingerprint——身份到路径的交接在这里完成。除 header 外的行内不出现文件路径。
 
 == 分解规则
 

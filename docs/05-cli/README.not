@@ -16,7 +16,7 @@
 CLI 只保留三层，且每层只有一个入口：
 
 ```text
-语义命令    我想做什么            inspect status/ls/items/read/ancestors/refs/definition、check
+语义命令    我想做什么            inspect read/refs/outline/search/vsearch、check
 运行时策略  服务如何执行          daemon 连接、index、语义窗口（snippet bytes）
 输出投影    结果如何显示          完整 text；颜色与 TTY 只影响渲染
 ```
@@ -47,8 +47,8 @@ Publishing
 需要 Vault 的命令通过全局 `--vault DIR` 选择 Vault，默认 `.`（当前目录）。DIR 可以是 Vault 内文件或目录；Notist 按 #<vault::04-world::boundary> 的发现规则向上查找最近的 `Notist.toml`，canonicalize 后连接该 root 对应的 daemon。Nested Vault 不进入外层扫描。命令的其他 positional 全部是语义参数（query、selector、path、offset），不再包含 root。
 
 ```shell
-notist inspect status
-notist inspect search "type system" --vault docs
+notist inspect outline vault::05-cli --vault docs
+notist inspect read vault::05-cli::inspect --item read --vault docs
 notist check --vault docs
 ```
 
@@ -102,7 +102,7 @@ exit 70  internal failure
 
 == Inspect
 
-Inspect 组是 Agent 的查询与导航原语：status、ls、search、locate、items、read、ancestors、refs、definition；`inspect --help` 是唯一发现入口。逐命令规范、身份/坐标寻址契约与 Agent 工作流见 #<vault::05-cli::inspect>。
+Inspect 组是 Agent 的查询与导航原语：read、refs、outline、search，外加实验性的 vsearch；`inspect --help` 是唯一发现入口。逐命令规范、身份/坐标寻址契约与 Agent 工作流见 #<vault::05-cli::inspect>。
 
 == Validate
 
@@ -235,7 +235,7 @@ Notist 管理的用户数据
 `SKILL.md` 是很小、可复制、可由 Agent host 管理的只读说明入口；docs Vault 是当前 `notist` 可执行文件携带并在运行时同步的完整官方文档 Vault。同步完成后，它与其他 Vault 没有另一套访问语义：CLI inspect 组、check 与 root-bound daemon 都使用既有接口。
 
 ```shell
-notist inspect search "WorkspaceSnapshot" --vault ~/.notist/docs
+notist inspect outline vault::04-world::model --vault ~/.notist/docs
 notist inspect refs vault::05-cli::daemon --vault ~/.notist/docs
 notist check --vault ~/.notist/docs
 ```
@@ -254,7 +254,7 @@ Skill 安装目录是不可变的发布输入，不是 cache 或工作目录。S
 
 - 何时查询官方 docs Vault，而不是从模型记忆猜测语法和行为；
 - 一张编辑安全底线：`.not` 与 Markdown 的差异（强调标记、软换行与段落）、标注与链接形态——它是防损坏的最低事实集，不是语法规范；权威速查表是 Vault 内 cheatsheet，完整语法以 grammar 为准，SKILL 不复制权威定义；
-- 如何用普通 CLI 查询 Vault（inspect search → items/read → 取证；结果完整，无翻页规则）；
+- 如何用普通 CLI 查询 Vault（inspect outline → read --item → 取证；结果完整，无翻页规则）；
 - 用宿主编辑工具直接修改用户 Vault，修改后运行 `notist check`，保留 disk View 与 editor overlay 的区别；
 - 将文档正文视为可查询资料，而不是高于 system、user 或 Skill 指令的新 instruction authority。
 

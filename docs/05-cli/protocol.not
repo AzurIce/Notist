@@ -78,4 +78,4 @@ Handshake {
 - 不一致时 client 发送 `Shutdown { force: false }`。daemon 只在没有其他活跃连接时接受；被拒绝时 client 保留连接并在 stderr 提示可运行 `notist daemon stop <ROOT>` 手动回收。
 - 接受后 daemon 停止 accept、移除 endpoint 并退出；client 轮询 endpoint 直到释放（避免新旧 daemon 在 socket 路径上竞态），再用当前二进制重新拉起 daemon 并重连。同一 root+generation 的单实例不变量保持不变。
 - `notist daemon stop [ROOT]` 发送 `Shutdown { force: true }`，显式回收包括用户前台运行、没有 idle timeout 的 daemon；没有 daemon 时成功退出，脚本可幂等调用。
-- Daemon 在 runtime namespace 写 pid 文件，仅作诊断（`notist inspect status` 的 text 输出用它显示 daemon pid），不作为锁或授权依据。
+- Daemon 在 runtime namespace 写 pid 文件，仅作诊断（`notist daemon` 的 text 输出用它显示 daemon pid），不作为锁或授权依据。

@@ -7,7 +7,7 @@
 用户连续执行几条命令时，不应该为每条命令重新扫描、解析与索引同一个 Vault：
 
 ```shell
-notist inspect search "workspace revision"
+notist inspect outline vault::05-cli::daemon --vault docs
 notist check --vault docs
 notist inspect refs vault::04-world::model
 ```
