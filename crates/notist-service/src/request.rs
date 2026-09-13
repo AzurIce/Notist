@@ -3805,6 +3805,69 @@ mod tests {
         assert!(duplicate[0].message.contains("Root/A/B"), "{duplicate:?}");
     }
 
+    /// A reference's `/` splits the ModulePath from the ItemId, and the ItemId
+    /// it hands over may itself contain `/` (a title chain's separator). So a
+    /// nested module `vault::a::b` does not change how `#<vault::a/b/Deep>`
+    /// reads: the module is everything before the first `/`, and `b/Deep` is
+    /// then looked up as a chain — which starts at the document's root heading,
+    /// so `b/Deep` alone is *not* a chain and does not resolve.
+    #[test]
+    fn target_syntax_splits_the_module_path_at_the_first_slash() {
+        let root = tempfile::TempDir::new_in(std::env::current_dir().unwrap()).unwrap();
+        std::fs::create_dir_all(root.path().join("a")).unwrap();
+        std::fs::write(root.path().join("a/b.not"), "= Root\n\n深层模块。\n").unwrap();
+        std::fs::write(
+            root.path().join("a.not"),
+            "= Root\n\n== b\n\n=== Deep\n\n同名节。\n",
+        )
+        .unwrap();
+        let service = NotistService::new();
+        let opened = service
+            .execute(CoreRequest::OpenView {
+                root: root.path().to_path_buf(),
+                kind: ProtocolViewKind::Disk,
+            })
+            .unwrap();
+        let CoreResponse::Opened { view_id, .. } = opened.response else {
+            panic!("expected opened view")
+        };
+        let resolve = |module: &str, item: &str| {
+            service
+                .execute(CoreRequest::Region {
+                    view_id,
+                    query: crate::query::RegionQuery {
+                        selector: crate::query::Selector {
+                            module: module.to_owned(),
+                            item: Some(item.to_owned()),
+                        },
+                        offset: None,
+                        byte_range: None,
+                        line_range: None,
+                        from_line: None,
+                        lines: None,
+                        include_content: false,
+                    },
+                })
+                .unwrap()
+                .response
+        };
+
+        // The chain in `vault::a` is `Root/b/Deep`; `b/Deep` is not one.
+        assert!(
+            matches!(resolve("vault::a", "Root/b/Deep"), CoreResponse::Region(_)),
+            "the chain resolves"
+        );
+        assert!(
+            matches!(resolve("vault::a", "b/Deep"), CoreResponse::QueryError(_)),
+            "a chain missing its root segment must not resolve"
+        );
+        // The nested module is addressed as a module, not through the slash.
+        assert!(matches!(
+            resolve("vault::a::b", "Root"),
+            CoreResponse::Region(_)
+        ));
+    }
+
     /// The collision is still surfaced — as a diagnostic, not by bricking the
     /// name.
     #[test]

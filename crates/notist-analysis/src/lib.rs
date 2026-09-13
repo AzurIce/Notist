@@ -2860,7 +2860,6 @@ impl WorkspaceSnapshot {
                     });
                     continue;
                 };
-
                 let mut target_range = None;
                 let mut unresolved = false;
                 if let Some(name) = &reference.name {
