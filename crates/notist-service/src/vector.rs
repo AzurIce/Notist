@@ -486,16 +486,23 @@ struct SectionUnit<'a> {
 
 fn collect_section_units<'a>(
     nodes: &'a [notist_model::Node],
+    overrides: &std::collections::HashMap<usize, String>,
     chain: &mut Vec<String>,
     out: &mut Vec<SectionUnit<'a>>,
 ) {
     for node in nodes {
         if node.is_core("section") {
+            // The chain segment is the heading's ItemId: an `@id` over it
+            // replaces the title, exactly as `--item` resolves it.
             let title = node
                 .children
                 .first()
                 .filter(|child| child.is_core("heading"))
-                .map(|heading| notist_analysis::heading_default_id_text(&heading.children))
+                .map(|heading| {
+                    overrides.get(&heading.range.start).cloned().unwrap_or_else(|| {
+                        notist_analysis::heading_default_id_text(&heading.children)
+                    })
+                })
                 .unwrap_or_default();
             chain.push(title);
             out.push(SectionUnit {
@@ -503,19 +510,19 @@ fn collect_section_units<'a>(
                 range: node.range,
                 node,
             });
-            collect_section_units(&node.children, chain, out);
+            collect_section_units(&node.children, overrides, chain, out);
             for (_, value) in &node.args {
                 if let notist_model::NodeValue::Stream(stream) = value {
-                    collect_section_units(stream, chain, out);
+                    collect_section_units(stream, overrides, chain, out);
                 }
             }
             chain.pop();
             continue;
         }
-        collect_section_units(&node.children, chain, out);
+        collect_section_units(&node.children, overrides, chain, out);
         for (_, value) in &node.args {
             if let notist_model::NodeValue::Stream(stream) = value {
-                collect_section_units(stream, chain, out);
+                collect_section_units(stream, overrides, chain, out);
             }
         }
     }
@@ -680,7 +687,8 @@ fn build_chunks(
         };
         let mut units: Vec<SectionUnit> = Vec::new();
         let mut chain = Vec::new();
-        collect_section_units(&structured.tree.roots, &mut chain, &mut units);
+        let overrides = workspace.heading_chain_overrides(&module.logical_path);
+        collect_section_units(&structured.tree.roots, &overrides, &mut chain, &mut units);
         units.sort_by_key(|unit| unit.range.start);
         let comments = crate::query::comment_ranges(&source.text);
         let relative = crate::query::relative_path(workspace.root(), &source.canonical_path);

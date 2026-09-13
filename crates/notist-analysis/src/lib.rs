@@ -1279,6 +1279,20 @@ impl WorkspaceSnapshot {
         (heading_ids_in_tree(&tree, &overrides), overrides)
     }
 
+    /// Chain name per heading start byte for one module — the section tree
+    /// other modules need when they walk the evaluated tree themselves. Empty
+    /// when no `@id` overrides the titles, in which case a title-derived walk
+    /// already agrees with the authoritative list.
+    pub fn heading_chain_overrides(
+        &self,
+        module_path: &ModulePath,
+    ) -> HashMap<usize, String> {
+        self.heading_overrides
+            .get(module_path)
+            .cloned()
+            .unwrap_or_default()
+    }
+
     /// Per-module map from a heading's start byte to the `@id` that replaces
     /// its title in the ItemId chain.
     fn compute_heading_overrides(
