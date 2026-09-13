@@ -801,7 +801,7 @@ fn collect_section_scopes_in_nodes(
                 .children
                 .first()
                 .filter(|child| child.is_core("heading"))
-                .map(|heading| node_text(&heading.children))
+                .map(|heading| notist_analysis::heading_default_id_text(&heading.children))
                 .unwrap_or_default();
             chain.push(title);
             let id = chain.join("/");
@@ -984,6 +984,13 @@ fn ancestor_record(
         .map(|label| label.name.clone());
     AncestorRecord {
         kind: node.name.clone(),
+        // Display text, deliberately *not* an ItemId: `id` above carries the
+        // only identity this record claims, and it comes from explicit labels
+        // alone. Deriving a heading chain here would either invent a
+        // ModulePath-qualified path that `--item` cannot consume, or need a
+        // module parameter this builder does not have. Heading chains are
+        // other commands' payload (read/items); see `heading_default_id_text`
+        // for the identity spelling.
         name: heading.map(|heading| node_text(&heading.children)),
         level: match node.get("level") {
             Some(NodeValue::Int(level)) => u8::try_from(*level).ok(),

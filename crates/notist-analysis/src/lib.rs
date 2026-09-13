@@ -3730,7 +3730,10 @@ fn collect_document_symbols(
                         file_id,
                         local_id,
                     },
-                    name: node_text(&node.children),
+                    // Identity text, not display text: a symbol whose name is
+                    // derived from `node_text` does not match the spelling
+                    // `--item` accepts (see `heading_default_id_text`).
+                    name: heading_default_id_text(&node.children),
                     level,
                     range: node.range,
                 });
@@ -4047,7 +4050,7 @@ fn collect_heading_default_ids(
             .children
             .first()
             .filter(|child| child.is_core("heading"))
-            .map(|heading| heading_plain_text(&heading.children))
+            .map(|heading| heading_default_id_text(&heading.children))
             .unwrap_or_default();
         chain.push(title);
         collect_heading_default_ids_in_nodes(&node.children, chain, output);
@@ -4060,7 +4063,7 @@ fn collect_heading_default_ids(
         // its plain title. The range is the block's span: leading whitespace
         // and the declaring annotation through the terminating newline.
         let id = if chain.is_empty() {
-            heading_plain_text(&node.children)
+            heading_default_id_text(&node.children)
         } else {
             chain.join("/")
         };
@@ -4103,9 +4106,19 @@ fn stream_arg<'a>(node: &'a Node, name: &str) -> Option<&'a [Node]> {
     }
 }
 
-/// Extracts the plain text of an inline node forest, mirroring the renderer's
-/// heading text extraction.
-fn heading_plain_text(nodes: &[Node]) -> String {
+/// Extracts the **identity text** of a heading's inline forest: the string a
+/// heading contributes to its default ItemId (D0003), and therefore the
+/// spelling `--item` matches.
+///
+/// This is the single authority for that string. `node_text` is its display
+/// counterpart and differs on purpose: it concatenates *every* descendant's
+/// text (so inline-code markup like `` `x` `` survives, links and calls
+/// contribute their inner text), which is right for rendering and wrong for
+/// identity. Deriving an ItemId from `node_text` produces strings that
+/// `--item` cannot resolve, so every identity consumer — heading default ids,
+/// section scopes, document symbols, the vector index — must come through
+/// this function instead.
+pub fn heading_default_id_text(nodes: &[Node]) -> String {
     nodes
         .iter()
         .map(|node| match node.core_local() {
@@ -4114,7 +4127,7 @@ fn heading_plain_text(nodes: &[Node]) -> String {
                 _ => String::new(),
             },
             Some("strong" | "emph" | "strike" | "underline" | "table-cell") => {
-                heading_plain_text(&node.children)
+                heading_default_id_text(&node.children)
             }
             Some("raw") => match node.get("source") {
                 Some(NodeValue::String(text)) => text.clone(),
@@ -4340,6 +4353,47 @@ mod tests {
         let structured = snapshot.structured_module(module.id).unwrap();
         assert_eq!(structured.tree.roots.len(), 1);
         assert!(structured.tree.roots[0].is_core("section"));
+    }
+
+    /// One heading, one string: the document symbols an editor sees and the
+    /// default ItemIds `--item` resolves must be spelled identically. They
+    /// used to diverge on inline-code markup, because symbols were built from
+    /// `node_text` (which keeps the backticks) while ids came from
+    /// `heading_default_id_text` (which strips them) — so a heading copied out
+    /// of an editor never resolved.
+    #[test]
+    fn document_symbols_share_the_heading_default_id_spelling() {
+        let root = TempDir::new().unwrap();
+        fs::write(
+            root.path().join("README.not"),
+            "= Root\n\n== Heading with `code` inside\n\nBody\n",
+        )
+        .unwrap();
+        let snapshot = WorkspaceSnapshot::load(root.path()).unwrap();
+        let module = snapshot.modules().next().unwrap();
+        let file_id = module.file_id.unwrap();
+
+        let symbols = snapshot.document_symbols(file_id);
+        let names: Vec<&str> = symbols.iter().map(|symbol| symbol.name.as_str()).collect();
+        assert_eq!(names, ["Root", "Heading with code inside"]);
+
+        let ids: Vec<String> = snapshot
+            .module_heading_default_ids(&module.logical_path)
+            .into_iter()
+            .map(|(id, _)| id)
+            .collect();
+        assert_eq!(ids, ["Root", "Root/Heading with code inside"]);
+
+        // Every symbol name is the trailing segment of exactly one default id:
+        // that is what makes an editor's outline safe to paste into `--item`
+        // once it is qualified with its chain.
+        for name in names {
+            assert_eq!(
+                ids.iter().filter(|id| id.ends_with(name)).count(),
+                1,
+                "symbol `{name}` does not identify exactly one ItemId among {ids:?}"
+            );
+        }
     }
 
     #[test]

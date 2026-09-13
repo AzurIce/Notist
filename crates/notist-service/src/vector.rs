@@ -495,7 +495,7 @@ fn collect_section_units<'a>(
                 .children
                 .first()
                 .filter(|child| child.is_core("heading"))
-                .map(|heading| notist_analysis::node_text(&heading.children))
+                .map(|heading| notist_analysis::heading_default_id_text(&heading.children))
                 .unwrap_or_default();
             chain.push(title);
             out.push(SectionUnit {
