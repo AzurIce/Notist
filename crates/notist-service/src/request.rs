@@ -3743,17 +3743,91 @@ mod tests {
     }
 
     #[test]
-    fn ancestors_ambiguous_item_names_are_a_typed_error() {
-        // Two same-titled top-level sections produce the same title-chain
-        // ItemId: a genuine duplicate, reported as a typed query error.
+    fn duplicate_item_ids_resolve_to_the_first_occurrence() {
+        // Two same-titled top-level sections derive the same title-chain
+        // ItemId. The name resolves to the first occurrence rather than
+        // erroring: a name that exists has to be usable, and `check` reports
+        // the collision once as a diagnostic instead.
         let (service, view_id, _root) =
             ancestors_fixture("dupe.not", "= 重复\n\n一段。\n\n= 重复\n\n另一段。\n");
-        let response =
-            ancestors_response(&service, view_id, "vault::dupe", Some("重复"), None, None);
-        let CoreResponse::QueryError(error) = response else {
-            panic!("expected a query error")
+        let records = expect_ancestors(ancestors_response(
+            &service,
+            view_id,
+            "vault::dupe",
+            Some("重复"),
+            None,
+            None,
+        ));
+        assert_eq!(records.len(), 1);
+        // The first section's body, not the second's: its paragraph reads
+        // 「一段。」.
+        let section = &records[0].children[0];
+        let paragraph = section
+            .children
+            .iter()
+            .find(|child| child.kind == "core::paragraph")
+            .expect("the first section has a paragraph");
+        let first = paragraph
+            .children
+            .iter()
+            .find(|child| child.name.is_some())
+            .and_then(|child| child.name.clone())
+            .unwrap_or_default();
+        assert_ne!(first, "另一段。", "resolved to the second section");
+    }
+
+    /// A heading whose title *text* contains the chain separator collides with
+    /// a genuinely nested heading: both derive `Root/A/B`. Neither is a label,
+    /// so this only surfaces if collisions are judged on the derived identity
+    /// rather than on repeated title text.
+    #[test]
+    fn chain_collisions_between_distinct_blocks_are_reported() {
+        let (service, view_id, _root) = ancestors_fixture(
+            "collide.not",
+            "= Root\n\n== A/B\n\n一段。\n\n== A\n\n=== B\n\n另一段。\n",
+        );
+        let diagnostics = match service
+            .execute(CoreRequest::DiagnosticsPage {
+                view_id,
+                query: crate::query::DiagnosticsQuery::default(),
+            })
+            .unwrap()
+            .response
+        {
+            CoreResponse::DiagnosticsPage(page) => page.diagnostics.records,
+            other => panic!("expected diagnostics, got {other:?}"),
         };
-        assert_eq!(error.code, "ambiguous_selector");
+        let duplicate: Vec<_> = diagnostics
+            .iter()
+            .filter(|record| record.code == "duplicate-item-id")
+            .collect();
+        assert_eq!(duplicate.len(), 1, "{diagnostics:?}");
+        assert!(duplicate[0].message.contains("Root/A/B"), "{duplicate:?}");
+    }
+
+    /// The collision is still surfaced — as a diagnostic, not by bricking the
+    /// name.
+    #[test]
+    fn duplicate_item_ids_are_reported_by_check() {
+        let (service, view_id, _root) =
+            ancestors_fixture("dupe.not", "= 重复\n\n一段。\n\n= 重复\n\n另一段。\n");
+        let diagnostics = match service
+            .execute(CoreRequest::DiagnosticsPage {
+                view_id,
+                query: crate::query::DiagnosticsQuery::default(),
+            })
+            .unwrap()
+            .response
+        {
+            CoreResponse::DiagnosticsPage(page) => page.diagnostics.records,
+            other => panic!("expected diagnostics, got {other:?}"),
+        };
+        let duplicate: Vec<_> = diagnostics
+            .iter()
+            .filter(|record| record.code == "duplicate-item-id")
+            .collect();
+        assert_eq!(duplicate.len(), 1, "{diagnostics:?}");
+        assert!(duplicate[0].message.contains("first wins"), "{duplicate:?}");
     }
 
     #[test]

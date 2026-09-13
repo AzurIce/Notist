@@ -1195,26 +1195,29 @@ impl WorkspaceSnapshot {
             };
         }
         let (headings, _) = self.module_heading_ids(module_path);
-        let matches: Vec<_> = headings.iter().filter(|(text, _)| text == name).collect();
-        match matches.len() {
-            1 => RefTarget::Item {
+        // Duplicate ItemIds resolve to the first occurrence in document order
+        // rather than erroring: a name that exists resolves, deterministically,
+        // and the collision itself is reported once by `check` as a
+        // duplicate-item-id diagnostic. Erroring here would make an address
+        // unusable in every command because two Items happen to share it.
+        if headings.iter().any(|(text, _)| text == name) {
+            return RefTarget::Item {
                 module: module.id,
                 name: name.to_owned(),
                 kind: ItemKind::Scope,
+            };
+        }
+        match module
+            .resources
+            .iter()
+            .find(|resource| resource.name == name)
+        {
+            Some(resource) => RefTarget::Item {
+                module: module.id,
+                name: resource.name.clone(),
+                kind: ItemKind::Resource(resource.kind),
             },
-            0 => match module
-                .resources
-                .iter()
-                .find(|resource| resource.name == name)
-            {
-                Some(resource) => RefTarget::Item {
-                    module: module.id,
-                    name: resource.name.clone(),
-                    kind: ItemKind::Resource(resource.kind),
-                },
-                None => RefTarget::Missing(MissingReason::Nonexistent),
-            },
-            _ => RefTarget::Missing(MissingReason::Ambiguous),
+            None => RefTarget::Missing(MissingReason::Nonexistent),
         }
     }
 
@@ -2732,7 +2735,7 @@ impl WorkspaceSnapshot {
         self.heading_overrides = self.compute_heading_overrides(&labels);
 
         for module in self.modules.values() {
-            let (Some(source_path), Some(parse)) = (&module.source_path, &module.parse) else {
+            let Some(source_path) = &module.source_path else {
                 continue;
             };
             // Heading title chains are default ItemIds: one flat ItemId
@@ -2740,22 +2743,51 @@ impl WorkspaceSnapshot {
             // (model.not). A collision is an authoring error. An `@id` over a
             // heading has already replaced that heading's chain segment, so
             // this pass sees the same names `--item` resolves.
+            // Identity-level collision detection: two *different* sources
+            // producing one ItemId. Distinct sources are compared by where the
+            // id came from — an `@id` label answers for the label's own range,
+            // a heading chain for the heading's block — so `= A/B` colliding
+            // with a nested `A > B` (different blocks, same chain) is caught,
+            // while the two rows `items()` folds into one (a label and the
+            // heading it covers, sharing a range) are not reported twice.
             let mut item_ids: HashMap<String, TextRange> = self
                 .labels
                 .iter()
                 .filter(|definition| definition.module == module.logical_path)
                 .map(|definition| (definition.name.clone(), definition.range))
                 .collect();
+            let mut heading_sources: HashMap<String, TextRange> = HashMap::new();
             for (name, range) in self.module_heading_default_ids(&module.logical_path) {
-                if item_ids.contains_key(&name) {
+                if let Some(existing) = item_ids.get(&name) {
                     diagnostics.push(Diagnostic {
                         kind: DiagnosticKind::DuplicateItemId,
-                        message: format!("duplicate ItemId `{name}`"),
+                        message: format!(
+                            "duplicate ItemId `{name}`: it names both the Item at byte {} and the one here; the first wins, give one of them an explicit `@id`",
+                            existing.start
+                        ),
                         source_path: Some(source_path.clone()),
                         range: Some(range),
                     });
                     continue;
                 }
+                // Two headings that derive the same chain from different blocks
+                // (for example `= A/B` and a nested `A > B`) collide without
+                // either being a label.
+                if let Some(existing) = heading_sources.get(&name)
+                    && *existing != range
+                {
+                    diagnostics.push(Diagnostic {
+                        kind: DiagnosticKind::DuplicateItemId,
+                        message: format!(
+                            "duplicate ItemId `{name}`: two headings derive the same chain; the earlier one at byte {} wins, give one of them an explicit `@id`",
+                            existing.start
+                        ),
+                        source_path: Some(source_path.clone()),
+                        range: Some(range),
+                    });
+                    continue;
+                }
+                heading_sources.insert(name.clone(), range);
                 item_ids.insert(name, range);
             }
         }
