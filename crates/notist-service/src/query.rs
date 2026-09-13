@@ -1478,9 +1478,14 @@ pub fn outline(
     for label in workspace.labels().iter().filter(|label| {
         label.module == resolved.module.logical_path && label.file_id == resolved.source.file_id
     }) {
+        // A label that names a heading is that heading's alternative address,
+        // not a second Item: `items()`/the identity map already fold the pair
+        // into one row (the chain, which now carries the label's name). Emitting
+        // the label here too would put two identities on one byte range — the
+        // state this command exists to make legible.
         if heading_ranges
             .iter()
-            .any(|(start, end)| *start == label.scope_range.start && *end == label.scope_range.end)
+            .any(|(start, _)| label.scope_range.start <= *start && *start < label.scope_range.end)
         {
             continue;
         }

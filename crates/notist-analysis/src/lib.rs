@@ -830,6 +830,10 @@ pub struct WorkspaceSnapshot {
     /// Module attributes declared by `@![...]` (D0006), captured once per
     /// snapshot in the same dependency-ordered evaluation pass.
     module_attributes: BTreeMap<ModuleId, Vec<MaterializedAttributes>>,
+    /// `@id` labels that replace a heading's title in its ItemId chain, per
+    /// module, keyed by the heading's start byte. Computed once per snapshot:
+    /// ItemId resolution runs on every query (D0003).
+    heading_overrides: BTreeMap<ModulePath, HashMap<usize, String>>,
     diagnostics: Vec<Diagnostic>,
     signatures: SignatureSet,
     function_registry: Arc<FunctionRegistry>,
@@ -1004,6 +1008,7 @@ impl WorkspaceSnapshot {
             imports: Vec::new(),
             module_import_seeds: BTreeMap::new(),
             module_attributes: BTreeMap::new(),
+            heading_overrides: BTreeMap::new(),
             diagnostics: Vec::new(),
             signatures,
             function_registry: Arc::new(function_registry),
@@ -1189,12 +1194,7 @@ impl WorkspaceSnapshot {
                 kind: ItemKind::Scope,
             };
         }
-        let seeds = self
-            .module_import_seeds
-            .get(&module.id)
-            .cloned()
-            .unwrap_or_default();
-        let headings = heading_default_ids(module, &seeds);
+        let (headings, _) = self.module_heading_ids(module_path);
         let matches: Vec<_> = headings.iter().filter(|(text, _)| text == name).collect();
         match matches.len() {
             1 => RefTarget::Item {
@@ -1218,18 +1218,105 @@ impl WorkspaceSnapshot {
         }
     }
 
-    /// Returns the heading default ids (heading plain text plus source
-    /// range) of a source-backed module, in document order (D0003).
+    /// Returns the heading ItemIds (id plus source range) of a source-backed
+    /// module, in document order (D0003).
+    ///
+    /// An `@id` label covering a heading *replaces* that heading's title in the
+    /// chain: the heading no longer answers to its title text, and descendants
+    /// chain through the label. This is the single source of truth for every
+    /// consumer — `--item` resolution, references, completion, symbols,
+    /// outlines — so they cannot disagree about what an Item is called.
     pub fn module_heading_default_ids(&self, module_path: &ModulePath) -> Vec<(String, TextRange)> {
+        self.module_heading_ids(module_path).0
+    }
+
+    /// The heading ItemIds plus the same headings' own blocks, so a consumer
+    /// that needs to tell "this heading" from "the text it was titled with"
+    /// (duplicate detection, outline rows) can.
+    fn module_heading_ids(
+        &self,
+        module_path: &ModulePath,
+    ) -> (Vec<(String, TextRange)>, HashMap<usize, String>) {
         let Some(module) = self.module(module_path) else {
-            return Vec::new();
+            return (Vec::new(), HashMap::new());
         };
+        let overrides = self
+            .heading_overrides
+            .get(module_path)
+            .cloned()
+            .unwrap_or_default();
+        if overrides.is_empty() {
+            let seeds = self
+                .module_import_seeds
+                .get(&module.id)
+                .cloned()
+                .unwrap_or_default();
+            return (heading_default_ids(module, &seeds), overrides);
+        }
+        let Some(source) = module.source.as_deref() else {
+            return (Vec::new(), overrides);
+        };
+        let (core_registry, core_shaping) = core_plugin::registry();
         let seeds = self
             .module_import_seeds
             .get(&module.id)
             .cloned()
             .unwrap_or_default();
-        heading_default_ids(module, &seeds)
+        let tree = Evaluator::new(core_registry)
+            .evaluate_parsed_with_shaping(
+                source,
+                module
+                    .parse
+                    .as_ref()
+                    .expect("source-backed modules have parses"),
+                seeds,
+                &core_shaping,
+            )
+            .tree
+            .roots;
+        (heading_ids_in_tree(&tree, &overrides), overrides)
+    }
+
+    /// Per-module map from a heading's start byte to the `@id` that replaces
+    /// its title in the ItemId chain.
+    fn compute_heading_overrides(
+        &self,
+        labels: &[LabelDefinition],
+    ) -> BTreeMap<ModulePath, HashMap<usize, String>> {
+        let mut result = BTreeMap::new();
+        for module in self.modules.values() {
+            let labels: Vec<LabelName> = labels
+                .iter()
+                .filter(|label| label.module == module.logical_path)
+                .map(|label| LabelName {
+                    name: label.name.clone(),
+                    scope_range: label.scope_range,
+                })
+                .collect();
+            if labels.is_empty() {
+                continue;
+            }
+            let Some(source) = module.source.as_deref() else {
+                continue;
+            };
+            let Some(parse) = module.parse.as_ref() else {
+                continue;
+            };
+            let (core_registry, core_shaping) = core_plugin::registry();
+            let seeds = self
+                .module_import_seeds
+                .get(&module.id)
+                .cloned()
+                .unwrap_or_default();
+            let tree = Evaluator::new(core_registry)
+                .evaluate_parsed_with_shaping(source, parse, seeds, &core_shaping)
+                .tree;
+            let overrides = heading_id_overrides(&tree.roots, &labels);
+            if !overrides.is_empty() {
+                result.insert(module.logical_path.clone(), overrides);
+            }
+        }
+        result
     }
 
     /// Returns the source range covering a resolved ItemName: the explicit
@@ -1239,12 +1326,7 @@ impl WorkspaceSnapshot {
             return Some(definition.scope_range);
         }
         let module = self.module(module)?;
-        let seeds = self
-            .module_import_seeds
-            .get(&module.id)
-            .cloned()
-            .unwrap_or_default();
-        let headings = heading_default_ids(module, &seeds);
+        let (headings, _) = self.module_heading_ids(&module.logical_path);
         let range = headings
             .iter()
             .find(|(text, _)| text == name)
@@ -2641,22 +2723,30 @@ impl WorkspaceSnapshot {
                     scope_range: annotation.target_range.unwrap_or(annotation.range),
                 });
             }
+        }
 
+        // `@id` labels replace the heading segment they cover, so the ItemId
+        // collision pass and every runtime resolver must agree on names. The
+        // map needs the labels (built above) and the import seeds (computed
+        // before this), because the walk evaluates each module.
+        self.heading_overrides = self.compute_heading_overrides(&labels);
+
+        for module in self.modules.values() {
+            let (Some(source_path), Some(parse)) = (&module.source_path, &module.parse) else {
+                continue;
+            };
             // Heading title chains are default ItemIds: one flat ItemId
             // namespace per module, shared with explicit `id` labels
-            // (model.not). A collision is an authoring error.
+            // (model.not). A collision is an authoring error. An `@id` over a
+            // heading has already replaced that heading's chain segment, so
+            // this pass sees the same names `--item` resolves.
             let mut item_ids: HashMap<String, TextRange> = self
                 .labels
                 .iter()
                 .filter(|definition| definition.module == module.logical_path)
                 .map(|definition| (definition.name.clone(), definition.range))
                 .collect();
-            let seeds = self
-                .module_import_seeds
-                .get(&module.id)
-                .cloned()
-                .unwrap_or_default();
-            for (name, range) in heading_default_ids(module, &seeds) {
+            for (name, range) in self.module_heading_default_ids(&module.logical_path) {
                 if item_ids.contains_key(&name) {
                     diagnostics.push(Diagnostic {
                         kind: DiagnosticKind::DuplicateItemId,
@@ -2750,14 +2840,11 @@ impl WorkspaceSnapshot {
                         target_range = Some(definition.range);
                     } else {
                         let headings =
-                            heading_indexes.entry(target_module.id).or_insert_with(|| {
-                                let seeds = self
-                                    .module_import_seeds
-                                    .get(&target_module.id)
-                                    .cloned()
-                                    .unwrap_or_default();
-                                heading_default_ids(target_module, &seeds)
-                            });
+                            heading_indexes
+                                .entry(target_module.id)
+                                .or_insert_with(|| {
+                                    self.module_heading_default_ids(&target_module.logical_path)
+                                });
                         if let Some(position) = headings.iter().position(|(text, _)| text == name) {
                             // Heading default name: exact match on the evaluated
                             // heading plain text; the first occurrence wins.
@@ -3997,6 +4084,14 @@ fn resource_kind(path: &Path) -> ResourceKind {
     }
 }
 
+/// An explicit `@(id: "...")` label as ItemId resolution needs it: the name an
+/// Item answers to, and the span it governs.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct LabelName {
+    pub name: String,
+    pub scope_range: TextRange,
+}
+
 /// Extracts the heading default ids (heading plain text) of a source-backed
 /// module from its evaluated document, in document order.
 fn heading_default_ids(
@@ -4018,21 +4113,96 @@ fn heading_default_ids(
             &core_shaping,
         )
         .tree;
+    heading_ids_in_tree(&tree.roots, &HashMap::new())
+}
+
+/// Heading ItemIds of an evaluated tree, with `@id` overrides applied, in
+/// document order.
+fn heading_ids_in_tree(
+    roots: &[Node],
+    overrides: &HashMap<usize, String>,
+) -> Vec<(String, TextRange)> {
     let mut headings = Vec::new();
     let mut chain = Vec::new();
-    collect_heading_default_ids_in_nodes(&tree.roots, &mut chain, &mut headings);
+    collect_heading_default_ids_in_nodes(roots, overrides, &mut chain, &mut headings);
     headings
+}
+
+/// Maps a heading's start byte to the `@id` label that replaces its title in
+/// the ItemId chain. Computed once per snapshot: `resolve_item_name` runs on
+/// every query, and walking the evaluated tree per lookup would be wasteful.
+///
+/// Coverage follows the same test `items()` uses: the heading's start falls
+/// inside the label's scope, and no *other* heading lies in that scope — a
+/// label spanning several headings names an outer container, not any one of
+/// them.
+fn heading_id_overrides(tree: &[Node], labels: &[LabelName]) -> HashMap<usize, String> {
+    let mut starts = Vec::new();
+    collect_heading_starts_in_nodes(tree, &mut starts);
+    let mut overrides = HashMap::new();
+    for label in labels {
+        let covered: Vec<usize> = starts
+            .iter()
+            .copied()
+            .filter(|start| label.scope_range.start <= *start && *start < label.scope_range.end)
+            .collect();
+        if let [only] = covered[..] {
+            overrides.insert(only, label.name.clone());
+        }
+    }
+    overrides
+}
+
+/// Every heading block's start byte, in document order: the coverage test and
+/// the override lookup both key on it.
+fn collect_heading_starts_in_nodes(nodes: &[Node], out: &mut Vec<usize>) {
+    for node in nodes {
+        if node.is_core("heading") {
+            out.push(node.range.start);
+        }
+        collect_heading_starts_in_nodes(&node.children, out);
+        for (_, value) in &node.args {
+            if let NodeValue::Stream(stream) = value {
+                collect_heading_starts_in_nodes(stream, out);
+            }
+        }
+    }
+}
+
+/// A section's own heading: its first child when that child is a heading. The
+/// distinction matters because a heading nested inside a section body is a
+/// *different* heading from the section's, and must not consume the section's
+/// chain segment.
+fn heading_segment(
+    section: &Node,
+    overrides: &HashMap<usize, String>,
+) -> (String, TextRange) {
+    section
+        .children
+        .first()
+        .filter(|child| child.is_core("heading"))
+        .map(|heading| {
+            (
+                overrides
+                    .get(&heading.range.start)
+                    .cloned()
+                    .unwrap_or_else(|| heading_default_id_text(&heading.children)),
+                heading.range,
+            )
+        })
+        .unwrap_or_default()
 }
 
 /// Collects heading texts in render (depth-first) order, mirroring the anchor
 /// planning walk of the HTML renderer.
 fn collect_heading_default_ids_in_nodes(
     nodes: &[Node],
+    overrides: &HashMap<usize, String>,
     chain: &mut Vec<String>,
     output: &mut Vec<(String, TextRange)>,
 ) {
     for node in nodes {
-        collect_heading_default_ids(node, chain, output);
+        collect_heading_default_ids(node, overrides, chain, false, output);
     }
 }
 
@@ -4040,59 +4210,79 @@ fn collect_heading_default_ids_in_nodes(
 /// enclosing sections joined with `/`, ending at its own title (model.not).
 /// Chain titles are heading texts, regardless of any `id` annotations on the
 /// chain.
+/// `section_heading` marks the heading that owns the enclosing section (its
+/// first child): only that heading's ItemId is the chain built so far. A
+/// heading nested deeper in the body is a different Item and takes its own.
 fn collect_heading_default_ids(
     node: &Node,
+    overrides: &HashMap<usize, String>,
     chain: &mut Vec<String>,
+    section_heading: bool,
     output: &mut Vec<(String, TextRange)>,
 ) {
     if node.is_core("section") {
-        let title = node
-            .children
-            .first()
-            .filter(|child| child.is_core("heading"))
-            .map(|heading| heading_default_id_text(&heading.children))
-            .unwrap_or_default();
+        // The chain segment is the heading's *ItemId*: an `@id` label covering
+        // this heading replaces the title text here, which is what makes
+        // descendants chain through the label (D0003). A label may also cover a
+        // node *inside* the section instead — then it does not touch this
+        // segment, because it does not cover the section's own heading.
+        let (title, _) = heading_segment(node, overrides);
         chain.push(title);
-        collect_heading_default_ids_in_nodes(&node.children, chain, output);
+        for (index, child) in node.children.iter().enumerate() {
+            collect_heading_default_ids(
+                child,
+                overrides,
+                chain,
+                index == 0 && child.is_core("heading"),
+                output,
+            );
+        }
         chain.pop();
         return;
     }
     if node.is_core("heading") {
-        // Inside a section the chain already carries the enclosing titles
-        // including this heading's own; a sectionless heading falls back to
-        // its plain title. The range is the block's span: leading whitespace
-        // and the declaring annotation through the terminating newline.
-        let id = if chain.is_empty() {
-            heading_default_id_text(&node.children)
-        } else {
+        // Inside a section the chain carries the enclosing segment names and
+        // this heading's own — but *only* when this heading is the section's
+        // own heading. A sectionless heading falls back to its plain title.
+        // The range is the block's span: leading whitespace and the declaring
+        // annotation through the terminating newline.
+        let id = if section_heading && !chain.is_empty() {
+            // This heading owns the enclosing section, so the chain's last
+            // segment *is* its ItemId (with any `@id` override already applied
+            // when that segment was pushed).
             chain.join("/")
+        } else {
+            overrides
+                .get(&node.range.start)
+                .cloned()
+                .unwrap_or_else(|| heading_default_id_text(&node.children))
         };
         output.push((id, node.range));
     }
     match node.core_local() {
-        None => collect_heading_default_ids_in_nodes(&node.children, chain, output),
+        None => collect_heading_default_ids_in_nodes(&node.children, overrides, chain, output),
         Some(
             "paragraph" | "strong" | "emph" | "strike" | "underline" | "heading" | "item"
             | "unresolved-call" | "list" | "table" | "table-cell" | "figure",
         ) => {
-            collect_heading_default_ids_in_nodes(&node.children, chain, output);
+            collect_heading_default_ids_in_nodes(&node.children, overrides, chain, output);
             for name in ["supplement", "caption"] {
                 if let Some(nodes) = stream_arg(node, name) {
-                    collect_heading_default_ids_in_nodes(nodes, chain, output);
+                    collect_heading_default_ids_in_nodes(nodes, overrides, chain, output);
                 }
             }
         }
         Some("callout") => {
             if let Some(title) = stream_arg(node, "title") {
-                collect_heading_default_ids_in_nodes(title, chain, output);
+                collect_heading_default_ids_in_nodes(title, overrides, chain, output);
             }
-            collect_heading_default_ids_in_nodes(&node.children, chain, output);
+            collect_heading_default_ids_in_nodes(&node.children, overrides, chain, output);
         }
         Some("details") => {
             if let Some(summary) = stream_arg(node, "summary") {
-                collect_heading_default_ids_in_nodes(summary, chain, output);
+                collect_heading_default_ids_in_nodes(summary, overrides, chain, output);
             }
-            collect_heading_default_ids_in_nodes(&node.children, chain, output);
+            collect_heading_default_ids_in_nodes(&node.children, overrides, chain, output);
         }
         _ => {}
     }

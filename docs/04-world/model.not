@@ -45,7 +45,8 @@ vault-root/
 Item 树有层级，标识却是拍平的：*ItemId* 在模块内唯一，同一模块出现两个相同 ItemId 产生 `duplicate-item-id` 诊断。Item 分为具名与匿名：
 
 - 被 `@(id: "xxx")` 标注的 Item 以 `xxx` 为 ItemId；
-- heading 的默认 ItemId 是标题链——从顶层标题到自身的标题文字以 `/` 连接，不受链上任一标题自身 id 标注的影响；例如本文 `= 数据模型` 下的 `== Item 树` 的默认 ItemId 是 `数据模型/Item 树`；
+- heading 的默认 ItemId 是标题链——从顶层标题到自身的标题文字以 `/` 连接；例如本文 `= 数据模型` 下的 `== Item 树` 的默认 ItemId 是 `数据模型/Item 树`。
+- 链上的某一级若被 `@(id: "xxx")` 标注，该级就**改用 `xxx`**：被标注标题的标题文字不再是 ItemId，其子树也接在这一级之下（上一条例子里，若 `== Item 树` 带 `@(id: "tree")`，则它的 ItemId 是 `数据模型/tree`，其子节是 `数据模型/tree/...`）。标注是**替换**而不是别名——一个 Item 只有一个 ItemId；
 - 其余 Item 是匿名 Item。
 
 包含 ModulePath 与 ItemId 的完整地址叫 *ItemPath*：`vault::04-world::model/数据模型/Item 树`。

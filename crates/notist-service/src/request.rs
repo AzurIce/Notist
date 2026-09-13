@@ -3688,11 +3688,13 @@ mod tests {
     #[test]
     fn ancestors_item_name_selector_starts_at_the_named_heading() {
         let (service, view_id, _root) = ancestors_fixture("guide.not", ANCESTORS_SOURCE);
+        // The fixture's `@(id: "wip")` label *replaces* the heading's default
+        // title id: `安装` is no longer an ItemId, `wip` is.
         let records = expect_ancestors(ancestors_response(
             &service,
             view_id,
             "vault::guide",
-            Some("安装"),
+            Some("wip"),
             None,
             None,
         ));
@@ -3835,6 +3837,10 @@ mod tests {
             "@(id: \"renamed\")#heading[原标题]\n\n正文。\n\n= 原标题\n\n另一节。\n",
         );
         let records = items_records(&service, view_id, "vault::mixed", None).unwrap();
+        // The labelled heading is one Item, listed under the label that names
+        // it; the module-level `= 原标题` is a different Item whose own title id
+        // collides with nothing, because the label took the first one out of
+        // the title namespace.
         assert_eq!(records.len(), 2);
         assert_eq!(records[0].name, "renamed");
         assert_eq!(records[0].origin, "id");
@@ -3843,10 +3849,76 @@ mod tests {
         assert_eq!(records[0].attributes[0].id.as_deref(), Some("renamed"));
         assert_eq!(records[1].name, "原标题");
         assert_eq!(records[1].origin, "heading");
-        assert!(records[1].ambiguous);
+        assert!(!records[1].ambiguous);
 
         let error = items_records(&service, view_id, "vault::mixed", Some("renamed")).unwrap_err();
         assert_eq!(error.code, "invalid_argument");
+    }
+
+    /// An `@id` on a heading replaces that heading's ItemId outright: the title
+    /// text stops resolving, the label does, and descendants chain through the
+    /// label rather than the title.
+    #[test]
+    fn heading_label_replaces_the_title_chain_segment() {
+        let (service, view_id, _root) = ancestors_fixture(
+            "relabel.not",
+            "= Root\n\n@(id: \"short\")\n== D\n\n正文。\n\n=== E\n\n更深。\n",
+        );
+        let headings: Vec<String> =
+            items_records(&service, view_id, "vault::relabel", None)
+                .unwrap()
+                .into_iter()
+                .map(|record| record.name)
+                .collect();
+        assert_eq!(headings, ["Root", "short", "Root/short/E"]);
+
+        // The title text is no longer an address; the label and the chain that
+        // goes through it are.
+        for name in ["Root/short", "Root/short/E", "short"] {
+            let query = crate::query::RegionQuery {
+                selector: crate::query::Selector {
+                    module: "vault::relabel".to_owned(),
+                    item: Some(name.to_owned()),
+                },
+                offset: None,
+                byte_range: None,
+                line_range: None,
+                from_line: None,
+                lines: None,
+                include_content: false,
+            };
+            let records = match service
+                .execute(CoreRequest::Region { view_id, query })
+                .unwrap()
+                .response
+            {
+                CoreResponse::Region(result) => result.records,
+                other => panic!("expected a region response for `{name}`, got {other:?}"),
+            };
+            assert_eq!(records.len(), 1, "`{name}` should resolve");
+        }
+        let response = service
+            .execute(CoreRequest::Region {
+                view_id,
+                query: crate::query::RegionQuery {
+                    selector: crate::query::Selector {
+                        module: "vault::relabel".to_owned(),
+                        item: Some("Root/D".to_owned()),
+                    },
+                    offset: None,
+                    byte_range: None,
+                    line_range: None,
+                    from_line: None,
+                    lines: None,
+                    include_content: false,
+                },
+            })
+            .unwrap()
+            .response;
+        let CoreResponse::QueryError(error) = response else {
+            panic!("`Root/D` must no longer resolve, got {response:?}")
+        };
+        assert_eq!(error.code, "not_found");
     }
 
     #[test]

@@ -190,10 +190,12 @@ fn refs_out_lists_the_region_mentions_pointing_outside() {
 }
 
 /// `docs/test/refs.not` is the standing `inspect refs` fixture: `refs_in`
-/// mentions the target from outside through both item spellings (heading
-/// chain and `@id`), a `super::` relative spelling, a mid-section block
-/// ScopeItem (`@id` on a paragraph), and the module itself, while the
-/// target's own self-mentions stay internal. Every `$ notist …` line in its
+/// mentions the target from outside through the labelled chain, a `super::`
+/// relative spelling, a mid-section block ScopeItem (`@id` on a paragraph),
+/// and the module itself, while the target's own self-mentions stay internal.
+/// The fixture's heading carries `@(id: "alias")`, which *replaces* the title
+/// in its ItemId: the section answers to `alias` and its child to
+/// `alias/三`, and the title `二` is not an ItemId at all. Every `$ notist …` line in its
 /// trailing text block is an executable request; the fixture copies both
 /// modules into a temporary vault and rewrites the embedded `--vault docs`.
 #[test]
@@ -207,8 +209,8 @@ fn refs_executes_the_requests_embedded_in_the_refs_fixture() {
         .map(|line| line["$ notist ".len()..].to_owned())
         .collect();
     assert!(
-        commands.len() >= 7,
-        "the fixture should embed module, item, alias, block-scope, nested, zero-hit, and outgoing requests"
+        commands.len() >= 6,
+        "the fixture should embed module, item, block-scope, nested, zero-hit, and outgoing requests"
     );
 
     let vault = fixture();
@@ -241,34 +243,29 @@ fn refs_executes_the_requests_embedded_in_the_refs_fixture() {
             String::from_utf8_lossy(&output.stderr)
         );
 
-        if command.contains("--item 二/三") {
-            // The nested section folds its block-scope item: the external
-            // mid/relative mentions plus the intra-module crossing from
-            // section 二, attributed to its innermost scope.
+        if command.contains("--item alias/三") {
+            // The nested section's only self-mention is now inside it, so no
+            // crossing survives: the relative spelling from `refs_in` resolves
+            // to this very region.
             assert!(
-                stdout.starts_with("vault::test::refs/二/三: 3 references"),
-                "{stdout}"
-            );
-            assert!(
-                stdout.contains(
-                    "[1] <vault::test::refs/二/三> <- <vault::test::refs/二>  test/refs.not:4"
-                ),
+                stdout.starts_with("vault::test::refs/alias/三: 0 references"),
                 "{stdout}"
             );
         } else if command.contains("--item alias") {
-            // `@id` and heading chain spellings are aliases: one region.
+            // The section answers to the label, and its child chains through
+            // it — one region, reached by the labelled chain.
             assert!(
-                stdout.starts_with("vault::test::refs/alias: 4 references"),
+                stdout.starts_with("vault::test::refs/alias: 2 references"),
                 "{stdout}"
             );
-            let by_chain = run(
-                &vault,
-                &["inspect", "refs", "vault::test::refs", "--item", "二"],
-            );
-            assert_eq!(
-                stdout.split_once('\n').map(|(_, rest)| rest),
-                by_chain.split_once('\n').map(|(_, rest)| rest),
-            );
+            // The replaced title is no longer an address.
+            let title = std::process::Command::new(env!("CARGO_BIN_EXE_notist"))
+                .args(["--no-daemon", "--vault"])
+                .arg(vault.0.path())
+                .args(["inspect", "refs", "vault::test::refs", "--item", "二"])
+                .output()
+                .expect("failed to spawn the notist binary");
+            assert!(!title.status.success(), "`二` must not resolve any more");
         } else if command.contains("--item mid") {
             // A mid-section block scope is addressable on its own.
             assert!(
@@ -277,18 +274,18 @@ fn refs_executes_the_requests_embedded_in_the_refs_fixture() {
             );
         } else if command.contains("--item") {
             assert!(
-                stdout.starts_with("vault::test::refs/二: 4 references"),
+                stdout.starts_with("vault::test::refs/alias: 2 references"),
                 "{stdout}"
             );
         } else if command.contains("--out") {
             // The outgoing half of the same crossing set: identical rows,
             // viewed from the mentioning side.
             assert!(
-                stdout.starts_with("vault::test::refs_in: 5 outgoing references"),
+                stdout.starts_with("vault::test::refs_in: 4 outgoing references"),
                 "{stdout}"
             );
             assert!(
-                stdout.contains("[1] <vault::test::refs/二> <- <vault::test::refs_in/一>"),
+                stdout.contains("[1] <vault::test::refs/alias> <- <vault::test::refs_in/一>"),
                 "{stdout}"
             );
         } else if command.contains("vault::test::refs_in") {
@@ -299,19 +296,25 @@ fn refs_executes_the_requests_embedded_in_the_refs_fixture() {
             );
             assert!(stdout.contains("hint:"), "{stdout}");
         } else {
-            // Module region: all five external mentions cross in; the
+            // Module region: every external mention crosses in; the
             // self-mentions are internal and never surface. Each row names
             // its resolved target, including the module-root one.
             assert!(
-                stdout.starts_with("vault::test::refs: 5 references"),
+                stdout.starts_with("vault::test::refs: 4 references"),
                 "{stdout}"
             );
             assert!(
-                stdout.contains("[1] <vault::test::refs/二> <- <vault::test::refs_in/一>"),
+                stdout.contains("[1] <vault::test::refs/alias> <- <vault::test::refs_in/一>"),
                 "{stdout}"
             );
             assert!(
-                stdout.contains("[5] <vault::test::refs> <- <vault::test::refs_in/一>"),
+                stdout.contains("[4] <vault::test::refs> <- <vault::test::refs_in/一>"),
+                "{stdout}"
+            );
+            assert!(
+                stdout.contains(
+                    "[2] <vault::test::refs/alias/三> <- <vault::test::refs_in/一>"
+                ),
                 "{stdout}"
             );
             assert!(!stdout.contains(" <- <vault::test::refs>"), "{stdout}");
