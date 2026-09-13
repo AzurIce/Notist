@@ -658,3 +658,146 @@ fn refs_color_changes_only_the_rendering() {
     assert!(colored.contains('\x1b'), "always must color: {colored:?}");
     assert_eq!(plain, strip_ansi(&colored));
 }
+
+// --- outline: the Item-tree index -----------------------------------------
+//
+// `outline` exists so a caller can find structure without paying for content:
+// one row per addressable Item, carrying the ItemId a later `read --item` will
+// accept, the Item's line range, and the environment in effect there. The
+// tests below pin the three properties that make it usable — no source text,
+// addressable names, and an environment identical to `read`'s.
+
+/// One `outline` row: indentation, ItemId, line range, Dict.
+fn outline_rows(output: &str) -> Vec<(usize, String, String, String)> {
+    output
+        .lines()
+        .filter(|line| !line.starts_with("module ") && !line.starts_with("items ")
+            && !line.starts_with("hint:"))
+        .filter(|line| !line.trim().is_empty())
+        .map(|line| {
+            let indent = line.len() - line.trim_start().len();
+            let body = line.trim_start();
+            // `<ItemId>  <start>..<end>  <Dict>`
+            let (name, rest) = body.rsplit_once("  ").expect("Dict column");
+            let (name, range) = name.rsplit_once("  ").expect("range column");
+            let name = name.trim_end_matches(" @").to_owned();
+            (indent, name, range.to_owned(), rest.to_owned())
+        })
+        .collect()
+}
+
+#[test]
+fn outline_lists_items_with_ranges_and_environments_but_no_source() {
+    let vault = fixture();
+    let output = run(&vault, &["inspect", "outline", "vault::guide"]);
+
+    assert!(output.contains("module <vault::guide> guide.not lines 1.."), "{output}");
+    assert!(output.contains("items 3"), "{output}");
+
+    let rows = outline_rows(&output);
+    assert_eq!(rows.len(), 3, "{output}");
+    assert_eq!(rows[0].0, 0, "top-level Item is unindented: {output}");
+    assert_eq!(rows[0].1, "安装");
+    assert_eq!(rows[1].0, 2, "nested Item is indented: {output}");
+    assert_eq!(rows[1].1, "安装/故障排除");
+    assert_eq!(rows[2].0, 0, "{output}");
+    assert_eq!(rows[2].1, "后记");
+
+    // Module `@!` inheritance is visible per Item, and the block `@(wip: true)`
+    // shows only where it governs: 安装's subtree, not 后记.
+    assert!(rows[0].3.contains("status: \"draft\""), "{output}");
+    assert!(rows[0].3.contains("wip: true"), "{output}");
+    assert!(!rows[2].3.contains("wip"), "{output}");
+
+    // The whole point: no source. `= 安装` is content and must not appear as a
+    // body line, only inside identity/range columns.
+    assert!(
+        !output.lines().any(|line| line.trim_start().starts_with("= ")),
+        "outline must not carry source lines: {output}"
+    );
+}
+
+#[test]
+fn outline_depth_bounds_the_tree() {
+    let vault = fixture();
+    let output = run(&vault, &["inspect", "outline", "vault::guide", "--depth", "1"]);
+    assert!(output.contains("items 2"), "{output}");
+    assert!(!output.contains("安装/故障排除"), "{output}");
+}
+
+/// The named Item must be exactly what `read --item` accepts. This is the
+/// property that failed before the naming lanes were unified: an outline built
+/// from a differently-derived title string emits rows that always `not_found`.
+#[test]
+fn every_outline_item_resolves_as_a_read_item() {
+    let vault = fixture();
+    let output = run(&vault, &["inspect", "outline", "vault::guide"]);
+    let rows = outline_rows(&output);
+    assert!(!rows.is_empty(), "{output}");
+    for (_, name, range, _) in &rows {
+        let read = run(&vault, &["inspect", "read", "vault::guide", "--item", name]);
+        // The Item's own reported span must match the row's range: identity and
+        // coordinates have to agree, not merely resolve.
+        let container = line_for(&read, "container");
+        assert!(
+            container.contains(&format!("lines {range}")),
+            "outline said {name} is at {range}, read says: {container}"
+        );
+    }
+}
+
+/// A headline carrying inline-code markup is the case where the two naming
+/// lanes used to disagree. The outline must print the spelling `--item`
+/// accepts, so the round trip has to hold for it too.
+#[test]
+fn outline_names_survive_headings_with_inline_code() {
+    let vault = fixture();
+    std::fs::write(
+        vault.0.path().join("code.not"),
+        "= Root\n\n== Heading with `code` inside\n\nBody\n\n=== Child\n\nBody\n",
+    )
+    .unwrap();
+    let output = run(&vault, &["inspect", "outline", "vault::code"]);
+    assert!(output.contains("Heading with code inside"), "{output}");
+    assert!(!output.contains("`code`"), "{output}");
+
+    for (_, name, _, _) in outline_rows(&output) {
+        run(&vault, &["inspect", "read", "vault::code", "--item", &name]);
+    }
+}
+
+#[test]
+fn outline_environment_matches_read_for_the_same_item() {
+    let vault = fixture();
+    let output = run(&vault, &["inspect", "outline", "vault::guide"]);
+    for (_, name, _, dict) in outline_rows(&output) {
+        let read = run(&vault, &["inspect", "read", "vault::guide", "--item", &name]);
+        // `read` prints the row's environment as the first segment Dict (its
+        // `common` block is empty for a whole-Item selection).
+        let read_dict = read
+            .lines()
+            .map(str::trim)
+            .find(|line| line.starts_with('('))
+            .unwrap_or_else(|| panic!("no Dict in read output for {name}:\n{read}"));
+        assert_eq!(dict, read_dict, "environment drifted for {name}");
+    }
+}
+
+#[test]
+fn outline_color_changes_only_the_rendering() {
+    let vault = fixture();
+    let plain = run(&vault, &["inspect", "outline", "vault::guide"]);
+    assert!(!plain.contains('\x1b'), "piped output must be uncolored: {plain:?}");
+    let output = std::process::Command::new(env!("CARGO_BIN_EXE_notist"))
+        .arg("--color")
+        .arg("always")
+        .arg("--no-daemon")
+        .arg("--vault")
+        .arg(vault.0.path())
+        .args(["inspect", "outline", "vault::guide"])
+        .output()
+        .expect("failed to spawn the notist binary");
+    let colored = String::from_utf8(output.stdout).unwrap();
+    assert!(colored.contains('\x1b'), "always must color: {colored:?}");
+    assert_eq!(plain, strip_ansi(&colored));
+}

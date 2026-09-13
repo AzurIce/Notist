@@ -150,6 +150,16 @@ enum InspectCommand {
         #[arg(long)]
         out: bool,
     },
+    /// List a module's Item tree: every addressable Item with its line range
+    /// and the attribute environment in effect there. An index, not content —
+    /// read the Item you picked with `read --item`.
+    Outline {
+        /// Exact ModulePath.
+        module: String,
+        /// Deepest nesting level to list, counting top-level Items as 1.
+        #[arg(long)]
+        depth: Option<u8>,
+    },
     /// Semantic vector search over Vault content blocks (experimental).
     ///
     /// Embeds the query and ranks structurally chunked blocks by cosine
@@ -556,6 +566,24 @@ fn run_inspect(
             }
             Ok(ExitCode::SUCCESS)
         }
+        InspectCommand::Outline { module, depth } => {
+            let (_, client, view_id) = connect_cli(vault.clone(), no_daemon)?;
+            let reply = client.request(CoreRequest::Outline {
+                view_id,
+                query: notist_service::OutlineQuery {
+                    selector: notist_service::Selector { module, item: None },
+                    depth,
+                },
+            })?;
+            let CoreResponse::Outline(page) = reply.response else {
+                return query_response_error("outline", reply.response);
+            };
+            let palette = Palette::stdout(color);
+            for record in &page.records {
+                print_outline_record(record, &palette);
+            }
+            Ok(ExitCode::SUCCESS)
+        }
         InspectCommand::Vsearch { query, k } => {
             let (_, client, view_id) = connect_cli(vault.clone(), no_daemon)?;
             let reply = client.request(CoreRequest::VectorSearch {
@@ -634,6 +662,69 @@ impl Palette {
         self.paint("36", text)
     }
 }
+/// Prints the Item tree: header with the module identity and fingerprint, then
+/// one row per addressable Item — indentation for nesting, the full ItemId
+/// (the exact spelling `read --item` accepts), the Item's line range, and the
+/// attribute environment in effect at its first line.
+///
+/// No source lines: this is the index you pick from, and `read --item` is how
+/// you then pay for content. Rows carry line numbers rather than byte offsets
+/// because that is the coordinate agents already navigate by (grep, host Read).
+/// Colors follow the global grammar: bold = structural labels, cyan = every
+/// identity, green = attribute keys, dim = all metadata.
+fn print_outline_record(record: &notist_service::OutlineRecord, palette: &Palette) {
+    let header = [
+        palette.cyan(&format!("<{}>", record.module)),
+        palette.dim(&record.relative_path.display().to_string()),
+        palette.dim(&format!(
+            "lines {}..{}",
+            record.line_range.start, record.line_range.end
+        )),
+        palette.dim(&format!("fingerprint {}", record.source_fingerprint)),
+    ]
+    .join(" ");
+    println!("{} {}", palette.bold("module"), header);
+    println!(
+        "{} {}",
+        palette.bold("items"),
+        palette.bold(&record.items.len().to_string())
+    );
+    for item in &record.items {
+        let indent = "  ".repeat(usize::from(item.level).saturating_sub(1));
+        let origin = if item.origin == "id" {
+            palette.dim(" @")
+        } else {
+            String::new()
+        };
+        println!(
+            "{}{}{}  {}  {}",
+            indent,
+            palette.cyan(&item.name),
+            origin,
+            palette.dim(&format!("{}..{}", item.line_range.start, item.line_range.end)),
+            dict_literal(&item.attributes),
+        );
+    }
+    for hint in &record_hints(record) {
+        println!("{} {}", palette.bold("hint:"), hint);
+    }
+}
+
+/// The continuation the outline owes its caller: the next command to run for
+/// the Item they just picked. Keeps the caller from re-deciding how to read.
+fn record_hints(record: &notist_service::OutlineRecord) -> Vec<String> {
+    if record.items.is_empty() {
+        return vec![format!(
+            "no addressable Items in <{}>; read raw lines with `read {} --line A..B`",
+            record.module, record.module
+        )];
+    }
+    vec![format!(
+        "read one with `read {} --item \"<ItemId>\"`",
+        record.module
+    )]
+}
+
 /// Prints the region attribute projection: header with the module identity
 /// and fingerprint, the common environment, then one block per uniform
 /// segment. The ModulePath is the file spelling, so no separate path echo.

@@ -153,6 +153,12 @@ pub enum CoreRequest {
         view_id: ServiceViewId,
         query: crate::query::ItemsQuery,
     },
+    /// Item tree projection (`inspect outline`): where a module's addressable
+    /// Items are and what environment each sits in, without source lines.
+    Outline {
+        view_id: ServiceViewId,
+        query: crate::query::OutlineQuery,
+    },
     Ancestors {
         view_id: ServiceViewId,
         query: crate::query::AncestorsQuery,
@@ -247,6 +253,7 @@ impl CoreRequest {
             | Self::Hover { view_id, .. }
             | Self::DocumentSymbols { view_id, .. }
             | Self::Items { view_id, .. }
+            | Self::Outline { view_id, .. }
             | Self::Ancestors { view_id, .. }
             | Self::Locate { view_id, .. }
             | Self::Region { view_id, .. }
@@ -415,6 +422,7 @@ pub enum CoreResponse {
     Hover(Option<HoverRecord>),
     DocumentSymbols(Vec<DocumentSymbolRecord>),
     Items(crate::query::QueryResult<crate::query::ItemRecord>),
+    Outline(crate::query::QueryResult<crate::query::OutlineRecord>),
     Locate(crate::query::LocateRecord),
     Region(crate::query::QueryResult<crate::query::RegionRecord>),
     Ancestors(crate::query::QueryResult<crate::query::AncestorRecord>),
@@ -1559,6 +1567,19 @@ impl NotistService {
                     snapshot,
                     response: match result {
                         Ok(page) => CoreResponse::Items(page),
+                        Err(error) => CoreResponse::QueryError(error),
+                    },
+                })
+            }
+            CoreRequest::Outline { view_id, query } => {
+                let (snapshot, result) = self
+                    .with_snapshot_identity(view_id, |workspace, identity| {
+                        crate::query::outline(workspace, identity, &query)
+                    })?;
+                Ok(CoreReply {
+                    snapshot,
+                    response: match result {
+                        Ok(page) => CoreResponse::Outline(page),
                         Err(error) => CoreResponse::QueryError(error),
                     },
                 })

@@ -1284,6 +1284,299 @@ struct RegionNodeRef {
     level: Option<u8>,
 }
 
+/// Every annotation entry that governs some part of `selection`, expanded to
+/// the scope range it governs: an entry bound to a node outside the selection
+/// (a heading above the range, say) still governs when its scope's subtree
+/// reaches into it, and module-level `@!` attributes enter as full-file
+/// entries.
+///
+/// This is the single collection step behind the effective environment.
+/// `region_info` (segments) and `outline` (per Item) both consume it so the
+/// two commands can never disagree about what a region's environment is.
+fn governing_entries(
+    workspace: &WorkspaceSnapshot,
+    structured: &notist_analysis::StructuredModule,
+    resolved: &ResolvedSource<'_>,
+    selection: TextRange,
+    point: bool,
+) -> Vec<GoverningEntry> {
+    let total = resolved.source.text.len();
+    let overlaps = |range: TextRange| {
+        if point {
+            range.start <= selection.start && selection.start < range.end
+        } else {
+            range.start < selection.end && selection.start < range.end
+        }
+    };
+    let mut governing: Vec<GoverningEntry> = Vec::new();
+    for (order, entry) in structured.annotations.iter().enumerate() {
+        let (range, node) = governing_scope(&structured.tree.roots, entry.range);
+        if !overlaps(range) {
+            continue;
+        }
+        governing.push(GoverningEntry {
+            range,
+            source_range: entry.range,
+            kind: node
+                .as_ref()
+                .map_or_else(|| "module".to_owned(), |node| node.kind.clone()),
+            level: node.as_ref().and_then(|node| node.level),
+            attributes: entry.attributes.clone(),
+            order,
+        });
+    }
+    for attributes in workspace.module_attributes(resolved.module.id) {
+        if attributes.is_empty() {
+            continue;
+        }
+        governing.push(GoverningEntry {
+            range: TextRange::new(0, total),
+            source_range: TextRange::new(0, total),
+            kind: "module".into(),
+            level: None,
+            attributes: attributes.clone(),
+            order: usize::MAX,
+        });
+    }
+    governing
+}
+
+/// The effective attribute environment at one byte point: entries covering the
+/// point, outermost first, first writer per key wins (innermost value
+/// survives). The point-query half of the algorithm `region_info` runs over
+/// pieces.
+fn effective_environment_at(
+    governing: &[GoverningEntry],
+    point: usize,
+) -> BTreeMap<String, (String, usize)> {
+    let mut covering: Vec<(usize, &GoverningEntry)> = governing
+        .iter()
+        .enumerate()
+        .filter(|(_, entry)| entry.range.start <= point && point < entry.range.end)
+        .collect();
+    covering.sort_by_key(|(_, entry)| {
+        (
+            std::cmp::Reverse(entry.range.end - entry.range.start),
+            entry.order,
+        )
+    });
+    let mut map: BTreeMap<String, (String, usize)> = BTreeMap::new();
+    for (index, entry) in covering {
+        for (key, value) in &entry.attributes {
+            map.entry(key.clone())
+                .or_insert_with(|| (value.clone(), index));
+        }
+    }
+    map
+}
+
+/// Selects the Item tree of one module: the module's addressable Items in
+/// document order.
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct OutlineQuery {
+    pub selector: Selector,
+    /// Deepest nesting level to emit, counting the module's top-level Items as
+    /// 1. `None` emits the whole tree.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub depth: Option<u8>,
+}
+
+/// One row of a module's Item tree.
+///
+/// This is an *index* row, not content: the payload is where the Item is and
+/// what environment it sits in, so a caller can decide what to read next
+/// without paying for the source. Ranges are the Item's whole subtree (the
+/// region `read --item` returns), not just its heading line.
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct OutlineItem {
+    /// Nesting depth, module-level Items at 1. Equals the number of segments in
+    /// the ItemId chain.
+    pub level: u8,
+    /// Full ItemId (title chain from the top-level heading down), the exact
+    /// spelling `read --item` accepts.
+    pub name: String,
+    /// The enclosing Item's full ItemId; absent at level 1.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub parent: Option<String>,
+    /// `heading` (a title-chain default id) or `id` (an explicit `@id` label).
+    pub origin: String,
+    pub byte_range: super::request::ByteRange,
+    pub line_range: LineRange,
+    /// Effective attribute environment at the Item's first byte, sorted by
+    /// key — the same Dict `read` reports for this Item.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub attributes: Vec<(String, String)>,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct OutlineRecord {
+    pub module: String,
+    pub relative_path: PathBuf,
+    pub source_fingerprint: String,
+    pub line_range: LineRange,
+    pub items: Vec<OutlineItem>,
+}
+
+/// The Item tree of one module (`inspect outline`).
+///
+/// Deliberately not a second `read`: it never carries source lines. The
+/// contract is "ranges and environments, no text", which keeps it an order of
+/// magnitude cheaper than reading the module while giving the caller the two
+/// things a plain text scan cannot — the title-chain identity each range can
+/// be addressed by, and the evaluated attribute environment in effect there.
+///
+/// Names come from `module_heading_default_ids`, i.e. the same list
+/// `resolve_item_name` matches against, so every emitted `name` is addressable
+/// by construction. Environment comes from `governing_entries` +
+/// `effective_environment_at`, the same pair `region_info` uses, so an Item's
+/// environment here cannot drift from what `read` reports for it.
+pub fn outline(
+    workspace: &WorkspaceSnapshot,
+    snapshot: &SnapshotIdentity,
+    query: &OutlineQuery,
+) -> Result<QueryResult<OutlineRecord>, ToolError> {
+    let resolved = resolve_source(workspace, &query.selector)?;
+    let structured = workspace
+        .structured_module(resolved.module.id)
+        .ok_or_else(|| {
+            ToolError::new(
+                "not_found",
+                format!(
+                    "module `{}` has no evaluated source",
+                    resolved.module.logical_path
+                ),
+            )
+        })?;
+    let module_string = resolved.module.logical_path.to_string();
+
+    // Section subtree span by heading start: an Item's range is the region
+    // `read --item` returns for it, which is the section's whole subtree (a
+    // sectionless heading falls back to the heading block itself).
+    let mut section_spans: HashMap<usize, TextRange> = HashMap::new();
+    collect_section_spans(&structured.tree.roots, &mut section_spans);
+
+    // Explicit `@id` labels that are not already a heading in this chain:
+    // they are Items too, and a module's tree is incomplete without them.
+    let mut items: Vec<OutlineItem> = Vec::new();
+    let mut heading_ranges: Vec<(usize, usize)> = Vec::new();
+    for (name, range) in workspace.module_heading_default_ids(&resolved.module.logical_path) {
+        let span = section_spans.get(&range.start).copied().unwrap_or(range);
+        heading_ranges.push((range.start, range.end));
+        items.push(OutlineItem {
+            level: u8::try_from(name.matches('/').count() + 1).unwrap_or(u8::MAX),
+            parent: name.rsplit_once('/').map(|(parent, _)| parent.to_owned()),
+            origin: "heading".into(),
+            name,
+            byte_range: super::request::ByteRange {
+                start: span.start,
+                end: span.end,
+            },
+            line_range: line_range(&resolved.source.text, span),
+            attributes: Vec::new(),
+        });
+    }
+    for label in workspace.labels().iter().filter(|label| {
+        label.module == resolved.module.logical_path && label.file_id == resolved.source.file_id
+    }) {
+        if heading_ranges
+            .iter()
+            .any(|(start, end)| *start == label.scope_range.start && *end == label.scope_range.end)
+        {
+            continue;
+        }
+        // Nesting comes from the tree, not from the label: an `@id` on an
+        // inline span sits inside whatever Item encloses it, so its parent is
+        // the innermost already-collected Item strictly containing it. Without
+        // this an in-paragraph label would render as a top-level row and lie
+        // about where it lives.
+        let parent = items
+            .iter()
+            .filter(|candidate| {
+                candidate.byte_range.start <= label.scope_range.start
+                    && label.scope_range.end <= candidate.byte_range.end
+                    && (candidate.byte_range.start != label.scope_range.start
+                        || candidate.byte_range.end != label.scope_range.end)
+            })
+            .max_by_key(|candidate| candidate.level)
+            .map(|candidate| (candidate.level, candidate.name.clone()));
+        let (level, parent_name) = match parent {
+            Some((level, name)) => (level.saturating_add(1), Some(name)),
+            None => (1, None),
+        };
+        items.push(OutlineItem {
+            level,
+            name: label.name.clone(),
+            parent: parent_name,
+            origin: "id".into(),
+            byte_range: super::request::ByteRange {
+                start: label.scope_range.start,
+                end: label.scope_range.end,
+            },
+            line_range: line_range(&resolved.source.text, label.scope_range),
+            attributes: Vec::new(),
+        });
+    }
+    items.sort_by_key(|item| item.byte_range.start);
+
+    if let Some(depth) = query.depth {
+        items.retain(|item| item.level <= depth);
+    }
+
+    // One collection pass for the whole module: the environment at each Item's
+    // first byte, computed exactly as `region_info` computes it.
+    let whole = TextRange::new(0, resolved.source.text.len());
+    let governing = governing_entries(workspace, &structured, &resolved, whole, false);
+    for item in &mut items {
+        let environment = effective_environment_at(&governing, item.byte_range.start);
+        item.attributes = environment
+            .into_iter()
+            .map(|(key, (value, _))| (key, value))
+            .collect();
+    }
+
+    Ok(QueryResult {
+        snapshot: snapshot.clone(),
+        records: vec![OutlineRecord {
+            module: module_string,
+            relative_path: relative_path(workspace.root(), &resolved.source.canonical_path),
+            source_fingerprint: fingerprint(&resolved.source.text),
+            line_range: line_range(&resolved.source.text, whole),
+            items,
+        }],
+        search: None,
+        hints: Vec::new(),
+    })
+}
+
+/// Section subtree span keyed by the section heading's start byte.
+fn collect_section_spans(nodes: &[Node], spans: &mut HashMap<usize, TextRange>) {
+    for node in nodes {
+        if node.is_core("section") {
+            let heading_start = node
+                .children
+                .first()
+                .filter(|child| child.is_core("heading"))
+                .map(|heading| heading.range.start);
+            if let Some(start) = heading_start {
+                spans.insert(start, node.range);
+            }
+            collect_section_spans(&node.children, spans);
+            for (_, value) in &node.args {
+                if let NodeValue::Stream(stream) = value {
+                    collect_section_spans(stream, spans);
+                }
+            }
+            continue;
+        }
+        collect_section_spans(&node.children, spans);
+        for (_, value) in &node.args {
+            if let NodeValue::Stream(stream) = value {
+                collect_section_spans(stream, spans);
+            }
+        }
+    }
+}
+
 pub fn region_info(
     workspace: &WorkspaceSnapshot,
     snapshot: &SnapshotIdentity,
@@ -1417,48 +1710,12 @@ pub fn region_info(
     // Nodes overlapping the selection: identity anchors and containers.
     let mut collected: Vec<RegionNodeRef> = Vec::new();
     collect_region_nodes(&structured.tree.roots, selection, point, &mut collected);
-    let overlaps = |range: TextRange| {
-        if point {
-            range.start <= selection.start && selection.start < range.end
-        } else {
-            range.start < selection.end && selection.start < range.end
-        }
-    };
 
-    // Expand annotation entries to their governing scope ranges first, then
-    // overlap-filter: an entry bound to a node outside the selection (a
-    // heading above the range, say) still governs when its scope's subtree
-    // reaches into it.
-    let mut governing: Vec<GoverningEntry> = Vec::new();
-    for (order, entry) in structured.annotations.iter().enumerate() {
-        let (range, node) = governing_scope(&structured.tree.roots, entry.range);
-        if !overlaps(range) {
-            continue;
-        }
-        governing.push(GoverningEntry {
-            range,
-            source_range: entry.range,
-            kind: node
-                .as_ref()
-                .map_or_else(|| "module".to_owned(), |node| node.kind.clone()),
-            level: node.as_ref().and_then(|node| node.level),
-            attributes: entry.attributes.clone(),
-            order,
-        });
-    }
-    for attributes in workspace.module_attributes(resolved.module.id) {
-        if attributes.is_empty() {
-            continue;
-        }
-        governing.push(GoverningEntry {
-            range: TextRange::new(0, total),
-            source_range: TextRange::new(0, total),
-            kind: "module".into(),
-            level: None,
-            attributes: attributes.clone(),
-            order: usize::MAX,
-        });
-    }
+    // Annotation entries expanded to their governing scopes, overlap-filtered
+    // against the selection (shared with `outline`, see `governing_entries`):
+    // an entry bound to a node outside the selection (a heading above the
+    // range, say) still governs when its scope's subtree reaches into it.
+    let mut governing = governing_entries(workspace, &structured, &resolved, selection, point);
 
     // Whitespace between one scope's end and the next scope's start belongs
     // to the scope above: a scope ends at its last token, so without this
