@@ -244,18 +244,19 @@ fn refs_executes_the_requests_embedded_in_the_refs_fixture() {
         );
 
         if command.contains("--item alias/三") {
-            // The nested section's only self-mention is now inside it, so no
-            // crossing survives: the relative spelling from `refs_in` resolves
-            // to this very region.
+            // The labelled parent's *section* keeps its subtree span, so this
+            // region is the whole `三` subtree: the parent's self-mention comes
+            // in from outside it, and `refs_in`'s relative spelling lands back
+            // inside.
             assert!(
-                stdout.starts_with("vault::test::refs/alias/三: 0 references"),
+                stdout.starts_with("vault::test::refs/alias/三: 3 references"),
                 "{stdout}"
             );
         } else if command.contains("--item alias") {
             // The section answers to the label, and its child chains through
             // it — one region, reached by the labelled chain.
             assert!(
-                stdout.starts_with("vault::test::refs/alias: 2 references"),
+                stdout.starts_with("vault::test::refs/alias: 3 references"),
                 "{stdout}"
             );
             // The replaced title is no longer an address.
@@ -274,7 +275,7 @@ fn refs_executes_the_requests_embedded_in_the_refs_fixture() {
             );
         } else if command.contains("--item") {
             assert!(
-                stdout.starts_with("vault::test::refs/alias: 2 references"),
+                stdout.starts_with("vault::test::refs/alias: 3 references"),
                 "{stdout}"
             );
         } else if command.contains("--out") {

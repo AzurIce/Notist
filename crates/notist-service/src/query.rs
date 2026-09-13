@@ -782,49 +782,28 @@ impl AncestorSelection {
 
 /// Walks the evaluated tree collecting section scopes named by their
 /// heading, keyed for ancestor-chain assembly.
-pub(crate) fn collect_section_scopes(nodes: &[Node], scopes: &mut Vec<(String, TextRange)>) {
-    let mut chain: Vec<String> = Vec::new();
-    collect_section_scopes_in_nodes(nodes, &mut chain, scopes);
+/// Section scopes named by their **ItemIds**, which is what an `@id` over a
+/// heading alters. Pairing the authoritative id list with the section spans
+/// keeps this in step with `--item` resolution; the tree walk above derives
+/// names on its own and would answer with a replaced title.
+fn collect_section_item_scopes(
+    workspace: &WorkspaceSnapshot,
+    module: &notist_analysis::Module,
+    structured: &notist_analysis::StructuredModule,
+    scopes: &mut Vec<(String, TextRange)>,
+) {
+    let mut spans: HashMap<usize, TextRange> = HashMap::new();
+    collect_section_spans(&structured.tree.roots, &mut spans);
+    for (name, heading) in workspace.module_heading_default_ids(&module.logical_path) {
+        if let Some(span) = spans.get(&heading.start) {
+            scopes.push((name, *span));
+        }
+    }
 }
 
 /// Section scopes named by their heading's title chain (model.not): a
 /// section's ItemId is the chain of enclosing heading titles including its
 /// own.
-fn collect_section_scopes_in_nodes(
-    nodes: &[Node],
-    chain: &mut Vec<String>,
-    scopes: &mut Vec<(String, TextRange)>,
-) {
-    for node in nodes {
-        if node.is_core("section") {
-            let title = node
-                .children
-                .first()
-                .filter(|child| child.is_core("heading"))
-                .map(|heading| notist_analysis::heading_default_id_text(&heading.children))
-                .unwrap_or_default();
-            chain.push(title);
-            let id = chain.join("/");
-            if !id.is_empty() {
-                scopes.push((id, node.range));
-            }
-            collect_section_scopes_in_nodes(&node.children, chain, scopes);
-            for (_, value) in &node.args {
-                if let NodeValue::Stream(stream) = value {
-                    collect_section_scopes_in_nodes(stream, chain, scopes);
-                }
-            }
-            chain.pop();
-            continue;
-        }
-        collect_section_scopes_in_nodes(&node.children, chain, scopes);
-        for (_, value) in &node.args {
-            if let NodeValue::Stream(stream) = value {
-                collect_section_scopes_in_nodes(stream, chain, scopes);
-            }
-        }
-    }
-}
 
 fn fully_contains(outer: TextRange, inner: TextRange) -> bool {
     outer.start <= inner.start && inner.end <= outer.end
@@ -1113,7 +1092,7 @@ pub fn locate(
         let structured = workspace.structured_module(module.id);
         let mut scopes: Vec<(String, TextRange)> = Vec::new();
         if let Some(structured) = &structured {
-            collect_section_scopes(&structured.tree.roots, &mut scopes);
+            collect_section_item_scopes(workspace, module, structured, &mut scopes);
         }
         for label in workspace
             .labels()
@@ -1693,13 +1672,8 @@ pub fn region_info(
         for (name, range) in workspace.module_heading_default_ids(&resolved.module.logical_path) {
             map.insert((range.start, range.end), item_path(name));
         }
-        let mut section_scopes: Vec<(String, TextRange)> = Vec::new();
-        collect_section_scopes(&structured.tree.roots, &mut section_scopes);
-        for (name, range) in section_scopes {
-            if !name.is_empty() {
-                map.insert((range.start, range.end), item_path(name));
-            }
-        }
+        // Section scopes come from the same authoritative list as the heading
+        // ids above, so a labelled heading cannot appear under two names here.
         for label in workspace.labels().iter().filter(|label| {
             label.module == resolved.module.logical_path && label.file_id == resolved.source.file_id
         }) {
@@ -1890,7 +1864,7 @@ pub fn region_info(
                 end: *end,
             },
             line_range: line_range(text, range),
-            item: addressable_item(workspace, resolved.source, &structured, *start)
+            item: addressable_item(workspace, &resolved, &structured, *start)
                 .map(|name| format!("{module_string}/{name}")),
             attributes,
             content,
@@ -2152,12 +2126,13 @@ fn origin_records(
 /// named by their heading, plus `@id` label scopes), for follow-up queries.
 fn addressable_item(
     workspace: &WorkspaceSnapshot,
-    source: &notist_analysis::SourceInput,
+    resolved: &ResolvedSource<'_>,
     structured: &notist_analysis::StructuredModule,
     point: usize,
 ) -> Option<String> {
+    let source = resolved.source;
     let mut scopes: Vec<(String, TextRange)> = Vec::new();
-    collect_section_scopes(&structured.tree.roots, &mut scopes);
+    collect_section_item_scopes(workspace, resolved.module, structured, &mut scopes);
     for label in workspace
         .labels()
         .iter()
@@ -2263,7 +2238,7 @@ fn module_item_regions(
     let mut section_ranges: HashMap<String, TextRange> = HashMap::new();
     if let Some(structured) = workspace.structured_module(module.id) {
         let mut scopes = Vec::new();
-        collect_section_scopes(&structured.tree.roots, &mut scopes);
+        collect_section_item_scopes(workspace, module, &structured, &mut scopes);
         for (chain, range) in scopes {
             by_name.insert(chain.clone(), ItemRegion::Scope(range));
             section_ranges.insert(chain.clone(), range);
