@@ -1,6 +1,6 @@
 = Daemon and Analyzer Views
 
-本文定义 daemon 的进程模型、每个 Vault 的 Analyzer View，以及 WorkspaceSnapshot 的身份、发布与查询语义。请求如何被 CLI 与 LSP 投影到 core request、本地协议与 daemon 生命周期见 #<vault::05-cli::protocol>；Vault 边界与发现规则见 #<vault::04-world::boundary>；LSP adapter 的对外行为见 #<vault::06-lsp>。
+本文定义 daemon 的进程模型、每个 Vault 的 Analyzer View，以及 WorkspaceSnapshot 的身份、发布与查询语义。请求如何被 CLI 与 LSP 投影到 core request、本地协议与 daemon 生命周期见 #<vault::05-cli::protocol>；Vault 边界与发现规则见 #<vault::04-world::boundary>；LSP adapter 的对外行为见 #<vault::06-lsp>；crate 分层与 VaultEngine 的实现落点见 #<vault::08-architecture>。
 
 == 为什么需要 daemon
 

@@ -11,6 +11,7 @@ Notist 官方文档库。本文是全库地图：分区、阅读路径与写作�
 - #<vault::05-cli> —— 命令面单一真相（inspect / check / index / daemon / lsp / skill / build / preview）+ daemon、protocol、build 运行时架构
 - #<vault::06-lsp> —— 编辑器集成：README（协议 gateway 行为）、checktable（逐方法支持面）、test（无头契约测试判据）
 - #<vault::07-plugins> —— 扩展面：README、package、abi、contributions、projection、namespace、shader 实例
+- #<vault::08-architecture> —— 实现层地图：crate 分层与依赖规则、请求路径、宿主矩阵
 - #<vault::ai> —— 调查档案（log 性质，自包含，不引用 vault::ai 外部模块；治理见其目录 AGENTS.md）
 - #<vault::example> —— 活示例与常驻 fixture
 

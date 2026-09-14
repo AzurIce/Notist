@@ -1,6 +1,6 @@
 = LSP
 
-`notist lsp` 是编辑器与 `notist-analysis` 之间的协议 gateway：负责文档同步、坐标换算、请求路由与结果发布，不重新实现 parser、模块解析、类型检查或求值。core 协议与 transport 无关，LSP 与 CLI 投影到同一组 core request（#<vault::05-cli::protocol>），共享 daemon 进程与 snapshot（#<vault::05-cli::daemon>），不维护第二套 module graph。逐方法支持面见 #<vault::06-lsp::checktable>；对外行为的黑箱验证见 #<vault::06-lsp::test>。
+`notist lsp` 是编辑器与 `notist-analysis` 之间的协议 gateway：负责文档同步、坐标换算、请求路由与结果发布，不重新实现 parser、模块解析、类型检查或求值。core 协议与 transport 无关，LSP 与 CLI 投影到同一组 core request（#<vault::05-cli::protocol>），共享 daemon 进程与 snapshot（#<vault::05-cli::daemon>），不维护第二套 module graph。逐方法支持面见 #<vault::06-lsp::checktable>；对外行为的黑箱验证见 #<vault::06-lsp::test>；adapter 在 crate 分层中的位置见 #<vault::08-architecture>。
 
 == 进程与传输
 
