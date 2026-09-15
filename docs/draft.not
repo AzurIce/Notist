@@ -1,0 +1,102 @@
+@!(draft: true)
+
+- 内容永远不产生 error，只产生 warn
+  任何内容问题不应该阻拦整个内容的解析与渲染
+- 以 IR 为中心，目前只有 not，但是未来或许会添加 markdown 前端
+- 基于规约 + wasm + web components 的插件系统
+- web & native
+  整个语言核心（解析、求值、LSP）应该可以完全在浏览器内独立运行
+
+@(ai: true)
+= Milestone 2026-09-15：语义核重写 + Web Editor
+
+- IR 设计 #<self/IR>
+  所有消费者读同一份 snapshot；错误模型 warn-only，恢复是一等公民
+- 重建 parse → eval → analysis 管线；语言服务核纯化，
+  LSP 降为 native 宿主的薄适配器
+- 表层语法冻结；md 前端、Agent 界面重做、bench 不在本里程碑
+- Web Editor 首版无后端：核编 wasm 跑 Worker，CM6 + web-tree-sitter，
+  Vault 经 VFS 抽象（FSA/OPFS）进入；服务端后端（大库向量检索/同步/协作）延后
+
+@(id: "IR")
+== IR
+
+现状路径（源文本到消费者，括号后为归属 crate）：
+
+```text
+源文本
+  → Parse（Markup 树 + Expression AST + errors；lossless、带 TextRange）   notist-syntax
+  → Node 调用森林（lowered）                                              notist-model
+  → 规约后森林 + ElementTree 成型树                                        notist-eval
+  → Evaluation（lowered、forest、tree、diagnostics、bindings、
+    annotations、module_attributes）                                       notist-eval
+  → StructuredModule / WorkspaceSnapshot                                  notist-analysis
+  → CoreRequest / CoreReply + Record                                      notist-service
+  → HTML 片段                                                             notist-html
+```
+
+以下编号（D、P、R、I）稳定，供后续讨论引用；各项内容是当前口径，进入 designs 设计时可整体重设计。
+
+=== 数据：IR 里流动的类型
+
+- D1 统一值域 Value：Unit、Bool、Int、Float、String、Content、Function、Target、
+  Array、Dict 一个枚举，同时充当表达式求值结果、节点参数载荷、绑定表值。
+  裁决点：未规约态（现 NodeValue 的 Stream）的位置——显式变体，或规约前不构值
+- D2 节点 Node：name、args、children、range、plan 挂载位；
+  未知名字保留为节点，配可见兜底标签与 warn
+- D3 调用计划 CallPlan：callee 注册身份、实参到形参映射、类型检查结论；
+  lower 与 check 期算一次，reduce 只执行不重算
+- D4 函数值 Function：signature、closure、implementation（builtin handler 引用或用户体）
+- D5 模块产物 ModuleResult：bindings、content（成型树）、annotations（区间属性表）、
+  module_attributes、diagnostics；每模块每版本恰一份，权威
+- D6 诊断：带 range、分级；error 只留给工具链故障，内容问题最高 warn
+- 身份词汇（ModulePath、ItemId、TextRange、Target）复用 model，IR 不新造
+
+=== 管线：八个 pass
+
+```text
+text → P1 parse  → CST                    （现状保留，lossless 已达标）
+CST  → P2 lower  → Forest                 （糖展开、名字解析、标注物化）
+Forest → P3 plan → PlannedForest          （签名检查、CallPlan 构造）
+PlannedForest → P4 reduce → ContentForest （不动点规约、registry 分发）
+ContentForest → P5 shape → Tree           （段落、列表、章节、表格成型）
+Tree → P6 assemble → ModuleResult
+ModuleResult×N → P7 analyze → StructuredDocument（引用图、身份、符号、outline）
+ModuleResult → P8 project → HTML 及未来投影
+```
+
+- P2 与 P3 分合是唯一开放设计点，倾向合并为一段、内部两相：
+  一次遍历产出 PlannedForest，诊断分通道
+- 跨模块 import 需要被引模块的 bindings 做种子，按依赖拓扑排程归 workspace 编排层，
+  IR 只声明输入需求
+- P4 保留 confluent（规约次序无关）；执行预算未定，另见 #<vault::thoughts>
+- P7 是 analysis crate 的新全部职责：从产物派生加缓存，不再持有求值逻辑
+- P8 是 html crate：输入改读 ModuleResult 的 content
+
+=== 规则：一次定死，各只有一份实现
+
+- R1 参数绑定规则（位置、命名、trailing、默认值、Int 到 Float coercion）：
+  唯一实现在 CallPlan 构造器
+- R2 let：顺序、不可变、词法作用域；函数定义是 let 加 lambda 糖；无 hoist
+- R3 名字解析次序：词法环境、import、注册表、未知兜底节点
+- R4 确定性：规约 confluent、求值无隐藏副作用、同输入同产物
+- R5 恢复模型：每个 pass 都是全函数，坏输入产出带诊断的退化产物，绝不中断
+
+=== 接口：两类外部消费者
+
+- I1 语言服务查询面：hover、completion、refs、outline、diagnostics 都是
+  快照进、结果出的纯函数，无平台依赖，零重求值
+- I2 插件贡献面：handler 的输入输出即统一值域；core 与第三方同一注册路径
+  （core 非特权保留）；wasm ABI 类型面为值域的可序列化子集
+
+=== 落位与验收
+
+- 拓扑：数据与管线进新 crate（暂名 notist-ir，或重写 notist-eval 收编，命名后定）；
+  model 收缩为纯词汇层；analysis 收缩为 P7；html 改读产物。
+  依赖方向不变：model ← syntax ← ir ← analysis ← service/cli
+- 验收：现有测试全量迁移；花括号触发 warn 而非 error 的回归用例；
+  每模块每快照恰一次求值有断言（求值计数器）；docs Vault 全程狗粮
+- 本阶段不做：parser 重写、HTML 投影重设计、service 与 daemon 与 transport、
+  wasm 与 Web Editor
+
+后续阶段：I1 落地与 lsp 拆薄；wasm kernel；Web Editor 首版。

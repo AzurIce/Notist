@@ -1,0 +1,17 @@
+[embedding]
+model = "text-embedding-bge-m3"
+endpoint = "http://192.168.2.11:1234/v1"
+dims = 1024
+context = "chain-attrs"
+
+[plugins.shader]
+path = "../plugins/shader"
+
+[plugins.mermaid]
+path = "../plugins/mermaid"
+
+[plugins.math]
+path = "../plugins/math"
+
+[site]
+styles = ["assets/main.css"]

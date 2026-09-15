@@ -1,0 +1,94 @@
+@!(ai: true, type: "log", desc: "现状代码变换路径快照：求值链条、快照编排、查询渲染入口、名称解析与绑定地点")
+
+= 现状变换路径梳理
+
+本文为 2026-09-15 对现状代码从源文本到消费者的完整变换路径的梳理快照，含名称解析、参数绑定、LSP 各查询的实际落点，均为当日现状事实。新设计见 #<vault::designs::pipeline>。
+
+== 一次求值的内部链条
+
+```text
+源文本
+ → parse（parser.rs:20）→ Parse：Markup 树 + Expression AST + errors
+ → stream_lower::lower_document_with_bindings（stream_lower.rs:46）
+     · 前置：collect_expression_functions 预收集用户函数，即 hoist（lower.rs:74）
+     · 糖展开：标题、列表、表格 → core 节点（stream_lower.rs:148-250）
+     · 标注物化 → AnnotationEntry 旁置表（stream_lower.rs:298-456、973）
+     · 调用点名字解析：词法环境 → registry → pending unknown（stream_lower.rs:480-524）
+     · 位置实参映射到签名形参名（stream_lower.rs:638-687），绑定点 ④
+     · 标量与实参表达式按需经 lower 求值（lower.rs:178）
+     · Content 字面量与 trailing body 递归回 stream_lower 加嵌套规约（lower.rs:717、980）
+ → Lowered（stream_lower.rs:27）
+ → leaf::node_engine::evaluate_to_nodes（leaf.rs:1030）
+     · reduce_nodes_recovering 不动点，descend-first
+     · dispatch_handler → bind_validated_arguments（leaf.rs:209、959），绑定点 ③
+     · builtin 函数值在此时才经 registry 重解析（leaf.rs:897-905）
+ → 规约后 forest
+ → shape_flat_with 成型（leaf.rs:263）→ ElementTree（leaf.rs:20）
+ → Evaluation：lowered、forest、tree、diagnostics、bindings、annotations、
+   module_attributes（eval/lib.rs:44，装配在 170-178）
+```
+
+== 快照构建编排
+
+WorkspaceSnapshot::build（analysis/lib.rs:884）按序执行：
+
+- 扫描目录存入 Module（lib.rs:452）；加载插件，组装 FunctionRegistry 与 ShapingRegistry（lib.rs:918）
+- 模块符号表：build_module_signatures（lib.rs:2532）由 extend_with_user_functions（check.rs:37）与 resolve_module_symbols（check.rs:119）构成
+- analyze_references（lib.rs:2557）八步：
+  a 扫 parse 的 imports，建 ImportEdge（lib.rs:2572）
+  b 求值一：module_bindings 递归求值全部模块（默认 shaping），收 import 种子（lib.rs:2682）
+  c 扫 parse 的 annotations，建 LabelDefinition（lib.rs:2714）
+  d 求值二：compute_heading_overrides 用 core-only registry 逐模块求值（lib.rs:1327）
+  e 标题 ItemId 冲突扫描，覆盖缺失时再求值（lib.rs:1250-1257、4148）
+  f 扫 parse 的 reference_targets 与 calls 加 builtin_call_target，建 ResolvedReference 引用图（lib.rs:2826），纯扫 CST，不经求值
+  g 静态检查：check_module_with_prelude（check.rs:401，调用绑定在 959-1080），绑定点 ①，类型检查跑在 Parse 上而非森林上
+  h 求值三：safe_evaluation_diagnostics 注册 SchemaFunction 占位符后重新求值，与 g 的诊断去重（lib.rs:415-438）
+- 发布 SnapshotPublication（lib.rs:809）
+
+== 查询入口
+
+LSP 只对 service 说话，方法与落点：
+
+| LSP 方法 | 位置 | 实际落点 |
+| - | - | - |
+| OpenView、UpdateView、UpdateViewDelta | lsp.rs:1008-1053 | LSP overlay 与 CLI 磁盘视图隔离 |
+| DocumentSymbols（outline） | lsp.rs:1349 | query::outline → structured_module：每次查询重新求值、零缓存（analysis/lib.rs:1882）；标题 ID 缺省时再 core-only 求值（lib.rs:1267），即求值四与五 |
+| WorkspaceSymbols | lsp.rs:1426 | 快照符号表 |
+| Definition、References、DocumentReferences | lsp.rs:1875、1914、1535 | ResolvedReference 引用图，快照期步骤 f 的产物 |
+| Completion、Hover | lsp.rs:1956、2007 | 重扫 Parse 与源文本前缀（analysis/lib.rs:2116-2388），不消费求值产物 |
+| Diagnostics | lsp.rs:1776 | 快照诊断，步骤 g 加 h 两遍 |
+| RenderDocument | lsp.rs:1588 | 走渲染路径 |
+
+CLI 的 inspect read 与 refs 走同一组 CoreRequest。
+
+== 渲染路径
+
+render_workspace（service/request.rs:2044）：runtime_plugins 组装又一份 registry（analysis/lib.rs:1911）→ 每模块 structured_module_with_runtime_plugins，带运行时插件的再一次求值（lib.rs:1965）→ rendered_annotations（request.rs:2281）→ html 渲染（request.rs:2021）。
+
+== 名称解析的全部地点
+
+八处，横跨三个 crate：
+
+- 模块符号表收集（check.rs:37、119），先于一切求值
+- hoist 预收集用户函数（lower.rs:74 → stream_lower.rs:53、111）
+- markup 位 let 函数特殊路径（stream_lower.rs:473）
+- 表达式位 let 函数特殊路径加 hoist 回退（lower.rs:418-432）
+- 调用点解析：词法 → registry → pending（stream_lower.rs:480-524）
+- reduce 期 builtin 重解析（leaf.rs:897-905），函数值只是名字，调用时再查一次
+- import 符号：种子来自求值一的 bindings，选择器匹配在符号表
+- Target 与引用解析：analysis 扫 CST（lib.rs:2826-2843），与求值完全平行的一套
+
+== 参数绑定的全部地点
+
+- ① 静态 checker（check.rs:959-1080）
+- ② 表达式路径 bind_arguments（eval/type_system.rs:269，被 lower.rs:853 与 934 使用）
+- ③ 规约路径 bind_validated_arguments（leaf.rs:209）
+- ④ lowering 位置映射（stream_lower.rs:638）
+
+诊断字符串在 ①②③ 三处复制（type_system.rs:348、leaf.rs:236、check.rs:1068）。
+
+类型检查跑在 Parse 上：check.rs 消费语法树，森林不携带类型；Type 与 FunctionSignature 定义在 model/signature.rs。
+
+== 病根小结
+
+求值被当成可以随时重做的廉价操作——符号表要种子求一遍、标题要覆盖求一遍、诊断要兜底求一遍、每个查询再求一遍；名字解析与绑定因为没有权威产物可挂靠，在每个需要它的地方重新发明一遍。
