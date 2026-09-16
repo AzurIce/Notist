@@ -1,0 +1,6 @@
+package cycle-a 0.1.0
+entry api.not
+exports
+  fn a() -> Int
+implementation none
+diagnostics

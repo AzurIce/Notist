@@ -1,0 +1,4 @@
+module
+  text("一段正文。")
+bindings
+diagnostics

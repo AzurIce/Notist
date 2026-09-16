@@ -1,0 +1,8 @@
+module
+  section(label=[text("笔记")])
+    section(label=[text("依赖")])
+      text("依赖只做图：路径来源、传递闭包、环检测。没有版本求解。")
+    section(label=[text("实现")])
+      text("只有声明没有实现是正常状态，调用时才降级并给出诊断。")
+bindings
+diagnostics

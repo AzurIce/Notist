@@ -1,0 +1,8 @@
+[package]
+name = "badge"
+version = "1.0.0"
+entry = "api.not"
+
+[implementation]
+kind = "host"
+artifact = "artifact.toml"

@@ -10,6 +10,8 @@
 @(ai: true)
 = Milestone 2026-09-15：语义核重写 + Web Editor
 
+相关：#<vault::designs::pipeline>，#<vault::designs::value-and-types>
+
 - IR 设计 #<self/IR>
   所有消费者读同一份 snapshot；错误模型 warn-only，恢复是一等公民
 - 重建 parse → eval → analysis 管线；语言服务核纯化，
@@ -35,7 +37,7 @@
   → HTML 片段                                                             notist-html
 ```
 
-以下编号（D、P、R、I）稳定，供后续讨论引用；各项内容是当前口径，进入 designs 设计时可整体重设计。
+以下编号（D、P、R、I）稳定，供后续讨论引用；各项内容是当前口径，进入 designs 设计时可整体重设计。管线与阶段细则以 #<vault::designs::pipeline> 为准。
 
 === 数据：IR 里流动的类型
 

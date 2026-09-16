@@ -1,0 +1,7 @@
+let outer = text(text: "外")
+let show() = [
+  let inner = text(text: "内")
+  inner
+  outer
+]
+show()

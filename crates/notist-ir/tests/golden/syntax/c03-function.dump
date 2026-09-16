@@ -1,0 +1,5 @@
+module
+  text("世界")
+bindings
+  greet = <fn(name: String)>
+diagnostics

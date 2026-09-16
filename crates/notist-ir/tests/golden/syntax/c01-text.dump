@@ -1,0 +1,4 @@
+module
+  text("你好。")
+bindings
+diagnostics

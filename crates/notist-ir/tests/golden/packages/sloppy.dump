@@ -1,0 +1,7 @@
+package sloppy 0.1.0
+entry api.not
+exports
+  fn ok(x: Int) -> Int
+implementation none
+diagnostics
+  warn declaration-module-has-content [0..24] declaration modules contain only `#extern` declarations

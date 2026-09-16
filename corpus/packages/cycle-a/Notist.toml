@@ -1,0 +1,7 @@
+[package]
+name = "cycle-a"
+version = "0.1.0"
+entry = "api.not"
+
+[dependencies]
+cycle-b = { path = "../cycle-b" }

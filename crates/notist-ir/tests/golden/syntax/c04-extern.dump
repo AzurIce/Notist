@@ -1,0 +1,6 @@
+module
+  sqrt[degraded](x=4)
+bindings
+  sqrt = <fn(x: Float)>
+diagnostics
+  warn implementation-missing [34..46] `sqrt` is declared but has no implementation

@@ -1,0 +1,6 @@
+package pending 0.3.0
+entry api.not
+exports
+  element note(body: Content) -> Item flow=standalone trailing=body
+implementation none
+diagnostics

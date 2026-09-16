@@ -1,0 +1,41 @@
+@!(ai: true, draft: true, desc: "core 注册元素包：元素签名、流角色与糖钉")
+
+= core 标准包
+
+core 与插件经同一注册路径，降级行为一致；core 的唯一特权是糖钉住的身份不可被覆盖。糖调用钉 core intrinsic 身份，不走名字解析。Item 模型见 #<vault::designs::item>。
+
+== 元素
+
+| 元素 | 签名 | 流角色 | 身份 | 糖 |
+| - | - | - | - | - |
+| text | text(text: String) | 行内 | 无 | 正文 |
+| strong | strong(body: Content) | 行内 | 无 | `*…*` |
+| emph | emph(body: Content) | 行内 | 无 | `_…_` |
+| underline | underline(body: Content) | 行内 | 无 | `__…__` |
+| strike | strike(body: Content) | 行内 | 无 | `~~…~~` |
+| raw | raw(source: String, lang: String?, block: Bool) | 行内或独立 | 无 | 反引号 |
+| math | math(source: String, block: Bool) | 行内或独立 | 无 | `$…$` |
+| rule | rule() | 独立 | 无 | `---` |
+| section | section(label: Content, body: Content) | 独立 | label 链 | 行首等号 |
+| list-item | list-item(body: Content, ordered: Bool) | 独立 | 无 | `-` 与 `+` |
+| table | table(columns: Int, align: Array, body: Content) | 独立 | 无 | 管道表 |
+| table-cell | table-cell(body: Content, header: Bool, colspan: Int, rowspan: Int) | 独立 | 无 | 无 |
+| scope | scope(body: Content) | 透明 | id 属性或匿名 | 标注绑定 |
+| link | link(target: Target) | 行内 | 无 | `#<…>` |
+| view | view(target: Target) | 行内或独立 | 无 | 无 |
+| callout | callout(kind: String, title: Content?, body: Content) | 独立 | 无 | 无 |
+| details | details(summary: Content?, open: Bool, body: Content) | 独立 | 无 | 无 |
+| figure | figure(caption: Content?, body: Content) | 独立 | 无 | 无 |
+| parbreak | parbreak() | 分隔 | 无 | 空行 |
+| gap | gap() | 透明 | 无 | 相邻项间空行 |
+
+流角色四值：行内参与行内流；独立自成一段并切断行内流；透明不产内容也不切断流；分隔不产内容但切断行内流。段落、列表、编号、表格行是投影视图，按流角色对终态兄弟序列做 run 划分。
+
+== 构造页
+
+- #<vault::designs::plugins::core::section>
+- #<vault::designs::plugins::core::list>
+- #<vault::designs::plugins::core::scope>
+- #<vault::designs::plugins::core::parbreak>
+
+尚无单独页的元素：text、强调族、raw、math、rule、table 与 table-cell、link、view、callout、details、figure、gap。

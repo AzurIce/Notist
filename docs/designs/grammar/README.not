@@ -1,0 +1,94 @@
+@!(ai: true, draft: true, desc: "语法总览：记法、词法规则、骨架与构造索引")
+
+= 语法
+
+从语法糖角度固定表面设计。表层语法冻结。
+
+== 记法
+
+本节是记法的唯一权威定义。产生式形态：
+
+```text
+Name[M] →
+    Symbols [SideNote]
+  | Symbols [SideNote]
+```
+
+分隔符 → 承自 Chomsky 重写记法：规则名展开为身体，语义即定义为。
+
+备选为有序选择：按序尝试、先中即赢；顺序影响语言处必须侧注标明。
+
+| 记法 | 示例 | 含义 |
+| - | - | - |
+| Name | ListItem、ModuleAnn | 句法产生式（非终结符） |
+| Name[M] | Markup[M+1] | 带 margin 参数的产生式，约束见下方 margin 定义 |
+| CAPITAL | LINEBREAK、PARBREAK | 词法单元，由词法规则给出 |
+| "string" | "-"、"+" | 终端：逐字符匹配的字面量 |
+| x? | x? | 零次或一次 |
+| x* | ModuleAnn* | 零次以上 |
+| x+ | Inline[M]+ | 一次以上 |
+| ( ... ) | ("=")+ | 分组，整体施加后缀 |
+| [SideNote] | col >= M | 侧注：附加条件，不参与匹配 |
+
+margin 定义：
+
+```text
+列 = 行首连续 U+0020 的个数；空行没有列。
+构造的列 = 其首行的列。
+Markup[M]：片段内所有非空行的列均大于等于 M；
+         围栏内部与括号作用域内部的行不参与。
+Markup[0]：文档根。
+```
+
+列管归属：构造的列落在哪个 Markup 的区间内，它就属于那个片段。Section 的嵌套由等号数决定，列只受容器 margin 约束；其余构造的列同样只受容器 margin 约束，多余的缩进不产生语法效力。
+
+产生式为描述性规格，conformance fixtures 为可执行真值，两者对拍。扩充算子时在此表登记。
+
+== 词法规则
+
+- L1 空行在文本上下文 → parbreak 元素
+- L2 空行在相邻 list-item 之间 → gap 元素
+- L3 段内单个换行留在 text 的值内，渲染按空白处理
+- L4 括号作用域跨行吸收换行，内部按 L1 与 L3 处理；括号内缩进无语法效力
+- L5 缩进只计行首连续 U+0020；行首首个字符为 U+0009 时报 warn，该行按列 0 处理
+- L6 块级构造的收尾 LINEBREAK 可为文件末尾
+
+== 骨架
+
+```text
+Document     → ModuleAnn* Markup[0]
+
+Markup[M]    → (Block[M] | Inline[M]+)*
+
+Block[M]     → ListItem[M] | Section[M] | Table[M] | Rule
+             | FencedRaw | FencedMath | Annotation
+
+Inline[M]    → Text | Escape | Raw | Math | Call | ContentBlock
+             | Strong | Emph | Underline | Strike
+
+Rule         → "---" LINEBREAK                    [独占一行]
+ContentBlock → "#[" Markup "]"
+```
+
+Block 是块级构造：首字符落在构造首字符集内，且满足该构造的列条件，在行首识别、按行或缩进定 extent。块级构造不蕴含流角色，流角色是元素声明的元数据，段落切分归投影视图。调用是行内构造，出现在行首时同样如此；它是否自成一段由元素的流角色决定。
+
+Inline[M]+ 的边界：PARBREAK、块级构造、括号闭合、文档末尾。括号作用域为 `#[` Markup `]`、调用的 `[` Markup `]` 体、参数表的 `(` `)`。
+
+== 行内构造
+
+- Text：未识别为其他构造的字符连续段
+- Escape：反斜杠加一个字符，值为该字符
+- Strong、Emph、Underline、Strike：定界符为 `*`、`_`、`__`、`~~`，取最长匹配；开定界符之后与闭定界符之前都紧邻非空白内容才成立，否则按字面文本处理
+- Raw、Math：行内字面量与行内公式
+- Call：`#` 加 Code 表达式
+- ContentBlock：求值为 Content 值
+
+同类定界符不嵌套；交叉嵌套时内层先闭合。
+
+== 构造索引
+
+- #<vault::designs::grammar::list>：list-item 糖、缩进归属与空行上下文
+- #<vault::designs::grammar::section>：Section 产生式，行首等号定界的身份容器
+- #<vault::designs::grammar::annotation>：标注与模块标注产生式
+
+尚无单独页的构造：Table、FencedRaw、FencedMath、Call 与 Code 表达式。

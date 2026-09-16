@@ -1,0 +1,2 @@
+interface = "fn area(width: Float) -> Float"
+symbols = ["area"]

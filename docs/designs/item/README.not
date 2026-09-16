@@ -1,0 +1,73 @@
+@!(ai: true, draft: true, desc: "Item 模型：内容树、命名与属性继承")
+
+= Item 模型
+
+== Item 是什么
+
+求值产物是一棵节点树：模块是根，其余每个节点都是一个 Item——section、scope、callout、列表项、文本，都是 Item（值域中的内容类型即 Item）。Item 与"可引用"无关：可引用只是部分 Item 携带名字，见下文。
+
+引用写作：
+
+```text
+#<vault::designs::grammar>     模块：designs/grammar 目录（README 代表所在目录）
+#<vault::draft/IR>             模块内条目：draft 模块里 ItemName 为 IR 的条目
+```
+
+引用的目标是有名字的 Item。解析不到时零命中即证明——引用图上没有这个名字，这是 absence 检查的基础。
+
+== ItemName
+
+哪些 Item 有名字：
+
+- module：ModulePath 即地址，不需要 ItemName。designs/grammar/README.not 的地址是 vault::designs::grammar。
+- section：ItemName 取 label 链——`= 引言` 之下的 `== 用法` 是「引言/用法」。链由 section 祖先的 label 拼接，中间隔着的节点（如 callout）不进链；label 是嵌入表达式的场合取其文本。
+- 标注绑定的节点：`@(id: "x")` 绑定流中下一个节点，该节点获得 ItemName x。绑定的目标是方括号内容块时，块保留为容器，这个容器叫 scope；没有 id 时为匿名 Item。
+- 资源文件：assets 下的文件，文件名即 ItemName。
+
+其余 Item 无名字：不可被引用，但完整地参与树、属性继承与渲染。同一父下 ItemName 需唯一，重名产生诊断。
+
+== 一个例子
+
+```text
+= 引言
+@(id: "spec")#[规格说明]
+#callout[
+  == 用法
+]
+- 列表项
+```
+
+它的树——每个节点都是 Item，括号里是有名字者的 ItemName：
+
+```text
+module
+└─ section（引言）
+   ├─ scope（spec）
+   ├─ callout（无名）
+   │  └─ section（引言/用法 —— 链穿过 callout，但链只拼 section 祖先）
+   └─ item（无名）
+```
+
+== 身份表何时可用
+
+身份表（有名字的 Item 的集合）从求值产物派生，因为求值可以向树里产出新的 section——outline、refs 要完整就必须消费产物，而非只看源码。代价与对策：
+
+- 缓存冷时，结构查询会触发相关模块的求值；指纹缓存保证每个模块对同一输入至多求值一次，daemon 可在后台预热，缓存热时查询零计算。
+- 指向生成内容的引用随求值结果漂移：插件版本、数据变化可能让目标出现或消失，稳定性由引用作者自己承担。
+
+== 属性继承
+
+标注求值为一个属性字典，挂在被绑定的节点上：模块头挂模块根，块级标注挂下一个节点。绑定发生在解析期，求值产出的节点不经过标注。
+
+一个节点的生效属性 = 树上从根到该节点路径全部字典的合并；同 key 冲突，离节点近的一层胜。
+
+```text
+@!(status: "draft")
+= 引言
+
+@(audience: "agent")
+== 用法
+正文……
+
+「用法」节内正文的生效属性：status = "draft"（继承自模块），audience = "agent"（本节标注）
+```

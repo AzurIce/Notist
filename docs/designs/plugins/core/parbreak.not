@@ -1,0 +1,11 @@
+@!(ai: true, draft: true, desc: "parbreak：空行溶解出的段落边界元素")
+
+= parbreak
+
+```text
+parbreak() -> Item
+```
+
+- 空行的溶解产物（L1），产生于文本上下文
+- 分隔：不产内容，切断 inline 流；段落由它与 block 元素划界
+- 可调用：暴露，动态内容引入分段由视图处理

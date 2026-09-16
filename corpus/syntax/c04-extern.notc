@@ -1,0 +1,2 @@
+extern fn sqrt(x: Float) -> Float
+sqrt(x: 4.0)

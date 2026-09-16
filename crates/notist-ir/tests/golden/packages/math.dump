@@ -1,0 +1,13 @@
+package math 0.1.0
+entry api.not
+exports
+  fn sqrt(x: Float) -> Float
+  fn pow(base: Float, exponent: Float) -> Float
+  element canvas(width: Int, height: Int, body: Content) -> Item flow=standalone trailing=body
+implementation external artifact.toml
+  interface match
+  symbols
+    sqrt -> sqrt
+    pow -> pow
+    canvas -> canvas
+diagnostics

@@ -1,0 +1,5 @@
+module
+  nope[degraded](x=1)
+bindings
+diagnostics
+  warn unknown-function [0..10] unknown function `nope`

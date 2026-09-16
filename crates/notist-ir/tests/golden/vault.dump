@@ -1,0 +1,13 @@
+workspace
+root vault
+packages
+  badge 1.0.0 exports=1 implementation=verified
+  math 0.1.0 exports=3 implementation=verified
+  units 0.1.0 exports=1 implementation=verified
+  vault 0.1.0 exports=0 implementation=absent
+edges
+  math -> units
+  vault -> badge
+  vault -> math
+  vault -> units
+diagnostics

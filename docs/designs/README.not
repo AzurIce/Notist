@@ -1,0 +1,20 @@
+@!(ai: true, draft: true, desc: "设计文档总览：词汇二分类与目录索引")
+
+= 设计文档
+
+== 词汇二分类
+
+| 类别 | 成员 | 谁可产生 |
+| - | - | - |
+| 元素 | 见 #<vault::designs::plugins::core> | 糖、手写调用、函数、handler |
+| 投影视图 | paragraph、list、编号、表格行 | 无树节点，derive 层共享视图函数计算 |
+
+section 与 list-item 同为容器元素，家族只决定嵌套信号、字段集、是否进身份表与渲染。保留两族 marker 的理由：行首 marker 书写对 any editor 友好（无需 outline UI），且大纲级节点与内容级节点的区分有语义价值。
+
+== 目录索引
+
+- pipeline：从源文本到唯一权威产物的派生管线设计
+- value-and-types：求值结果与节点参数共用的统一值域及其不变量
+- grammar：语法糖设计总览，含记法的唯一权威定义
+- plugins/core：core 注册元素包
+- item：Item 模型——来源、派生与属性继承

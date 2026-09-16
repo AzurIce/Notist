@@ -1,51 +1,88 @@
-@!(ai: true, draft: true, desc: "管线设计：三真相、指纹派生 DAG、八个派生、查询分层与增量")
+@!(ai: true, draft: true, desc: "从源文本到唯一权威产物的派生管线设计")
 
 = 变换路径
 
-本文从理念出发设计管线：一份源文本，三层真相，被两组读者按需取用。三条公理：文档即程序，一次求值产出权威产物，产物有三张面孔（结构、绑定、内容与属性）；身份、引用、旁置属性是 Vault 的本体，不是渲染副产品；人与 Agent 两个读者，消费语法与延迟要求不同。
+本文从理念出发设计管线：一份源文本，三层真相，被两组读者按需取用。三条公理：文档即程序，一次求值产出权威产物，产物有三张面孔（结构、绑定、内容与属性）；身份、引用、旁置属性是 Vault 的本体；人与 Agent 两个读者，消费语法与延迟要求不同。
 
 == 三真相
 
-| 真相 | 载体 | 内容 | 铸造者 |
+| 真相 | 载体 | 内容 | 构造者 |
 | - | - | - | - |
 | 源真相 | CST | 写了什么：无损、带 range、warn-only 恢复 | parse，前端可换 |
-| 意图真相 | PlannedForest | 想表达什么：调用森林、绑定结论、身份声明、引用点、属性声明 | plan |
-| 物质真相 | ModuleResult | 成为了什么：求值后内容、成型树、绑定值、生效属性表 | reduce、shape、assemble |
+| 意图真相 | PlannedForest | 想表达什么：调用森林、绑定结论、标注绑定、引用点、属性声明 | plan |
+| 物质真相 | ModuleResult | 成为了什么：求值后内容树、绑定值、生效属性表 | reduce、assemble |
 
 三条裁决：
 
-- 身份在意图层铸造：标题链、显式 id、scope 声明的 Item 在 plan 期获得身份；插件的成型变换不能铸造或销毁身份。结构查询（outline、refs、graph）从此零求值。
+- 身份从终态树派生：section（label 链）、scope、显式 id 标注节点、module、资源构成身份表；标注绑定在 plan 期完成。结构查询消费产物，DAG 缓存承担成本。
 - 诊断分层：源层语法诊断、意图层绑定与引用诊断、物质层求值诊断，逐层发布。
 - 产物完备性：任何消费者的任何问题必须能从某层真相回答；查询需要重扫源文本即为产物缺陷。
 
 == 派生 DAG
 
-每个派生是纯函数，以输入指纹为键，至多计算一次、按需发生。恰一次是纪律，至多一次是定理：打开千模块 Vault 请求 outline，求值次数为零；只有 read、render、深查询沿依赖边 force 具体模块。
+每个派生是纯函数，以输入指纹为键，至多计算一次、按需发生。恰一次是纪律，至多一次是定理：缓存冷时任何查询按需 force 相关模块，缓存热时零计算——outline、refs、read、render 同路径。
 
 ```text
-text → parse → CST → plan → PlannedForest → link → 引用图、导入种子
-                                        │
-      registry 加导入绑定值加预算 → reduce → ContentForest
-                                        │
-                          shape → 成型树 → assemble → ModuleResult
-                                                              │
-                                  derive → 身份表、引用图、符号、属性索引
-                                                              │
-                                          project → HTML 与未来投影
+text → parse → CST → plan → PlannedForest（含 section 打组）→ link → 引用图、导入种子
+                                          │
+        registry 加导入绑定值加预算 → reduce → ContentForest（原位改写）
+                                          │
+                                    assemble → ModuleResult
+                                          │
+        derive → 身份表、引用图、符号、属性索引、共享视图（paragraph、list、编号）
+                                          │
+                          project → HTML 与未来投影，消费视图
 ```
 
-- parse：文本到 CST，前端可换（not、未来 md），全函数
-- plan：糖溶解、名字解析、单一绑定（CallPlan）、身份铸造、引用点与属性声明提取、类型诊断
+- parse：文本到 CST，前端可换（not、未来 md），全函数，识别糖但不消解糖（细则见源表示）
+- plan：糖溶解、名字解析、单一绑定（CallPlan）、标注绑定、引用点与属性声明提取、类型诊断
 - link：workspace 级引用解析与 import 组织。两级依赖：A 的 plan 只需被引模块的导出签名指纹，A 的 reduce 才需绑定值；环产生诊断与降级产物
-- reduce：严格调用、confluent 不动点、统一分发（core 非特权）、预算进指纹——同输入同预算同产物，部分产物可复现
-- shape：同型重写（成型），不变换身份
-- assemble：ModuleResult 装配——bindings、content、生效属性表（三层继承在此物化）、分层诊断、指纹
-- derive：workspace 索引（身份表、引用图、符号、属性索引），全部为记忆化查询而非 pass
-- project：面向人的投影
+- reduce：原位改写，严格调用、confluent 不动点、统一分发（core 非特权）、预算进指纹——同输入同预算同产物，部分产物可复现
+- assemble：ModuleResult 装配——bindings、内容树、生效属性表（沿祖先链物化）、分层诊断、指纹
+- derive：workspace 索引（身份表、引用图、符号、属性索引）与共享视图函数（paragraph、list、编号），全部为记忆化查询而非 pass
+- project：面向人的投影，消费 derive 的视图
+
+== 阶段细则
+
+=== 源表示与 parse
+
+- CST 契约三条：每个源字节可归属唯一节点、round-trip 恒等、range 完整；fmt、代码动作、Agent 编辑建议、增量全部构建其上
+- 基座采用 typst 路线：无损无类型绿红树（rowan 或自研同构，属实现选择），糖词汇表为类型化视图而非节点类型；TextRange 保留为坐标词汇；跨会话稳定 span 编号推迟到增量阶段与 comemo spike 一并验证
+- 识别糖但不消解糖：脱糖是 plan 的第一步，也是多前端的汇聚点——CST 是各前端共享的糖词汇表，plan 因此前端无关
+- trivia 边界：空行有语义（段落分隔或 item 间隙），永远是结构；Code 注释与纯空白是 trivia，作为基座节点保留
+- 档位辨析：完整精确、错误容忍的源映射是 diagnostic 的硬前提；无损由 fmt、按键级增量、整文件生成的字节保全与单栈强制——diagnostic 本身不强制无损（LSP 诊断线上格式只有 range）
+- 证据底座：_logs 的 rustc 与 typst 源表示剖析（2026-09-15）
+
+=== plan 与脱糖
+
+- 糖溶解为调用：糖目标钉 core intrinsic 身份，不走名字解析，用户 shadow 不影响糖行为；糖调用与手写调用不可区分，同样有 CallPlan，callee 来源是糖钉扎
+- 空行按上下文溶解：文本与 item body 内为 parbreak 节点，Text 不携带结构性换行；item 之间为间隙信号（间距信息，不断链）
+- section 由行首等号糖直接构造：解析期一遍栈式构建嵌套
+- scope 是块级标注绑定 Item 字面量产生的容器（字面量求值插值，被绑定时保留为容器）；引用语法是 link 调用的糖，引用点在 plan 期从 Target 实参提取
+
+=== reduce 与规约词汇
+
+- handler 融合 typst 的 element function 与 show 规则两种角色：无样式系统，变换知识显式住在 handler 里
+- reduce 是原位改写：调用在骨架槽位上被产物替换，拼贴产物作为兄弟序列落进槽位，inline 与 block 交给投影视图解释
+- 词汇分层：reduce 的输入输出限于可调用元素词汇——text、parbreak、emph、strong、raw、math、item、section、scope、table-cell 与一切插件容器元素。词汇分界即决策局部性分界
+- 拼贴：动态产出自然进入终态树与身份表——section 走 label 链，scope 无标注通道；block 落 inline 槽无需拆段规则，paragraph 是视图，块元素天然中断 run
+
+=== 分组与视图
+
+成型作为管线阶段不存在。判据：分组归属跟随排版职责——谁拥有排版，谁拥有分组。
+
+- 属性继承沿祖先链：属性字典挂被标注节点，节点生效属性为根到自身路径全部挂载的合并，同 key 取最近一层（规则见 Item 模型）
+- paragraph、list、编号、表格行是投影视图：对终态兄弟序列的 run 划分（flow 轴：inline run 以 parbreak 与块元素为界；marker 轴：连续 item；定长轴：columns 切行）。视图由 derive 层共享函数唯一实现，project 与结构查询复用
+- 成型收敛为投影端的流组织：inline 流切分为 paragraph、block 流同类归组为 list、表格内定长切分为行；语义树不含流组织，流角色是元素 schema 的元数据，流组织是投影的解释维度
+- 先例：DOM 不派生段落，CSS 匿名盒在布局期打组，同一分界。typst 反之，因为它是排版器（paragraph 是断行单元）且有样式系统（分组元素是 set 与 show 的靶子）；notist 两者皆无，分组归投影
+- 相邻 item 不论来源（糖、手写、handler 产出）在终态是相邻兄弟即同一个 list——动态合并语义零成本获得，无需特殊规则
+- 容器即分组边界：scope 内部自成子文档计算视图，外部以单一单元参与流；分组永不跨越容器边界
+- 流透明性判据：是否产生内容。标注与 scope 不产内容，对流透明；拼贴裁决只适用于内容生产者
+- 注解转移规则代替区间机器：函数调用被替换时，其上的注解转移到产物根节点
 
 == 查询面
 
-查询与管线同刻设计，每条查询声明消费的真相层：结构类查询（outline、refs、absence 证明）永不触发求值；内容类查询（read、render）才 force 具体模块。这是 Agent 读者的延迟保证，也是 bench 教训（发现层、寻址工效）的管线侧回应。
+查询与管线同刻设计，每条查询消费声明层的产物：outline、refs、absence、read、render 统一经 DAG 按需 force、指纹缓存承担重复成本，daemon 预热与缓存命中提供延迟保证。这也是 bench 教训（发现层、寻址工效）的管线侧回应。
 
 == 增量
 
@@ -70,15 +107,13 @@ text → parse → CST → plan → PlannedForest → link → 引用图、导�
 | 文档即程序 | 单一调用森林、统一分发 |
 | 三张面孔 | 产物分层，各层独立派生 |
 | 引用是身份 | plan 期铸身份，引用图一等，absence 是证明 |
-| 标注旁置细到区间 | 声明层在 plan，生效层在 assemble |
+| 标注旁置细到区间 | 声明层在 plan，生效层在 assemble，挂节点走祖先链 |
 | 两个读者 | 三真相加查询分层延迟保证 |
 | warn-only | 每个派生全函数，诊断分层 |
 | IR 中心多前端 | parse 可换，三真相不依赖具体语法 |
 | 浏览器可运行 | 纯派生加指纹缓存，天然增量与端侧计算 |
 | 确定性与预算 | 预算进指纹，部分产物可复现 |
 
-== 与既有裁决的关系
+== 与其他设计的关系
 
-存活：值域无 pending、严格调用、单一绑定、confluent 规约、身份词汇在 model、lossless CST。值域与类型细节见 #<vault::designs::value-and-types>。
-
-升级：不变量由每模块每快照恰一次求值改为每个派生按指纹至多计算一次（更强，覆盖所有层）；身份推导从成型树改为 plan 期铸造。
+管线不变量（每个派生按指纹至多计算一次、身份从终态树派生、分组归投影）以本文为唯一权威。

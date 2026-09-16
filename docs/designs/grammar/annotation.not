@@ -1,0 +1,16 @@
+@!(ai: true, draft: true, desc: "标注糖的产生式：载荷求值为 Dict，绑定下一个构造")
+
+= annotation
+
+```text
+ModuleAnn  → "@" "!" Expr LINEBREAK     [文件头区域]
+Annotation → "@" Expr                   [块级构造，绑定下一个构造，可堆叠]
+```
+
+- 文件头区域是文档最前面的连续 ModuleAnn 行；被其他行打断后 `@!` 按普通 Annotation 处理并报 warn
+- 多个 ModuleAnn 按书写顺序合并，同 key 取书写靠后者
+- Annotation 只在行首识别，行内出现的 `@` 是文本
+- 绑定目标是下一个非标注构造，含块级构造与行内流段；连续堆叠的多个 Annotation 绑同一目标，同 key 取书写靠后者
+- 目标不存在时标注丢弃并报 warn
+- 标注不进内容流：载荷求值为属性字典，挂在被绑定构造的产物根上；被绑定的是 Content 字面量或行内流段时，该构造保留为 scope 容器
+- 载荷 Expr 求值必须产出 Dict，义务由类型检查诊断

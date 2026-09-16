@@ -1,0 +1,4 @@
+module
+  text("同一段第一行\n第二行。")
+bindings
+diagnostics

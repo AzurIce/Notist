@@ -1,0 +1,60 @@
+@!(ai: true, type: "log", desc: "rustc 与 typst 源表示剖析及 notist 的选型")
+
+= rustc 与 typst 源表示剖析
+
+背景：管线设计推进到 parse 层，需要裁决源表示用 AST 还是 CST。本文深挖 rustc 与 typst 两条路线的完整代价结构，作为 #<vault::designs::pipeline> 相关条目的证据底座。
+
+== 三档表示
+
+| 档 | 内容 | 买到什么 | 代价 |
+| - | - | - | - |
+| T1 裸 AST | 语义结构、range 不全 | 几乎无 | 标注、诊断、坐标全废 |
+| T2 带完整 range 的 typed 树 | 糖为类型化节点、错误可保留 | 身份铸造、区间刺探、诊断锚定、LSP 跳转、字节坐标 | trivia 丢失 |
+| T3 无损 CST | 每字节归属唯一节点，空格、注释、错误皆为节点 | round-trip 恒等、fmt、注释保全、增量重解析、token 级高亮源 | 基座复杂，无类型需要视图层 |
+
+真问题不是三选一：T2 是底座，分歧在要不要把 T3 定为契约与基座。
+
+== rustc：T2 的充分性与代价外溢
+
+基座是 typed AST 加完整 Span，trivia 在词法层即被丢弃。对 rustc 自身这够用：
+
+- 编译模型是保存后全量编译，无按键级重解析需求；
+- 宏系统工作在 TokenStream 上——Rust 实际存在第三种表示（token 层），宏不需要 AST 的 trivia；
+- 代码生成对空格与注释无价值。
+
+两个细节值得记：
+
+- doc 注释是 trivia 语义化的特例：rustc 把文档注释特判为 doc 属性保进 AST。语义上重要的 trivia 必须成为结构——rustc 用特例回应了这条规律，而不是用无损树。
+- 增量编译在 query 与 dep-graph 层，重解析是全量的；Span 与各层 id（NodeId、HirId、DefId）参与稳定哈希。
+
+代价没有消失，全部由生态另起炉灶支付：
+
+- rust-analyzer 未复用 rustc 解析器：以 rowan 自建无损 CST（绿红树、错误即节点、resilient LL parsing），并因 rustc 内核不可作为库嵌入而自建一套 HIR 与类型系统。一个语言两套解析栈加两套语义近似，分歧税由整个生态长期缴纳；rustc 解析器恢复不是设计目标，错误通常终止编译，IDE 需要的永远有树模型只能由第二棵树供给。
+- rustfmt 为注释打补丁：AST 丢注释，rustfmt 自带注释词法预处理，剥出、格式化、缝回。
+- syn 是事实上的第三解析器（proc-macro 生态）。
+
+教训：T2 能造工业编译器，但 T3 的需求不因编译器不需要而消失——它转移到 IDE、格式化、宏生态，以第二第三棵树的形式收税。
+
+== typst：单树路线
+
+typst-syntax 是自研绿红树（受 rowan 启发）：无类型无损基座，空格、段落分隔、行注释、块注释皆为节点；解析错误是树内 Error 节点，树永远完整。typed AST 是 ast 模块的惰性视图，按 SyntaxKind 校验的零成本包装，eval 直接走视图。
+
+绿树（不可变、无父指针、可共享）与红树（带父指针的廉价门面）的分离是增量与指纹的关键：未变子树是同一个绿节点，结构共享使子树指纹对未变部分近乎零成本——正是指纹派生 DAG 想要的性质。
+
+收益链：
+
+- Source 局部重析：编辑后只重析受影响区域，绿树拼接复用未变兄弟；watch、preview、tinymist 的按键延迟都靠它
+- span 编号会话内跨编辑稳定，服务 comemo 增量缓存；span 挂在 Content（节点层）而非 Value（值层）——与 notist 不变量源映射不语义化同构
+- trivia 在树里，fmt 直接长在树上，无需 rustfmt 式补丁
+- 编译器、tinymist、增量 watch、fmt 全部同栈，无第二解析栈
+- typst 无宏，语法层保持两级（文本与树），无 Rust 式 token 第三层
+
+== 对 notist 的裁决
+
+- 编辑是第一等交互：人在编辑器持续改文档、Agent 改库、Web Editor 按键响应，全是 T3 场景。notist 等于把 rust-analyzer 的需求当主业，却只有 typst 的预算——养不起第二棵树。
+- docs/ai 的 2026-07-17 与 2026-07-31 两篇历史日志当年选择 typed 树加 TextRange，并把 lossless CST 的引入条件写为需要 token 级高亮、格式化或增量重解析之时；本里程碑的 Web Editor、Agent 字节保全编辑、未来 fmt 恰好点燃全部条件。
+- 两个读者承诺要求单栈：语法外围已需维持 tree-sitter 与 TextMate 投影，核心再分叉为编译树与 IDE 树将重演 Rust 生态分裂，且无生态兜底。
+
+采用 typst 路线：无损无类型基座加类型化视图；共享糖词汇表从节点类型降为视图；TextRange 保留为坐标词汇；typst 式跨会话稳定 span 编号推迟到增量阶段与 comemo spike 一并验证；基座实现用 rowan（纯 Rust、wasm 直通）或自研同构绿树，属实现选择。notist 的标注本就是 annotation 结构节点——rustc doc 注释那条特例规律，notist 以正解满足。
+
+一句话收束：rustc 证明 T2 足以造编译器、也证明 T3 需求只会转移不会消失；typst 证明单棵无损树能同时喂编译器、IDE 与 fmt；notist 的两个读者承诺在结构上选边 typst。

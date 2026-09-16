@@ -1,8 +1,8 @@
-@!(ai: true, draft: true, desc: "IR 值域与类型层设计：不变量、统一值域、待拍板裁决")
+@!(ai: true, draft: true, desc: "求值结果与节点参数共用的统一值域及其不变量")
 
 = 值域与类型层
 
-定义 IR 的统一值域及其不变量。类型系统本阶段冻结深度：签名静态检查接进 CallPlan，不做元素类型追踪、不新增类型构造。
+定义 IR 的统一值域及其不变量。类型系统本阶段冻结深度：签名静态检查接进 CallPlan，不做元素类型追踪、不新增类型构造。flow 角色与槽位有效性属于 ElementSchema 的 content model：糖书写由产生式强制，值的内容由诊断通道校验，均不进类型。
 
 == 不变量
 
@@ -15,7 +15,7 @@ IR 设计的宪法，后续设计与它冲突时改设计不改宪法：
 - 确定性：同输入同产物；规约 confluent；除显式 registry 外无环境依赖
 - core 非特权：core 与插件经同一注册路径；插件缺失与未知名字的降级行为一致
 - 身份唯一：ModulePath、ItemId、TextRange 只定义在 model，IR 不造第二套身份
-- 源映射不语义化：range 是坐标不是值，出处信息留在节点与表达式层
+- 源映射不语义化：range 是坐标；值不携带出处，出处信息留在节点与表达式层
 
 == 统一值域
 
@@ -25,14 +25,16 @@ Value = Unit | Bool | Int | Float | String
       | Array(Vec<Value>) | Dict(String -> Value)
 ```
 
-- Unit 吸收原 NodeValue 的 None，“无”只有一个
+- Unit 是唯一的“无”
 - Content 包装节点序列，不裸用 Vec，为将来加不变量留位
 - Array 与 Dict 的元素保持动态，值域不追踪元素类型
 - Target 是一等值，link 与 view 消费
+- 值域只含完成态：表达式在前（挂 CallPlan）、值在后（规约产物），未规约态不进公共词汇
 
-== 待拍板裁决
+== 裁决
 
-- 裁决 1 未规约态的表示。选项 A：值域加显式 pending 变体，一个类型贯穿管线前后。选项 B：规约前不构值，PlannedForest 的参数是表达式（挂 CallPlan），reduce 产物参数才是值，表达式与值由管线阶段区分。倾向 B：插件 handler、投影、查询等消费者永远只见完成态，pending 是管线内部细节，不进公共词汇
+- 裁决 1 未规约态的表示（待拍板，讨论已收敛于 B）。B：规约前不构值，PlannedForest 的参数是表达式（挂 CallPlan），reduce 产物参数才是值，表达式与值由管线阶段区分。收敛理由：消费者（handler、投影、查询）永远只见完成态，pending 是管线内部细节；值域 pending 与源映射不语义化冲突；rustc 与 typst 均为阶段化表示，无值域 pending 先例；惰性已由裁决 5 排除，pending 变体的唯一潜在收益消失
 - 裁决 2 值不携带 range 与 provenance（不变量“源映射不语义化”的落地）。诊断需要位置时由 CallPlan 的调用点 range 提供。倾向接受
 - 裁决 3 Function 流动规则。可作为参数与绑定值自由传递；不可投影，插入内容时产出可见兜底标签与 warn，与未知名字的降级同构。倾向接受
-- 裁决 4 coercion 与动态性。只保留 Int 到 Float；Dict 键为 String；签名检查结论进 CallPlan，运行时不再复查。倾向接受
+- 裁决 4 coercion 与动态性。只保留 Int 到 Float；Dict 键为 String；签名检查结论进 CallPlan，运行时只执行。倾向接受
+- 裁决 5 惰性与调用策略。不做通用惰性求值：预算确定性、诊断完备性、wasm 内存行为三处否决；默认严格调用，实参先全部求值再分发，短路由 if、and、or 表达式层特殊形式承载；增量性能走管线设计的记忆化查询（comemo 式）而非值域 thunk。倾向接受

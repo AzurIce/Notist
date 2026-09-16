@@ -1,0 +1,8 @@
+[package]
+name = "vault"
+version = "0.1.0"
+
+[dependencies]
+math = { path = "../packages/math" }
+badge = { path = "../packages/badge" }
+units = { path = "../packages/units" }

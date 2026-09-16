@@ -1587,6 +1587,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "notist-ir"
+version = "0.1.0"
+dependencies = [
+ "notist-model",
+ "serde",
+ "toml",
+]
+
+[[package]]
 name = "notist-model"
 version = "0.1.0"
 dependencies = [

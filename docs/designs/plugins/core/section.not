@@ -1,0 +1,12 @@
+@!(ai: true, draft: true, desc: "section：label 与 body 字段的大纲节点元素")
+
+= section
+
+```text
+section(label: Content, body: Content) -> Item
+```
+
+- label 是标题行的行内内容，body 是节体
+- 嵌套由树深表达，节点不携带 level 字段；渲染层级取树深
+- 身份：ItemName 取 label 链，链上只拼 section 祖先的 label
+- 渲染为 heading

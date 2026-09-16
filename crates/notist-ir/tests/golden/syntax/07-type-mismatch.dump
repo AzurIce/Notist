@@ -1,0 +1,5 @@
+module
+  text[degraded](text=1)
+bindings
+diagnostics
+  warn type-mismatch [0..14] argument `text` of `text` expects String, found Int

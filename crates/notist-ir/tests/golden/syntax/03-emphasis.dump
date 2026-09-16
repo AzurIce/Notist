@@ -1,0 +1,10 @@
+module
+  text("前 ")
+  strong
+    text("强")
+  text(" 中 ")
+  emph
+    text("斜")
+  text(" 后")
+bindings
+diagnostics
