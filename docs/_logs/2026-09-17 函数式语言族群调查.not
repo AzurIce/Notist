@@ -1,0 +1,462 @@
+@!(ai: true, type: "log", desc: "四族函数式语言对 Notist code 模式设计的机制参照：文档即程序、Lisp、ML/DSL、确定性配置语言")
+
+= 函数式语言族群调查
+
+背景：.not → .notc → IR 路径确立后，code 模式本质是一门具有一等 Content 值的函数式语言。2026-09-16 由四路并行调查汇总，为意图层词汇、值域与求值语义的设计提供机制先例与反面教材。本文只收机制事实与设计相关性判断。
+
+问题图例：A1 语句层是否收敛为 let 绑定 + 表达式语句；A2 运算符是否脱糖为钉扎 core 调用；A3 钉扎拼写（code 模式如何拼不受用户遮蔽的 core 引用）；A4 标注拼写；Q7 尾随 body 实参形态；B 值域；C 求值语义。
+
+== 设计问题速查
+
+- A1 → 收敛成立。ML 四家与 Julia 全部在核心语言层面把函数定义溶为 lambda 绑定（SML 派生形式、OCaml alternate syntax、Haskell Report Translation、`F#` let binding、Julia assignment form）。新分歧：let 递归性——OCaml/SML/`F#` 默认非递归，Haskell 是 letrec；文档语言应选顺序非递归 let。遮蔽取 OCaml 式纪律：遮蔽合法，遮蔽致旧绑定 dead 才警告。
+- A2 → 可直接定。OCaml §7.5、Julia、Elixir、Haskell 互证"中缀即函数应用"；钉扎有规范级先例（Haskell Report ch.3 的 Prelude 钉扎条款、一元负号钉死 `negate`）。灾难全部来自词法侧（Haskell lens 运算符汤、Raku 自由优先级、Scala 2 到 3 的回收）。安全区间：运算符集封闭、语义一律钉扎脱糖、无用户自定义优先级、短路运算显式列特殊形式。
+- A3 → 理论模型齐备。Racket：绑定即身份、名字只是拼写；脱糖输出带定义点上下文（钉死）与使用点输入正常解析的不对称；hygiene 协议层（scope flip、phase、taint）是用户宏税，不偷。Common Lisp 贡献纪律层（限定名读时钉死、显式遮蔽声明制），避开其运行时包模型。推论：用户遮蔽 core 名给 warn 即可，脱糖产物不受影响。
+- A4 → 方向明确：前缀拼写 + 脱糖到 core 函数。Clojure metadata 是"标注旁置"的完整语义先例：不参与相等与哈希、附着不可变且产新值、reader 前缀拼写 `^:flag` 与 `^{...}`、`with-meta` 证明前缀糖可脱糖为普通函数调用。佐证：Typst `<label>` 附着最近前驱元素且只 warn；Racket syntax properties 承担工具链 provenance 通道（与语义标注分层）；Pollen 的 doc/metas 双导出。预答三坑：相等定义明说忽略标注；可挂标注的载体在值模型层定义；规范形态打印标注必须可读回。
+- Q7 → 形态收敛。body 脱糖为单个 Content 值（Typst 路线），不学 Scribble/Pollen 撒成不定数量字符串参数；绑定规则声明式固定（恒绑名为 body 的末参），不学 Swift backwards-scan 启发式；汇聚保持同质序列，不学 TupleView 异质积类型；"尾随块无处可绑"必须诊断，不学 Ruby 静默忽略。Elixir do-end（尾置块即最后一个具名实参）是最字面先例；`F#` computation expression 翻译表（Zero、Combine、Delay）是内容上下文脱糖规范的模板。
+- B → Dict 进值域但语义无序（键序规范化后参与相等与指纹）；闭包按值快照捕获（按引用会把环境身份泄漏进缓存键）；Function 指纹降级为"创建点 + 捕获环境指纹"；canonical 形式（NaN、Dict 键序、coercion 时机）是值域定义的一部分而非实现细节。
+- C → 否决惰性获三面佐证（Nix 内存黑洞、Jsonnet 错误推迟到输出点与诊断完备性冲突、惰性的正当收益可由管线记忆化查询获得）；fuel 预算而非 totality（Dhall 自承 totality 无资源上界，Jsonnet 明拒强制终止）；确定性必须覆盖诊断通道（发射集合与排序规则进契约）与 f64（NaN 规范化、原生与 wasm 后端差异）；Wolfram 坐实"值域只含完成态"——规约完成、预算耗尽、错误降级是三种不同的完成态，都在完成态词汇内显式表达。
+- 总判断：文档语言 = 带一等 Content 值的函数式语言，是被 Scribble、Pollen、Typst 与 ML 核心反复验证的架构；全函数 + warn-only + 执行预算在该谱系中无先例，是 Notist 的差异化设计点。
+
+== 文档即程序族群
+
+=== Scribble（Racket at-exp）
+
+记法到 S-expr 的完整映射。`@‹cmd›[‹datum›*]{‹text-body›*}` 三段均可选但至少留一段，顺序固定、三段间不允许空格；读作 `(‹cmd› ‹datum›* ‹parsed-body›*)`。datum 槽是任意 Racket 表达式逐一堆在 body 参数之前（惯用法是 `#:kw val` 关键字参数，如 `@foo[#:width 2]{blah}` → `(foo #:width 2 "blah blah")`）；body 的每个文本片段变成一个字符串参数排在最后：换行变独立 `"\n"` 字符串（不与相邻文本合并）、行首/行尾空格丢弃但按列位置生成全空格缩进字符串、单行 body 花括号内侧空格保留。平衡的 `{}` 可当普通文本。来源：`https://docs.racket-lang.org/scribble/reader.html`。
+
+嵌套 `@`。body 中的 `@` 递归调用同一 reader，语法在文本语境与 code 语境完全同一：`@foo{bar @baz{3} blah}` → `(foo "bar " (baz "3") "\n" "blah")`。只有 cmd 无 body/datum 时不加括号直接插入（`@foo{... @y ...}` → `(foo "..." y "...")`），于是 `@` 本身成了任意 code 的通用逃逸：`@(bar 2)`、`@"..."`（字符串逃逸有与周围文本合并的特例，用于插入 `}` `@` 等字面字符）、`@|expr|` 界定与文本紧贴的边界、`|{...}|` 换定界符应对大量字面 `@`、`@;` 行注释与 `@;{...}` 可嵌套块注释。
+
+"文档表面只是 reader 变换"的证据与限度。官方原话 "An `@-expression` is simply an S-expression in disguise"；reader 层不创造语义，"identifiers still get their meaning … through the lexical context"。但完整管线还有第二层：`#lang scribble/base` 的顶层是 text-body 流，求值后由一个隐式 `decode` 操作把字符串与值的混合流 decode 成 part/flow/paragraph 结构（空行分段、`---` → mdash），渲染器只认 decode 后的固定结构层级。来源：`https://download.racket-lang.org/releases/8.2/doc/scribble/getting-started.html`、`https://web.mit.edu/racket_v612/amd64_ubuntu1404/racket/doc/scribble/layers.html?hq=R%3A`。即 Scribble = reader 糖（无语义）+ 库层 decode（流→结构），与 Notist "脱糖无语义、结构恢复在 IR/求值层"同构。
+
+值表示与 body 传值。body 是撒在参数列表上的不定数量字符串——单字符串与字符串序列的差别泄漏进每个函数的签名（tag 函数必须用 rest 参数，否则 arity mismatch）。标注对应物：无（title/section 只是普通函数）。求值严格性：Racket 严格求值，未绑定名/arity 错误直接异常中断，无预算概念。
+
+=== Pollen
+
+"The book is a program" 是官方头条设计原则：源文件即程序，编译即求值；项目 = 源文件 + 静态文件，按软件工程习惯组织（版本控制、模板、pagetree）。一个 markup 源文件求值后作为模块导出 `doc`（root txexpr）与 `metas`（hash）两个值；`(require "src.pm")` 拿到 doc 和 metas，`(require (submod "src.pm" metas))` 只拿 metas。来源：`https://docs.racket-lang.org/pollen/big-picture.html`、`https://docs.racket-lang.org/pollen/pollen-command-syntax.html`、`https://docs.racket-lang.org/pollen/Core.html`。
+
+txexpr：文档树即普通数据。X-expression 是 Racket 原生 list：`(body (h1 "Hello world") (p "Nice to " (i "see") " you."))`；带属性为 `(tag ((attr "val")) child...)`。优势：无冗余定界符、保留内部结构、是宿主语言原生数据类型——整个 Racket 函数库可直接处理文档树。任何未定义命令名默认当 tag 函数静默生成对应 txexpr（typo 不报错的根源）。
+
+双模式。文件默认纯文本；`◊` 唯一命令字符，两种等价风格：Pollen 风格 `◊name[racket-args]{text body}`（即 Scribble `@-form`）与 Racket 风格 `◊(expr)`，前者机械翻译为后者。body 传值与 Scribble 相同（不定数量字符串参数，rest 参数是义务）。
+
+`◊` 的人体工学教训。选 `◊` 的四条理由：几乎在所有字体里、排版中几乎不用、任何编程语言不用、视觉上醒目。核心论证："逃逸符必须稀有，否则导入普通文本时处处要转义"（自称 Pareto-optimal trade）。代价：输入成本高，官方文档用了整节罗列 DrRacket 工具栏按钮、键位绑定、Windows Alt 码、Emacs/Vim digraph、AutoHotkey 脚本——稀有逃逸符把转义负担换成了输入负担，需要编辑器工具链兜底。
+
+标注对应物（重要先例）。`◊define-meta[key]{value}`：metas 在求值时从输出中移除、收集进与 doc 平行的独立 hash；先收集后可用，故可以先引用后定义；位置任意、同 key 后者覆盖。这是"元数据不属于值本体"的直接先例——但其语法形式仍是混在正文流里的特殊调用，Notist 的旁置标注更干净。求值严格性：Racket 严格求值；类型错误（如把 list 插进 markup）运行期异常。
+
+=== Typst
+
+双模式。markup 默认；`#` 进 code，表达式解析完后自动回 markup，`;` 可强制终止表达式，`#(...)` 包裹不兼容 `#` 前缀的表达式（如二元运算）；code 中 `[...]` 是 content block（markup quotation，产出 content 值）、`{...}` 是 code block；`$..$` 是第三模式 math。"Once you have entered code mode with `#`, you don't need to use further hashes"（code 内部不再要 `#`）。来源：`https://typst.app/docs/reference/syntax/`、`https://typst.app/docs/reference/scripting/`。
+
+content 一等性与函数。content 是心型类型：元素 + fields；`+` 拼接、整数倍增、可存变量、随处可传；string/none 可隐式当 content。函数：具名参数 `name: value` 带默认值、参数 sink、`..` spread、`(x) => x+1` 匿名函数、`fn.with(...)` 部分应用；"all functions are pure"；尾随 content block 实参：`list[A][B]` ≡ `list([A],[B])`，空参时可省略括号。body 是单个 content 值（sequence 是 content 内部结构），不像 Scribble/Pollen 撒在参数列表上。来源：`https://typst.app/docs/reference/foundations/content/`、`https://typst.app/docs/reference/foundations/function/`。
+
+element function 与糖钉扎（源码核实）。markup 糖"只是对应函数的快捷方式"，但 `https://raw.githubusercontent.com/typst/typst/main/crates/typst-eval/src/markup.rs` 显示 `*x*` 直接求值为 `StrongElem::new(body)`、`= x` 直接 `HeadingElem::new(body).with_depth(depth)`、列表项直接 `ListItem::new(...)`——原生元素构造，不经过任何名字解析：用户 `let strong = ...` 无法劫持 `*x*`。这正是 Notist"脱糖产物 callee 不受用户 shadow 影响"的正面先例（且比 Notist 更硬：Typst 的糖在求值器内建，不在源码层翻译）。同一文件还给出旁置标注先例：`<label>` 求值为一个值后附着到序列中最近的非 Unlabellable 前驱元素（`elem.labelled(label)`），重复附着/无处可附着只发 warning——标注不是构造参数、不进值本体。
+
+set/show 机制与痛点（Notist 已否决，以下是反面证据汇总）。机制：set rule 把元素函数的可选字段配置到块/文件尾；show rule 按 selector（元素函数、`fn.where(fields)`、label、字面文本、regex、`:` everything）把元素整体替换为任意 content。实现上（同源码）：set = 对语法上后续 markup 序列 `.styled_with_map(styles)`，show = 对剩余序列 `.styled_with_recipe(recipe)`——所谓"作用域"就是把剩余内容包一层隐式变换。痛点：
+
+1. 无法在函数内建立全局规则：set/show 只活到当前块尾，模板作者没法用纯函数交付样式，只能要求用户写 `#show: template`（formatful 模板），社区长期请求 "programmatically establish set/show rules globally" 而不得——`https://github.com/typst/typst/discussions/2153`。
+2. content 不透明：经 set rule 生效的字段在字段访问时不可见（官方明示："Optional fields are only available with field access … not when they result from a set rule"）；content 构造后不可解构/修改，show rule 里想检查/改写内部只能靠脆弱的 children 遍历——`https://forum.typst.app/t/how-can-i-work-with-the-type-content-in-show-rules-to-check-for-content-and-maybe-even-change-it/3361`。
+3. 递归自替换：show rule 产出同类元素会被自己再次替换，报 "maximum show rule depth exceeded"（同 thread）。
+4. text/regex show rule 是残缺的：不跨文本元素边界（`https://github.com/typst/typst/issues/3855`），大文档显著拖慢编译，且 show 函数内拿不到当前有效样式（想 "weight+100" 无解）——`https://forum.typst.app/t/how-to-define-a-regex-show-rule-that-doesnt-apply-in-raw-blocks/4241`、`https://forum.typst.app/t/how-to-add-100-to-the-weight-of-the-results-of-a-regex-show-rule/3488`。
+5. context 表达式：凡依赖文档位置/有效样式的值都要 `context` 块，在纯函数模型上戳出隐式环境洞，是"隐式样式环境"的必然税。
+
+求值严格性：严格、纯、确定性；错误即编译失败；有 "maximum function call depth exceeded" 类执行预算；0.12 起引入 warning（如 label 问题只 warn）——与 Notist warn-only 方向一致但远不及 Notist 彻底。
+
+=== MDX / JSX
+
+element 即普通值与编译目标。MDX 编译为 JS 模块：默认导出 `MDXContent(props)` 组件，内部 `_createMdxContent` 把文档树变成 `_jsx`/`_jsxs` 调用——`# Hello <Thing/>` →
+
+```text
+const _components = {h1: 'h1', ...props.components}
+_jsxs(_components.h1, {children: ['Hello ', _jsx(Thing, {})]})
+```
+
+children 是 props 里的普通数组值，element 就是函数调用表达式。来源：`https://mdxjs.com/docs/using-mdx/`。
+
+关键反证：markdown 糖不钉扎。markdown 构造编译为对 `_components.h1` 的查表调用，而 `_components` 可被调用方经 props / MDXProvider context 覆盖——同一个 `#` 标题在不同 render 上下文中解析为不同东西。MDX 把这当核心特性（component mapping），代价是文档语义永远依赖运行时注入的映射。Notist 的糖钉扎正是对这条路的否决。
+
+双模式与 `{}` 插值。markdown 默认；JSX 元素直接混入；`{expr}` 是完整 JS 表达式（可塞 IIFE），markdown 语法在 `{}` 内不解析；顶层可用 ESM import/export。模式共处的粗糙处（`https://mdxjs.com/docs/what-is-mdx/`）：`<` 和 `{` 是常用字符却要转义（`\<`、`\{` 或 `{'<'}`）；为允许 JSX 自由缩进废掉了 markdown 的缩进代码块；autolink 被废（与 JSX 歧义）；interleaving 规则——同一行内 markdown 只按 inline 解析（不产块级元素），跨行才产块，模式边界由排版换行决定而非语义，可造出非法嵌套 HTML。官方自嘲："markdown is whitespace sensitive and forgiving, JavaScript is whitespace insensitive and unforgiving" 的怪异混合。标注对应物：无（frontmatter 是插件；`export const` 算模块绑定）。求值严格性：JS 运行时求值、每次 render 重新执行、错误即抛、无预算。
+
+=== TeX / LaTeX
+
+catcode"模式"为何是教训。TeX 没有语法层面的双模式，只有 tokenize 时的 16 类 category code 状态（escape、begin/end group、math、parameter、letter、other、active……）；字符一入读入就按当时 catcode 固定成 token，之后不可回溯（`https://texdoc.org/serve/texbytopic/0` 第 2 章 Category Codes and Internal States）。直接后果：`\verb`/verbatim 靠临时改 catcode 工作，因此永远不能出现在任何宏参数里——参数在外层宏读入时已按旧 catcode tokenize 完毕。TeX FAQ 的定性："they aren't just fragile, they're quite unusable in any 'normal' command parameter"（`https://texfaq.org/FAQ-verbwithin`）。教训：由运行时值改变词法规则的"模式"不可组合；Notist 的 markup/code 切换必须在语法层静态确定，这正是已定设计。
+
+纯宏展开模型为何是教训。TeX 的"编程"是 token 重写：宏在 "mouth" 里展开，赋值/排版在 "stomach" 执行，参数是（定界/非定界）token 列表；无函数值、无闭包、无求值概念，时序惊吓是日常（Alan Jeffrey, TUGboat 11-2：`\ref` 何时展开出数字的经典意外，`https://www.tug.org/TUGboat/tb11-2/tb28jeffrey.pdf`）。作用域只有 group 的保存-恢复（动态），没有词法环境捕获——名字捕获、`\_csname` 拼名、`\expandafter` 控制展开序、fragile 命令要 `\protect`，组合性全面崩塌；expl3 整个项目就是在宏语言上手工模拟正经编程结构。最深一层：文档树不是值——一切都是排版操作序列，无法先构造文档再检查/变换它，这是 LaTeX 后期 hook/模板机制如此痛苦的根源。标注对应物：无。求值严格性：吞参错位产生 "File ended while scanning use of..." 类经典错误，交互式错误处理，语义上"尽力继续"。
+
+=== 本族可偷/可避
+
+可偷：
+
+1. Scribble 三段式记法：`cmd[datums]{body}`——datum 槽放具名/关键字实参、body 槽放尾随内容实参，顺序固定、无空格分隔；`@` 逃逸在文本与 code 语境语法同一。直接证明"具名实参 + 尾随 body 实参"记法的人体工学可行。附带可偷：`@"..."` 字符串合并特例、`@;` 两种注释、`@|...|` 边界界定。
+2. Scribble 两层管线：reader 变换零语义 + 库层 decode（流→结构）。文档表面可以完全只是脱糖，结构恢复放库层——与 .not → .notc → IR 管线同构。
+3. Pollen txexpr：文档树 = 原生数据（tag + attrs + children），通用函数可直接处理；`doc`/`metas` 双导出是"标注旁置"的直接先例（metas 从正文收集、与本体平行、可先引用后定义）。
+4. Typst 糖钉扎（源码级先例）：markup 糖直接构造元素、不经名字解析；同时可偷 `<label>` 求值后附着最近前驱元素的旁置标注实现，以及 label 问题只 warn 不 error 的尺度。
+5. Typst `#` 逃逸细节：表达式结束自动回 markup、`;` 强制终止、`#(...)` 兜底、`[...]`/`{...}` 反向 quotation、尾随 content block 实参、body 是单个 content 值。
+6. MDX 编译目标形态：`_jsx(callee, {children: [...]})`——元素即函数调用、children 即普通参数值，最简 IR 形态参照。
+
+可避：
+
+1. Typst set/show 全套（Notist 已否决，此处是完整罪证）：块尾失效且函数内无法全局生效；content 不透明（set 的字段不可见、构造后不可解构）；show 递归自旋；text/regex show 不跨边界、慢、拿不到有效样式；context 表达式给纯函数模型开洞。若 Notist 将来需要"按类型全局变换"，应走对内容树这个一等值做显式树→树函数，而非隐式规则引擎。
+2. MDX `_components` 运行时查表：markdown 糖的 callee 可被 props/context 覆盖，文档语义依赖运行时注入——"翻译保语义"的反面教材，糖钉扎正是避它。
+3. MDX 模式共处的两个决定：常用字符（`{`）当逃逸符导致高频转义；模式边界由换行/缩进决定。Notist 的 `#` 边界应纯词法、与排版无关；`#` 是常见字符，转义成本要靠 markup 中 `#` 后接头的解析规则收敛来控制（Typst 用 `\#` 转义 + `;` 终止，已有成熟答案）。
+4. Scribble/Pollen 的 body 传值方式：body 撒成不定数量字符串参数 + 独立 `"\n"` 字符串，使"单字符串 vs 字符串序列"泄漏进每个用户函数的签名，rest 参数成为全民义务。Typst 的方案（body 脱糖为一个 Content 值，序列在 Content 内部）明显更优，Notist 的尾随 body 实参应采此形。
+5. Pollen 的"未定义名默认 tag 函数"：名字解析失败静默重定向，掩盖 typo。Notist warn-only 下应对未解析 callee 发诊断，而不是静默造元素。
+6. TeX 三宗罪：运行时改词法规则（catcode）毁组合性；文本替换宏系统无词法作用域；文档树不是值。Notist 三者都已避开，此族仅作反面锚点。
+
+一个横向结论：五者中没有任何一个做到 Notist 的"全函数 + warn-only"——Scribble/Pollen/MDX 错误即异常，TeX 错误即交互中断，Typst 错误即编译失败（仅个别情形 warn）。Notist 的"任何输入产出带诊断的产物 + 执行预算"在该族群中没有先例可抄，是差异化设计点。
+
+== Lisp 族群
+
+=== Scheme quasiquote：内容上下文 + 逃逸 + 拼贴的同构原型
+
+来源：`https://man.scheme.org/quasiquote.7scm`（含 R7RS 文法）、`https://docs.racket-lang.org/reference/quasiquote.html`。
+
+- 三件套都是 reader 缩写：反引号 x ≡ `(quasiquote x)`，`,e` ≡ `(unquote e)`，`,@e` ≡ `(unquote-splicing e)`。逃逸记号是被逃逸表达式的前缀，模板部分无记号——与 Notist markup 模式"content 默认、`#` 逃逸"极性完全相同。
+- 逃逸位置：pair、vector、box、prefab 字段、hash 的 value 位（不含 key 位），可任意深度嵌套。`,@` 只允许出现在 list/vector/prefab 的元素位；Racket 扩展：pair 尾端 cdr 为空时 `,@` 的 expr 可以不是 list，结果直接接尾（同 `append` 尾参）。
+- 层级规则：quasiquote +1，unquote −1，只替换与最外层 quasiquote 同层级的 unquote；多重嵌套需要对应数量的 `,` 才能逃逸到目标层。R7RS 把这个非上下文无关的规则形式化为"按嵌套深度生成无限多条产生式"的文法配方。R5RS 对嵌套语义含糊，R6RS 修正了嵌套 quasiquotation 的含义并允许多实参 unquote/unquote-splicing（多点插入）。
+- 结构共享：quasiquote 只分配必要的 cons cell；不需要重建的模板部分是 literal（跨多次求值共享、可视为常量）。即模板骨架是静态可分析的常量，只有逃逸孔是动态的。
+- `unquote` 单独作为表达式出现是 syntax error——逃逸记号只在模板上下文内有意义。
+
+对 Notist 的相关性：
+
+- 同构关系成立：markup mode ≈ 全文处于隐式 quasiquote；`#expr` ≈ `,expr`；content 子节点展开 ≈ `,@`。quasiquote 的 quote 基底与 Notist Content 构造都是"数据默认"，比字符串插值（字符串默认）更贴近。
+- 警示在嵌套层级：Scheme 的逃逸记号随深度线性累加（`,,`、`,@,@`），两层以上迅速不可读。若 Notist 存在 content → code → content 再嵌（标注实参里的 content、函数体里再写 markup），逃逸记法若按深度累加符号就是已知的人体工学灾难点；更稳的选择是让每个上下文边界自带配对记号，逃逸永远只跳一层。
+- "骨架静态、孔动态"直接支持 .notc 作为规范形态：脱糖产物里 content 骨架应为字面 Content 常量，逃逸孔是唯一需要求值的位置。
+
+=== Racket kernel forms：脱糖目标如何钉住 kernel 身份
+
+来源：`https://docs.racket-lang.org/reference/syntax-model.html`、`https://lexi-lambda.github.io/blog/2018/04/15/reimplementing-hackett-s-type-language-expanding-to-custom-core-forms-in-racket/`、`https://docs.racket-lang.org/reference/Kernel_Forms_and_Functions.html`、`https://felleisen.org/matthias/lp/module-langs.html`。
+
+- read 阶段按 reader/expander 约定把 module body 包进 `#%module-begin`；expand 后收敛到约 20 个 core form：`#%plain-module-begin`、`#%plain-app`、`#%plain-lambda`、`case-lambda`、`if`、`begin`、`begin0`、`define-values`、`define-syntaxes`、`let-values`、`letrec-values`、`letrec-syntaxes+values`、`set!`、`quote`、`quote-syntax`、`with-continuation-mark`、`#%top`、`#%datum`、`#%variable-reference`、`module`/`module*`/`submodule`、`#%require`/`#%provide`/`#%declare`（`#%expression` 仅出现于 local-expand 结果）。
+- 核心契约：fully-expanded 程序里标识符的符号名可以与文法不符，"Only the binding (according to `free-identifier=?`) matters"。fully-expanded 语法是 parse 树，标识符的 lexical information 就是 parse 结果本身。名字只是拼写，身份是绑定。
+- 隐式引入三件套 `#%app`/`#%datum`/`#%top`：expander 遇到"pair 首元素非已绑定标识符 / 裸 datum / 未绑定标识符"时，带着使用点的 lexical information 插入对应标识符再走正常绑定解析。所以隐式形式是故意晚绑定的：语言通过 provide 自己的 `#%app`/`#%datum`/`#%module-begin` 定制表层语义（`racket` 的 `#%app` 是个宏，展开到 core `#%plain-app`；一切 `#%module-begin` 最终必须展开到 `#%plain-module-begin`；`#%datum` 展开到 `quote`）。部分展开若发现绑定就是 primitive 版本，则干脆不插入。
+- 自定义 core form 的工程先例（Hackett）：自定义 kernel 标识符绑定为"一展开就报错"的宏，用 `local-expand` 的 stop list（按 `free-identifier=?` 判停）停住 expander，然后对"部分展开"的 AST 做静态分析。脱糖目标的身份自始至终是某个具体 binding，名字撞车无所谓。
+
+与 Notist"糖钉扎"是否同一机制：是，而且 Racket 拆成了两层，Notist 可以分开偷——
+
+1. 绑定即身份：规范形态层面，callee 的语义身份是"指到某 intrinsic 的引用"，名字只是显示。Notist 的 .notc 里钉扎 callee 应该是 IR 层面的直接引用（或带 core 上下文的引用 token），不参与 code 模式的普通名字解析。
+2. 隐式引入 vs 显式输出的不对称：expander 隐式插入的形式带使用点上下文（晚绑定，留给语言定制）；宏显式输出的标识符带定义点上下文（早绑定，钉死）。Notist 脱糖器是"宏的作者"，其输出的 callee 按 Racket 模型天然钉在 core 侧；`#` 逃逸进来的用户代码是"使用点输入"，正常解析。这套不对称正好把"钉扎哪些、解析哪些"说清楚了。
+
+=== Racket hygiene：scope set 如何保证展开不受 shadow 影响
+
+来源：`https://docs.racket-lang.org/reference/syntax-model.html`、Flatt, Binding as Sets of Scopes (POPL 2016) `https://www-old.cs.utah.edu/plt/publications/popl16-f.pdf`、`https://users.cs.utah.edu/plt/scope-sets/`。
+
+- 模型：每个 syntax object 携带 per-phase 的 scope 集合；绑定注册进全局表（symbol × scope-set → meaning）。引用解析规则：引用的 scope set ⊇ 绑定的 scope set，且取超集最大者；无唯一最大者即 ambiguous，syntax error。shadowing 的定义是纯集合论：同 symbol、绑定 scope set 是另一者的子集。
+- 宏展开的捕获防护：expander 把宏输入加 fresh macro-introduction scope，宏输出上翻转该 scope——宏引入的标识符保留它、使用点原有的去掉。结果：宏展开里的自由引用（如展开式中的 `if`）绑定到宏定义模块的 binding，使用点 shadow 同名变量不影响；宏引入的绑定也不会意外捕获使用点引用。同一定义上下文内的宏再加 use-site scope（不翻转），让"宏生成 define + 宏生成 use"能互相看见。
+- 钉扎 API：`(quote-syntax datum #:local)` 产出保留 datum 在该位置全部 lexical information 的 syntax object——把"定义上下文"物化成可嵌入模板的字面引用；裸 `quote-syntax` 会剥掉部分 scope。
+- 编译产物归约：fully-expanded 后局部引用的 scope set 被裁到与绑定标识符完全一致（`bound-identifier=?` 可配对局部绑定与引用）；模块级引用用 `free-identifier=?`。
+
+Notist 可偷的 / 不需要的：
+
+- 可偷的核心抽象："引用 = 名字 + 定义上下文"的数据模型。机械翻译不丢语义的 Racket 解法不是重命名（gensym），而是给引用挂上翻译器分配的上下文 token；解析时按上下文匹配而非按名字匹配。Notist 的脱糖器输出 .notc 时，callee 放一个"core 上下文引用"即可；用户 `let` shadow 只遮蔽用户上下文写出的裸名。确定性、可重放、无需全局状态。
+- 不需要的部分（全是用户宏税）：macro-introduction/use-site scope 的 flip 协议（解决"宏引入绑定 vs 用户引用"双向捕获，Notist 没有宏引入绑定的问题）、phase level 塔（编译期求值层）、binding spaces、ambiguous-引用检测、local binding context、taint/armor。这些机制的存在理由是让任意用户写的 syntax→syntax 函数自由组合仍保持引用透明；Notist 的翻译是编译器内部、可信、单 pass 的机械映射，问题面塌缩成"脱糖器这一处的引用别走用户解析"。
+
+=== 旁置元数据：Racket syntax properties 与 Clojure metadata
+
+来源：`https://docs.racket-lang.org/reference/stxprops.html`、`https://clojure.org/reference/metadata`、`https://clojure.org/reference/reader`。
+
+Racket syntax properties（挂在语法制品上）：
+
+- 每个 syntax object 带键值 property list；`syntax-property` 返回新对象，原对象不变（不可变关联）。source location 是独立通道，不算 property；property 不参与 datum 层相等比较。
+- `preserved` 标志决定 marshal 到 `.zo` 字节码时是否保留；preserved 值必须可序列化（非环、限定类型）。uninterned symbol 做 key 不出现在 `syntax-property-keys` 列表——私有 key 可行，reader 就用私有 key 标记 `syntax-original?`。
+- expander 自动把宏输入的 props merge 进输出（同 key 则 cons 合并、结果在前），并自动维护 `'origin`（反向记录宏展开链，供调试/`syntax-track-origin`）；`'disappeared-binding`/`'disappeared-use` 记录展开中擦除的绑定与引用，Check Syntax 靠它画绑定箭头；`'paren-shape` 记录源拼写是 `[` 还是 `{`；`'inferred-name` 给编译器提示过程名。
+- 坑：手工解构重建 syntax 时 props 默认丢失（要显式 `syntax-track-origin`）；同 key merge 出 cons 对；preserved 值类型受限。
+
+Clojure metadata（挂在一等值上）：
+
+- `with-meta` 返回同类型同值的新对象挂 meta；`vary-meta` 函数式更新；`alter-meta!`/`reset-meta!` 只用于 Var/namespace/ref/agent/atom 这类 identity 容器。
+- 核心语义（官方原文加粗）：metadata 不属于对象的值——不影响相等性与哈希码；仅 meta 不同的两对象 `=` 为真，但 `identical?` 为假（关联不可变）。对 lazy seq 附 meta 会 realize 其头部（为了让两个对象共享同一 seq）。
+- 载体限制：只挂在实现 IMeta 的类型——symbol、list/vector/map/set、record/type 实例、Var；不能挂 keyword/number/string（宿主类型）。
+- reader 拼写：`^{:a 1} [1 2 3]` 读时附着；`^:dynamic x` ≡ `^{:dynamic true}`；`^String x` ≡ `^{:tag java.lang.String}`（type hint）；可链式，右到左 merge。`*print-meta*` 为真时 `pr` 打出可读回的 `^{...}` 前缀，默认打印丢弃 meta。
+- 用途谱系：编译器指令（`:tag` 消反射、`:dynamic`、`:const`、`:macro`）+ Var 文档（`:doc`、`:arglists`、`:added`）+ 用户旁注（数据来源、策略）。
+- 坑：meta 不参与相等 ⇒ 仅 meta 不同的两值做 map key/set 元素会塌缩成一个；`map`/`filter` 产出 lazy seq 丢 meta；序列化（默认 `pr`）丢 meta ⇒ 落盘/跨进程即失。
+
+对 Notist A4 的定位：两者是"标注旁置"的两种现存实现，但作用域不同。syntax properties 挂在编译期语法制品上，是工具链侧信道（对应 Notist 的 .notc span/provenance 追踪，相当于 Racket 的 `'origin`）；Clojure metadata 挂在一等值上，与 Notist"元数据不属于值本体"的标注语义直接同构——相等/哈希忽略 meta、meta 关联不可变、附着产生新值，全部可直接搬。Clojure 同时证明了"前缀拼写"可行：`^:flag`/`^{...}` 读时前缀附着，等价于 Notist A4 的"前缀构造"候选；且 `with-meta` 表明前缀构造脱糖成普通函数调用语义完全说得通，前提是 Content 可挂 meta。Clojure 的载体限制教训是：值类型里哪些能挂 meta 要在值模型层定义（Notist 应让 Content 及任意值可挂，避免 keyword/string 不能挂的尴尬）。
+
+=== Common Lisp 包系统：限定拼写与遮蔽纪律
+
+来源：CLHS `http://www.lispworks.com/documentation/HyperSpec/Body/02_ce.htm`、`http://www.lispworks.com/documentation/HyperSpec/Body/11_aaba.htm`、`http://www.lispworks.com/documentation/HyperSpec/Body/11_aabc.htm`、`http://www.lispworks.com/documentation/HyperSpec/Body/11_aabe.htm`、`http://www.lispworks.com/documentation/HyperSpec/Body/11_abaa.htm`、SBCL Manual §12 Package Locks `https://www.sbcl.org/manual/index.html`。
+
+- symbol 是一等对象：name + home package。package 内一名至多一 symbol；`intern` 保证同包同名读到同一个 symbol 对象（read-time 唯一性）；gensym 是无 home 的 uninterned symbol。可达性分 present（home 或 import）与 inherited（`use-package` 继承对方 external symbol）。
+- reader 限定拼写（read time 钉死身份，与上下文无关）：`foo:bar` = FOO 包的 external BAR，未导出/不存在 → correctable reader error；`foo::bar` = FOO 包里任意 BAR（没有就 intern）；`:bar` = KEYWORD 包、自求值；裸名在当前 `*package*` 解析/不存在则 intern。
+- 冲突纪律：冲突在包结构变更时急切检测（`use-package`/`import`/`export`），不是查找时；冲突即 correctable error；shadowing list 中的 symbol 永远静默胜出，`shadow`/`shadowing-import` 是"遮蔽必须显式声明"的入口；同一 symbol 多路径可达不算冲突。
+- 不可遮蔽的 CL 先例：ANSI 层面，conforming program 不得重定义/绑定 COMMON-LISP 包的外部 symbol（违规则 undefined）；SBCL package locks 落地为运行时检查：locked 包的非词法修改 → continuable `package-lock-violation`；词法遮蔽 locked 包的 symbol（`let`/`flet`/`labels`/`macrolet` 绑 `cl:` 名字）→ 编译期 warning + 执行到该 form 时 `program-error`；可局部 `declare (disable-package-locks ...)` 关闭。SBCL 明言：这不是安全机制，是防手滑。
+
+对 Notist namespace 的定位：
+
+- 可偷：`pkg:name` 在读时把限定名钉成确定身份，编辑器与工具天然理解；`:` 与 `::` 的区分给出"public interface vs 穿透拼写"的先例（`::` 存在但被污名化，正好可作 Notist 是否提供"逃逸限定拼写"的决策参照——提供则明示、不提供则彻底）。shadowing-import 纪律即"静默遮蔽是错误、显式遮蔽是声明"，可化为 Notist 的 let-shadow 诊断规则。
+- 可避：CL 的 `::` 读不到就 intern 新 symbol——读操作对全局可变表有副作用，破坏确定性与可重放（Notist 硬约束直接排除）；package locks 是运行时补丁（continuable error、可局部关闭、依赖 `*package*` 动态绑定），Notist 应在解析期静态裁决限定名不可遮蔽，把"锁"变成解析规则而非运行时检查。
+
+=== 本族可偷/可避
+
+A3（钉扎拼写）：
+
+- 偷 Racket fully-expanded 契约：规范形态层面"绑定即身份、名字只是拼写"。钉扎 callee 在 .notc 里的拼写应解析为一个不经用户作用域的引用构造（专用前缀或 IR 级直接引用），而非一个"恰好不能被 shadow 的名字"。
+- 偷 hygiene 的数据模型而弃其协议：引用 = 名字 + 定义上下文 token；脱糖器是唯一的"宏"，其输出的 callee 带 core 上下文。不偷 scope flip、phase、binding space、taint。
+- 偷 Racket 的不对称约定：脱糖输出钉死（定义点上下文），`#` 逃逸输入正常解析（使用点上下文）。这把钉扎边界讲成了翻译方向问题。
+- 避 CL 式实现：不要把钉扎做成"core 名字可被 shadow、靠运行时锁报错兜底"（SBCL 式），Notist 应静态解析即定。
+
+A4（标注拼写）：
+
+- 偷 Clojure 语义全套：meta 不参与相等/哈希；meta 关联不可变、附着即新值；reader 前缀拼写证明"前缀构造"人体工学成立；`with-meta` 证明前缀构造脱糖为普通函数调用语义成立（标注 = 作用于求值后值的函数）。
+- 偷 Racket syntax properties 的另一半用途：.notc 脱糖产物上的 provenance/span 追踪走语法制品旁注通道（`'origin` 式），与语言语义的标注分层，互不污染。
+- 避 Clojure 的坑并在语义里预先回答：meta 不同的值做 key 会塌缩（Notist 的相等定义必须明说）；惰性结构上附 meta 的副作用（Notist 全函数 + 预算，应无此问题，但 Content 的流式部分要想清楚）；打印/序列化丢 meta（.notc 规范形态若含标注，必须可读回，Clojure 用 `*print-meta*` 默认丢是教训）。
+- 避 Clojure 载体限制：在值模型层规定"一切值可挂标注"或明确白名单，别出现 string/keyword 不能挂的破洞。
+- 决策参照：前缀构造 vs 普通函数在 Lisp 族里都有先例且互不冲突——`^:flag` 就是脱糖成 `with-meta` 调用的前缀糖。Notist 若选前缀拼写 + 脱糖到 core 函数，与 Clojure 完全同构，无设计风险。
+
+quotation（内容上下文与逃逸记法）：
+
+- 偷 Scheme 极性：内容/数据默认，逃逸记号是被逃逸表达式的前缀（`,` 与 `#` 同构），模板部分零记号——quasiquote 几十年验证过的方向。
+- 偷 Scheme 的"骨架静态"性质：脱糖产物中 content 骨架应为字面常量，逃逸孔是唯一动态点。
+- 避 Scheme 的深度计数逃逸：嵌套 quasiquote 按层级累加记号是公认的不可读点（R6RS 还专门修正过嵌套语义）。Notist 的 code → content → code 切换应让逃逸永远只跳最近一层，配对记号随上下文边界重置。
+- 参照 Clojure：syntax-quote 不给嵌套层级规则——"不定义嵌套"会把复杂度推给用户；Scheme 式显式层级虽丑但严格。Notist 应选择"每层边界自配对"，既避免累加记号又避免未定义。
+- 参照 Clojure syntax-quote 的默认钉扎：模板内 symbol 读时自动解析为限定名，要裸名须显式逃逸——"模板作者的引用默认钉定义上下文，逃逸须显式"正是脱糖钉扎在记法上的镜像。
+
+namespace（限定名与 let 遮蔽纪律）：
+
+- 偷 CL 的读时钉名：`pkg:name` 拼写在 reader 层就绑定到确定身份，不依赖求值上下文——Notist 限定名应同样静态、上下文无关。
+- 偷 CL 的 shadowing 声明纪律：静默遮蔽是错误，遮蔽必须显式声明；Notist 可做成 warn-only 诊断（用户 let 遮蔽 core/导入名时提示，脱糖产物不受影响——A3 已保证）。
+- 偷 CL `:`/`::` 的教训做减法：是否提供穿透 public interface 的限定拼写，CL 证明它一旦存在就被滥用；Notist 倾向不提供。
+- 避 CL 的运行时包模型：可变全局表、读时 intern 副作用、动态 `*package*`、运行时 package lock——全部与 Notist 的确定性求值、静态解析冲突。Notist 的静态解析应取 Racket 式"绑定即身份"，CL 只贡献拼写层与纪律层。
+
+== ML 家族与 DSL 机制族群
+
+=== ML 家族：函数定义在核心语言里一律是 lambda 绑定
+
+四家全部如此，且都有规范层面的"脱糖"表述——这正是 .not → .notc 双层结构的先例：
+
+- SML：《The Definition of Standard ML》附录 A 明确给出派生形式（derived forms）：`fun f x = e` 展开为 `val rec f = fn x => e`；多子句带模式匹配的 `fun` 再进一步展开为 `fn x => case x of ...`。即 `fun` 在语言定义层面就是 `val rec` + `fn` 的糖。来源：`https://smlfamily.github.io/sml97-defn.pdf`。
+- OCaml：手册 §7.2 "An alternate syntax is provided to bind variables to functional values: instead of writing `let ident = fun p1 … pm -> expr` … one may instead write `let ident p1 … pm = expr`"。来源：`https://ocaml.org/manual/expr.html`。
+- `F#`：let-bindings 文档："Function bindings follow the rules for value bindings, except that function bindings include the function name and the parameters"——函数绑定就是带参数语法的值绑定。来源：`https://learn.microsoft.com/en-us/dotnet/fsharp/language-reference/functions/let-bindings`。
+- Haskell：Haskell 2010 Report §4.4.3.1 给出官方 Translation：函数绑定 `x p11…p1k = e1 | …` 语义等价于简单模式绑定 `x = \x1…xk -> case (x1,…,xk) of (p11,…) match1 ; …`。来源：`https://www.haskell.org/onlinereport/haskell2010/haskellch4.html`。
+
+但注意：四家顶层（module/structure 层）都仍是 declaration 语法而非表达式序列。即"核心语言溶、表层留定义糖"——Notist 若选 A1 的收敛方向（语句层 = let 绑定 + 表达式语句，lambda 是表达式），与 ML 核心语言一致；markup 侧保留 `def` 风格糖也符合这个传统。
+
+=== let 的递归性是一个真实分歧点
+
+- OCaml/SML/`F#`：let 默认非递归，递归要显式 `let rec` / `val rec`。Real World OCaml 还给了非递归 let 的语义红利："in the absence of an explicit `rec`, you can assume that a `let` binding is nonrecursive, and so can only build upon previous definitions… makes it easier to create a new definition that extends and supersedes an existing one by shadowing it"（`https://dev.realworldocaml.org/variables-and-functions.html`）。
+- Haskell：`let { d1;…;dn } in e` 引入的是互相递归的声明组（let is often called letrec in other languages），且声明无序（Report §3.12）。
+
+对文档语言：顺序、非递归、可遮蔽的 let（OCaml 式）与"语句序列"的心智模型最吻合；Haskell 式 letrec 会把"下面的定义影响上面"引进文档，与确定性/预算求值的目标相悖。
+
+=== 顺序遮蔽（shadowing）：ML 系默认允许且无遮蔽警告
+
+- OCaml：遮蔽是惯用法，编译器没有遮蔽警告；RWO 的例子显示遮蔽后旧绑定不再被使用时只报 Warning 26 [unused-var]（报的是"未使用"而非"遮蔽"）。
+- `F#`：明确支持 shadowing，无默认警告（`https://fsharpforfunandprofit.com/posts/conciseness-pattern-matching/`）。
+- Haskell：允许遮蔽；`-Wname-shadowing` 存在但默认关闭，包含在 `-Wall` 中（`https://ghc.gitlab.haskell.org/ghc/doc/users_guide/using-warnings.html`）。
+
+与 Notist 的 warn-only 哲学对齐：遮蔽合法 + 提供警告档位是成熟做法；OCaml 式"遮蔽后旧绑定变 dead 才警告"比"一遮蔽就警告"更贴合文档场景（文档里同名局部覆盖很常见）。
+
+=== 运算符即普通函数：三家的实际规定
+
+- OCaml（A2 最直接的先例）：手册 §7.5 原文："Infix and prefix symbols do not have a fixed meaning: they are simply interpreted as applications of functions bound to the names corresponding to the symbols. The expression `expr1 infix-symbol expr2` is interpreted as the application `( infix-symbol ) expr1 expr2`." 运算符可以随时 `let ( + ) = …` 重绑定；`&&`/`||`/`~-` 被特殊处理（短路、不建议改义）。优先级与结合性由符号的首一两个字符词法决定（`**` > `* / %` > `+ -` > `@ ^` > `= < > | & $` > `&&` > `or`），不可声明数字优先级。来源：`https://ocaml.org/manual/expr.html`。
+- Julia：同样官方："The infix form is exactly equivalent to the function application form – in fact the former is parsed to produce the function call internally." `+(1,2,3)` 合法、`f = +` 可赋值（`https://docs.julialang.org/en/v1/manual/functions/`）。
+- Haskell：Report §3.4 恒等式 `e1 op e2 = (op) e1 e2`；Prelude 运算符是 typeclass 方法（重载机制）；用户自定义运算符若无 fixity 声明默认 `infixl 9`，优先级共 10 级（0–9），同优先级不同结合性相邻出现直接是语法错误。钉扎先例：前缀否定 `-e` 永远翻译为 Prelude 的 `negate(e)`，"There is no link between the local meaning of the `-` operator and unary negation"——即使用户重绑定了 `-`，一元负号仍钉在 Prelude（Report §3.4）。
+- Elixir：运算符就是普通调用，`quote do 1 + 2 end` → `{:+, [], [1, 2]}`，可写 `Kernel.+(1, 2)`（`https://hexdocs.pm/elixir/syntax-reference.html`）。
+
+=== 糖钉扎的最强先例：Haskell Report 的翻译规则本身
+
+Report ch.3 开篇（`https://www.haskell.org/onlinereport/haskell2010/haskellch3.html`）：
+
+```text
+Free variables and constructors used in these translations always refer to
+entities defined by the Prelude. For example, 'concatMap' used in the
+translation of list comprehensions means the concatMap defined in the
+Prelude, regardless of whether or not the identifier 'concatMap' is in
+scope where the list comprehension is used, and (if it is in scope) what
+it is bound to.
+```
+
+do 记法、列表推导、`if`、数字字面量（`fromInteger`）全部按此钉扎。这与 Notist"脱糖产物的 callee 不受用户 shadow 影响"是同一设计，且由语言规范层面背书。
+
+=== 自定义运算符的反面教材（优先级灾难史）
+
+- Scala：Scala 2 允许任意字母数字方法直接中缀使用 + 任意符号方法名，催生 DSL 噪音；Scala 3 收紧：字母数字方法中缀使用被弃用、须显式 `infix` 修饰符（"the author of a method decides whether that method should be applied as an infix operator"），符号运算符建议配 `@targetName` 提供字母名；一元运算符只许 `+ - ! ~`（`https://docs.scala-lang.org/scala3/reference/changed-features/operators.html`）。
+- Raku（Perl 6）：运算符全是 sub，可自由定义 `sub infix:<!!> … is tighter(&infix:<+>)`，优先级相对既有运算符声明（`https://docs.raku.org/language/functions`）——表达力最强，也是"可读性灾难"的常驻案例。
+- OCaml 的实际坑（即使优先级词法固定也不能免）：以 `*` 开头的运算符 `(***)` 会被读成注释；`-` 低于函数应用导致 `Int.max 3 -4` 解析为 `(Int.max 3) - 4` 报出令人困惑的错；选错结合性（右结合 `^>` 当管道）得到费解的类型错误（RWO, Prefix and Infix Operators）。
+- Haskell lens 的运算符动物园（`^.`、`.~`、`%~`、`<>~`…）是社区公认的 "operator soup" 案例；GHC 侧还有 `-Woperator-whitespace` 类警告说明空格敏感性本身已是坑。
+- 对照组（最保守两例）：Kotlin 只允许重载语言预定义的一张运算符表（`plus`/`times`/…，符号与优先级语言固定，`operator` 修饰符，`https://kotlinlang.org/docs/operator-overloading.html`）；Swift 自定义运算符必须显式声明 `infix operator ^^ : SomePrecedenceGroup` 并定义 precedencegroup（SE-0077，`https://github.com/apple/swift-evolution/blob/main/proposals/0077-operator-precedence.md`）。
+
+教训浓缩："运算符语义 = 普通函数调用"（OCaml/Julia/Haskell）与"运算符词法/优先级体系"是两个正交决定。语义统一脱糖是好设计；灾难全部来自词法侧（自由符号 + 自由优先级）。OCaml 的"首字符定优先级"和 Kotlin 的"固定表"都证明：把优先级做成有限封闭集合即可规避。
+
+=== OCaml 具名实参：最丰富的先例（含坑）
+
+- 调用点按标签匹配、不同标签间乱序合法；还有 labels-omitted full application 特例（全位置给出时标签可省，但不鼓励、有警告）（`https://ocaml.org/manual/expr.html`）。
+- 坑 1：标签顺序在把函数当值传递时是类型的一部分——`first:int -> second:int -> int` 与 `second:'a -> first:'b -> 'c` 不匹配（RWO, Higher-Order Functions and Labels）。
+- 坑 2：可选实参 `?label` 的"擦除"规则：给出第一个后续位置实参时可选实参被擦除；放在末尾的可选实参不可擦除 → Warning 16 [unerasable-optional-argument]。RWO 直言 "OCaml's support for labeled and optional arguments is not without its complexities"。
+
+对 Notist：具名实参 + 尾随 body 若进入函数类型，需尽早决定"实参序/标签是否参与函数值的同一性"，OCaml 是现成的复杂度下限参照。
+
+=== Kotlin：trailing lambda、receiver、类型安全 DSL
+
+全部来自官方文档 `https://kotlinlang.org/docs/lambdas.html` 与 `https://kotlinlang.org/docs/type-safe-builders.html`：
+
+- Trailing lambda 约定：纯语法约定——"if the last parameter of a function is a function, then a lambda expression passed as the corresponding argument can be placed outside the parentheses"；若 lambda 是唯一实参，括号可全省略。只有最后一个参数享有此位置；其余 lambda 只能在括号内（可用具名实参给出）。匿名函数 `fun(s: String): Int {…}` 不能尾随。
+- Lambda with receiver：函数类型可带接收者 `A.(B) -> C`，体内接收者成为隐式 `this`，可省略限定符；`(A,B)->C` 与 `A.(B)->C` 可互换赋值。kotlinx.html 的全部魔法 = 普通函数 `fun html(init: HTML.() -> Unit): HTML`，体内 `head { }`、`body { }` 是接收者的成员调用，嵌套结构 = 嵌套尾随 lambda。
+- 作用域控制 `@DslMarker`：嵌套 DSL 里外层接收者的成员默认全部可见（`head` 里还能调外层 `html` 的 `head`——作用域泄漏）；给接收者类型标同一个 `@DslMarker` 注解后，编译器只允许访问最近接收者的成员，外层须显式 `this@html.head { }`。这是"隐式上下文嵌套时名字解析规则"的现成方案与问题记录。
+- 裸文本的缺口：kotlinx.html 里字符串要用 `+"text"`（`unaryPlus` 扩展函数 hack）才能进 children——因为 Kotlin 没有"裸语句自动汇聚"的内容上下文。Notist 的内容上下文天然无此缺口，反证内容上下文是值得保留的一等概念。
+- `it` 隐式名单参、非局部 `return`：lambda 里裸 `return` 从外层 fun 返回（内联语义）——闭包与控制流的耦合坑，Notist 全函数、无非局部控制流，天然规避。
+
+对 A1 的旁证：Kotlin 的 `fun` 声明与 `val f = { … }` 是双轨制（重载、可见性、递归标注规则不同），是"声明/值分层"长期割裂的样本。
+
+=== Swift result builders：语句序列 → 值的官方变换 + 反面教材
+
+机制（SE-0289，`https://github.com/swiftlang/swift-evolution/blob/main/proposals/0289-result-builders.md`，Swift 5.4）：
+
+- 带 `@resultBuilder` 的函数体内，语句序列被机械重写：`1; 2; 3` → `buildExpression(1)`、`buildExpression(2)`、`buildExpression(3)`，再 `buildBlock(_a,_b,_c)` 汇聚。`if`（无 else）→ `buildOptional`，`if-else`/`switch` → `buildEither(first:/second:)` 二叉注入树，`for` → `buildArray`。builder 没提供某方法 = 对应语句在 DSL 里不可用。
+- 设计原则与 Notist 完全一致："The power of these builder transformations is intentionally limited so that the result preserves the dynamic semantics of the original code: the original statements of the function are still executed as normal, it's just that values which would be ignored under normal semantics are in fact collected into the result."
+- 声明语句（`let`）允许但不产结果；赋值按返回 `()` 的表达式语句处理。
+
+尾随闭包（SE-0279，`https://github.com/swiftlang/swift-evolution/blob/main/proposals/0279-multiple-trailing-closures.md`，Swift 5.3）：
+
+- 首个尾随闭包丢弃实参标签，后续尾随闭包必须带标签：`Section { 内容 } header: { … } footer: { … }`。
+- API 设计指南配套裁决："Name functions assuming that the argument label of the first trailing closure will be dropped."
+- 反面教材：类型检查用 backwards-scan 给无标签尾随闭包找形参，与默认实参交互反直觉（`foo { 42 }` 会绑到最后的 `b:` 而非语义上的 `a:`），proposal 自己承认 "this interaction with default arguments is unintuitive and limiting"，但为源码兼容无法改。教训：尾随实参的绑定规则要声明式、固定（如永远绑定名为 body 的末参），不要启发式扫描。
+
+痛点（作为可避清单）：
+
+1. 10 子项上限：没有 variadic generics 时 ViewBuilder 手写 `buildBlock` 的 0…9 元重载，VStack 超 10 子视图直接报错；Swift 5.7 的 SE-0348 `buildPartialBlock`（累加式）才理论解封。Notist 的 Content 汇聚若是同质序列（Content list）则天然无此墙——汇聚类型保持同质，别学 TupleView 异质积类型。
+2. 类型推断爆炸：社区高频错误 "The compiler is unable to type-check this expression in reasonable time"，嵌套视图稍深即触发。
+3. 诊断不透明：错误报在变换后的合成调用上，位置与源码脱节。
+4. DSL/宿主语义割裂：ViewBuilder 体内看着是 Swift 语句，但可用语句子集取决于 builder 方法集；`buildExpression` 的类型导引使普通表达式在 builder 内外类型行为不同。
+
+=== Ruby blocks 与 Elixir sigils / do-end
+
+Ruby（功过各半）：
+
+- 机制：每个方法调用可带至多一个隐式尾随 block（`{ }` 或 `do…end`），方法内用 `yield` 调用或 `&block` 捕获成 `Proc` 才变一等值。block 捕获定义处的 self 与局部变量（Binding），`instance_exec`/`instance_eval` 可换掉 block 的 self——RSpec `describe`/`it` 的 DSL 上下文就是这么来的。
+- 过：尾随块 + 换 self 造就了 RSpec/Rake 一代 DSL 人体工学。
+- 坑（可避）：`do…end` 优先级低于 `{ }`——`puts [1,2,3].map do |x| x*10 end` 被解析为 `puts([1,2,3].map) do … end`，块绑到 `puts` 上被静默忽略（`https://ruby-doc.org/docs/keywords/1.9/files/keywords_rb.html`）。两种块定界符两种优先级是历史包袱，Notist 只留一种块定界即可规避。隐式单块 + `method_missing` 链使"这个方法从哪来"完全不透明；`instance_eval` 换 self 后词法作用域与接收者两套解析叠加，是 Ruby DSL"魔法感"的总根源。对照 Kotlin：receiver 是类型化的、`@DslMarker` 可控——隐式上下文必须显式声明且可被作用域规则约束。
+
+Elixir（两个都直接命中 Q7，全部来自官方 Syntax Reference `https://hexdocs.pm/elixir/syntax-reference.html`）：
+
+- do-end 块 = 尾置具名实参："Elixir's do-end blocks are equivalent to keywords as the last argument of a function call"：`if true do this else that end` ≡ `if(true, do: (this), else: (that))`。`defmodule Foo do … end` 就是 `defmodule(Foo, [do: …])`。这是"trailing content block 作为最后一个具名实参"在主流语言里最字面的先例，且块内容以 quoted AST（`__block__`）交给宏解释——callee 决定如何解释 body，与 Notist `#section(title:)[…]` 的结构完全同构。
+- sigils = quotation 记法：`~` + 字母 + 定界符对 + 修饰符，统一脱糖为 `sigil_x(contents, modifiers)` 调用；小写字母用户可自定义（`~r` regex、`~D` date、`~s` string、`~w` word list），大写 = 关闭插值的 raw 变体（`~S` vs `~s`）。即"单字母 callee + 自选定界内容 + 大小写切换解释模式"——对应 Notist 里"callee 命名的内容块 + 可选 raw/verbatim 变体"的记法参考。
+- 另：Elixir AST 是普通数据结构（三元素 tuple），`quote`/`unquote` 在语法层一等；语句序列即 `__block__`。"脱糖目标 = 语言内普通值"与 Notist IR 为语句序列的思路一致。
+
+=== Julia（简要）
+
+- 运算符即函数：同 OCaml，infix 解析即函数调用。
+- 函数定义两形态官方等价：`f(x, y) = x + y`（assignment form）≡ `function f(x, y) … end`（`https://docs.julialang.org/en/v1/manual/functions/`）——A1 的又一主流先例（尽管 Julia 因 multiple dispatch 其实是"给泛型函数加方法"，Notist 无此复杂度）。
+- do 块糖：`map(xs) do x … end` 把匿名函数作为第一实参传入；`open("f","w") do io … end` 惯用。尾随块到某固定实参位的又一先例（注意它选的是第一参而非末参，因为 Julia 约定函数实参前置）。
+- `$` 插值的作用域纪律：`$` 只在字符串与 quote 上下文内合法，`$a + b` 裸写是编译期错误 "syntax: `$` expression outside quote"；`quote…end` / `:(…)` 产 `Expr`（代码即数据），`$(xs...)` 拼接（`https://docs.julialang.org/en/v1/manual/metaprogramming/`）。教训：插值逃逸记号只在 quotation 上下文内有意义，与 Notist "markup 默认内容上下文 + `#` 逃逸"是同构的上下文切换纪律。
+
+=== 本族可偷/可避
+
+A1（语句层 = let 绑定 + 表达式语句；`def` 溶成 `let f = fn`）：
+
+- 可偷：SML/OCaml/`F#`/Haskell 四家全部在核心语言层面把函数定义溶成 lambda 绑定，A1 方向是 ML 正统而非激进实验；markup 侧保留 `def` 风格糖 = "表层留糖、规范形态收敛"，对应四家顶层 declaration 传统。Haskell Report 全书的 "Translation" 体例：每个糖都有规范级脱糖等式——.not → .notc 脱糖规范可直接采用此体例。遮蔽合法 + 警告档位的组合：OCaml 式（遮蔽本身不警告，遮蔽导致旧绑定 dead 才警告 unused）或 Haskell 式（`-Wname-shadowing` 默认关、高档位开），都兼容 warn-only 哲学。Julia assignment form：主流语言里"两种定义形态官方等价"的又一票。
+- 必须裁决的分歧：let 递归性——OCaml/SML/`F#` 非递归默认 vs Haskell letrec。文档语言应选顺序非递归 let + 显式 rec（或干脆无递归、靠显式不动点），保持"语句序列从上往下"的心智模型与确定性求值。
+- 可避：Kotlin/Swift 的 `fun` 声明 vs lambda 值双轨制（重载、递归标注、可调用性规则各异）——溶成单一 let 后不要又长出第二条定义通道。Kotlin lambda 的非局部 `return`——闭包别引入非局部控制流。
+
+A2（二元/一元运算符不进意图层，脱糖为钉扎 core 调用）：
+
+- 可偷：OCaml §7.5 的规范表述可直接化用：`a ⊙ b` ≡ `(⊙) a b`，"运算符没有固定含义，就是对绑定到该符号名字的函数的应用"。Julia、Elixir、Haskell 同一结论，四方互证。钉扎先例 ×2：Haskell Report ch.3 的 Prelude 钉扎条款、Haskell 一元负号钉死 Prelude `negate` 与本地 `-` 解耦——糖钉扎可直接引用这两条作为规范先例。优先级词法封闭化：OCaml"首一两个字符定优先级/结合性、不可声明数字优先级"在"自由符号"与"固定表"之间取得平衡；Kotlin 固定表是最保守端。建议区间：运算符集合封闭（core 固定），语义一律 `#add(a,b)` 式钉扎调用，无用户自定义优先级。短路运算符单列：OCaml 把 `&&`/`||` 特殊处理、Haskell 把 `-` 特殊处理——脱糖规范里把"求值顺序特殊"的运算显式列为特例（或脱糖为 `if`/惰性构造），别假装它们是普通函数。
+- 可避：用户自定义符号 + 自由优先级（Haskell fixity 0–9、Raku `is tighter`/`looser`、Scala 2 自由 infix）：优先级灾难三例齐全；Scala 3 被迫回收是事后补救的形状。即使语义统一，词法坑仍在：OCaml 的 `*` 注释陷阱、`-` 低于应用、结合性选错的费解报错——定界符/运算符词法设计时逐条对照。OCaml 允许 `let ( + ) = …` 重绑定：这与钉扎冲突——若 core 运算符可被用户 shadow 重定义，脱糖产物就不确定；Notist 的钉扎决定优于 OCaml 此处。
+
+Q7（尾随 body 实参）：
+
+- 可偷：Elixir do-end——尾置块就是最后一个具名实参（`do:` keyword），块内容交 callee（宏）解释，直接支持"trailing content block 绑定到末位具名形参"。Swift SE-0279：首尾随块丢标签、后续带标签的语法形状，以及配套 API 命名准则"按首块标签会被丢弃来命名"。Kotlin：尾随 lambda 约定 + lambda with receiver + `@DslMarker`（嵌套隐式上下文只露最近一层，外层显式限定）；Notist 若无 receiver 概念，则至少可偷"嵌套内容块中名字解析以最近构造器为准"的作用域规则。`F#` computation expressions：`builder { cexpr }` + 官方翻译表（Yield/Combine/Zero/Bind/For/Delay/Run），缺方法 = 构造不可用；`seq { }` 隐式 yield 汇聚语句序列——"内容上下文内一串语句汇聚成 Content"的 ML 系同构机制，其翻译表是写内容上下文脱糖规范的直接模板（尤其是 Zero = 空内容、Combine = 拼接、Delay = 预算/惰性边界三个点）。Swift SE-0289 的自我设限原则："变换刻意受限以保持原代码的动态语义，只是原本被丢弃的值被收集进结果"——机械脱糖原则的同义表述，可直接引用。Elixir sigils：`~` + callee 字母 + 定界符 + 修饰符、大写关插值——`#name[…]` 内容的 raw/verbatim 变体记法参考。Julia `$` 纪律：逃逸记号只在 quotation/内容上下文内合法，出界即编译错。
+- 可避：Swift backwards-scan 绑定启发式——尾随块绑哪个形参必须声明式固定（如恒绑名为 `body` 的末参），默认实参与尾随块的交互要写进规范而非留给扫描算法。Swift 异质汇聚（TupleView 积类型）：导致 10 项上限 + 推断爆炸 + 诊断不透明三连；Content 汇聚保持同质序列，元素类型统一。Ruby：单一隐式块 + `yield` 无 arity 检查 + `instance_eval` 换 self + `do…end`/`{}` 双优先级——隐式性不加类型与作用域约束就是魔法；块绑错调用方被静默忽略是最坏失败模式（应让"尾随块无处可绑"成为警告/错误而非静默丢弃）。result builders 的 DSL/宿主割裂：变换后诊断位置脱节、可用语句子集随 builder 方法集变化——应保证脱糖产物可打印、诊断映射回 markup 源位置（.notc 规范形态 + source map 是对策）。
+- 具名实参附带参照（与 Q7 强相关）：OCaml 的 labeled/optional 实参提供了"调用点乱序 + 函数值层面标签序敏感 + 可选实参擦除规则（Warning 16）"的完整复杂度样本——若"具名实参 + 尾随 body + 函数一等值"三者共存，OCaml 的这些边角就是必须提前裁决的问题清单。
+
+== 确定性与配置语言族群
+
+=== Dhall：totality 与语义哈希
+
+Totality 的机制与真实收益。Dhall 不提供递归：递归表达式/函数直接是类型错误；`List` 是唯一的递归数据结构，且只能经 `List/fold` 等保证终止的安全原语构造与消费。类型检查通过 ⇒ 求值在有限时间内成功：不抛异常、不 crash、不 hang（`https://docs.dhall-lang.org/discussions/Safety-guarantees.html`）。但官方自承关键限定："有限"无上界——存在病态短程序的求值时间超过宇宙热寂；totality 消除的是"意外写出发散程序的概率"，不是资源上界。这一点对 Notist 直接相关：totality 替代不了执行预算，fuel 给出的是 Dhall 给不出的实际上界。
+
+语义哈希 = normal-form 哈希。完整性校验不是文本哈希：import 先完全解析（传递闭包全部代入），再 α-规范化 + β-规范化，对其二进制编码取 SHA-256（`https://github.com/dhall-lang/dhall-lang/blob/master/tests/README.md`、`https://haskellforall.com/2017/11/semantic-integrity-checks-are-next`）。性质：注释、格式、记录字段顺序、保义重构（如把局部函数提取成文件）不扰动哈希；传递依赖的任何实质变化都被检出；局限：只检测 β-等价，`λx. x*2` 与 `λx. x+x` 哈希不同——假阳性安全，假阴性仅有哈希碰撞。
+
+缓存。带哈希的 import 首次请求后永久本地缓存，以哈希为键（XDG 语义缓存），后续不再发网络请求；无哈希的 import 不进语义缓存、每次内联（`https://github.com/dhall-lang/dhall-lang/issues/1185`）。这与 Notist"内容寻址指纹 DAG 做增量缓存"是同构物：哈希即键、命中即免取。
+
+身份是求值规则的函数（重要代价）。normal-form 哈希把规约语义冻结进身份体系：v11.0.0 仅因改变 normal form 的简化规则就扰动了所有语义哈希（`https://github.com/dhall-lang/dhall-lang/blob/master/CHANGELOG.md`）；dhall-1.42.3 把哈希基础从文本换成二进制表示也是全量 breaking。求值器变更 = 缓存全量失效事件，这是语义级指纹的固有税。Notist"预算进缓存指纹"本质上是同一原理的显式化。
+
+放弃了什么。图灵完备（无通用递归），换来：每个表达式存在 canonical normal form（可审计、可哈希、可比较）、可安全执行不可信配置。另有一条与严格性相关的细节：Dhall 的 import 解析是严格的——无论 import 是否被用到都全部解析，使 import 集合静态可知、不能泄漏程序状态。
+
+=== Nix 表达式语言：惰性的功过
+
+功。惰性使 nixpkgs 这种"数万个属性的巨型 attrset 不动点"按需物化：只评估你引用到的属性路径，未触达的昂贵求值不发生（`https://tweag.io/blog/2020-06-25-eval-cache/`）。
+
+过（四条）：
+
+1. 内存黑洞：一个"相当简单"的 NixOS 系统配置求值分配 1.8–2GiB，且构建期间不释放（`https://github.com/NixOS/nix/issues/5200`）。
+2. 无限递归是运行期错误且位置信息历来极差；递归是唯一的迭代手段，纯靠栈帧，Nix 2.20 起加 `max-call-depth=10000` 兜底（`https://blog.kleisli.io/post/trampolining-nix-with-generic-closure`）。
+3. 求值顺序官方明示未指定：手册明言 evaluator 可自由选择顺序，`builtins.trace` 等副作用输出顺序未定义（`https://nix.dev/manual/nix/2.35/language/evaluation`）——诊断/调试通道的时序不属于语言契约。
+4. `rec` 的 stale 捕获：`rec` 属性互为词法闭包，而 override 机制不理解这种耦合——`overrideAttrs (old: { doCheck = false; })` 只改 `doCheck`，`cmakeFlags` 仍引用 `rec` 词法作用域里的旧值（`https://discourse.nixos.org/t/avoid-rec-expresions-in-nixpkgs/8293`）。
+
+`with` 为何是污点（手册自己给出了全部证据）。`with e; body` 引入的绑定不 shadow 词法绑定（词法优先），外层 `with` 才被内层 shadow（`https://nix.dev/manual/nix/2.35/language/constructs`）。后果：body 中自由变量的解析取决于 attrset 的运行期键集——给 `e` 加一个键，会把 body 里原本的"未定义变量"错误静默变成合法绑定；任何工具都无法在不知道 `e` 求值结果的情况下静态解析变量来源。这正是"半个动态作用域"的最坏形态：既不是词法的也不是动态的，而是运行时数据依赖的。
+
+闭包捕获。纯词法作用域、环境不可变，实现上闭包捕获环境指针 + thunk；因数据不可变，"按值快照 vs 按引用"在语义上无差别——但在指纹/缓存语境下有差别（见 B 节）。
+
+值域参考。Integer（64 位）与 Float（IEEE 754 64 位）分立，attrset/list/function/path/null/external；字符串携带 string context（`https://nix.dev/manual/nix/2.35/language/values`）。手册未对浮点跨平台确定性做任何声明。
+
+=== Jsonnet：晚绑定 mixin 与错误教训
+
+`self`/`super` 晚绑定的表达力与代价。`+` 不是"先求值左值再合并字段"：`self` 在合并后的对象上重新解析，因此覆盖一个字段可以改变同对象其他字段的含义（mixin 的全部表达力来源）（`https://jsonnet.org/docs/tutorial.html`、`https://jsonnet.org/articles/design.html`）。代价设计文档自己展示：库把内部辅助函数放在可覆盖字段上，用户就可以钩住实现细节，且作者一旦内联该调用就会改变用户程序行为——读到一个具体字段值，不能保证它是最终值。CUE 文档对此有最尖锐的概括：override 式继承下，改变一个值需要沿继承链和文件字典序追完所有声明才敢动手（`https://cuelang.org/docs/concept/the-logic-of-cue/`）。
+
+惰性 = 错误延迟到 manifestation。全语言惰性（对象为晚绑定天然惰性，数组为一致性跟进）；错误只在字段被实际解引用时触发，未被触达的字段里埋着错误也不报；manifestation（输出 JSON）才是 force 点。这对 Notist 是反例：warn-only + 全函数要求诊断在求值时就位，惰性把诊断推迟到消费点，与"诊断完备性"正面冲突——这正是裁决 5 否决惰性的理由之一，Jsonnet 是活样本。错误栈方面，工程现实是仍存在缺位置信息的运行期错误（`https://github.com/google/go-jsonnet/issues/282`）。
+
+对终止性的明确拒绝（对 Notist 极有价值的一段论证）。设计文档：强制终止要么把语言限制到某些程序写不出，要么要求程序员提供终止性证据；而且 totality 并不解决更实际的问题——执行期资源消耗上界（非图灵完备语言照样可以吃掉任意 CPU/内存）。结论："restricting termination would create more problems than it would solve"。这是 Notist 选 fuel 预算而非 totality 的直接背书。
+
+架构同构点。Jsonnet 明言"语言设计为可脱糖：简单 core 语言，其余构造先翻译到 core 再解释"——与 .not 机械脱糖到 .notc 规范形态是同一架构。其 hermeticity 定义（同输入同 JSON、无环境依赖）与 Notist 确定性不变量同义。
+
+=== CUE：合一、格与默认值
+
+核心机制。类型即值；全部值（含类型、约束、整个配置）偏序成格；`&` = meet（GLB，合一），`|` = join（析取）；冲突 = ⊥（bottom 即错误值，且 bottom 是每个值的实例）。推论：序无关——任意两个配置可无歧义合并，与书写顺序、文件组织无关（`https://cuelang.org/docs/concept/the-logic-of-cue/`）。约束随合一单调收紧：`>=3 & <=10` 与 `>=5 & <=20` 合成 `>=5 & <=10`——对比 GCL/Jsonnet 的 assert 只堆积不化简。
+
+默认值的双轨语义（对祖先链合并最有借鉴价值的部分）。默认值是析取中 `*` 标记的分支。为保持格性质，CUE 对每个字段并行维护两条线："所有可能值"与"默认值"，默认值必须是前者的实例且各处默认互不冲突才可落地；两个冲突默认值 ⇒ 无具体值（而非"看谁先求值"或"就近赢"）。文档明言：否则结果取决于"实现的心情"，且会滑向 NP 完全的约束求解——CUE 拒绝参与。
+
+无 override 继承。实例不得违反父约束 ⇒ 见到具体值即最终值。这是用表达力（没有 Jsonnet 式覆盖）换来的可推理性质。
+
+环上推理。`a: b, b: a` 合法（意为相等）；`a: b+1, b: a-1, b: 1` 也能解出 `a:2, b:1`——不用代数求解器，靠"表达式除非 X 否则必错，故可假设 X 再验证"的朴素逻辑。但结构性 occurs check 未实现，无限结构打印仍会 loop（文档脚注自承）。
+
+什么不该学：(1) 把合一当通用求值引擎——CUE 为此放弃了函数/闭包（只有 comprehension），Notist 有一等 Function，合一承载不了 β 规约；(2) 双轨默认值求值的实现复杂度应裁剪后借鉴——取"冲突即非具体值 + 诊断"的裁决规则即可，不必复制并行求值机制；(3) CUE 的复杂度集中在"闭结构 + 可选字段 ⊥ 语义"这类格角案例（可选字段冲突 ⇒ 丢弃字段而非报错），这类隐式行为与 Notist"可恢复但不静默"的精神相冲。
+
+=== Unison：content-addressed codebase
+
+身份 = 语法树哈希。每个定义的哈希对其语法树计算：参数名替换为位置序号（de Bruijn），依赖项替换为依赖的哈希（传递 DAG）；名字只是指向哈希的独立可变元数据（`https://www.unison-lang.org/docs/the-big-idea/`）。推论：改名自由、α-等价定义自动去重、依赖冲突不存在（同名不同哈希共存）。
+
+永不失效的缓存。解析 + 类型检查结果以哈希为键缓存，且缓存是 codebase 格式的一部分而非 IDE 临时态；纯计算（无 IO）的测试结果同样以依赖哈希为键，依赖不变不重跑。这与 Notist"每个派生以输入指纹为键，至多计算一次"的不变量逐字同构——Unison 证明了这个模型可以支撑完整的开发者工作流（重构以"结构化改名会话"进行，codebase 永不处于 broken 态）。
+
+与 Dhall 的关键对照——指纹键的谱系。Unison 哈希求值前的 AST：改名不变、格式化不变，但保义重构（`x+x` → `2*x`）改变身份；Dhall 哈希求值后的 normal form：保义 β-重构也不变，但把规约语义冻结进身份（改求值器 = 全量失效）。另有第三极：canonical 源文本哈希，优点是 `sha256sum` 即可独立验证。Notist 指纹 DAG 必须在这条谱上显式选点，且"预算进指纹"意味着指纹键天然是规约语义的函数——Dhall 已演示过这个选择的失效面管理方式。
+
+=== Wolfram Language：未规约态进值域的混乱样本
+
+求值模型。一切都是 symbolic expression（代码、数据、错误同构）（`https://www.wolfram.com/language/principles/`）；求值器"反复做变换直到结果不再变化"——"求值完成"的定义是不动点，语言词汇中没有完成态/未完成态的表示分界。
+
+未规约态是一等公民的直接后果。出错时函数原样返回自己：`NSolve[1,1,1]` 报错后返回的值在 `FullForm` 下与输入表达式不可区分，且仍是"活"的——对它做一次模式替换会重新触发求值并重复报错。连"报错并原样返回"这个内置行为都无法用用户态原语复现：`Unevaluated`/`Defer`/`HoldForm` 各错各的（`https://mathematica.stackexchange.com/questions/249608/`）。Hold 族 + `HoldAll` 属性 + `Evaluate` 例外构成一套"阻止求值 vs 在 held 上下文强制求值"反复横跳的控制面，每个内置函数的消费者都必须懂这套协议（Plot 系函数要求手动 `Evaluate` 是教科书级坑）。
+
+对 Notist 的佐证。这正是裁决 1"值域只含完成态"的反面样本：未规约态进公共词汇 ⇒ (1) 错误值与普通值表示同构，无法区分；(2) 每个消费者被迫理解求值控制协议；(3) 错误处理与表示层纠缠（报错信息随重复求值重复发射）。Notist 的对应路径——错误以降级值（兜底节点）+ 诊断通道在完成态内表达——在此样本下显得是唯一的干净解。
+
+=== 本族可偷/可避
+
+B. 值域（Array / Dict / Target 的形态）：
+
+可偷：
+
+- Dict 进值域，但语义无序 + 规范化序列化（偷 Dhall 记录语义 + Nix `attrNames` 排序实践的交集）：Dict 相等与指纹必须对键序不敏感——键排序后再参与指纹与比较。否则同义 Dict 产生不同指纹，缓存击穿。迭代序若暴露给用户（如 `dict/keys`），契约上规定为排序序，不要走 Nix"求值顺序未指定"的老路。
+- 闭包按值快照捕获（Nix/Jsonnet 语义等价性 + Notist 指纹约束推出）：两者皆词法作用域、环境不可变，快照与引用语义无差别；但 Notist 的闭包可作为 Dict/Array 元素进缓存键，按引用捕获会把环境身份泄漏进指纹（跨派生不稳定），快照（捕获时物化）使指纹只依赖值。Jsonnet 的晚绑定 `self` 是反例：捕获解析点推迟到消费点，推理成本与键不稳定双重代价。
+- Target 作为不透明一等值（Wolfram 反衬）：引用目标是不可再分的完成态值，不携带未求值上下文、不参与求值协议。
+- Function 的指纹降级规则（偷 Dhall 语义哈希的局限认知）：函数相等性不可判定（Dhall 也只敢承诺 β-等价），指纹对 Function 值应降级为"闭包创建点 + 捕获环境指纹"，与裁决 3"Function 不可投影"同构。
+- 值域内任何规范化敏感的构造，先定义 canonical 形式再谈指纹（Dhall 的总纲）：哈希/比较前的规范化规则（Dict 键序、Float 的 NaN 处理、Int/Float coercion 时机）是值域定义的一部分，不是实现细节。
+
+可避：
+
+- 不要让 `self`/`super` 式晚绑定进值域语义（Jsonnet 教训）：祖先链合并若要保留"子层覆盖改变父层内部引用"的能力，等于把每个字段都变成隐式扩展点，且使"读到具体值 ≠ 最终值"。
+- 不要给属性合并提供 `with` 式未限定名解析（Nix 污点）：合并只发生在显式属性查询/合并操作的路径上；任何"自由变量从某个数据集的键集合兜底解析"的设计都是运行时数据依赖作用域，静态工具无解。
+
+C. 求值语义（严格/惰性、totality、预算、确定性）：
+
+可偷：
+
+- 严格调用 + 表达式层短路，本调查三面佐证裁决 5：Nix 惰性 = 内存黑洞（2GiB/简单配置）+ 无限递归运行期错 + trace 顺序不定；Jsonnet 惰性 = 错误推迟到 manifestation，与诊断完备性正面冲突；惰性在配置语言的正当收益（按需物化大图）由 Notist 记忆化查询在管线层获得，不需要值域 thunk。
+- Dhall 的"半个 totality"：不提供通用递归绑定（递归只经安全原语或管线层不动点查询发生），压低意外发散概率——但不要追求类型系统保证终止：Dhall 自承 totality ≠ 资源上界（宇宙热寂例），Jsonnet 设计文档明说强制终止不解实际问题。fuel 预算是更工程化的答案。
+- Dhall 的严格 import 精神：无论是否用到，全部解析——使依赖集合静态可知、诊断完备。
+- CUE 双轨默认值的裁决规则（用于属性沿祖先链合并）：多层默认值冲突时不要"就近赢"——冲突即落回非具体值 + warn。序无关是 CUE 最深的胜利，合并结果不得依赖祖先链遍历顺序之外的任何隐式序。
+- CUE 的约束单调收紧：若 Notist 类型层将来引入范围/模式约束，合一时化简（`>=3 & <=10` ∧ `>=5 & <=20` ⇒ `>=5 & <=10`）而非 assert 堆积。
+- Unison 的缓存即格式：派生产物缓存以指纹为键且作为持久格式的一部分，依赖不变不重跑；重构（改名）不进指纹维度——α-等价应产生相同指纹（参数名擦除后哈希）。
+
+可避：
+
+- 预算机制的形态要意识失效面（Dhall v11.0.0 事件）：任何影响产物 normal form 的求值器变更都是全量缓存失效事件；预算进指纹同理。预算的计步粒度（每规约步 vs 每调用）应在文档中作为规约语义的一部分固定，因为它已被冻结进身份体系。
+- 确定性要覆盖诊断通道（Nix 手册"求值顺序未指定"的教训）：Nix 的 trace 输出顺序不属于语言契约，结果是调试体验灾难。Notist 的"同输入同产物"必须把诊断的发射集合与排序规则纳入契约（如按调用点 range 排序后发射），否则 warn-only 体系下"产物"本身不确定。
+- f64 的确定性要靠规范而非运气（Nix 有 float 却无跨平台确定性声明的前车）：Float 进指纹/比较前必须规定 NaN 处理（指纹走位模式 + 比较时 NaN 规则显式化，或 canonicalize 到单一 NaN），并警惕不同后端（原生 vs wasm）的超越函数差异——预算确定性已经否决了惰性，浮点是下一个确定性漏洞候选。
+- 绝不让求值失败/预算耗尽以 held 表达式形态泄漏进值域（Wolfram 样本）：规约完成、预算耗尽、错误降级是三种不同的完成态，都必须在完成态词汇内显式表达（降级值 + 诊断），消费者永远不需要求值控制协议。
