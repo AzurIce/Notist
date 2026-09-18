@@ -5,6 +5,79 @@ use std::{
     sync::atomic::{AtomicUsize, Ordering},
 };
 static NEXT: AtomicUsize = AtomicUsize::new(0);
+
+#[test]
+fn module_names_follow_binding_rules() {
+    for (raw, expected) in [
+        ("getting started", "getting_started"),
+        ("my-tools", "my_tools"),
+        ("安装指南", "安装指南"),
+        ("2026 年计划", "_2026_年计划"),
+        ("let", "_let"),
+        ("vault", "_vault"),
+        ("My__Tools", "My__Tools"),
+    ] {
+        let name = package::module_name(raw).unwrap();
+        assert_eq!(name, expected);
+        assert!(notist_next::syntax::valid_binding(&name));
+    }
+    for raw in ["", "---", "   "] {
+        assert!(package::module_name(raw).is_err());
+    }
+}
+
+#[test]
+fn normalized_modules_support_nested_imports_and_report_collisions() {
+    let f = Fixture::new();
+    f.put("Notist.toml", "[package]\nname='test'");
+    f.put(
+        "docs/README.notc",
+        "use vault::my_tools::{a, 子_模块::{aa, bb}}; a; aa; bb;",
+    );
+    f.put("docs/my tools/README.notc", "let a = \"a\";");
+    f.put(
+        "docs/my tools/子 模块.notc",
+        "let aa = \"b\"; let bb = \"c\";",
+    );
+    let mut loaded = package::load(&f.0).unwrap();
+    let result = loaded.runtime.evaluate(&loaded.entry);
+    assert!(result.warnings.is_empty(), "{:?}", result.warnings);
+    assert_eq!(result.content.html(), "abc");
+    assert!(
+        loaded
+            .runtime
+            .sources
+            .contains_key("p0/docs/my tools/子 模块.notc")
+    );
+
+    f.put("docs/my tools/子_模块.notc", "");
+    let mut loaded = package::load(&f.0).unwrap();
+    let result = loaded.runtime.evaluate(&loaded.entry);
+    assert!(
+        result.warnings.iter().any(|message| {
+            message.contains("module path conflict")
+                && message.contains("子 模块.notc")
+                && message.contains("子_模块.notc")
+        }),
+        "{:?}",
+        result.warnings
+    );
+}
+
+#[test]
+fn explicit_module_segments_are_not_normalized() {
+    for source in [
+        "use vault::2026 as year;",
+        "use vault::my-tools;",
+        "use vault::let as value;",
+    ] {
+        assert!(
+            !notist_next::syntax::parse_traced(source).errors.is_empty(),
+            "{source}"
+        );
+    }
+}
+
 struct Fixture(PathBuf);
 impl Fixture {
     fn new() -> Self {

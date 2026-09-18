@@ -22,6 +22,7 @@ fn expr(e: &Expr) -> Json {
         ExprKind::Int(v) => json!({"kind":"int","value":v}),
         ExprKind::Bool(v) => json!({"kind":"bool","value":v}),
         ExprKind::Name(n) => json!({"kind":"name","name":n}),
+        ExprKind::Target(path, item) => json!({"kind":"target","module":path,"item":item}),
         ExprKind::List(v) => json!({"kind":"list","items":v.iter().map(expr).collect::<Vec<_>>()}),
         ExprKind::Dict(v) => {
             json!({"kind":"dict","fields":v.iter().map(|(k,v)|json!({"key":k,"value":expr(v)})).collect::<Vec<_>>()})

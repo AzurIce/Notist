@@ -1,15 +1,17 @@
 @!(ai: true, desc: "当前 .notc 原型语法和求值语义")
 
-= .notc
+= .notc 与 .not
 
-`.notc` 是由当前原型直接求值的模块格式。模块从上到下执行，表达式语句产生 Content，绑定语句只更新环境。
+`.notc` 是代码模块格式。模块从上到下执行，表达式语句产生 Content，绑定语句只更新环境。`.not` 是同一求值管线的 Markup 前端：整个文件相当于一个隐式的 `[]` Content 字面量，文本、插值、样式和 wikilink 直接降低为同一组表达式。
 
-== 词法
+== 词法与名称
 
 - 标识符由字母或 `_` 开头，后续只能使用字母、数字和 `_`。
 - 关键字：`let`、`use`、`wasm`、`as`、`if`、`else`、`none`、`true`、`false`。
 - 字面量：字符串、整数、布尔值和 `none`。
 - 注释使用 `//` 到行尾。
+- 文件名中的空格和其他非标识符字符逐个映射为 `_`；数字开头和保留字在逻辑模块名上加 `_` 前缀。大小写、Unicode 字母数字和下划线保留。
+- 映射后的模块名冲突是错误，诊断包含冲突的两个源文件；显式 Code 名称只校验，不做映射。
 
 == 语句
 
@@ -31,7 +33,7 @@ let heading = (title: String, level: Int = 2) => item("heading", (level: level, 
 
 == 表达式
 
-支持名称、字符串、整数、布尔值、`none`、List、Dict、Content、函数调用、字段访问、`if` 和有限的整数/字符串/布尔运算。函数调用支持位置参数、具名参数、默认值和尾随 Content：
+支持名称、字符串、整数、布尔值、`none`、List、Dict、Content、函数调用、字段访问、模块导出引用、Item 目标、`if` 和有限的整数/字符串/布尔运算。函数调用支持位置参数、具名参数、默认值和尾随 Content：
 
 ```notc
 let paragraph = (body: Content) => item("paragraph", (body: body));
@@ -40,9 +42,11 @@ paragraph[hello];
 
 `[]` 的结果是 Content。Content 中允许文本和 Item；`item(name, args)` 返回 Item。字段访问支持 `item.name` 和 `item.args`。
 
+模块导出使用 `module::name`，Item 目标使用 `module::"item-id"`。Markup wikilink 使用 `[[module]]` 或 `[[module#item-id]]`，产生同一种引用值；引用本身不触发目标模块求值。
+
 == 模块路径
 
-模块源文件位于 package 的 `docs/` 下。`README.notc` 表示所在目录模块，其他 `.notc` 或 `.not` 文件按文件名组成模块段。空格映射为 `_`；数字开头和 Unicode 字母数字可以出现在文件名段中；`vault`、`self`、`super` 是路径关键字，不能作为文件名段。
+模块源文件位于 package 的 `docs/` 下。`README.not` 或 `README.notc` 表示所在目录模块，其他 `.not` 或 `.notc` 文件按规范化文件名组成模块段。`vault`、`self`、`super` 是路径关键字。
 
 ```notc
 use vault::helpers::{self as helpers, format};
@@ -61,4 +65,4 @@ WASM 必须显式引用。运行时调用 `notist_register` 读取函数注册�
 
 == 求值与错误
 
-运行时严格求值参数，函数按词法闭包执行，没有隐式 reduce/normalization pass。错误保留在输出 Content 中并附带来源位置；后续语句仍可继续求值。`.not` 文件只建立索引，当前求值会报告 lowering 尚未实现。
+运行时严格求值参数，函数按词法闭包执行，没有隐式 reduce/normalization pass。错误保留在输出 Content 中并附带来源位置；后续语句仍可继续求值。`.not` 的 Markup 节点和 `.notc` 的 `[]` 使用同一求值器。

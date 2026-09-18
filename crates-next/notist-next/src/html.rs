@@ -24,6 +24,9 @@ pub fn render(content: &Content) -> String {
         Content::Sequence(children) => children.iter().map(render).collect(),
         Content::Error { message, .. } => error(message),
         Content::Item(item) => render_item(item),
+        Content::Link { target } => {
+            format!("<a href=\"{}\">{}</a>", escape(target), escape(target))
+        }
     }
 }
 

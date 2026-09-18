@@ -48,6 +48,32 @@ fn collections_none_and_item_values() {
     assert!(r.warnings.is_empty());
     assert_eq!(r.content.html(), "empty");
 }
+
+#[test]
+fn not_markup_and_item_targets_share_the_code_pipeline() {
+    let mut r = Runtime::default();
+    r.sources.insert(
+        "README.notc".into(),
+        "use vault::guide; guide::\"intro\";".into(),
+    );
+    r.sources.insert(
+        "guide.not".into(),
+        "Hello [[vault::guide#intro]] #text(\"!\")".into(),
+    );
+    let result = r.evaluate("guide.not");
+    assert!(result.warnings.is_empty(), "{:?}", result.warnings);
+    assert_eq!(
+        result.content.html(),
+        "Hello <a href=\"vault::guide#intro\">vault::guide#intro</a> !"
+    );
+
+    let result = r.evaluate("README.notc");
+    assert!(result.warnings.is_empty(), "{:?}", result.warnings);
+    assert_eq!(
+        result.content.html(),
+        "<a href=\"guide#intro\">guide#intro</a>"
+    );
+}
 #[test]
 fn no_legacy_syntax_or_overloads() {
     for source in [
@@ -70,7 +96,7 @@ fn paths_aliases_globs_self_super_numbers_and_spaces() {
         "p0/docs/README.notc".into(),
         r#"
       use vault::getting_started::{self as guide, title};
-      use vault::2026::09 as month;
+      use vault::_2026::_09 as month;
       use vault::helpers::*;
       title; guide::title; month::value; helper;
     "#

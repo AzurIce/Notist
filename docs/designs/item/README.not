@@ -10,10 +10,11 @@ Content 是模块求值的输出类型：
 Content = Text(String)
         | Sequence(Content*)
         | Item(name, args, location)
+        | Link(target)
         | Error(message, location)
 ```
 
-文本不是 Item。List、Dict、Function 等值只有在函数或表达式需要输出 Content 时才被转换；不可转换值产生 Error Content。
+文本不是 Item。Link 是未求值的模块或 Item 目标，供渲染器、LSP 和索引使用。List、Dict、Function 等值只有在函数或表达式需要输出 Content 时才被转换；不可转换值产生 Error Content。
 
 == Item
 

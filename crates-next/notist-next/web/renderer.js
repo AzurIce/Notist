@@ -12,6 +12,12 @@ export async function mount(parent, content, components, base = document.baseURI
     if (node == null) return document.createDocumentFragment();
     if (typeof node !== 'object') throw new Error('Expected Content');
     if ('text' in node) return document.createTextNode(node.text);
+    if ('link' in node) {
+      const link = document.createElement('a');
+      link.href = node.link;
+      link.textContent = node.link;
+      return link;
+    }
     if (node.error) return failure(node.error, node);
     if (node.sequence) {
       const fragment = document.createDocumentFragment();

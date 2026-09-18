@@ -1,7 +1,7 @@
 use charts::diagram;
 use shader::shader;
 use core::{section, heading, paragraph};
-use vault::2026_notes::title;
+use vault::_2026_notes::title;
 
 section[
   #heading(level: 1)[#title]

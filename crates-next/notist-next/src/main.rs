@@ -4,10 +4,12 @@ use std::{fs, path::Path, process::ExitCode};
 fn run() -> Result<(), String> {
     let args = std::env::args().skip(1).collect::<Vec<_>>();
     let Some(path) = args.first() else {
-        return Err("usage: notist-next PACKAGE|FILE.notc [--html|--snapshot|--bundle DIR]".into());
+        return Err(
+            "usage: notist-next PACKAGE|FILE.not|FILE.notc [--html|--snapshot|--bundle DIR]".into(),
+        );
     };
     if path == "--help" {
-        println!("notist-next PACKAGE|FILE.notc [--html|--snapshot|--bundle DIR]");
+        println!("notist-next PACKAGE|FILE.not|FILE.notc [--html|--snapshot|--bundle DIR]");
         return Ok(());
     }
     let path = Path::new(path).canonicalize().map_err(|e| e.to_string())?;

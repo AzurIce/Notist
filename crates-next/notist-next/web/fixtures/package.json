@@ -18,7 +18,7 @@
   "entry": "p0/docs/README.notc",
   "files": {
     "p0/docs/2026 notes.notc": "let title = \"Notist packages\";\n",
-    "p0/docs/README.notc": "use charts::diagram;\nuse shader::shader;\nuse core::{section, heading, paragraph};\nuse vault::2026_notes::title;\n\nsection[\n  #heading(level: 1)[#title]\n  #paragraph[Package resources and ordinary functions.]\n  #diagram(\"graph LR; A --> B\")\n  #shader(\"void main() { gl_FragColor = vec4(0.2, 0.7, 0.4, 1.0); }\")\n];\n",
+    "p0/docs/README.notc": "use charts::diagram;\nuse shader::shader;\nuse core::{section, heading, paragraph};\nuse vault::_2026_notes::title;\n\nsection[\n  #heading(level: 1)[#title]\n  #paragraph[Package resources and ordinary functions.]\n  #diagram(\"graph LR; A --> B\")\n  #shader(\"void main() { gl_FragColor = vec4(0.2, 0.7, 0.4, 1.0); }\")\n];\n",
     "p1/docs/README.notc": "use mermaid::diagram as make_diagram;\nlet diagram = (source: String) => make_diagram(source);\n",
     "p2/docs/README.notc": "wasm \"../wasm/semantic.wasm\";\nlet diagram = (source: String, theme: String = \"default\") =>\n    item(\"mermaid\", (source: echo(source), theme: theme));\n",
     "p3/docs/README.notc": "let section = (body: Content) => item(\"section\", (body: body));\nlet paragraph = (body: Content) => item(\"paragraph\", (body: body));\nlet heading = (body: Content, level: Int = 1) => item(\"heading\", (level: level, body: body));\nlet list = (body: Content, ordered: Bool = false) => item(\"list\", (ordered: ordered, body: body));\nlet list_item = (body: Content) => item(\"list-item\", (body: body));\n",

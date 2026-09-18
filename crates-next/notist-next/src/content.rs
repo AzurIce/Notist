@@ -20,6 +20,7 @@ pub enum Content {
     Text(String),
     Sequence(Vec<Content>),
     Item(Item),
+    Link { target: String },
     Error { message: String, location: Location },
 }
 
@@ -38,6 +39,7 @@ impl Content {
                 json!({"sequence": children.iter().map(Self::to_json).collect::<Vec<_>>()})
             }
             Self::Item(item) => item.to_json(),
+            Self::Link { target } => json!({"link": target}),
             Self::Error { message, location } => {
                 json!({"error": message, "source": location.source, "offset": location.offset})
             }

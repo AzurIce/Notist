@@ -37,6 +37,29 @@ impl Loaded {
     }
 }
 
+/// Derive a code identifier without changing case or transliterating Unicode.
+pub fn module_name(name: &str) -> Result<String, String> {
+    if !name.chars().any(|c| c.is_alphanumeric() || c == '_') {
+        return Err(format!(
+            "module name has no identifier characters: `{name}`"
+        ));
+    }
+    let mut normalized: String = name
+        .chars()
+        .map(|c| {
+            if c.is_alphanumeric() || c == '_' {
+                c
+            } else {
+                '_'
+            }
+        })
+        .collect();
+    if !crate::syntax::valid_binding(&normalized) {
+        normalized.insert(0, '_');
+    }
+    Ok(normalized)
+}
+
 pub fn module_key(path: &str) -> Result<String, String> {
     let (package, local) = if let Some((package, local)) = path.split_once("/docs/") {
         (package, local)
@@ -53,13 +76,8 @@ pub fn module_key(path: &str) -> Result<String, String> {
     }
     let mut key = vec![package.to_owned()];
     for part in parts {
-        let name = part.replace(' ', "_");
-        if name.is_empty() || !name.chars().all(|c| c.is_alphanumeric() || c == '_') {
-            return Err(format!("invalid module filename `{path}`: `{part}`"));
-        }
-        if matches!(name.as_str(), "vault" | "self" | "super") {
-            return Err(format!("reserved module segment `{name}` in `{path}`"));
-        }
+        let name = module_name(part)
+            .map_err(|error| format!("invalid module filename `{path}`: {error}"))?;
         key.push(name);
     }
     Ok(key.join("::"))

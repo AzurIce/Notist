@@ -1,6 +1,6 @@
 # Notist Language Prototype
 
-A self-contained `.notc` evaluator with first-class Content and Item values, local packages, Rust-style module paths, registered WASM functions, and a separate HTML consumer.
+A self-contained `.not`/`.notc` evaluator with first-class Content and Item values, local packages, Rust-style module paths, registered WASM functions, and a separate HTML consumer.
 
 ```sh
 cargo test -j4 -p notist-next -- --test-threads=4
@@ -12,13 +12,13 @@ Use `crates-next/notist-next/examples/demo` as `examples-path`. Serve a bundle o
 
 ## Packages
 
-`Notist.toml` declares `[package] name` and `[dependencies] alias = { path = "..." }`. No package entry or component declaration fields: `docs/README.notc` is the root module, and component entries are discovered by convention. `.not` files participate in module discovery but markup lowering is explicitly unavailable in this prototype.
+`Notist.toml` declares `[package] name` and `[dependencies] alias = { path = "..." }`. No package entry or component declaration fields: `docs/README.not` or `docs/README.notc` is the root module, and component entries are discovered by convention. A `.not` file is the implicit outer Content literal; its text, `#` interpolations, styles, nested Content, and `[[module#item]]` wikilinks use the same evaluator as `.notc` Content literals.
 
-`vault` always names the defining package root. `self` and repeated `super` name the current and parent modules. Dependency aliases name dependency roots. Files are discovered automatically; directory modules can be implicit. Spaces map one-to-one to `_`; numeric path segments and Unicode alphanumeric segments are accepted. Conflicting logical module paths are errors. Other punctuation is rejected.
+`vault` always names the defining package root. `self` and repeated `super` name the current and parent modules. Dependency aliases name dependency roots. Files are discovered automatically; directory modules can be implicit. Filename segments preserve case, Unicode letters/numbers, and underscores; each other character maps to `_`. Numeric-leading names and reserved words receive an `_` prefix, so logical module names follow binding identifier rules. Names without any identifier characters are rejected. Conflicting logical module paths are errors naming both source files. Explicit code names are validated, never normalized. A code target `module::"item-id"` and a Markup wikilink `[[module#item-id]]` both produce a reference value.
 
 ```notc
 use vault::helpers::{self as helpers, format};
-use vault::2026_notes as notes;
+use vault::_2026_notes as notes;
 use theme::colors::*;
 wasm "../wasm/semantic.wasm";
 let diagram = (source: String, theme: String = "default") =>
@@ -52,6 +52,6 @@ Registration is cached per binary path per evaluation and bindings are installed
 
 ## Scope
 
-The demo tests transitive components and WASM registration. Mermaid/Shader components display source text; they do not bundle those rendering engines. The core package is ordinary `.notc`. Registry/version resolution, public/private declarations, complete `.not` lowering, static type inference, editor integration, and custom WASM type definitions remain outside this prototype. No changes are required in sister editors until they adopt this language.
+The demo tests transitive components and WASM registration. Mermaid/Shader components display source text; they do not bundle those rendering engines. Registry/version resolution, public/private declarations, static type inference, editor integration, and custom WASM type definitions remain outside this prototype.
 
 `cargo run -j4 -p notist-next --example build_fixture` regenerates the WASM fixture and portable package request. `just web-build` and `just web-fixtures` build the browser evaluator; `just web-compare` compares only native/browser `result.content` and `result.diagnostics`.

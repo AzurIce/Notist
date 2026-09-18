@@ -34,6 +34,7 @@ pub enum ExprKind {
     Int(i64),
     Bool(bool),
     Name(String),
+    Target(Vec<String>, Option<String>),
     List(Vec<Expr>),
     Dict(Vec<(String, Expr)>),
     Content(Vec<Expr>),
@@ -193,6 +194,18 @@ pub fn parse_traced(source: &str) -> ParseResult {
     result
 }
 
+/// Parse a `.not` source file as the implicit outer Content literal.
+pub fn parse_markup(source: &str) -> Result<Vec<Expr>, String> {
+    let mut parser = Parser {
+        source,
+        pos: 0,
+        depth: 0,
+        tokens: Vec::new(),
+        recovery: false,
+    };
+    parser.markup_root()
+}
+
 fn token_kind(token: &Token) -> &'static str {
     if token.string {
         return "string";
@@ -262,7 +275,8 @@ fn assign_ids(
             | ExprKind::String(_)
             | ExprKind::Int(_)
             | ExprKind::Bool(_)
-            | ExprKind::Name(_) => {}
+            | ExprKind::Name(_)
+            | ExprKind::Target(_, _) => {}
         }
     }
     stmt_ids.reserve(statements.len());
@@ -471,8 +485,7 @@ impl<'a> Parser<'a> {
     fn segment(&mut self) -> Result<String, String> {
         let token = self.token();
         if token.string
-            || token.text.is_empty()
-            || !token.text.chars().all(|c| c.is_alphanumeric() || c == '_')
+            || !(valid_binding(token.text) || matches!(token.text, "vault" | "self" | "super"))
         {
             return Err("expected module path segment".into());
         }
@@ -526,7 +539,7 @@ impl<'a> Parser<'a> {
             None
         };
         if alias.is_none() && !path.last().is_some_and(|s| valid_binding(s)) {
-            return Err("numeric module imports require `as name`".into());
+            return Err("module root imports require `as name`".into());
         }
         imports.push(Use {
             path,
@@ -596,11 +609,21 @@ impl<'a> Parser<'a> {
             ExprKind::Int(value)
         } else {
             let mut name = self.name()?;
+            let mut item = None;
             while self.eat("::") {
+                if self.token().string {
+                    item = Some(self.string()?);
+                    break;
+                }
                 name.push_str("::");
                 name.push_str(&self.segment()?);
             }
-            ExprKind::Name(name)
+            match item {
+                Some(item) => {
+                    ExprKind::Target(name.split("::").map(str::to_owned).collect(), Some(item))
+                }
+                None => ExprKind::Name(name),
+            }
         };
         // Every branch above leaves `pos` just past its last consumed token.
         let mut end = self.pos;
@@ -808,20 +831,87 @@ impl<'a> Parser<'a> {
             return Err("content nesting limit exceeded".into());
         }
         self.depth += 1;
-        let result = self.markup_inner(end);
+        let result = self.markup_inner(Some(end));
         self.depth -= 1;
         result
     }
-    fn markup_inner(&mut self, end: char) -> Result<Vec<Expr>, String> {
+    fn markup_root(&mut self) -> Result<Vec<Expr>, String> {
+        if self.depth >= 128 {
+            return Err("content nesting limit exceeded".into());
+        }
+        self.depth += 1;
+        let result = self.markup_inner(None);
+        self.depth -= 1;
+        result
+    }
+    fn markup_inner(&mut self, end: Option<char>) -> Result<Vec<Expr>, String> {
         let mut parts = Vec::new();
         let mut text = String::new();
         let mut start = self.pos;
         loop {
             let offset = self.pos;
+            if self.source[self.pos..].starts_with("[[") {
+                if !text.is_empty() {
+                    self.record(start, offset, "markup-text", &self.source[start..offset]);
+                    parts.push(Expr {
+                        offset: start,
+                        end: offset,
+                        id: 0,
+                        kind: ExprKind::String(std::mem::take(&mut text)),
+                    });
+                }
+                let target_start = self.pos + 2;
+                let close = self.source[target_start..]
+                    .find("]]")
+                    .ok_or("unclosed wikilink")?;
+                let target_end = target_start + close;
+                let raw = &self.source[target_start..target_end];
+                let (module, item) = raw
+                    .split_once('#')
+                    .map_or((raw, None), |(m, i)| (m, Some(i)));
+                if module.is_empty()
+                    || module.split("::").any(|part| part.is_empty())
+                    || item.is_some_and(str::is_empty)
+                {
+                    return Err("invalid wikilink target".into());
+                }
+                self.record(
+                    self.pos,
+                    target_end + 2,
+                    "wikilink",
+                    &self.source[self.pos..target_end + 2],
+                );
+                self.pos = target_end + 2;
+                parts.push(Expr {
+                    offset,
+                    end: self.pos,
+                    id: 0,
+                    kind: ExprKind::Target(
+                        module.split("::").map(str::to_owned).collect(),
+                        item.map(str::to_owned),
+                    ),
+                });
+                start = self.pos;
+                continue;
+            }
             let Some(c) = self.source[self.pos..].chars().next() else {
-                return Err(format!("unclosed markup, expected `{end}`"));
+                if !text.is_empty() {
+                    self.record(
+                        start,
+                        self.pos,
+                        "markup-text",
+                        &self.source[start..self.pos],
+                    );
+                    parts.push(Expr {
+                        offset: start,
+                        end: self.pos,
+                        id: 0,
+                        kind: ExprKind::String(text),
+                    });
+                }
+                return Ok(parts);
             };
-            if c == end || matches!(c, '#' | '[' | '*' | '_') {
+            if end.is_some_and(|end| c == end) || matches!(c, '#' | '[' | '*' | '_') {
                 if !text.is_empty() {
                     self.record(start, offset, "markup-text", &self.source[start..offset]);
                     parts.push(Expr {
@@ -832,7 +922,7 @@ impl<'a> Parser<'a> {
                     });
                 }
                 self.pos += c.len_utf8();
-                if c == end {
+                if end.is_some_and(|end| c == end) {
                     self.record(
                         offset,
                         self.pos,
@@ -890,7 +980,10 @@ impl<'a> Parser<'a> {
                 );
                 text.push(next);
             } else if c == ']' {
-                return Err(format!("unclosed markup, expected `{end}` before `]`"));
+                return Err(end.map_or_else(
+                    || "unexpected `]` in markup".into(),
+                    |end| format!("unclosed markup, expected `{end}` before `]`"),
+                ));
             } else {
                 self.pos += c.len_utf8();
                 text.push(c);

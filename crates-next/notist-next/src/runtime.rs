@@ -21,6 +21,10 @@ pub enum Value {
     Content(Content),
     Item(Item),
     Module(String),
+    Target {
+        module: String,
+        item: Option<String>,
+    },
     Named(String),
     Closure(Rc<Closure>),
     External(Rc<External>),
@@ -76,13 +80,18 @@ impl Value {
             Self::Content(v) => v.to_json(),
             Self::Item(v) => v.to_json(),
             Self::Module(v) => json!({"module":v}),
+            Self::Target { module, item } => json!({"target": module, "item": item}),
             Self::Named(v) => json!({"function":v}),
             _ => json!({"function":"<function>"}),
         }
     }
     pub fn serializable(&self) -> bool {
         match self {
-            Self::Module(_) | Self::Named(_) | Self::Closure(_) | Self::External(_) => false,
+            Self::Module(_)
+            | Self::Target { .. }
+            | Self::Named(_)
+            | Self::Closure(_)
+            | Self::External(_) => false,
             Self::List(v) => v.iter().all(Self::serializable),
             Self::Dict(v) => v.values().all(Self::serializable),
             Self::Item(i) | Self::Content(Content::Item(i)) => {
@@ -176,21 +185,29 @@ impl Runtime {
             let mut parts = key.split("::").collect::<Vec<_>>();
             while parts.len() > 1 {
                 parts.pop();
-                let source = if parts[0] == "root" {
-                    format!("{}/README.notc", parts[1..].join("/"))
-                } else {
-                    format!(
-                        "{}/docs/{}README.notc",
-                        parts[0],
-                        if parts.len() > 1 {
-                            format!("{}/", parts[1..].join("/"))
+                let parent = parts.join("::");
+                let source = self
+                    .sources
+                    .keys()
+                    .find(|path| crate::package::module_key(path).as_deref() == Ok(parent.as_str()))
+                    .cloned()
+                    .unwrap_or_else(|| {
+                        if parts[0] == "root" {
+                            format!("{}/README.notc", parts[1..].join("/"))
                         } else {
-                            String::new()
+                            format!(
+                                "{}/docs/{}README.notc",
+                                parts[0],
+                                if parts.len() > 1 {
+                                    format!("{}/", parts[1..].join("/"))
+                                } else {
+                                    String::new()
+                                }
+                            )
                         }
-                    )
-                };
+                    });
                 self.index
-                    .entry(parts.join("::"))
+                    .entry(parent)
                     .or_insert(source.trim_start_matches('/').into());
             }
         }
@@ -229,6 +246,9 @@ impl Runtime {
             Value::None => Content::Sequence(vec![]),
             Value::Content(c) => c,
             Value::Item(i) => Content::Item(i),
+            Value::Target { module, item } => Content::Link {
+                target: item.map_or_else(|| module.clone(), |item| format!("{module}#{item}")),
+            },
             Value::String(s) => Content::Text(s),
             Value::Int(n) => Content::Text(n.to_string()),
             Value::List(v) => {
@@ -272,17 +292,24 @@ impl Runtime {
             );
         };
         if source.ends_with(".not") {
+            let mut output = Vec::new();
+            match syntax::parse_markup(&text) {
+                Ok(parts) => {
+                    let env = Env::new();
+                    for expr in parts {
+                        let value = self.eval(&expr, &env, source, depth + 1);
+                        output.push(Self::content(value, &location));
+                    }
+                }
+                Err(message) => output.push(Content::Error {
+                    message,
+                    location: location.clone(),
+                }),
+            }
             self.loading.remove(source);
-            return (
-                Env::new(),
-                Self::content(
-                    Self::failure(
-                        "markup .not modules are indexed but lowering is not implemented; use .notc",
-                        &location,
-                    ),
-                    &location,
-                ),
-            );
+            let content = Content::Sequence(output);
+            self.modules.insert(source.into(), Env::new());
+            return (Env::new(), content);
         }
         let statements = syntax::parse(&text);
         let mut env = Env::new();
@@ -592,6 +619,10 @@ impl Runtime {
                 )
                 .unwrap_or_else(|e| Self::failure(e, &loc))
             }
+            ExprKind::Target(path, item) => Value::Target {
+                module: path.join("::"),
+                item: item.clone(),
+            },
             ExprKind::List(values) => Value::List(
                 values
                     .iter()
