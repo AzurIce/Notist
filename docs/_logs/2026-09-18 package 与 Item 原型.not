@@ -1,0 +1,84 @@
+@!(ai: true, desc: "Package、模块路径、WASM 注册、Item 树与按目录约定发现的 Web Component")
+= Package 与 Item 原型
+
+== Package 与模块
+
+Package 是依赖与分发单位，根目录包含 `Notist.toml`，源码位于 `docs/`，浏览器资源位于 `components/`。Rust 项目可在同一根目录使用 `Cargo.toml` 与 `src/`。
+
+Package 使用根 module，无独立入口配置。`docs/README.notc` 或 `docs/README.not` 对应根 module；两者同时存在构成路径冲突。目录可以形成隐式模块。
+
+```toml
+[package]
+name = "diagram"
+[dependencies]
+theme = { path = "../theme" }
+```
+
+模块路径使用 `::`。`vault` 是定义代码所属 package 的根，`self` 是当前模块，`super` 是父模块，依赖别名指向依赖根。路径可寻址模块和导出绑定。
+
+```notc
+use vault::helpers;
+use vault::helpers::{self as h, format};
+use super::shared::*;
+use vault::2026_notes as notes;
+use diagram::render;
+```
+
+文件名的每个普通空格映射为一个下划线，其余字母、数字、下划线保持原样；路径段允许数字开头或纯数字。`getting started.not` 与 `getting_started.not` 占用同一个逻辑模块路径，同时存在时报冲突，内容不合并。模块本身导入为变量时，需要合法绑定名；数字模块名通过 `as` 指定别名。磁盘路径保留原始文件名。
+
+模块按文件自动发现，每次求值只初始化一次；循环依赖与重复绑定报错。当前顶层 let 与 WASM 注册符号公开，use 绑定仅在本模块可见。可见性修饰符与重新导出语法尚未实现。
+
+== 函数、Content 与 Item
+
+```notc
+let diagram = (source: String, theme: String = "default") =>
+    item("mermaid", (source: source, theme: theme));
+```
+
+函数使用 let 绑定闭包，支持词法捕获、自递归、参数类型、默认值、具名调用、尾随 Content。默认表达式可以引用前面的参数。每个作用域名字唯一，不提供重载。
+
+Content 字面量使用方括号。List 使用圆括号和逗号；Dict 使用键值冒号。none、空 Content、错误内容是不同值。Item 保存 name、结构化 args 和来源位置，属于求值完成后的结构节点；参数可以包含其他 Content。内容构造和变换使用普通函数。
+
+Core 的 section、paragraph、heading、list 等构造函数可以放在普通 notc package 中。Rust 负责基础值、函数求值、模块解析和外部函数桥接。
+
+== WASM
+
+```notc
+wasm "../wasm/semantic.wasm";
+```
+
+WASM 由源码显式引用，路径相对当前源文件。轻量注册函数返回名称、参数名与类型、默认值、结果类型、实现导出名。注册经过校验后将符号加入当前模块环境，同一个二进制路径在一次求值中缓存注册结果。
+
+Wasmi 2.0 使用无宿主导入、受燃料和内存限制的实例。函数调用采用独立实例，JSON 参数数组通过 memory 与 alloc 传入，返回值以指针和长度交付。注册 JSON 与语言值 JSON 分开解码。当前支持内置类型与可空类型；自定义导出类型尚未实现。
+
+== HTML 消费者与组件
+
+语言输出为文本、Item 和错误节点组成的 Content 树，HTML 是消费者之一。语言检查值与函数参数；组件的输入契约由渲染端验证，LSP 不承担浏览器组件契约检查。
+
+HTML 消费者将 section、paragraph、heading、list 等基础内容转换为原生语义标签。扩展 Item 默认映射为 `notist-名称`，每个参数分别 JSON 编码为 `data-字段名`。不适合 HTML 标签或 attribute 的名字在渲染端报错。
+
+浏览器组件入口默认导出 HTMLElement 子类，宿主统一注册；`render(args, context)` 接收结构化参数，`context.renderContent` 负责递归渲染 Content 参数。同步与异步 render 失败生成带来源的局部错误，其他内容继续渲染。后续事件回调的异常由组件处理。
+
+组件资源沿完整 package 依赖图收集，按 package 身份隔离，保留内部相对路径。组件入口按约定发现：`components/<name>.js` 或 `components/<name>/main.js`。其余文件作为资源传递。同一个 package 经多条路径引用只收集一次；同名组件来自不同提供者时报错。资源需已构建为浏览器可加载产物。
+
+入口发现只匹配上述两种形式，不递归注册深层 main.js。同一个名称同时存在文件入口和目录入口时报冲突。顶层每个 js 文件都是入口；辅助代码放入组件子目录或没有 main.js 的共享目录。名称只允许小写 ASCII 字母、数字和连字符，不使用模块文件名的空格映射规则。Notist.toml 无组件声明字段，加载器自动生成 components.json 渲染资源清单。
+
+```text
+components/
+  mermaid.js           → notist-mermaid
+  shader/
+    main.js            → notist-shader
+    renderer.js        → 辅助资源
+  shared/
+    utils.js           → 共享资源
+```
+
+一个组件对应一个入口模块，可以引用多个实现文件。渲染资源清单记录组件名与 package 隔离后的入口路径；浏览器无需再次扫描目录。
+
+基础元素使用普通 DOM，支持全局主题 CSS。扩展组件可以选择 Light DOM 或 Shadow DOM；后者通过 CSS 自定义属性、part 等方式暴露主题接口。
+
+== 原型范围
+
+实现位于 `crates-next/notist-next`，支持本地 path 依赖、notc 求值、WASM 注册、HTML 片段、浏览器 bundle 和 native/WASM 快照。not 文件参与模块发现，但完整 Markup lowering 尚未接入，会产生明确诊断。registry、版本解析、静态类型推导和正式编辑器接入尚未实现。
+
+demo 通过 charts 间接依赖 Mermaid，验证组件资源的传递。Mermaid 与 Shader 示例组件只展示源码，没有绑定对应完整渲染引擎。测试使用受限 cargo 并行度，覆盖语言、模块冲突、传递依赖、WASM 和快照。

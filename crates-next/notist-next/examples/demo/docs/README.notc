@@ -1,0 +1,11 @@
+use charts::diagram;
+use shader::shader;
+use core::{section, heading, paragraph};
+use vault::2026_notes::title;
+
+section[
+  #heading(level: 1)[#title]
+  #paragraph[Package resources and ordinary functions.]
+  #diagram("graph LR; A --> B")
+  #shader("void main() { gl_FragColor = vec4(0.2, 0.7, 0.4, 1.0); }")
+];

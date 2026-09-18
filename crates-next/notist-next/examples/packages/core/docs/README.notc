@@ -1,0 +1,5 @@
+let section = (body: Content) => item("section", (body: body));
+let paragraph = (body: Content) => item("paragraph", (body: body));
+let heading = (body: Content, level: Int = 1) => item("heading", (level: level, body: body));
+let list = (body: Content, ordered: Bool = false) => item("list", (ordered: ordered, body: body));
+let list_item = (body: Content) => item("list-item", (body: body));

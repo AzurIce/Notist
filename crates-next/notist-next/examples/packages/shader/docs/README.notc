@@ -1,0 +1,1 @@
+let shader = (source: String) => item("shader", (source: source));

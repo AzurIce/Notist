@@ -1,0 +1,4 @@
+let values = ("one", "two");
+let fields = (title: "Collections", count: 2);
+[#fields.title: #len(values)];
+concat(map((value: String) => [#value ], values));

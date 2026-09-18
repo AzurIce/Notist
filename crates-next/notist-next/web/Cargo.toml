@@ -1,0 +1,21 @@
+[package]
+name = "notist-next-web"
+version = "0.1.0"
+edition = "2024"
+publish = false
+
+[workspace]
+# 独立 workspace：钉版 wasm-bindgen 与专属 profile（z + lto + strip）不与根 workspace 共享。
+
+[lib]
+crate-type = ["cdylib"]
+
+[dependencies]
+notist-next = { path = ".." }
+wasm-bindgen = "=0.2.121"
+
+[profile.release]
+opt-level = "z"
+lto = true
+codegen-units = 1
+strip = true

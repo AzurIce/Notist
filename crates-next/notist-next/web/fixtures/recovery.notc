@@ -1,0 +1,4 @@
+[before];
+recover(error("optional failure"), [fallback]);
+item("missing-component", (source: "rendering diagnostic"));
+[after];

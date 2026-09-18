@@ -1,0 +1,145 @@
+<!DOCTYPE html>
+<html lang="zh">
+<head>
+<meta charset="utf-8">
+<title>notist-next 调试器</title>
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<style>
+  :root {
+    --bg: #16181d; --panel: #1e2128; --border: #2c313a;
+    --text: #d6d9df; --muted: #8a919e; --accent: #6cb6ff;
+    --warn: #d4a72c; --error: #f47067; --failure: #da7bd4;
+    --mark: rgba(108, 182, 255, 0.35);
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0; background: var(--bg); color: var(--text);
+    font: 13px/1.5 ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  }
+  header {
+    display: flex; align-items: center; gap: 8px; flex-wrap: wrap;
+    padding: 8px 12px; border-bottom: 1px solid var(--border); background: var(--panel);
+  }
+  header .spacer { flex: 1; }
+  #status { color: var(--muted); }
+  main {
+    display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
+    gap: 8px; padding: 8px; height: calc(100vh - 49px);
+  }
+  #left, #right { display: flex; flex-direction: column; gap: 8px; min-height: 0; }
+  .pane {
+    border: 1px solid var(--border); background: var(--panel);
+    display: flex; flex-direction: column; min-height: 0;
+  }
+  .pane-head {
+    padding: 4px 8px; border-bottom: 1px solid var(--border);
+    display: flex; align-items: center; gap: 8px; color: var(--muted);
+  }
+  #editor {
+    flex: 1; resize: none; border: 0; outline: none; padding: 8px;
+    background: var(--bg); color: var(--text); min-height: 120px;
+    font: inherit; tab-size: 4;
+  }
+  #source-view {
+    flex: 1; margin: 0; padding: 8px; overflow: auto; white-space: pre-wrap;
+    word-break: break-all; font: inherit;
+  }
+  #source-view mark { background: var(--mark); color: inherit; outline: 1px solid var(--accent); }
+  #source-view mark.zero-width { display: inline-block; width: 2px; color: transparent; }
+  #tabs { display: flex; gap: 2px; border-bottom: 1px solid var(--border); background: var(--panel); }
+  #tabs button {
+    background: none; border: 0; color: var(--muted); padding: 6px 12px;
+    font: inherit; cursor: pointer;
+  }
+  #tabs button.active { color: var(--text); border-bottom: 2px solid var(--accent); }
+  .panel { flex: 1; overflow: auto; padding: 4px 0; min-height: 0; }
+  .panel[hidden] { display: none; }
+  .row { display: flex; gap: 12px; padding: 1px 8px; white-space: nowrap; }
+  .row.head { color: var(--muted); border-bottom: 1px solid var(--border); position: sticky; top: 0; background: var(--bg); }
+  .clickable { cursor: pointer; }
+  .clickable:hover { background: #262b34; }
+  .c-i { min-width: 4ch; color: var(--muted); }
+  .c-kind { color: var(--accent); min-width: 12ch; }
+  .c-name { color: #a5d6a7; }
+  .c-text { color: var(--text); overflow: hidden; text-overflow: ellipsis; }
+  .c-range, .c-rec, .c-id { color: var(--muted); }
+  .c-detail, .c-io { color: var(--muted); overflow: hidden; text-overflow: ellipsis; max-width: 40ch; }
+  .row.ev-error .c-kind, .diag.error .severity { color: var(--error); }
+  .row.ev-wasm_call .c-kind { color: #d2a8ff; }
+  .row.recovery .c-kind { color: var(--warn); }
+  .diag.warning .severity { color: var(--warn); }
+  .diag.failure .severity { color: var(--failure); }
+  .subhead { padding: 6px 8px 2px; color: var(--muted); border-top: 1px solid var(--border); margin-top: 6px; }
+  .tree-node { padding-left: calc(8px + var(--depth, 0) * 16px); }
+  .tree-node.stmt > .c-kind { color: #ffab70; }
+  .muted { color: var(--muted); padding: 2px 8px; }
+  .cycle { color: var(--error); padding: 2px 8px; }
+  .stepper { display: flex; align-items: center; gap: 8px; padding: 6px 8px; position: sticky; top: 0; background: var(--bg); }
+  .stepper input { width: 8ch; }
+  .ir-pair { display: grid; grid-template-columns: 1fr 1fr; }
+  .ir-pair > div { border-right: 1px solid var(--border); min-width: 0; }
+  .ir-pair .subhead { border-top: 0; margin-top: 0; }
+  .stats { flex-wrap: wrap; padding: 8px; }
+  #eval-filters {
+    display: flex; align-items: center; gap: 10px; flex-wrap: wrap;
+    padding: 4px 8px; border-bottom: 1px solid var(--border);
+    position: sticky; top: 0; background: var(--bg);
+  }
+  #eval-filters label { color: var(--muted); }
+  button, select, input {
+    background: var(--bg); color: var(--text); border: 1px solid var(--border);
+    font: inherit; padding: 3px 8px; border-radius: 4px;
+  }
+  button { cursor: pointer; }
+  button:hover:not(:disabled) { border-color: var(--accent); }
+  button:disabled { opacity: 0.4; cursor: default; }
+  button.more { margin: 6px 8px; color: var(--muted); }
+  .row.diag { white-space: normal; }
+  @media (max-width: 1000px) {
+    main { grid-template-columns: 1fr; height: auto; }
+  }
+</style>
+</head>
+<body>
+<header>
+  <select id="entry" title="入口文件"></select>
+  <button id="analyze">分析</button>
+  <button id="cancel">取消</button>
+  <label><input type="checkbox" id="auto" checked> 自动分析</label>
+  <button id="open-dir">打开目录…</button>
+  <button id="download">下载快照 JSON</button>
+  <span class="spacer"></span>
+  <span id="status">载入 fixtures…</span>
+</header>
+<main>
+  <section id="left">
+    <div class="pane" style="flex: 1">
+      <div class="pane-head">编辑区（fixtures 只读载入，可在内存中修改）</div>
+      <textarea id="editor" spellcheck="false"></textarea>
+    </div>
+    <div class="pane" style="flex: 1.4">
+      <div class="pane-head">
+        Source
+        <select id="source-file" title="切换文件（source_id）"></select>
+      </div>
+      <pre id="source-view"></pre>
+    </div>
+  </section>
+  <section id="right">
+    <nav id="tabs">
+      <button data-tab="tokens" class="active">Tokens</button>
+      <button data-tab="ast">AST</button>
+      <button data-tab="eval">Evaluation</button>
+      <button data-tab="result">Result</button>
+    </nav>
+    <div class="pane">
+      <div class="panel" id="panel-tokens"></div>
+      <div class="panel" id="panel-ast" hidden></div>
+      <div class="panel" id="panel-eval" hidden><div id="eval-filters"></div></div>
+      <div class="panel" id="panel-result" hidden></div>
+    </div>
+  </section>
+</main>
+<script type="module" src="./app.js"></script>
+</body>
+</html>

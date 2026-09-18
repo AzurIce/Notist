@@ -1,0 +1,2 @@
+use mermaid::diagram as make_diagram;
+let diagram = (source: String) => make_diagram(source);

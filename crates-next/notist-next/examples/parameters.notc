@@ -1,0 +1,4 @@
+let greet = (name: String = "world", body: Content? = none) =>
+    item("paragraph", (body: [Hello #name! #body]));
+greet();
+greet(name: "Notist")[Typed content];

@@ -1,0 +1,7 @@
+[package]
+name = "demo"
+
+[dependencies]
+charts = { path = "../packages/charts" }
+shader = { path = "../packages/shader" }
+core = { path = "../packages/core" }

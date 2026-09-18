@@ -1,0 +1,3 @@
+wasm "../wasm/semantic.wasm";
+let diagram = (source: String, theme: String = "default") =>
+    item("mermaid", (source: echo(source), theme: theme));

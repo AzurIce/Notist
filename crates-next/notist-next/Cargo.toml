@@ -1,0 +1,16 @@
+[package]
+name = "notist-next"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+serde_json.workspace = true
+serde = { version = "1", features = ["derive"] }
+toml = "0.8"
+base64 = "0.22"
+wasmi = "2.0.0"
+web-time = "1"
+
+[dev-dependencies]
+wat = "1"

@@ -1,0 +1,3 @@
+let panel = (body: Content) => item("section", (body: body));
+let title = "Notist";
+panel[Hello *#title*.];
