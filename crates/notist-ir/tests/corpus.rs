@@ -1,4 +1,4 @@
-//! 语料库对拍：`corpus/` 下每个源文件、每个包、每棵依赖树各有一份 golden。
+//! 语料库对拍：`corpus/` 下每个源文件一份 golden。
 //!
 //! 语料只放输入，期望输出放在本 crate 的 `tests/golden/`，按语料相对路径镜像。
 //! 这样语料可以被直接当 vault 打开，不会混进生成物。
@@ -28,7 +28,7 @@ fn updating() -> bool {
     std::env::var_os("UPDATE_GOLDEN").is_some()
 }
 
-/// 递归收集源文件；`api.not` 是声明模块，内容对拍跳过它。
+/// 递归收集源文件；`README.not` 是目录说明，不是语料。
 fn collect_sources(directory: &Path, sources: &mut Vec<PathBuf>) {
     for entry in fs::read_dir(directory).expect("readable directory") {
         let path = entry.expect("readable entry").path();
@@ -42,7 +42,7 @@ fn collect_sources(directory: &Path, sources: &mut Vec<PathBuf>) {
         if !matches!(extension, "not" | "notc") {
             continue;
         }
-        if path.file_name().and_then(|value| value.to_str()) == Some("api.not") {
+        if path.file_name().and_then(|value| value.to_str()) == Some("README.not") {
             continue;
         }
         sources.push(path);
@@ -52,8 +52,7 @@ fn collect_sources(directory: &Path, sources: &mut Vec<PathBuf>) {
 #[test]
 fn sources_match_golden() {
     let mut sources = Vec::new();
-    collect_sources(&corpus_root().join("syntax"), &mut sources);
-    collect_sources(&corpus_root().join("vault"), &mut sources);
+    collect_sources(&corpus_root(), &mut sources);
     sources.sort();
     assert!(!sources.is_empty(), "no corpus sources found");
 
@@ -66,46 +65,6 @@ fn sources_match_golden() {
             notist_ir::compile(&source)
         };
         compare(&golden_for(&source_path), &notist_ir::dump::dump(&result));
-    }
-}
-
-#[test]
-fn packages_match_golden() {
-    let root = corpus_root().join("packages");
-    let mut directories: Vec<PathBuf> = fs::read_dir(&root)
-        .expect("packages directory")
-        .filter_map(|entry| {
-            let path = entry.expect("readable entry").path();
-            path.is_dir().then_some(path)
-        })
-        .collect();
-    directories.sort();
-    assert!(!directories.is_empty(), "no package corpus found");
-
-    for directory in directories {
-        let report = notist_ir::package::load(&directory)
-            .unwrap_or_else(|error| panic!("{}: {error}", directory.display()));
-        compare(&golden_for(&directory), &notist_ir::dump::dump_package(&report));
-    }
-}
-
-#[test]
-fn workspaces_match_golden() {
-    let root = corpus_root();
-    let mut roots: Vec<PathBuf> = fs::read_dir(&root)
-        .expect("corpus directory")
-        .filter_map(|entry| {
-            let path = entry.expect("readable entry").path();
-            (path.is_dir() && path.join("Notist.toml").is_file()).then_some(path)
-        })
-        .collect();
-    roots.sort();
-    assert!(!roots.is_empty(), "no workspace corpus found");
-
-    for directory in roots {
-        let graph = notist_ir::package::load_graph(&directory)
-            .unwrap_or_else(|error| panic!("{}: {error}", directory.display()));
-        compare(&golden_for(&directory), &notist_ir::dump::dump_graph(&graph));
     }
 }
 

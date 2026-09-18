@@ -1,15 +1,15 @@
-//! IR 的值域与内容层类型：一切消费者读的完成态词汇。
+//! 物质层：一切消费者读的完成态词汇。
 //!
 //! 本文件的类型只描述「已经求值完成」的世界：表达式不是值，未规约态不进值域。
-//! 意图层（`crate::plan`）有自己的一套类型，两者不共用一个节点表示。
+//! 意图层（`crate::hir`）有自己的一套类型，两者不共用一个节点表示。
 
 use notist_model::TextRange;
 
-use crate::plan::{Param, Statement};
+use crate::hir::{BindingId, Expr, Signature};
 
 /// 元素身份。
 ///
-/// 本切片只有 core；未注册的名字保留原拼写，作为可见兜底的身份。
+/// core 之外的来源与未知名字都保留原拼写，作为可见兜底的身份。
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum ElementName {
     Core(CoreElement),
@@ -35,6 +35,16 @@ pub enum CoreElement {
     Strike,
     Parbreak,
     Section,
+    Rule,
+    Raw,
+    Math,
+    ListItem,
+    Gap,
+    Table,
+    TableCell,
+    Callout,
+    Details,
+    Figure,
 }
 
 impl CoreElement {
@@ -48,6 +58,16 @@ impl CoreElement {
             Self::Strike => "strike",
             Self::Parbreak => "parbreak",
             Self::Section => "section",
+            Self::Rule => "rule",
+            Self::Raw => "raw",
+            Self::Math => "math",
+            Self::ListItem => "list-item",
+            Self::Gap => "gap",
+            Self::Table => "table",
+            Self::TableCell => "table-cell",
+            Self::Callout => "callout",
+            Self::Details => "details",
+            Self::Figure => "figure",
         }
     }
 }
@@ -87,6 +107,9 @@ pub enum Value {
     Content(Content),
     /// 闭包：签名、捕获的环境、实现（该语言写的体，或只有声明）。
     Function(Box<FunctionValue>),
+    Array(Vec<Value>),
+    /// 键序即书写序；同名键按最后一次取值。
+    Dict(Vec<(String, Value)>),
 }
 
 impl Value {
@@ -99,36 +122,51 @@ impl Value {
             Self::String(_) => "String",
             Self::Content(_) => "Content",
             Self::Function(_) => "Function",
+            Self::Array(_) => "Array",
+            Self::Dict(_) => "Dict",
         }
+    }
+
+    /// 默认值的相等性：浮点按位比较，容器逐项比较。
+    pub fn same(&self, other: &Self) -> bool {
+        self == other
     }
 }
 
 /// 函数值。
 ///
-/// 捕获是按值快照：定义点可见的绑定就是闭包环境。函数体是代码，不是待求值的东西。
+/// 捕获是按值快照：定义点解析出的自由变量就是闭包环境。函数体是代码，不是待求值的东西。
 #[derive(Clone, Debug, PartialEq)]
 pub struct FunctionValue {
-    pub params: Vec<Param>,
-    pub captured: Vec<(String, Value)>,
+    pub signature: Signature,
+    /// 捕获的自由变量：绑定 id 与快照值。
+    pub captures: Vec<(BindingId, Value)>,
     pub body: FunctionBody,
 }
 
 /// 函数实现。
 #[derive(Clone, Debug, PartialEq)]
 pub enum FunctionBody {
-    /// 该语言写出的体。
-    User(Vec<Statement>),
+    /// 该语言写出的体表达式，与形参的绑定 id。
+    User {
+        body: Box<Expr>,
+        param_bindings: Vec<BindingId>,
+    },
     /// 只有声明，实现由外部提供。
     Extern,
 }
 
 impl FunctionValue {
     /// 形参表的单行形态，用于诊断与 dump。
-    pub fn signature(&self) -> String {
+    pub fn signature_text(&self) -> String {
         let params = self
+            .signature
             .params
             .iter()
-            .map(|param| format!("{}: {}", param.name, param.ty))
+            .map(|param| match param.ty {
+                Some(ty) => format!("{}: {}", param.name, ty.as_str()),
+                None => param.name.clone(),
+            })
             .collect::<Vec<_>>()
             .join(", ");
         format!("({params})")

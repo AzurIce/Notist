@@ -1,7 +1,0 @@
-[package]
-name = "mismatch"
-version = "0.1.0"
-entry = "api.not"
-
-[implementation]
-artifact = "artifact.toml"

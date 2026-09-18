@@ -1,4 +1,0 @@
-let f(x: Int) = [
-  text(text: "x")
-]
-f(y: 1)

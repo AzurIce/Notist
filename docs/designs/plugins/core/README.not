@@ -1,41 +1,30 @@
-@!(ai: true, draft: true, desc: "core 注册元素包：元素签名、流角色与糖钉")
+@!(ai: true, desc: "当前原型的内置函数和 HTML 内置 Item")
 
-= core 标准包
+= Core
 
-core 与插件经同一注册路径，降级行为一致；core 的唯一特权是糖钉住的身份不可被覆盖。糖调用钉 core intrinsic 身份，不走名字解析。Item 模型见 #<vault::designs::item>。
+Core 是运行时直接提供的一组普通函数。它没有独立 registry，也不拥有特殊的 rewrite 或 handler 阶段。扩展 package 可以用 `.notc` 定义同样的函数形态。
 
-== 元素
+== 函数
 
-| 元素 | 签名 | 流角色 | 身份 | 糖 |
-| - | - | - | - | - |
-| text | text(text: String) | 行内 | 无 | 正文 |
-| strong | strong(body: Content) | 行内 | 无 | `*…*` |
-| emph | emph(body: Content) | 行内 | 无 | `_…_` |
-| underline | underline(body: Content) | 行内 | 无 | `__…__` |
-| strike | strike(body: Content) | 行内 | 无 | `~~…~~` |
-| raw | raw(source: String, lang: String?, block: Bool) | 行内或独立 | 无 | 反引号 |
-| math | math(source: String, block: Bool) | 行内或独立 | 无 | `$…$` |
-| rule | rule() | 独立 | 无 | `---` |
-| section | section(label: Content, body: Content) | 独立 | label 链 | 行首等号 |
-| list-item | list-item(body: Content, ordered: Bool) | 独立 | 无 | `-` 与 `+` |
-| table | table(columns: Int, align: Array, body: Content) | 独立 | 无 | 管道表 |
-| table-cell | table-cell(body: Content, header: Bool, colspan: Int, rowspan: Int) | 独立 | 无 | 无 |
-| scope | scope(body: Content) | 透明 | id 属性或匿名 | 标注绑定 |
-| link | link(target: Target) | 行内 | 无 | `#<…>` |
-| view | view(target: Target) | 行内或独立 | 无 | 无 |
-| callout | callout(kind: String, title: Content?, body: Content) | 独立 | 无 | 无 |
-| details | details(summary: Content?, open: Bool, body: Content) | 独立 | 无 | 无 |
-| figure | figure(caption: Content?, body: Content) | 独立 | 无 | 无 |
-| parbreak | parbreak() | 分隔 | 无 | 空行 |
-| gap | gap() | 透明 | 无 | 相邻项间空行 |
+| 名称 | 形式 | 结果 |
+| - | - | - |
+| `item` | `item(name: String, args: Dict)` | Item |
+| `text` | `text(value: String)` | 文本 Content |
+| `error` | `error(message: String)` | Error Content |
+| `is_error` | `is_error(value: Any)` | Bool |
+| `recover` | `recover(value: Any, fallback: Any)` | Value |
+| `str` | `str(value: String\|Int\|Bool)` | String |
+| `len` | `len(List\|Dict)` | Int |
+| `get` | `get(Dict\|List, key: String\|Int)` | Value 或 Error Content |
+| `concat` | `concat(List)` | Content |
+| `map` | `map(Function, List)` | List |
 
-流角色四值：行内参与行内流；独立自成一段并切断行内流；透明不产内容也不切断流；分隔不产内容但切断行内流。段落、列表、编号、表格行是投影视图，按流角色对终态兄弟序列做 run 划分。
+== Item 与 HTML
 
-== 构造页
+`item` 只负责构造数据，不验证是否存在对应的组件。HTML consumer 对少数名称使用原生 HTML：`paragraph`、`section`、`strong`、`em`、`list`、`list-item` 和 `heading`。其他合法名称映射为 `notist-<name>`。
 
-- #<vault::designs::plugins::core::section>
-- #<vault::designs::plugins::core::list>
-- #<vault::designs::plugins::core::scope>
-- #<vault::designs::plugins::core::parbreak>
+Item 字段序列化为 `data-<field>` 属性；Content 字段由组件通过 `renderContent` 显式渲染。字段不能序列化或名称不能成为 HTML 属性时，由渲染器产生 `notist-error`。
 
-尚无单独页的元素：text、强调族、raw、math、rule、table 与 table-cell、link、view、callout、details、figure、gap。
+== 当前边界
+
+段落分组、列表投影、section label 身份、annotation、Target、outline 和引用索引不属于当前 core 运行时。`components/` 中的 Web Component 是 package 资源，不是 core 函数注册项。

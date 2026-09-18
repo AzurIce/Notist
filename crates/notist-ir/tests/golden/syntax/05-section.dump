@@ -1,7 +1,0 @@
-module
-  section(label=[text("标题")])
-    text("正文。")
-    section(label=[text("子节")])
-      text("子正文。")
-bindings
-diagnostics

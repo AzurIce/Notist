@@ -1,5 +1,0 @@
-module
-bindings
-  count = 3
-diagnostics
-  warn value-is-not-content [14..19] statement produces Int and adds no content

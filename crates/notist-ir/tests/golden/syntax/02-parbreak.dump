@@ -1,6 +1,0 @@
-module
-  text("第一段。")
-  parbreak
-  text("第二段。")
-bindings
-diagnostics

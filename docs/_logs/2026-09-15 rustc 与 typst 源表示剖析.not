@@ -1,8 +1,8 @@
-@!(ai: true, type: "log", desc: "rustc 与 typst 源表示剖析及 notist 的选型")
+@!(ai: true, desc: "rustc 与 typst 源表示剖析及 notist 的选型")
 
 = rustc 与 typst 源表示剖析
 
-背景：管线设计推进到 parse 层，需要裁决源表示用 AST 还是 CST。本文深挖 rustc 与 typst 两条路线的完整代价结构，作为 #<vault::designs::pipeline> 相关条目的证据底座。
+背景：管线设计推进到 parse 层，需要裁决源表示用 AST 还是 CST。本文深挖 rustc 与 typst 两条路线的完整代价结构，作为源表示选型的证据底座。
 
 == 三档表示
 

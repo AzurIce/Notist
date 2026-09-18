@@ -1,4 +1,0 @@
-[package]
-name = "sloppy"
-version = "0.1.0"
-entry = "api.not"

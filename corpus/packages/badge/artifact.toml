@@ -1,2 +1,0 @@
-interface = "element badge(text: String) -> Item flow=inline"
-symbols = ["badge"]

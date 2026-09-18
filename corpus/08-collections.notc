@@ -1,0 +1,11 @@
+let numbers = array(1, 2, 3)
+let config = dict(mode: "fast", retries: 2)
+
+let first = at(value: numbers, index: 0)
+let mode = get(value: config, key: "mode")
+let missing = get(value: config, key: "absent")
+let count = len(value: numbers)
+
+table(columns: 2, align: array("left", "right"), body: [
+  table-cell[text(text: "单元格")]
+])

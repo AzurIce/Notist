@@ -1,0 +1,11 @@
+module
+bindings
+  apply = <fn(f: Function, value: Int)>
+  double = <fn(value: Int)>
+  quad = 8
+  make_adder = <fn(amount: Int)>
+  add_ten = <fn(value: Int)>
+  result = 15
+  factorial = <fn(n: Int)>
+  factorial_of_five = 120
+diagnostics

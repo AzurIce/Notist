@@ -54,4 +54,4 @@ Registration is cached per binary path per evaluation and bindings are installed
 
 The demo tests transitive components and WASM registration. Mermaid/Shader components display source text; they do not bundle those rendering engines. The core package is ordinary `.notc`. Registry/version resolution, public/private declarations, complete `.not` lowering, static type inference, editor integration, and custom WASM type definitions remain outside this prototype. No changes are required in sister editors until they adopt this language.
 
-`cargo run -j4 -p notist-next --example build_fixture` regenerates the WASM fixture and portable package request. `just web-build`, `just web-fixtures`, and `just web-compare` build and compare the browser evaluator.
+`cargo run -j4 -p notist-next --example build_fixture` regenerates the WASM fixture and portable package request. `just web-build` and `just web-fixtures` build the browser evaluator; `just web-compare` compares only native/browser `result.content` and `result.diagnostics`.

@@ -1,2 +1,0 @@
-interface = "fn meters(x: Float) -> Float"
-symbols = ["meters"]

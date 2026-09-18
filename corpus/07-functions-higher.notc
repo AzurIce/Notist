@@ -1,0 +1,11 @@
+let apply(f: Function, value: Int) -> Int = f(value)
+
+let double(value: Int) -> Int = value * 2
+let quad = apply(double, 4)
+
+let make_adder(amount: Int) = (value: Int) => value + amount
+let add_ten = make_adder(amount: 10)
+let result = add_ten(5)
+
+let rec factorial(n: Int) -> Int = if n <= 1 { 1 } else { n * factorial(n - 1) }
+let factorial_of_five = factorial(5)

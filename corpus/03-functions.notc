@@ -1,0 +1,21 @@
+let greet(name: String) = [
+  text(text: name)
+]
+greet(name: "世界")
+
+let pair(
+  first: String,
+  second: String,
+) -> Content = [
+  text(text: first)
+  text(text: second)
+]
+pair(first: "一", second: "二")
+
+// 位置实参与具名实参混用，缺省用默认值
+let scaled(value: Int, factor: Int = 2) -> Int = value * factor
+let doubled = scaled(21)
+let tripled = scaled(7, factor: 3)
+
+// 尾随体绑定签名声明的 body 形参
+strong[text(text: "尾随体")]

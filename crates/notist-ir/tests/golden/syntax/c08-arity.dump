@@ -1,7 +1,0 @@
-module
-  f[degraded](y=1)
-bindings
-  f = <fn(x: Int)>
-diagnostics
-  warn missing-argument [38..45] `f(x: Int)` is missing argument `x`
-  warn unknown-argument [38..45] `f(x: Int)` has no parameter `y`

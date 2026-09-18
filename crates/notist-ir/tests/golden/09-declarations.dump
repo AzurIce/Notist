@@ -1,0 +1,12 @@
+module
+  call[degraded](#0=4)
+  call[degraded](#0="标")
+bindings
+  sqrt = <fn(x: Float)>
+  canvas = <fn(width: Int, height: Int, body: Content)>
+  badge = <fn(text: String)>
+diagnostics
+  warn unknown-type [99..103] unknown type `Item`
+  warn unknown-type [141..145] unknown type `Item`
+  warn implementation-missing [147..159] this function is declared but has no implementation
+  warn implementation-missing [160..178] this function is declared but has no implementation

@@ -1,6 +1,0 @@
-package cycle-b 0.1.0
-entry api.not
-exports
-  fn b() -> Int
-implementation none
-diagnostics

@@ -1,0 +1,9 @@
+let title = text(text: "标题")
+title
+
+// 遮蔽：同作用域重绑定，最近一次生效
+let title = text(text: "遮蔽后的标题")
+title
+
+let count = 3
+let total = count * 2

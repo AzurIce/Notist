@@ -1,2 +1,0 @@
-interface = "fn up(x: Int) -> Int; fn down(x: Int) -> Int"
-symbols = ["up"]

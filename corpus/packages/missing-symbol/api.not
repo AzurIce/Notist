@@ -1,2 +1,0 @@
-#extern fn up(x: Int) -> Int
-#extern fn down(x: Int) -> Int

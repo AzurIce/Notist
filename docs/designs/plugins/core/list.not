@@ -1,14 +1,7 @@
-@!(ai: true, draft: true, desc: "list-item 元素与列表投影视图")
+@!(ai: true, desc: "列表 Item 的当前原型边界")
 
 = list
 
-```text
-list-item(body: Content, ordered: Bool) -> Item
-```
+当前原型没有列表投影或自动分组阶段。列表使用普通 List 值表示；需要渲染列表时，由 `.notc` 显式构造 `item("list", ...)` 和 `item("list-item", ...)`。
 
-- 容器元素：body 是项内容；ordered 由 `+` 置位，是节点字段
-- 列表是投影视图：同层连续的 list-item 兄弟构成一个列表，归组跨过透明元素，被其他兄弟打断即终止
-- ordered 相同的连续项归为同一个列表；编号自 1 起，列表终止即重起
-- 嵌套由 body 表达
-- 来源统一：糖、手写调用、handler 产出的 list-item 在终态相邻即同属一个列表
-- 相邻项之间的空行是 gap 元素，供视图区分松紧
+HTML consumer 根据 `ordered` 字段选择 `ul` 或 `ol`，根据 `body` 字段渲染列表项。

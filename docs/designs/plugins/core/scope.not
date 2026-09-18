@@ -1,12 +1,5 @@
-@!(ai: true, draft: true, desc: "scope：透明容器元素，标注的绑定目标")
+@!(ai: true, desc: "scope 的当前原型边界")
 
 = scope
 
-```text
-scope(body: Content) -> Item
-```
-
-- 透明：不产内容；内容为纯 inline 时与相邻内容同段，含 block 元素时自成块兄弟
-- 容器即分组边界：内部自成子文档计算视图，外部以单一单元参与流
-- 来源：被标注绑定的构造保留为容器；`#[…]` 未被绑定时内容直接进入流
-- 身份：显式 id 进身份表，无 id 时为匿名 Item；id 存属性字典，不是节点字段
+当前原型没有 scope Item、annotation 绑定或属性继承。需要分组时使用 Content、List、Dict 或显式 `item` 字段表达结构。

@@ -1,9 +1,0 @@
-package badge 1.0.0
-entry api.not
-exports
-  element badge(text: String) -> Item flow=inline
-implementation host artifact.toml
-  interface match
-  symbols
-    badge -> badge
-diagnostics

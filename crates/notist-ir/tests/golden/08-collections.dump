@@ -1,0 +1,12 @@
+module
+  table(columns=2, align=array("left", "right"))
+    table-cell
+      text("单元格")
+bindings
+  numbers = array(1, 2, 3)
+  config = dict(mode: "fast", retries: 2)
+  first = 1
+  mode = "fast"
+  missing = ()
+  count = 3
+diagnostics

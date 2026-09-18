@@ -1,0 +1,13 @@
+module
+  text("正文。")
+  text("转义：\"引号\"、\\ 反斜杠、\n换行")
+  strong
+    text("强调")
+  emph
+    text("斜体")
+  underline
+    text("下划线")
+  strike
+    text("删除线")
+bindings
+diagnostics

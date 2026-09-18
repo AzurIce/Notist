@@ -1,3 +1,0 @@
-这一行不是声明。
-
-#extern fn ok(x: Int) -> Int

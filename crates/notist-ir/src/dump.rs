@@ -166,6 +166,17 @@ pub fn compact_value(value: &Value) -> String {
             let items: Vec<String> = content.items.iter().map(compact).collect();
             format!("[{}]", items.join(", "))
         }
-        Value::Function(function) => format!("<fn{}>", function.signature()),
+        Value::Function(function) => format!("<fn{}>", function.signature_text()),
+        Value::Array(items) => {
+            let items: Vec<String> = items.iter().map(compact_value).collect();
+            format!("array({})", items.join(", "))
+        }
+        Value::Dict(pairs) => {
+            let pairs: Vec<String> = pairs
+                .iter()
+                .map(|(key, value)| format!("{key}: {}", compact_value(value)))
+                .collect();
+            format!("dict({})", pairs.join(", "))
+        }
     }
 }

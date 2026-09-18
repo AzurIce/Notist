@@ -1,0 +1,64 @@
+@!(ai: true, desc: "当前 .notc 原型语法和求值语义")
+
+= .notc
+
+`.notc` 是由当前原型直接求值的模块格式。模块从上到下执行，表达式语句产生 Content，绑定语句只更新环境。
+
+== 词法
+
+- 标识符由字母或 `_` 开头，后续只能使用字母、数字和 `_`。
+- 关键字：`let`、`use`、`wasm`、`as`、`if`、`else`、`none`、`true`、`false`。
+- 字面量：字符串、整数、布尔值和 `none`。
+- 注释使用 `//` 到行尾。
+
+== 语句
+
+```text
+Module    = Statement*
+Statement = Let | Use | Wasm | Expr
+Let       = "let" Name "=" Expr ";"
+Use       = "use" Path ImportTail ";"
+Wasm      = "wasm" String ";"
+```
+
+函数使用 lambda 形式：
+
+```notc
+let heading = (title: String, level: Int = 2) => item("heading", (level: level, body: [#text(title)]));
+```
+
+同一模块环境中重复绑定是错误。模块导出的 `let` 绑定和 WASM 注册函数可被其他模块导入；`use` 导入的名称只进入当前模块环境。
+
+== 表达式
+
+支持名称、字符串、整数、布尔值、`none`、List、Dict、Content、函数调用、字段访问、`if` 和有限的整数/字符串/布尔运算。函数调用支持位置参数、具名参数、默认值和尾随 Content：
+
+```notc
+let paragraph = (body: Content) => item("paragraph", (body: body));
+paragraph[hello];
+```
+
+`[]` 的结果是 Content。Content 中允许文本和 Item；`item(name, args)` 返回 Item。字段访问支持 `item.name` 和 `item.args`。
+
+== 模块路径
+
+模块源文件位于 package 的 `docs/` 下。`README.notc` 表示所在目录模块，其他 `.notc` 或 `.not` 文件按文件名组成模块段。空格映射为 `_`；数字开头和 Unicode 字母数字可以出现在文件名段中；`vault`、`self`、`super` 是路径关键字，不能作为文件名段。
+
+```notc
+use vault::helpers::{self as helpers, format};
+use theme::colors::*;
+```
+
+`vault` 指当前 package 根，依赖别名指向依赖 package 根，`self` 指当前模块，`super` 向父模块移动。循环导入、缺失模块和冲突模块路径产生 Error Content。
+
+== WASM
+
+```notc
+wasm "../wasm/semantic.wasm";
+```
+
+WASM 必须显式引用。运行时调用 `notist_register` 读取函数注册表，验证每个导出的 ABI 和声明类型后，把函数直接放入当前环境。注册按 binary 路径和一次求值缓存；调用使用独立实例。WASM 只传输可 JSON 化的内置值。
+
+== 求值与错误
+
+运行时严格求值参数，函数按词法闭包执行，没有隐式 reduce/normalization pass。错误保留在输出 Content 中并附带来源位置；后续语句仍可继续求值。`.not` 文件只建立索引，当前求值会报告 lowering 尚未实现。

@@ -1,0 +1,13 @@
+let pick(flag: Bool) -> Content = if flag [
+  text(text: "真分支")
+] else [
+  text(text: "假分支")
+]
+pick(flag: true)
+
+let describe(value: Int) -> String = if value > 0 {
+  "正数"
+} else {
+  "非正数"
+}
+text(text: describe(value: 5))

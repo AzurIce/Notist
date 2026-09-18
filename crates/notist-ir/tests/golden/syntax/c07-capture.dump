@@ -1,7 +1,0 @@
-module
-  text("内")
-  text("外")
-bindings
-  outer = [text("外")]
-  show = <fn()>
-diagnostics

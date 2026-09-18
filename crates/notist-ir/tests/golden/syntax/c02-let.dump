@@ -1,5 +1,0 @@
-module
-  text("你好。")
-bindings
-  greeting = [text("你好。")]
-diagnostics

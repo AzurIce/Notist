@@ -1,0 +1,14 @@
+let outer = text(text: "外层")
+
+let show() = [
+  let inner = text(text: "内层")
+  inner
+  outer
+]
+
+section(label: [text(text: "章节")], body: [
+  show()
+  [
+    text(text: "再嵌一层")
+  ]
+])

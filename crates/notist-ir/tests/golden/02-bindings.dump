@@ -1,0 +1,8 @@
+module
+  text("标题")
+  text("遮蔽后的标题")
+bindings
+  title = [text("遮蔽后的标题")]
+  count = 3
+  total = 6
+diagnostics

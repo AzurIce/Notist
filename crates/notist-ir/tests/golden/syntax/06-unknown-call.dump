@@ -1,8 +1,0 @@
-module
-  text("前 ")
-  nope[degraded]
-    text("体")
-  text(" 后")
-bindings
-diagnostics
-  warn unknown-function [4..14] unknown function `nope`

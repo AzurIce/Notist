@@ -1,3 +1,0 @@
-#extern fn sqrt(x: Float) -> Float
-#extern fn pow(base: Float, exponent: Float) -> Float
-#extern element canvas(width: Int, height: Int, body: Content) -> Item

@@ -1,0 +1,6 @@
+extern fn sqrt(x: Float) -> Float
+extern element canvas(width: Int, height: Int, body: Content) -> Item
+extern inline badge(text: String) -> Item
+
+sqrt(x: 4.0)
+badge(text: "标")

@@ -1,4 +1,0 @@
-let greet(name: String) = [
-  text(text: name)
-]
-greet(name: "世界")

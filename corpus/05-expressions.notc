@@ -1,0 +1,7 @@
+let arithmetic = 2 * 3 + 10 / 5 - 1
+let mixed = 1 + 2.5
+let joined = "前缀" + "后缀"
+let compared = 3 <= 4
+let logic = true and not false
+let grouped = (1 < 2) == true
+let negated = -arithmetic

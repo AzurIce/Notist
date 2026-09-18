@@ -1,2 +1,0 @@
-interface = "fn sqrt(x: Float) -> Float; fn pow(base: Float, exponent: Float) -> Float; element canvas(width: Int, height: Int, body: Content) -> Item flow=standalone trailing=body"
-symbols = ["sqrt", "pow", "canvas"]

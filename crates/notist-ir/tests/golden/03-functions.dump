@@ -1,0 +1,13 @@
+module
+  text("世界")
+  text("一")
+  text("二")
+  strong
+    text("尾随体")
+bindings
+  greet = <fn(name: String)>
+  pair = <fn(first: String, second: String)>
+  scaled = <fn(value: Int, factor: Int)>
+  doubled = 42
+  tripled = 21
+diagnostics

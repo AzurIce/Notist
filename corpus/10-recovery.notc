@@ -1,0 +1,9 @@
+nope(x: 1)
+
+let count = 3
+count
+
+text(text: "类型不匹配")
+text(text: count)
+
+strong()
