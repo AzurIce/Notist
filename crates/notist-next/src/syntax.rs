@@ -1,3 +1,5 @@
+mod markup;
+
 #[derive(Clone, Debug)]
 pub struct Expr {
     pub offset: usize,
@@ -29,6 +31,9 @@ pub fn valid_binding(name: &str) -> bool {
 
 #[derive(Clone, Debug)]
 pub enum ExprKind {
+    Typed(Type, Box<Expr>),
+    Element(String, Vec<(String, Expr)>),
+    Annotation(bool, Box<Expr>),
     None,
     String(String),
     Int(i64),
@@ -142,6 +147,7 @@ pub fn parse_source(path: &str, source: &str) -> ParseResult {
     }
     let mut parser = Parser {
         source,
+        documentation: false,
         pos: 0,
         depth: 0,
         tokens: Vec::new(),
@@ -188,6 +194,7 @@ pub fn parse_source(path: &str, source: &str) -> ParseResult {
 pub fn parse_traced(source: &str) -> ParseResult {
     let mut parser = Parser {
         source,
+        documentation: false,
         pos: 0,
         depth: 0,
         tokens: Vec::new(),
@@ -237,6 +244,7 @@ pub fn parse_traced(source: &str) -> ParseResult {
             }
         }
     }
+    parser.record_code_trivia(parser.token().offset);
     result.id_count = assign_ids(
         &mut result.statements,
         &mut result.stmt_ids,
@@ -250,12 +258,26 @@ pub fn parse_traced(source: &str) -> ParseResult {
 pub fn parse_markup(source: &str) -> Result<Vec<Expr>, String> {
     let mut parser = Parser {
         source,
+        documentation: false,
         pos: 0,
         depth: 0,
         tokens: Vec::new(),
         recovery: false,
     };
     parser.markup_root()
+}
+
+/// Parse documentation without code interpolation or attribute expressions.
+pub fn parse_documentation(source: &str) -> Result<Vec<Expr>, String> {
+    Parser {
+        source,
+        documentation: true,
+        pos: 0,
+        depth: 0,
+        tokens: Vec::new(),
+        recovery: false,
+    }
+    .markup_root()
 }
 
 fn token_kind(token: &Token) -> &'static str {
@@ -303,7 +325,7 @@ fn assign_ids(
                     walk(item, next);
                 }
             }
-            ExprKind::Dict(fields) => {
+            ExprKind::Dict(fields) | ExprKind::Element(_, fields) => {
                 for (_, value) in fields {
                     walk(value, next);
                 }
@@ -314,7 +336,9 @@ fn assign_ids(
                     walk(&mut arg.expr, next);
                 }
             }
-            ExprKind::Field(base, _) => walk(base, next),
+            ExprKind::Field(base, _) | ExprKind::Annotation(_, base) | ExprKind::Typed(_, base) => {
+                walk(base, next)
+            }
             ExprKind::Lambda(params, body) => {
                 for param in params {
                     if let Some(default) = &mut param.default {
@@ -355,6 +379,7 @@ fn assign_ids(
 
 struct Parser<'a> {
     source: &'a str,
+    documentation: bool,
     pos: usize,
     depth: usize,
     tokens: Vec<TokenEvent>,
@@ -448,8 +473,21 @@ impl<'a> Parser<'a> {
     }
     fn bump(&mut self) {
         let token = self.token();
+        self.record_code_trivia(token.offset);
         self.pos = token.end;
         self.record(token.offset, token.end, token_kind(&token), token.text);
+    }
+    fn record_code_trivia(&mut self, end: usize) {
+        let mut at = self.pos;
+        while at < end {
+            if self.source[at..].starts_with("//") {
+                let stop = self.source[at..end].find('\n').map_or(end, |n| at + n);
+                self.record(at, stop, "comment", &self.source[at..stop]);
+                at = stop;
+            } else {
+                at += self.source[at..].chars().next().unwrap().len_utf8();
+            }
+        }
     }
     fn at(&self, text: &str) -> bool {
         let t = self.token();
@@ -535,8 +573,13 @@ impl<'a> Parser<'a> {
             if !valid_binding(&name) {
                 return Err(format!("invalid binding `{name}`"));
             }
+            let ty = if self.eat(":") {
+                Some(self.ty()?)
+            } else {
+                None
+            };
             self.expect("=")?;
-            let expr = self.expr(0)?;
+            let expr = self.checked_expr(ty)?;
             self.expect(";")?;
             return Ok(Statement::Let(name, expr));
         }
@@ -619,6 +662,18 @@ impl<'a> Parser<'a> {
         self.depth -= 1;
         result
     }
+    fn checked_expr(&mut self, ty: Option<Type>) -> Result<Expr, String> {
+        let value = self.expr(0)?;
+        Ok(match ty {
+            Some(ty) => Expr {
+                offset: value.offset,
+                end: value.end,
+                id: 0,
+                kind: ExprKind::Typed(ty, Box::new(value)),
+            },
+            None => value,
+        })
+    }
     fn expression(&mut self, min: u8) -> Result<Expr, String> {
         let offset = self.token().offset;
         let kind = if self.token().string {
@@ -629,8 +684,13 @@ impl<'a> Parser<'a> {
             let checkpoint = self.pos;
             let tokens = self.tokens.len();
             if let Some(params) = self.lambda_params()? {
+                let result = if self.eat("->") {
+                    Some(self.ty()?)
+                } else {
+                    None
+                };
                 self.expect("=>")?;
-                ExprKind::Lambda(params, Box::new(self.expr(0)?))
+                ExprKind::Lambda(params, Box::new(self.checked_expr(result)?))
             } else {
                 self.pos = checkpoint;
                 self.tokens.truncate(tokens);
@@ -808,7 +868,7 @@ impl<'a> Parser<'a> {
             }
             self.bump();
         }
-        let lambda = self.at("=>");
+        let lambda = self.at("=>") || self.at("->");
         self.pos = checkpoint;
         self.tokens.truncate(token_count);
         if !lambda {
@@ -889,224 +949,10 @@ impl<'a> Parser<'a> {
         Ok(ExprKind::List(values))
     }
     fn markup(&mut self, end: char) -> Result<Vec<Expr>, String> {
-        if self.depth >= 128 {
-            return Err("content nesting limit exceeded".into());
-        }
-        self.depth += 1;
-        let result = self.markup_inner(Some(end), 0);
-        self.depth -= 1;
-        result
+        self.markup_flow(Some(end), 0, None, false)
     }
     fn markup_root(&mut self) -> Result<Vec<Expr>, String> {
-        if self.depth >= 128 {
-            return Err("content nesting limit exceeded".into());
-        }
-        self.depth += 1;
-        let result = self.markup_inner(None, 0);
-        self.depth -= 1;
-        result
-    }
-    fn markup_inner(
-        &mut self,
-        end: Option<char>,
-        section_level: usize,
-    ) -> Result<Vec<Expr>, String> {
-        let mut parts = Vec::new();
-        let mut text = String::new();
-        let mut start = self.pos;
-        loop {
-            let offset = self.pos;
-            let line_start = self.pos == 0 || self.source[..self.pos].ends_with('\n');
-            let level = self.source[self.pos..]
-                .chars()
-                .take_while(|c| *c == '=')
-                .count();
-            let heading =
-                line_start && level > 0 && self.source[self.pos + level..].starts_with(' ');
-            let section_end = section_level > 0
-                && (heading && level <= section_level
-                    || end.is_some_and(|c| self.source[self.pos..].starts_with(c)));
-            if heading || section_end {
-                if !text.is_empty() {
-                    parts.push(Expr {
-                        offset: start,
-                        end: offset,
-                        id: 0,
-                        kind: ExprKind::String(std::mem::take(&mut text)),
-                    });
-                }
-                if section_end {
-                    return Ok(parts);
-                }
-                if self.depth >= 128 {
-                    return Err("section nesting limit exceeded".into());
-                }
-                self.pos += level + 1;
-                self.depth += 1;
-                let title = self.markup_inner(Some('\n'), 0)?;
-                let body = self.markup_inner(end, level)?;
-                self.depth -= 1;
-                parts.push(Expr {
-                    offset,
-                    end: self.pos,
-                    id: 0,
-                    kind: ExprKind::Section(level, title, body),
-                });
-                start = self.pos;
-                continue;
-            }
-            if self.source[self.pos..].starts_with("[[") {
-                if !text.is_empty() {
-                    self.record(start, offset, "markup-text", &self.source[start..offset]);
-                    parts.push(Expr {
-                        offset: start,
-                        end: offset,
-                        id: 0,
-                        kind: ExprKind::String(std::mem::take(&mut text)),
-                    });
-                }
-                let target_start = self.pos + 2;
-                let close = self.source[target_start..]
-                    .find("]]")
-                    .ok_or("unclosed wikilink")?;
-                let target_end = target_start + close;
-                let raw = &self.source[target_start..target_end];
-                let (module, item) = raw
-                    .split_once('#')
-                    .map_or((raw, None), |(m, i)| (m, Some(i)));
-                if module.is_empty()
-                    || module.split("::").any(|part| part.is_empty())
-                    || item.is_some_and(str::is_empty)
-                {
-                    return Err("invalid wikilink target".into());
-                }
-                self.record(
-                    self.pos,
-                    target_end + 2,
-                    "wikilink",
-                    &self.source[self.pos..target_end + 2],
-                );
-                self.pos = target_end + 2;
-                parts.push(Expr {
-                    offset,
-                    end: self.pos,
-                    id: 0,
-                    kind: ExprKind::Target(
-                        module.split("::").map(str::to_owned).collect(),
-                        item.map(str::to_owned),
-                    ),
-                });
-                start = self.pos;
-                continue;
-            }
-            let Some(c) = self.source[self.pos..].chars().next() else {
-                if let Some(end) = end.filter(|c| *c != '\n') {
-                    return Err(format!("unclosed markup, expected `{end}`"));
-                }
-                if !text.is_empty() {
-                    self.record(
-                        start,
-                        self.pos,
-                        "markup-text",
-                        &self.source[start..self.pos],
-                    );
-                    parts.push(Expr {
-                        offset: start,
-                        end: self.pos,
-                        id: 0,
-                        kind: ExprKind::String(text),
-                    });
-                }
-                return Ok(parts);
-            };
-            if end.is_some_and(|end| c == end) || matches!(c, '#' | '[' | '*' | '_') {
-                if !text.is_empty() {
-                    self.record(start, offset, "markup-text", &self.source[start..offset]);
-                    parts.push(Expr {
-                        offset: start,
-                        end: offset,
-                        id: 0,
-                        kind: ExprKind::String(std::mem::take(&mut text)),
-                    });
-                }
-                self.pos += c.len_utf8();
-                if end.is_some_and(|end| c == end) {
-                    self.record(
-                        offset,
-                        self.pos,
-                        "markup-close",
-                        &self.source[offset..self.pos],
-                    );
-                    return Ok(parts);
-                }
-                let expr = match c {
-                    '#' => {
-                        self.record(offset, self.pos, "markup-interp", "#");
-                        if self.at("let") || self.at("use") || self.at("wasm") {
-                            let statement = self.statement()?;
-                            Expr {
-                                offset,
-                                end: self.pos,
-                                id: 0,
-                                kind: ExprKind::Declaration(Box::new(statement)),
-                            }
-                        } else {
-                            self.expr(5)?
-                        }
-                    }
-                    '[' => {
-                        self.record(offset, self.pos, "markup-open", "[");
-                        let inner = self.markup(']')?;
-                        Expr {
-                            offset,
-                            end: self.pos,
-                            id: 0,
-                            kind: ExprKind::Content(inner),
-                        }
-                    }
-                    '*' | '_' => {
-                        self.record(
-                            offset,
-                            self.pos,
-                            "markup-style",
-                            &self.source[offset..self.pos],
-                        );
-                        let inner = self.markup(c)?;
-                        Expr {
-                            offset,
-                            end: self.pos,
-                            id: 0,
-                            kind: ExprKind::Styled(if c == '*' { "strong" } else { "em" }, inner),
-                        }
-                    }
-                    _ => unreachable!(),
-                };
-                parts.push(expr);
-                start = self.pos;
-            } else if c == '\\' {
-                self.pos += 1;
-                let next = self.source[self.pos..]
-                    .chars()
-                    .next()
-                    .ok_or("unfinished markup escape")?;
-                self.pos += next.len_utf8();
-                self.record(
-                    offset,
-                    self.pos,
-                    "markup-escape",
-                    &self.source[offset..self.pos],
-                );
-                text.push(next);
-            } else if c == ']' {
-                return Err(end.map_or_else(
-                    || "unexpected `]` in markup".into(),
-                    |end| format!("unclosed markup, expected `{end}` before `]`"),
-                ));
-            } else {
-                self.pos += c.len_utf8();
-                text.push(c);
-            }
-        }
+        self.markup_flow(None, 0, None, true)
     }
     fn arguments(&mut self, end: &str) -> Result<Vec<Arg>, String> {
         let mut args = Vec::new();

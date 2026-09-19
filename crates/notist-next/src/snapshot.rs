@@ -17,6 +17,15 @@ pub fn base64_decode(text: &str) -> Result<Vec<u8>, String> {
 
 fn expr(e: &Expr) -> Json {
     let mut node = match &e.kind {
+        ExprKind::Element(name, fields) => {
+            json!({"kind":"element","name":name,"fields":fields.iter().map(|(k,v)| (k,expr(v))).collect::<std::collections::BTreeMap<_,_>>()})
+        }
+        ExprKind::Annotation(module, value) => {
+            json!({"kind":"annotation","module":module,"value":expr(value)})
+        }
+        ExprKind::Typed(ty, value) => {
+            json!({"kind":"typed","type":format!("{ty:?}"),"value":expr(value)})
+        }
         ExprKind::None => json!({"kind":"none"}),
         ExprKind::String(v) => json!({"kind":"string","value":v}),
         ExprKind::Int(v) => json!({"kind":"int","value":v}),
@@ -158,5 +167,7 @@ pub fn analyze(input: &str) -> Json {
         "platform":{"target":if cfg!(target_arch="wasm32"){"wasm32-unknown-unknown"}else{"native"},"elapsed_ms":started.elapsed().as_secs_f64()*1000.0},
         "source":{"files":files,"entry_source_id":source_id(entry)},"syntax":{"tokens":tokens,"statements":statements,"errors":errors},
         "evaluation":{"events":events},"result":{"content":evaluation.content.to_json(),"bindings":env.iter().map(|(k,v)|json!({"name":k,"value":v.to_json().to_string(),"source_id":source_id(entry)})).collect::<Vec<_>>(),
+        "attributes":evaluation.attributes.iter().map(|(k,v)|(k,v.to_json())).collect::<std::collections::BTreeMap<_,_>>(),
+        "modules":runtime.module_attributes.iter().map(|(source,attrs)|(source,attrs.iter().map(|(k,v)|(k,v.to_json())).collect::<std::collections::BTreeMap<_,_>>())).collect::<std::collections::BTreeMap<_,_>>(),
         "diagnostics":diagnostics,"stats":{"events":events.len(),"tokens":tokens.len()}},"truncated":[]})
 }

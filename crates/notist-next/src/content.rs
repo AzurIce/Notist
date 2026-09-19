@@ -12,6 +12,7 @@ pub struct Location {
 pub struct Item {
     pub name: String,
     pub args: BTreeMap<String, Value>,
+    pub attributes: BTreeMap<String, Value>,
     pub location: Location,
 }
 
@@ -27,6 +28,7 @@ pub enum Content {
 impl Item {
     pub fn to_json(&self) -> Json {
         json!({"item": self.name, "args": self.args.iter().map(|(k,v)| (k, v.to_json())).collect::<BTreeMap<_,_>>(),
+            "attributes": self.attributes.iter().map(|(k,v)| (k, v.to_json())).collect::<BTreeMap<_,_>>(),
             "source": self.location.source, "offset": self.location.offset})
     }
 }
@@ -53,7 +55,7 @@ impl Content {
             match value {
                 Value::Content(c) => c.warnings(out),
                 Value::Item(i) => {
-                    for v in i.args.values() {
+                    for v in i.args.values().chain(i.attributes.values()) {
                         visit(v, out);
                     }
                 }
@@ -81,7 +83,7 @@ impl Content {
                 }
             }
             Self::Item(item) => {
-                for v in item.args.values() {
+                for v in item.args.values().chain(item.attributes.values()) {
                     visit(v, out);
                 }
             }

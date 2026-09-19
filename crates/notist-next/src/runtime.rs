@@ -95,9 +95,11 @@ impl Value {
             | Self::External(_) => false,
             Self::List(v) => v.iter().all(Self::serializable),
             Self::Dict(v) => v.values().all(Self::serializable),
-            Self::Item(i) | Self::Content(Content::Item(i)) => {
-                i.args.values().all(Self::serializable)
-            }
+            Self::Item(i) | Self::Content(Content::Item(i)) => i
+                .args
+                .values()
+                .chain(i.attributes.values())
+                .all(Self::serializable),
             Self::Content(Content::Sequence(v)) => {
                 v.iter().all(|c| Self::Content(c.clone()).serializable())
             }
@@ -138,11 +140,13 @@ fn type_name(name: &str) -> Result<Type, String> {
 
 pub struct Evaluation {
     pub content: Content,
+    pub attributes: Env,
     pub warnings: Vec<String>,
 }
 
 #[derive(Default)]
 pub struct Runtime {
+    pub module_attributes: BTreeMap<String, Env>,
     pub sources: BTreeMap<String, String>,
     pub binaries: BTreeMap<String, Vec<u8>>,
     /// Package id -> (dependency alias -> package id).
@@ -161,6 +165,7 @@ impl Runtime {
         self.evaluate_with_env(source).0
     }
     pub fn evaluate_with_env(&mut self, source: &str) -> (Evaluation, Env) {
+        self.module_attributes.clear();
         self.modules.clear();
         self.loading.clear();
         self.registry.clear();
@@ -234,7 +239,29 @@ impl Runtime {
         };
         let mut warnings = Vec::new();
         content.warnings(&mut warnings);
-        (Evaluation { content, warnings }, env)
+        let attributes = self
+            .module_attributes
+            .get(source)
+            .cloned()
+            .unwrap_or_default();
+        Content::Item(Item {
+            name: "module".into(),
+            args: Env::new(),
+            attributes: attributes.clone(),
+            location: Location {
+                source: source.into(),
+                offset: 0,
+            },
+        })
+        .warnings(&mut warnings);
+        (
+            Evaluation {
+                content,
+                attributes,
+                warnings,
+            },
+            env,
+        )
     }
     fn failure(message: impl Into<String>, location: &Location) -> Value {
         Value::Content(Content::Error {
@@ -311,6 +338,8 @@ impl Runtime {
         };
         let mut exports = Env::new();
         let mut output = Vec::new();
+        let mut pending = Env::new();
+        let mut pending_location = None;
         for statement in statements {
             match statement {
                 Statement::Let(name, expr) => {
@@ -332,14 +361,60 @@ impl Runtime {
                     exports.insert(name, value);
                 }
                 Statement::Expression(expr) => {
+                    if let ExprKind::Annotation(module, value) = &expr.kind {
+                        let location = Location {
+                            source: source.into(),
+                            offset: expr.offset,
+                        };
+                        match self.eval(value, &env, source, depth + 1) {
+                            Value::Dict(attributes) => {
+                                if *module {
+                                    self.module_attributes
+                                        .entry(source.into())
+                                        .or_default()
+                                        .extend(attributes);
+                                } else {
+                                    pending.extend(attributes);
+                                    pending_location = Some(location);
+                                }
+                            }
+                            value if value.error() => output.push(Self::content(value, &location)),
+                            _ => output.push(Self::content(
+                                Self::failure(
+                                    "annotation expression must evaluate to Dict",
+                                    &location,
+                                ),
+                                &location,
+                            )),
+                        }
+                        continue;
+                    }
                     let value = self.eval(&expr, &env, source, depth + 1);
-                    output.push(Self::content(
+                    let mut content = Self::content(
                         value,
                         &Location {
                             source: source.into(),
                             offset: expr.offset,
                         },
-                    ));
+                    );
+                    fn attach(content: &mut Content, attrs: &mut Env) -> bool {
+                        match content {
+                            Content::Item(item) => {
+                                let mut merged = std::mem::take(attrs);
+                                merged.append(&mut item.attributes);
+                                item.attributes = merged;
+                                true
+                            }
+                            Content::Sequence(parts) => {
+                                parts.iter_mut().any(|part| attach(part, attrs))
+                            }
+                            _ => false,
+                        }
+                    }
+                    if pending_location.is_some() && attach(&mut content, &mut pending) {
+                        pending_location = None;
+                    }
+                    output.push(content);
                 }
                 Statement::Error(offset, message) => output.push(Content::Error {
                     message,
@@ -417,6 +492,12 @@ impl Runtime {
                     }
                 }
             }
+        }
+        if let Some(location) = pending_location {
+            output.push(Content::Error {
+                message: "Item annotation has no following Item".into(),
+                location,
+            });
         }
         (exports, Content::Sequence(output))
     }
@@ -582,6 +663,19 @@ impl Runtime {
         }
         self.steps -= 1;
         match &expr.kind {
+            ExprKind::Element(name, fields) => {
+                let args = fields
+                    .iter()
+                    .map(|(key, value)| (key.clone(), self.eval(value, env, source, depth + 1)))
+                    .collect();
+                Value::Item(Item {
+                    name: name.clone(),
+                    args,
+                    attributes: Env::new(),
+                    location: loc,
+                })
+            }
+            ExprKind::Annotation(_, _) => Self::failure("annotation requires Markup scope", &loc),
             ExprKind::Section(level, title, body) => {
                 let mut field = |parts: &Vec<Expr>| {
                     self.eval(
@@ -598,6 +692,7 @@ impl Runtime {
                 let body = field(body);
                 Value::Item(Item {
                     name: "section".into(),
+                    attributes: Env::new(),
                     args: BTreeMap::from([
                         ("level".into(), Value::Int(*level as i64)),
                         ("title".into(), title),
@@ -607,6 +702,17 @@ impl Runtime {
                 })
             }
             ExprKind::Declaration(_) => Self::failure("declaration requires Content scope", &loc),
+            ExprKind::Typed(ty, value) => {
+                let value = self.eval(value, env, source, depth + 1);
+                if value.error() || matches_type(ty, &value) {
+                    value
+                } else {
+                    Self::failure(
+                        format!("type annotation expected {ty:?}, got {:?}", value.ty()),
+                        &loc,
+                    )
+                }
+            }
             ExprKind::None => Value::None,
             ExprKind::String(v) => Value::String(v.clone()),
             ExprKind::Int(v) => Value::Int(*v),
@@ -618,6 +724,9 @@ impl Runtime {
                 if matches!(
                     name.as_str(),
                     "item"
+                        | "math"
+                        | "raw"
+                        | "link"
                         | "text"
                         | "error"
                         | "concat"
@@ -662,6 +771,7 @@ impl Runtime {
                 Value::Item(i) => match key.as_str() {
                     "name" => Value::String(i.name),
                     "args" => Value::Dict(i.args),
+                    "attributes" => Value::Dict(i.attributes),
                     _ => Self::failure("Item has name and args fields", &loc),
                 },
                 v if v.error() => v,
@@ -679,6 +789,7 @@ impl Runtime {
                 if let ExprKind::Styled(name, _) = &expr.kind {
                     Value::Item(Item {
                         name: (*name).into(),
+                        attributes: Env::new(),
                         args: BTreeMap::from([("body".into(), Value::Content(content))]),
                         location: loc,
                     })
@@ -878,17 +989,46 @@ impl Runtime {
                 Err(e) => Self::failure(e, loc),
             },
             Value::Named(name) => {
-                if args.iter().any(|a| a.name.is_some()) {
+                if args.iter().any(|a| a.name.is_some())
+                    && !((name == "math" || name == "raw")
+                        && args.len() == 1
+                        && args[0].name.as_deref() == Some("content"))
+                {
                     return Self::failure("builtin requires positional arguments", loc);
                 }
                 let v = args.into_iter().map(|a| a.value).collect::<Vec<_>>();
                 match (name.as_str(), v.as_slice()) {
                     ("item", [Value::String(name), Value::Dict(args)]) => Value::Item(Item {
                         name: name.clone(),
+                        attributes: Env::new(),
                         args: args.clone(),
                         location: loc.clone(),
                     }),
                     ("text", [Value::String(s)]) => Value::Content(Content::Text(s.clone())),
+                    ("math" | "raw", [Value::String(s)]) => Value::Item(Item {
+                        name: name.clone(),
+                        args: Env::from([
+                            ("content".into(), Value::String(s.clone())),
+                            ("block".into(), Value::Bool(false)),
+                        ]),
+                        attributes: Env::new(),
+                        location: loc.clone(),
+                    }),
+                    ("link", [Value::String(dest)]) | ("link", [Value::String(dest), _]) => {
+                        let body = v
+                            .get(1)
+                            .cloned()
+                            .unwrap_or_else(|| Value::Content(Content::Text(dest.clone())));
+                        Value::Item(Item {
+                            name: "link".into(),
+                            args: Env::from([
+                                ("dest".into(), Value::String(dest.clone())),
+                                ("body".into(), body),
+                            ]),
+                            attributes: Env::new(),
+                            location: loc.clone(),
+                        })
+                    }
                     ("error", [Value::String(s)]) => Self::failure(s, loc),
                     ("is_error", [v]) => Value::Bool(v.error()),
                     ("recover", [v, fallback]) => {

@@ -70,6 +70,16 @@ pub fn run(args: Args) -> Result<(), String> {
         }
         let manifest = serde_json::to_string(&loaded.components).unwrap();
         fs::write(dir.join("components.json"), manifest).map_err(|e| e.to_string())?;
+        let attributes = result
+            .attributes
+            .iter()
+            .map(|(k, v)| (k, v.to_json()))
+            .collect::<std::collections::BTreeMap<_, _>>();
+        fs::write(
+            dir.join("attributes.json"),
+            serde_json::to_vec(&attributes).unwrap(),
+        )
+        .map_err(|e| e.to_string())?;
         fs::write(
             dir.join("content.json"),
             result.content.to_json().to_string(),
@@ -80,7 +90,7 @@ pub fn run(args: Args) -> Result<(), String> {
             include_str!("../../notist-next/web/renderer.js"),
         )
         .map_err(|e| e.to_string())?;
-        fs::write(dir.join("index.html"),"<!doctype html><meta charset=\"utf-8\"><title>Notist</title><main id=\"document\"></main><script type=\"module\">import {mount} from './renderer.js'; const [content,components]=await Promise.all(['content.json','components.json'].map(p=>fetch(p).then(r=>r.json()))); await mount(document.querySelector('main'),content,components);</script>").map_err(|e|e.to_string())?;
+        fs::write(dir.join("index.html"),"<!doctype html><meta charset=\"utf-8\"><meta name=\"viewport\" content=\"width=device-width\"><title>Notist</title><style>main{overflow-wrap:anywhere}pre{overflow:auto}canvas,svg{max-width:100%}</style><main id=\"document\"></main><script type=\"module\">import {mount} from './renderer.js'; const [content,components,attributes]=await Promise.all(['content.json','components.json','attributes.json'].map(p=>fetch(p).then(r=>r.json()))); await mount(document.querySelector('main'),content,components,document.baseURI,attributes);</script>").map_err(|e|e.to_string())?;
     } else if args.html {
         println!("{}", result.content.html());
     } else {

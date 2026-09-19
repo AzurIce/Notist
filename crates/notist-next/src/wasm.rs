@@ -163,6 +163,18 @@ pub(crate) fn decode(json: Json, location: &Location) -> Result<Value, String> {
                 return Ok(Value::Item(Item {
                     name,
                     args,
+                    attributes: object
+                        .remove("attributes")
+                        .map(|value| {
+                            value
+                                .as_object()
+                                .ok_or("expected Item attributes object")?
+                                .iter()
+                                .map(|(k, v)| Ok((k.clone(), decode(v.clone(), location)?)))
+                                .collect::<Result<_, String>>()
+                        })
+                        .transpose()?
+                        .unwrap_or_default(),
                     location: location.clone(),
                 }));
             }

@@ -1,0 +1,24 @@
+@!(title: "Markup", lang: "en")
+
+@(id: "markup")
+= Markup
+
+*Strong*, _emphasis_, "quotes", literal [brackets], and https://typst.app.
+
+@(id: "code")
+```not
+@!(title: "Document")
+#math(content: "x_1 + y_2")
+```
+
+Inline $x_1 + y_2$ and block math:
+
+$ sum_(i=1)^n i = (n (n + 1)) / 2 $
+
+- First
+  + Nested
+  + Second
+- Last
+
+/ Item: A node with arguments and attributes.
+/ Module: A source document.

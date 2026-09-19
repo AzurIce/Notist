@@ -5,6 +5,38 @@ fn run(source: &str) -> notist_next::Evaluation {
     r.evaluate("README.notc")
 }
 #[test]
+fn binding_and_return_type_annotations_are_checked() {
+    for source in [
+        "let x: Int = 1; x;",
+        "let x: String? = none; x;",
+        "let f: Function = (x: Int) -> String => str(x); f(2);",
+        "let f = (x: Int) -> Int => if x == 0 { 1 } else { x * f(x - 1) }; f(3);",
+        "let f = () -> Content => item(\"x\", (:)); f();",
+    ] {
+        assert!(
+            run(source).warnings.is_empty(),
+            "{source}: {:?}",
+            run(source).warnings
+        );
+    }
+    for source in [
+        "let x: Int = \"bad\";",
+        "let f = () -> String => 1; f();",
+        "let f = (x) -> Int => x; f(\"bad\");",
+        "let f = () -> Int? => false; f();",
+        "let x: Missing = 1;",
+    ] {
+        assert!(!run(source).warnings.is_empty(), "{source}");
+    }
+    let mut r = Runtime::default();
+    r.sources.insert(
+        "README.not".into(),
+        "#let x: Int = 3;\n#let f = () -> Int => x;\n#f()".into(),
+    );
+    assert!(r.evaluate("README.not").warnings.is_empty());
+}
+
+#[test]
 fn typed_defaults_named_trailing_recursion_and_capture() {
     let result = run(r#"
       let prefix = "p";
@@ -64,7 +96,7 @@ fn not_markup_and_item_targets_share_the_code_pipeline() {
     assert!(result.warnings.is_empty(), "{:?}", result.warnings);
     assert_eq!(
         result.content.html(),
-        "Hello <a href=\"vault::guide#intro\">vault::guide#intro</a> !"
+        "<p>Hello <a href=\"vault::guide#intro\">vault::guide#intro</a> !</p>"
     );
 
     let result = r.evaluate("README.notc");
@@ -104,7 +136,7 @@ fn nested_sections_share_content_evaluation_and_keep_lexical_scope() {
     assert!(html.contains("<h1>Parent</h1>"), "{html}");
     assert!(html.contains("<h2>Child</h2>"), "{html}");
     assert!(html.contains("<h1>Sibling</h1>"), "{html}");
-    assert!(html.ends_with("1\n</section>"), "{html}");
+    assert!(html.ends_with("3 1</p></section>"), "{html}");
     for source in ["[unfinished", "[\n= Title\nunfinished"] {
         assert!(!run(source).warnings.is_empty(), "{source}");
     }
