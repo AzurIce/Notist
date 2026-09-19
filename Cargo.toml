@@ -1,18 +1,6 @@
 [workspace]
 resolver = "2"
-members = [
-    "crates/*",
-    "crates-next/*",
-    "plugins/core",
-    "plugins/*/semantic",
-]
-
-# wasm 插件专用：与宿主 release 构建隔离（opt-level s + panic abort）
-[profile.plugin-release]
-inherits = "release"
-opt-level = "s"
-lto = true
-panic = "abort"
+members = ["crates/notist-next", "crates/notist-analysis", "crates/notist-cli"]
 
 [workspace.package]
 version = "0.1.0"
@@ -20,38 +8,4 @@ edition = "2024"
 license = "MIT OR Apache-2.0"
 
 [workspace.dependencies]
-axum = "0.8"
-base64 = "0.22"
-clap = { version = "4", features = ["derive"] }
-codespan-reporting = "0.13"
-dunce = "1"
-flate2 = "1"
-fs2 = "0.4"
-lsp-server = "0.10"
-lsp-types = "0.97"
-notify = "8.2"
-open = "5"
-percent-encoding = "2"
-postcard = { version = "1", features = ["alloc"] }
-serde = "1"
 serde_json = "1"
-sha2 = "0.10"
-regex = "1"
-tantivy = "0.26"
-tempfile = "3"
-tokio = { version = "1", features = ["fs", "io-util", "macros", "net", "rt-multi-thread", "signal", "sync", "time"] }
-tokio-stream = { version = "0.1", features = ["sync"] }
-toml = "0.8"
-tower-http = { version = "0.7", features = ["fs"] }
-tracing = "0.1"
-tracing-subscriber = { version = "0.3", features = ["env-filter", "fmt"] }
-unicode-normalization = "0.1"
-wasmtime = { version = "47", default-features = false, features = ["runtime", "cranelift", "std", "component-model"] }
-notist-model = { path = "crates/notist-model" }
-notist-syntax = { path = "crates/notist-syntax" }
-notist-eval = { path = "crates/notist-eval" }
-notist-plugin-core = { path = "plugins/core" }
-notist-analysis = { path = "crates/notist-analysis" }
-notist-html = { path = "crates/notist-html" }
-notist-plugin-host = { path = "crates/notist-plugin-host" }
-notist-service = { path = "crates/notist-service" }

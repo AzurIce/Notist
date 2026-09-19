@@ -1,8 +1,0 @@
-{
-  "package": "component-echo",
-  "version": "0.1.0",
-  "api-version": "0.1",
-  "wasm": {
-    "module": "semantic.wasm"
-  }
-}

@@ -1,0 +1,6 @@
+[package]
+name = "workspace"
+
+[dependencies]
+mermaid = { path = "../../packages/mermaid" }
+canvas = { path = "../../packages/canvas" }

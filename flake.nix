@@ -45,21 +45,22 @@
         # 打包用 stable 工具链即可（CI 也是 stable）
         craneLib = crane.mkLib pkgs;
 
-        # build.rs 会把 docs/ 与 .agents/skills/notist 嵌入二进制，
-        # 因此除了 Cargo 源码外还需要保留这两个目录。
+        # Tests and include_str! need package fixtures and the browser renderer.
         src = lib.cleanSourceWith {
           src = ./.;
           filter =
             path: type:
             (craneLib.filterCargoSources path type)
-            || (lib.hasInfix "/docs/" path)
-            || (lib.hasInfix "/skills/" path);
+            || (lib.hasInfix "/crates/notist-next/examples/" path)
+            || (lib.hasInfix "/crates/notist-next/web/" path);
         };
 
         commonArgs = {
           inherit src;
           pname = "notist";
           strictDeps = true;
+          cargoExtraArgs = "--locked --package notist-cli -j8";
+          cargoTestExtraArgs = "-- --test-threads=4";
         };
 
         cargoArtifacts = craneLib.buildDepsOnly commonArgs;
@@ -68,20 +69,8 @@
           commonArgs
           // {
             inherit cargoArtifacts;
-            cargoExtraArgs = "--locked --package notist-cli";
-            # 测试需要两处可写目录，沙箱里 HOME（/homeless-shelter）不可写：
-            # - XDG_CACHE_HOME：搜索索引缓存（见 notist-service 的 search_cache_path）
-            # - NOTIST_DATA_DIR：内嵌官方文档的同步根（见 notist-cli 的 notist_data_root，
-            #   每个命令入口都会 ensure_synced），这是 #1 里 checkPhase 真正的失败点，
-            #   macOS 上表现为 Read-only file system，Linux 上是 Permission denied。
-            # 不用字面量 /build：那是 Linux 沙箱的构建目录，macOS 上不存在；
-            # $TMPDIR 在两个平台的沙箱里都指向可写的构建目录。
-            preCheck = ''
-              export XDG_CACHE_HOME="$TMPDIR/xdg-cache"
-              export NOTIST_DATA_DIR="$TMPDIR/notist-data"
-            '';
             meta = {
-              description = "Notist CLI";
+              description = "Notist language tools";
               mainProgram = "notist";
               license = with lib.licenses; [
                 mit
@@ -117,7 +106,7 @@
               # cargo-udeps 依赖 nightly，stable 工具链下不可用
               # cargo-udeps
               miniserve
-              # 与 plugins/mermaid-web 的 wasm-bindgen crate 版本严格一致，
+              # 与 notist-next/web 的 wasm-bindgen crate 版本严格一致，
               # 否则生成的胶水与运行时 ABI 不匹配。
               wasm-bindgen-cli
               # mdbook-katex

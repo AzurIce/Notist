@@ -1,7 +1,0 @@
-module
-  text("真分支")
-  text("正数")
-bindings
-  pick = <fn(flag: Bool)>
-  describe = <fn(value: Int)>
-diagnostics

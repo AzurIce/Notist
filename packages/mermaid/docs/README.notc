@@ -1,0 +1,1 @@
+let diagram = (source: String, theme: String = "default") => item("mermaid", (source: source, theme: theme));

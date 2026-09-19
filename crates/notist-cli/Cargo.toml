@@ -9,36 +9,10 @@ name = "notist"
 path = "src/main.rs"
 
 [dependencies]
-tracing.workspace = true
-tracing-subscriber.workspace = true
-axum.workspace = true
-clap.workspace = true
-codespan-reporting.workspace = true
-dunce.workspace = true
-flate2.workspace = true
-fs2.workspace = true
-lsp-server.workspace = true
-lsp-types.workspace = true
-notist-analysis.workspace = true
-notist-eval.workspace = true
-notist-html.workspace = true
-notist-plugin-host.workspace = true
-notist-service.workspace = true
-notist-model.workspace = true
-notist-syntax.workspace = true
-open.workspace = true
-percent-encoding.workspace = true
-serde = { workspace = true, features = ["derive"] }
+clap = { version = "4", features = ["derive"] }
+notist-next = { path = "../notist-next" }
+notist-analysis = { path = "../notist-analysis" }
 serde_json.workspace = true
-sha2.workspace = true
-tempfile.workspace = true
-tokio.workspace = true
-tokio-stream.workspace = true
-tower-http.workspace = true
-
-[dev-dependencies]
-tempfile.workspace = true
-
-[build-dependencies]
-flate2.workspace = true
-sha2.workspace = true
+lsp-server = "0.10"
+tiny_http = "0.12"
+url = "2"

@@ -1,9 +1,0 @@
-module
-  section(label=[text("章节")])
-    text("内层")
-    text("外层")
-    text("再嵌一层")
-bindings
-  outer = [text("外层")]
-  show = <fn()>
-diagnostics

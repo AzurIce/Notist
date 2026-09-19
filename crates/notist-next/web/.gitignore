@@ -1,0 +1,6 @@
+# wasm-bindgen output (just web-build / just web-compare)
+/pkg/
+/scripts/pkg-node/
+
+# Generated package request (just web-fixtures)
+/fixtures/package.json

@@ -1,0 +1,21 @@
+name: Rust
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - name: Check formatting
+        run: cargo fmt --all -- --check
+      - name: Run tests
+        run: cargo test -j8 --workspace --locked -- --test-threads=4
+      - name: Run Clippy
+        run: cargo clippy -j8 --workspace --all-targets --locked -- -D warnings

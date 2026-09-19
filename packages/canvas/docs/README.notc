@@ -1,0 +1,1 @@
+let canvas = (commands: List, width: Int = 640, height: Int = 360) => item("canvas", (commands: commands, width: width, height: height));
