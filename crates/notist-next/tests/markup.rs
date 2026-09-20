@@ -1,3 +1,4 @@
+use notist_html::RenderHtml;
 use notist_next::{Evaluation, Runtime};
 use serde_json::{Value, json};
 

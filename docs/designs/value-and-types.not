@@ -19,6 +19,10 @@ Value = String | Int | Bool | None
 
 参数可以标注：`String`、`Int`、`Bool`、`Content`、`Item`、`Module`、`Target`、`List`、`Dict`、`Function`、`None`、`Any`，以及在这些类型后加 `?` 的可选类型。`Content` 接受 Content 和 Item。
 
+`T?` 接受 `T` 或 `none`。函数调用省略参数时，先使用声明的默认值；没有显式默认值的 `T?` 参数补入 `none`，其他参数报缺参错误。显式传入的值始终优先，传 `none` 不触发默认值；`Any` 和 `None` 参数也需要显式默认值才能省略。此规则由参数绑定统一执行，适用于源码函数和 WASM 注册函数。
+
+例如，`x: Int?` 省略时为 `none`；`x: Int? = 2` 省略时为 `2`，显式传 `none` 时仍为 `none`。局部绑定与返回类型上的 `?` 只表示可空类型，不产生初始化值。
+
 标注主要用于函数参数绑定和 WASM 注册结果校验。当前没有完整静态推导、用户自定义类型、Float、Array 或隐式 Int 到 Float 转换。
 
 == 集合字面量

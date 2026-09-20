@@ -1,8 +1,8 @@
-use crate::{
+use super::{
     Workspace, offset, position, range,
     types::{Analysis, InferredType},
 };
-use notist_next::syntax::{ExprKind, Statement, Type};
+use notist_syntax::{ExprKind, Statement, Type};
 use serde_json::{Value, json};
 
 impl Workspace {

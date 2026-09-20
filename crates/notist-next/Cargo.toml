@@ -4,13 +4,20 @@ version.workspace = true
 edition.workspace = true
 license.workspace = true
 
+[features]
+default = ["filesystem"]
+filesystem = ["notist-analysis/filesystem"]
+
 [dependencies]
+notist-syntax = { path = "../notist-syntax" }
+notist-ir = { path = "../notist-ir" }
+notist-eval = { path = "../notist-eval" }
+notist-analysis = { path = "../notist-analysis", default-features = false }
 serde_json.workspace = true
-serde = { version = "1", features = ["derive"] }
-toml = "0.8"
 base64 = "0.22"
-wasmi = "2.0.0"
 web-time = "1"
 
 [dev-dependencies]
+notist-model = { path = "../notist-model" }
+notist-html = { path = "../notist-html" }
 wat = "1"

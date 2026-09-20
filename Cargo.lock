@@ -455,7 +455,11 @@ checksum = "cf8baf1c55e62ffcace7a9f06f4bd9cd3f0c4beb022d3b367256b91b87513d98"
 name = "notist-analysis"
 version = "0.1.0"
 dependencies = [
- "notist-next",
+ "base64",
+ "notist-eval",
+ "notist-ir",
+ "notist-syntax",
+ "serde",
  "serde_json",
  "tempfile",
  "toml",
@@ -469,6 +473,7 @@ dependencies = [
  "clap",
  "lsp-server",
  "notist-analysis",
+ "notist-html",
  "notist-next",
  "serde_json",
  "tempfile",
@@ -477,16 +482,82 @@ dependencies = [
 ]
 
 [[package]]
+name = "notist-eval"
+version = "0.1.0"
+dependencies = [
+ "notist-ir",
+ "notist-model",
+ "notist-syntax",
+ "serde_json",
+ "wasmi",
+ "wat",
+]
+
+[[package]]
+name = "notist-html"
+version = "0.1.0"
+dependencies = [
+ "notist-ir",
+ "serde_json",
+]
+
+[[package]]
+name = "notist-ir"
+version = "0.1.0"
+dependencies = [
+ "notist-model",
+ "notist-syntax",
+ "serde_json",
+]
+
+[[package]]
+name = "notist-model"
+version = "0.1.0"
+dependencies = [
+ "serde",
+]
+
+[[package]]
 name = "notist-next"
 version = "0.1.0"
 dependencies = [
  "base64",
- "serde",
+ "notist-analysis",
+ "notist-eval",
+ "notist-html",
+ "notist-ir",
+ "notist-model",
+ "notist-syntax",
  "serde_json",
- "toml",
- "wasmi",
  "wat",
  "web-time",
+]
+
+[[package]]
+name = "notist-plugin-macros"
+version = "0.1.0"
+dependencies = [
+ "proc-macro-crate",
+ "proc-macro2",
+ "quote",
+ "syn 2.0.119",
+]
+
+[[package]]
+name = "notist-plugin-sdk"
+version = "0.1.0"
+dependencies = [
+ "notist-model",
+ "notist-plugin-macros",
+ "serde_json",
+]
+
+[[package]]
+name = "notist-syntax"
+version = "0.1.0"
+dependencies = [
+ "notist-model",
+ "serde_json",
 ]
 
 [[package]]
@@ -520,6 +591,15 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "d83eb9bc6d8e5cf568e7a1101d60ee05e81ed50ea106026f3d18deeb046d7661"
 dependencies = [
  "zerovec",
+]
+
+[[package]]
+name = "proc-macro-crate"
+version = "3.5.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "e67ba7e9b2b56446f1d419b1d807906278ffa1a658a8a5d8a39dcb1f5a78614f"
+dependencies = [
+ "toml_edit 0.25.15+spec-1.1.0",
 ]
 
 [[package]]
@@ -739,8 +819,8 @@ checksum = "dc1beb996b9d83529a9e75c17a1686767d148d70663143c7854d8b4a09ced362"
 dependencies = [
  "serde",
  "serde_spanned",
- "toml_datetime",
- "toml_edit",
+ "toml_datetime 0.6.11",
+ "toml_edit 0.22.27",
 ]
 
 [[package]]
@@ -753,6 +833,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "toml_datetime"
+version = "1.1.1+spec-1.1.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "3165f65f62e28e0115a00b2ebdd37eb6f3b641855f9d636d3cd4103767159ad7"
+dependencies = [
+ "serde_core",
+]
+
+[[package]]
 name = "toml_edit"
 version = "0.22.27"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -761,9 +850,30 @@ dependencies = [
  "indexmap",
  "serde",
  "serde_spanned",
- "toml_datetime",
+ "toml_datetime 0.6.11",
  "toml_write",
- "winnow",
+ "winnow 0.7.15",
+]
+
+[[package]]
+name = "toml_edit"
+version = "0.25.15+spec-1.1.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "1340ea94a5856333492c9064b02c778b191dd2c853778d9609debdcdfea3a614"
+dependencies = [
+ "indexmap",
+ "toml_datetime 1.1.1+spec-1.1.0",
+ "toml_parser",
+ "winnow 1.0.4",
+]
+
+[[package]]
+name = "toml_parser"
+version = "1.1.3+spec-1.1.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "1d38ac1cf9b95face32296c0a3ede1fdc270627c9d9c02a7274dd6d960dc4d56"
+dependencies = [
+ "winnow 1.0.4",
 ]
 
 [[package]]
@@ -977,6 +1087,15 @@ name = "winnow"
 version = "0.7.15"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "df79d97927682d2fd8adb29682d1140b343be4ac0f08fd68b7765d9c059d3945"
+dependencies = [
+ "memchr",
+]
+
+[[package]]
+name = "winnow"
+version = "1.0.4"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "23b97319f7b8343df12cc98938e5c3eb436064524c8d2b4e30a1d3a36eecdf81"
 dependencies = [
  "memchr",
 ]

@@ -106,3 +106,13 @@ fn function_signatures_include_return_types_and_parameters_have_hover() {
         "let f: (x: Any) -> Any"
     );
 }
+
+#[test]
+fn optional_parameter_hover_preserves_type_and_explicit_defaults() {
+    let source = "let f = (x: Int?, y: Int? = 2) -> Int? => x; f();";
+    assert_eq!(
+        display(source, "f();", false),
+        "let f: (x: Int?, y: Int? = 2) -> Int?"
+    );
+    assert_eq!(display(source, "x;", false), "Int?");
+}

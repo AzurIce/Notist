@@ -1,6 +1,6 @@
+use crate::package::{Manifest, module_key};
 use crate::{Workspace, file_uri, range, uri_path};
-use notist_next::package::{Manifest, module_key};
-use notist_next::syntax::Statement;
+use notist_syntax::Statement;
 use serde_json::{Value, json};
 use std::{
     collections::{BTreeMap, BTreeSet},
@@ -87,7 +87,7 @@ impl Projects {
             ..Package::default()
         };
         for (alias, dependency) in manifest.dependencies {
-            if !notist_next::syntax::valid_binding(&alias) {
+            if !notist_syntax::valid_binding(&alias) {
                 self.error(&root, format!("invalid dependency alias `{alias}`"));
                 continue;
             }

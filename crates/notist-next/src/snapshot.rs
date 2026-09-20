@@ -1,7 +1,7 @@
 //! Portable debug snapshots use the same evaluator as the CLI.
 use crate::{
     Runtime,
-    syntax::{self, Expr, ExprKind, Statement},
+    syntax::{Expr, ExprKind, Statement},
 };
 use base64::Engine;
 use serde_json::{Value as Json, json};
@@ -96,11 +96,12 @@ pub fn analyze(input: &str) -> Json {
             Err(e) => failures.push(e.to_string()),
         }
     }
-    let files = runtime
-        .sources
+    let input = runtime.snapshot();
+    let files = input
+        .sources()
         .iter()
         .enumerate()
-        .map(|(id, (path, text))| json!({"source_id":id,"path":path,"text":text}))
+        .map(|(id, (path, source))| json!({"source_id":id,"path":path,"text":source.text.as_ref()}))
         .collect::<Vec<_>>();
     let source_id = |path: &str| files.iter().position(|f| f["path"] == path).unwrap_or(0);
     let mut tokens = Vec::new();
@@ -127,17 +128,17 @@ pub fn analyze(input: &str) -> Json {
             _ => {}
         }
     }
-    for (path, text) in &runtime.sources {
-        let parsed = syntax::parse_source(path, text);
+    for (path, source) in input.sources() {
+        let parsed = &source.parsed;
         let sid = source_id(path);
-        for t in parsed.tokens {
+        for t in &parsed.tokens {
             tokens.push(json!({"i":t.i,"source_id":sid,"range":[t.start,t.end],"kind":t.kind,"text":t.text,"recovery":t.recovery}));
         }
         for ((s, r), id) in parsed
             .statements
             .iter()
-            .zip(parsed.stmt_ranges)
-            .zip(parsed.stmt_ids)
+            .zip(&parsed.stmt_ranges)
+            .zip(&parsed.stmt_ids)
         {
             let mut node = match s {
                 Statement::Let(n, e) => json!({"kind":"let","name":n,"expr":expr(e)}),
@@ -154,11 +155,12 @@ pub fn analyze(input: &str) -> Json {
             remap(&mut node, id_offset);
             statements.push(node);
         }
-        for e in parsed.errors {
+        for e in &parsed.errors {
             errors.push(json!({"source_id":sid,"range":[e.start,e.end],"message":e.message}));
         }
         id_offset += parsed.id_count;
     }
+    let mut runtime = notist_eval::Runtime::new(&input);
     let (evaluation, env) = runtime.evaluate_with_env(entry);
     let diagnostics=failures.iter().map(|e|json!({"severity":"failure","stage":"setup","source_id":source_id(entry),"range":[0,0],"message":e}))
         .chain(evaluation.warnings.iter().map(|e|json!({"severity":"warning","stage":"evaluate","source_id":source_id(entry),"range":[0,0],"message":e}))).collect::<Vec<_>>();

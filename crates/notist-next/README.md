@@ -42,13 +42,23 @@ Discovery is limited to those two entry forms. Both forms declaring the same nam
 
 Wasmi 2.0 runs import-free, fuel-limited instances. Exports: `memory`, `alloc(i32)->i32`, `notist_register(i32,i32)->i64`, and functions with the same pointer/length ABI. Return pointer occupies the high 32 bits; length occupies the low 32. UTF-8 JSON input is an argument array.
 
-Registration returns ordinary JSON, independently from value decoding:
+Rust plugins use ordinary functions with SDK attributes:
 
-```json
-{"functions":{"echo":{"export":"echo","params":[{"name":"source","type":"String","default":""}],"result":"String"}}}
+```rust
+use notist_plugin_sdk::{func, init_plugin};
+
+init_plugin!(echo, add);
+
+#[func]
+pub fn echo(source: Option<String>) -> Option<String> { source }
+
+#[func(defaults(right = 1))]
+pub fn add(left: i64, right: i64) -> i64 { left + right }
 ```
 
-Registration is cached per binary path per evaluation and bindings are installed atomically after validation. Function calls use fresh instances. Result values use JSON primitives, arrays, `{"dict":{...}}`, `{"item":"name","args":{...}}`, `{"text":"..."}`, `{"sequence":[...]}`, or `{"error":"..."}`. Functions/modules cannot cross the ABI. Registered types currently use the built-in type vocabulary; exported user-defined types are not implemented.
+`init_plugin!` lists the annotated function paths to register. Rust calls still supply every argument. Notist parameter and default rules are defined in `docs/designs/value-and-types.not`; `Option<T>` maps to `T?`. Build plugins as release cdylibs for `wasm32-unknown-unknown`. `just test-plugin-sdk` builds the SDK example and tests it through the evaluator.
+
+Registration and values use the shared structured types in `notist-model::abi`. Registration is cached per binary path per evaluation and bindings are installed atomically after validation. Function calls use fresh instances. The ABI's tagged value encoding is separate from renderer/debug JSON. Functions, modules and standalone targets cannot cross the ABI; returned Items and errors receive host-side call locations. Exported user-defined types are not implemented.
 
 ## Scope
 

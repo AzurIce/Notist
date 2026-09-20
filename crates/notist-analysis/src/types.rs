@@ -1,6 +1,6 @@
 //! Bounded, static type information for editor queries. Never evaluates packages.
 use crate::Workspace;
-use notist_next::syntax::{Expr, ExprKind, Statement, Type};
+use notist_syntax::{Expr, ExprKind, Statement, Type};
 use std::{
     collections::{BTreeMap, BTreeSet},
     fmt,

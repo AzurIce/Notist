@@ -1,5 +1,5 @@
 use super::{Document, types::InferredType};
-use notist_next::syntax::{self, Expr, ExprKind, Statement, Type};
+use notist_syntax::{self as syntax, Expr, ExprKind, Statement, Type};
 
 pub(super) struct SymbolInfo {
     pub signature: String,

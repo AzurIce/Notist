@@ -10,7 +10,7 @@ refresh();setInterval(refresh,1000);
 </script></html>"#;
 pub fn serve(root: &Path, address: &str) -> Result<(), Box<dyn std::error::Error>> {
     let root = root.canonicalize()?;
-    notist_next::package::load(&root)?;
+    notist_analysis::package::load(&root)?;
     let server = Server::http(address).map_err(|e| e.to_string())?;
     eprintln!("Preview: http://{}", server.server_addr());
     for request in server.incoming_requests() {
@@ -21,10 +21,10 @@ pub fn serve(root: &Path, address: &str) -> Result<(), Box<dyn std::error::Error
             (
                 200,
                 "text/javascript",
-                include_bytes!("../../notist-next/web/renderer.js").to_vec(),
+                notist_html::RENDERER_JS.as_bytes().to_vec(),
             )
         } else {
-            match notist_next::package::load(&root) {
+            match notist_analysis::package::load(&root) {
                 Err(error) => (
                     500,
                     "application/json",

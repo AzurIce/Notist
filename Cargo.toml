@@ -1,6 +1,18 @@
 [workspace]
 resolver = "2"
-members = ["crates/notist-next", "crates/notist-analysis", "crates/notist-cli"]
+members = [
+    "crates/notist-model",
+    "crates/notist-plugin-sdk",
+    "crates/notist-plugin-macros",
+    "crates/notist-syntax",
+    "crates/notist-ir",
+    "crates/notist-html",
+    "crates/notist-eval",
+    "crates/notist-next",
+    "crates/notist-analysis",
+    "crates/notist-cli",
+]
+exclude = ["editor"]
 
 [workspace.package]
 version = "0.1.0"
@@ -9,3 +21,4 @@ license = "MIT OR Apache-2.0"
 
 [workspace.dependencies]
 serde_json = "1"
+serde = { version = "1", features = ["derive"] }

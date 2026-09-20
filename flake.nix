@@ -52,7 +52,7 @@
             path: type:
             (craneLib.filterCargoSources path type)
             || (lib.hasInfix "/crates/notist-next/examples/" path)
-            || (lib.hasInfix "/crates/notist-next/web/" path);
+            || (lib.hasInfix "/crates/notist-html/" path);
         };
 
         commonArgs = {
@@ -106,7 +106,7 @@
               # cargo-udeps 依赖 nightly，stable 工具链下不可用
               # cargo-udeps
               miniserve
-              # 与 notist-next/web 的 wasm-bindgen crate 版本严格一致，
+              # 与 editor/crates/editor-wasm 的 wasm-bindgen crate 版本严格一致，
               # 否则生成的胶水与运行时 ABI 不匹配。
               wasm-bindgen-cli
               # mdbook-katex

@@ -1,7 +1,23 @@
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     let root =
         std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("examples/packages/mermaid/wasm");
-    let registry=serde_json::json!({"functions":{"echo":{"export":"echo","params":[{"name":"source","type":"String"}],"result":"String"}}}).to_string();
+    use notist_model::{Type, abi};
+    let registry = serde_json::to_string(&abi::Registration {
+        functions: [(
+            "echo".into(),
+            abi::Function {
+                export: "echo".into(),
+                params: vec![abi::Parameter {
+                    name: "source".into(),
+                    ty: Type::String,
+                    default: None,
+                }],
+                result: Type::String,
+            },
+        )]
+        .into_iter()
+        .collect(),
+    })?;
     let escaped = registry
         .bytes()
         .map(|b| format!("\\{b:02x}"))
@@ -24,7 +40,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         &std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("examples/demo"),
     )?;
     std::fs::write(
-        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("web/fixtures/package.json"),
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../editor/fixtures/package.json"),
         serde_json::to_vec_pretty(&package.request())?,
     )?;
     Ok(())

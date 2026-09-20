@@ -1,3 +1,4 @@
+use notist_html::RenderHtml;
 use notist_next::{Content, Runtime, runtime::Value};
 fn run(source: &str) -> notist_next::Evaluation {
     let mut r = Runtime::default();
@@ -68,6 +69,64 @@ fn function_argument_contracts() {
             .warnings
             .is_empty()
     );
+}
+
+#[test]
+fn optional_parameters_supply_none_only_when_omitted() {
+    let result = run(r#"
+        let show = (x: Int?) => if x == none { "none" } else { str(x) };
+        let preferred = (x: Int? = 2) => show(x);
+        show(); show(none); show(x: 3);
+        preferred(); preferred(none); preferred(x: 5);
+        let dependent = (x: Int?, y: Int? = x) => show(y);
+        dependent(); dependent(7);
+    "#);
+    assert!(result.warnings.is_empty(), "{:?}", result.warnings);
+    assert_eq!(result.content.html(), "nonenone32none5none7");
+
+    let result = run(r#"
+        let named = (optional: Int?, required: String) => required;
+        named(required: "named"); named(none, "positional");
+        let body = (value: Content?) => if value == none { "empty" } else { value };
+        body(); body()[content]; body(value: none);
+    "#);
+    assert!(result.warnings.is_empty(), "{:?}", result.warnings);
+    assert_eq!(result.content.html(), "namedpositionalemptycontentempty");
+}
+
+#[test]
+fn nullable_parameters_do_not_relax_other_call_contracts() {
+    for (source, expected) in [
+        ("let f = (x: Int) => x; f();", "missing argument"),
+        ("let f = (x: Any) => x; f();", "missing argument"),
+        ("let f = (x: None) => x; f();", "missing argument"),
+        ("let f = (x) => x; f();", "missing argument"),
+        ("let f = (x: Int?) => x; f(true);", "expects Optional"),
+        ("let f = (x: Int = 2) => x; f(none);", "expects Int"),
+        ("let f = (x: Int? = true) => x; f();", "expects Optional"),
+        (
+            "let f = (x: Int?, y: String) => y; f(\"y\");",
+            "expects Optional",
+        ),
+        (
+            "let f = (x: Int?) => x; f(none, x: 1);",
+            "duplicate argument",
+        ),
+        (
+            "let f = (x: Int?) => x; f(other: 1);",
+            "unknown or excess argument",
+        ),
+    ] {
+        let result = run(source);
+        assert!(
+            result
+                .warnings
+                .iter()
+                .any(|warning| warning.contains(expected)),
+            "{source}: {:?}",
+            result.warnings
+        );
+    }
 }
 #[test]
 fn collections_none_and_item_values() {
@@ -231,7 +290,24 @@ fn item_html_and_error_boundaries() {
 }
 #[test]
 fn registration_named_defaults_and_nested_paths() {
-    let registry=serde_json::json!({"functions":{"echo":{"export":"echo","params":[{"name":"source","type":"String","default":"default"}],"result":"String"}}}).to_string();
+    use notist_model::{Type, abi};
+    let registry = serde_json::to_string(&abi::Registration {
+        functions: [(
+            "echo".into(),
+            abi::Function {
+                export: "echo".into(),
+                params: vec![abi::Parameter {
+                    name: "source".into(),
+                    ty: Type::String,
+                    default: Some(abi::Value::String("default".into())),
+                }],
+                result: Type::String,
+            },
+        )]
+        .into_iter()
+        .collect(),
+    })
+    .unwrap();
     let escaped = registry
         .bytes()
         .map(|b| format!("\\{b:02x}"))

@@ -43,11 +43,11 @@ fn run(cli: Cli) -> Result<(), Box<dyn std::error::Error>> {
         Command::Lsp => lsp::run(),
         Command::Preview { package, address } => preview::serve(&package, &address),
         Command::Check { package } => {
-            let mut package = notist_next::package::load(&package)?;
-            let sources = package.runtime.sources.keys().cloned().collect::<Vec<_>>();
+            let mut package = notist_analysis::package::load(&package)?;
+            let snapshot = package.runtime.snapshot();
             let mut errors = 0;
-            for path in sources {
-                for message in package.runtime.evaluate(&path).warnings {
+            for path in snapshot.sources().keys() {
+                for message in snapshot.evaluate(path).warnings {
                     eprintln!("{message}");
                     errors += 1;
                 }

@@ -35,6 +35,7 @@ LSP 支持 `.not` / `.notc` 的语法诊断、嵌套 section 大纲、局部 let
 - `crates/notist-next/`：语言与 package 实现，后续按实际职责拆分。
 - `crates/notist-analysis/`：文档、位置编码、语法查询与工作区。
 - `crates/notist-cli/`：命令入口、LSP 和预览服务。
+- `editor/`：一方 Web 编辑器，使用独立 Cargo workspace；开发计划见 [路线图](editor/ROADMAP.md)。
 - `packages/`、`examples/workspace/`：组件 package 与集成示例。
 - `crates/notist-next/examples/`：package、WASM 与组件示例。
 - `docs/`：设计和讨论记录，使用 .not 文件。

@@ -1,4 +1,6 @@
-use notist_next::{Runtime, package, snapshot};
+use notist_analysis::{EvaluationSession as Runtime, package};
+use notist_html::RenderHtml;
+use notist_next::snapshot;
 use std::{fs, path::PathBuf};
 
 #[derive(clap::Args)]
@@ -85,12 +87,8 @@ pub fn run(args: Args) -> Result<(), String> {
             result.content.to_json().to_string(),
         )
         .map_err(|e| e.to_string())?;
-        fs::write(
-            dir.join("renderer.js"),
-            include_str!("../../notist-next/web/renderer.js"),
-        )
-        .map_err(|e| e.to_string())?;
-        fs::write(dir.join("index.html"),"<!doctype html><meta charset=\"utf-8\"><meta name=\"viewport\" content=\"width=device-width\"><title>Notist</title><style>main{overflow-wrap:anywhere}pre{overflow:auto}canvas,svg{max-width:100%}</style><main id=\"document\"></main><script type=\"module\">import {mount} from './renderer.js'; const [content,components,attributes]=await Promise.all(['content.json','components.json','attributes.json'].map(p=>fetch(p).then(r=>r.json()))); await mount(document.querySelector('main'),content,components,document.baseURI,attributes);</script>").map_err(|e|e.to_string())?;
+        fs::write(dir.join("renderer.js"), notist_html::RENDERER_JS).map_err(|e| e.to_string())?;
+        fs::write(dir.join("index.html"), notist_html::BUNDLE_HTML).map_err(|e| e.to_string())?;
     } else if args.html {
         println!("{}", result.content.html());
     } else {

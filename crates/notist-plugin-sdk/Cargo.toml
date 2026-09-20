@@ -1,0 +1,14 @@
+[package]
+name = "notist-plugin-sdk"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+notist-model = { path = "../notist-model" }
+notist-plugin-macros = { path = "../notist-plugin-macros" }
+serde_json.workspace = true
+
+[[example]]
+name = "semantic"
+crate-type = ["cdylib"]

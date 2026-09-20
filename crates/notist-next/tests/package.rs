@@ -1,3 +1,4 @@
+use notist_html::RenderHtml;
 use notist_next::package;
 use std::{
     fs,

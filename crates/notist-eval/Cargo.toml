@@ -1,0 +1,15 @@
+[package]
+name = "notist-eval"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+notist-model = { path = "../notist-model" }
+notist-syntax = { path = "../notist-syntax" }
+notist-ir = { path = "../notist-ir" }
+serde_json.workspace = true
+wasmi = "2.0.0"
+
+[dev-dependencies]
+wat = "1"
