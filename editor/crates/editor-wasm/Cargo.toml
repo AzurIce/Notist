@@ -8,5 +8,5 @@ publish = false
 crate-type = ["cdylib"]
 
 [dependencies]
-notist-next = { path = "../../../crates/notist-next", default-features = false }
+notist-analysis = { path = "../../../crates/notist-analysis", default-features = false }
 wasm-bindgen = "=0.2.121"

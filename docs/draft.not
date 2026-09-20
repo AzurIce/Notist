@@ -2,7 +2,7 @@
 
 = 调试快照
 
-当前调试器使用 `crates/notist-next` 生成 JSON 快照。native CLI 和浏览器 WASM evaluator 接收同一类虚拟文件请求；HTML 渲染不属于语言快照。
+调试器使用 `notist-analysis::debug` 生成 JSON 快照。native CLI 和浏览器 WASM evaluator 接收同一类虚拟文件请求；HTML 渲染不属于语言快照。
 
 == 请求
 

@@ -7,7 +7,7 @@ import assert from 'node:assert/strict';
 const here = dirname(fileURLToPath(import.meta.url));
 const root = resolve(here, '../..');
 const { analyze } = createRequire(import.meta.url)('./pkg-node/notist_editor.js');
-const run = flag => JSON.parse(execFileSync('cargo', ['run', '-q', '-j4', '-p', 'notist-cli', '--', 'eval', 'crates/notist-next/examples/demo', flag], { cwd: root, encoding: 'utf8' }));
+const run = flag => JSON.parse(execFileSync('cargo', ['run', '-q', '-j4', '-p', 'notist-cli', '--', 'eval', 'examples/demo', flag], { cwd: root, encoding: 'utf8' }));
 const request = run('--request');
 const native = run('--snapshot');
 const wasm = JSON.parse(analyze(JSON.stringify(request)));

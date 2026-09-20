@@ -10,7 +10,6 @@ path = "src/main.rs"
 
 [dependencies]
 clap = { version = "4", features = ["derive"] }
-notist-next = { path = "../notist-next" }
 notist-analysis = { path = "../notist-analysis" }
 notist-html = { path = "../notist-html" }
 serde_json.workspace = true

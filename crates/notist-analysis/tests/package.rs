@@ -1,5 +1,7 @@
+#![cfg(feature = "filesystem")]
+
+use notist_analysis::package;
 use notist_html::RenderHtml;
-use notist_next::package;
 use std::{
     fs,
     path::PathBuf,
@@ -20,7 +22,7 @@ fn module_names_follow_binding_rules() {
     ] {
         let name = package::module_name(raw).unwrap();
         assert_eq!(name, expected);
-        assert!(notist_next::syntax::valid_binding(&name));
+        assert!(notist_syntax::valid_binding(&name));
     }
     for raw in ["", "---", "   "] {
         assert!(package::module_name(raw).is_err());
@@ -73,7 +75,7 @@ fn explicit_module_segments_are_not_normalized() {
         "use vault::let as value;",
     ] {
         assert!(
-            !notist_next::syntax::parse_traced(source).errors.is_empty(),
+            !notist_syntax::parse_traced(source).errors.is_empty(),
             "{source}"
         );
     }
@@ -226,7 +228,7 @@ fn rejects_invalid_component_names_and_manifest_declarations() {
 
 #[test]
 fn demo_package_is_evaluable() {
-    let root = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("examples/demo");
+    let root = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../examples/demo");
     let mut loaded = package::load(&root).unwrap();
     let result = loaded.runtime.evaluate(&loaded.entry);
     assert!(result.warnings.is_empty(), "{:?}", result.warnings);

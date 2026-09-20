@@ -1,4 +1,4 @@
-use notist_next::snapshot::{analyze, base64_decode, base64_encode};
+use notist_analysis::debug::{analyze, base64_decode, base64_encode};
 #[test]
 fn snapshot_describes_evaluation_and_items() {
     let request=serde_json::json!({"entry":"README.notc","files":{"README.notc":"let f = (body: Content) => item(\"section\", (body: body)); f[hello];"}}).to_string();

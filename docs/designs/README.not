@@ -13,6 +13,6 @@
 
 == 当前范围
 
-语言与 package 实现位于 `crates/notist-next`，分析层位于 `crates/notist-analysis`，CLI、LSP 与预览入口位于 `crates/notist-cli`。`.not` 与 `.notc` 共用解析表示和求值器；Markup 标题生成嵌套 section Item。
+共享类型、解析、运行时表示和求值分别位于 `crates/notist-model`、`crates/notist-syntax`、`crates/notist-ir` 和 `crates/notist-eval`。`crates/notist-analysis` 管理 package、输入快照、文档查询和调试 JSON；CLI、LSP 与预览入口位于 `crates/notist-cli`。`.not` 与 `.notc` 共用解析表示和求值器；Markup 标题生成嵌套 section Item。
 
 LSP 按 Notist.toml 发现 package，沿 path 依赖加载源码，共享文件、AST 和导出索引，提供语法诊断、大纲、局部及顶层导入的定义跳转和基础补全。package registry、完整静态类型推导、Item ID 解析、嵌套作用域导入查询和 Markdown 前端尚未实现。

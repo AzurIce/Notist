@@ -1,14 +1,14 @@
-# Notist Language Prototype
+# Notist Language Examples
 
 A self-contained `.not`/`.notc` evaluator with first-class Content and Item values, local packages, Rust-style module paths, registered WASM functions, and a separate HTML consumer.
 
 ```sh
-cargo test -j4 -p notist-next -- --test-threads=4
+cargo test -j4 -p notist-analysis -- --test-threads=4
 cargo run -j4 -p notist-cli -- eval examples-path --html
-cargo run -j4 -p notist-cli -- eval crates/notist-next/examples/demo --bundle /tmp/notist-demo
+cargo run -j4 -p notist-cli -- eval examples/demo --bundle /tmp/notist-demo
 ```
 
-Use `crates/notist-next/examples/demo` as `examples-path`. Serve a bundle over HTTP to load its ES modules. `--snapshot` emits debug JSON; `--request` emits the portable input used by the browser debugger.
+Use `examples/demo` as `examples-path`. Serve a bundle over HTTP to load its ES modules. `--snapshot` emits debug JSON from `notist-analysis::debug`; `--request` emits the portable input used by the browser debugger.
 
 ## Packages
 
@@ -64,4 +64,4 @@ Registration and values use the shared structured types in `notist-model::abi`. 
 
 The demo tests transitive components and WASM registration. Mermaid/Shader components display source text; they do not bundle those rendering engines. Registry/version resolution, public/private declarations, static type inference, editor integration, and custom WASM type definitions remain outside this prototype.
 
-`cargo run -j4 -p notist-next --example build_fixture` regenerates the WASM fixture and portable package request. `just web-build` and `just web-fixtures` build the browser evaluator; `just web-compare` compares only native/browser `result.content` and `result.diagnostics`.
+`cargo run -j4 -p notist-analysis --example build_fixture` regenerates the WASM fixture and portable package request. `just web-build` and `just web-fixtures` build the browser evaluator; `just web-compare` compares only native/browser `result.content` and `result.diagnostics`.

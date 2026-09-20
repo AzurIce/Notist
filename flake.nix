@@ -51,7 +51,7 @@
           filter =
             path: type:
             (craneLib.filterCargoSources path type)
-            || (lib.hasInfix "/crates/notist-next/examples/" path)
+            || (lib.hasPrefix (toString ./. + "/examples/") path)
             || (lib.hasInfix "/crates/notist-html/" path);
         };
 

@@ -1,14 +1,15 @@
+use notist_analysis::EvaluationSession;
+use notist_eval::Evaluation;
 use notist_html::RenderHtml;
-use notist_next::Runtime;
 
-fn evaluate(source: &str) -> notist_next::Evaluation {
+fn evaluate(source: &str) -> Evaluation {
     let path = std::env::var_os("NOTIST_SDK_WASM")
         .map(std::path::PathBuf::from)
         .unwrap_or_else(|| {
             std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
                 .join("../../target/wasm32-unknown-unknown/release/examples/semantic.wasm")
         });
-    let mut runtime = Runtime::default();
+    let mut runtime = EvaluationSession::default();
     runtime.binaries.insert(
         "semantic.wasm".into(),
         std::fs::read(path).expect("build the SDK example first: just test-plugin-sdk"),

@@ -6,17 +6,25 @@ license.workspace = true
 
 [features]
 default = ["filesystem"]
-filesystem = ["dep:serde", "dep:base64", "dep:url", "dep:toml"]
+filesystem = ["dep:serde", "dep:url", "dep:toml"]
 
 [dependencies]
 notist-syntax = { path = "../notist-syntax" }
 notist-ir = { path = "../notist-ir" }
 notist-eval = { path = "../notist-eval" }
 serde = { workspace = true, optional = true }
-base64 = { version = "0.22", optional = true }
+base64 = "0.22"
+web-time = "1"
 serde_json.workspace = true
 url = { version = "2", optional = true }
 toml = { version = "0.8", optional = true }
 
 [dev-dependencies]
 tempfile = "3"
+notist-model = { path = "../notist-model" }
+notist-html = { path = "../notist-html" }
+wat = "1"
+
+[[example]]
+name = "build_fixture"
+required-features = ["filesystem"]

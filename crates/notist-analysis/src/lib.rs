@@ -1,4 +1,5 @@
 //! Shared source snapshots and evaluation inputs, with optional filesystem/editor support.
+pub mod debug;
 pub mod package;
 mod snapshot;
 pub use snapshot::{EvaluationSession, Snapshot, SourceSnapshot};

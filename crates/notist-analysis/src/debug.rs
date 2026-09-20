@@ -1,9 +1,7 @@
-//! Portable debug snapshots use the same evaluator as the CLI.
-use crate::{
-    Runtime,
-    syntax::{Expr, ExprKind, Statement},
-};
+//! JSON projection for the CLI and browser debugger, separate from input snapshots.
+use crate::EvaluationSession;
 use base64::Engine;
+use notist_syntax::{Expr, ExprKind, Statement};
 use serde_json::{Value as Json, json};
 
 pub fn base64_encode(bytes: &[u8]) -> String {
@@ -72,7 +70,7 @@ pub fn analyze(input: &str) -> Json {
         json!({})
     });
     let entry = request["entry"].as_str().unwrap_or("main.notc");
-    let mut runtime = Runtime::default();
+    let mut runtime = EvaluationSession::default();
     if let Some(files) = request["files"].as_object() {
         for (path, text) in files {
             runtime

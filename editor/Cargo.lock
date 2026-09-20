@@ -127,17 +127,19 @@ checksum = "cf8baf1c55e62ffcace7a9f06f4bd9cd3f0c4beb022d3b367256b91b87513d98"
 name = "notist-analysis"
 version = "0.1.0"
 dependencies = [
+ "base64",
  "notist-eval",
  "notist-ir",
  "notist-syntax",
  "serde_json",
+ "web-time",
 ]
 
 [[package]]
 name = "notist-editor"
 version = "0.1.0"
 dependencies = [
- "notist-next",
+ "notist-analysis",
  "wasm-bindgen",
 ]
 
@@ -166,19 +168,6 @@ name = "notist-model"
 version = "0.1.0"
 dependencies = [
  "serde",
-]
-
-[[package]]
-name = "notist-next"
-version = "0.1.0"
-dependencies = [
- "base64",
- "notist-analysis",
- "notist-eval",
- "notist-ir",
- "notist-syntax",
- "serde_json",
- "web-time",
 ]
 
 [[package]]

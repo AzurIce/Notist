@@ -1,9 +1,10 @@
+use notist_analysis::EvaluationSession;
+use notist_eval::Evaluation;
 use notist_html::RenderHtml;
-use notist_next::{Evaluation, Runtime};
 use serde_json::{Value, json};
 
 fn run(text: &str) -> Evaluation {
-    let mut runtime = Runtime::default();
+    let mut runtime = EvaluationSession::default();
     runtime.sources.insert("README.not".into(), text.into());
     runtime.evaluate("README.not")
 }
@@ -100,7 +101,7 @@ fn brackets_are_text_while_code_keeps_content_boundaries() {
             .html()
             .contains("literal [brackets] [nested [brackets]]")
     );
-    let mut runtime = Runtime::default();
+    let mut runtime = EvaluationSession::default();
     runtime
         .sources
         .insert("README.notc".into(), "[literal [brackets]];".into());

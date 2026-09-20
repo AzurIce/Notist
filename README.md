@@ -2,7 +2,7 @@
 
 Notist 是一门文档编程语言，使用 .not Markup 和 .notc Code，共享求值器与 Content / Item 模型。
 
-语言核位于 `crates/notist-next`，包含解析、求值、WASM 函数、package 加载和 Content 输出。`notist-analysis` 提供多前端文档与查询，`notist-cli` 提供 stdio LSP、package 检查和浏览器预览。
+语言核按职责拆分为 `notist-model`、`notist-syntax`、`notist-ir` 和 `notist-eval`。`notist-analysis` 提供 package 加载、输入快照、文档查询和调试 JSON，`notist-cli` 提供 stdio LSP、package 检查和浏览器预览。
 
 ## 运行
 
@@ -32,13 +32,18 @@ LSP 支持 `.not` / `.notc` 的语法诊断、嵌套 section 大纲、局部 let
 
 ## 目录
 
-- `crates/notist-next/`：语言与 package 实现，后续按实际职责拆分。
-- `crates/notist-analysis/`：文档、位置编码、语法查询与工作区。
+- `crates/notist-model/`：共享类型、位置和插件传输数据。
+- `crates/notist-syntax/`：`.not` / `.notc` 解析和语法树。
+- `crates/notist-ir/`：运行时值、函数和 Content / Item 表示。
+- `crates/notist-eval/`：求值器和 WASM 调用适配。
+- `crates/notist-analysis/`：package 加载、输入快照、文档查询与调试 JSON。
+- `crates/notist-html/`：HTML 渲染和浏览器组件运行时。
+- `crates/notist-plugin-sdk/`、`crates/notist-plugin-macros/`：Rust 插件 API 与属性宏。
 - `crates/notist-cli/`：命令入口、LSP 和预览服务。
 - `editor/`：一方 Web 编辑器，使用独立 Cargo workspace；开发计划见 [路线图](editor/ROADMAP.md)。
 - `packages/`、`examples/workspace/`：组件 package 与集成示例。
-- `crates/notist-next/examples/`：package、WASM 与组件示例。
+- `examples/demo/`、`examples/packages/`：package、WASM 与组件示例。
 - `docs/`：设计和讨论记录，使用 .not 文件。
 - `archived-docs/`、`corpus/`：历史文档与语料，不能作为当前实现的验收标准。
 
-语言能力和已知范围见 [原型说明](crates/notist-next/README.md)。项目尚未发布，语法和接口仍在开发中。
+语言示例和已知范围见 [示例说明](examples/README.md)。项目尚未发布，语法和接口仍在开发中。

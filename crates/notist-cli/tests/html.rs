@@ -17,7 +17,7 @@ fn eval(package: &Path, options: &[&str]) -> String {
 
 #[test]
 fn html_and_bundle_render_the_same_package() {
-    let package = Path::new(env!("CARGO_MANIFEST_DIR")).join("../notist-next/examples/demo");
+    let package = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../examples/demo");
     let html = eval(&package, &["--html"]);
     assert!(html.contains("<h1>"));
     assert!(html.contains("<notist-mermaid"));

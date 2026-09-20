@@ -457,13 +457,17 @@ version = "0.1.0"
 dependencies = [
  "base64",
  "notist-eval",
+ "notist-html",
  "notist-ir",
+ "notist-model",
  "notist-syntax",
  "serde",
  "serde_json",
  "tempfile",
  "toml",
  "url",
+ "wat",
+ "web-time",
 ]
 
 [[package]]
@@ -474,7 +478,6 @@ dependencies = [
  "lsp-server",
  "notist-analysis",
  "notist-html",
- "notist-next",
  "serde_json",
  "tempfile",
  "tiny_http",
@@ -515,22 +518,6 @@ name = "notist-model"
 version = "0.1.0"
 dependencies = [
  "serde",
-]
-
-[[package]]
-name = "notist-next"
-version = "0.1.0"
-dependencies = [
- "base64",
- "notist-analysis",
- "notist-eval",
- "notist-html",
- "notist-ir",
- "notist-model",
- "notist-syntax",
- "serde_json",
- "wat",
- "web-time",
 ]
 
 [[package]]

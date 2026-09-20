@@ -8,7 +8,6 @@ members = [
     "crates/notist-ir",
     "crates/notist-html",
     "crates/notist-eval",
-    "crates/notist-next",
     "crates/notist-analysis",
     "crates/notist-cli",
 ]

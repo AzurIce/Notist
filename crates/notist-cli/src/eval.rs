@@ -1,6 +1,5 @@
-use notist_analysis::{EvaluationSession as Runtime, package};
+use notist_analysis::{EvaluationSession as Runtime, debug, package};
 use notist_html::RenderHtml;
-use notist_next::snapshot;
 use std::{fs, path::PathBuf};
 
 #[derive(clap::Args)]
@@ -52,7 +51,7 @@ pub fn run(args: Args) -> Result<(), String> {
         let request = loaded.request();
         println!(
             "{}",
-            serde_json::to_string_pretty(&snapshot::analyze(&request.to_string())).unwrap()
+            serde_json::to_string_pretty(&debug::analyze(&request.to_string())).unwrap()
         );
         return Ok(());
     }

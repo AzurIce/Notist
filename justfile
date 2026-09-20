@@ -5,10 +5,10 @@ test:
 
 test-plugin-sdk:
     cargo build -p notist-plugin-sdk --example semantic --release --target wasm32-unknown-unknown --target-dir target
-    cargo test -p notist-next --test plugin_sdk -- --ignored
+    cargo test -p notist-analysis --test plugin_sdk -- --ignored
 
 demo:
-    cargo run -j8 -p notist-cli -- eval crates/notist-next/examples/demo --html
+    cargo run -j8 -p notist-cli -- eval examples/demo --html
 
 check package="examples/workspace":
     cargo run -j8 -p notist-cli -- check {{package}}
@@ -34,7 +34,7 @@ web-fixtures:
     set -euo pipefail
     cd "{{justfile_directory()}}"
     mkdir -p editor/fixtures
-    cargo run -j4 -p notist-next --example build_fixture
+    cargo run -j4 -p notist-analysis --example build_fixture
 
 # 本地静态服务：http://127.0.0.1:8000/app/
 web-serve port="8000":

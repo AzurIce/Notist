@@ -1,6 +1,6 @@
 fn main() -> Result<(), Box<dyn std::error::Error>> {
-    let root =
-        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("examples/packages/mermaid/wasm");
+    let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("../../examples/packages/mermaid/wasm");
     use notist_model::{Type, abi};
     let registry = serde_json::to_string(&abi::Registration {
         functions: [(
@@ -36,8 +36,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     std::fs::create_dir_all(&root)?;
     std::fs::write(root.join("semantic.wat"), &source)?;
     std::fs::write(root.join("semantic.wasm"), wat::parse_str(source)?)?;
-    let package = notist_next::package::load(
-        &std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("examples/demo"),
+    let package = notist_analysis::package::load(
+        &std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../examples/demo"),
     )?;
     std::fs::write(
         std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../editor/fixtures/package.json"),

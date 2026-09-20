@@ -1,7 +1,9 @@
+use notist_analysis::EvaluationSession;
+use notist_eval::Evaluation;
 use notist_html::RenderHtml;
-use notist_next::{Content, Runtime, runtime::Value};
-fn run(source: &str) -> notist_next::Evaluation {
-    let mut r = Runtime::default();
+use notist_ir::{Content, Value};
+fn run(source: &str) -> Evaluation {
+    let mut r = EvaluationSession::default();
     r.sources.insert("README.notc".into(), source.into());
     r.evaluate("README.notc")
 }
@@ -29,7 +31,7 @@ fn binding_and_return_type_annotations_are_checked() {
     ] {
         assert!(!run(source).warnings.is_empty(), "{source}");
     }
-    let mut r = Runtime::default();
+    let mut r = EvaluationSession::default();
     r.sources.insert(
         "README.not".into(),
         "#let x: Int = 3;\n#let f = () -> Int => x;\n#f()".into(),
@@ -142,7 +144,7 @@ fn collections_none_and_item_values() {
 
 #[test]
 fn not_markup_and_item_targets_share_the_code_pipeline() {
-    let mut r = Runtime::default();
+    let mut r = EvaluationSession::default();
     r.sources.insert(
         "README.notc".into(),
         "use vault::guide; guide::\"intro\";".into(),
@@ -183,7 +185,7 @@ fn no_legacy_syntax_or_overloads() {
 
 #[test]
 fn nested_sections_share_content_evaluation_and_keep_lexical_scope() {
-    let mut runtime = Runtime::default();
+    let mut runtime = EvaluationSession::default();
     runtime.sources.insert(
         "README.not".into(),
         "#let x = 1;\n= Parent\n#let y = 2;\n#y\n== Child\n#y\n= Sibling\n#let y = 3;\n#y #x\n"
@@ -203,7 +205,7 @@ fn nested_sections_share_content_evaluation_and_keep_lexical_scope() {
 }
 #[test]
 fn paths_aliases_globs_self_super_numbers_and_spaces() {
-    let mut r = Runtime::default();
+    let mut r = EvaluationSession::default();
     r.sources.insert(
         "p0/docs/README.notc".into(),
         r#"
@@ -242,7 +244,7 @@ fn paths_aliases_globs_self_super_numbers_and_spaces() {
 }
 #[test]
 fn conflicts_cycles_and_package_relative_roots() {
-    let mut r = Runtime::default();
+    let mut r = EvaluationSession::default();
     r.sources
         .insert("README.notc".into(), "use vault::a;".into());
     r.sources.insert("a.notc".into(), "use vault;".into());
@@ -256,7 +258,7 @@ fn conflicts_cycles_and_package_relative_roots() {
             .iter()
             .any(|e| e.contains("module path conflict"))
     );
-    let mut r = Runtime::default();
+    let mut r = EvaluationSession::default();
     r.sources.insert(
         "p0/docs/README.notc".into(),
         "use dep::answer; answer;".into(),
@@ -322,7 +324,7 @@ fn registration_named_defaults_and_nested_paths() {
          local.get 1 i32.const 2 i32.sub i64.extend_i32_u i64.or))"#,
         registry.len()
     );
-    let mut r = Runtime::default();
+    let mut r = EvaluationSession::default();
     r.sources.insert(
         "p0/docs/README.notc".into(),
         "use vault::nested::api::echo; echo(source: \"hello\"); echo();".into(),
