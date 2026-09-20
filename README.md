@@ -24,7 +24,9 @@ cargo install --path crates/notist-cli
 
 Nix 默认包和应用提供 `notist`。浏览器调试器通过 `just web-build`、`just web-fixtures`、`just web-serve` 启动；静态服务使用开发环境自带的 `miniserve`，访问 http://127.0.0.1:8000/app/，可用 `just web-serve 8001` 指定端口。
 
-LSP 支持 `.not` / `.notc` 的语法诊断、嵌套 section 大纲、局部 let 定义跳转与悬停、基础补全，支持 UTF-8 / UTF-16 和增量同步。跨模块符号查询、Markdown 前端、daemon、搜索及编辑器自定义预览协议尚未实现。现有 `docs/` 仍需语法迁移，不能作为 `check` 的验收样例。
+LSP 支持 `.not` / `.notc` 的语法诊断、嵌套 section 大纲、局部 let 和顶层导入的定义跳转与悬停、基础补全，支持 UTF-8 / UTF-16 和增量同步。Markdown 前端、完整类型分析、Item 引用查询、daemon、搜索及编辑器自定义预览协议尚未实现。`docs/` 是仓库根 package 的源码目录，可用 `cargo run -p notist-cli -- check .` 校验。
+
+`notist lsp` 从编辑器的 `workspaceFolders`（回退到 `rootUri`，再回退到启动目录）发现 `Notist.toml`，分别建立 package 模块表，并沿相对 manifest 的 path 依赖加载目录外的 package。无需 workspace 配置；发现过程跳过 `.git`、`target`、`node_modules`、`.obsidian` 和 `.direnv`。一个会话共享依赖的文件、AST 和导出索引，未保存源码覆盖磁盘内容，分析查询不执行 WASM。manifest 按保存后的磁盘内容加载，磁盘变化通过通知或两秒轮询更新；未归属 package 的已打开文件仍有语法能力。嵌套作用域的导入解析尚未实现。
 
 `preview` 默认监听 `127.0.0.1:8000`，每秒重新加载 package；可用第二个参数指定地址。`packages/mermaid` 提供真实图表渲染，`packages/canvas` 提供矩形、圆形和文本的 2D 绘图，均使用普通 Notist 函数和浏览器组件。
 

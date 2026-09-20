@@ -2,4 +2,4 @@
 
 = scope
 
-当前原型没有 scope Item、annotation 绑定或属性继承。需要分组时使用 Content、List、Dict 或显式 `item` 字段表达结构。
+属性标注直接绑定 Item 或所在 Module，不沿 Item 树继承。需要分组时使用 Content、List、Dict 或显式 `item` 字段表达结构。

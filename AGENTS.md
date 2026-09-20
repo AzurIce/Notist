@@ -1,6 +1,6 @@
 本仓库的 `docs/` 下是文档目录。
 
-当前可运行核心为 `crates/notist-next`，分析层为 `crates/notist-analysis`，命令入口为 `crates/notist-cli`，提供基础 `lsp`、`preview` 和 package `check`。`docs/` 尚未完成语法迁移，暂通过文件工具读取和编辑；不要用机器上已安装的旧 CLI 代替当前实现。可用 `cargo run -p notist-cli -- check examples/workspace` 验证集成示例。
+当前可运行核心为 `crates/notist-next`，分析层为 `crates/notist-analysis`，命令入口为 `crates/notist-cli`，提供基础 `lsp`、`preview` 和 package `check`。`docs/` 是根 package 的源码目录，通过文件工具读取和编辑，在仓库根运行 `cargo run -p notist-cli -- check .` 校验。不要用机器上已安装的旧 CLI 代替当前实现。可用 `cargo run -p notist-cli -- check examples/workspace` 验证集成示例。
 
 本项目从未发布过任何版本：不要用 v1/v2/v3 这类版本号命名或引用迭代。需要引用某个历史状态时，用日期（如"2026-08-15 裁决的命令面"）或 commit hash。第三方产品自身的版本号（如 Typst 0.14）不受此限。
 
@@ -16,11 +16,9 @@
 
 ## 姊妹项目
 
-仓库根的 `.env`（已 gitignore）声明了四个相邻项目的本地路径，跨仓库引用时从这里取：
+仓库根的 `.env`（已 gitignore）声明了几个相邻项目的本地路径，跨仓库引用时从这里取：
 - `ZED_NOTIST_PATH`：Zed 编辑器扩展（grammar 快照 + queries + LSP language server 声明）
-- `OBSIDIAN_NOTIST_PATH`：Obsidian 插件（tree-sitter 高亮 + 自研 LSP 客户端 `src/lsp/`）
 - `TREE_SITTER_NOTIST_PATH`：tree-sitter 语法上游（grammar.js + queries）
-- `VSCODE_NOTIST_PATH`：VS Code 扩展（TextMate grammar + vscode-languageclient 客户端 + renderDocument 预览）
 
 ## 核心变动的跨项目审查
 

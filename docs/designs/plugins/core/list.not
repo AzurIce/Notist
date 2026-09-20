@@ -2,6 +2,6 @@
 
 = list
 
-当前原型没有列表投影或自动分组阶段。列表使用普通 List 值表示；需要渲染列表时，由 `.notc` 显式构造 `item("list", ...)` 和 `item("list-item", ...)`。
+Markup 的 `-`、`+` 和 `1.` 行首标记生成 list 与 list-item；缩进表示嵌套，数字标记保留起始编号。`/ 术语: 解释` 生成 terms 与 term-item。
 
 HTML consumer 根据 `ordered` 字段选择 `ul` 或 `ol`，根据 `body` 字段渲染列表项。

@@ -21,7 +21,7 @@ Name[P] →
 | CAPITAL | LINEBREAK、PARBREAK | 词法单元，由词法规则给出 |
 | "string" | "let"、":" | 终端：逐字符匹配的字面量 |
 | x? | Type? | 零次或一次 |
-| x* | Statement* | 零次以上 |
+| x\* | Statement\* | 零次以上 |
 | x+ | Inline+ | 一次以上 |
 | ( ... ) | ("=")+ | 分组，整体施加后缀 |
 | [SideNote] | col >= M | 侧注：附加条件，不参与匹配 |

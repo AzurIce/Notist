@@ -7,7 +7,7 @@ description: Investigate `.not` knowledge-base Vaults from the CLI — map a mod
 
 ## Repository availability
 
-This repository provides `notist-next`, `notist-analysis`, and `notist-cli`. Run `cargo run -p notist-cli -- check examples/workspace`, `preview examples/workspace`, or `lsp` for current tools. The inspect/daemon commands described below remain unavailable. Repository docs still require syntax migration: use filesystem reads and edits, and do not substitute an installed historical `notist` binary. The following command contracts are reference material for pending tooling.
+This repository provides `notist-next`, `notist-analysis`, and `notist-cli`. Run `cargo run -p notist-cli -- check .` or `preview .` at the repository root for the docs package; `check examples/workspace` validates the component demo. The inspect/daemon commands described below remain unavailable. Use filesystem reads and edits, and do not substitute an installed historical `notist` binary. Read `docs/AGENTS.md` for current document syntax and protected-file rules. The following command contracts are reference material for pending tooling.
 
 Notist manages knowledge-base *Vaults*. A Vault is a directory containing a `Notist.toml`; its content lives in `.not` files, organized into Modules addressed by `ModulePath` (for example `vault::04-world::reference`). The installed `notist` executable ships the full tool suite — Item-tree mapping, annotated reading, cross-reference lookups, validation, site publishing — with complete results (no paging, no output ceiling), count headers, and source lines numbered exactly like your host tools.
 
@@ -47,7 +47,7 @@ notist check --vault <VAULT>                                             # healt
 
 ## `.not` syntax
 
-`.not` is not Markdown, and it differs in ways that matter: emphasis is `*strong*` (not `**bold**`), a single newline is a soft break while a blank line starts a new paragraph, annotations bind metadata (`@(id: "x")`, `#tag`, `key = value`), links are `#<vault::module/target>`, and source has separate markup and code contexts. Before writing or editing `.not` files, read the authoritative quick reference:
+`.not` uses `*strong*`, `_emphasis_`, blank-line paragraphs, backtick raw text, and `$math$` / `$ block math $`. Plain brackets remain text in Markup. `@expr` attaches a Dict to the following Item; `@!expr` attaches it to the current Module. Repeated annotations merge in source order without inheritance. Wikilinks use `[[module::path#item-id]]`. Read `docs/AGENTS.md` and `docs/designs/notc.not` through filesystem tools for the current syntax; the inspect command below is pending:
 
 ```shell
 notist inspect read vault::02-cheatsheet --vault <VAULT>

@@ -4,13 +4,15 @@
 
 == 核心定义
 
-- #<vault::designs::philosophy>：语言核心、错误和消费者边界
-- #<vault::designs::notc>：`.notc` 语法与求值语义
-- #<vault::designs::value-and-types>：运行时值与类型标注
-- #<vault::designs::item>：Content、Item 和 Error 的结构
-- #<vault::designs::plugins::core>：当前内置函数和 HTML 内置 Item
-- #<vault::designs::grammar>：语法记法
+- [[vault::designs::philosophy]]：Code 与 Markup 的关系
+- [[vault::designs::notc]]：`.notc` 语法与求值语义
+- [[vault::designs::value_and_types]]：运行时值与类型标注
+- [[vault::designs::item]]：Content、Item 和 Error 的结构
+- [[vault::designs::plugins::core]]：当前内置函数和 HTML 内置 Item
+- [[vault::designs::grammar]]：语法记法
 
 == 当前范围
 
-这些文档描述 `crates-next/notist-next` 原型。package registry、静态类型推导、`.not` lowering、LSP 和跨 package 版本解析不属于当前实现，文档不把它们当作已存在的运行时契约。
+语言与 package 实现位于 `crates/notist-next`，分析层位于 `crates/notist-analysis`，CLI、LSP 与预览入口位于 `crates/notist-cli`。`.not` 与 `.notc` 共用解析表示和求值器；Markup 标题生成嵌套 section Item。
+
+LSP 按 Notist.toml 发现 package，沿 path 依赖加载源码，共享文件、AST 和导出索引，提供语法诊断、大纲、局部及顶层导入的定义跳转和基础补全。package registry、完整静态类型推导、Item ID 解析、嵌套作用域导入查询和 Markdown 前端尚未实现。

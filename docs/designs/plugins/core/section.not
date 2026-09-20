@@ -2,4 +2,6 @@
 
 = section
 
-`section` 是 HTML consumer 识别的 Item 名称，不是特殊语言构造。`.notc` 可以显式构造 `item("section", (body: ..., ...))`；当前 HTML renderer 直接把它映射为 `<section>`，不计算 label 链、outline 或树深。
+Markup 中行首的 `= 标题`、`== 子标题` 形成嵌套 section Item。每个 section 保存 `level`、`title` 和 `body`，同级或更浅标题结束当前 section；子标题进入 body。
+
+`.notc` 可以显式构造相同的 `item("section", (level: 1, title: [标题], body: [正文]))`。HTML consumer 渲染为 `<section>`，title 使用 h1 至 h6，body 递归渲染。LSP 从语法树提供嵌套大纲；标题身份、label 链和 Item ID 解析尚未实现。

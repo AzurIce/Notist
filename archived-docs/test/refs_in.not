@@ -1,6 +1,0 @@
-= 一
-
-见 #<vault::test::refs/alias> ，它是 `= 二` 这一节的 `@id` 锚点，
-相对拼写同样成立：#<super::refs/alias/三> 。
-
-再引段中 ScopeItem #<vault::test::refs/mid> ，并直指模块 #<vault::test::refs> 。

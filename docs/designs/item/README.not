@@ -9,7 +9,7 @@ Content 是模块求值的输出类型：
 ```text
 Content = Text(String)
         | Sequence(Content*)
-        | Item(name, args, location)
+        | Item(name, args, attributes, location)
         | Link(target)
         | Error(message, location)
 ```
@@ -19,6 +19,8 @@ Content = Text(String)
 == Item
 
 `item(name, args)` 返回结构化 Item。`name` 是字符串，`args` 是字段到 Value 的字典，Item 同时保留创建它的源文件和字节偏移。Item 参数可以嵌套 List、Dict、Item 和 Content。
+
+`attributes` 独立于参数。Markup 的 `@expr` 将 Dict 附到后续 Item，`@!expr` 将 Dict 附到所在 Module；连续标注按源码顺序合并，同名键后者覆盖，属性不继承。Code 通过 `item.attributes` 读取 Item 属性，Module 属性随求值结果和 snapshot 输出。
 
 ```notc
 item("paragraph", (body: [#text("hello")]))

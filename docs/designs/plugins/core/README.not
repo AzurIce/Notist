@@ -27,4 +27,8 @@ Item 字段序列化为 `data-<field>` 属性；Content 字段由组件通过 `r
 
 == 当前边界
 
-段落分组、列表投影、section label 身份、annotation、Target、outline 和引用索引不属于当前 core 运行时。`components/` 中的 Web Component 是 package 资源，不是 core 函数注册项。
+Markup 标题构造嵌套 section Item，空行形成 paragraph，缩进列表形成 list 或 terms；Target 输出为 Link；LSP 从语法树提取 section 大纲。`@expr` 与 `@!expr` 的 Dict 分别存入 Item 和 Module 的 attributes，连续标注按源码顺序合并，不继承。
+
+反引号生成 raw Item，保留 content、lang 与 block。`$x$` 和 `$ x $` 生成 math Item，content 是未经求值的 String，block 区分行内和块级。Code 可调用 `math(content: "x")`；数学排版由后续 renderer 处理，当前预览原样显示源码。
+
+`components/` 中的 Web Component 是 package 资源，不是 core 函数注册项。Item ID 引用索引尚未实现。

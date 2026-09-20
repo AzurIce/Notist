@@ -1,0 +1,91 @@
+@!(ai: true, draft: true, desc: "crates 组织现状与迁移建议：终端可读示意图")
+
+= crates 组织与迁移建议
+
+本文记录 2026-09-19 的架构讨论，属于迁移建议，尚未决定最终 crate 划分。核心方向是重写语言核心，复用外围工具基础设施，并重新设计连接两者的分析层。
+
+== 现有组织
+
+下图表示主要职责连接，省略部分直接依赖。方括号内省略 `notist-` 前缀。
+
+```text
+[cli] CLI / LSP / preview
+  |
+  v
+[service] daemon / 查询 / 搜索 / 渲染调度
+  |                              |
+  v                              v
+[analysis]                    [html]
+  文件快照、模块、语义分析         旧 Node 的 HTML 投影
+  |
+  +--> [syntax] 旧 .not 解析
+  +--> [eval] lower -> reduce -> shape
+  +--> [plugin-host] 插件加载与注册
+
+[model] Node / NodeValue / Schema
+  被 syntax、eval、html、plugin-host、plugin-sdk 共同依赖
+
+独立实验：
+  crates/notist-ir             AST / HIR / IR / package 实验
+  crates-next/notist-next      .notc 求值与 package 原型
+```
+
+旧主链路以 Node 为中心，同一个 Node 类型既表示等待规约的调用，也表示完成的内容节点。模块发现、插件配置、文档身份和求值组织分散在分析及插件层。
+
+== 建议组织
+
+下面是职责图，不是最终 Cargo 依赖图；源码范围、诊断、公共 Code 表示的具体归属仍需细化。
+
+```text
+[cli] CLI / LSP / preview
+  |
+  v
+[service] 会话 / daemon / 请求调度
+  |
+  +--> [analysis] 快照 / 符号 / 导航 / 文档索引
+  |       |
+  |       +--> [package] 包依赖 / 模块发现 / 资源
+  |       |
+  |       +--> [syntax] .notc / .not / 后续 Markdown 前端
+  |                     |
+  |                     v
+  |                  公共 Code 表示
+  |                     |
+  |                     v
+  |                  [eval] 名称解析 / 求值
+  |                     |          |
+  |                     |          +--> [plugin-host] WASM 函数
+  |                     v
+  |                  [ir] Content / Item / Target
+  |                     |
+  +--> [html] <---------+
+       HTML / 组件资源 / 链接投影
+
+[plugin-sdk] 为新 WASM 注册与值传输契约提供作者接口
+```
+
+Package 集中管理模块身份和资源；各前端汇合到公共 Code 表示，求值产生内容 IR。语言导航读取源码与绑定信息，预览和文档索引读取内容及其来源信息；不能只用最终 IR 实现全部 LSP 查询。
+
+== 各 crate 的去向
+
+| 现有 crate | 建议处理 |
+| --- | --- |
+| `notist-model` | 提取源码范围等基础类型；删除旧 Node、NodeValue 和 shaping Schema，内容模型归入新 IR |
+| `notist-ir` | 清理独立实验，作为新公共内容 IR 的候选位置；不因已有名称而保留旧语义 |
+| `notist-syntax` | 重写为多前端入口，复用解析恢复、源码范围和适用的语法测试 |
+| `notist-eval` | 重写为公共 Code 求值器，移除旧 reduce/shape 机制 |
+| `notist-analysis` | 复用快照、overlay 和位置基础设施，重写符号分析与文档查询 |
+| `notist-service` | 复用会话、通信和调度；搜索、渲染请求接新分析层 |
+| `notist-html` | 接受新 IR，负责 HTML、组件与目标 URL 投影 |
+| `notist-plugin-host` | 复用适用的运行隔离和资源限制经验，按新注册与值传输契约重写 |
+| `notist-plugin-sdk` | 提供新函数 ABI 的作者接口，移除 Node forest API |
+| `notist-cli` | 复用 CLI/LSP 外壳、同步与编码处理，迁移查询和输出 |
+| 新增 `notist-package` | 集中管理 manifest、依赖图、模块名映射、源文件及组件资源 |
+
+`crates-next/notist-next` 提供新设计的实现起点，按职责迁入正式 crate；接替完成后删除原型目录，避免长期维护两套语言语义。原型仍需补齐目标解析、Markup 声明与恢复、来源信息和编辑器查询，不能直接视作完整替代品。
+
+== 迁移顺序
+
+先补齐新语言核心和 package，再接入分析与渲染，随后切换 CLI/LSP 和插件，最后删除已无调用方的旧实现。旧测试按行为筛选迁移，编辑器同步、位置编码和未保存内容隔离等契约应继续回归。
+
+Item ID 的身份规则与完整文档投影仍待讨论，不在此次组织建议中代为确定。

@@ -1,4 +1,4 @@
-本目录为一个 Notist 库。
+本目录为仓库根 Notist.toml 所声明 package 的源码目录。使用 `cargo run -p notist-cli -- check .` 在仓库根校验，使用 `cargo run -p notist-cli -- preview .` 预览。
 
 ## 目录结构
 
@@ -39,4 +39,6 @@
 | `agents` | string | 对该 Node 生效的类 AGENTS.md 的提示，在操作对应 Node 前必须确保阅读并理解 |
 
 在生成文档时，如果对应部分内容完全由 AI 生成，则必须标注上 `ai: true` 属性。
+模块属性使用 `@!(ai: true, desc: "摘要")`；Item 属性使用 `@(id: "intro")`，绑定到后续 Item。连续标注按源码顺序合并，同名键后者覆盖，不继承。
+代码示例使用反引号 raw 区域，内部原样保留，无需转义；多行代码使用三个或更多反引号及可选语言名。
 `draft: true` 的内容不应作为判断依据或拒绝理由，但是遇到存在矛盾的情况应该主动询问。

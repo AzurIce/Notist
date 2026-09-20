@@ -2,4 +2,4 @@
 
 = parbreak
 
-当前原型没有 `parbreak` 内置函数，也没有从空行推导段落边界的流分析。段落应由 `.notc` 显式构造 Item；HTML consumer 只识别 `paragraph` Item。
+Markup 的空行分隔 paragraph Item，单个换行折叠为空格。反斜杠后接空白或文件结尾产生 linebreak Item。Code 中的 Content 字面量保留行内内容，出现空行时形成段落。

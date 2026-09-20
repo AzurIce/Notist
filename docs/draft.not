@@ -2,7 +2,7 @@
 
 = 调试快照
 
-当前调试器使用 `crates-next/notist-next` 生成 JSON 快照。native CLI 和浏览器 WASM evaluator 接收同一类虚拟文件请求；HTML 渲染不属于语言快照。
+当前调试器使用 `crates/notist-next` 生成 JSON 快照。native CLI 和浏览器 WASM evaluator 接收同一类虚拟文件请求；HTML 渲染不属于语言快照。
 
 == 请求
 
@@ -31,4 +31,4 @@ Content JSON 使用以下编码：`{"text": ...}`、`{"sequence": [...]}`、`{"i
 
 == 范围
 
-当前快照不承诺增量分析、事件预算、取消请求、完整源范围映射、静态 resolve 阶段、`.not` lowering 或规约步进。新增字段可以扩展实现，但消费者只能依赖这里列出的字段和语义。
+快照按源文件扩展名解析 `.not` Markup 或 `.notc` Code，共享表达式表示与求值器。当前快照不承诺增量分析、事件预算、取消请求、完整源范围映射、静态 resolve 阶段或规约步进。新增字段可以扩展实现，但消费者只能依赖这里列出的字段和语义。

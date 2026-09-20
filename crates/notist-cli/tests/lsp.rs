@@ -149,6 +149,33 @@ impl Drop for Client {
 }
 
 #[test]
+fn one_server_serves_fixed_markup_and_code_frontends() {
+    let mut client = Client::new();
+    client.send(json!({"jsonrpc":"2.0","id":1,"method":"initialize","params":{"capabilities":{}}}));
+    client.response(1);
+    client.send(json!({"jsonrpc":"2.0","method":"initialized","params":{}}));
+    for (suffix, language) in [("not", "notist"), ("notc", "notist-code")] {
+        let uri = notist_analysis::file_uri(&client._root.path().join(format!("example.{suffix}")));
+        client.send(json!({"jsonrpc":"2.0","method":"textDocument/didOpen","params":{"textDocument":{"uri":uri,"languageId":language,"version":1,"text":"let value = 1;"}}}));
+        client.send(json!({"jsonrpc":"2.0","id":2,"method":"textDocument/documentSymbol","params":{"textDocument":{"uri":uri}}}));
+        let symbols = client.response(2)["result"].clone();
+        if suffix == "not" {
+            assert_eq!(symbols, json!([]));
+            client.send(json!({"jsonrpc":"2.0","method":"textDocument/didChange","params":{"textDocument":{"uri":uri,"version":2},"contentChanges":[{"text":"#let value = 1;"}]}}));
+            client.send(json!({"jsonrpc":"2.0","id":3,"method":"textDocument/documentSymbol","params":{"textDocument":{"uri":uri}}}));
+            assert_eq!(client.response(3)["result"][0]["name"], "value");
+        } else {
+            assert_eq!(symbols[0]["name"], "value");
+        }
+    }
+    client.send(json!({"jsonrpc":"2.0","id":4,"method":"shutdown","params":null}));
+    client.response(4);
+    client.send(json!({"jsonrpc":"2.0","method":"exit","params":null}));
+    drop(client.input.take());
+    assert!(client.child.wait().unwrap().success());
+}
+
+#[test]
 fn hover_references_and_rename_use_exact_ranges() {
     let mut client = Client::new();
     client.send(json!({"jsonrpc":"2.0","id":1,"method":"initialize","params":{"capabilities":{"workspace":{"workspaceEdit":{"documentChanges":true}}}}}));
