@@ -33,7 +33,7 @@ fn expr(e: &Expr) -> Json {
             json!({"kind":"section","level":level,"title":title.iter().map(expr).collect::<Vec<_>>(),"body":body.iter().map(expr).collect::<Vec<_>>()})
         }
         ExprKind::Declaration(s) => json!({"kind":"declaration","statement":format!("{s:?}")}),
-        ExprKind::Target(path, item) => json!({"kind":"target","module":path,"item":item}),
+        ExprKind::Target(path, labels) => json!({"kind":"target","module":path,"labels":labels}),
         ExprKind::List(v) => json!({"kind":"list","items":v.iter().map(expr).collect::<Vec<_>>()}),
         ExprKind::Dict(v) => {
             json!({"kind":"dict","fields":v.iter().map(|(k,v)|json!({"key":k,"value":expr(v)})).collect::<Vec<_>>()})

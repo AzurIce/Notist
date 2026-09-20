@@ -149,6 +149,62 @@ impl Drop for Client {
 }
 
 #[test]
+fn label_navigation_and_diagnostics_follow_editor_overlays() {
+    use std::fs;
+    let mut client = Client::new();
+    let root = client._root.path().canonicalize().unwrap();
+    fs::create_dir(root.join("docs")).unwrap();
+    fs::write(root.join("Notist.toml"), "[package]\nname = 'labels'\n").unwrap();
+    fs::write(
+        root.join("docs/README.not"),
+        "[[vault::guide::\"A\"::\"例子\"]]",
+    )
+    .unwrap();
+    fs::write(
+        root.join("docs/guide.not"),
+        "= A\n== Middle\n=== 例子\nText",
+    )
+    .unwrap();
+    let uri = notist_analysis::file_uri(&root.join("docs/README.not"));
+    let guide = notist_analysis::file_uri(&root.join("docs/guide.not"));
+    client.send(json!({"jsonrpc":"2.0","id":1,"method":"initialize","params":{"capabilities":{}}}));
+    client.response(1);
+    client.send(json!({"jsonrpc":"2.0","method":"initialized","params":{}}));
+    client.send(json!({"jsonrpc":"2.0","id":2,"method":"textDocument/definition","params":{"textDocument":{"uri":uri},"position":{"line":0,"character":22}}}));
+    let definition = client.response(2);
+    assert_eq!(definition["result"]["uri"], guide);
+    assert_eq!(definition["result"]["range"]["start"]["line"], 2);
+    client.send(json!({"jsonrpc":"2.0","method":"textDocument/didOpen","params":{"textDocument":{"uri":guide,"version":1,"languageId":"notist","text":"= A\n== 例子\nOne\n== 例子\nTwo"}}}));
+    let diagnostic = loop {
+        let message = client.receive();
+        if message["method"] == "textDocument/publishDiagnostics" && message["params"]["uri"] == uri
+        {
+            break message;
+        }
+    };
+    assert_eq!(
+        diagnostic["params"]["diagnostics"]
+            .as_array()
+            .unwrap()
+            .len(),
+        1
+    );
+    assert!(
+        diagnostic["params"]["diagnostics"][0]["message"]
+            .as_str()
+            .unwrap()
+            .contains("ambiguous LabelPath")
+    );
+    client.send(json!({"jsonrpc":"2.0","id":3,"method":"textDocument/definition","params":{"textDocument":{"uri":uri},"position":{"line":0,"character":22}}}));
+    assert!(client.response(3)["result"].is_null());
+    client.send(json!({"jsonrpc":"2.0","id":4,"method":"shutdown","params":null}));
+    client.response(4);
+    client.send(json!({"jsonrpc":"2.0","method":"exit","params":null}));
+    drop(client.input.take());
+    assert!(client.child.wait().unwrap().success());
+}
+
+#[test]
 fn one_server_serves_fixed_markup_and_code_frontends() {
     let mut client = Client::new();
     client.send(json!({"jsonrpc":"2.0","id":1,"method":"initialize","params":{"capabilities":{}}}));

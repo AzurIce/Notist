@@ -5,6 +5,8 @@ mod documentation;
 mod hints;
 #[path = "project.rs"]
 pub mod project;
+#[path = "targets.rs"]
+mod targets;
 #[path = "types.rs"]
 mod types;
 use serde_json::{Value, json};
@@ -381,6 +383,9 @@ impl Workspace {
             return Value::Null;
         };
         let n = offset(&doc.text, pos, utf8);
+        if let Some(target) = doc.target_at(n) {
+            return self.target_definition(uri, target, utf8);
+        }
         if let Some((_, start, end)) = doc
             .bindings()
             .find(|(_, start, end)| *start <= n && n < *end)
@@ -653,6 +658,13 @@ impl Workspace {
     }
 
     pub fn prepare_rename(&self, uri: &str, pos: &Value, utf8: bool) -> Result<Value, String> {
+        if self
+            .documents
+            .get(uri)
+            .is_some_and(|doc| doc.target_at(offset(&doc.text, pos, utf8)).is_some())
+        {
+            return Err("Rename of label paths is not implemented".into());
+        }
         let target = self.definition(uri, pos, utf8);
         let target_uri = target["uri"]
             .as_str()

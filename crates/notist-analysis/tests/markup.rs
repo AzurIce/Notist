@@ -56,19 +56,19 @@ fn raw_text_is_opaque_and_fences_are_not_markdown() {
 #[test]
 fn attributes_merge_without_inheritance_or_args_mutation() {
     let result = run(
-        "#let data = (id: \"intro\", priority: 1);\n@! (title: \"one\") @data @!(title: \"two\") @(priority: 2)\n= Heading\n@!(ai: true)\nBody\n\n@(id: \"next\")\nSecond paragraph",
+        "#let data = (label: \"intro\", priority: 1);\n@! (title: \"one\") @data @!(title: \"two\") @(priority: 2)\n= Heading\n@!(ai: true)\nBody\n\n@(label: \"next\")\nSecond paragraph",
     );
     assert!(result.warnings.is_empty(), "{:?}", result.warnings);
     assert_eq!(result.attributes["title"].to_json(), "two");
     assert_eq!(result.attributes["ai"].to_json(), true);
     let content = result.content.to_json();
     let section = items(&content, "section")[0];
-    assert_eq!(section["attributes"], json!({"id":"intro","priority":2}));
-    assert!(section["args"].get("id").is_none());
+    assert_eq!(section["attributes"], json!({"label":"intro","priority":2}));
+    assert!(section["args"].get("label").is_none());
     let paragraphs = items(&content, "paragraph");
     assert_eq!(paragraphs[0]["attributes"], json!({}));
-    assert_eq!(paragraphs[1]["attributes"]["id"], "next");
-    for source in ["@1\nHello", "@!\"bad\"", "@(id: \"orphan\")"] {
+    assert_eq!(paragraphs[1]["attributes"]["label"], "next");
+    for source in ["@1\nHello", "@!\"bad\"", "@(label: \"orphan\")"] {
         assert!(!run(source).warnings.is_empty(), "{source}");
     }
 }
@@ -93,7 +93,7 @@ fn whitespace_comments_escapes_and_word_boundaries() {
 
 #[test]
 fn brackets_are_text_while_code_keeps_content_boundaries() {
-    let result = run("literal [brackets] [nested [brackets]] [[vault::guide#intro]]");
+    let result = run("literal [brackets] [nested [brackets]] [[self]]");
     assert!(result.warnings.is_empty(), "{:?}", result.warnings);
     assert!(
         result
@@ -167,13 +167,13 @@ fn automatic_links_and_explicit_links_escape_output() {
 #[test]
 fn annotations_and_interpolation_keep_node_boundaries() {
     let result = run(
-        "@(id: \"custom\")\n#item(\"paragraph\", (body: [Body]))\n\n_foo_bar_\n\n#math(content: \"x\")",
+        "@(label: \"custom\")\n#item(\"paragraph\", (body: [Body]))\n\n_foo_bar_\n\n#math(content: \"x\")",
     );
     assert!(result.warnings.is_empty(), "{:?}", result.warnings);
     let content = result.content.to_json();
     assert_eq!(items(&content, "paragraph").len(), 2);
     assert_eq!(
-        items(&content, "paragraph")[0]["attributes"]["id"],
+        items(&content, "paragraph")[0]["attributes"]["label"],
         "custom"
     );
     assert!(result.content.html().contains("<em>foo_bar</em>"));

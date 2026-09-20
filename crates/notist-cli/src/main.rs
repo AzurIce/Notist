@@ -47,7 +47,7 @@ fn run(cli: Cli) -> Result<(), Box<dyn std::error::Error>> {
             let snapshot = package.runtime.snapshot();
             let mut errors = 0;
             for path in snapshot.sources().keys() {
-                for message in snapshot.evaluate(path).warnings {
+                for message in snapshot.check(path).warnings {
                     eprintln!("{message}");
                     errors += 1;
                 }

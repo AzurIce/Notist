@@ -11,7 +11,7 @@ Value = String | Int | Bool | None
       | Function
 ```
 
-`Content` 是 `Text | Sequence(Content*) | Item | Link | Error`。`Item` 包含名称、字段字典和来源位置。`Module` 是可被 `use` 继续解析的模块引用。`Target` 保存模块路径与可选 Item ID，输出时成为 Link；当前不验证目标存在性。闭包和 WASM 导出都属于 Function。Module、Target 和函数值不能通过 WASM 或 Item 参数序列化。
+`Content` 是 `Text | Sequence(Content*) | Item | Link | Error`。`Item` 包含名称、字段字典、属性和来源位置。`Module` 是可被 `use` 继续解析的模块引用。`Target` 保存模块路径和 LabelPath，空 LabelPath 表示模块目标，输出时成为 Link；引用解析规则定义于 [[vault::designs::item]]。闭包和 WASM 导出都属于 Function。Module、Target 和函数值不能通过 WASM 或 Item 参数序列化。
 
 `None` 表示缺省值或无值；它与空 Content 不同。将 `None`、字符串、整数或列表作为模块表达式输出时，运行时会尝试转换为 Content；函数、字典等不可转换值会产生 Error Content。
 

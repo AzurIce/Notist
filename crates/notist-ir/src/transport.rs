@@ -80,7 +80,7 @@ impl Content {
                 abi::Content::Sequence(v.iter().map(Self::to_abi).collect::<Result<_, _>>()?)
             }
             Self::Item(v) => abi::Content::Item(v.to_abi()?),
-            Self::Link { target } => abi::Content::Link(target.clone()),
+            Self::Link { target, .. } => abi::Content::Link(target.clone()),
             Self::Error { message, .. } => abi::Content::Error(message.clone()),
         })
     }
@@ -92,7 +92,10 @@ impl Content {
                 Self::Sequence(v.into_iter().map(|v| Self::from_abi(v, location)).collect())
             }
             abi::Content::Item(v) => Self::Item(Item::from_abi(v, location)),
-            abi::Content::Link(target) => Self::Link { target },
+            abi::Content::Link(target) => Self::Link {
+                target,
+                location: location.clone(),
+            },
             abi::Content::Error(message) => Self::Error {
                 message,
                 location: location.clone(),

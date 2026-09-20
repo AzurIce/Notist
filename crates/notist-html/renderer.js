@@ -31,8 +31,9 @@ export async function mount(parent, content, components, base = document.baseURI
       const annotate = el => {
         if (node.attributes && Object.keys(node.attributes).length) {
           el.dataset.notistAttributes = JSON.stringify(node.attributes);
-          if (typeof node.attributes.id === 'string') el.id = node.attributes.id;
+
         }
+        if (typeof node.label === 'string') el.dataset.notistLabel = node.label;
         return el;
       };
       if (name === 'linebreak') return annotate(document.createElement('br'));

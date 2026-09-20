@@ -26,7 +26,8 @@ fn nested_data_roundtrip_preserves_variants_and_attributes() {
         Value::Content(Content::Sequence(vec![
             Content::Text("body".into()),
             Content::Link {
-                target: Target::new("p0::doc", Some("part".into())),
+                target: Target::new("p0::doc", vec!["part".into()]),
+                location: location("original"),
             },
             Content::Error {
                 message: "error".into(),
@@ -58,7 +59,7 @@ fn runtime_state_is_rejected_even_when_nested() {
     for value in [
         Value::Named("f".into()),
         Value::Module("p0::doc".into()),
-        Value::Target(Target::new("p0::doc", None)),
+        Value::Target(Target::new("p0::doc", vec![])),
     ] {
         assert!(value.to_abi().is_err());
         assert!(

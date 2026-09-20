@@ -42,7 +42,8 @@ pub enum ExprKind {
     Int(i64),
     Bool(bool),
     Name(String),
-    Target(Vec<String>, Option<String>),
+    /// Module segments and ordered label constraints; an empty label path targets a module.
+    Target(Vec<String>, Vec<String>),
     Declaration(Box<Statement>),
     Section(usize, Vec<Expr>, Vec<Expr>),
     List(Vec<Expr>),
@@ -584,6 +585,27 @@ impl<'a> Parser<'a> {
         self.bump();
         Ok(name)
     }
+    /// A module path followed by zero or more quoted label constraints.
+    /// Both Code and wikilinks use the same string lexer, so delimiters inside
+    /// labels remain text rather than splitting the path or closing a wikilink.
+    fn reference_path(&mut self, first: String) -> Result<(Vec<String>, Vec<String>), String> {
+        let mut module = vec![first];
+        let mut labels = Vec::new();
+        while self.eat("::") {
+            if self.token().string {
+                let label = self.string()?;
+                if label.is_empty() {
+                    return Err("label path segments must not be empty".into());
+                }
+                labels.push(label);
+            } else if labels.is_empty() {
+                module.push(self.segment()?);
+            } else {
+                return Err("expected a quoted label after the label path begins".into());
+            }
+        }
+        Ok((module, labels))
+    }
     fn use_tree(
         &mut self,
         mut path: Vec<String>,
@@ -716,21 +738,12 @@ impl<'a> Parser<'a> {
             self.bump();
             ExprKind::Int(value)
         } else {
-            let mut name = self.name()?;
-            let mut item = None;
-            while self.eat("::") {
-                if self.token().string {
-                    item = Some(self.string()?);
-                    break;
-                }
-                name.push_str("::");
-                name.push_str(&self.segment()?);
-            }
-            match item {
-                Some(item) => {
-                    ExprKind::Target(name.split("::").map(str::to_owned).collect(), Some(item))
-                }
-                None => ExprKind::Name(name),
+            let first = self.name()?;
+            let (module, labels) = self.reference_path(first)?;
+            if labels.is_empty() {
+                ExprKind::Name(module.join("::"))
+            } else {
+                ExprKind::Target(module, labels)
             }
         };
         // Every branch above leaves `pos` just past its last consumed token.

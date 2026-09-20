@@ -2,6 +2,7 @@
 pub mod debug;
 pub mod package;
 mod snapshot;
+pub use notist_eval::{ReferenceDiagnostic, ResolvedItem, ResolvedTarget, TargetError};
 pub use snapshot::{EvaluationSession, Snapshot, SourceSnapshot};
 
 #[cfg(feature = "filesystem")]

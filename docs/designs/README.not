@@ -7,7 +7,7 @@
 - [[vault::designs::philosophy]]：Code 与 Markup 的关系
 - [[vault::designs::notc]]：`.notc` 语法与求值语义
 - [[vault::designs::value_and_types]]：运行时值与类型标注
-- [[vault::designs::item]]：Content、Item 和 Error 的结构
+- [[vault::designs::item]]：Content、Item、label 与引用解析
 - [[vault::designs::plugins::core]]：当前内置函数和 HTML 内置 Item
 - [[vault::designs::grammar]]：语法记法
 
@@ -15,4 +15,6 @@
 
 共享类型、解析、运行时表示和求值分别位于 `crates/notist-model`、`crates/notist-syntax`、`crates/notist-ir` 和 `crates/notist-eval`。`crates/notist-analysis` 管理 package、输入快照、文档查询和调试 JSON；CLI、LSP 与预览入口位于 `crates/notist-cli`。`.not` 与 `.notc` 共用解析表示和求值器；Markup 标题生成嵌套 section Item。
 
-LSP 按 Notist.toml 发现 package，沿 path 依赖加载源码，共享文件、AST 和导出索引，提供语法诊断、大纲、局部及顶层导入的定义跳转和基础补全。package registry、完整静态类型推导、Item ID 解析、嵌套作用域导入查询和 Markdown 前端尚未实现。
+LSP 按 Notist.toml 发现 package，沿 path 依赖加载源码，共享文件、AST 和导出索引，提供语法诊断、大纲、局部及顶层导入的定义跳转和基础补全。Item label 引用由分析层按需解析，LSP 提供定义跳转及缺失、歧义诊断，package check 检查求值遇到的目标。
+
+LSP 不加载 WASM 二进制；依赖 WASM 生成的目标无法求值时保留未解析状态，不据此报告 label 缺失或歧义。package registry、完整静态类型推导、嵌套作用域导入查询和 Markdown 前端尚未实现。

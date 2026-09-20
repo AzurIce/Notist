@@ -151,20 +151,20 @@ fn not_markup_and_item_targets_share_the_code_pipeline() {
     );
     r.sources.insert(
         "guide.not".into(),
-        "Hello [[vault::guide#intro]] #text(\"!\")".into(),
+        "Hello [[vault::guide::\"intro\"]] #text(\"!\")".into(),
     );
     let result = r.evaluate("guide.not");
     assert!(result.warnings.is_empty(), "{:?}", result.warnings);
     assert_eq!(
         result.content.html(),
-        "<p>Hello <a href=\"vault::guide#intro\">vault::guide#intro</a> !</p>"
+        "<p>Hello <a href=\"root::guide::&quot;intro&quot;\">root::guide::&quot;intro&quot;</a> !</p>"
     );
 
     let result = r.evaluate("README.notc");
     assert!(result.warnings.is_empty(), "{:?}", result.warnings);
     assert_eq!(
         result.content.html(),
-        "<a href=\"guide#intro\">guide#intro</a>"
+        "<a href=\"root::guide::&quot;intro&quot;\">root::guide::&quot;intro&quot;</a>"
     );
 }
 #[test]

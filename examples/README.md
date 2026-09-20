@@ -12,9 +12,9 @@ Use `examples/demo` as `examples-path`. Serve a bundle over HTTP to load its ES 
 
 ## Packages
 
-`Notist.toml` declares `[package] name` and `[dependencies] alias = { path = "..." }`. No package entry or component declaration fields: `docs/README.not` or `docs/README.notc` is the root module, and component entries are discovered by convention. A `.not` file is the implicit outer Content literal; its text, `#` interpolations, styles, nested Content, and `[[module#item]]` wikilinks use the same evaluator as `.notc` Content literals.
+`Notist.toml` declares `[package] name` and `[dependencies] alias = { path = "..." }`. No package entry or component declaration fields: `docs/README.not` or `docs/README.notc` is the root module, and component entries are discovered by convention. A `.not` file is the implicit outer Content literal; its text, `#` interpolations, styles, nested Content, and `[[module::"Label"]]` wikilinks use the same evaluator as `.notc` Content literals.
 
-`vault` always names the defining package root. `self` and repeated `super` name the current and parent modules. Dependency aliases name dependency roots. Files are discovered automatically; directory modules can be implicit. Filename segments preserve case, Unicode letters/numbers, and underscores; each other character maps to `_`. Numeric-leading names and reserved words receive an `_` prefix, so logical module names follow binding identifier rules. Names without any identifier characters are rejected. Conflicting logical module paths are errors naming both source files. Explicit code names are validated, never normalized. A code target `module::"item-id"` and a Markup wikilink `[[module#item-id]]` both produce a reference value.
+`vault` always names the defining package root. `self` and repeated `super` name the current and parent modules. Dependency aliases name dependency roots. Files are discovered automatically; directory modules can be implicit. Filename segments preserve case, Unicode letters/numbers, and underscores; each other character maps to `_`. Numeric-leading names and reserved words receive an `_` prefix, so logical module names follow binding identifier rules. Names without any identifier characters are rejected. Conflicting logical module paths are errors naming both source files. Explicit code names are validated, never normalized. A code target `module::"Parent"::"Label"` and a Markup wikilink `[[module::"Parent"::"Label"]]` both produce a reference value. LabelPath matching and explicit `@(label: "...")` attributes follow [the Item reference rules](../docs/designs/item/README.not).
 
 ```notc
 use vault::helpers::{self as helpers, format};
@@ -62,6 +62,6 @@ Registration and values use the shared structured types in `notist-model::abi`. 
 
 ## Scope
 
-The demo tests transitive components and WASM registration. Mermaid/Shader components display source text; they do not bundle those rendering engines. Registry/version resolution, public/private declarations, static type inference, editor integration, and custom WASM type definitions remain outside this prototype.
+The demo tests transitive components and WASM registration. Mermaid/Shader components display source text; they do not bundle those rendering engines. Registry/version resolution, public/private declarations, static type inference, and custom WASM type definitions remain outside this prototype.
 
 `cargo run -j4 -p notist-analysis --example build_fixture` regenerates the WASM fixture and portable package request. `just web-build` and `just web-fixtures` build the browser evaluator; `just web-compare` compares only native/browser `result.content` and `result.diagnostics`.

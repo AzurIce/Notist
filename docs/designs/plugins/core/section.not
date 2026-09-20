@@ -4,4 +4,6 @@
 
 Markup 中行首的 `= 标题`、`== 子标题` 形成嵌套 section Item。每个 section 保存 `level`、`title` 和 `body`，同级或更浅标题结束当前 section；子标题进入 body。
 
-`.notc` 可以显式构造相同的 `item("section", (level: 1, title: [标题], body: [正文]))`。HTML consumer 渲染为 `<section>`，title 使用 h1 至 h6，body 递归渲染。LSP 从语法树提供嵌套大纲；标题身份、label 链和 Item ID 解析尚未实现。
+`.notc` 可以显式构造相同的 `item("section", (level: 1, title: [标题], body: [正文]))`。HTML consumer 渲染为 `<section>`，title 使用 h1 至 h6，body 递归渲染。LSP 从语法树提供嵌套大纲。
+
+section 的默认 label 和显式 label 遵循 [[vault::designs::item]] 的命名与引用解析规则，Markup 标题和显式构造的 section 使用相同规则。

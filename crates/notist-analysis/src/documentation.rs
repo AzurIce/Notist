@@ -207,12 +207,8 @@ pub(super) fn render(source: &str, markdown: bool) -> String {
                     all(body, markdown)
                 )
             }
-            ExprKind::Target(path, item) => {
-                let target = format!(
-                    "{}{}",
-                    path.join("::"),
-                    item.as_ref().map(|id| format!("#{id}")).unwrap_or_default()
-                );
+            ExprKind::Target(path, labels) => {
+                let target = notist_ir::Target::new(path.join("::"), labels.clone()).to_string();
                 if markdown {
                     code(&target, false)
                 } else {

@@ -17,6 +17,6 @@ Notist 使用 .not Markup 与 .notc Code 编写模块，共享 Content、Item �
 
 == 文档标记
 
-文档用 `@!(ai: true, desc: "摘要")` 标注 Module，用 `@(id: "intro")` 标注后续 Item。标注表达式须求值为 Dict，连续标注后者覆盖同名键，属性不继承。
+文档用 `@!(ai: true, desc: "摘要")` 标注 Module，用 `@(label: "intro")` 标注后续 Item。标注表达式须求值为 Dict，连续标注后者覆盖同名键，属性不继承。
 
 反引号代码区原样保留内容，不参与求值。数学使用 `$x$` 或 `$ x $`，生成携带源码 String 的 math Item；预览暂显示源码。

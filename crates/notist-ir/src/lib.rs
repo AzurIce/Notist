@@ -1,5 +1,7 @@
 //! Language values and content. Function values retain parsed bodies, not execution logic.
+mod labels;
 mod transport;
+pub use labels::LabeledItem;
 
 pub use notist_model::{Location, Target, Type};
 use notist_syntax::{Expr, Param};
@@ -57,7 +59,7 @@ pub enum Content {
     Text(String),
     Sequence(Vec<Content>),
     Item(Item),
-    Link { target: Target },
+    Link { target: Target, location: Location },
     Error { message: String, location: Location },
 }
 
@@ -95,7 +97,7 @@ impl Value {
             Self::Content(v) => v.to_json(),
             Self::Item(v) => v.to_json(),
             Self::Module(v) => json!({"module":v}),
-            Self::Target(target) => json!({"target": target.module, "item": target.item}),
+            Self::Target(target) => json!({"target": target.module, "labels": target.labels}),
             Self::Named(v) => json!({"function":v}),
             Self::Closure(_) | Self::External(_) => json!({"function":"<function>"}),
         }
@@ -127,7 +129,7 @@ impl Item {
     pub fn to_json(&self) -> Json {
         json!({"item": self.name, "args": self.args.iter().map(|(k,v)| (k, v.to_json())).collect::<BTreeMap<_,_>>(),
             "attributes": self.attributes.iter().map(|(k,v)| (k, v.to_json())).collect::<BTreeMap<_,_>>(),
-            "source": self.location.source, "offset": self.location.offset})
+            "source": self.location.source, "offset": self.location.offset, "label": self.label().ok().flatten()})
     }
 }
 
@@ -139,7 +141,8 @@ impl Content {
                 json!({"sequence": children.iter().map(Self::to_json).collect::<Vec<_>>()})
             }
             Self::Item(item) => item.to_json(),
-            Self::Link { target } => json!({"link": target.to_string()}),
+            Self::Link { target, location } => json!({"link": target.to_string(), "target": target,
+                "source": location.source, "offset": location.offset}),
             Self::Error { message, location } => {
                 json!({"error": message, "source": location.source, "offset": location.offset})
             }
@@ -150,6 +153,12 @@ impl Content {
             match value {
                 Value::Content(c) => c.warnings(out),
                 Value::Item(i) => {
+                    if let Err(message) = i.label() {
+                        out.push(format!(
+                            "{}:{}: {message}",
+                            i.location.source, i.location.offset
+                        ));
+                    }
                     for v in i.args.values().chain(i.attributes.values()) {
                         visit(v, out);
                     }
@@ -178,6 +187,12 @@ impl Content {
                 }
             }
             Self::Item(item) => {
+                if let Err(message) = item.label() {
+                    out.push(format!(
+                        "{}:{}: {message}",
+                        item.location.source, item.location.offset
+                    ));
+                }
                 for v in item.args.values().chain(item.attributes.values()) {
                     visit(v, out);
                 }

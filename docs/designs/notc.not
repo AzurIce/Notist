@@ -42,7 +42,7 @@ paragraph[hello];
 
 `[]` 的结果是 Content。Content 中允许文本和 Item；`item(name, args)` 返回 Item。字段访问支持 `item.name` 和 `item.args`。
 
-模块导出使用 `module::name`，Item 目标使用 `module::"item-id"`。Markup wikilink 使用 `[[module]]` 或 `[[module#item-id]]`，产生同一种引用值；引用本身不触发目标模块求值。
+模块导出使用 `module::name`，Item 目标使用 `module::"Label1"::"Label2"`。路径中的标识符段组成 ModulePath，后续字符串段组成 LabelPath；进入 LabelPath 后只接受字符串段。Markup wikilink 使用 `[[module]]` 或 `[[module::"Label1"::"Label2"]]`，产生同一种引用值。label 的来源、允许跳层的有序匹配和唯一性规则定义于 [[vault::designs::item]]；引用本身不触发目标模块求值。
 
 == 模块路径
 
@@ -63,7 +63,7 @@ wasm "../wasm/semantic.wasm";
 
 WASM 必须显式引用。运行时调用 `notist_register` 读取函数注册表，验证每个导出的 ABI 和声明类型后，把函数直接放入当前环境。注册按 binary 路径和一次求值缓存；调用使用独立实例。注册信息和调用数据使用 `notist-model::abi` 的结构化 JSON 编码，类型使用共享的 `Type`，传输值不包含闭包、模块状态或源码位置。
 
-Rust 插件通过 `notist-plugin-sdk` 的 `#[func]` 标注普通函数，并在插件根调用 `init_plugin!(函数路径, ...)` 汇总注册信息。类型从 Rust 签名映射；`Option<T>` 对应 `T?`，参数省略规则遵循 [[value-and-types]]。显式默认值使用 `#[func(defaults(参数 = 表达式))]` 声明，生成注册数据时求值，不能引用调用参数。Rust 直接调用保持普通函数规则，必须提供每个实参。
+Rust 插件通过 `notist-plugin-sdk` 的 `#[func]` 标注普通函数，并在插件根调用 `init_plugin!(函数路径, ...)` 汇总注册信息。类型从 Rust 签名映射；`Option<T>` 对应 `T?`，参数省略规则遵循 [[vault::designs::value_and_types]]。显式默认值使用 `#[func(defaults(参数 = 表达式))]` 声明，生成注册数据时求值，不能引用调用参数。Rust 直接调用保持普通函数规则，必须提供每个实参。
 
 == 求值与错误
 

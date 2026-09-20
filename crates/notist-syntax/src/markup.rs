@@ -189,6 +189,16 @@ impl Parser<'_> {
                 continue;
             }
             if c == '@' && !self.documentation {
+                if self.line_position().is_some()
+                    && let Some(level) = self.annotated_heading()
+                {
+                    // Leading Item annotations belong to the following heading,
+                    // including when that heading closes the current section.
+                    if section > 0 && level <= section {
+                        break;
+                    }
+                    flush(&mut out, &mut inline, *wrap);
+                }
                 let annotation = self.markup_annotation()?;
                 if inline.is_empty() {
                     out.push(annotation);
@@ -329,6 +339,38 @@ impl Parser<'_> {
             self.pos,
         ))
     }
+    /// Look past a standalone run of Item annotations without consuming its tokens.
+    /// Module annotations and other expressions keep their existing lexical scope.
+    fn annotated_heading(&mut self) -> Option<usize> {
+        let position = self.pos;
+        let tokens = self.tokens.len();
+        let level = (|| {
+            loop {
+                if !self.rest().starts_with('@') || self.rest().starts_with("@!") {
+                    return None;
+                }
+                self.markup_annotation().ok()?;
+                loop {
+                    while self.rest().starts_with(char::is_whitespace) {
+                        self.consume_char();
+                    }
+                    if self.rest().starts_with("//") || self.rest().starts_with("/*") {
+                        self.markup_comment().ok()?;
+                    } else {
+                        break;
+                    }
+                }
+                self.line_position()?;
+                let level = self.rest().bytes().take_while(|c| *c == b'=').count();
+                if level > 0 && self.rest()[level..].starts_with([' ', '\t', '\n']) {
+                    return Some(level);
+                }
+            }
+        })();
+        self.pos = position;
+        self.tokens.truncate(tokens);
+        level
+    }
     fn markup_comment(&mut self) -> Result<(), String> {
         let start = self.pos;
         if self.rest().starts_with("//") {
@@ -388,22 +430,17 @@ impl Parser<'_> {
         }
         if self.rest().starts_with("[[") {
             self.pos += 2;
-            let end = self.rest().find("]]").ok_or("unclosed wikilink")? + self.pos;
-            let (module, item) = self.source[self.pos..end]
-                .split_once('#')
-                .map_or((&self.source[self.pos..end], None), |(m, i)| {
-                    (m, Some(i.to_owned()))
-                });
-            if module.is_empty()
-                || module.split("::").any(str::is_empty)
-                || item.as_deref() == Some("")
-            {
-                return Err("invalid wikilink target".into());
+            let tokens = self.tokens.len();
+            let first = self.segment()?;
+            let (module, labels) = self.reference_path(first)?;
+            let close = self.token().offset;
+            if !self.source[close..].starts_with("]]") {
+                return Err("expected `]]` after wikilink target".into());
             }
-            let path = module.split("::").map(str::to_owned).collect();
-            self.pos = end + 2;
+            self.pos = close + 2;
+            self.tokens.truncate(tokens);
             self.record(start, self.pos, "wikilink", &self.source[start..self.pos]);
-            return Ok(expr(ExprKind::Target(path, item), start, self.pos));
+            return Ok(expr(ExprKind::Target(module, labels), start, self.pos));
         }
         if self.rest().starts_with("https://") || self.rest().starts_with("http://") {
             let mut target = self

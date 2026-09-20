@@ -1,7 +1,9 @@
 use crate::package::{module_key, relative};
 #[cfg(feature = "filesystem")]
 use crate::{Workspace, uri_path};
-use notist_eval::{Evaluation, ModuleProvider, Runtime};
+use notist_eval::{
+    Evaluation, ModuleProvider, ReferenceDiagnostic, ResolvedTarget, Runtime, TargetError,
+};
 use notist_ir::Env;
 use notist_syntax::ParseResult;
 use serde_json::Value;
@@ -37,6 +39,36 @@ impl Snapshot {
     }
     pub fn evaluate(&self, source: &str) -> Evaluation {
         Runtime::new(self).evaluate(source)
+    }
+
+    /// Resolve a canonical Target, evaluating only its destination when labels are present.
+    pub fn resolve_target(
+        &self,
+        target: &notist_ir::Target,
+    ) -> Result<ResolvedTarget, TargetError> {
+        Runtime::new(self).resolve_target(target)
+    }
+
+    pub fn reference_diagnostics(&self, source: &str) -> Vec<ReferenceDiagnostic> {
+        let mut runtime = Runtime::new(self);
+        runtime.evaluate(source);
+        runtime.reference_diagnostics()
+    }
+
+    /// Evaluate a module and validate encountered references, without following reference cycles.
+    pub fn check(&self, source: &str) -> Evaluation {
+        let mut runtime = Runtime::new(self);
+        let mut result = runtime.evaluate(source);
+        for diagnostic in runtime.reference_diagnostics() {
+            result.warnings.push(format!(
+                "{}:{}: {}: {}",
+                diagnostic.location.source,
+                diagnostic.location.offset,
+                diagnostic.target,
+                diagnostic.error
+            ));
+        }
+        result
     }
 
     fn insert_module(&mut self, source: String, key: String) {

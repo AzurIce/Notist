@@ -1,5 +1,7 @@
 //! Evaluation over host-provided syntax, module identities and resources.
+mod targets;
 mod wasm;
+pub use targets::{ReferenceDiagnostic, ResolvedItem, ResolvedTarget, TargetError};
 
 use notist_ir::Closure;
 pub use notist_ir::{Content, Env, Item, Value};
@@ -52,6 +54,8 @@ pub struct Runtime<'a> {
     pub used_wasm: Vec<String>,
     pub events: Vec<Json>,
     modules: BTreeMap<String, Env>,
+    contents: BTreeMap<String, Content>,
+    references: Vec<(Target, Location)>,
     loading: BTreeSet<String>,
     registry: BTreeMap<String, Env>,
     steps: usize,
@@ -65,9 +69,11 @@ impl<'a> Runtime<'a> {
             used_wasm: Vec::new(),
             events: Vec::new(),
             modules: BTreeMap::new(),
+            contents: BTreeMap::new(),
+            references: Vec::new(),
             loading: BTreeSet::new(),
             registry: BTreeMap::new(),
-            steps: 0,
+            steps: 20_000,
         }
     }
     pub fn evaluate(&mut self, source: &str) -> Evaluation {
@@ -76,6 +82,8 @@ impl<'a> Runtime<'a> {
     pub fn evaluate_with_env(&mut self, source: &str) -> (Evaluation, Env) {
         self.module_attributes.clear();
         self.modules.clear();
+        self.contents.clear();
+        self.references.clear();
         self.loading.clear();
         self.registry.clear();
         self.used_wasm.clear();
@@ -102,6 +110,7 @@ impl<'a> Runtime<'a> {
                 ),
             )
         };
+        self.collect_links(&content);
         let mut warnings = Vec::new();
         content.warnings(&mut warnings);
         let attributes = self
@@ -139,7 +148,10 @@ impl<'a> Runtime<'a> {
             Value::None => Content::Sequence(vec![]),
             Value::Content(c) => c,
             Value::Item(i) => Content::Item(i),
-            Value::Target(target) => Content::Link { target },
+            Value::Target(target) => Content::Link {
+                target,
+                location: location.clone(),
+            },
             Value::String(s) => Content::Text(s),
             Value::Int(n) => Content::Text(n.to_string()),
             Value::List(v) => {
@@ -157,7 +169,13 @@ impl<'a> Runtime<'a> {
             offset: 0,
         };
         if let Some(env) = self.modules.get(source) {
-            return (env.clone(), Content::Sequence(vec![]));
+            return (
+                env.clone(),
+                self.contents
+                    .get(source)
+                    .cloned()
+                    .unwrap_or_else(|| Content::Sequence(vec![])),
+            );
         }
         if depth >= 128 || !self.loading.insert(source.into()) {
             return (
@@ -186,6 +204,7 @@ impl<'a> Runtime<'a> {
         let result = self.statements(statements, Env::new(), source, depth);
         self.loading.remove(source);
         self.modules.insert(source.into(), result.0.clone());
+        self.contents.insert(source.into(), result.1.clone());
         result
     }
     fn statements(
@@ -375,55 +394,15 @@ impl<'a> Runtime<'a> {
         source: &str,
         depth: usize,
     ) -> Result<Value, String> {
-        let Some(first) = path.first() else {
-            return Err("empty module path".into());
-        };
-        if let Some(value) = env.get(first) {
-            if path.len() == 1 {
-                return Ok(value.clone());
-            }
-            if let Value::Module(module) = value {
-                let key = self
-                    .world
-                    .module_key(module)
-                    .ok_or_else(|| format!("missing module `{module}`"))?;
-                return self.resolve_key(&format!("{key}::{}", path[1..].join("::")), depth);
-            }
-            return Err(format!("`{first}` is not a module"));
+        if path.len() == 1
+            && let Some(value) = env.get(&path[0])
+        {
+            return Ok(value.clone());
         }
-        let current = self
-            .world
-            .module_key(source)
-            .ok_or_else(|| format!("missing module `{source}`"))?;
-        let package = current.split("::").next().unwrap();
-        let mut parts = current.split("::").map(str::to_owned).collect::<Vec<_>>();
-        let mut rest = 1;
-        match first.as_str() {
-            "vault" => parts.truncate(1),
-            "self" => {}
-            "super" => {
-                let mut n = 0;
-                while path.get(n).is_some_and(|p| p == "super") {
-                    n += 1;
-                }
-                if n >= parts.len() {
-                    return Err("super escapes package root".into());
-                }
-                parts.truncate(parts.len() - n);
-                rest = n;
-            }
-            name => {
-                let dep = self.world.dependency(package, name);
-                if let Some(dep) = dep {
-                    parts = vec![dep.to_owned()];
-                } else {
-                    return Err(format!("unknown binding or dependency `{name}`"));
-                }
-            }
-        }
-        parts.extend_from_slice(&path[rest..]);
-        self.resolve_key(&parts.join("::"), depth)
+        let key = self.path_key(path, env, source)?;
+        self.resolve_key(&key, depth)
     }
+
     fn resolve_key(&mut self, key: &str, depth: usize) -> Result<Value, String> {
         if let Some(source) = self.world.module_source(key).map(str::to_owned) {
             let (_, content) = self.module(&source, depth + 1);
@@ -559,9 +538,14 @@ impl<'a> Runtime<'a> {
                 )
                 .unwrap_or_else(|e| Self::failure(e, &loc))
             }
-            ExprKind::Target(path, item) => {
-                Value::Target(Target::new(path.join("::"), item.clone()))
-            }
+            ExprKind::Target(path, labels) => match self.target_module(path, env, source) {
+                Ok(module) => {
+                    let target = Target::new(module, labels.clone());
+                    self.references.push((target.clone(), loc));
+                    Value::Target(target)
+                }
+                Err(error) => Self::failure(error, &loc),
+            },
             ExprKind::List(values) => Value::List(
                 values
                     .iter()

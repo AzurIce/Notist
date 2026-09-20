@@ -19,7 +19,11 @@
 - `platform` 保存 target 和耗时。native 与 WASM 比较时忽略该字段。
 - `truncated` 当前固定为空数组，表示尚未实现预算截断。
 
-Content JSON 使用以下编码：`{"text": ...}`、`{"sequence": [...]}`、`{"item": name, "args": {...}, "source": ..., "offset": ...}` 和 `{"error": ..., "source": ..., "offset": ...}`。Dict 使用 `{"dict": {...}}` 包装；`none` 使用 JSON null。
+Content JSON 使用以下编码：`{"text": ...}`、`{"sequence": [...]}`、`{"item": name, "args": {...}, "attributes": {...}, "label": ..., "source": ..., "offset": ...}` 和 `{"error": ..., "source": ..., "offset": ...}`。Item 的 `label` 是计算后的有效 label，无 label 时为 null。Dict 使用 `{"dict": {...}}` 包装；`none` 使用 JSON null。
+
+Link 使用 `{"link": "module::path::\"Label\"", "target": {"module": "module::path", "labels": ["Label"]}, "source": ..., "offset": ...}`。`link` 是目标的字符串表示，`target` 保留结构化路径，来源位置指向引用表达式。
+
+Target 表达式的 syntax JSON 使用 `{"kind": "target", "module": [...], "labels": [...]}`；运行时 Target 值使用 `{"target": "module::path", "labels": [...]}`。`labels` 是按顺序保存的字符串数组，空数组表示模块目标。
 
 == 阶段边界
 

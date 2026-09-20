@@ -1,15 +1,17 @@
 @!(title: "Markup", lang: "en")
 
-@(id: "markup")
+@(label: "markup")
 = Markup
 
 *Strong*, _emphasis_, "quotes", literal [brackets], and https://typst.app.
 
-@(id: "code")
+@(label: "code")
 ```not
 @!(title: "Document")
 #math(content: "x_1 + y_2")
 ```
+
+Reference to the code example: [[self::"markup"::"code"]].
 
 Inline $x_1 + y_2$ and block math:
 

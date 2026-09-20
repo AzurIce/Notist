@@ -104,6 +104,7 @@ impl Workspace {
         if diagnostics.is_empty() {
             diagnostics.extend(Analysis::new(self).document(uri).errors.into_iter().map(|(start,end,message)|
                 json!({"range":range(&doc.text,start,end,utf8),"severity":1,"source":"notist","message":message})));
+            diagnostics.extend(self.target_diagnostics(uri, utf8));
         }
         json!(diagnostics)
     }

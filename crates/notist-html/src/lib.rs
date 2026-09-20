@@ -45,7 +45,7 @@ pub fn render(content: &Content) -> String {
         Content::Sequence(children) => children.iter().map(render).collect(),
         Content::Error { message, .. } => error(message),
         Content::Item(item) => render_item(item),
-        Content::Link { target } => {
+        Content::Link { target, .. } => {
             let target = target.to_string();
             format!("<a href=\"{}\">{}</a>", escape(&target), escape(&target))
         }
@@ -63,20 +63,22 @@ fn render_value(value: &Value) -> String {
 }
 
 fn render_item(item: &Item) -> String {
+    let label = item
+        .label()
+        .ok()
+        .flatten()
+        .map(|label| format!(" data-notist-label=\"{}\"", escape(&label)))
+        .unwrap_or_default();
     let attributes = if item.attributes.is_empty() {
-        String::new()
+        label.clone()
     } else {
         let json = item
             .attributes
             .iter()
             .map(|(k, v)| (k, v.to_json()))
             .collect::<std::collections::BTreeMap<_, _>>();
-        let id = match item.attributes.get("id") {
-            Some(Value::String(id)) => format!(" id=\"{}\"", escape(id)),
-            _ => String::new(),
-        };
         format!(
-            "{id} data-notist-attributes=\"{}\"",
+            "{label} data-notist-attributes=\"{}\"",
             escape(&serde_json::to_string(&json).unwrap())
         )
     };

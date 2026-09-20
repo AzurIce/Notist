@@ -31,4 +31,4 @@ Markup 标题构造嵌套 section Item，空行形成 paragraph，缩进列表�
 
 反引号生成 raw Item，保留 content、lang 与 block。`$x$` 和 `$ x $` 生成 math Item，content 是未经求值的 String，block 区分行内和块级。Code 可调用 `math(content: "x")`；数学排版由后续 renderer 处理，当前预览原样显示源码。
 
-`components/` 中的 Web Component 是 package 资源，不是 core 函数注册项。Item ID 引用索引尚未实现。
+`components/` 中的 Web Component 是 package 资源，不是 core 函数注册项。
