@@ -82,7 +82,7 @@ impl Client {
 fn discovers_packages_from_cwd_and_shares_dependency_edits() {
     use std::fs;
     let mut client = Client::new();
-    let root = client._root.path().to_path_buf();
+    let root = client._root.path().canonicalize().unwrap();
     for name in ["a", "nested/b"] {
         let path = root.join(name);
         fs::create_dir_all(path.join("docs")).unwrap();
@@ -372,6 +372,38 @@ fn stdio_unicode_edits_diagnostics_queries_and_shutdown() {
         assert_eq!(client.receive()["id"], 3);
         client.send(json!({"jsonrpc":"2.0","method":"exit","params":null}));
         // Closing stdin also lets the transport's reader thread finish.
+        drop(client.input.take());
+        assert!(client.child.wait().unwrap().success());
+    }
+}
+
+#[test]
+fn typed_link_diagnostics_use_negotiated_unicode_ranges_and_clear_after_fix() {
+    for encoding in ["utf-8", "utf-16"] {
+        let mut client = Client::new();
+        let root = client._root.path().canonicalize().unwrap();
+        std::fs::create_dir(root.join("docs")).unwrap();
+        std::fs::write(root.join("Notist.toml"), "[package]\nname = 'unicode'\n").unwrap();
+        let uri = notist_analysis::file_uri(&root.join("docs/README.not"));
+        let bad = "中文😀 [[self::\"Missing\"]]";
+        std::fs::write(root.join("docs/README.not"), bad).unwrap();
+        client.send(json!({"jsonrpc":"2.0","id":1,"method":"initialize","params":{"capabilities":{"general":{"positionEncodings":[encoding]}}}}));
+        client.response(1);
+        client.send(json!({"jsonrpc":"2.0","method":"initialized","params":{}}));
+        let notification = client.receive();
+        let d = &notification["params"]["diagnostics"][0];
+        assert_eq!(d["code"], "missing_label");
+        assert_eq!(
+            d["range"]["start"]["character"],
+            if encoding == "utf-8" { 11 } else { 5 }
+        );
+        client.send(json!({"jsonrpc":"2.0","method":"textDocument/didOpen","params":{"textDocument":{"uri":uri,"version":1,"languageId":"notist","text":"= Missing\n中文😀 [[self::\"Missing\"]]"}}}));
+        let notification = client.receive();
+        assert_eq!(notification["params"]["uri"], uri);
+        assert_eq!(notification["params"]["diagnostics"], json!([]));
+        client.send(json!({"jsonrpc":"2.0","id":2,"method":"shutdown","params":null}));
+        client.response(2);
+        client.send(json!({"jsonrpc":"2.0","method":"exit","params":null}));
         drop(client.input.take());
         assert!(client.child.wait().unwrap().success());
     }

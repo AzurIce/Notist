@@ -9,6 +9,7 @@ name = "notist"
 path = "src/main.rs"
 
 [dependencies]
+codespan-reporting = "0.13"
 clap = { version = "4", features = ["derive"] }
 notist-analysis = { path = "../notist-analysis" }
 notist-html = { path = "../notist-html" }

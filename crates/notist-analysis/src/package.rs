@@ -1,5 +1,5 @@
 #[cfg(feature = "filesystem")]
-pub use filesystem::{Dependency, Loaded, Manifest, Package, load};
+pub use filesystem::{Dependency, Loaded, Manifest, Package, load, load_for_check};
 
 #[cfg(feature = "filesystem")]
 mod filesystem {
@@ -46,6 +46,16 @@ mod filesystem {
     }
 
     pub fn load(root: &Path) -> Result<Loaded, String> {
+        load_impl(root, false)
+    }
+
+    /// Preserve missing plugin resources so checking can report them at their declarations.
+    /// Package discovery and component setup failures still abort loading.
+    pub fn load_for_check(root: &Path) -> Result<Loaded, String> {
+        load_impl(root, true)
+    }
+
+    fn load_impl(root: &Path, retain_binary_errors: bool) -> Result<Loaded, String> {
         let root = root.canonicalize().map_err(|e| e.to_string())?;
         let mut loaded = Loaded {
             paths: BTreeMap::new(),
@@ -56,7 +66,13 @@ mod filesystem {
         };
         let mut ids = BTreeMap::new();
         let mut active = BTreeSet::new();
-        let id = visit(&root, &mut loaded, &mut ids, &mut active)?;
+        let id = visit(
+            &root,
+            &mut loaded,
+            &mut ids,
+            &mut active,
+            retain_binary_errors,
+        )?;
         loaded.entry = loaded
             .runtime
             .sources
@@ -92,6 +108,7 @@ mod filesystem {
         loaded: &mut Loaded,
         ids: &mut BTreeMap<PathBuf, String>,
         active: &mut BTreeSet<PathBuf>,
+        retain_binary_errors: bool,
     ) -> Result<String, String> {
         if active.contains(root) {
             return Err(format!("cyclic package dependency: {}", root.display()));
@@ -121,7 +138,10 @@ mod filesystem {
                 .join(dep.path)
                 .canonicalize()
                 .map_err(|e| e.to_string())?;
-            dependencies.insert(alias, visit(&path, loaded, ids, active)?);
+            dependencies.insert(
+                alias,
+                visit(&path, loaded, ids, active, retain_binary_errors)?,
+            );
         }
         loaded.runtime.dependencies.insert(id.clone(), dependencies);
         let mut source_files = Vec::new();
@@ -201,18 +221,33 @@ mod filesystem {
             let parsed = loaded.runtime.parse(&source, &text);
             for statement in &parsed.statements {
                 if let notist_syntax::Statement::Wasm(path) = statement {
-                    let virtual_path = relative(&source, path)?;
-                    let local = virtual_path
-                        .strip_prefix(&format!("{id}/"))
-                        .ok_or("WASM escapes package")?;
-                    let disk = root.join(local).canonicalize().map_err(|e| e.to_string())?;
-                    if !disk.starts_with(root) {
-                        return Err("WASM escapes package".into());
+                    let virtual_path = match relative(&source, path) {
+                        Ok(path) => path,
+                        Err(_) if retain_binary_errors => continue, // evaluator reports the invalid resource path
+                        Err(error) => return Err(error),
+                    };
+                    let resource = (|| {
+                        let local = virtual_path
+                            .strip_prefix(&format!("{id}/"))
+                            .ok_or("WASM escapes package")?;
+                        let disk = root
+                            .join(local)
+                            .canonicalize()
+                            .map_err(|e| format!("cannot load WASM `{path}`: {e}"))?;
+                        if !disk.starts_with(root) {
+                            return Err("WASM escapes package".to_owned());
+                        }
+                        fs::read(disk).map_err(|e| format!("cannot load WASM `{path}`: {e}"))
+                    })();
+                    match resource {
+                        Ok(bytes) => {
+                            loaded.runtime.binaries.insert(virtual_path, bytes);
+                        }
+                        Err(error) if retain_binary_errors => {
+                            loaded.runtime.binary_errors.insert(virtual_path, error);
+                        }
+                        Err(error) => return Err(error),
                     }
-                    loaded
-                        .runtime
-                        .binaries
-                        .insert(virtual_path, fs::read(disk).map_err(|e| e.to_string())?);
                 }
             }
         }

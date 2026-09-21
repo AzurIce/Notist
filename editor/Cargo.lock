@@ -130,6 +130,7 @@ dependencies = [
  "base64",
  "notist-eval",
  "notist-ir",
+ "notist-model",
  "notist-syntax",
  "serde_json",
  "web-time",
@@ -168,6 +169,7 @@ name = "notist-model"
 version = "0.1.0"
 dependencies = [
  "serde",
+ "serde_json",
 ]
 
 [[package]]

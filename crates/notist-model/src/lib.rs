@@ -1,5 +1,7 @@
 //! Shared language data. Lexical rules and host path policies live with their owners.
 pub mod abi;
+mod query;
+pub use query::*;
 
 use serde::{Deserialize, Serialize};
 use std::fmt;

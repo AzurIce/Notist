@@ -78,3 +78,33 @@ fn rust_plugin_and_source_share_optional_default_precedence() {
     assert!(result.warnings.is_empty(), "{:?}", result.warnings);
     assert_eq!(result.content.html(), "nonenone32none5");
 }
+
+#[test]
+#[ignore = "requires compiled Rust plugin; run just test-plugin-sdk"]
+fn plugin_origins_survive_indirect_calls_without_entering_the_wire_format() {
+    let result = evaluate("map(paragraph, ([One], [Two]));");
+    assert!(result.diagnostics.is_empty(), "{:?}", result.diagnostics);
+    let tree = notist_ir::ItemIndex::new(&result.content);
+    let paragraphs: Vec<_> = tree
+        .nodes()
+        .iter()
+        .enumerate()
+        .filter_map(|(id, _)| {
+            let item = tree.item(&result.content, id);
+            (item.name == "paragraph").then_some(item)
+        })
+        .collect();
+    assert_eq!(paragraphs.len(), 2);
+    for item in paragraphs {
+        let origin = item.origin.as_ref().unwrap();
+        assert_eq!(origin.kind, notist_model::OriginKind::Plugin);
+        assert!(origin.node_id.is_some());
+        let wire = notist_ir::Value::Item(item.clone()).to_abi().unwrap();
+        assert!(
+            !serde_json::to_value(wire)
+                .unwrap()
+                .to_string()
+                .contains("node_id")
+        );
+    }
+}

@@ -18,6 +18,7 @@ fn nested_data_roundtrip_preserves_variants_and_attributes() {
         Value::None,
         Value::Dict(Env::from([("kind".into(), Value::String("item".into()))])),
         Value::Item(Item {
+            origin: None,
             name: "custom".into(),
             args: Env::new(),
             attributes: Env::from([("count".into(), Value::Int(3))]),
@@ -30,6 +31,7 @@ fn nested_data_roundtrip_preserves_variants_and_attributes() {
                 location: location("original"),
             },
             Content::Error {
+                code: notist_model::DiagnosticCode::Evaluation,
                 message: "error".into(),
                 location: location("original"),
             },
@@ -64,6 +66,7 @@ fn runtime_state_is_rejected_even_when_nested() {
         assert!(value.to_abi().is_err());
         assert!(
             Value::Content(Content::Item(Item {
+                origin: None,
                 name: "custom".into(),
                 args: Env::new(),
                 attributes: Env::from([("hidden".into(), Value::List(vec![value]))]),

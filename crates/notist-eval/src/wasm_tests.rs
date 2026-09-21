@@ -164,6 +164,7 @@ fn invocation_enforces_types_and_transport_boundary() {
         .contains("cannot cross")
     );
     let error = Value::Content(crate::Content::Error {
+        code: notist_model::DiagnosticCode::Evaluation,
         message: "bad".into(),
         location: Location {
             source: "original".into(),

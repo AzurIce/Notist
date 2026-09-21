@@ -1,8 +1,8 @@
 //! Editor projections of the evaluated label resolver. Workspace snapshots omit WASM inputs.
 use super::{Document, Workspace, range};
-use crate::{EvaluationSession, Snapshot};
-use notist_eval::{ModuleProvider, Runtime, TargetError};
-use notist_ir::{Content, Location, Target, Value as RuntimeValue};
+use crate::{DiagnosticCode, EvaluationSession, ModuleKey, ResolvedTarget, Snapshot};
+use notist_eval::ModuleProvider;
+use notist_ir::Target;
 use notist_syntax::{Expr, ExprKind};
 use serde_json::{Value, json};
 
@@ -61,9 +61,30 @@ impl Workspace {
         let Some((snapshot, source)) = self.target_snapshot(uri) else {
             return Value::Null;
         };
-        let mut runtime = Runtime::new(&snapshot);
-        runtime.evaluate(&source);
-        let observed = runtime.targets_at(&source, expr.offset);
+        let mut query = snapshot.query();
+        let Some(key) = snapshot.module_key(&source) else {
+            return Value::Null;
+        };
+        let Ok(evaluation) = query.evaluate(&ModuleKey::from(key)) else {
+            return Value::Null;
+        };
+        let Some(syntax) = snapshot.syntax(&source, expr.id) else {
+            return Value::Null;
+        };
+        let Ok(attempts) = evaluation.observations(&syntax) else {
+            return Value::Null;
+        };
+        if attempts.iter().any(|r| r.result.is_err()) {
+            return Value::Null;
+        }
+        let mut observed = Vec::new();
+        for r in attempts {
+            if let Ok(target) = &r.result {
+                if !observed.contains(target) {
+                    observed.push(target.clone());
+                }
+            }
+        }
         let target = match observed.as_slice() {
             [target] => target.clone(),
             [] => {
@@ -100,12 +121,21 @@ impl Workspace {
             }
             _ => return Value::Null,
         };
-        let Ok(target) = runtime.resolve_target(&target) else {
+        let Ok(target) = query.resolve(&target) else {
             return Value::Null;
         };
-        let (target_source, point) = match target.item {
-            Some(item) => (item.location.source, Some(item.location.offset)),
-            None => (target.source, None),
+        let (target_source, point, exact_span) = match target {
+            ResolvedTarget::Item(item) => {
+                let origin = item.origin();
+                let span = origin.syntax.map(|s| s.selection_span());
+                (origin.location.source, Some(origin.location.offset), span)
+            }
+            ResolvedTarget::Module(module) => {
+                let Some(source) = module.source() else {
+                    return Value::Null;
+                };
+                (source.to_owned(), None, None)
+            }
         };
         let Some(target_uri) = snapshot
             .origin(&target_source)
@@ -116,90 +146,33 @@ impl Workspace {
         let Some(document) = self.documents.get(target_uri) else {
             return Value::Null;
         };
-        let (start, end) = point.map_or((0, 0), |point| document.target_span(point));
+        let (start, end) = exact_span
+            .map(|s| (s.start, s.end))
+            .unwrap_or_else(|| point.map_or((0, 0), |point| document.target_span(point)));
         json!({"uri":target_uri,"range":range(&document.text,start,end,utf8)})
     }
 
     pub(super) fn target_diagnostics(&self, uri: &str, utf8: bool) -> Vec<Value> {
-        let Some(document) = self.documents.get(uri) else {
-            return Vec::new();
-        };
-        if !document
-            .expressions()
-            .iter()
-            .any(|expr| matches!(expr.kind, ExprKind::Target(..)))
-        {
-            return Vec::new();
-        }
         let Some((snapshot, source)) = self.target_snapshot(uri) else {
-            return Vec::new();
+            return vec![];
         };
-        let mut runtime = Runtime::new(&snapshot);
-        let evaluation = runtime.evaluate(&source);
-        let mut errors = Vec::new();
-        formation_errors(&evaluation.content, &mut errors);
-        errors.retain(|(location, _)| document.target_at(location.offset).is_some());
-        errors.extend(
-            runtime
-                .reference_diagnostics()
-                .into_iter()
-                .filter_map(|diagnostic| {
-                    // Static editor queries do not load plugin binaries. Incomplete evaluation
-                    // cannot establish that a label is missing or ambiguous.
-                    if matches!(diagnostic.error, TargetError::EvaluationFailed(_)) {
-                        return None;
-                    }
-                    Some((diagnostic.location, diagnostic.error.to_string()))
-                }),
-        );
-        errors.into_iter().filter_map(|(location, message)| {
-            if !snapshot.origin(&location.source).map_or(location.source == source, |origin| origin == uri) {
-                return None;
-            }
-            let start = location.offset;
-            let end = document.expressions().into_iter()
-                .filter(|expr| expr.offset <= start && start < expr.end)
-                .min_by_key(|expr| expr.end - expr.offset)
-                .map_or(start, |expr| expr.end);
-            Some(json!({"range":range(&document.text,start,end,utf8),"severity":1,"source":"notist","message":message}))
+        let Some(document) = self.documents.get(uri) else {
+            return vec![];
+        };
+        let Ok(report) = snapshot.check(&source) else {
+            return vec![];
+        };
+        report.diagnostics().into_iter().filter_map(|d| {
+            if !matches!(d.code, DiagnosticCode::TargetFormation | DiagnosticCode::MissingModule | DiagnosticCode::MissingLabel | DiagnosticCode::AmbiguousLabel) { return None; }
+            let location = d.location.as_ref()?;
+            if !snapshot.origin(&location.source).map_or(location.source == source, |origin| origin == uri) { return None; }
+            let span = d.span?;
+            let related: Vec<_> = d.related.iter().filter_map(|r| {
+                let target_uri = snapshot.origin(&r.span.source).or_else(|| (r.span.source == source).then_some(uri))?;
+                let text = &snapshot.source(&r.span.source)?.text;
+                Some(json!({"location":{"uri":target_uri,"range":range(text,r.span.start,r.span.end,utf8)},"message":r.message}))
+            }).collect();
+            Some(json!({"range":range(&document.text,span.start,span.end,utf8),"severity":1,"source":"notist","code":d.code.as_str(),"message":d.message,"relatedInformation":related}))
         }).collect()
-    }
-}
-
-fn formation_errors(content: &Content, errors: &mut Vec<(Location, String)>) {
-    fn value(node: &RuntimeValue, errors: &mut Vec<(Location, String)>) {
-        match node {
-            RuntimeValue::Content(content) => formation_errors(content, errors),
-            RuntimeValue::Item(item) => {
-                for field in item.args.values() {
-                    value(field, errors);
-                }
-            }
-            RuntimeValue::List(items) => {
-                for item in items {
-                    value(item, errors);
-                }
-            }
-            RuntimeValue::Dict(fields) => {
-                for field in fields.values() {
-                    value(field, errors);
-                }
-            }
-            _ => {}
-        }
-    }
-    match content {
-        Content::Error { location, message } => errors.push((location.clone(), message.clone())),
-        Content::Sequence(parts) => {
-            for part in parts {
-                formation_errors(part, errors);
-            }
-        }
-        Content::Item(item) => {
-            for field in item.args.values() {
-                value(field, errors);
-            }
-        }
-        _ => {}
     }
 }

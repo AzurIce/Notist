@@ -1,11 +1,13 @@
 //! Evaluation over host-provided syntax, module identities and resources.
 mod targets;
 mod wasm;
-pub use targets::{ReferenceDiagnostic, ResolvedItem, ResolvedTarget, TargetError};
+pub use targets::{OutputLink, TargetObservation, expand_module_address};
 
 use notist_ir::Closure;
 pub use notist_ir::{Content, Env, Item, Value};
-use notist_model::{Location, Target, Type};
+use notist_model::{
+    CreationOrigin, Diagnostic, DiagnosticCode, Location, OriginKind, Target, Type,
+};
 use notist_syntax::{Expr, ExprKind, Param, ParseResult, Statement};
 use serde_json::{Value as Json, json};
 use std::{
@@ -28,6 +30,10 @@ pub trait ModuleProvider {
     fn module_source(&self, key: &str) -> Option<&str>;
     fn dependency(&self, package: &str, alias: &str) -> Option<&str>;
     fn binary(&self, path: &str) -> Option<&[u8]>;
+    /// A host may retain an unavailable resource as a source-local evaluation failure.
+    fn binary_error(&self, _path: &str) -> Option<&str> {
+        None
+    }
     fn binary_path(&self, source: &str, path: &str) -> Result<String, String>;
     /// Setup failures which prevent evaluation of this input set.
     fn errors(&self) -> &[String];
@@ -42,10 +48,14 @@ pub(crate) fn matches_type(ty: &Type, v: &Value) -> bool {
     }
 }
 
+#[derive(Clone, Debug)]
 pub struct Evaluation {
     pub content: Content,
     pub attributes: Env,
     pub warnings: Vec<String>,
+    pub diagnostics: Vec<Diagnostic>,
+    pub references: Vec<TargetObservation>,
+    pub output_links: Vec<OutputLink>,
 }
 
 pub struct Runtime<'a> {
@@ -55,7 +65,7 @@ pub struct Runtime<'a> {
     pub events: Vec<Json>,
     modules: BTreeMap<String, Env>,
     contents: BTreeMap<String, Content>,
-    references: Vec<(Target, Location)>,
+    references: Vec<TargetObservation>,
     loading: BTreeSet<String>,
     registry: BTreeMap<String, Env>,
     steps: usize,
@@ -103,6 +113,7 @@ impl<'a> Runtime<'a> {
                     errors
                         .iter()
                         .map(|message| Content::Error {
+                            code: DiagnosticCode::Setup,
                             message: message.clone(),
                             location: location.clone(),
                         })
@@ -110,35 +121,57 @@ impl<'a> Runtime<'a> {
                 ),
             )
         };
-        self.collect_links(&content);
-        let mut warnings = Vec::new();
-        content.warnings(&mut warnings);
+        let output_links = targets::output_links(&content);
+        let mut diagnostics = content.diagnostics();
+        // Errors in evaluated imports remain failures of the entry evaluation, even
+        // when only an export (rather than the module's Content) was consumed.
+        for (module, content) in &self.contents {
+            if module != source {
+                for diagnostic in content.diagnostics() {
+                    if !diagnostics.contains(&diagnostic) {
+                        diagnostics.push(diagnostic);
+                    }
+                }
+            }
+        }
         let attributes = self
             .module_attributes
             .get(source)
             .cloned()
             .unwrap_or_default();
-        Content::Item(Item {
-            name: "module".into(),
-            args: Env::new(),
-            attributes: attributes.clone(),
-            location: Location {
-                source: source.into(),
-                offset: 0,
-            },
-        })
-        .warnings(&mut warnings);
+        for (module, attributes) in &self.module_attributes {
+            let metadata = Content::Item(Item {
+                origin: None,
+                name: "module".into(),
+                args: Env::new(),
+                attributes: attributes.clone(),
+                location: Location {
+                    source: module.clone(),
+                    offset: 0,
+                },
+            });
+            for diagnostic in metadata.diagnostics() {
+                if !diagnostics.contains(&diagnostic) {
+                    diagnostics.push(diagnostic);
+                }
+            }
+        }
+        let warnings = diagnostics.iter().map(ToString::to_string).collect();
         (
             Evaluation {
                 content,
                 attributes,
                 warnings,
+                diagnostics,
+                references: self.references.clone(),
+                output_links,
             },
             env,
         )
     }
     fn failure(message: impl Into<String>, location: &Location) -> Value {
         Value::Content(Content::Error {
+            code: DiagnosticCode::Evaluation,
             message: message.into(),
             location: location.clone(),
         })
@@ -158,6 +191,7 @@ impl<'a> Runtime<'a> {
                 Content::Sequence(v.into_iter().map(|v| Self::content(v, location)).collect())
             }
             v => Content::Error {
+                code: DiagnosticCode::Evaluation,
                 message: format!("expected Content, found {:?}", v.ty()),
                 location: location.clone(),
             },
@@ -200,7 +234,12 @@ impl<'a> Runtime<'a> {
                 ),
             );
         };
-        let statements = parsed.statements.clone();
+        let statements = parsed
+            .statements
+            .iter()
+            .cloned()
+            .zip(parsed.stmt_ranges.iter().map(|r| r.0))
+            .collect();
         let result = self.statements(statements, Env::new(), source, depth);
         self.loading.remove(source);
         self.modules.insert(source.into(), result.0.clone());
@@ -209,20 +248,20 @@ impl<'a> Runtime<'a> {
     }
     fn statements(
         &mut self,
-        statements: Vec<Statement>,
+        statements: Vec<(Statement, usize)>,
         mut env: Env,
         source: &str,
         depth: usize,
     ) -> (Env, Content) {
-        let location = Location {
-            source: source.into(),
-            offset: 0,
-        };
         let mut exports = Env::new();
         let mut output = Vec::new();
         let mut pending = Env::new();
         let mut pending_location = None;
-        for statement in statements {
+        for (statement, statement_offset) in statements {
+            let location = Location {
+                source: source.into(),
+                offset: statement_offset,
+            };
             match statement {
                 Statement::Let(name, expr) => {
                     if env.contains_key(&name) {
@@ -301,6 +340,7 @@ impl<'a> Runtime<'a> {
                     output.push(content);
                 }
                 Statement::Error(offset, message) => output.push(Content::Error {
+                    code: DiagnosticCode::Syntax,
                     message,
                     location: Location {
                         source: source.into(),
@@ -381,6 +421,7 @@ impl<'a> Runtime<'a> {
         }
         if let Some(location) = pending_location {
             output.push(Content::Error {
+                code: DiagnosticCode::Evaluation,
                 message: "Item annotation has no following Item".into(),
                 location,
             });
@@ -399,7 +440,9 @@ impl<'a> Runtime<'a> {
         {
             return Ok(value.clone());
         }
-        let key = self.path_key(path, env, source)?;
+        let key = self
+            .path_key(path, env, source)
+            .map_err(|e| e.to_string())?;
         self.resolve_key(&key, depth)
     }
 
@@ -435,10 +478,12 @@ impl<'a> Runtime<'a> {
         if let Some(env) = self.registry.get(path) {
             return Ok(env.clone());
         }
-        let bytes = self
-            .world
-            .binary(path)
-            .ok_or_else(|| format!("missing WASM `{path}`"))?;
+        let bytes = self.world.binary(path).ok_or_else(|| {
+            self.world
+                .binary_error(path)
+                .map(str::to_owned)
+                .unwrap_or_else(|| format!("missing WASM `{path}`"))
+        })?;
         let env = wasm::registration(bytes, path, location)?;
         self.used_wasm.push(path.into());
         self.registry.insert(path.into(), env.clone());
@@ -463,6 +508,10 @@ impl<'a> Runtime<'a> {
                     name: name.clone(),
                     args,
                     attributes: Env::new(),
+                    origin: Some(CreationOrigin {
+                        node_id: Some(expr.id),
+                        kind: OriginKind::Syntax,
+                    }),
                     location: loc,
                 })
             }
@@ -489,6 +538,10 @@ impl<'a> Runtime<'a> {
                         ("title".into(), title),
                         ("body".into(), body),
                     ]),
+                    origin: Some(CreationOrigin {
+                        node_id: Some(expr.id),
+                        kind: OriginKind::Syntax,
+                    }),
                     location: loc,
                 })
             }
@@ -538,14 +591,24 @@ impl<'a> Runtime<'a> {
                 )
                 .unwrap_or_else(|e| Self::failure(e, &loc))
             }
-            ExprKind::Target(path, labels) => match self.target_module(path, env, source) {
-                Ok(module) => {
-                    let target = Target::new(module, labels.clone());
-                    self.references.push((target.clone(), loc));
-                    Value::Target(target)
+            ExprKind::Target(path, labels) => {
+                let result = self
+                    .target_module(path, env, source)
+                    .map(|module| Target::new(module, labels.clone()));
+                self.references.push(TargetObservation {
+                    location: loc.clone(),
+                    node_id: expr.id,
+                    result: result.clone(),
+                });
+                match result {
+                    Ok(target) => Value::Target(target),
+                    Err(error) => Value::Content(Content::Error {
+                        code: DiagnosticCode::TargetFormation,
+                        message: error.to_string(),
+                        location: loc,
+                    }),
                 }
-                Err(error) => Self::failure(error, &loc),
-            },
+            }
             ExprKind::List(values) => Value::List(
                 values
                     .iter()
@@ -575,9 +638,14 @@ impl<'a> Runtime<'a> {
             ExprKind::Content(parts) | ExprKind::Styled(_, parts) => {
                 let statements = parts
                     .iter()
-                    .map(|e| match &e.kind {
-                        ExprKind::Declaration(s) => *s.clone(),
-                        _ => Statement::Expression(e.clone()),
+                    .map(|e| {
+                        (
+                            match &e.kind {
+                                ExprKind::Declaration(s) => *s.clone(),
+                                _ => Statement::Expression(e.clone()),
+                            },
+                            e.offset,
+                        )
                     })
                     .collect();
                 let (_, content) = self.statements(statements, env.clone(), source, depth + 1);
@@ -586,6 +654,10 @@ impl<'a> Runtime<'a> {
                         name: (*name).into(),
                         attributes: Env::new(),
                         args: BTreeMap::from([("body".into(), Value::Content(content))]),
+                        origin: Some(CreationOrigin {
+                            node_id: Some(expr.id),
+                            kind: OriginKind::Syntax,
+                        }),
                         location: loc,
                     })
                 } else {
@@ -614,7 +686,13 @@ impl<'a> Runtime<'a> {
                         value: self.eval(&a.expr, env, source, depth + 1),
                     })
                     .collect();
-                let value = self.call(function, args, &loc, depth + 1);
+                let kind = if matches!(function, Value::External(_)) {
+                    OriginKind::Plugin
+                } else {
+                    OriginKind::Constructor
+                };
+                let mut value = self.call(function, args, &loc, depth + 1);
+                stamp_origin(&mut value, &loc, expr.id, kind);
                 if self.events.len() < 4000 {
                     self.events.push(json!({"kind":"call","source":source,"range":[expr.offset,expr.end],"out":value.to_json()}));
                 }
@@ -795,6 +873,7 @@ impl<'a> Runtime<'a> {
                 let v = args.into_iter().map(|a| a.value).collect::<Vec<_>>();
                 match (name.as_str(), v.as_slice()) {
                     ("item", [Value::String(name), Value::Dict(args)]) => Value::Item(Item {
+                        origin: None,
                         name: name.clone(),
                         attributes: Env::new(),
                         args: args.clone(),
@@ -802,6 +881,7 @@ impl<'a> Runtime<'a> {
                     }),
                     ("text", [Value::String(s)]) => Value::Content(Content::Text(s.clone())),
                     ("math" | "raw", [Value::String(s)]) => Value::Item(Item {
+                        origin: None,
                         name: name.clone(),
                         args: Env::from([
                             ("content".into(), Value::String(s.clone())),
@@ -816,6 +896,7 @@ impl<'a> Runtime<'a> {
                             .cloned()
                             .unwrap_or_else(|| Value::Content(Content::Text(dest.clone())));
                         Value::Item(Item {
+                            origin: None,
                             name: "link".into(),
                             args: Env::from([
                                 ("dest".into(), Value::String(dest.clone())),
@@ -876,5 +957,52 @@ impl<'a> Runtime<'a> {
             v if v.is_error() => v,
             _ => Self::failure("value is not callable", loc),
         }
+    }
+}
+
+// Only newly created values at this call site are stamped; forwarded values retain their origin.
+fn stamp_origin(value: &mut Value, location: &Location, node_id: usize, kind: OriginKind) {
+    fn item(item: &mut Item, location: &Location, node_id: usize, kind: OriginKind) {
+        if item.origin.is_none() && item.location == *location {
+            item.origin = Some(CreationOrigin {
+                node_id: Some(node_id),
+                kind,
+            });
+        } else if item.location == *location {
+            if let Some(origin) = &mut item.origin {
+                if origin.node_id.is_none() {
+                    origin.node_id = Some(node_id);
+                }
+            }
+        }
+        for value in item.args.values_mut().chain(item.attributes.values_mut()) {
+            stamp_origin(value, location, node_id, kind);
+        }
+    }
+    fn content(c: &mut Content, location: &Location, node_id: usize, kind: OriginKind) {
+        match c {
+            Content::Item(i) => item(i, location, node_id, kind),
+            Content::Sequence(v) => {
+                for c in v {
+                    content(c, location, node_id, kind);
+                }
+            }
+            _ => {}
+        }
+    }
+    match value {
+        Value::Item(i) => item(i, location, node_id, kind),
+        Value::Content(c) => content(c, location, node_id, kind),
+        Value::List(v) => {
+            for v in v {
+                stamp_origin(v, location, node_id, kind);
+            }
+        }
+        Value::Dict(v) => {
+            for v in v.values_mut() {
+                stamp_origin(v, location, node_id, kind);
+            }
+        }
+        _ => {}
     }
 }

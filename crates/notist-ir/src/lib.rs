@@ -1,9 +1,14 @@
 //! Language values and content. Function values retain parsed bodies, not execution logic.
+mod diagnostics;
 mod labels;
 mod transport;
+mod tree;
 pub use labels::LabeledItem;
+pub use tree::{ItemIndex, ItemNode};
 
-pub use notist_model::{Location, Target, Type};
+pub use notist_model::{
+    CreationOrigin, Diagnostic, DiagnosticCode, Location, OriginKind, Target, Type,
+};
 use notist_syntax::{Expr, Param};
 use serde_json::{Value as Json, json};
 use std::{collections::BTreeMap, rc::Rc};
@@ -52,6 +57,7 @@ pub struct Item {
     pub args: BTreeMap<String, Value>,
     pub attributes: BTreeMap<String, Value>,
     pub location: Location,
+    pub origin: Option<CreationOrigin>,
 }
 
 #[derive(Clone, Debug)]
@@ -59,8 +65,15 @@ pub enum Content {
     Text(String),
     Sequence(Vec<Content>),
     Item(Item),
-    Link { target: Target, location: Location },
-    Error { message: String, location: Location },
+    Link {
+        target: Target,
+        location: Location,
+    },
+    Error {
+        message: String,
+        location: Location,
+        code: DiagnosticCode,
+    },
 }
 
 impl Value {
@@ -143,61 +156,14 @@ impl Content {
             Self::Item(item) => item.to_json(),
             Self::Link { target, location } => json!({"link": target.to_string(), "target": target,
                 "source": location.source, "offset": location.offset}),
-            Self::Error { message, location } => {
+            Self::Error {
+                message, location, ..
+            } => {
                 json!({"error": message, "source": location.source, "offset": location.offset})
             }
         }
     }
     pub fn warnings(&self, out: &mut Vec<String>) {
-        fn visit(value: &Value, out: &mut Vec<String>) {
-            match value {
-                Value::Content(c) => c.warnings(out),
-                Value::Item(i) => {
-                    if let Err(message) = i.label() {
-                        out.push(format!(
-                            "{}:{}: {message}",
-                            i.location.source, i.location.offset
-                        ));
-                    }
-                    for v in i.args.values().chain(i.attributes.values()) {
-                        visit(v, out);
-                    }
-                }
-                Value::List(values) => {
-                    for v in values {
-                        visit(v, out);
-                    }
-                }
-                Value::Dict(fields) => {
-                    for v in fields.values() {
-                        visit(v, out);
-                    }
-                }
-                _ => {}
-            }
-        }
-        match self {
-            Self::Error { message, location } => out.push(format!(
-                "{}:{}: {message}",
-                location.source, location.offset
-            )),
-            Self::Sequence(children) => {
-                for c in children {
-                    c.warnings(out);
-                }
-            }
-            Self::Item(item) => {
-                if let Err(message) = item.label() {
-                    out.push(format!(
-                        "{}:{}: {message}",
-                        item.location.source, item.location.offset
-                    ));
-                }
-                for v in item.args.values().chain(item.attributes.values()) {
-                    visit(v, out);
-                }
-            }
-            _ => {}
-        }
+        out.extend(self.diagnostics().iter().map(ToString::to_string));
     }
 }

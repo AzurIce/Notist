@@ -1,0 +1,53 @@
+use crate::{Content, Diagnostic, DiagnosticCode, Item, Value};
+impl Content {
+    pub fn diagnostics(&self) -> Vec<Diagnostic> {
+        let mut out = vec![];
+        content(self, &mut out);
+        out
+    }
+}
+fn item(i: &Item, out: &mut Vec<Diagnostic>) {
+    if let Err(message) = i.label() {
+        out.push(Diagnostic::error(
+            DiagnosticCode::InvalidLabel,
+            message,
+            Some(i.location.clone()),
+        ));
+    }
+    for v in i.args.values().chain(i.attributes.values()) {
+        value(v, out);
+    }
+}
+fn value(v: &Value, out: &mut Vec<Diagnostic>) {
+    match v {
+        Value::Item(i) => item(i, out),
+        Value::Content(c) => content(c, out),
+        Value::List(v) => {
+            for v in v {
+                value(v, out);
+            }
+        }
+        Value::Dict(v) => {
+            for v in v.values() {
+                value(v, out);
+            }
+        }
+        _ => {}
+    }
+}
+fn content(c: &Content, out: &mut Vec<Diagnostic>) {
+    match c {
+        Content::Item(i) => item(i, out),
+        Content::Sequence(v) => {
+            for c in v {
+                content(c, out);
+            }
+        }
+        Content::Error {
+            message,
+            location,
+            code,
+        } => out.push(Diagnostic::error(*code, message, Some(location.clone()))),
+        _ => {}
+    }
+}

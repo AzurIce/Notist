@@ -1,5 +1,5 @@
 //! Conversion at the plugin boundary; renderer/debug JSON is a separate format.
-use crate::{Content, Item, Location, Value};
+use crate::{Content, DiagnosticCode, Item, Location, Value};
 use notist_model::abi;
 use std::collections::BTreeMap;
 
@@ -68,6 +68,10 @@ impl Item {
             args: decode_fields(item.args, location),
             attributes: decode_fields(item.attributes, location),
             location: location.clone(),
+            origin: Some(crate::CreationOrigin {
+                node_id: None,
+                kind: crate::OriginKind::Plugin,
+            }),
         }
     }
 }
@@ -97,6 +101,7 @@ impl Content {
                 location: location.clone(),
             },
             abi::Content::Error(message) => Self::Error {
+                code: DiagnosticCode::Evaluation,
                 message,
                 location: location.clone(),
             },

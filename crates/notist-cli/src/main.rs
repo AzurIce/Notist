@@ -1,3 +1,4 @@
+mod check;
 mod eval;
 mod lsp;
 mod preview;
@@ -25,10 +26,7 @@ enum Command {
         address: String,
     },
     /// Check all modules in a package.
-    Check {
-        #[arg(default_value = ".")]
-        package: PathBuf,
-    },
+    Check(check::Args),
 }
 
 fn main() {
@@ -42,18 +40,9 @@ fn run(cli: Cli) -> Result<(), Box<dyn std::error::Error>> {
         Command::Eval(args) => eval::run(args).map_err(Into::into),
         Command::Lsp => lsp::run(),
         Command::Preview { package, address } => preview::serve(&package, &address),
-        Command::Check { package } => {
-            let mut package = notist_analysis::package::load(&package)?;
-            let snapshot = package.runtime.snapshot();
-            let mut errors = 0;
-            for path in snapshot.sources().keys() {
-                for message in snapshot.check(path).warnings {
-                    eprintln!("{message}");
-                    errors += 1;
-                }
-            }
-            if errors > 0 {
-                return Err(format!("{errors} diagnostics").into());
+        Command::Check(args) => {
+            if !check::run(args)? {
+                std::process::exit(1);
             }
             Ok(())
         }

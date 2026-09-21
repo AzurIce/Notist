@@ -161,7 +161,12 @@ pub fn analyze(input: &str) -> Json {
     let mut runtime = notist_eval::Runtime::new(&input);
     let (evaluation, env) = runtime.evaluate_with_env(entry);
     let diagnostics=failures.iter().map(|e|json!({"severity":"failure","stage":"setup","source_id":source_id(entry),"range":[0,0],"message":e}))
-        .chain(evaluation.warnings.iter().map(|e|json!({"severity":"warning","stage":"evaluate","source_id":source_id(entry),"range":[0,0],"message":e}))).collect::<Vec<_>>();
+        .chain(evaluation.diagnostics.iter().map(|d| {
+            let mut d = d.clone(); input.enrich(&mut d);
+            let source = d.location.as_ref().map_or(entry, |l| l.source.as_str());
+            let range = d.span.as_ref().map_or([0,0], |s| [s.start,s.end]);
+            json!({"severity":"error","stage":"evaluate","code":d.code.as_str(),"source_id":source_id(source),"range":range,"message":d.message})
+        })).collect::<Vec<_>>();
     let events=runtime.events.iter().enumerate().map(|(i,e)|json!({"i":i,"phase":"evaluate","kind":e["kind"],"node":null,"source_id":source_id(e["source"].as_str().unwrap_or(entry)),"range":e["range"],"name":null,"detail":"function evaluation","in":null,"out":e["out"].to_string()})).collect::<Vec<_>>();
     json!({"protocol":"notist-debug-snapshot","request_id":request["request_id"].as_str().unwrap_or("native"),
         "platform":{"target":if cfg!(target_arch="wasm32"){"wasm32-unknown-unknown"}else{"native"},"elapsed_ms":started.elapsed().as_secs_f64()*1000.0},

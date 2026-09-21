@@ -67,79 +67,28 @@ fn text(value: &Value) -> String {
 }
 
 impl Content {
-    /// Pre-order Item occurrences; List/Dict/Content fields are traversed, attributes are not.
     pub fn labeled_items(&self) -> Vec<LabeledItem<'_>> {
-        fn item<'a>(i: &'a Item, path: &mut Vec<String>, out: &mut Vec<LabeledItem<'a>>) {
-            let label = i.label().ok().flatten();
-            if let Some(label) = &label {
-                path.push(label.clone());
-            }
-            if label.is_some() {
-                out.push(LabeledItem {
-                    item: i,
-                    path: path.clone(),
-                });
-            }
-            for field in i.args.values() {
-                value(field, path, out);
-            }
-            if label.is_some() {
-                path.pop();
-            }
-        }
-        fn value<'a>(v: &'a Value, path: &mut Vec<String>, out: &mut Vec<LabeledItem<'a>>) {
-            match v {
-                Value::Item(i) => item(i, path, out),
-                Value::Content(c) => content(c, path, out),
-                Value::List(v) => {
-                    for v in v {
-                        value(v, path, out);
-                    }
-                }
-                Value::Dict(v) => {
-                    for v in v.values() {
-                        value(v, path, out);
-                    }
-                }
-                _ => {}
-            }
-        }
-        fn content<'a>(c: &'a Content, path: &mut Vec<String>, out: &mut Vec<LabeledItem<'a>>) {
-            match c {
-                Content::Item(i) => item(i, path, out),
-                Content::Sequence(v) => {
-                    for c in v {
-                        content(c, path, out);
-                    }
-                }
-                _ => {}
-            }
-        }
-        let mut out = Vec::new();
-        content(self, &mut Vec::new(), &mut out);
-        out
+        let index = crate::ItemIndex::new(self);
+        index
+            .nodes()
+            .iter()
+            .enumerate()
+            .filter(|(_, n)| n.label.is_some())
+            .map(|(id, _)| LabeledItem {
+                item: index.item(self, id),
+                path: index.label_path(id),
+            })
+            .collect()
     }
 
-    /// Match an ordered subsequence of strict ancestors, ending at the target itself.
-    /// Each occurrence appears once even if its ancestors admit several matching subsequences.
     pub fn label_matches(&self, labels: &[String]) -> Vec<LabeledItem<'_>> {
-        let Some((last, ancestors)) = labels.split_last() else {
-            return Vec::new();
-        };
-        self.labeled_items()
+        let index = crate::ItemIndex::new(self);
+        index
+            .matches(labels)
             .into_iter()
-            .filter(|candidate| {
-                let (target, path) = candidate.path.split_last().unwrap();
-                if target != last {
-                    return false;
-                }
-                let mut next = 0;
-                for label in path {
-                    if ancestors.get(next) == Some(label) {
-                        next += 1;
-                    }
-                }
-                next == ancestors.len()
+            .map(|id| LabeledItem {
+                item: index.item(self, id),
+                path: index.label_path(id),
             })
             .collect()
     }

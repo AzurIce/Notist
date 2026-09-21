@@ -995,3 +995,68 @@ impl<'a> Parser<'a> {
         Ok(args)
     }
 }
+
+impl ParseResult {
+    /// Expressions in source-tree order, including unexecuted bodies and defaults.
+    pub fn expressions(&self) -> Vec<&Expr> {
+        fn statement<'a>(s: &'a Statement, out: &mut Vec<&'a Expr>) {
+            match s {
+                Statement::Let(_, e) | Statement::Expression(e) => visit(e, out),
+                _ => {}
+            }
+        }
+        fn visit<'a>(e: &'a Expr, out: &mut Vec<&'a Expr>) {
+            out.push(e);
+            match &e.kind {
+                ExprKind::Section(_, a, b) => {
+                    for e in a.iter().chain(b) {
+                        visit(e, out);
+                    }
+                }
+                ExprKind::Content(v) | ExprKind::List(v) | ExprKind::Styled(_, v) => {
+                    for e in v {
+                        visit(e, out);
+                    }
+                }
+                ExprKind::Dict(v) | ExprKind::Element(_, v) => {
+                    for (_, e) in v {
+                        visit(e, out);
+                    }
+                }
+                ExprKind::Declaration(s) => statement(s, out),
+                ExprKind::Call(f, args) => {
+                    visit(f, out);
+                    for arg in args {
+                        visit(&arg.expr, out);
+                    }
+                }
+                ExprKind::Lambda(params, body) => {
+                    for p in params {
+                        if let Some(e) = &p.default {
+                            visit(e, out);
+                        }
+                    }
+                    visit(body, out);
+                }
+                ExprKind::Field(e, _) | ExprKind::Typed(_, e) | ExprKind::Annotation(_, e) => {
+                    visit(e, out)
+                }
+                ExprKind::If(a, b, c) => {
+                    visit(a, out);
+                    visit(b, out);
+                    visit(c, out);
+                }
+                ExprKind::Binary(_, a, b) => {
+                    visit(a, out);
+                    visit(b, out);
+                }
+                _ => {}
+            }
+        }
+        let mut out = vec![];
+        for s in &self.statements {
+            statement(s, &mut out);
+        }
+        out
+    }
+}

@@ -1,9 +1,8 @@
 use crate::package::{module_key, relative};
+use crate::{CheckReport, ModuleAddressError, ModuleKey, ResolveError, ResolvedTarget};
 #[cfg(feature = "filesystem")]
 use crate::{Workspace, uri_path};
-use notist_eval::{
-    Evaluation, ModuleProvider, ReferenceDiagnostic, ResolvedTarget, Runtime, TargetError,
-};
+use notist_eval::{Evaluation, ModuleProvider, Runtime};
 use notist_ir::Env;
 use notist_syntax::ParseResult;
 use serde_json::Value;
@@ -23,6 +22,7 @@ pub struct Snapshot {
     keys: BTreeMap<String, String>,
     dependencies: BTreeMap<String, BTreeMap<String, String>>,
     binaries: BTreeMap<String, Arc<[u8]>>,
+    binary_errors: BTreeMap<String, String>,
     origins: BTreeMap<String, String>,
     errors: Vec<String>,
 }
@@ -41,34 +41,20 @@ impl Snapshot {
         Runtime::new(self).evaluate(source)
     }
 
-    /// Resolve a canonical Target, evaluating only its destination when labels are present.
+    /// Resolve within a temporary query session; returned handles retain their output.
     pub fn resolve_target(
         &self,
         target: &notist_ir::Target,
-    ) -> Result<ResolvedTarget, TargetError> {
-        Runtime::new(self).resolve_target(target)
+    ) -> Result<ResolvedTarget<'_>, ResolveError<'_>> {
+        self.query().resolve(target)
     }
 
-    pub fn reference_diagnostics(&self, source: &str) -> Vec<ReferenceDiagnostic> {
-        let mut runtime = Runtime::new(self);
-        runtime.evaluate(source);
-        runtime.reference_diagnostics()
-    }
-
-    /// Evaluate a module and validate encountered references, without following reference cycles.
-    pub fn check(&self, source: &str) -> Evaluation {
-        let mut runtime = Runtime::new(self);
-        let mut result = runtime.evaluate(source);
-        for diagnostic in runtime.reference_diagnostics() {
-            result.warnings.push(format!(
-                "{}:{}: {}: {}",
-                diagnostic.location.source,
-                diagnostic.location.offset,
-                diagnostic.target,
-                diagnostic.error
-            ));
-        }
-        result
+    /// Check a source module. Use QuerySession for several queries sharing evaluations.
+    pub fn check(&self, source: &str) -> Result<CheckReport<'_>, ModuleAddressError> {
+        let key = self
+            .module_key(source)
+            .ok_or_else(|| ModuleAddressError::UnknownModule(source.into()))?;
+        self.query().check(&ModuleKey::from(key))
     }
 
     fn insert_module(&mut self, source: String, key: String) {
@@ -127,6 +113,9 @@ impl ModuleProvider for Snapshot {
     fn binary(&self, path: &str) -> Option<&[u8]> {
         self.binaries.get(path).map(AsRef::as_ref)
     }
+    fn binary_error(&self, path: &str) -> Option<&str> {
+        self.binary_errors.get(path).map(String::as_str)
+    }
     fn binary_path(&self, source: &str, path: &str) -> Result<String, String> {
         relative(source, path)
     }
@@ -141,6 +130,7 @@ pub struct EvaluationSession {
     pub sources: BTreeMap<String, String>,
     pub dependencies: BTreeMap<String, BTreeMap<String, String>>,
     pub binaries: BTreeMap<String, Vec<u8>>,
+    pub binary_errors: BTreeMap<String, String>,
     pub module_attributes: BTreeMap<String, Env>,
     pub used_wasm: Vec<String>,
     pub events: Vec<Value>,
@@ -187,6 +177,7 @@ impl EvaluationSession {
         }
         let mut snapshot = Snapshot {
             sources: self.parsed.clone(),
+            binary_errors: self.binary_errors.clone(),
             dependencies: self.dependencies.clone(),
             binaries: self
                 .binaries
