@@ -1,4 +1,12 @@
 use crate::{Content, Diagnostic, DiagnosticCode, Item, Value};
+impl Value {
+    /// Inspect errors in a value without giving dictionaries Item semantics.
+    pub fn diagnostics(&self) -> Vec<Diagnostic> {
+        let mut out = vec![];
+        value(self, &mut out);
+        out
+    }
+}
 impl Content {
     pub fn diagnostics(&self) -> Vec<Diagnostic> {
         let mut out = vec![];

@@ -10,6 +10,57 @@ use std::{
 static NEXT: AtomicUsize = AtomicUsize::new(0);
 
 #[test]
+fn plugins_are_loaded_in_sections_content_functions_and_defaults() {
+    let registry = r#"{"functions":{}}"#;
+    let escaped: String = registry.bytes().map(|b| format!("\\{b:02x}")).collect();
+    let bytes = wat::parse_str(format!(
+        r#"(module
+        (memory (export "memory") 1)
+        (data (i32.const 0) "{escaped}")
+        (func (export "alloc") (param i32) (result i32) i32.const 8192)
+        (func (export "notist_register") (param i32 i32) (result i64) i64.const {}))"#,
+        registry.len()
+    ))
+    .unwrap();
+    for (name, source) in [
+        ("README.not", "= Section\n#wasm \"../wasm/empty.wasm\";\nOK"),
+        ("README.notc", "[#wasm \"../wasm/empty.wasm\";\nOK];"),
+        (
+            "README.notc",
+            "let f = () => [#wasm \"../wasm/empty.wasm\";\nOK]; f();",
+        ),
+        (
+            "README.notc",
+            "let f = (body: Content = [#wasm \"../wasm/empty.wasm\";\nOK]) => body; f();",
+        ),
+    ] {
+        let f = Fixture::new();
+        f.put("Notist.toml", "[package]\nname='test'");
+        f.put(&format!("docs/{name}"), source);
+        fs::create_dir(f.0.join("wasm")).unwrap();
+        fs::write(f.0.join("wasm/empty.wasm"), &bytes).unwrap();
+        for loader in [package::load, package::load_for_check] {
+            let mut loaded = loader(&f.0).unwrap();
+            let snapshot = loaded.runtime.snapshot();
+            let report = snapshot.check(&loaded.entry).unwrap();
+            assert!(report.is_ok(), "{source}: {:?}", report.diagnostics());
+            assert!(report.evaluation.content().html().contains("OK"));
+            assert_eq!(loaded.runtime.binaries.len(), 1);
+        }
+        fs::remove_file(f.0.join("wasm/empty.wasm")).unwrap();
+        assert!(package::load(&f.0).is_err());
+        let mut loaded = package::load_for_check(&f.0).unwrap();
+        let snapshot = loaded.runtime.snapshot();
+        let diagnostics = snapshot.check(&loaded.entry).unwrap().diagnostics();
+        assert!(
+            diagnostics
+                .iter()
+                .any(|d| d.message.contains("cannot load WASM"))
+        );
+    }
+}
+
+#[test]
 fn module_names_follow_binding_rules() {
     for (raw, expected) in [
         ("getting started", "getting_started"),

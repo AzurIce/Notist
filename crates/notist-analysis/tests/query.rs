@@ -268,7 +268,10 @@ fn broken_outgoing_links_do_not_make_an_existing_item_unresolvable() {
 #[test]
 fn module_attributes_errors_prevent_false_absence_and_query_order_is_irrelevant() {
     let s = session(&[
-        ("README.not", "@!(label: 3)\n= Existing"),
+        (
+            "README.not",
+            "@!(problem: error(\"metadata failed\"))\n= Existing",
+        ),
         ("other.not", "= Other"),
     ])
     .snapshot();
@@ -313,7 +316,10 @@ fn failed_imports_prevent_false_absence_even_when_an_export_was_available() {
 fn imported_module_metadata_errors_also_make_the_entry_incomplete() {
     let s = session(&[
         ("README.notc", "use vault::bad::value; value;"),
-        ("bad.not", "@!(label: 3)\n#let value = [Known];"),
+        (
+            "bad.not",
+            "@!(problem: error(\"metadata failed\"))\n#let value = [Known];",
+        ),
     ])
     .snapshot();
     let e = s.query().evaluate(&"root".into()).unwrap();
@@ -321,7 +327,7 @@ fn imported_module_metadata_errors_also_make_the_entry_incomplete() {
     assert!(
         e.diagnostics()
             .iter()
-            .any(|d| d.code == DiagnosticCode::InvalidLabel)
+            .any(|d| d.message.contains("metadata failed"))
     );
 }
 
@@ -333,4 +339,81 @@ fn repeated_output_links_are_not_erased_by_an_identical_target_value() {
     assert_eq!(report.evaluation.output_links().len(), 2);
     assert_eq!(report.references.len(), 3);
     assert_eq!(report.diagnostics().len(), 3);
+}
+
+#[test]
+fn recovered_imports_do_not_poison_entry_queries_or_hide_dependency_failures() {
+    for bad in [
+        "#let value = [Known];\n#error(\"failed\")",
+        "@!(problem: error(\"failed\"))\n#let value = [Known];",
+    ] {
+        for expression in ["vault::bad::value", "vault::bad"] {
+            let source = format!(
+                "recover({expression}, item(\"section\", (title: [Fallback], body: [OK])));"
+            );
+            let s = session(&[("README.notc", &source), ("bad.not", bad)]).snapshot();
+            let mut q = s.query();
+            assert!(q.check(&"root".into()).unwrap().is_ok());
+            assert!(q.resolve(&target("root", "Fallback")).is_ok());
+            assert!(!q.check(&"root::bad".into()).unwrap().is_ok());
+            assert!(q.check(&"root".into()).unwrap().is_ok());
+        }
+    }
+}
+
+#[test]
+fn module_metadata_has_no_item_label_constraint_but_nested_errors_are_checked() {
+    let s = session(&[("README.not", "@!(label: 3)\n= Existing")]).snapshot();
+    let mut q = s.query();
+    assert!(q.check(&"root".into()).unwrap().is_ok());
+    assert!(q.resolve(&target("root", "Existing")).is_ok());
+    for text in [
+        "@!(data: (nested: error(\"failed\")))\n= Existing",
+        "@!(data: with_attributes(item(\"custom\", (:)), (label: 3)))\n= Existing",
+    ] {
+        let s = session(&[("README.not", text)]).snapshot();
+        assert!(!s.check("README.not").unwrap().is_ok());
+    }
+}
+
+#[test]
+fn code_attributes_preserve_values_and_origins_and_share_markup_override_rules() {
+    let s = session(&[(
+        "README.notc",
+        r#"
+        let original = item("custom", (body: [Body]));
+        let first = with_attributes(original, (label: "old", priority: 1));
+        let changed = with_attributes(first, (label: "new"));
+        original; first; changed;
+        [@(label: "markup") #with_attributes(first, (:))];
+    "#,
+    )])
+    .snapshot();
+    let mut q = s.query();
+    let e = q.evaluate(&"root".into()).unwrap();
+    assert_eq!(e.status(), EvaluationStatus::Complete);
+    let items: Vec<_> = e.items().filter(|i| i.value().name == "custom").collect();
+    assert_eq!(items.len(), 4);
+    assert!(items[0].value().attributes.is_empty());
+    for (i, label) in items[1..].iter().zip(["old", "new", "markup"]) {
+        assert_eq!(i.value().attributes["label"].to_json(), label);
+        assert_eq!(i.value().attributes["priority"].to_json(), 1);
+        assert_eq!(
+            i.value().args["body"].to_json(),
+            items[0].value().args["body"].to_json()
+        );
+        assert_eq!(
+            i.origin().syntax.unwrap().node_id(),
+            items[0].origin().syntax.unwrap().node_id()
+        );
+        assert!(q.resolve(&target("root", label)).is_ok());
+    }
+    for source in [
+        "with_attributes(3, (:));",
+        "with_attributes(item(\"custom\", (:)), 3);",
+        "with_attributes(item(\"custom\", (:)), (label: 3));",
+    ] {
+        let s = session(&[("README.notc", source)]).snapshot();
+        assert!(!s.check("README.notc").unwrap().is_ok());
+    }
 }

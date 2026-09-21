@@ -309,6 +309,7 @@ fn builtin(name: &str) -> InferredType {
         "text" => (vec![String], Content),
         "math" | "raw" => (vec![String], Item),
         "item" => (vec![String, Dict], Item),
+        "with_attributes" => (vec![Item, Dict], Item),
         "link" => (vec![String, Any], Item),
         "str" => (vec![Any], String),
         "len" => (vec![Any], Int),

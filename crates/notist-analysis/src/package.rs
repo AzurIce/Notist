@@ -219,7 +219,18 @@ mod filesystem {
             .collect::<Vec<_>>();
         for (source, text) in sources {
             let parsed = loaded.runtime.parse(&source, &text);
-            for statement in &parsed.statements {
+            let nested = parsed.expressions();
+            let statements = parsed
+                .statements
+                .iter()
+                .chain(nested.iter().filter_map(|expr| {
+                    if let notist_syntax::ExprKind::Declaration(statement) = &expr.kind {
+                        Some(statement.as_ref())
+                    } else {
+                        None
+                    }
+                }));
+            for statement in statements {
                 if let notist_syntax::Statement::Wasm(path) = statement {
                     let virtual_path = match relative(&source, path) {
                         Ok(path) => path,

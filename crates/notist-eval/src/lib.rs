@@ -63,6 +63,7 @@ pub struct Runtime<'a> {
     pub module_attributes: BTreeMap<String, Env>,
     pub used_wasm: Vec<String>,
     pub events: Vec<Json>,
+    trace_calls: bool,
     modules: BTreeMap<String, Env>,
     contents: BTreeMap<String, Content>,
     references: Vec<TargetObservation>,
@@ -78,6 +79,7 @@ impl<'a> Runtime<'a> {
             module_attributes: BTreeMap::new(),
             used_wasm: Vec::new(),
             events: Vec::new(),
+            trace_calls: false,
             modules: BTreeMap::new(),
             contents: BTreeMap::new(),
             references: Vec::new(),
@@ -88,6 +90,11 @@ impl<'a> Runtime<'a> {
     }
     pub fn evaluate(&mut self, source: &str) -> Evaluation {
         self.evaluate_with_env(source).0
+    }
+    /// Opt into debugger call events. Ordinary evaluation does not serialize them.
+    pub fn with_call_trace(mut self) -> Self {
+        self.trace_calls = true;
+        self
     }
     pub fn evaluate_with_env(&mut self, source: &str) -> (Evaluation, Env) {
         self.module_attributes.clear();
@@ -122,40 +129,12 @@ impl<'a> Runtime<'a> {
             )
         };
         let output_links = targets::output_links(&content);
-        let mut diagnostics = content.diagnostics();
-        // Errors in evaluated imports remain failures of the entry evaluation, even
-        // when only an export (rather than the module's Content) was consumed.
-        for (module, content) in &self.contents {
-            if module != source {
-                for diagnostic in content.diagnostics() {
-                    if !diagnostics.contains(&diagnostic) {
-                        diagnostics.push(diagnostic);
-                    }
-                }
-            }
-        }
+        let diagnostics = self.module_diagnostics(source, &content);
         let attributes = self
             .module_attributes
             .get(source)
             .cloned()
             .unwrap_or_default();
-        for (module, attributes) in &self.module_attributes {
-            let metadata = Content::Item(Item {
-                origin: None,
-                name: "module".into(),
-                args: Env::new(),
-                attributes: attributes.clone(),
-                location: Location {
-                    source: module.clone(),
-                    offset: 0,
-                },
-            });
-            for diagnostic in metadata.diagnostics() {
-                if !diagnostics.contains(&diagnostic) {
-                    diagnostics.push(diagnostic);
-                }
-            }
-        }
         let warnings = diagnostics.iter().map(ToString::to_string).collect();
         (
             Evaluation {
@@ -168,6 +147,21 @@ impl<'a> Runtime<'a> {
             },
             env,
         )
+    }
+    // A dependency failure is propagated by import resolution as an Error value.
+    // Do not reintroduce errors from dependency caches after callers recover them.
+    fn module_diagnostics(&self, source: &str, content: &Content) -> Vec<Diagnostic> {
+        let mut diagnostics = content.diagnostics();
+        if let Some(attributes) = self.module_attributes.get(source) {
+            for value in attributes.values() {
+                for diagnostic in value.diagnostics() {
+                    if !diagnostics.contains(&diagnostic) {
+                        diagnostics.push(diagnostic);
+                    }
+                }
+            }
+        }
+        diagnostics
     }
     fn failure(message: impl Into<String>, location: &Location) -> Value {
         Value::Content(Content::Error {
@@ -323,9 +317,7 @@ impl<'a> Runtime<'a> {
                     fn attach(content: &mut Content, attrs: &mut Env) -> bool {
                         match content {
                             Content::Item(item) => {
-                                let mut merged = std::mem::take(attrs);
-                                merged.append(&mut item.attributes);
-                                item.attributes = merged;
+                                item.apply_attributes(std::mem::take(attrs));
                                 true
                             }
                             Content::Sequence(parts) => {
@@ -449,8 +441,11 @@ impl<'a> Runtime<'a> {
     fn resolve_key(&mut self, key: &str, depth: usize) -> Result<Value, String> {
         if let Some(source) = self.world.module_source(key).map(str::to_owned) {
             let (_, content) = self.module(&source, depth + 1);
-            let mut errors = Vec::new();
-            content.warnings(&mut errors);
+            let errors: Vec<_> = self
+                .module_diagnostics(&source, &content)
+                .iter()
+                .map(ToString::to_string)
+                .collect();
             if !errors.is_empty() {
                 return Err(errors.join("; "));
             }
@@ -465,8 +460,11 @@ impl<'a> Runtime<'a> {
             .map(str::to_owned)
             .ok_or_else(|| format!("missing module `{parent}`"))?;
         let (env, content) = self.module(&source, depth + 1);
-        let mut errors = Vec::new();
-        content.warnings(&mut errors);
+        let errors: Vec<_> = self
+            .module_diagnostics(&source, &content)
+            .iter()
+            .map(ToString::to_string)
+            .collect();
         if !errors.is_empty() {
             return Err(errors.join("; "));
         }
@@ -568,6 +566,7 @@ impl<'a> Runtime<'a> {
                 if matches!(
                     name.as_str(),
                     "item"
+                        | "with_attributes"
                         | "math"
                         | "raw"
                         | "link"
@@ -693,7 +692,7 @@ impl<'a> Runtime<'a> {
                 };
                 let mut value = self.call(function, args, &loc, depth + 1);
                 stamp_origin(&mut value, &loc, expr.id, kind);
-                if self.events.len() < 4000 {
+                if self.trace_calls && self.events.len() < 4000 {
                     self.events.push(json!({"kind":"call","source":source,"range":[expr.offset,expr.end],"out":value.to_json()}));
                 }
                 value
@@ -872,6 +871,11 @@ impl<'a> Runtime<'a> {
                 }
                 let v = args.into_iter().map(|a| a.value).collect::<Vec<_>>();
                 match (name.as_str(), v.as_slice()) {
+                    ("with_attributes", [Value::Item(item), Value::Dict(attributes)]) => {
+                        let mut item = item.clone();
+                        item.apply_attributes(attributes.clone());
+                        Value::Item(item)
+                    }
                     ("item", [Value::String(name), Value::Dict(args)]) => Value::Item(Item {
                         origin: None,
                         name: name.clone(),

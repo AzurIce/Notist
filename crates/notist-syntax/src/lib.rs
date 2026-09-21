@@ -997,6 +997,78 @@ impl<'a> Parser<'a> {
 }
 
 impl ParseResult {
+    /// Find an expression using the pre-order IDs assigned by the parser.
+    /// Binary searches skip sibling subtrees; only the containing branch is visited.
+    pub fn expression(&self, id: usize) -> Option<&Expr> {
+        fn statement(s: &Statement) -> Option<&Expr> {
+            match s {
+                Statement::Let(_, e) | Statement::Expression(e) => Some(e),
+                _ => None,
+            }
+        }
+        fn floor<T>(items: &[T], id: usize, key: impl Fn(&T) -> usize) -> Option<&T> {
+            let index = items
+                .partition_point(|item| key(item) <= id)
+                .checked_sub(1)?;
+            items.get(index)
+        }
+        fn find(e: &Expr, id: usize) -> Option<&Expr> {
+            if e.id == id {
+                return Some(e);
+            }
+            if e.id > id {
+                return None;
+            }
+            let next = match &e.kind {
+                ExprKind::Section(_, title, body) => {
+                    floor(body, id, |e| e.id).or_else(|| floor(title, id, |e| e.id))
+                }
+                ExprKind::Content(v) | ExprKind::List(v) | ExprKind::Styled(_, v) => {
+                    floor(v, id, |e| e.id)
+                }
+                ExprKind::Dict(v) | ExprKind::Element(_, v) => {
+                    floor(v, id, |(_, e)| e.id).map(|(_, e)| e)
+                }
+                ExprKind::Declaration(s) => statement(s),
+                ExprKind::Field(e, _) | ExprKind::Typed(_, e) | ExprKind::Annotation(_, e) => {
+                    Some(e.as_ref())
+                }
+                ExprKind::Call(f, args) => floor(args, id, |a| a.expr.id)
+                    .map(|a| &a.expr)
+                    .or(Some(f.as_ref())),
+                ExprKind::Lambda(params, body) => {
+                    if body.id <= id {
+                        Some(body.as_ref())
+                    } else {
+                        params
+                            .iter()
+                            .filter_map(|p| p.default.as_ref())
+                            .take_while(|e| e.id <= id)
+                            .last()
+                    }
+                }
+                ExprKind::If(a, b, c) => Some(
+                    if c.id <= id {
+                        c
+                    } else if b.id <= id {
+                        b
+                    } else {
+                        a
+                    }
+                    .as_ref(),
+                ),
+                ExprKind::Binary(_, a, b) => Some(if b.id <= id { b } else { a }.as_ref()),
+                _ => None,
+            }?;
+            find(next, id)
+        }
+        let index = self
+            .stmt_ids
+            .partition_point(|&start| start <= id)
+            .checked_sub(1)?;
+        find(statement(self.statements.get(index)?)?, id)
+    }
+
     /// Expressions in source-tree order, including unexecuted bodies and defaults.
     pub fn expressions(&self) -> Vec<&Expr> {
         fn statement<'a>(s: &'a Statement, out: &mut Vec<&'a Expr>) {

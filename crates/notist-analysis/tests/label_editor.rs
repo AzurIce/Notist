@@ -243,3 +243,19 @@ fn uncalled_reserved_root_targets_navigate_but_namespaces_without_source_do_not(
     assert!(definition(&workspace, &uri, "[[vault::namespace]]", false).is_null());
     assert_eq!(workspace.diagnostics(&uri, false), serde_json::json!([]));
 }
+
+#[test]
+fn invalid_labels_are_visible_even_when_plugin_evaluation_is_unavailable() {
+    let uri = "file:///tmp/notist-invalid-label.not";
+    let mut workspace = Workspace::default();
+    for prefix in ["", "#wasm \"unavailable.wasm\";\n"] {
+        let source = format!("{prefix}@(label: 3)\n= Heading\n[[self::\"Heading\"]]");
+        workspace.open(uri.into(), source, Some(1));
+        let diagnostics = workspace.diagnostics(uri, false);
+        let diagnostics = diagnostics.as_array().unwrap();
+        assert_eq!(diagnostics.len(), 1, "{diagnostics:?}");
+        assert_eq!(diagnostics[0]["code"], "invalid_label");
+    }
+    workspace.open(uri.into(), "@!(label: 3)\n= Heading".into(), Some(2));
+    assert_eq!(workspace.diagnostics(uri, false), serde_json::json!([]));
+}

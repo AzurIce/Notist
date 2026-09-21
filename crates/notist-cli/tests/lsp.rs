@@ -408,3 +408,42 @@ fn typed_link_diagnostics_use_negotiated_unicode_ranges_and_clear_after_fix() {
         assert!(client.child.wait().unwrap().success());
     }
 }
+
+#[test]
+fn invalid_label_diagnostics_and_attribute_completions_use_stdio() {
+    for encoding in ["utf-8", "utf-16"] {
+        let mut client = Client::new();
+        client.send(json!({"jsonrpc":"2.0","id":1,"method":"initialize","params":{"capabilities":{"general":{"positionEncodings":[encoding]}}}}));
+        client.response(1);
+        client.send(json!({"jsonrpc":"2.0","method":"initialized","params":{}}));
+        let uri = "file:///tmp/notist-label-attributes.not";
+        let bad = "@(label: 3)\n= 中文😀";
+        client.send(json!({"jsonrpc":"2.0","method":"textDocument/didOpen","params":{"textDocument":{"uri":uri,"languageId":"notist","version":1,"text":bad}}}));
+        let notification = client.receive();
+        let d = &notification["params"]["diagnostics"][0];
+        assert_eq!(d["code"], "invalid_label");
+        assert_eq!(
+            d["range"],
+            notist_analysis::range(bad, bad.find('=').unwrap(), bad.len(), encoding == "utf-8")
+        );
+        client.send(json!({"jsonrpc":"2.0","method":"textDocument/didChange","params":{"textDocument":{"uri":uri,"version":2},"contentChanges":[{"text":"@(label: \"ok\")\n= 中文😀"}]}}));
+        assert_eq!(client.receive()["params"]["diagnostics"], json!([]));
+        client.send(json!({"jsonrpc":"2.0","id":2,"method":"textDocument/completion","params":{"textDocument":{"uri":uri},"position":{"line":0,"character":1}}}));
+        let result = client.response(2);
+        let candidate = result["result"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|c| c["label"] == "with_attributes")
+            .unwrap();
+        assert_eq!(
+            candidate["detail"],
+            "with_attributes(item: Item, attributes: Dict) -> Item"
+        );
+        client.send(json!({"jsonrpc":"2.0","id":3,"method":"shutdown","params":null}));
+        client.response(3);
+        client.send(json!({"jsonrpc":"2.0","method":"exit","params":null}));
+        drop(client.input.take());
+        assert!(client.child.wait().unwrap().success());
+    }
+}

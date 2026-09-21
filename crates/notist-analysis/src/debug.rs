@@ -158,7 +158,7 @@ pub fn analyze(input: &str) -> Json {
         }
         id_offset += parsed.id_count;
     }
-    let mut runtime = notist_eval::Runtime::new(&input);
+    let mut runtime = notist_eval::Runtime::new(&input).with_call_trace();
     let (evaluation, env) = runtime.evaluate_with_env(entry);
     let diagnostics=failures.iter().map(|e|json!({"severity":"failure","stage":"setup","source_id":source_id(entry),"range":[0,0],"message":e}))
         .chain(evaluation.diagnostics.iter().map(|d| {

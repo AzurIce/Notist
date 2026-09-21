@@ -507,8 +507,22 @@ impl Workspace {
     pub fn completions(&self, uri: &str) -> Value {
         let mut names = BTreeMap::new();
         for name in [
-            "item", "text", "math", "raw", "link", "concat", "map", "str", "get", "len", "error",
-            "recover", "vault", "self", "super",
+            "item",
+            "text",
+            "math",
+            "raw",
+            "link",
+            "concat",
+            "map",
+            "str",
+            "get",
+            "len",
+            "error",
+            "recover",
+            "with_attributes",
+            "vault",
+            "self",
+            "super",
         ] {
             names.insert(name.to_owned(), 3);
         }
@@ -607,6 +621,8 @@ impl Workspace {
                         "math" | "raw" => format!("{label}(content: String) -> Item"),
                         "text" => "text(content: String) -> Content".into(),
                         "item" => "item(name: String, args: Dict) -> Item".into(),
+                        "with_attributes" =>
+                            "with_attributes(item: Item, attributes: Dict) -> Item".into(),
                         _ =>
                             if item["kind"] == 9 {
                                 "module or import".into()

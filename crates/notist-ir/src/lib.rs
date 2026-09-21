@@ -139,6 +139,12 @@ impl Value {
 }
 
 impl Item {
+    /// Apply attributes to this value; supplied keys override existing keys.
+    /// Arguments and creation provenance are preserved.
+    pub fn apply_attributes(&mut self, attributes: Env) {
+        self.attributes.extend(attributes);
+    }
+
     pub fn to_json(&self) -> Json {
         json!({"item": self.name, "args": self.args.iter().map(|(k,v)| (k, v.to_json())).collect::<BTreeMap<_,_>>(),
             "attributes": self.attributes.iter().map(|(k,v)| (k, v.to_json())).collect::<BTreeMap<_,_>>(),

@@ -62,24 +62,17 @@ impl Eq for ModuleRef<'_> {}
 pub struct SyntaxRef<'s> {
     snapshot: &'s Snapshot,
     source: String,
-    node_id: usize,
+    expression: &'s Expr,
 }
 impl<'s> SyntaxRef<'s> {
     pub fn source(&self) -> &str {
         &self.source
     }
     pub fn node_id(&self) -> usize {
-        self.node_id
+        self.expression.id
     }
     pub fn expression(&self) -> &'s Expr {
-        self.snapshot
-            .source(&self.source)
-            .unwrap()
-            .parsed
-            .expressions()
-            .into_iter()
-            .find(|e| e.id == self.node_id)
-            .unwrap()
+        self.expression
     }
     pub fn span(&self) -> SourceSpan {
         let e = self.expression();
@@ -105,7 +98,7 @@ impl fmt::Debug for SyntaxRef<'_> {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.debug_tuple("SyntaxRef")
             .field(&self.source)
-            .field(&self.node_id)
+            .field(&self.node_id())
             .finish()
     }
 }
@@ -172,7 +165,7 @@ impl<'s> EvaluationRef<'s> {
         Ok(self
             .references()
             .iter()
-            .filter(|r| r.location.source == syntax.source && r.node_id == syntax.node_id)
+            .filter(|r| r.location.source == syntax.source && r.node_id == syntax.node_id())
             .collect())
     }
     pub fn root_items(&self) -> impl Iterator<Item = ItemRef<'s>> + '_ {
@@ -490,15 +483,11 @@ impl Snapshot {
         self.module(&ModuleKey(key))
     }
     pub fn syntax(&self, source: &str, node_id: usize) -> Option<SyntaxRef<'_>> {
-        self.source(source)?
-            .parsed
-            .expressions()
-            .into_iter()
-            .find(|e| e.id == node_id)?;
+        let expression = self.source(source)?.parsed.expression(node_id)?;
         Some(SyntaxRef {
             snapshot: self,
             source: source.into(),
-            node_id,
+            expression,
         })
     }
     pub(crate) fn span_at(&self, location: &Location) -> Option<SourceSpan> {

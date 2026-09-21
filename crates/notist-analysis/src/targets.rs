@@ -163,7 +163,7 @@ impl Workspace {
             return vec![];
         };
         report.diagnostics().into_iter().filter_map(|d| {
-            if !matches!(d.code, DiagnosticCode::TargetFormation | DiagnosticCode::MissingModule | DiagnosticCode::MissingLabel | DiagnosticCode::AmbiguousLabel) { return None; }
+            if !matches!(d.code, DiagnosticCode::InvalidLabel | DiagnosticCode::TargetFormation | DiagnosticCode::MissingModule | DiagnosticCode::MissingLabel | DiagnosticCode::AmbiguousLabel) { return None; }
             let location = d.location.as_ref()?;
             if !snapshot.origin(&location.source).map_or(location.source == source, |origin| origin == uri) { return None; }
             let span = d.span?;
