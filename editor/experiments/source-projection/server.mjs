@@ -7,8 +7,7 @@ const root = dirname(fileURLToPath(import.meta.url));
 const language = resolve(root, "../../pkg");
 const kernel = resolve(root, "../../pkg-core");
 const types = { ".html": "text/html", ".css": "text/css", ".js": "text/javascript", ".mjs": "text/javascript", ".wasm": "application/wasm" };
-export function startServer(port = 4173) {
-  const server = createServer(async (req, res) => {
+export async function serveProjection(req, res) {
     try {
       const pathname = decodeURIComponent(new URL(req.url, "http://localhost").pathname);
       const isLanguage = pathname.startsWith("/language/");
@@ -22,7 +21,9 @@ export function startServer(port = 4173) {
       res.writeHead(200, { "Content-Type": types[extname(path)] || "application/octet-stream", "Cache-Control": "no-store" });
       res.end(body);
     } catch { res.writeHead(404); res.end("Not found"); }
-  });
+}
+export function startServer(port = 4173) {
+  const server = createServer(serveProjection);
   return new Promise(resolveReady => server.listen(port, "127.0.0.1", () => resolveReady(server)));
 }
 if (process.argv[1] === fileURLToPath(import.meta.url)) {

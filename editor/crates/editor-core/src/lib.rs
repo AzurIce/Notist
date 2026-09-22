@@ -20,6 +20,50 @@ use std::sync::{Arc, Mutex, mpsc};
 use text::{difference, validate_edits};
 use types::{AnchorTarget, crdt_error};
 
+impl Version {
+    /// Loro's binary version encoding, for interoperability with sync adapters.
+    /// Document identity travels separately and must be checked by the host.
+    pub fn encode(&self) -> Result<Vec<u8>, CoreError> {
+        validate_identity(&self.identity)?;
+        Ok(version_vector(self)?.encode())
+    }
+
+    pub fn decode(identity: DocumentIdentity, bytes: &[u8]) -> Result<Self, CoreError> {
+        validate_identity(&identity)?;
+        let vector = VersionVector::decode(bytes).map_err(|_| CoreError::InvalidVersion)?;
+        let version = Self {
+            identity,
+            clocks: vector
+                .iter()
+                .filter(|(_, count)| **count != 0)
+                .map(|(peer, count)| (peer.to_string(), *count))
+                .collect(),
+        };
+        version_vector(&version)?;
+        Ok(version)
+    }
+}
+
+impl SyncPacket {
+    /// Wrap an interoperable Loro blob in the host's explicit history identity.
+    /// Decoding does not authenticate the identity or bypass Document::import.
+    pub fn from_binary(identity: DocumentIdentity, data: Vec<u8>) -> Result<Self, CoreError> {
+        validate_identity(&identity)?;
+        let meta = LoroDoc::decode_import_blob_meta(&data, true).map_err(crdt_error)?;
+        let kind = match meta.mode {
+            EncodedBlobMode::Snapshot => PacketKind::Snapshot,
+            EncodedBlobMode::Updates => PacketKind::Updates,
+            EncodedBlobMode::ShallowSnapshot => return Err(CoreError::UnsupportedHistory),
+            _ => return Err(CoreError::InvalidPacket),
+        };
+        Ok(Self {
+            identity,
+            kind,
+            data,
+        })
+    }
+}
+
 pub struct Document {
     identity: DocumentIdentity,
     doc: LoroDoc,

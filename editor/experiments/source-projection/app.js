@@ -25,6 +25,8 @@ const SAMPLE = `= 在文字里思考
 源码里的表达式、注解，以及尚未写完的语法，都可以继续留在原来的位置。
 `;
 const STORAGE = "notist-source-projection-draft";
+const params = new URLSearchParams(location.search);
+const errors = [];
 let stored;
 try { stored = localStorage.getItem(STORAGE); } catch {}
 await initCore();
@@ -32,13 +34,24 @@ const createCore = text => EditorCore.create(EditorDocument, {
   identity: { document_id: "source-projection-draft", history_id: crypto.randomUUID() }, text,
   onListenerError(error) { errors.push(String(error)); console.error(error); },
 });
-let core = createCore(stored ?? SAMPLE);
+let syncSession = null;
+if (params.has("room")) {
+  try {
+    syncSession = await (await import("/sync/client.js")).openSyncDocument({
+      EditorCore, EditorDocument, room: params.get("room"), replica: params.get("replica") || crypto.randomUUID(),
+    });
+  } catch (error) {
+    const message = document.createElement("p"); message.textContent = error.message;
+    document.querySelector("#workspace").replaceChildren(message);
+    throw error;
+  }
+}
+let core = syncSession?.core ?? createCore(stored ?? SAMPLE);
 const source = () => core.snapshot().text;
 let richVersion = core.snapshot().version, cmVersion = richVersion;
 let projection = withPositions(project(source()));
 let rich, cm, syncing = false, revision = 0, lastPatch = null;
 let activeView = "rich", diagnostics = [], languageReady = false;
-const errors = [];
 
 function observeCore() {
   core.subscribe(() => {
@@ -77,7 +90,7 @@ function commitSource(next, origin, before) {
 }
 function changed() {
   revision++;
-  try { localStorage.setItem(STORAGE, source()); } catch {}
+  if (!syncSession) try { localStorage.setItem(STORAGE, source()); } catch {}
   refresh(); scheduleAnalysis();
 }
 function refresh() {
@@ -344,12 +357,13 @@ function renderDiagnostics() {
   if (!diagnostics.length) panel.hidden = true;
 }
 
-// A small explicit test surface. No remote service or collaboration transport.
+// Explicit test surface. Network mode is opt-in on the separate sync server.
 window.probe = {
-  rich, cm, get core() { return core; },
+  rich, cm, syncSession, get core() { return core; },
   makeReplica: () => EditorCore.restore(EditorDocument, core.exportSnapshot()),
   inspect: () => ({ source: source(), cm: cm.state.doc.toString(), doc: rich.getJSON(), projection: projection.source, lastPatch, revision, diagnostics, languageReady, errors: [...errors], canUndo: core.undoState.can_undo, canRedo: core.undoState.can_redo }),
   reset(text = SAMPLE) {
+    if (syncSession) throw new Error("Use a fresh room to reset a collaborative document");
     $("#toast").hidden = true;
     core.dispose(); core = createCore(text); observeCore();
     syncCM(); syncRich({ anchor: 0, head: 0 }); changed();
@@ -357,4 +371,5 @@ window.probe = {
   selectRich(from, to = from) { rich.commands.setTextSelection({ from: sourceToRich(projection, from), to: sourceToRich(projection, to) }); rich.commands.focus(); },
   undo, revealSource,
 };
+syncSession?.mount();
 refresh(); scheduleAnalysis();

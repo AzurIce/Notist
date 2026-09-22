@@ -30,6 +30,9 @@ export class EditorCore {
   static create(Binding: WasmBinding, options: HostOptions & { identity: DocumentIdentity; text?: string }): EditorCore;
   static restore(Binding: WasmBinding, packet: SyncPacket, options?: HostOptions): EditorCore;
   snapshot(): TextSnapshot;
+  encodedVersion(): Uint8Array;
+  decodeVersion(bytes: Uint8Array): Version;
+  importBinary(identity: DocumentIdentity, bytes: Uint8Array, origin?: string): { readonly event: ChangeEvent | null; readonly pending: boolean };
   readonly writerId: string;
   readonly undoState: UndoState;
   transact(transaction: { expectedVersion: Version; edits: readonly TextEdit[]; origin?: string; undoMetadata?: JsonValue; undoPositions?: readonly number[] }): ChangeEvent | null;

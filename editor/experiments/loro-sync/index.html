@@ -1,0 +1,25 @@
+<!doctype html>
+<html lang="zh-CN">
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Notist · 一起写下去</title>
+<style>
+  *{box-sizing:border-box}body{margin:0;background:#eaece7;color:#263b30;font:14px system-ui,sans-serif}
+  header{padding:22px 30px;display:flex;align-items:center;justify-content:space-between;gap:20px;background:#f9faf7;border-bottom:1px solid #d6ded3}
+  h1{font-size:24px;margin:0 0 7px;font-weight:550;letter-spacing:-.5px}p{margin:0;color:#647168;line-height:1.7}
+  a{color:#315f48;text-underline-offset:4px}main{display:grid;grid-template-columns:1fr 1fr;gap:12px;padding:12px;height:calc(100vh - 117px);min-height:630px}
+  section{display:flex;flex-direction:column;min-width:0;border:1px solid #d0d9ce;border-radius:10px;overflow:hidden;background:#fff}
+  .label{padding:10px 15px;background:#f4f7f1;display:flex;justify-content:space-between;align-items:center;font-size:12px}
+  iframe{border:0;flex:1;width:100%}@media(max-width:1050px){main{grid-template-columns:1fr;height:auto}iframe{height:800px;flex:auto}}
+</style>
+<header><div><h1>一起写下去</h1><p>两个独立副本，同一份文档。试试同时编辑，或断网后分别输入，再恢复连接。</p></div><p>本地保存 CRDT 历史<br>服务端定期保存 · 实验环境</p></header>
+<main><section><div class="label"><b>副本 A</b><a id="open-a" target="_blank">单独打开 ↗</a></div><iframe title="副本 A" id="a"></iframe></section><section><div class="label"><b>副本 B</b><a id="open-b" target="_blank">单独打开 ↗</a></div><iframe title="副本 B" id="b"></iframe></section></main>
+<script>
+  const room = new URLSearchParams(location.search).get("room") || "demo";
+  for (const replica of ["a", "b"]) {
+    const url = `/editor?room=${encodeURIComponent(room)}&replica=${replica}`;
+    document.getElementById(replica).src = url;
+    document.getElementById(`open-${replica}`).href = `/editor?room=${encodeURIComponent(room)}&replica=${replica}-${crypto.randomUUID()}`;
+  }
+</script>
+</html>

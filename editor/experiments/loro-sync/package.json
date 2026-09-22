@@ -1,0 +1,22 @@
+{
+  "name": "notist-loro-sync-experiment",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "build": "node build.mjs",
+    "dev": "node build.mjs && node server.mjs",
+    "test": "node --test sync.test.mjs",
+    "test:browser": "node browser.test.mjs"
+  },
+  "dependencies": {
+    "@loro-dev/flock": "4.5.1",
+    "loro-crdt": "1.16.2",
+    "loro-protocol": "0.3.0",
+    "loro-websocket": "0.6.2",
+    "ws": "8.18.3"
+  },
+  "devDependencies": {
+    "esbuild": "0.25.10",
+    "playwright-core": "1.55.1"
+  }
+}

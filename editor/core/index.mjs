@@ -84,6 +84,9 @@ export class EditorCore {
   }
 
   snapshot() { return immutable(JSON.parse(this.#call("snapshot"))); }
+  encodedVersion() { return this.#call("encoded_version"); }
+  decodeVersion(bytes) { return immutable(JSON.parse(this.#call("decode_version", bytes))); }
+  importBinary(identity, bytes, origin = "remote") { return this.#mutate("import_binary", JSON.stringify(identity), bytes, origin); }
   get writerId() { return this.#call("writer_id"); }
   get undoState() { return immutable(JSON.parse(this.#call("undo_state"))); }
 

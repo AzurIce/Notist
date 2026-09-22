@@ -48,6 +48,37 @@ fn replay(event: &ChangeEvent) {
 }
 
 #[test]
+fn binary_interop_preserves_versions_and_import_guards() {
+    let mut a = doc(u64::MAX - 1, "中😀");
+    let version = a.version();
+    assert_eq!(
+        Version::decode(identity(), &version.encode().unwrap()).unwrap(),
+        version
+    );
+    assert!(Version::decode(identity(), &[255]).is_err());
+    let raw = a.export_snapshot().unwrap().data;
+    let packet = SyncPacket::from_binary(identity(), raw).unwrap();
+    assert_eq!(packet.kind, PacketKind::Snapshot);
+    let mut b = Document::from_snapshot(&packet, Some(2)).unwrap();
+    apply(&mut a, vec![edit(0, 0, "prefix")]);
+    let updates = SyncPacket::from_binary(
+        identity(),
+        a.export_updates_since(&b.version()).unwrap().data,
+    )
+    .unwrap();
+    assert_eq!(updates.kind, PacketKind::Updates);
+    let mut wrong = updates.clone();
+    wrong.identity.history_id = "unrelated".into();
+    assert!(matches!(
+        b.import(&wrong, "network".into()),
+        Err(CoreError::IdentityMismatch)
+    ));
+    b.import(&updates, "network".into()).unwrap();
+    assert_eq!(a.snapshot().text, b.snapshot().text);
+    assert!(SyncPacket::from_binary(identity(), vec![1, 2, 3]).is_err());
+}
+
+#[test]
 fn transactions_validate_all_edits_before_mutation_and_reject_stale_versions() {
     let mut d = doc(1, "A😀中BC");
     let events = d.subscribe();

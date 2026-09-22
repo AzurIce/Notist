@@ -60,6 +60,25 @@ impl EditorDocument {
     pub fn writer_id(&self) -> String {
         self.document.writer_id()
     }
+    pub fn encoded_version(&self) -> Result<Vec<u8>, JsValue> {
+        self.document.version().encode().map_err(error)
+    }
+    pub fn decode_version(&self, bytes: &[u8]) -> Result<String, JsValue> {
+        Ok(encode(
+            Version::decode(self.document.identity().clone(), bytes).map_err(error)?,
+        ))
+    }
+    pub fn import_binary(
+        &mut self,
+        identity: &str,
+        bytes: &[u8],
+        origin: String,
+    ) -> Result<String, JsValue> {
+        let packet = SyncPacket::from_binary(decode(identity)?, bytes.to_vec()).map_err(error)?;
+        Ok(encode(
+            self.document.import(&packet, origin).map_err(error)?,
+        ))
+    }
     pub fn undo_state(&self) -> String {
         encode(self.document.undo_state())
     }

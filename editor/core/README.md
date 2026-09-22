@@ -96,6 +96,8 @@ Rust 通过独立队列向每个订阅者发送提交完成的事件。JS 在微
 
 `exportSnapshot()` 导出带身份的完整 CRDT 历史包。`exportUpdatesSince(version)` 导出缺失操作，`import(packet, origin)` 处理重复和乱序交付。接收方发现不同文档或历史时拒绝导入。载荷先在临时副本中解码验证，再导入活跃实例。
 
+与现有 Loro 同步实现互操作时，可用 `encodedVersion()` / `decodeVersion(bytes)` 转换原始二进制版本，使用 `importBinary(identity, bytes, origin)` 包装并导入原始快照或增量。原始 Loro 字节不含宿主的文档/历史身份，适配器必须通过房间或握手先确认身份；这些入口仍执行原有导入校验。Rust 对应 `Version::encode/decode` 和 `SyncPacket::from_binary`。官方 WebSocket 实验见 `../experiments/loro-sync`。
+
 因果依赖尚未满足时，`import` 返回 `pending: true`，操作会在内存中等待前序包。宿主应保留未满足依赖的包；本接口不承诺导出的快照持久化等待队列。网络连接、重试、授权、确认和可靠落盘由宿主定义。包的身份封装用于防止误接，不构成认证；只交换兼容内核产生的包。
 
 ### 撤销和锚点
