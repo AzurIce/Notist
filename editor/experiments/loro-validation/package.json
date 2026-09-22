@@ -1,0 +1,23 @@
+{
+  "name": "notist-loro-validation",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "test": "node core.test.mjs",
+    "test:browser": "node browser.test.mjs",
+    "test:interop": "node interop.test.mjs",
+    "build": "node build.mjs"
+  },
+  "dependencies": {
+    "@codemirror/commands": "6.11.1",
+    "@codemirror/state": "6.7.5",
+    "@codemirror/view": "6.43.12",
+    "loro-codemirror": "0.3.3",
+    "loro-crdt": "1.16.2",
+    "loro-crdt-latest": "npm:loro-crdt@1.16.3"
+  },
+  "devDependencies": {
+    "esbuild": "0.25.10",
+    "playwright-core": "1.55.1"
+  }
+}

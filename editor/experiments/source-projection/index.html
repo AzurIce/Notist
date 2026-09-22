@@ -1,0 +1,37 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Notist · 文字的两面</title>
+  <link rel="stylesheet" href="/style.css">
+</head>
+<body>
+  <header class="topbar">
+    <a class="brand" href="/" aria-label="Notist 首页"><span class="brand-mark">n.</span> notist<span class="experiment">编辑实验</span></a>
+    <div class="file-path">我的工作台 <span>/</span> 文字的两面.not</div>
+    <div class="top-actions"><span class="local-status"><i></i> 本地草稿</span><button id="download" class="quiet">导出 .not <span>↗</span></button></div>
+  </header>
+  <div class="workspace-heading">
+    <div><span class="eyebrow">A SPACE TO THINK</span><h1>文字的两面<span> / </span><small>同一份源码</small></h1></div>
+    <div class="view-switch" role="group" aria-label="视图"><button id="document-only">文档</button><button id="split-view" class="active">文档 + 源码</button></div>
+  </div>
+  <main class="workspace" id="workspace">
+    <section class="document-pane" aria-label="文档视图">
+      <div class="pane-bar"><span class="pane-label"><i class="doc-icon"></i>文档</span><div class="format-tools" aria-label="格式工具"><button id="bold" title="加粗 ⌘B" aria-label="加粗"><b>B</b></button><button id="italic" title="斜体 ⌘I" aria-label="斜体"><i>I</i></button><span class="divider"></span><button id="heading" title="二级标题" aria-label="二级标题">H₂</button><span class="divider"></span><button id="undo" title="撤销 ⌘Z" aria-label="撤销">↶</button><button id="redo" title="重做 ⇧⌘Z" aria-label="重做">↷</button></div><span class="pane-meta">TIPTAP</span></div>
+      <div class="paper-scroll"><div class="paper"><div class="paper-kicker"><span>FIELD NOTES</span><span>001 — 写作实验</span></div><div id="rich-editor"></div><div class="paper-end"><span></span> 继续写，想法会在文字里成形。</div></div></div>
+      <div class="pane-footer"><span id="word-count"></span><span>选中文字试试加粗 · Enter 分段</span></div>
+    </section>
+    <section class="source-pane" aria-label="源码视图">
+      <div class="pane-bar"><span class="pane-label"><span class="code-icon">‹/›</span>源码</span><span class="source-filename">文字的两面.not</span><span class="pane-meta">CODEMIRROR</span></div>
+      <div class="source-intro"><span class="source-dot"></span>你编辑的每一个字符，都是文档本身。</div>
+      <div id="source-editor"></div>
+      <div id="diagnostics" hidden></div>
+      <div class="pane-footer"><button id="diagnostic-status" class="diagnostic-status">正在加载语言核…</button><span id="cursor-status">UTF-8 · Notist</span></div>
+    </section>
+  </main>
+  <footer class="workspace-footer"><span><i></i><span id="sync-status">两个视图 · 一份 Loro 文本 · 共享撤销</span></span><span>原型：段落 / 标题 / 强调 <span class="footer-dot">·</span> 复杂语法保留为源码块</span></footer>
+  <div id="toast" role="status" hidden></div>
+  <script type="module" src="/dist/app.js"></script>
+</body>
+</html>

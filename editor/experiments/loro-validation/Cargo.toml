@@ -1,0 +1,12 @@
+[package]
+name = "notist-loro-validation"
+version = "0.1.0"
+edition = "2024"
+publish = false
+
+# Isolated selection experiment; the editor's dependency graph stays untouched.
+[workspace]
+
+[dependencies]
+loro = "=1.16.2"
+serde_json = "1"

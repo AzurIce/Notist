@@ -1,0 +1,23 @@
+{
+  "name": "notist-source-projection",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "build": "node build.mjs",
+    "dev": "node build.mjs && node server.mjs",
+    "test": "node --test projection.test.mjs",
+    "test:browser": "node browser.test.mjs"
+  },
+  "dependencies": {
+    "@codemirror/commands": "6.11.1",
+    "@codemirror/state": "6.7.5",
+    "@codemirror/view": "6.43.12",
+    "@tiptap/core": "3.31.3",
+    "@tiptap/pm": "3.31.3",
+    "@tiptap/starter-kit": "3.31.3"
+  },
+  "devDependencies": {
+    "esbuild": "0.25.10",
+    "playwright-core": "1.55.1"
+  }
+}
