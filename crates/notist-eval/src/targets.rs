@@ -69,21 +69,21 @@ impl Runtime<'_> {
         source: &str,
     ) -> Result<String, PathError> {
         let first = path.first().ok_or(PathError::EmptyPath)?;
-        if !matches!(first.as_str(), "vault" | "self" | "super") {
-            if let Some(value) = env.get(first) {
-                let Value::Module(module) = value else {
-                    return Err(PathError::NotModule(first.clone()));
-                };
-                let key = self
-                    .world
-                    .module_key(module)
-                    .ok_or_else(|| PathError::UnknownModule(module.clone()))?;
-                return Ok(if path.len() == 1 {
-                    key.into()
-                } else {
-                    format!("{key}::{}", path[1..].join("::"))
-                });
-            }
+        if !matches!(first.as_str(), "vault" | "self" | "super")
+            && let Some(value) = env.get(first)
+        {
+            let Value::Module(module) = value else {
+                return Err(PathError::NotModule(first.clone()));
+            };
+            let key = self
+                .world
+                .module_key(module)
+                .ok_or_else(|| PathError::UnknownModule(module.clone()))?;
+            return Ok(if path.len() == 1 {
+                key.into()
+            } else {
+                format!("{key}::{}", path[1..].join("::"))
+            });
         }
         let current = self
             .world
@@ -114,11 +114,6 @@ pub(super) fn output_links(content: &Content) -> Vec<OutputLink> {
     fn value(v: &Value, out: &mut Vec<OutputLink>) {
         match v {
             Value::Content(c) => visit(c, out),
-            Value::Item(i) => {
-                for v in i.args.values() {
-                    value(v, out);
-                }
-            }
             Value::List(v) => {
                 for v in v {
                     value(v, out);
@@ -133,22 +128,16 @@ pub(super) fn output_links(content: &Content) -> Vec<OutputLink> {
         }
     }
     fn visit(c: &Content, out: &mut Vec<OutputLink>) {
-        match c {
-            Content::Link { target, location } => out.push(OutputLink {
+        if c.name == "link"
+            && let Some(Value::Target(target)) = c.args.get("target")
+        {
+            out.push(OutputLink {
                 target: target.clone(),
-                location: location.clone(),
-            }),
-            Content::Sequence(parts) => {
-                for c in parts {
-                    visit(c, out);
-                }
-            }
-            Content::Item(i) => {
-                for v in i.args.values() {
-                    value(v, out);
-                }
-            }
-            _ => {}
+                location: c.location.clone(),
+            });
+        }
+        for v in c.args.values() {
+            value(v, out);
         }
     }
     let mut out = vec![];

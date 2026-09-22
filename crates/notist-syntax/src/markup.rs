@@ -14,36 +14,8 @@ fn string(value: impl Into<String>, start: usize, end: usize) -> Expr {
 fn element(name: &str, fields: Vec<(String, Expr)>, start: usize, end: usize) -> Expr {
     expr(ExprKind::Element(name.into(), fields), start, end)
 }
-fn body(name: &str, parts: Vec<Expr>, start: usize, end: usize) -> Expr {
-    element(
-        name,
-        vec![("body".into(), expr(ExprKind::Content(parts), start, end))],
-        start,
-        end,
-    )
-}
-fn flush(out: &mut Vec<Expr>, inline: &mut Vec<Expr>, wrap: bool) {
-    while inline
-        .last()
-        .is_some_and(|e| matches!(&e.kind, ExprKind::String(s) if s == " "))
-    {
-        inline.pop();
-    }
-    if inline.is_empty() {
-        return;
-    }
-    let start = inline[0].offset;
-    let end = inline.last().unwrap().end;
-    let parts = std::mem::take(inline);
-    if parts.len() == 1 && matches!(parts[0].kind, ExprKind::Call(..)) {
-        out.extend(parts);
-        return;
-    }
-    if wrap {
-        out.push(body("paragraph", parts, start, end));
-    } else {
-        out.extend(parts);
-    }
+fn flush(out: &mut Vec<Expr>, inline: &mut Vec<Expr>) {
+    out.append(inline);
 }
 
 fn word(c: char) -> bool {
@@ -89,13 +61,12 @@ impl Parser<'_> {
         end: Option<char>,
         section: usize,
         indent: Option<usize>,
-        mut wrap: bool,
     ) -> Result<Vec<Expr>, String> {
         if self.depth >= 128 {
             return Err("markup nesting limit exceeded".into());
         }
         self.depth += 1;
-        let result = self.flow_inner(end, section, indent, &mut wrap);
+        let result = self.flow_inner(end, section, indent);
         self.depth -= 1;
         result
     }
@@ -104,7 +75,6 @@ impl Parser<'_> {
         end: Option<char>,
         section: usize,
         indent: Option<usize>,
-        wrap: &mut bool,
     ) -> Result<Vec<Expr>, String> {
         let mut out = Vec::new();
         let mut inline = Vec::new();
@@ -145,13 +115,13 @@ impl Parser<'_> {
                 if section > 0 && level <= section {
                     break;
                 }
-                flush(&mut out, &mut inline, *wrap);
+                flush(&mut out, &mut inline);
                 self.pos += level;
                 while self.rest().starts_with([' ', '\t']) {
                     self.consume_char();
                 }
                 let title = self.markup_inline('\n', true)?;
-                let children = self.markup_flow(end, level, indent, true)?;
+                let children = self.markup_flow(end, level, indent)?;
                 out.push(expr(
                     ExprKind::Section(level, title, children),
                     start,
@@ -160,8 +130,8 @@ impl Parser<'_> {
                 continue;
             }
             if let Some((kind, _, _)) = self.marker() {
-                flush(&mut out, &mut inline, *wrap);
-                out.push(self.markup_list(kind, end)?);
+                flush(&mut out, &mut inline);
+                out.extend(self.markup_list(kind, end)?);
                 continue;
             }
             if c.is_whitespace() {
@@ -173,14 +143,14 @@ impl Parser<'_> {
                     self.consume_char();
                 }
                 if newlines >= 2 {
-                    *wrap = true;
-                    flush(&mut out, &mut inline, true);
+                    flush(&mut out, &mut inline);
+                    out.push(element("parbreak", vec![], start, self.pos));
                 } else if !inline.is_empty()
-                    && !inline
-                        .last()
-                        .is_some_and(|e| matches!(&e.kind, ExprKind::String(s) if s == " "))
+                    && !inline.last().is_some_and(
+                        |e| matches!(&e.kind, ExprKind::Element(name, _) if name == "space"),
+                    )
                 {
-                    inline.push(string(" ", start, self.pos));
+                    inline.push(element("space", vec![], start, self.pos));
                 }
                 continue;
             }
@@ -197,12 +167,11 @@ impl Parser<'_> {
                     if section > 0 && level <= section {
                         break;
                     }
-                    flush(&mut out, &mut inline, *wrap);
+                    flush(&mut out, &mut inline);
                 }
                 let annotation = self.markup_annotation()?;
                 if inline.is_empty() {
                     out.push(annotation);
-                    *wrap = true;
                 } else {
                     inline.push(annotation);
                 }
@@ -211,7 +180,7 @@ impl Parser<'_> {
             if c == '#' && !self.documentation {
                 let value = self.markup_code()?;
                 if matches!(value.kind, ExprKind::Declaration(_)) {
-                    flush(&mut out, &mut inline, *wrap);
+                    flush(&mut out, &mut inline);
                     out.push(value);
                 } else {
                     inline.push(value);
@@ -230,13 +199,13 @@ impl Parser<'_> {
             let value = self.markup_atom()?;
             let block = matches!(&value.kind, ExprKind::Element(name, fields) if (name == "raw" || name == "math") && fields.iter().any(|(key,v)| key == "block" && matches!(v.kind, ExprKind::Bool(true))));
             if block {
-                flush(&mut out, &mut inline, *wrap);
+                flush(&mut out, &mut inline);
                 out.push(value);
             } else {
                 inline.push(value);
             }
         }
-        flush(&mut out, &mut inline, *wrap);
+        flush(&mut out, &mut inline);
         Ok(out)
     }
     fn markup_inline(&mut self, end: char, allow_eof: bool) -> Result<Vec<Expr>, String> {
@@ -287,10 +256,10 @@ impl Parser<'_> {
                     self.consume_char();
                     if !parts.is_empty()
                         && !parts.last().is_some_and(
-                            |e: &Expr| matches!(&e.kind, ExprKind::String(s) if s == " "),
+                            |e: &Expr| matches!(&e.kind, ExprKind::Element(name, _) if name == "space"),
                         )
                     {
-                        parts.push(string(" ", start, self.pos));
+                        parts.push(element("space", vec![], start, self.pos));
                     }
                 } else if c == '@' && !self.documentation {
                     parts.push(self.markup_annotation()?);
@@ -646,11 +615,9 @@ impl Parser<'_> {
             self.pos,
         ))
     }
-    fn markup_list(&mut self, kind: String, end: Option<char>) -> Result<Expr, String> {
-        let start = self.pos;
+    fn markup_list(&mut self, kind: String, end: Option<char>) -> Result<Vec<Expr>, String> {
         let column = self.line_position().unwrap();
         let mut items = Vec::new();
-        let mut tight = true;
         while let Some((name, length, number)) = self.marker() {
             if name != kind || self.line_position() != Some(column) {
                 break;
@@ -665,7 +632,7 @@ impl Parser<'_> {
             } else {
                 None
             };
-            let parts = self.markup_flow(end, 0, Some(column), true)?;
+            let parts = self.markup_flow(end, 0, Some(column))?;
             let mut fields = vec![(
                 "body".into(),
                 expr(ExprKind::Content(parts), begin, self.pos),
@@ -682,32 +649,17 @@ impl Parser<'_> {
                     expr(ExprKind::Int(number), begin, self.pos),
                 ));
             }
+            fields.push((
+                "ordered".into(),
+                expr(ExprKind::Bool(kind == "enum"), begin, self.pos),
+            ));
             let item_name = if kind == "terms" {
                 "term-item"
             } else {
                 "list-item"
             };
             items.push(element(item_name, fields, begin, self.pos));
-            if self.source[begin..self.pos].contains("\n\n") {
-                tight = false;
-            }
         }
-        let name = if kind == "terms" { "terms" } else { "list" };
-        Ok(element(
-            name,
-            vec![
-                (
-                    "body".into(),
-                    expr(ExprKind::Content(items), start, self.pos),
-                ),
-                (
-                    "ordered".into(),
-                    expr(ExprKind::Bool(kind == "enum"), start, self.pos),
-                ),
-                ("tight".into(), expr(ExprKind::Bool(tight), start, self.pos)),
-            ],
-            start,
-            self.pos,
-        ))
+        Ok(items)
     }
 }

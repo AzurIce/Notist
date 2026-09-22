@@ -36,7 +36,7 @@ fn rust_plugin_shares_language_calling_semantics() {
     assert!(result.warnings.is_empty(), "{:?}", result.warnings);
     assert_eq!(
         result.content.html(),
-        "hellodefault79empty<p>body</p><p><strong>nested</strong></p>content"
+        "<p>hellodefault79empty</p><p>body</p><p><strong>nested</strong></p><p>content</p>"
     );
 }
 
@@ -76,7 +76,7 @@ fn rust_plugin_and_source_share_optional_default_precedence() {
     "#,
     );
     assert!(result.warnings.is_empty(), "{:?}", result.warnings);
-    assert_eq!(result.content.html(), "nonenone32none5");
+    assert_eq!(result.content.html(), "<p>nonenone32none5</p>");
 }
 
 #[test]
@@ -99,7 +99,7 @@ fn plugin_origins_survive_indirect_calls_without_entering_the_wire_format() {
         let origin = item.origin.as_ref().unwrap();
         assert_eq!(origin.kind, notist_model::OriginKind::Plugin);
         assert!(origin.node_id.is_some());
-        let wire = notist_ir::Value::Item(item.clone()).to_abi().unwrap();
+        let wire = notist_ir::Value::Content(item.clone()).to_abi().unwrap();
         assert!(
             !serde_json::to_value(wire)
                 .unwrap()
@@ -107,4 +107,21 @@ fn plugin_origins_survive_indirect_calls_without_entering_the_wire_format() {
                 .contains("node_id")
         );
     }
+}
+
+#[test]
+#[ignore = "requires compiled Rust plugin; run just test-plugin-sdk"]
+fn plugin_element_registration_and_target_transport_participate_in_formation() {
+    let result = evaluate("[a #badge[b] c]; identity(self::\"destination\");");
+    assert!(result.diagnostics.is_empty(), "{:?}", result.diagnostics);
+    let tree = notist_ir::ItemIndex::new(&result.content);
+    let names = (0..tree.nodes().len())
+        .map(|id| tree.item(&result.content, id).name.as_str())
+        .collect::<Vec<_>>();
+    assert_eq!(names.iter().filter(|&&name| name == "paragraph").count(), 1);
+    assert_eq!(
+        names.iter().filter(|&&name| name == "plugin-badge").count(),
+        1
+    );
+    assert_eq!(result.output_links[0].target.labels, ["destination"]);
 }

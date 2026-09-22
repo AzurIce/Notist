@@ -79,10 +79,10 @@ impl Workspace {
         }
         let mut observed = Vec::new();
         for r in attempts {
-            if let Ok(target) = &r.result {
-                if !observed.contains(target) {
-                    observed.push(target.clone());
-                }
+            if let Ok(target) = &r.result
+                && !observed.contains(target)
+            {
+                observed.push(target.clone());
             }
         }
         let target = match observed.as_slice() {
@@ -127,7 +127,7 @@ impl Workspace {
         let (target_source, point, exact_span) = match target {
             ResolvedTarget::Item(item) => {
                 let origin = item.origin();
-                let span = origin.syntax.map(|s| s.selection_span());
+                let span = origin.syntax.map(|s| s.selection_span()).or(origin.span);
                 (origin.location.source, Some(origin.location.offset), span)
             }
             ResolvedTarget::Module(module) => {
@@ -163,7 +163,7 @@ impl Workspace {
             return vec![];
         };
         report.diagnostics().into_iter().filter_map(|d| {
-            if !matches!(d.code, DiagnosticCode::InvalidLabel | DiagnosticCode::TargetFormation | DiagnosticCode::MissingModule | DiagnosticCode::MissingLabel | DiagnosticCode::AmbiguousLabel) { return None; }
+            if !matches!(d.code, DiagnosticCode::ContentConstraint | DiagnosticCode::InvalidLabel | DiagnosticCode::TargetFormation | DiagnosticCode::MissingModule | DiagnosticCode::MissingLabel | DiagnosticCode::AmbiguousLabel) { return None; }
             let location = d.location.as_ref()?;
             if !snapshot.origin(&location.source).map_or(location.source == source, |origin| origin == uri) { return None; }
             let span = d.span?;

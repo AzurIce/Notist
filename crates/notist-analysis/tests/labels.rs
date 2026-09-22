@@ -176,8 +176,5 @@ fn reference_values_preserve_the_lexical_module_across_packages() {
     let s = session.snapshot();
     let result = s.check("p0/docs/README.notc").unwrap();
     assert!(result.is_ok(), "{:?}", result.diagnostics());
-    assert_eq!(
-        result.evaluation.content().to_json()["sequence"][0]["target"]["module"],
-        "p1"
-    );
+    assert_eq!(result.evaluation.output_links()[0].target.module, "p1");
 }

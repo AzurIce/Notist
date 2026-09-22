@@ -9,12 +9,13 @@ Response fields:
 - `source.files`: source ids, paths and text; `entry_source_id` selects the entry.
 - `syntax`: tokens, statements and parser errors. Statements are `let`, `use`, `wasm`, `expression`, or `error`; ranges are UTF-8 byte offsets.
 - `evaluation.events`: ordinary function-call events. They contain serialized output summaries; `node` and `name` are currently null.
-- `result`: Content JSON, exported bindings, diagnostics and counters. Item nodes contain `item`, `args`, `source`, and `offset`. Nested arguments retain tagged Dict/Content values.
+- `evaluation.content`: the raw Item tree, including annotation and paragraph-boundary controls.
+- `result`: formed Content JSON, raw exported bindings, diagnostics and counters. Content constraint diagnostics use stage `form` and code `content_constraint`.
 - `platform`: target and elapsed time. Native/WASM comparison ignores this field.
 - `truncated`: reserved output-budget field; it is currently always an empty array.
 
-Content encodings are `{"text": ...}`, `{"sequence": [...]}`, `{"item": name, "args": {...}}`, and `{"error": ...}`. Dict values use `{"dict": {...}}`; `none` is JSON null.
+Every Content uses `{"item": name, "args": {...}, "attributes": {...}, "label": ..., "source": ..., "offset": ...}`. Known source ranges add `span: {source, start, end}` in UTF-8 bytes. Text stores `args.text`, sequences store `args.children`, paragraphs store `args.body`, and errors store `args.message` and `args.code`. Dict values use `{"dict": {...}}`; Lists are arrays; `none` is JSON null. Target values use `{"target": module, "labels": [...]}` and appear in a link Item's `args.target`.
 
-There is no normalization stage, rule trace, origin id, or complete event-to-source mapping. The debugger displays syntax, ordinary evaluation events and resulting Content. Rendering errors belong to the HTML consumer, not language diagnostics.
+The debugger displays syntax, ordinary evaluation events, raw Content and formed Content. Formation is shared with document queries and rendering. There is no per-rule trace, origin id, or complete event-to-source mapping. Raw and formed trees have separate node identities. Rendering errors belong to the HTML consumer.
 
-`just web-compare` compares only `result.content` and `result.diagnostics` between native and browser evaluation.
+`just web-compare` compares `evaluation.content`, `result.content` and `result.diagnostics` between native and browser evaluation.

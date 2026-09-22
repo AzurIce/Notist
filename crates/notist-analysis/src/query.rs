@@ -106,6 +106,7 @@ impl fmt::Debug for SyntaxRef<'_> {
 #[derive(Clone, Debug)]
 pub struct ItemOrigin<'s> {
     pub location: Location,
+    pub span: Option<SourceSpan>,
     pub kind: Option<OriginKind>,
     pub syntax: Option<SyntaxRef<'s>>,
 }
@@ -128,6 +129,9 @@ pub struct EvaluationRef<'s> {
 impl<'s> EvaluationRef<'s> {
     pub fn module(&self) -> &ModuleKey {
         &self.output.module
+    }
+    pub fn raw_content(&self) -> &Content {
+        &self.output.result.raw_content
     }
     pub fn content(&self) -> &Content {
         &self.output.result.content
@@ -247,6 +251,7 @@ impl<'s> ItemRef<'s> {
         let item = self.value();
         ItemOrigin {
             location: item.location.clone(),
+            span: item.span.clone(),
             kind: item.origin.as_ref().map(|o| o.kind),
             syntax: item
                 .origin
@@ -524,18 +529,17 @@ impl Snapshot {
         let Some(location) = &diagnostic.location else {
             return;
         };
-        if diagnostic.code == DiagnosticCode::Syntax {
-            if let Some(error) = self
+        if diagnostic.code == DiagnosticCode::Syntax
+            && let Some(error) = self
                 .source(&location.source)
                 .and_then(|s| s.parsed.errors.iter().find(|e| e.start == location.offset))
-            {
-                diagnostic.span = Some(SourceSpan {
-                    source: location.source.clone(),
-                    start: error.start,
-                    end: error.end,
-                });
-                return;
-            }
+        {
+            diagnostic.span = Some(SourceSpan {
+                source: location.source.clone(),
+                start: error.start,
+                end: error.end,
+            });
+            return;
         }
         diagnostic.span = self.span_at(location);
     }

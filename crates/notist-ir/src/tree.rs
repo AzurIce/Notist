@@ -3,13 +3,10 @@ use crate::{Content, Item, Value};
 
 #[derive(Clone, Debug)]
 enum Step {
-    Sequence(usize),
-    ContentItem,
     Field(String),
     List(usize),
     Dict(String),
     ValueContent,
-    ValueItem,
 }
 #[derive(Clone, Debug)]
 pub struct ItemNode {
@@ -38,22 +35,16 @@ impl ItemIndex {
     }
     pub fn item<'a>(&self, content: &'a Content, id: usize) -> &'a Item {
         enum Cursor<'a> {
-            Content(&'a Content),
-            Value(&'a Value),
             Item(&'a Item),
+            Value(&'a Value),
         }
-        let mut cursor = Cursor::Content(content);
+        let mut cursor = Cursor::Item(content);
         for step in &self.nodes[id].route {
             cursor = match (cursor, step) {
-                (Cursor::Content(Content::Sequence(v)), Step::Sequence(i)) => {
-                    Cursor::Content(&v[*i])
-                }
-                (Cursor::Content(Content::Item(v)), Step::ContentItem) => Cursor::Item(v),
                 (Cursor::Item(v), Step::Field(k)) => Cursor::Value(&v.args[k]),
                 (Cursor::Value(Value::List(v)), Step::List(i)) => Cursor::Value(&v[*i]),
                 (Cursor::Value(Value::Dict(v)), Step::Dict(k)) => Cursor::Value(&v[k]),
-                (Cursor::Value(Value::Content(v)), Step::ValueContent) => Cursor::Content(v),
-                (Cursor::Value(Value::Item(v)), Step::ValueItem) => Cursor::Item(v),
+                (Cursor::Value(Value::Content(v)), Step::ValueContent) => Cursor::Item(v),
                 _ => unreachable!("index and immutable output must belong together"),
             };
         }
@@ -118,29 +109,10 @@ impl ItemIndex {
         self.nodes[id].subtree_end = self.nodes.len();
     }
     fn content(&mut self, c: &Content, parent: Option<usize>, route: &mut Vec<Step>) {
-        match c {
-            Content::Item(item) => {
-                route.push(Step::ContentItem);
-                self.push_item(item, parent, route);
-                route.pop();
-            }
-            Content::Sequence(parts) => {
-                for (i, c) in parts.iter().enumerate() {
-                    route.push(Step::Sequence(i));
-                    self.content(c, parent, route);
-                    route.pop();
-                }
-            }
-            _ => {}
-        }
+        self.push_item(c, parent, route);
     }
     fn value(&mut self, v: &Value, parent: Option<usize>, route: &mut Vec<Step>) {
         match v {
-            Value::Item(item) => {
-                route.push(Step::ValueItem);
-                self.push_item(item, parent, route);
-                route.pop();
-            }
             Value::Content(c) => {
                 route.push(Step::ValueContent);
                 self.content(c, parent, route);

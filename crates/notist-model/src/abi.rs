@@ -1,5 +1,5 @@
 //! Data exchanged with plugins, independent of syntax trees and runtime state.
-use crate::{Target, Type};
+use crate::{ElementModel, Target, Type};
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
 
@@ -7,6 +7,8 @@ use std::collections::BTreeMap;
 #[serde(deny_unknown_fields)]
 pub struct Registration {
     pub functions: BTreeMap<String, Function>,
+    #[serde(default)]
+    pub elements: BTreeMap<String, ElementModel>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -42,7 +44,7 @@ pub enum Value {
     List(Vec<Value>),
     Dict(BTreeMap<String, Value>),
     Content(Content),
-    Item(Item),
+    Target(Target),
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -53,17 +55,36 @@ pub struct Item {
     pub attributes: BTreeMap<String, Value>,
 }
 
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(
-    tag = "kind",
-    content = "value",
-    rename_all = "snake_case",
-    deny_unknown_fields
-)]
-pub enum Content {
-    Text(String),
-    Sequence(Vec<Content>),
-    Item(Item),
-    Link(Target),
-    Error(String),
+/// Content always consists of one Item, including text, sequences and errors.
+pub type Content = Item;
+
+impl Item {
+    pub fn new(name: impl Into<String>, args: BTreeMap<String, Value>) -> Self {
+        Self {
+            name: name.into(),
+            args,
+            attributes: BTreeMap::new(),
+        }
+    }
+    pub fn text(text: impl Into<String>) -> Self {
+        Self::new(
+            "text",
+            BTreeMap::from([("text".into(), Value::String(text.into()))]),
+        )
+    }
+    pub fn seq(children: Vec<Content>) -> Self {
+        Self::new(
+            "seq",
+            BTreeMap::from([(
+                "children".into(),
+                Value::List(children.into_iter().map(Value::Content).collect()),
+            )]),
+        )
+    }
+    pub fn error(message: impl Into<String>) -> Self {
+        Self::new(
+            "error",
+            BTreeMap::from([("message".into(), Value::String(message.into()))]),
+        )
+    }
 }

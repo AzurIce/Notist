@@ -48,6 +48,12 @@ fn invoke(export: &str, args: Vec<Value>) -> Value {
 #[test]
 fn rust_signatures_produce_typed_registration() {
     let registry = semantic::notist_registration();
+    assert!(registry.elements["plugin-badge"].inline);
+    assert_eq!(
+        registry.elements["plugin-badge"].slots["body"],
+        notist_plugin_sdk::ContentMode::Inline
+    );
+    assert_eq!(registry.functions["badge"].result, Type::Content);
     assert_eq!(registry.functions["add"].params[0].ty, Type::Int);
     assert_eq!(
         registry.functions["add"].params[1].default,
@@ -83,7 +89,7 @@ fn wrappers_convert_values_and_errors() {
     assert_eq!(invoke("optional", vec![Value::Int(4)]), Value::Int(4));
     assert_eq!(
         invoke("checked", vec![Value::Int(-1)]),
-        Value::Content(Content::Error("expected nonnegative value".into()))
+        Value::Content(Content::error("expected nonnegative value"))
     );
     let item = notist_plugin_sdk::Item {
         name: "custom".into(),
@@ -91,8 +97,8 @@ fn wrappers_convert_values_and_errors() {
         attributes: BTreeMap::new(),
     };
     assert!(matches!(
-        invoke("paragraph", vec![Value::Item(item)]),
-        Value::Item(_)
+        invoke("paragraph", vec![Value::Content(item)]),
+        Value::Content(_)
     ));
     for (export, args) in [
         ("add", vec![]),
@@ -102,12 +108,12 @@ fn wrappers_convert_values_and_errors() {
     ] {
         assert!(matches!(
             invoke(export, args),
-            Value::Content(Content::Error(_))
+            Value::Content(c) if c.name == "error"
         ));
     }
     let invalid: Value =
         serde_json::from_slice(&semantic::notist_dispatch("echo", b"not json")).unwrap();
-    assert!(matches!(invalid, Value::Content(Content::Error(_))));
+    assert!(matches!(invalid, Value::Content(c) if c.name == "error"));
 }
 
 #[test]

@@ -1,1 +1,2 @@
+define_element("mermaid", false, (:));
 let diagram = (source: String, theme: String = "default") => item("mermaid", (source: source, theme: theme));

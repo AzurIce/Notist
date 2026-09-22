@@ -28,7 +28,6 @@ fn item(i: &Item, out: &mut Vec<Diagnostic>) {
 }
 fn value(v: &Value, out: &mut Vec<Diagnostic>) {
     match v {
-        Value::Item(i) => item(i, out),
         Value::Content(c) => content(c, out),
         Value::List(v) => {
             for v in v {
@@ -44,18 +43,18 @@ fn value(v: &Value, out: &mut Vec<Diagnostic>) {
     }
 }
 fn content(c: &Content, out: &mut Vec<Diagnostic>) {
-    match c {
-        Content::Item(i) => item(i, out),
-        Content::Sequence(v) => {
-            for c in v {
-                content(c, out);
-            }
-        }
-        Content::Error {
-            message,
-            location,
+    if c.name == "error" {
+        let code = c
+            .string("code")
+            .and_then(|s| serde_json::from_value(serde_json::json!(s)).ok())
+            .unwrap_or(DiagnosticCode::Evaluation);
+        let mut diagnostic = Diagnostic::error(
             code,
-        } => out.push(Diagnostic::error(*code, message, Some(location.clone()))),
-        _ => {}
+            c.string("message").unwrap_or("invalid error Item"),
+            Some(c.location.clone()),
+        );
+        diagnostic.span = c.span.clone();
+        out.push(diagnostic);
     }
+    item(c, out);
 }

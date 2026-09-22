@@ -54,10 +54,11 @@ fn child_heading_annotations_are_separate_from_the_preceding_paragraph() {
     let ExprKind::Section(_, _, children) = &parent.kind else {
         panic!("missing section");
     };
-    assert_eq!(children.len(), 3);
-    assert!(matches!(children[0].kind, ExprKind::Element(..)));
-    assert!(matches!(children[1].kind, ExprKind::Annotation(false, _)));
-    assert!(matches!(children[2].kind, ExprKind::Section(..)));
+    assert_eq!(children.len(), 4);
+    assert!(matches!(children[0].kind, ExprKind::String(_)));
+    assert!(matches!(&children[1].kind, ExprKind::Element(name, _) if name == "space"));
+    assert!(matches!(children[2].kind, ExprKind::Annotation(false, _)));
+    assert!(matches!(children[3].kind, ExprKind::Section(..)));
 }
 
 #[test]

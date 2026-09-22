@@ -10,6 +10,7 @@ fn location() -> Location {
 
 fn descriptor() -> abi::Registration {
     abi::Registration {
+        elements: Default::default(),
         functions: [(
             "echo".into(),
             abi::Function {
@@ -49,7 +50,7 @@ const ECHO: &str = r#"(func (export "echo") (param i32 i32) (result i64)
 #[test]
 fn typed_registration_preserves_explicit_none_default() {
     let bytes = module(&serde_json::to_value(descriptor()).unwrap(), ECHO);
-    let env = registration(&bytes, "plugin.wasm", &location()).unwrap();
+    let (env, _) = registration(&bytes, "plugin.wasm", &location()).unwrap();
     let Value::External(f) = &env["echo"] else {
         panic!()
     };
@@ -163,22 +164,20 @@ fn invocation_enforces_types_and_transport_boundary() {
         .unwrap_err()
         .contains("cannot cross")
     );
-    let error = Value::Content(crate::Content::Error {
-        code: notist_model::DiagnosticCode::Evaluation,
-        message: "bad".into(),
-        location: Location {
+    let error = Value::Content(crate::Content::error(
+        "bad",
+        notist_model::DiagnosticCode::Evaluation,
+        Location {
             source: "original".into(),
             offset: 0,
         },
-    });
+    ));
     let result = invoke(&bytes, "echo", &[error], &Type::Int, &location()).unwrap();
-    let Value::Content(crate::Content::Error {
-        location: actual, ..
-    }) = result
-    else {
+    assert!(result.is_error());
+    let Value::Content(actual) = result else {
         panic!()
     };
-    assert_eq!(actual, location());
+    assert_eq!(actual.location, location());
 }
 
 #[test]

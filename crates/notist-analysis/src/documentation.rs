@@ -116,7 +116,6 @@ fn type_name(ty: &Type) -> String {
         Type::Int => "Int".into(),
         Type::Bool => "Bool".into(),
         Type::Content => "Content".into(),
-        Type::Item => "Item".into(),
         Type::Module => "Module".into(),
         Type::Target => "Target".into(),
         Type::List => "List".into(),
@@ -223,6 +222,7 @@ pub(super) fn render(source: &str, markdown: bool) -> String {
                     field(name).is_some_and(|e| matches!(e.kind, ExprKind::Bool(true)))
                 };
                 match name.as_str() {
+                    "space" => " ".into(),
                     "paragraph" => format!("{}\n\n", content("body")),
                     "linebreak" => {
                         if markdown {
@@ -294,8 +294,29 @@ pub(super) fn render(source: &str, markdown: bool) -> String {
                         }
                         format!("{out}\n")
                     }
-                    "term-item" => format!("{}: {}", content("term"), content("body")),
-                    "list-item" => content("body"),
+                    "term-item" => {
+                        format!("{}: {}\n", content("term").trim(), content("body").trim())
+                    }
+                    "list-item" => {
+                        let prefix = if flag("ordered") {
+                            let number = field("number")
+                                .and_then(|e| match e.kind {
+                                    ExprKind::Int(n) => Some(n),
+                                    _ => None,
+                                })
+                                .unwrap_or(1);
+                            format!("{number}. ")
+                        } else {
+                            "- ".into()
+                        };
+                        let body = content("body");
+                        let mut lines = body.trim().lines();
+                        let mut out = format!("{prefix}{}\n", lines.next().unwrap_or_default());
+                        for line in lines {
+                            out.push_str(&format!("{}{}\n", " ".repeat(prefix.len()), line));
+                        }
+                        out
+                    }
                     "link" => {
                         let dest = field("dest")
                             .and_then(|e| {

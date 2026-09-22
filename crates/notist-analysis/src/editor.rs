@@ -161,6 +161,7 @@ impl Document {
         fn title_text(e: &Expr) -> String {
             match &e.kind {
                 ExprKind::String(s) => s.clone(),
+                ExprKind::Element(name, _) if name == "space" => " ".into(),
                 ExprKind::Content(v) | ExprKind::Styled(_, v) => v.iter().map(title_text).collect(),
                 ExprKind::Element(name, fields) if name == "raw" || name == "math" => fields
                     .iter()
@@ -520,6 +521,7 @@ impl Workspace {
             "error",
             "recover",
             "with_attributes",
+            "define_element",
             "vault",
             "self",
             "super",
@@ -618,11 +620,13 @@ impl Workspace {
                     item["textEdit"] =
                         json!({"range":range(&doc.text,edit_start,at,utf8),"newText":label});
                     item["detail"] = json!(match label.as_str() {
-                        "math" | "raw" => format!("{label}(content: String) -> Item"),
+                        "math" | "raw" => format!("{label}(content: String) -> Content"),
                         "text" => "text(content: String) -> Content".into(),
-                        "item" => "item(name: String, args: Dict) -> Item".into(),
+                        "item" => "item(name: String, args: Dict) -> Content".into(),
                         "with_attributes" =>
-                            "with_attributes(item: Item, attributes: Dict) -> Item".into(),
+                            "with_attributes(item: Content, attributes: Dict) -> Content".into(),
+                        "define_element" =>
+                            "define_element(name: String, inline: Bool, slots: Dict, block_field?: String) -> None".into(),
                         _ =>
                             if item["kind"] == 9 {
                                 "module or import".into()

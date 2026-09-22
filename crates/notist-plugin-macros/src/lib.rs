@@ -217,14 +217,43 @@ fn expand_func(mut options: Options, function: ItemFn, sdk: &Tokens) -> syn::Res
 
 #[proc_macro]
 pub fn init_plugin(input: TokenStream) -> TokenStream {
-    let exports = parse_macro_input!(input with Punctuated::<Path, Token![,]>::parse_terminated);
+    let Init { exports, elements } = parse_macro_input!(input as Init);
     sdk_path()
-        .and_then(|sdk| expand_init(exports, &sdk))
+        .and_then(|sdk| expand_init(exports, elements, &sdk))
         .unwrap_or_else(syn::Error::into_compile_error)
         .into()
 }
 
-fn expand_init(mut exports: Punctuated<Path, Token![,]>, sdk: &Tokens) -> syn::Result<Tokens> {
+struct Init {
+    exports: Punctuated<Path, Token![,]>,
+    elements: Option<Path>,
+}
+impl Parse for Init {
+    fn parse(input: ParseStream) -> syn::Result<Self> {
+        let elements = if input.peek(Ident) && input.peek2(Token![=]) {
+            let name: Ident = input.parse()?;
+            if name != "elements" {
+                return Err(syn::Error::new(name.span(), "expected elements"));
+            }
+            input.parse::<Token![=]>()?;
+            let path = input.parse()?;
+            input.parse::<Token![;]>()?;
+            Some(path)
+        } else {
+            None
+        };
+        Ok(Self {
+            elements,
+            exports: Punctuated::parse_terminated(input)?,
+        })
+    }
+}
+
+fn expand_init(
+    mut exports: Punctuated<Path, Token![,]>,
+    elements: Option<Path>,
+    sdk: &Tokens,
+) -> syn::Result<Tokens> {
     let mut names = BTreeSet::new();
     for export in &exports {
         if export.segments.iter().any(|s| !s.arguments.is_empty()) {
@@ -246,9 +275,13 @@ fn expand_init(mut exports: Punctuated<Path, Token![,]>, sdk: &Tokens) -> syn::R
         segment.ident = format_ident!("__notist_export_{}", segment.ident.unraw());
     }
     let exports: Vec<_> = exports.iter().collect();
+    let models = elements.map(|path| quote! { registration.elements = #path(); });
     Ok(quote! {
         pub fn notist_registration() -> #sdk::abi::Registration {
-            #sdk::__private::registration(&[#(#exports),*])
+            #[allow(unused_mut)]
+            let mut registration = #sdk::__private::registration(&[#(#exports),*]);
+            #models
+            registration
         }
 
         pub fn notist_dispatch(export: &str, input: &[u8]) -> Vec<u8> {

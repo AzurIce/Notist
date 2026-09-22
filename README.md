@@ -1,6 +1,6 @@
 # Notist
 
-Notist 是一门文档编程语言，使用 .not Markup 和 .notc Code，共享求值器与 Content / Item 模型。
+Notist 是一门文档编程语言，使用 .not Markup 和 .notc Code，共享求值器与 Content / Item 模型。所有内容都是 Item，语言中统一使用 Content 类型。求值产生原始树，标准文档成型确定段落、属性归属和内容约束，查询与展示共享成型结果。
 
 语言核按职责拆分为 `notist-model`、`notist-syntax`、`notist-ir` 和 `notist-eval`。`notist-analysis` 提供 package 加载、输入快照、文档查询和调试 JSON，`notist-cli` 提供 stdio LSP、package 检查和浏览器预览。
 
@@ -34,7 +34,7 @@ LSP 支持 `.not` / `.notc` 的语法诊断、嵌套 section 大纲、局部 let
 
 - `crates/notist-model/`：共享类型、位置和插件传输数据。
 - `crates/notist-syntax/`：`.not` / `.notc` 解析和语法树。
-- `crates/notist-ir/`：运行时值、函数和 Content / Item 表示。
+- `crates/notist-ir/`：运行时值、函数、统一 Item 表示和文档成型。
 - `crates/notist-eval/`：求值器和 WASM 调用适配。
 - `crates/notist-analysis/`：package 加载、输入快照、文档查询与调试 JSON。
 - `crates/notist-html/`：HTML 渲染和浏览器组件运行时。

@@ -3,6 +3,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         .join("../../examples/packages/mermaid/wasm");
     use notist_model::{Type, abi};
     let registry = serde_json::to_string(&abi::Registration {
+        elements: Default::default(),
         functions: [(
             "echo".into(),
             abi::Function {

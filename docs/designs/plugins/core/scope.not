@@ -1,5 +1,0 @@
-@!(ai: true, desc: "scope 的当前原型边界")
-
-= scope
-
-属性标注直接绑定 Item 或所在 Module，不沿 Item 树继承。需要分组时使用 Content、List、Dict 或显式 `item` 字段表达结构。

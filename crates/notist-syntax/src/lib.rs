@@ -532,7 +532,6 @@ impl<'a> Parser<'a> {
             "Int" => Ok(Type::Int),
             "Bool" => Ok(Type::Bool),
             "Content" => Ok(Type::Content),
-            "Item" => Ok(Type::Item),
             "Module" => Ok(Type::Module),
             "Target" => Ok(Type::Target),
             "List" => Ok(Type::List),
@@ -948,10 +947,10 @@ impl<'a> Parser<'a> {
         Ok(ExprKind::List(values))
     }
     fn markup(&mut self, end: char) -> Result<Vec<Expr>, String> {
-        self.markup_flow(Some(end), 0, None, false)
+        self.markup_flow(Some(end), 0, None)
     }
     fn markup_root(&mut self) -> Result<Vec<Expr>, String> {
-        self.markup_flow(None, 0, None, true)
+        self.markup_flow(None, 0, None)
     }
     fn arguments(&mut self, end: &str) -> Result<Vec<Arg>, String> {
         let mut args = Vec::new();

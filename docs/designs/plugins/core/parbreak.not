@@ -1,5 +1,11 @@
-@!(ai: true, desc: "段落边界的当前原型边界")
+@!(ai: true, desc: "段落边界标记与成型时的消费和诊断")
 
 = parbreak
 
-Markup 的空行分隔 paragraph Item，单个换行折叠为空格。反斜杠后接空白或文件结尾产生 linebreak Item。Code 中的 Content 字面量保留行内内容，出现空行时形成段落。
+Markup 的空行产生 parbreak Item，求值输出保留该边界，供标准文档成型处理。单个换行按 Markup 空白规则参与文字间隔；反斜杠后接空白或文件结尾产生 linebreak Item。
+
+普通 flow 遇到 parbreak 时结束已有行内聚合，非空聚合形成 paragraph。连续边界或前后纯空白不应凭空产生 paragraph。linebreak 表示段内换行，通常仍属于同一 paragraph。
+
+显式 paragraph 或其他 Inline 槽内出现 parbreak 时，产生 error 等级的 `content_constraint` 诊断，以 error Item 替换该边界并保留后续正常内容。
+
+parbreak 是具有通用 Item 表示的控制节点。成型消费边界；它若显式携带属性或 label，产生没有内容目标的诊断。尚待附着的 annotation 可以跨 Flow 中的 parbreak 寻找后续内容。

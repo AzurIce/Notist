@@ -1,42 +1,66 @@
-@!(ai: true, desc: "Content、Item、label 与引用解析")
+@!(ai: true, desc: "纯 Item 内容树、函数与节点、属性及引用模型")
 
 = Content 与 Item
 
-== Content
+== 统一的内容表示
 
-Content 是模块求值的输出类型：
+Content 是内容值的类型，每个 Content 持有一个根 Item。全部内容节点采用 Item 结构：
 
 ```text
-Content = Text(String)
-        | Sequence(Content*)
-        | Item(name, args, attributes, location)
-        | Link(target, location)
-        | Error(message, location)
+Item {
+    name: ElementName,
+    args: Dict<Value>,
+    attributes: Dict<Value>,
+}
+
+text("hello")                  : Content
+seq([text("hello"), link(...)]) : Content
+item("paragraph", { body })    : Content
 ```
 
-文本不是 Item。Link 保存模块或 Item 目标以及引用的来源位置；构造引用值不触发目标模块求值。List、Dict、Function 等值只有在函数或表达式需要输出 Content 时才被转换；不可转换值产生 Error Content。
+以上为模型伪代码。args 保存结构字段，语言可读取 `content.name`、`content.args` 和 `content.attributes`。名称按完整字符串匹配。宿主节点另外保存创建位置、可选源码范围及来源种类；这些诊断元数据不进入插件传输。
 
-== Item
+text、space、seq、paragraph、strong、math、link、error 和 annotation 都是 Item。语义定义各不相同，树表示保持统一。文本与空格可以由程序构造、观察和组合；自动 paragraph 聚合保留其内容。
 
-`item(name, args)` 返回结构化 Item。`name` 是字符串，`args` 是字段到 Value 的字典，Item 同时保留创建它的源文件和字节偏移。Item 参数可以嵌套 List、Dict、Item 和 Content。
+字段中的 Content，以及经 List、Dict 嵌套的 Content，组成节点的子树。属性属于独立元数据，不进入结构子树。通用树遍历与特定内容槽的成型具有不同职责：遍历能发现一个 Content 字段，不代表该字段应按普通段落 flow 处理。
 
-`attributes` 独立于参数。Markup 的 `@expr` 将 Dict 附到后续 Item，`@!expr` 将 Dict 附到所在 Module；连续标注按源码顺序合并，同名键后者覆盖，属性不继承。Code 通过 `item.attributes` 读取 Item 属性，Module 属性随求值结果和 snapshot 输出。
+== 函数与节点
+
+`item(name, fields)` 保留为显式节点构造入口，返回 Content。普通函数仅执行计算，其调用本身不增加内容层级：
 
 ```notc
-item("paragraph", (body: [#text("hello")]))
+let paragraph = (body: Content) => item("paragraph", (body: body));
+let foo = (body: Content) => paragraph(body);
+let badge = (body: Content) => item("badge", (body: body));
 ```
 
-Item 不要求存在 Web Component，也不包含 HTML 标签信息。它是语言层的中立数据；不同消费者可以采用不同投影。
+foo 返回 paragraph；badge 返回 badge。需要对 foo 的结果整体赋予独立身份时，函数可以显式构造节点。为每次调用保留包装会使辅助函数影响结构深度，因此包装由内容构造决定。
+
+函数参数与 Item 字段可以具有相似形状，但两者无需一一对应。函数可以计算、忽略或合并参数，也可返回多个内容的 seq。属性不隐式投影为函数参数；属性继承也不属于函数调用规则。
+
+完整的 call origin 树不属于内容语义的必需数据。源码诊断与调试仍可保留调用事件和位置，避免用额外内容节点承担这些职责。
+
+== seq 与属性
+
+Code `[]`、Markup `#[]` 和尾随内容参数均构造 [[vault::designs::plugins::core::seq]]，空内容和单元素内容也保留该节点。
+
+`@expr` 求值为属性标注 Item，记录 Dict；标准文档成型决定目标并附着属性。`@!expr` 的目标已由语法确定为当前 Module。具体附着规则定义于 [[vault::designs::plugins::core::annotation]]。
+
+属性独立于 args。连续标注按源码顺序合并，同名键后者覆盖，属性不继承。读取一个原始 Item 的已有属性，与查询语义文档中完成附着的属性，属于不同阶段的观察。
 
 == Item 树与 label
 
-模块输出中的 Item 按结构组成树。Content Sequence 保持兄弟顺序；Item 的 args 中直接包含的 Item、Content，以及经 List、Dict 嵌套的 Item、Content，均进入子树。Text、Link 和 Error 不引入 Item 层级；attributes 是元数据，不进入子树。相同 Item 值在输出中出现多次时，每个出现位置都是独立节点；创建来源不能代替节点身份。
+模块输出的每个内容节点都进入树，包括 seq、text、link 和 error。seq 的 children 保持顺序。其他字段按模型规定的确定遍历顺序进入子树；Dict 的遍历顺序不应被解释为自然语言内容顺序。
 
-Item 通过 `label` 提供可引用名称。显式属性 label 的值必须是非空 String，`@(label: "名称")` 覆盖默认 label。section 的默认 label 取求值后 title 的文本；空标题不产生默认 label，其他 Item 没有默认 label。同一模块、同一父节点下都允许 label 重复；重复本身不产生诊断。
+同一 Content 值被嵌入多次时，每个出现位置都是独立节点。创建来源与共享存储地址均不能代替节点身份。新增包装节点会改变父子路径；label 的祖先匹配允许跳过未命名层级。
 
-标题文本由 String、Content 和 List 的文本按顺序拼接。嵌套 Item 依次取首个存在的 body、content、title 字段继续提取；linebreak 和 smartquote 分别贡献换行和对应引号，Link 使用其目标的字符串表示，其他值和 Error 不贡献文本。拼接保留大小写和空白。
+标准文档的 Item 索引建立在属性归属和语义单元确定之后。原始树也可以提供调试遍历，其节点身份不与语义树混用。
 
-label 是名称，不承诺跨修改、移动或重命名的稳定身份。显式 label 也参与所在 Item 的结构路径。
+Item 通过 label 提供可引用名称。显式属性 label 必须为非空 String，并覆盖默认 label。section 的默认 label 取 title 的文本；空标题不产生默认 label，其他 Item 无默认 label。同一模块和同一父节点下均允许重复 label，重复本身不产生诊断。
+
+标题文本由 String、Content 和 List 的文本按顺序拼接。text 贡献自身文本，seq 按 children 顺序提取，space 贡献相应空白。其他嵌套 Item 依次取首个存在的 body、content、title 字段继续提取；linebreak 和 smartquote 分别贡献换行与对应引号；目标链接使用目标字符串表示。error 和其余无文本值不贡献文本。拼接保留大小写和空白。
+
+label 是名称，不承诺跨修改、移动或重命名的稳定身份。显式 label 参与所在节点的结构路径。
 
 == 模块与 Item 引用
 
@@ -48,22 +72,20 @@ label 是名称，不承诺跨修改、移动或重命名的稳定身份。显�
 [[vault::guide::"第一章"::"例子"]]
 ```
 
-LabelPath 的末段必须等于目标节点自身的 label；之前的段按从外到内的顺序匹配严格祖先的 label，可以跳过中间层级。名称逐字匹配。匹配在指定模块内进行，与引用所在章节无关。
+LabelPath 末段必须等于目标节点自身的 label；之前各段按从外到内的顺序匹配严格祖先的 label，可以跳过中间层级。名称逐字匹配。匹配在指定模块内进行，与引用所在章节无关。
 
-例如结构为 `第一章 → 安装 → 例子` 时，`"例子"`、`"安装"::"例子"`、`"第一章"::"例子"` 和 `"第一章"::"安装"::"例子"` 都能匹配末端节点；`"例子"::"第一章"` 不匹配它。单独 `"第一章"` 只匹配名为第一章的节点自身。
+结构为 `第一章 → 安装 → 例子` 时，`"例子"`、`"安装"::"例子"`、`"第一章"::"例子"` 和 `"第一章"::"安装"::"例子"` 都可匹配末端节点；逆序不匹配。单独 `"第一章"` 只匹配该名称的节点自身。
 
-解析时按不同目标节点计数；同一节点满足多种祖先匹配组合只计一次。一个候选表示成功，零个候选产生目标缺失错误，多个候选产生引用歧义错误并列出候选。即使完整 label 链相同，节点也保持独立；要分别引用这些节点，需要调整其中的 label。
+解析按不同目标节点计数，同一节点满足多个祖先匹配组合只计一次。一个候选表示成功，零个候选产生目标缺失诊断，多个候选产生引用歧义诊断并列出候选。完整 label 链相同的节点仍是不同目标；分别引用它们需要调整 label。
 
-构造 Target 时按表达式所在模块和作用域解析 ModulePath，保存确定的模块地址，不求值目标模块；引用值被传递到其他位置后保持原有含义。查询或检查引用时按需取得目标模块输出并匹配 Item 树。`Snapshot::check` 检查求值过程中已遇到的引用，包括仅绑定到变量的 Target；解析目标时不递归追踪目标模块的链接。package `check` 检查所有模块并报告引用缺失与歧义，不将重复 label 本身判为错误。
+构造 Target 时按表达式所在模块和作用域解析 ModulePath，保存确定的模块地址，不立即求值目标模块。Target 被传递后保持含义。查询与引用检查按需取得目标模块的语义文档并匹配 Item 树，解析目标时不递归追踪其链接。
 
-== Error
+package 检查覆盖求值过程中已遇到的引用，包括仅绑定到变量的 Target；未执行代码中的引用检查覆盖范围由静态分析能力决定。
 
-Error 是 Content 的一等分支，可以出现在 Sequence 中并与正常 Item 共存。错误消息和来源位置随节点保留。`error`、解析恢复、模块加载、绑定、WASM 和函数调用都可以产生 Error Content。
+== 错误与消费者
 
-== HTML 投影
+error 是能够与正常内容共存的 Item，并保留消息、诊断类别和来源。解析恢复、模块加载、类型或参数绑定、插件调用、内容约束都可能产生诊断；并非每条诊断都必须占据一个内容节点。
 
-HTML consumer 将 Item 名称映射到内置元素或自定义元素。自定义 Item `chart` 变为 `<notist-chart>`；每个可序列化字段变为 JSON 编码的 `data-<field>`。组件负责解释字段和渲染嵌套 Content。
+Item 不要求存在 Web Component，也不包含强制的 HTML 标签映射。消费者可以解释特定节点、展开它或显示不支持内容的诊断。字段能否跨插件或渲染器传输由相应数据协议约束。
 
-native 与浏览器 renderer 将有效 label 输出到 `data-notist-label`，该属性可以重复。DOM 锚点和页面地址由宿主导航负责映射。
-
-该映射是消费者约定，不是 Item 类型系统的一部分。LSP 和语言运行时不检查组件是否存在或字段是否符合组件预期。
+通用构造器允许未知名称。未知节点进入标准文档 flow 后的角色与校验规则属于文档模型，不由其名称拼写或组件 CSS 自动决定。

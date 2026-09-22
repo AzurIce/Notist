@@ -13,19 +13,6 @@ export async function mount(parent, content, components, base = document.baseURI
   const render = async node => {
     if (node == null) return document.createDocumentFragment();
     if (typeof node !== 'object') throw new Error('Expected Content');
-    if ('text' in node) return document.createTextNode(node.text);
-    if ('link' in node) {
-      const link = document.createElement('a');
-      link.href = node.link;
-      link.textContent = node.link;
-      return link;
-    }
-    if (node.error) return failure(node.error, node);
-    if (node.sequence) {
-      const fragment = document.createDocumentFragment();
-      for (const child of node.sequence) fragment.append(await render(child));
-      return fragment;
-    }
     try {
       const { item: name, args = {} } = node;
       const annotate = el => {
@@ -36,11 +23,38 @@ export async function mount(parent, content, components, base = document.baseURI
         if (typeof node.label === 'string') el.dataset.notistLabel = node.label;
         return el;
       };
+      if (name === 'seq') {
+        const children = args.children ?? [];
+        const fragment = document.createDocumentFragment();
+        let group = null, groupKind = null;
+        for (const child of children) {
+          const kind = child.item === 'term-item' ? 'dl' : child.item === 'list-item' ? (child.args?.ordered ? 'ol' : 'ul') : null;
+          if (kind) {
+            if (kind !== groupKind) {
+              group = document.createElement(kind); groupKind = kind;
+              if (kind === 'ol' && Number.isInteger(child.args?.number)) group.start = child.args.number;
+              fragment.append(group);
+            }
+            group.append(await render(child));
+          } else { group = null; groupKind = null; fragment.append(await render(child)); }
+        }
+        if (!Object.keys(node.attributes ?? {}).length && node.label == null) return fragment;
+        const wrapper = annotate(document.createElement('notist-seq'));
+        wrapper.style.display = 'contents'; wrapper.append(fragment); return wrapper;
+      }
+      if (name === 'text' || name === 'space') {
+        const text = document.createTextNode(name === 'space' ? ' ' : args.text ?? '');
+        if (!Object.keys(node.attributes ?? {}).length && node.label == null) return text;
+        const wrapper = annotate(document.createElement('span')); wrapper.append(text); return wrapper;
+      }
+      if (name === 'error') return annotate(failure(args.message ?? 'Invalid error Item', node));
       if (name === 'linebreak') return annotate(document.createElement('br'));
       if (name === 'smartquote') {
         const lang = document.documentElement.lang.split('-')[0];
         const quotes = lang === 'de' ? ['\u201e','\u201c','\u201a','\u2018'] : lang === 'fr' ? ['\u00ab\u00a0','\u00a0\u00bb','\u2039','\u203a'] : ['\u201c','\u201d','\u2018','\u2019'];
-        return document.createTextNode(quotes[(args.double ? 0 : 2) + (args.open ? 0 : 1)]);
+        const text = document.createTextNode(quotes[(args.double ? 0 : 2) + (args.open ? 0 : 1)]);
+        if (!Object.keys(node.attributes ?? {}).length && node.label == null) return text;
+        const wrapper = annotate(document.createElement('span')); wrapper.append(text); return wrapper;
       }
       if (name === 'raw' || name === 'math') {
         if (typeof args.content !== 'string') throw Error('Expected String content');
@@ -53,6 +67,11 @@ export async function mount(parent, content, components, base = document.baseURI
         return annotate(el);
       }
       if (name === 'link') {
+        if (args.target) {
+          const target = args.target.target + (args.target.labels ?? []).map(label => '::' + JSON.stringify(label)).join('');
+          const el = annotate(document.createElement('a')); el.href = target; el.textContent = target; return el;
+        }
+
         if (typeof args.dest !== 'string' || !['http:', 'https:', 'mailto:'].includes(new URL(args.dest, base).protocol)) throw Error('Unsupported link destination');
         const el = document.createElement('a');
         el.href = args.dest;

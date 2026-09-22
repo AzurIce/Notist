@@ -519,15 +519,15 @@ function renderContentNode(node, container, depth) {
   let label;
   if (node == null) label = "null";
   else if (node.truncated) label = `…（深度截断）`;
-  else if (typeof node.text === "string") label = `text ${JSON.stringify(node.text.length > 60 ? node.text.slice(0, 59) + "…" : node.text)}`;
-  else if (node.sequence) label = `sequence（${node.sequence.length}）`;
+  else if (node.item === "text") label = `text ${JSON.stringify(node.args?.text ?? "")}`;
+  else if (node.item === "seq") label = `seq（${node.args?.children?.length ?? 0}）`;
+  else if (node.item === "error") label = `error ${node.args?.message}`;
   else if (node.item) label = `item ${node.item}`;
-  else if (node.error) label = `error ${node.error}`;
   else label = JSON.stringify(node).slice(0, 80);
   row.append(span("c-kind", label));
   if (node != null && node.id != null) row.append(span("c-id", `#${node.id}`));
   container.append(row);
-  const children = node?.sequence ?? (node?.args ? Object.entries(node.args).map(([key, value]) => ({ dict: { [key]: value } })) : node?.dict ? Object.values(node.dict) : Array.isArray(node) ? node : null);
+  const children = (node?.args ? Object.entries(node.args).map(([key, value]) => ({ dict: { [key]: value } })) : node?.dict ? Object.values(node.dict) : Array.isArray(node) ? node : null);
   if (Array.isArray(children)) {
     for (const child of children) renderContentNode(child, container, depth + 1);
   }
@@ -543,9 +543,19 @@ function renderResult() {
   const result = state.snapshot?.result;
   if (!result) return;
 
+  if (state.snapshot.evaluation?.content) {
+    const rawHead = document.createElement("div");
+    rawHead.className = "subhead";
+    rawHead.textContent = "raw content";
+    const rawTree = document.createElement("div");
+    state.nodeBudget = { count: 0, limit: 2000, hit: false };
+    renderContentNode(state.snapshot.evaluation.content, rawTree, 0);
+    panel.append(rawHead, rawTree);
+  }
+
   const contentHead = document.createElement("div");
   contentHead.className = "subhead";
-  contentHead.textContent = "content";
+  contentHead.textContent = "formed content";
   const contentTree = document.createElement("div");
   state.nodeBudget = { count: 0, limit: 2000, hit: false };
   renderContentNode(result.content, contentTree, 0);

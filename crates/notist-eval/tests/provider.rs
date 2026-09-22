@@ -50,7 +50,16 @@ fn evaluates_preparsed_buffers_without_filename_conventions() {
     };
     let result = Runtime::new(&buffers).evaluate("editor:1");
     assert!(result.warnings.is_empty(), "{:?}", result.warnings);
-    assert_eq!(result.content.to_json()["sequence"][0]["text"], "42");
+    assert_eq!(
+        result
+            .raw_content
+            .children()
+            .next()
+            .unwrap()
+            .string("text")
+            .unwrap(),
+        "42"
+    );
 }
 
 #[test]

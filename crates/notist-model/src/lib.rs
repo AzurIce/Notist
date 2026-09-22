@@ -1,5 +1,7 @@
 //! Shared language data. Lexical rules and host path policies live with their owners.
 pub mod abi;
+mod content;
+pub use content::*;
 mod query;
 pub use query::*;
 
@@ -88,7 +90,6 @@ pub enum Type {
     Int,
     Bool,
     Content,
-    Item,
     Module,
     Target,
     List,

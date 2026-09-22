@@ -29,7 +29,8 @@ fn handles_retain_output_across_queries_session_drop_and_input_changes() {
         let again = resolved(&mut q, &target("root", "A"));
         assert_eq!(a, again);
         let b = resolved(&mut q, &target("root", "B"));
-        assert_eq!(b.parent(), Some(a.clone()));
+        assert_eq!(b.parent().unwrap().value().name, "seq");
+        assert_eq!(b.parent().unwrap().parent(), Some(a.clone()));
         assert!(a.descendants().any(|i| i == b));
         q.evaluate(&"root::other".into()).unwrap();
         assert_eq!(a.value().name, "section");
@@ -209,7 +210,7 @@ fn origins_distinguish_output_owner_creation_and_forwarding() {
     ])
     .snapshot();
     let e = s.query().evaluate(&"root".into()).unwrap();
-    let items: Vec<_> = e.root_items().collect();
+    let items: Vec<_> = e.items().filter(|i| i.value().name == "section").collect();
     assert_eq!(items.len(), 2);
     assert_ne!(items[0], items[1]);
     for i in &items {
@@ -222,16 +223,18 @@ fn origins_distinguish_output_owner_creation_and_forwarding() {
 }
 
 #[test]
-fn tree_traverses_unlabeled_nested_fields_but_not_attributes_or_links() {
+fn tree_traverses_all_content_nodes_and_fields_but_not_attributes() {
     let s = session(&[(
         "README.notc",
         "let child = item(\"child\", (:)); item(\"parent\", (nested: (hidden: (child, child))));",
     )])
     .snapshot();
     let e = s.query().evaluate(&"root".into()).unwrap();
-    let root = e.root_items().next().unwrap();
+    let sequence = e.root_items().next().unwrap();
+    assert_eq!(sequence.value().name, "seq");
+    let root = sequence.children().next().unwrap();
     assert_eq!(root.children().count(), 2);
-    assert_eq!(e.items().count(), 3);
+    assert_eq!(e.items().count(), 4);
     assert!(root.label_path().is_empty());
     assert!(matches!(&root.value().args["nested"], Value::Dict(_)));
     let s = session(&[(

@@ -1,7 +1,38 @@
-@!(ai: true, desc: "列表 Item 的当前原型边界")
+@!(ai: true, desc: "嵌套列表条目及首块主内容、后续详细内容的约定")
 
-= list
+= 列表条目
 
-Markup 的 `-`、`+` 和 `1.` 行首标记生成 list 与 list-item；缩进表示嵌套，数字标记保留起始编号。`/ 术语: 解释` 生成 terms 与 term-item。
+列表采用嵌套的条目 Item 表达结构。每个条目拥有自己的有序内容，子条目保留在所属条目内部。列表符号与缩进决定归属，正文的成型在这个范围内进行。
 
-HTML consumer 根据 `ordered` 字段选择 `ul` 或 `ol`，根据 `body` 字段渲染列表项。
+该模型不要求先把所有条目包进一个额外的 list 节点。消费者可以按条目标记和相邻关系形成视觉列表；视觉分组不得改变条目的语义归属。
+
+== 主内容与详细内容
+
+条目内部成型后，第一个实际内容 block 是主内容，表达列表符号后面的内容；后续 block 是详细信息。空白、待处理标注和段落边界标记不计为主内容。
+
+```not
+- 主内容
+
+  第一段详细信息。
+
+  第二段详细信息。
+
+  - 嵌套条目的主内容
+```
+
+主内容可以是 paragraph，也可以是函数产生的其他独立内容单元。先由语法建立条目边界，再在条目 body 中聚合段落，最后取得第一个 block；不能在全局 flow 中任意抓取一个 block 决定列表归属。
+
+这一约定可以表现为有序 body 上的查询视图，无须强制额外存储一份 title 与 body，也无须将首块内容复制到两个字段。
+
+== 与成型的关系
+
+条目 body 接受 flow，内部 paragraph 可以包含 strong、math、自定义行内节点等。块内容终止正在形成的 paragraph，但不会自动退出条目。缩进或其他条目语法边界负责结束所属范围。
+
+seq 的结构边界保留。宿主 `flow_blocks()` 查询按顺序穿过 seq，空 seq 不贡献内容块；`main_content()` 返回 body 的首块，`detail_content()` 返回其余块。查询不改写存储结构或复制主内容。
+
+== 节点与显示
+
+- 普通条目为 `list-item(body: Content, ordered: Bool, number: Int?)`。无序条目不要求 number；显式编号保存在 number。
+- 术语条目为 `term-item(term: Content, body: Content)`；term 使用 Inline，body 使用 Flow。
+- 函数返回多块内容时，首块为主内容，其余为详细内容。空条目没有主内容；只有子条目时，首个子条目就是首块。
+- HTML consumer 将同一 seq 内相邻且 ordered 相同的 list-item 分组为 ul 或 ol，term-item 分组为 dl。显式编号投影到 ol 的 start 与 li 的 value；这些显示分组不增加语义节点。

@@ -1,7 +1,26 @@
-use notist_plugin_sdk::{Content, Item, Value, func, init_plugin};
+use notist_plugin_sdk::{Content, ContentMode, ElementModel, Item, Value, func, init_plugin};
 use std::collections::BTreeMap;
 
-init_plugin!(echo, add, optional, preferred, identity, paragraph, checked);
+init_plugin!(elements = models; echo, add, optional, preferred, identity, paragraph, checked, badge);
+
+fn models() -> BTreeMap<String, ElementModel> {
+    BTreeMap::from([(
+        "plugin-badge".into(),
+        ElementModel {
+            inline: true,
+            block_field: None,
+            slots: BTreeMap::from([("body".into(), ContentMode::Inline)]),
+        },
+    )])
+}
+
+#[func]
+pub fn badge(body: Content) -> Content {
+    Item::new(
+        "plugin-badge",
+        BTreeMap::from([("body".into(), Value::Content(body))]),
+    )
+}
 
 #[func(defaults(source = "default".into()))]
 pub fn echo(source: String) -> String {

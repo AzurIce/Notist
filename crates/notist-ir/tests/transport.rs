@@ -17,24 +17,25 @@ fn nested_data_roundtrip_preserves_variants_and_attributes() {
         Value::Bool(true),
         Value::None,
         Value::Dict(Env::from([("kind".into(), Value::String("item".into()))])),
-        Value::Item(Item {
+        Value::Content(Item {
+            span: None,
             origin: None,
             name: "custom".into(),
             args: Env::new(),
             attributes: Env::from([("count".into(), Value::Int(3))]),
             location: location("original"),
         }),
-        Value::Content(Content::Sequence(vec![
-            Content::Text("body".into()),
-            Content::Link {
-                target: Target::new("p0::doc", vec!["part".into()]),
-                location: location("original"),
-            },
-            Content::Error {
-                code: notist_model::DiagnosticCode::Evaluation,
-                message: "error".into(),
-                location: location("original"),
-            },
+        Value::Content(Content::seq(vec![
+            Content::text("body"),
+            Content::link(
+                Target::new("p0::doc", vec!["part".into()]),
+                location("original"),
+            ),
+            Content::error(
+                "error",
+                notist_model::DiagnosticCode::Evaluation,
+                location("original"),
+            ),
         ])),
     ]);
     let encoded = original.to_abi().unwrap();
@@ -44,7 +45,7 @@ fn nested_data_roundtrip_preserves_variants_and_attributes() {
     let Value::List(values) = decoded else {
         panic!()
     };
-    let Value::Item(item) = &values[6] else {
+    let Value::Content(item) = &values[6] else {
         panic!()
     };
     assert_eq!(item.location, location("call"));
@@ -58,20 +59,17 @@ fn nested_data_roundtrip_preserves_variants_and_attributes() {
 
 #[test]
 fn runtime_state_is_rejected_even_when_nested() {
-    for value in [
-        Value::Named("f".into()),
-        Value::Module("p0::doc".into()),
-        Value::Target(Target::new("p0::doc", vec![])),
-    ] {
+    for value in [Value::Named("f".into()), Value::Module("p0::doc".into())] {
         assert!(value.to_abi().is_err());
         assert!(
-            Value::Content(Content::Item(Item {
+            Value::Content(Item {
+                span: None,
                 origin: None,
                 name: "custom".into(),
                 args: Env::new(),
                 attributes: Env::from([("hidden".into(), Value::List(vec![value]))]),
                 location: location("source"),
-            }))
+            })
             .to_abi()
             .is_err()
         );
@@ -85,7 +83,7 @@ fn malformed_values_are_not_coerced() {
         r#"{"kind":"int","value":18446744073709551615}"#,
         r#"{"kind":"function","value":"f"}"#,
         r#"{"kind":"none","source":"forged"}"#,
-        r#"{"kind":"item","value":{"name":"x","args":{},"attributes":{},"offset":5}}"#,
+        r#"{"kind":"content","value":{"name":"x","args":{},"attributes":{},"offset":5}}"#,
     ] {
         assert!(serde_json::from_str::<abi::Value>(json).is_err(), "{json}");
     }

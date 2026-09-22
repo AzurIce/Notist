@@ -1,34 +1,94 @@
-@!(ai: true, desc: "当前原型的内置函数和 HTML 内置 Item")
+@!(ai: true, desc: "Core 文档模型、标准 package 与公开扩展能力")
 
 = Core
 
-Core 是运行时直接提供的一组普通函数。它没有独立 registry，也不拥有特殊的 rewrite 或 handler 阶段。扩展 package 可以用 `.notc` 定义同样的函数形态。
+Core 提供常用内容构造器和标准文档模型。语言负责值、函数、模块和通用 Item；Core 定义 text、space、seq、paragraph、section、列表项等元素的文档含义。消费者负责这些元素的具体投影。
 
-== 函数
+== 基础操作
+
+以下基础操作由求值器 prelude 提供，其余构造器可由普通 package 封装。
 
 | 名称 | 形式 | 结果 |
 | - | - | - |
-| `item` | `item(name: String, args: Dict)` | Item |
-| `text` | `text(value: String)` | 文本 Content |
-| `error` | `error(message: String)` | Error Content |
+| `item` | `item(name: String, args: Dict)` | Content |
+| `text` | `text(value: String)` | text Item 对应的 Content |
+| `error` | `error(message: String)` | error Item 对应的 Content |
 | `is_error` | `is_error(value: Any)` | Bool |
 | `recover` | `recover(value: Any, fallback: Any)` | Value |
 | `str` | `str(value: String\|Int\|Bool)` | String |
 | `len` | `len(List\|Dict)` | Int |
-| `get` | `get(Dict\|List, key: String\|Int)` | Value 或 Error Content |
-| `concat` | `concat(List)` | Content |
+| `get` | `get(Dict\|List, key: String\|Int)` | Value 或错误内容 |
+| `concat` | `concat(List)` | 组合后的 Content |
 | `map` | `map(Function, List)` | List |
+| `with_attributes` | `with_attributes(Content, Dict)` | 携带合并属性的 Content |
+| `define_element` | `define_element(String, Bool, Dict, String?)` | 注册内容模型，返回 None |
 
-== Item 与 HTML
+表中的联合记法概括接受值域，正式函数类型语法另行定义。seq 与其他节点构造器可以建立在通用 item 操作之上。
 
-`item` 只负责构造数据，不验证是否存在对应的组件。HTML consumer 对少数名称使用原生 HTML：`paragraph`、`section`、`strong`、`em`、`list`、`list-item` 和 `heading`。其他合法名称映射为 `notist-<name>`。
+== 内容模型
 
-Item 字段序列化为 `data-<field>` 属性；Content 字段由组件通过 `renderContent` 显式渲染。字段不能序列化或名称不能成为 HTML 属性时，由渲染器产生 `notist-error`。
+- [[vault::designs::plugins::core::seq]]：有序分组与字面量边界。
+- [[vault::designs::plugins::core::annotation]]：属性的延迟附着。
+- [[vault::designs::plugins::core::paragraph]]：段落单元、自动聚合与内容约束。
+- [[vault::designs::plugins::core::parbreak]]：段落边界标记。
+- [[vault::designs::plugins::core::section]]：标题与嵌套章节。
+- [[vault::designs::plugins::core::list]]：嵌套条目、主内容和详细内容。
 
-== 当前边界
+== package 与引擎
 
-Markup 标题构造嵌套 section Item，空行形成 paragraph，缩进列表形成 list 或 terms；Target 输出为 Link；LSP 从语法树提取 section 大纲。`@expr` 与 `@!expr` 的 Dict 分别存入 Item 和 Module 的 attributes，连续标注按源码顺序合并，不继承。
+Core 可以作为标准 package 暴露构造函数和元素定义。`paragraph(body) = item("paragraph", { body })` 是普通函数包装的示意；外部 package 也可构造自己的节点。
 
-反引号生成 raw Item，保留 content、lang 与 block。`$x$` 和 `$ x $` 生成 math Item，content 是未经求值的 String，block 区分行内和块级。Code 可调用 `math(content: "x")`；数学排版由后续 renderer 处理，当前预览原样显示源码。
+成型器由 `notist-ir::document` 提供遍历、段落聚合、属性附着和诊断。`DocumentRules::default` 安装 Core 元素声明，源码 package 和 WASM package 使用相同的声明接口添加外部元素。标准声明随每次构建初始化，导入的 package 声明在本次构建中生效。
 
-`components/` 中的 Web Component 是 package 资源，不是 core 函数注册项。
+“Core 是 package”不意味着现有 `.notc` 函数能力已经能独立实现任意成型器。必须给 package 提供必要的文档模型接口，并使 Core 与外部 package 使用同一套能力。
+
+== 三层扩展能力
+
+| 能力 | 外部 package 能做什么 | 所需机制 |
+| - | - | - |
+| 构造内容 | 普通函数返回 text、seq 或自定义 Item | 值和函数调用 |
+| 声明内容模型 | 指定外部参与方式及各内容槽的约束，使用通用聚合规则 | 元素定义和规则注册 |
+| 实现新算法 | 定义新的分类、展开或分组行为 | 可执行协议、上下文、终止与诊断规则 |
+
+第二层足以让许多自定义节点参与标准段落流程。第三层允许新增宿主原本不知道的成型策略。开放普通构造器或渲染组件，仅分别满足第一层或展示需求。
+
+== 公开声明接口
+
+```notc
+define_element("badge", true, (body: "inline"));
+define_element("callout", false, (body: "flow"));
+define_element("formula", true, (:), "block");
+let badge = (body: Content) => item("badge", (body: body));
+```
+
+参数为元素名称、能否参与外层 paragraph、内容槽 Dict，以及可省略的块级开关字段名。最后一个参数一旦提供须为 String；对应 Item 字段恰为 true 时，该出现位置作为 block。槽值只能为 `"inline"` 或 `"flow"`。已声明且存在的槽必须持有 Content；未声明字段作为数据原样保留。
+
+名称按完整字符串匹配，没有隐式 package 命名空间。外部 package 应选择独有名称。相同名称的完全相同声明可重复加载，冲突声明产生错误；空名称以及 seq、annotation、parbreak 不能注册。未知名称默认作为不透明 block。
+
+WASM 的 `Registration.elements` 使用名称到 `ElementModel` 的映射。模型字段为 `inline: Bool`、`block_field: String?` 和 `slots: Map<String, ContentMode>`；ContentMode 在 JSON 中编码为 `"inline"` 或 `"flow"`。SDK 的 `init_plugin!(elements = models; foo, bar)` 调用 models 函数取得该映射。省略 elements 时注册空映射。
+
+== 行内信息与外部元素
+
+不能由 `badge`、`callout` 等函数名推断内容角色。外部 package 可以声明其构造的节点如何参与文档，也可以返回已有节点，沿用这些节点的规则。返回结构随参数变化时，可解释实际结构或使用显式分类逻辑。
+
+元素对外如何参与，与其 body 接受什么内容分别定义。规则还需说明哪些字段是需要递归成型的内容槽，哪些只是保留的数据。
+
+== 语法与标准库
+
+Markup 可以提供 text、strong、math、section、列表和边界标记等语法。语法层应保留建立这些语义所需的信息；普通函数调用依然使用词法名称解析。
+
+Markup 语法直接构造固定的 Core 名称；局部同名函数只影响显式函数调用。Core 标准模型的冲突声明同样产生错误。
+
+反引号 raw 与 math 保存未经求值的源码 String，及区分行内或块级形式的信息。该信息由 Core 文档模型解释；具体排版由消费者负责。
+
+== 展示与语义
+
+package 的 Web Component 属于展示资源。注册组件不自动注册行内性、内容槽约束或成型规则。HTML、其他渲染器及查询服务应共享完成成型的文档结构。
+
+HTML consumer 为支持的基础元素提供原生映射；自定义 Item `chart` 可映射为 `<notist-chart>`，可序列化字段使用 JSON 编码的 `data-<field>`。组件通过 `renderContent` 渲染嵌套 Content。名称或字段无法按该协议表示时，由消费者报告诊断。
+
+有效 label 可投影到 `data-notist-label`，允许重复；DOM 锚点及页面地址由宿主导航映射。这些映射约定不参与语言值的类型判定。
+
+== 扩展范围
+
+公开接口支持构造内容和声明内容模型。可执行分类函数、用户展开规则和自定义分组算法尚未提供。实现这些能力需要另行规定执行协议、顺序、终止预算和属性保留规则。

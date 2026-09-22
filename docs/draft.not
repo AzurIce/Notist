@@ -2,6 +2,8 @@
 
 = 调试快照
 
+本文记录当前实现的调试协议。
+
 调试器使用 `notist-analysis::debug` 生成 JSON 快照。native CLI 和浏览器 WASM evaluator 接收同一类虚拟文件请求；HTML 渲染不属于语言快照。
 
 == 请求
@@ -15,23 +17,24 @@
 - `source.files` 保存源文件内容，`entry_source_id` 指向入口。
 - `syntax.tokens`、`syntax.statements` 和 `syntax.errors` 保存 lexer/parser 结果。语句类型是 `let`、`use`、`wasm`、`expression` 和 `error`。
 - `evaluation.events` 记录普通函数调用事件。当前事件的 `node` 和 `name` 没有稳定绑定身份；`out` 是 JSON 字符串摘要。
-- `result.content` 是 Content JSON；`result.bindings` 是入口模块导出绑定；`result.diagnostics` 保存 setup failure 和 evaluation warning；`result.stats` 目前只有事件数和 token 数。
+- `evaluation.content` 保存求值后的原始树，包含 annotation 和 parbreak 等控制节点。
+- `result.content` 是成型后的语义树；`result.bindings` 是入口模块原始导出绑定；`result.diagnostics` 保存构建诊断，内容约束错误的 stage 为 form、code 为 content_constraint；`result.stats` 保存事件数和 token 数。
 - `platform` 保存 target 和耗时。native 与 WASM 比较时忽略该字段。
 - `truncated` 当前固定为空数组，表示尚未实现预算截断。
 
-Content JSON 使用以下编码：`{"text": ...}`、`{"sequence": [...]}`、`{"item": name, "args": {...}, "attributes": {...}, "label": ..., "source": ..., "offset": ...}` 和 `{"error": ..., "source": ..., "offset": ...}`。Item 的 `label` 是计算后的有效 label，无 label 时为 null。Dict 使用 `{"dict": {...}}` 包装；`none` 使用 JSON null。
+Content JSON 统一使用 `{"item": name, "args": {...}, "attributes": {...}, "label": ..., "source": ..., "offset": ...}`。已知源码范围时额外包含 `span: {source, start, end}`，偏移量为 UTF-8 字节。Item 的 label 是计算后的有效 label，无 label 时为 null。Dict 使用 `{"dict": {...}}` 包装；List 使用 JSON 数组，none 使用 JSON null。
 
-Link 使用 `{"link": "module::path::\"Label\"", "target": {"module": "module::path", "labels": ["Label"]}, "source": ..., "offset": ...}`。`link` 是目标的字符串表示，`target` 保留结构化路径，来源位置指向引用表达式。
+text 的 args.text 为 String；seq 的 args.children 为 Content 数组；paragraph 的 args.body 为 Content；error 的 args 保存 message 和 code。目标链接为 link Item，其 args.target 保存结构化 Target 值；来源位置指向引用表达式。
 
 Target 表达式的 syntax JSON 使用 `{"kind": "target", "module": [...], "labels": [...]}`；运行时 Target 值使用 `{"target": "module::path", "labels": [...]}`。`labels` 是按顺序保存的字符串数组，空数组表示模块目标。
 
 == 阶段边界
 
-当前快照只有 syntax、evaluation 和 result 三个可观察处理阶段。没有 normalization 或 rule trace，也没有 `origin_id`；语句和表达式仍带 snapshot-local id，但 evaluation 事件当前不引用这些 id。诊断位置在部分运行时错误中只能定位到模块入口 `[0, 0]`。
+syntax、evaluation 和 result 分别呈现语法、求值与成型结果。两棵内容树使用同一表示，节点索引不跨阶段共享。没有逐条成型规则 trace 或 origin_id；语句和表达式带 snapshot-local id，evaluation 事件当前不引用这些 id。无法定位的诊断范围为 `[0, 0]`。
 
 == 浏览器比较
 
-`just web-compare` 运行 native 和 browser evaluator，比较 `result.content` 与 `result.diagnostics`。source id、耗时、platform 和其他调试字段不属于当前跨平台比较契约。
+`just web-compare` 运行 native 和 browser evaluator，比较 `evaluation.content`、`result.content` 与 `result.diagnostics`。耗时、platform 和其他调试字段不属于当前跨平台比较契约。
 
 == 范围
 

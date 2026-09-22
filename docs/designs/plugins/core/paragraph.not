@@ -1,0 +1,52 @@
+@!(ai: true, desc: "paragraph 的语义、行内参与、内容约束和自动聚合")
+
+= paragraph 与内容位置
+
+paragraph 是有身份和边界的文档单元，其内部包含有序内容，并对内容施加行内约束。它可用通用 Item 和 seq 表示，但只有“children 都可行内”不足以定义 paragraph：标题、按钮文字等也可以有同样约束，却承担其他文档含义。
+
+== 三个独立问题
+
+| 问题 | 含义 | 例子 |
+| - | - | - |
+| 对外如何参与 | 能否加入父级正在形成的 paragraph | 行内 math 加入，块级 math 结束聚合 |
+| 对内接受什么 | 某个内容字段的约束 | paragraph 接受行内内容，section body 接受 flow |
+| 如何展示 | 消费者的视觉投影 | 字形、换行、宽高、CSS display |
+
+一个节点对外行内，不必意味着其所有字段或内部数据都行内。例如整体作为行内对象展示的复杂结构，可以拥有自己的内部布局。内容模型应分别定义外部参与方式与内部槽的处理方式。
+
+这里的 inline 表示参与文档行内内容的能力；block 表示作为 flow 中独立单元出现。两者不能直接等同于 HTML 标签类别或 CSS display。
+
+== paragraph 内的内容
+
+paragraph 可以包含 text、space、strong、link、行内 math、可行内的 seq 及外部 package 的行内对象。strong 等节点可以保留语义包装；消费者按需要展开或投影。
+
+text 和 space 保持公开 Item 身份。成型将一串可行内内容组织进 paragraph，文字无需从树中消失。空格折叠和边缘处理应有明确规则，纯空白不应单独制造空 paragraph；对携带属性的内容还需保留其元数据语义。
+
+== 自动聚合与显式 paragraph
+
+普通 flow 在遇到边界之前累积行内内容，遇到独立块时结束已有段落：
+
+```text
+a X b，X 可行内   → paragraph(a, X, b)
+a X b，X 独立成块 → paragraph(a), X, paragraph(b)
+```
+
+这里显示语义单元关系，省略 seq 等存储包装。空行产生的 parbreak 也会结束聚合；空缓冲不产生 paragraph。
+
+显式构造 paragraph 已经声明一个段落单元，其 body 遇到块内容或 parbreak 时产生 error 等级的 `content_constraint` 诊断。非法出现位置以 error Item 恢复，保留后续正常内容，paragraph 的范围不拆分。
+
+因此“是否可行内”既影响自动分段，也参与显式位置的有效性检查。任意 Item 可以存在于抽象树中，但进入标准 paragraph 后仍需符合该位置的内容模型。
+
+== 信息从哪里来
+
+普通函数的名称不能决定返回结果是否可行内。函数可能根据参数返回不同结构；基础方案在求值后解释实际 Content。类型分析可以提供额外证明，但不承担猜测返回树的职责。
+
+对于 `item("xxx", ...)`，成型器必须通过以下信息之一确定参与方式：注册的元素定义、明确声明的语义数据、可解释的展开结果，或文档模型指定的未知节点策略。仅查看名字或 body 中是否全是文字都不足以确定其语义。
+
+== 元素模型
+
+元素通过 [[vault::designs::plugins::core]] 定义的 `define_element` 注册参与方式与内容槽。分类针对求值后的实际 Item，不推导普通函数的角色。基础 Item 的属性表不承担元素模型声明。
+
+未知节点默认作为不透明 block：结束外层段落，其字段保留原始数据；进入 Inline 槽时产生错误。raw 和 math 的 `block: true` 字段使该出现位置作为 block，其余情况可行内。
+
+annotation、parbreak 和 seq 由成型器专门处理。仅用 Inline 与 Block 二选一不足以覆盖这些控制与组合节点的语义。

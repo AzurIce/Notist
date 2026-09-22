@@ -43,13 +43,13 @@ pub(crate) fn matches_type(ty: &Type, v: &Value) -> bool {
     match ty {
         Type::Any => true,
         Type::Optional(t) => matches!(v, Value::None) || matches_type(t, v),
-        Type::Content => matches!(v, Value::Content(_) | Value::Item(_)),
         _ => *ty == v.ty(),
     }
 }
 
 #[derive(Clone, Debug)]
 pub struct Evaluation {
+    pub raw_content: Content,
     pub content: Content,
     pub attributes: Env,
     pub warnings: Vec<String>,
@@ -59,6 +59,7 @@ pub struct Evaluation {
 }
 
 pub struct Runtime<'a> {
+    pub document_rules: notist_ir::document::DocumentRules,
     world: &'a dyn ModuleProvider,
     pub module_attributes: BTreeMap<String, Env>,
     pub used_wasm: Vec<String>,
@@ -75,6 +76,7 @@ pub struct Runtime<'a> {
 impl<'a> Runtime<'a> {
     pub fn new(world: &'a dyn ModuleProvider) -> Self {
         Self {
+            document_rules: Default::default(),
             world,
             module_attributes: BTreeMap::new(),
             used_wasm: Vec::new(),
@@ -97,6 +99,7 @@ impl<'a> Runtime<'a> {
         self
     }
     pub fn evaluate_with_env(&mut self, source: &str) -> (Evaluation, Env) {
+        self.document_rules = Default::default();
         self.module_attributes.clear();
         self.modules.clear();
         self.contents.clear();
@@ -116,20 +119,26 @@ impl<'a> Runtime<'a> {
         } else {
             (
                 Env::new(),
-                Content::Sequence(
+                Content::seq(
                     errors
                         .iter()
-                        .map(|message| Content::Error {
-                            code: DiagnosticCode::Setup,
-                            message: message.clone(),
-                            location: location.clone(),
+                        .map(|message| {
+                            Content::error(message, DiagnosticCode::Setup, location.clone())
                         })
                         .collect(),
                 ),
             )
         };
+        let raw_content = content;
+        let formed = self.document_rules.form(&raw_content);
+        let content = formed.content;
         let output_links = targets::output_links(&content);
-        let diagnostics = self.module_diagnostics(source, &content);
+        let mut diagnostics = self.module_diagnostics(source, &content);
+        for diagnostic in formed.diagnostics {
+            if !diagnostics.contains(&diagnostic) {
+                diagnostics.push(diagnostic);
+            }
+        }
         let attributes = self
             .module_attributes
             .get(source)
@@ -138,6 +147,7 @@ impl<'a> Runtime<'a> {
         let warnings = diagnostics.iter().map(ToString::to_string).collect();
         (
             Evaluation {
+                raw_content,
                 content,
                 attributes,
                 warnings,
@@ -164,31 +174,28 @@ impl<'a> Runtime<'a> {
         diagnostics
     }
     fn failure(message: impl Into<String>, location: &Location) -> Value {
-        Value::Content(Content::Error {
-            code: DiagnosticCode::Evaluation,
-            message: message.into(),
-            location: location.clone(),
-        })
+        Value::Content(Content::error(
+            message,
+            DiagnosticCode::Evaluation,
+            location.clone(),
+        ))
     }
     pub fn content(value: Value, location: &Location) -> Content {
         match value {
-            Value::None => Content::Sequence(vec![]),
+            Value::None => Content::seq(vec![]).at(location),
             Value::Content(c) => c,
-            Value::Item(i) => Content::Item(i),
-            Value::Target(target) => Content::Link {
-                target,
-                location: location.clone(),
-            },
-            Value::String(s) => Content::Text(s),
-            Value::Int(n) => Content::Text(n.to_string()),
+            Value::Target(target) => Content::link(target, location.clone()),
+            Value::String(s) => Content::text(s).at(location),
+            Value::Int(n) => Content::text(n.to_string()).at(location),
             Value::List(v) => {
-                Content::Sequence(v.into_iter().map(|v| Self::content(v, location)).collect())
+                Content::seq(v.into_iter().map(|v| Self::content(v, location)).collect())
+                    .at(location)
             }
-            v => Content::Error {
-                code: DiagnosticCode::Evaluation,
-                message: format!("expected Content, found {:?}", v.ty()),
-                location: location.clone(),
-            },
+            v => Content::error(
+                format!("expected Content, found {:?}", v.ty()),
+                DiagnosticCode::Evaluation,
+                location.clone(),
+            ),
         }
     }
     fn module(&mut self, source: &str, depth: usize) -> (Env, Content) {
@@ -202,7 +209,7 @@ impl<'a> Runtime<'a> {
                 self.contents
                     .get(source)
                     .cloned()
-                    .unwrap_or_else(|| Content::Sequence(vec![])),
+                    .unwrap_or_else(|| Content::seq(vec![])),
             );
         }
         if depth >= 128 || !self.loading.insert(source.into()) {
@@ -218,7 +225,7 @@ impl<'a> Runtime<'a> {
             self.loading.remove(source);
             if self.world.module_key(source).is_some() {
                 self.modules.insert(source.into(), Env::new());
-                return (Env::new(), Content::Sequence(vec![]));
+                return (Env::new(), Content::seq(vec![]));
             }
             return (
                 Env::new(),
@@ -249,8 +256,6 @@ impl<'a> Runtime<'a> {
     ) -> (Env, Content) {
         let mut exports = Env::new();
         let mut output = Vec::new();
-        let mut pending = Env::new();
-        let mut pending_location = None;
         for (statement, statement_offset) in statements {
             let location = Location {
                 source: source.into(),
@@ -289,8 +294,11 @@ impl<'a> Runtime<'a> {
                                         .or_default()
                                         .extend(attributes);
                                 } else {
-                                    pending.extend(attributes);
-                                    pending_location = Some(location);
+                                    output.push(Item::new(
+                                        "annotation",
+                                        Env::from([("attributes".into(), Value::Dict(attributes))]),
+                                        location,
+                                    ));
                                 }
                             }
                             value if value.is_error() => {
@@ -307,6 +315,9 @@ impl<'a> Runtime<'a> {
                         continue;
                     }
                     let value = self.eval(&expr, &env, source, depth + 1);
+                    if matches!(value, Value::None) {
+                        continue;
+                    }
                     let mut content = Self::content(
                         value,
                         &Location {
@@ -314,31 +325,26 @@ impl<'a> Runtime<'a> {
                             offset: expr.offset,
                         },
                     );
-                    fn attach(content: &mut Content, attrs: &mut Env) -> bool {
-                        match content {
-                            Content::Item(item) => {
-                                item.apply_attributes(std::mem::take(attrs));
-                                true
-                            }
-                            Content::Sequence(parts) => {
-                                parts.iter_mut().any(|part| attach(part, attrs))
-                            }
-                            _ => false,
-                        }
-                    }
-                    if pending_location.is_some() && attach(&mut content, &mut pending) {
-                        pending_location = None;
+                    if content.span.is_none()
+                        && content.location.source == source
+                        && content.location.offset == expr.offset
+                    {
+                        content.span = Some(notist_model::SourceSpan {
+                            source: source.into(),
+                            start: expr.offset,
+                            end: expr.end,
+                        });
                     }
                     output.push(content);
                 }
-                Statement::Error(offset, message) => output.push(Content::Error {
-                    code: DiagnosticCode::Syntax,
+                Statement::Error(offset, message) => output.push(Content::error(
                     message,
-                    location: Location {
+                    DiagnosticCode::Syntax,
+                    Location {
                         source: source.into(),
                         offset,
                     },
-                }),
+                )),
                 Statement::Use(imports) => {
                     for import in imports {
                         match self.resolve(&import.path, &env, source, depth + 1) {
@@ -411,14 +417,13 @@ impl<'a> Runtime<'a> {
                 }
             }
         }
-        if let Some(location) = pending_location {
-            output.push(Content::Error {
-                code: DiagnosticCode::Evaluation,
-                message: "Item annotation has no following Item".into(),
-                location,
-            });
-        }
-        (exports, Content::Sequence(output))
+        (
+            exports,
+            Content::seq(output).at(&Location {
+                source: source.into(),
+                offset: 0,
+            }),
+        )
     }
     fn resolve(
         &mut self,
@@ -482,7 +487,12 @@ impl<'a> Runtime<'a> {
                 .map(str::to_owned)
                 .unwrap_or_else(|| format!("missing WASM `{path}`"))
         })?;
-        let env = wasm::registration(bytes, path, location)?;
+        let (env, elements) = wasm::registration(bytes, path, location)?;
+        let mut rules = self.document_rules.clone();
+        for (name, model) in elements {
+            rules.define(name, model)?;
+        }
+        self.document_rules = rules;
         self.used_wasm.push(path.into());
         self.registry.insert(path.into(), env.clone());
         Ok(env)
@@ -496,13 +506,14 @@ impl<'a> Runtime<'a> {
             return Self::failure("evaluation limit exceeded", &loc);
         }
         self.steps -= 1;
-        match &expr.kind {
+        let mut value = match &expr.kind {
             ExprKind::Element(name, fields) => {
                 let args = fields
                     .iter()
                     .map(|(key, value)| (key.clone(), self.eval(value, env, source, depth + 1)))
                     .collect();
-                Value::Item(Item {
+                Value::Content(Item {
+                    span: None,
                     name: name.clone(),
                     args,
                     attributes: Env::new(),
@@ -528,7 +539,8 @@ impl<'a> Runtime<'a> {
                 };
                 let title = field(title);
                 let body = field(body);
-                Value::Item(Item {
+                Value::Content(Item {
+                    span: None,
                     name: "section".into(),
                     attributes: Env::new(),
                     args: BTreeMap::from([
@@ -566,6 +578,7 @@ impl<'a> Runtime<'a> {
                 if matches!(
                     name.as_str(),
                     "item"
+                        | "define_element"
                         | "with_attributes"
                         | "math"
                         | "raw"
@@ -601,11 +614,11 @@ impl<'a> Runtime<'a> {
                 });
                 match result {
                     Ok(target) => Value::Target(target),
-                    Err(error) => Value::Content(Content::Error {
-                        code: DiagnosticCode::TargetFormation,
-                        message: error.to_string(),
-                        location: loc,
-                    }),
+                    Err(error) => Value::Content(Content::error(
+                        error.to_string(),
+                        DiagnosticCode::TargetFormation,
+                        loc,
+                    )),
                 }
             }
             ExprKind::List(values) => Value::List(
@@ -625,7 +638,7 @@ impl<'a> Runtime<'a> {
                     .get(key)
                     .cloned()
                     .unwrap_or_else(|| Self::failure(format!("missing field `{key}`"), &loc)),
-                Value::Item(i) => match key.as_str() {
+                Value::Content(i) => match key.as_str() {
                     "name" => Value::String(i.name),
                     "args" => Value::Dict(i.args),
                     "attributes" => Value::Dict(i.attributes),
@@ -649,7 +662,8 @@ impl<'a> Runtime<'a> {
                     .collect();
                 let (_, content) = self.statements(statements, env.clone(), source, depth + 1);
                 if let ExprKind::Styled(name, _) = &expr.kind {
-                    Value::Item(Item {
+                    Value::Content(Item {
+                        span: None,
                         name: (*name).into(),
                         attributes: Env::new(),
                         args: BTreeMap::from([("body".into(), Value::Content(content))]),
@@ -660,6 +674,11 @@ impl<'a> Runtime<'a> {
                         location: loc,
                     })
                 } else {
+                    let mut content = content.at(&loc);
+                    content.origin = Some(CreationOrigin {
+                        node_id: Some(expr.id),
+                        kind: OriginKind::Syntax,
+                    });
                     Value::Content(content)
                 }
             }
@@ -746,15 +765,27 @@ impl<'a> Runtime<'a> {
                             && matches_type(&Type::Content, &a)
                             && matches_type(&Type::Content, &b) =>
                     {
-                        Value::Content(Content::Sequence(vec![
-                            Self::content(a, &loc),
-                            Self::content(b, &loc),
-                        ]))
+                        Value::Content(
+                            Content::seq(vec![Self::content(a, &loc), Self::content(b, &loc)])
+                                .at(&loc),
+                        )
                     }
                     _ => Self::failure("operator argument type mismatch", &loc),
                 }
             }
+        };
+        if let Value::Content(content) = &mut value
+            && content.span.is_none()
+            && content.location.source == source
+            && content.location.offset == expr.offset
+        {
+            content.span = Some(notist_model::SourceSpan {
+                source: source.into(),
+                start: expr.offset,
+                end: expr.end,
+            });
         }
+        value
     }
     #[allow(clippy::too_many_arguments)]
     fn bind(
@@ -871,20 +902,71 @@ impl<'a> Runtime<'a> {
                 }
                 let v = args.into_iter().map(|a| a.value).collect::<Vec<_>>();
                 match (name.as_str(), v.as_slice()) {
-                    ("with_attributes", [Value::Item(item), Value::Dict(attributes)]) => {
+                    (
+                        "define_element",
+                        [
+                            Value::String(element),
+                            Value::Bool(inline),
+                            Value::Dict(slots),
+                        ],
+                    )
+                    | (
+                        "define_element",
+                        [
+                            Value::String(element),
+                            Value::Bool(inline),
+                            Value::Dict(slots),
+                            Value::String(_),
+                        ],
+                    ) => {
+                        let slots = slots
+                            .iter()
+                            .map(|(name, mode)| match mode {
+                                Value::String(mode) if mode == "flow" => {
+                                    Ok((name.clone(), notist_model::ContentMode::Flow))
+                                }
+                                Value::String(mode) if mode == "inline" => {
+                                    Ok((name.clone(), notist_model::ContentMode::Inline))
+                                }
+                                _ => Err(format!("content slot `{name}` requires inline or flow")),
+                            })
+                            .collect::<Result<BTreeMap<_, _>, String>>();
+                        let result = slots.and_then(|slots| {
+                            self.document_rules.define(
+                                element.clone(),
+                                notist_model::ElementModel {
+                                    inline: *inline,
+                                    slots,
+                                    block_field: match v.get(3) {
+                                        Some(Value::String(field)) => Some(field.clone()),
+                                        _ => None,
+                                    },
+                                },
+                            )
+                        });
+                        match result {
+                            Ok(()) => Value::None,
+                            Err(e) => Self::failure(e, loc),
+                        }
+                    }
+                    ("with_attributes", [Value::Content(item), Value::Dict(attributes)]) => {
                         let mut item = item.clone();
                         item.apply_attributes(attributes.clone());
-                        Value::Item(item)
+                        Value::Content(item)
                     }
-                    ("item", [Value::String(name), Value::Dict(args)]) => Value::Item(Item {
+                    ("item", [Value::String(name), Value::Dict(args)]) => Value::Content(Item {
+                        span: None,
                         origin: None,
                         name: name.clone(),
                         attributes: Env::new(),
                         args: args.clone(),
                         location: loc.clone(),
                     }),
-                    ("text", [Value::String(s)]) => Value::Content(Content::Text(s.clone())),
-                    ("math" | "raw", [Value::String(s)]) => Value::Item(Item {
+                    ("text", [Value::String(s)]) => {
+                        Value::Content(Content::text(s.clone()).at(loc))
+                    }
+                    ("math" | "raw", [Value::String(s)]) => Value::Content(Item {
+                        span: None,
                         origin: None,
                         name: name.clone(),
                         args: Env::from([
@@ -898,8 +980,9 @@ impl<'a> Runtime<'a> {
                         let body = v
                             .get(1)
                             .cloned()
-                            .unwrap_or_else(|| Value::Content(Content::Text(dest.clone())));
-                        Value::Item(Item {
+                            .unwrap_or_else(|| Value::Content(Content::text(dest.clone()).at(loc)));
+                        Value::Content(Item {
+                            span: None,
                             origin: None,
                             name: "link".into(),
                             args: Env::from([
@@ -972,31 +1055,18 @@ fn stamp_origin(value: &mut Value, location: &Location, node_id: usize, kind: Or
                 node_id: Some(node_id),
                 kind,
             });
-        } else if item.location == *location {
-            if let Some(origin) = &mut item.origin {
-                if origin.node_id.is_none() {
-                    origin.node_id = Some(node_id);
-                }
-            }
+        } else if item.location == *location
+            && let Some(origin) = &mut item.origin
+            && origin.node_id.is_none()
+        {
+            origin.node_id = Some(node_id);
         }
         for value in item.args.values_mut().chain(item.attributes.values_mut()) {
             stamp_origin(value, location, node_id, kind);
         }
     }
-    fn content(c: &mut Content, location: &Location, node_id: usize, kind: OriginKind) {
-        match c {
-            Content::Item(i) => item(i, location, node_id, kind),
-            Content::Sequence(v) => {
-                for c in v {
-                    content(c, location, node_id, kind);
-                }
-            }
-            _ => {}
-        }
-    }
     match value {
-        Value::Item(i) => item(i, location, node_id, kind),
-        Value::Content(c) => content(c, location, node_id, kind),
+        Value::Content(c) => item(c, location, node_id, kind),
         Value::List(v) => {
             for v in v {
                 stamp_origin(v, location, node_id, kind);

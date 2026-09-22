@@ -1,8 +1,8 @@
-@!(ai: true, desc: "当前 .notc 原型语法和求值语义")
+@!(ai: true, desc: "Markup 与 Code 语法、模块路径和内容构造语义")
 
 = .notc 与 .not
 
-`.notc` 是代码模块格式。模块从上到下执行，表达式语句产生 Content，绑定语句只更新环境。`.not` 是同一求值管线的 Markup 前端：整个文件相当于一个隐式的 `[]` Content 字面量，文本、插值、样式和 wikilink 直接降低为同一组表达式。
+`.notc` 是代码模块格式。模块从上到下执行，表达式语句的输出组合为 Content，绑定语句只更新环境。`.not` 是同一求值管线的 Markup 前端：整个文件相当于一个隐式的 `[]` 内容字面量，文本、插值、样式和 wikilink 降低为共享的内容构造表达式。
 
 == 词法与名称
 
@@ -40,31 +40,39 @@ let paragraph = (body: Content) => item("paragraph", (body: body));
 paragraph[hello];
 ```
 
-`[]` 的结果是 Content。Content 中允许文本和 Item；`item(name, args)` 返回 Item。字段访问支持 `item.name` 和 `item.args`。
+`[]` 总是构造一个新的 seq Item，值类型为 Content；空内容与单元素内容保留同样的结构边界。Markup 使用 `#[]` 进入内容字面量，普通方括号保持文本含义。`#foo[...]` 将该字面量构造的 Content 作为尾随参数传入 foo。
+
+`item(name, args)` 构造节点并返回 Content，文本、链接、错误也采用 Item 表示。函数调用本身不增加节点包装。内容根节点通过 `.name`、`.args` 和 `.attributes` 提供名称、结构字段和已有属性。
 
 模块导出使用 `module::name`，Item 目标使用 `module::"Label1"::"Label2"`。路径中的标识符段组成 ModulePath，后续字符串段组成 LabelPath；进入 LabelPath 后只接受字符串段。Markup wikilink 使用 `[[module]]` 或 `[[module::"Label1"::"Label2"]]`，产生同一种引用值。label 的来源、允许跳层的有序匹配和唯一性规则定义于 [[vault::designs::item]]；引用本身不触发目标模块求值。
 
 == 模块路径
 
-模块源文件位于 package 的 `docs/` 下。`README.not` 或 `README.notc` 表示所在目录模块，其他 `.not` 或 `.notc` 文件按规范化文件名组成模块段。`vault`、`self`、`super` 是路径关键字。
+模块源文件位于 package 的源码目录，通常为 `docs/`。`README.not` 或 `README.notc` 表示所在目录模块，其他 `.not` 或 `.notc` 文件按规范化文件名组成模块段。`vault`、`self`、`super` 是路径关键字。
 
 ```notc
 use vault::helpers::{self as helpers, format};
 use theme::colors::*;
 ```
 
-`vault` 指当前 package 根，依赖别名指向依赖 package 根，`self` 指当前模块，`super` 向父模块移动。循环导入、缺失模块和冲突模块路径产生 Error Content。
+`vault` 指当前 package 根，依赖别名指向依赖 package 根，`self` 指当前模块，`super` 向父模块移动。循环导入、缺失模块和冲突模块路径产生诊断，并可通过 error Item 保留输出中的错误位置。
 
-== WASM
+== WASM 普通函数
 
 ```notc
 wasm "../wasm/semantic.wasm";
 ```
 
-WASM 必须显式引用。运行时调用 `notist_register` 读取函数注册表，验证每个导出的 ABI 和声明类型后，把函数直接放入当前环境。注册按 binary 路径和一次求值缓存；调用使用独立实例。注册信息和调用数据使用 `notist-model::abi` 的结构化 JSON 编码，类型使用共享的 `Type`，传输值不包含闭包、模块状态或源码位置。
+WASM 必须显式引用。运行时调用 `notist_register` 读取函数注册表，验证每个导出的 ABI 和声明类型后，把函数放入当前环境。注册按 binary 路径和一次求值缓存；调用使用独立实例。注册信息和调用数据使用 `notist-model::abi` 的结构化 JSON 编码，传输值不包含闭包、模块状态或源码位置。
+
+该入口注册普通函数，并可通过 `Registration.elements` 声明元素模型。源码声明接口与模型字段定义于 [[vault::designs::plugins::core]]。注册普通函数不隐含创建同名节点或注册同名模型。
+
+WASM ABI 的 Value 使用 `kind` 与 `value` 标签。Content 编码为 `{"kind":"content","value":{"name":"text","args":{"text":{"kind":"string","value":"hello"}},"attributes":{}}}`。全部内容通过同一种 Item 结构传递，seq 的 children 为包含 Content 的 List。Target 使用 target 类型标签和结构化 module、labels；函数、模块句柄及源码来源不传输。
 
 Rust 插件通过 `notist-plugin-sdk` 的 `#[func]` 标注普通函数，并在插件根调用 `init_plugin!(函数路径, ...)` 汇总注册信息。类型从 Rust 签名映射；`Option<T>` 对应 `T?`，参数省略规则遵循 [[vault::designs::value_and_types]]。显式默认值使用 `#[func(defaults(参数 = 表达式))]` 声明，生成注册数据时求值，不能引用调用参数。Rust 直接调用保持普通函数规则，必须提供每个实参。
 
 == 求值与错误
 
-运行时严格求值参数，函数按词法闭包执行，没有隐式 reduce/normalization pass。错误保留在输出 Content 中并附带来源位置；后续语句仍可继续求值。`.not` 的 Markup 节点和 `.notc` 的 `[]` 使用同一求值器。
+求值器严格求值参数，函数按词法闭包执行。`.not` 的 Markup 节点和 `.notc` 的 `[]` 使用同一求值器，构造含 text、space、边界和属性标注的原始 Item 树。标题和缩进列表的词法归属由解析确定，段落聚合与属性目标由标准文档成型解释。
+
+[[vault::designs::pipeline]] 定义求值、成型与消费者投影的阶段关系。求值中的错误可保留为 error Item，后续语句仍可继续执行；成型也可以产生内容约束诊断。

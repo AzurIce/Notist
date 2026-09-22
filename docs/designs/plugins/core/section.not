@@ -1,9 +1,11 @@
-@!(ai: true, desc: "section Item 的当前原型边界")
+@!(ai: true, desc: "section 的词法嵌套、内容模型与默认 label")
 
 = section
 
-Markup 中行首的 `= 标题`、`== 子标题` 形成嵌套 section Item。每个 section 保存 `level`、`title` 和 `body`，同级或更浅标题结束当前 section；子标题进入 body。
+Markup 中行首的 `= 标题`、`== 子标题` 形成嵌套 section Item。每个 section 保存 level、title 和 body；同级或更浅标题结束当前 section，子标题进入 body。该归属由标题语法确定。
 
-`.notc` 可以显式构造相同的 `item("section", (level: 1, title: [标题], body: [正文]))`。HTML consumer 渲染为 `<section>`，title 使用 h1 至 h6，body 递归渲染。LSP 从语法树提供嵌套大纲。
+Code 可以显式构造 `item("section", (level: 1, title: [标题], body: [正文]))`。title 和 body 都接收 Content，并分别按标题内容和正文 flow 的规则处理。body 的段落在文档成型时形成。
 
-section 的默认 label 和显式 label 遵循 [[vault::designs::item]] 的命名与引用解析规则，Markup 标题和显式构造的 section 使用相同规则。
+section 的默认 label 及显式 label 遵循 [[vault::designs::item]]。Markup 标题与显式构造的 section 使用一致的命名规则。
+
+消费者可以将 section 映射为 HTML section 和相应级别的标题。源码编辑器可以直接从标题语法提供大纲；运行结果中由函数生成的 section 属于语义文档查询的范围。

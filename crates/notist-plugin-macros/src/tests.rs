@@ -81,6 +81,7 @@ fn initialization_accepts_paths_and_rejects_duplicate_names() {
     let parse = Punctuated::<Path, Token![,]>::parse_terminated;
     let expanded = expand_init(
         parse.parse_str("echo, nested::other,").unwrap(),
+        None,
         &quote!(::sdk),
     )
     .unwrap();
@@ -88,6 +89,7 @@ fn initialization_accepts_paths_and_rejects_duplicate_names() {
     assert!(
         expand_init(
             parse.parse_str("one::echo, two::echo").unwrap(),
+            None,
             &quote!(::sdk)
         )
         .unwrap_err()
@@ -95,9 +97,13 @@ fn initialization_accepts_paths_and_rejects_duplicate_names() {
         .contains("duplicate exported")
     );
     assert!(
-        expand_init(parse.parse_str("echo::<i64>").unwrap(), &quote!(::sdk))
-            .unwrap_err()
-            .to_string()
-            .contains("without generic arguments")
+        expand_init(
+            parse.parse_str("echo::<i64>").unwrap(),
+            None,
+            &quote!(::sdk)
+        )
+        .unwrap_err()
+        .to_string()
+        .contains("without generic arguments")
     );
 }

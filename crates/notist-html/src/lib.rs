@@ -40,22 +40,62 @@ fn error(message: &str) -> String {
 }
 
 pub fn render(content: &Content) -> String {
-    match content {
-        Content::Text(text) => escape(text),
-        Content::Sequence(children) => children.iter().map(render).collect(),
-        Content::Error { message, .. } => error(message),
-        Content::Item(item) => render_item(item),
-        Content::Link { target, .. } => {
-            let target = target.to_string();
-            format!("<a href=\"{}\">{}</a>", escape(&target), escape(&target))
+    render_item(content)
+}
+
+fn render_sequence(children: &[&Content]) -> String {
+    let mut output = String::new();
+    let mut index = 0;
+    while index < children.len() {
+        let child = children[index];
+        let tag = match child.name.as_str() {
+            "list-item" => Some(
+                if matches!(child.args.get("ordered"), Some(Value::Bool(true))) {
+                    "ol"
+                } else {
+                    "ul"
+                },
+            ),
+            "term-item" => Some("dl"),
+            _ => None,
+        };
+        if let Some(tag) = tag {
+            let start = if tag == "ol" {
+                match child.args.get("number") {
+                    Some(Value::Int(n)) => format!(" start=\"{n}\""),
+                    _ => String::new(),
+                }
+            } else {
+                String::new()
+            };
+            output.push_str(&format!("<{tag}{start}>"));
+            while index < children.len() {
+                let next = children[index];
+                let same = if tag == "dl" {
+                    next.name == "term-item"
+                } else {
+                    next.name == "list-item"
+                        && matches!(next.args.get("ordered"), Some(Value::Bool(true)))
+                            == (tag == "ol")
+                };
+                if !same {
+                    break;
+                }
+                output.push_str(&render_item(next));
+                index += 1;
+            }
+            output.push_str(&format!("</{tag}>"));
+        } else {
+            output.push_str(&render_item(child));
+            index += 1;
         }
     }
+    output
 }
 
 fn render_value(value: &Value) -> String {
     match value {
         Value::Content(c) => render(c),
-        Value::Item(i) => render_item(i),
         Value::List(v) => v.iter().map(render_value).collect(),
         Value::None => String::new(),
         _ => error("expected child Content"),
@@ -82,19 +122,49 @@ fn render_item(item: &Item) -> String {
             escape(&serde_json::to_string(&json).unwrap())
         )
     };
+    if item.name == "seq" {
+        let body = render_sequence(&item.children().collect::<Vec<_>>());
+        return if attributes.is_empty() {
+            body
+        } else {
+            format!("<notist-seq style=\"display:contents\"{attributes}>{body}</notist-seq>")
+        };
+    }
+    if matches!(item.name.as_str(), "text" | "space") {
+        let body = if item.name == "space" {
+            " ".into()
+        } else {
+            escape(item.string("text").unwrap_or_default())
+        };
+        return if attributes.is_empty() {
+            body
+        } else {
+            format!("<span{attributes}>{body}</span>")
+        };
+    }
+    if item.name == "error" {
+        return format!(
+            "<notist-error role=\"note\"{attributes}>{}</notist-error>",
+            escape(item.string("message").unwrap_or("invalid error Item"))
+        );
+    }
     if item.name == "linebreak" {
         return format!("<br{attributes}>");
     }
     if item.name == "smartquote" {
         let double = matches!(item.args.get("double"), Some(Value::Bool(true)));
         let open = matches!(item.args.get("open"), Some(Value::Bool(true)));
-        return match (double, open) {
+        let quote = match (double, open) {
             (true, true) => "\u{201c}",
             (true, false) => "\u{201d}",
             (false, true) => "\u{2018}",
             (false, false) => "\u{2019}",
-        }
-        .into();
+        };
+        return if attributes.is_empty() {
+            quote.into()
+        } else {
+            format!("<span{attributes}>{quote}</span>")
+        };
     }
     if matches!(item.name.as_str(), "raw" | "math") {
         let Some(Value::String(content)) = item.args.get("content") else {
@@ -123,6 +193,11 @@ fn render_item(item: &Item) -> String {
         };
     }
     if item.name == "link" {
+        if let Some(Value::Target(target)) = item.args.get("target") {
+            let text = escape(&target.to_string());
+            return format!("<a{attributes} href=\"{text}\">{text}</a>");
+        }
+
         let Some(Value::String(dest)) = item.args.get("dest") else {
             return error("expected String link destination");
         };

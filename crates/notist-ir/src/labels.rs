@@ -26,16 +26,19 @@ impl Item {
 }
 
 fn text(value: &Value) -> String {
-    fn content(value: &Content) -> String {
-        match value {
-            Content::Text(s) => s.clone(),
-            Content::Sequence(parts) => parts.iter().map(content).collect(),
-            Content::Item(item) => item_text(item),
-            Content::Link { target, .. } => target.to_string(),
-            Content::Error { .. } => String::new(),
-        }
-    }
     fn item_text(item: &Item) -> String {
+        match item.name.as_str() {
+            "text" => return item.string("text").unwrap_or_default().into(),
+            "space" => return " ".into(),
+            "seq" => return item.children().map(item_text).collect(),
+            "error" | "annotation" | "parbreak" => return String::new(),
+            "link" => {
+                if let Some(Value::Target(t)) = item.args.get("target") {
+                    return t.to_string();
+                }
+            }
+            _ => {}
+        }
         if item.name == "linebreak" {
             return "\n".into();
         }
@@ -59,8 +62,7 @@ fn text(value: &Value) -> String {
     }
     match value {
         Value::String(s) => s.clone(),
-        Value::Content(c) => content(c),
-        Value::Item(i) => item_text(i),
+        Value::Content(c) => item_text(c),
         Value::List(values) => values.iter().map(text).collect(),
         _ => String::new(),
     }

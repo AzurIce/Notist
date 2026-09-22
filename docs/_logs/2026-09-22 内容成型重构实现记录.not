@@ -1,0 +1,47 @@
+@!(ai: true, type: "log", desc: "内容树重构的主仓库实现、验证结果与跨项目审查缺口")
+
+= 内容成型重构实现记录
+
+记录日期为 2026-09-22。本记录描述本次工作区实现及当时完成的验证，不作为后续实现状态的自动更新声明。
+
+== 主仓库实现
+
+- 语言使用单一 Content 类型，全部内容节点采用 Item 结构。text、space、seq、paragraph、link、error 和 annotation 均以名称、args、attributes 表达。
+- 内容字面量始终构造 seq。普通函数调用不增加节点包装；item 构造器保留。
+- 解析保留原始文字、空白和 parbreak，不构造自动 paragraph。标题和缩进条目的词法归属仍由解析器确定。
+- 公共构建入口保存 raw_content，并通过文档成型得到 content。段落聚合、属性附着与内容槽验证在共享阶段完成，查询和渲染读取语义结果。
+- list-item 和 term-item 直接嵌套。首块及后续块通过 body 查询取得；HTML 消费者按相邻关系形成视觉列表。
+- 字面量与合成段落保留源码范围。Inline 中非法块以 error Item 恢复，保留其属性与来源，产生 content_constraint 诊断。
+- ABI、Rust SDK、插件宏、调试 JSON、HTML、浏览器调试器及示例完成同步。插件传输中的 Content 统一为 Item，Target 可作为结构化数据传输。
+
+核心实现位于 `crates/notist-ir/src/document.rs`。共享模型声明位于 `crates/notist-model/src/content.rs`。求值器在 `crates/notist-eval` 调用成型；分析、查询、LSP 与调试入口由 `crates/notist-analysis` 接入。
+
+== 实施规则
+
+- Flow 累积行内内容生成 paragraph；独立块和 parbreak 结束聚合。
+- seq 全部可行内时参与外层段落；否则中断外层段落，在内部成型 Flow。包装始终保留。
+- Flow 中的普通文字前标注附着完整 paragraph；显式 seq 和独立块接收自身的外部标注。Inline 槽内标注附着到下一个非 space 节点。
+- 段落中部标注结束此前段落，后续内容形成新的目标；空 seq 是目标，None、普通空白及 parbreak 不成为目标。悬空标注产生错误。
+- 同一 Content 复用时，成型通过独立值完成上下文附着，原始内容和其他出现位置不受污染。
+- 未知元素默认是不透明 block；声明的内容槽按 Flow 或 Inline 处理，未声明字段保留数据。
+
+源码 package 使用 `define_element(name, inline, slots, block_field?)`，WASM package 使用 Registration.elements；Rust 宏支持 `init_plugin!(elements = models; foo, bar)`。相同声明可重复，冲突声明产生错误。Core 默认模型通过同一声明机制安装，seq、annotation 和 parbreak 属于固定控制协议。
+
+== 验证
+
+- 主 workspace 测试共 156 项通过，其中包含 14 项成型行为测试；常规测试中忽略的 5 项插件测试另行构建真实 WASM 并全部通过。
+- `cargo clippy --workspace --all-targets -- -D warnings` 通过，Rust 格式化与 diff 空白检查通过。
+- 根文档 package 与 `examples/workspace` 通过当前源码 CLI 的 check。
+- 浏览器 WASM release 构建通过；examples/demo 的原始树、成型树和诊断与 native 对拍一致。
+- Chrome DOM 实测覆盖段落目标、seq 内外标注、嵌套条目、自定义行内组件、约束错误恢复及叶节点属性保留。
+- LSP stdio 回归覆盖 UTF-8、UTF-16 的成型诊断位置，以及编辑后清除诊断。
+
+本机 Nix 环境的默认链接器缺少 iconv 链接配置，验证使用 `CARGO_TARGET_AARCH64_APPLE_DARWIN_LINKER=/usr/bin/clang` 和 `MACOSX_DEPLOYMENT_TARGET=14.0`。测试临时目录设为 `TMPDIR=/private/tmp`，避免 macOS 临时路径别名造成已有路径比较用例失败；未改仓库配置。
+
+== 范围与后续核验
+
+本次提供声明式内容模型和固定成型算法。任意用户展开或分组 hook、完整执行前类型检查、内容形态静态证明、布局反馈及多轮重排均未实现。
+
+跨项目实际审查尚未完成：根目录没有 `.env`，已请求姊妹项目路径，应用保存的项目列表也只包含本仓库。需要核验的外部影响包括：tree-sitter 和各编辑器 grammar 的类型名集合；客户端对新增 content_constraint 诊断代码的处理；消费 Content JSON 或插件 ABI 的调用点。LSP 的同步方式、capabilities 和编码协商契约未修改。
+
+仓库内已检查分析、CLI、HTML、浏览器与 SDK 调用点。外部路径不可用不能作为外部项目不受影响的证明。

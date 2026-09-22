@@ -71,10 +71,10 @@ fn types_follow_bindings_calls_fields_and_lexical_scope() {
             "let title: String",
         ),
         ("let title = text(\"hi\"); title;", "let title: Content"),
-        ("let title = math(\"x\"); title;", "let title: Item"),
+        ("let title = math(\"x\"); title;", "let title: Content"),
         (
             "let title = with_attributes(item(\"custom\", (:)), (label: \"X\")); title;",
-            "let title: Item",
+            "let title: Content",
         ),
         (
             "let text = (x: String) => 3; let title = text(\"hi\"); title;",

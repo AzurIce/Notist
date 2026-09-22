@@ -101,10 +101,10 @@ pub fn run(args: Args) -> Result<bool, Box<dyn std::error::Error>> {
         let config = term::Config::default();
         for d in diagnostics {
             let mut labels = vec![];
-            if let Some(span) = &d.span {
-                if let Some(label) = label(span, true, &ids, &files) {
-                    labels.push(label);
-                }
+            if let Some(span) = &d.span
+                && let Some(label) = label(span, true, &ids, &files)
+            {
+                labels.push(label);
             }
             for related in &d.related {
                 if let Some(label) = label(&related.span, false, &ids, &files) {

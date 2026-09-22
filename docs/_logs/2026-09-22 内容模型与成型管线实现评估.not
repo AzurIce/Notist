@@ -1,0 +1,164 @@
+@!(ai: true, type: "log", desc: "2026-09-22 内容模型与成型管线的代码变动评估")
+
+= 实现变动评估
+
+本文记录 2026-09-22 对内容模型与成型管线的实现评估。代码基线为 commit `331a6ccebae0188b3cc45df1f8673718da122352`，评估时工作区仅有文档变更。文中的“当前”均指该时点；源码路径与符号是当时的核查记录，不依赖这些文件未来的内容。
+
+== 评估所依据的目标
+
+本次讨论的目标涉及语言核、文档语义、查询、插件和消费者。当时只更新设计文档，尚未实施代码变更。评估使用以下模型假设：
+
+- Content 是统一的内容值类型，每个值持有一个根 Item。text、space、seq、paragraph、link、error 和属性标注都使用 Item 表示；普通值仍包括标量、List、Dict、函数、模块和 Target。
+- 普通函数执行计算，其调用不自动生成同名节点。`item(name, fields)` 显式构造节点并返回 Content。
+- Code `[]`、Markup `#[]` 及尾随内容参数都构造 seq；空内容、单元素和多元素保留同样的结构边界。函数可以主动变换收到的内容。
+- 求值产生原始 Item 树；共享文档成型解释内容位置，聚合 paragraph、确定属性目标并检查约束；之后建立文档索引，再由消费者渲染或布局。前后内容使用同一节点表示。
+- paragraph 是具有身份和边界的文档单元。inline/block 描述内容在标准文档 flow 中的参与方式，内部内容槽约束与视觉投影分别定义；抽象 Item 树本身无需普遍具有该分类。
+- `@expr` 在求值时计算 Dict 并形成 annotation Item，在成型时附着。prose 前的标注作用于完整 paragraph；显式 seq 保留内外不同目标。连续标注后者覆盖同名键，属性不继承。
+- 列表采用嵌套条目 Item。条目中成型后的第一个实际 block 表示主内容，其余为详细内容；缩进等语法决定条目归属。
+- Core 作为标准 package 暴露构造器与文档模型，宿主提供必要的成型机制，外部 package 应能使用同样的公开能力。普通函数注册与展示组件注册均不足以直接提供任意成型算法。
+- 普通值的提前类型检查与求值后的内容约束验证分别设计。内容树不必保留完整调用来源树，但诊断位置、跳转和重复出现位置的独立身份仍需保留。
+
+当时尚未确定的内容包括：seq 含块内容时的处理、段落中部或空内容后的属性目标、未知 Item 的默认角色、显式 paragraph 的恢复策略、条目字段及首块视图、package 成型接口，以及完整静态类型保证的范围。后文的工作量与实施顺序以这些边界为前提。
+
+== 总体判断
+
+这是一项跨层重构。最深的变化在内容表示、段落形成时机和属性目标；最广的联动在 ABI、JSON、树索引和消费者。增加一个成型函数，无法单独完成目标。
+
+模块加载、词法闭包、一般表达式求值、路径解析和组件资源加载可以沿用现有框架。完整静态类型检查与任意外部规约 hook 都是独立的大项，可以在最小文档成型闭环之后推进。
+
+| 范围 | 当前事实 | 必要变化 | 变动程度 |
+| - | - | - | - |
+| model / ir | Content 混合枚举与独立 Item 值 | 单一内容值、全节点 Item、统一遍历和传输 | 高，接口联动广 |
+| syntax | 解析器直接生成 paragraph 和列表包装 | 保留内容边界、改变列表输出结构 | 高，语义变化集中 |
+| eval | 执行语法树并立即附着属性 | 生成原始 Item 和控制节点 | 高 |
+| 文档成型 | 无独立实现 | 上下文、角色、聚合、附着与诊断 | 新增核心能力 |
+| analysis | 对求值结果直接建索引 | 阶段分离、成型缓存、来源和查询调整 | 高 |
+| ABI / SDK | 普通函数注册，混合内容传输 | 统一编码，另设计元素定义与 hook | 高，需协同迁移 |
+| HTML / 调试器 | 匹配旧 JSON 与旧列表层级 | 统一节点解码及语义树消费 | 中高 |
+| CLI / LSP | 多个入口直接求值 | 汇入一致管线并合并诊断 | 中；协议变更按需 |
+
+程度表示改动深度与联动范围，不代表工期估算。待定语义会直接影响实际工作量。
+
+== 表示、遍历和诊断
+
+`crates/notist-model/src/lib.rs` 的 Type 同时含 Item 与 Content。`crates/notist-ir/src/lib.rs` 的 Value 同时含 `Value::Item` 和 `Value::Content`；Content 再分为 Text、Sequence、Item、Link 和 Error。`Value::ty`、`is_error`、`serializable`、`to_json` 及 Item 的属性操作均依赖该结构。
+
+目标需要 Content 包装统一 Item，text、space、seq、link、error 等通过节点定义表达。必须一起确定根节点访问、通用构造器、错误识别、字段类型及诊断数据的保存方式。可以采用不可变共享或受控复制，不能把带位置的属性附着直接写回被多处复用的值。
+
+`crates/notist-ir/src/tree.rs` 的 ItemIndex 只对现有 Item 分支建节点；Sequence 仅提供路径，Text、Link、Error 不进入索引。Step 也区分 ContentItem、ValueItem 和 ValueContent。统一后 roots、父子关系、节点编号及后代范围都会变化，不能靠给 Text 增加一个分支就完成。
+
+`crates/notist-ir/src/labels.rs` 的文本提取、默认 section label 和 label 匹配使用旧分支。名称匹配算法可沿用，文本提取与遍历必须适配 seq/text/space。`diagnostics.rs` 识别专门的 Error 分支并遍历字段和属性；统一后需保留诊断类别、位置及避免重复报告的规则。
+
+== 解析器
+
+`crates/notist-syntax/src/markup.rs` 的 `flush` 已经包出 paragraph，并对“只有一个函数调用”做直接输出的特殊处理。`flow_inner` 在空行处结束聚合，部分空白已被折叠或移除。该层无法知道函数实际返回什么内容。
+
+目标解析输出需保留 text、space、parbreak、annotation 和显式分组的信息。paragraph 聚合应由实际值及内容上下文决定。仍需由解析器保留标题级别、缩进列表归属、源码跨度，以及 raw/math 等语法形式的区别。
+
+`markup_inline` 限制行内语法跨越段落边界。这类词法限制需逐条判断是否仍属于语法，不能机械地全部迁移到成型。`ExprKind::Content`、Styled、Element、Section、Annotation 的降低方式和调试 JSON 也需同步。
+
+`markup_list` 当前生成 list/list-item 以及 terms/term-item。目标的嵌套条目模型需要实际调整解析结果与消费者；当前代码尚未实现该模型。应先确定条目字段与首块查询，避免丢失缩进、编号或术语信息。
+
+== 求值器
+
+`crates/notist-eval/src/lib.rs` 的 `content` 将标量、Target、List 等转成不同 Content 分支；`eval` 对 Content、Styled、Section 分别构造值；`item` 内置返回独立的 Value::Item。`matches_type` 还含 Content 接受 Item 的兼容规则。这些位置共同切换到统一内容值。
+
+`statements` 对普通 Annotation 累积 pending 属性，`attach` 穿过 Sequence 寻找第一个 Item，跳过 Text、Link 和 Error。目标需要在词法环境中求值 Dict 并输出 annotation Item；模块标注仍可直接处理。`with_attributes`、属性读取及现有字段访问需要相应的阶段约定。
+
+`concat`、内容加法和列表到内容的转换要明确 seq 包装保留规则。空序列、None 和单元素不能再次通过特殊路径绕过显式字面量边界。
+
+`crates/notist-eval/src/targets.rs` 的 output_links 特别匹配 Link 分支。目标链接成为 Item 后，链接收集和求值中 Target 观察都需要检查；输出链接与仅在变量中出现的 Target 是两个不同的检查来源。
+
+== 成型层的最小实现
+
+建议先形成独立的文档语义模块，再决定是否拆为单独 crate。接口可表达为 `form(raw_content, context, rules) -> content + diagnostics`，名字仅作示意。模块导出的普通值和函数保留求值语义，文档 body 通过显式入口成型，避免在导入时过早固化可复用 Content 的使用上下文。
+
+最小成型器需要以下操作：
+
+- 识别控制节点、可行内内容、独立内容和未知节点。
+- 按元素定义进入特定内容槽，保留原始结构边界。
+- 在 flow 中累积行内内容，遇到边界时生成 paragraph。
+- 按确定的附着规则累积和消费属性标注。
+- 检查显式 paragraph 等受约束位置，并产生可恢复诊断。
+- 给合成节点保留可用于跳转与诊断的来源范围。
+
+简单缓冲算法可以完成连续行内内容的聚合。难点在嵌套 seq 的对外分类、属性目标和内容槽上下文，它们必须共同设计。先把整个树扁平化再补回属性，会丢失显式分组的身份。
+
+第一步不需要任意不动点求解器。若开放展开规则，应增加规则顺序、递归预算和输出再处理协议；稳定性与终止性需要单独保证。
+
+== 分析、查询和静态检查
+
+`crates/notist-analysis/src/query.rs` 的 QuerySession::evaluate 当前调用 Runtime，然后直接为 `result.content` 创建 ItemIndex。EvaluationRef 暴露内容、根节点、引用等；ItemRef 暴露父子关系和 origin。这里需要区分原始求值与完成成型的文档，并对语义文档建索引。
+
+`snapshot.rs` 的 Snapshot::evaluate、EvaluationSession::evaluate_with_env，以及 `debug.rs` 的 analyze 都直接进入 Runtime。不能仅在 QuerySession 中加入成型，否则 preview、debug 或其他直接求值入口会观察不同结构。推荐提供明确的共享文档构建入口，同时保留原始求值入口供函数执行和调试使用。
+
+缓存需区分输入快照、内容上下文和 package 文档规则。相同值重复出现的节点身份以及跨阶段身份也要分别处理。当前 ItemRef::origin 与 CreationOrigin 承担来源查询；无需完整 call origin 树不等于可以直接删除这些 API。
+
+`types.rs` 的 InferredType 内部保存部分函数参数与结果信息，但 Call 分支主要推断实参和返回类型，没有完整执行同一套参数绑定检查；通用 Type::Function 也不携带完整签名。运行期 bind 和 WASM 返回值检查仍承担约束。提前静态检查需要新增或强化检查层，不能把现有推断直接视为完整保证。
+
+`documentation.rs`、`hints.rs` 的类型显示和诊断要适配 Content；`editor.rs` 的语法遍历、`targets.rs` 的引用跳转与目标诊断要核对新的表达式和来源。共享的名称与绑定定义可以减少静态分析和运行期检查之间的偏差。
+
+== 插件协议与 package
+
+`crates/notist-model/src/abi.rs` 的 Registration 只有 functions。ABI 的 Value 与 Content 都保留当前混合表示；`crates/notist-ir/src/transport.rs` 逐个转换；`crates/notist-eval/src/wasm.rs` 验证函数注册、参数和实际返回值。统一节点需要三处一起变更。
+
+有一处关键约束：当前 Target 不能作为普通 Value 跨 WASM 边界，但专门的 ABI Content::Link 可以携带 Target。把 Link 表达为普通 Item 后，必须决定链接字段保存结构化可传输数据，还是开放受限 Target 传输。直接把 Target 填进 fields 会违反现有编码限制。
+
+`crates/notist-plugin-sdk/src/lib.rs` 分别实现 Item 与 Content 的 PluginValue；`notist-plugin-macros` 通过这些类型定义生成注册和调用包装。SDK、宏测试、插件 fixture 及编译出的示例 WASM 要协同更新，避免声明返回 Content 而实际解码仍要求旧结构。
+
+元素模型声明或可执行成型 hook 都需要新的公开契约。现有普通函数注册不提供这些能力；也不能把它们仅硬编码给 Core 后宣称外部 package 已获得等价能力。
+
+`examples/packages/core/docs/README.notc` 已展示普通构造函数 package，但其 list/list-item 对应现有表示。`packages/mermaid`、`packages/canvas` 及 examples 中的自定义节点构造器需要确定文档参与方式，其组件资源继续负责展示。普通函数源码通常改动有限，协议、默认策略和测试的联动更大。
+
+== 消费者、调试器和入口
+
+`crates/notist-html/src/lib.rs` 的 render 与 `crates/notist-html/renderer.js` 分别匹配 Text、Sequence、Link、Error 和 Item。两端必须同步支持纯 Item 编码、seq、text/space、链接和新的嵌套条目；仍由字段显式渲染嵌套内容。标准文档语义应在进入这些 renderer 前一致确定。
+
+`crates/notist-cli/src/eval.rs` 与 preview.rs 存在直接 Runtime 求值入口；check.rs 使用 Snapshot/QuerySession。LSP 通过分析层获取诊断。需要让文档输出路径共享成型结果，保持纯求值入口的明确含义。新增内容诊断需要等级、错误码、来源跨度和去重策略，但这一点本身不要求改变 LSP 方法集、同步模式或编码协商。
+
+LSP 当前不加载 WASM 二进制。对依赖插件的内容形态只能保留未知或有限检查，不能因为缺少执行结果就报告为不合法。完整 package check 与编辑中的部分分析需要明确各自覆盖范围。
+
+`crates/notist-analysis/src/debug.rs` 当前只暴露 syntax、evaluation、result；`editor/crates/editor-wasm/src/lib.rs` 是其薄封装。`editor/app/app.js` 的 renderContentNode 硬编码旧 text/sequence/item/error 分支。调试面板、`editor/SNAPSHOT.md`、`docs/draft.not` 和 `editor/scripts/compare.mjs` 都要随协议调整。建议分别展示原始内容、成型结果和内容诊断，方便验证“节点在哪里产生、属性在哪里附着”。
+
+== 建议的实施顺序
+
+1. 确定最小语义样例：seq 混合内容、标注边界、未知节点、显式 paragraph 恢复、条目字段及首块查询。先为这些行为建立可审阅的输入输出约定。
+2. 统一 Content/Item、节点构造、遍历和传输表示；同步最低限度的查询与消费者，使结构变化保持可运行和可检查。
+3. 将 paragraph 聚合和属性目标迁移到共享成型层，解析器输出原始边界，所有文档入口使用同一实现；保留原始值及诊断来源。
+4. 完成嵌套条目、首块视图、label 查询、预览和调试对齐；验证复用内容与错误恢复。
+5. 用一个外部 package 验证公开元素模型协议；若需任意算法，再加入可执行 hook 和递归约束。
+6. 独立加强函数签名、调用检查和静态保证；与求值器共享绑定规则，并明确 Any/未知值的行为。
+
+第 2 至第 4 步存在强依赖，宜分成保持可构建的提交，在整个纵向闭环完成前不宣称目标管线已实现。完整静态检查和任意重写机制无需与首个闭环同时交付。
+
+== 验证范围
+
+以下是实施代码时所需的语义回归，本次文档更新不新增代码测试。
+
+| 样例 | 必须验证的结果 |
+| - | - |
+| 空、单元素、多元素字面量 | 都构造 seq；通过普通函数传递后按其实现保留或变换 |
+| foo 返回 paragraph | 无额外 foo 节点；显式 item 构造保留节点 |
+| text、space、link、error | 都可遍历为 Item，文本提取与错误诊断正常 |
+| 标注后接多行 prose | 属性附在完整合成 paragraph |
+| 连续标注与内外 seq 标注 | 前者合并，后者保持不同目标 |
+| 复用同一个 Content | 附着不污染其他出现位置，身份分别建立 |
+| inline 与 block 函数结果 | 自动分段依据实际值；显式 paragraph 对非法内容诊断 |
+| seq 内含空行或块 | 保留结构边界，按选定规则分段或诊断 |
+| 条目内段落和嵌套条目 | 主内容、详细内容与缩进归属正确 |
+| 重复 label 与跨模块引用 | 祖先匹配、歧义和求值中 Target 检查保持约定 |
+| 插件返回链接和嵌套内容 | ABI 往返、来源和语义分类一致 |
+| native / browser | 同一语义树及诊断，消费者无重复成型 |
+
+已有回归入口包括 `crates/notist-ir/tests/{values,transport}.rs`、`crates/notist-eval/tests/provider.rs`，analysis 下的 markup、labels、query、label_editor、language、hover_types、documentation、plugin_sdk、debug、snapshots，以及 CLI 下的 html、check、lsp。按实际改动运行对应测试；跨层闭环还需根 package、`examples/workspace` 与 `just web-compare` 检查。
+
+== 姊妹项目审查范围
+
+仓库约定从根 `.env` 获取姊妹项目路径。本次根 `.env` 不存在，因此无法按约定定位并核对外部 checkout；以下为待核验位置，不能视为已完成源码审查。
+
+- tree-sitter-notist：grammar 与 queries，核对语法边界、节点形状和高亮。仅移动内部段落生成时机未必需要修改公开 grammar，仍需对照确认。
+- zed-notist：extension.toml 钉住的 grammar revision 及 language server 接入；grammar 产物变化时同步。
+- obsidian-notist：共享高亮产物及 src/lsp/session.ts 中的协议假设；诊断语义变化时核对显示和定位。
+- vscode-notist：TextMate grammar、src/protocol.ts、scripts/fixtures/sample.not；按实际变化运行 tm-smoke 和 lsp-smoke。
+
+本仓库内嵌 editor 的相关代码与协议已纳入本次评估。姊妹项目的真实受影响清单和实机回归，应在路径可用且实施方案具体化后补齐。

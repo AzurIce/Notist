@@ -8,7 +8,10 @@ fn snapshot_describes_evaluation_and_items() {
     b["platform"] = serde_json::Value::Null;
     assert_eq!(a, b);
     assert!(a.get("normalization").is_none());
-    assert_eq!(a["result"]["content"]["sequence"][0]["item"], "section");
+    assert_eq!(
+        a["result"]["content"]["args"]["children"][0]["item"],
+        "section"
+    );
     assert!(!a["evaluation"]["events"].as_array().unwrap().is_empty());
     assert!(a["result"]["diagnostics"].as_array().unwrap().is_empty());
 }

@@ -73,6 +73,7 @@ pub enum OriginKind {
     Syntax,
     Constructor,
     Plugin,
+    Formation,
 }
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct CreationOrigin {
@@ -86,6 +87,7 @@ pub enum DiagnosticCode {
     Setup,
     Syntax,
     Evaluation,
+    ContentConstraint,
     InvalidLabel,
     TargetFormation,
     MissingModule,
@@ -99,6 +101,7 @@ impl DiagnosticCode {
             Self::Setup => "setup",
             Self::Syntax => "syntax",
             Self::Evaluation => "evaluation",
+            Self::ContentConstraint => "content_constraint",
             Self::InvalidLabel => "invalid_label",
             Self::TargetFormation => "target_formation",
             Self::MissingModule => "missing_module",

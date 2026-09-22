@@ -1,7 +1,7 @@
 use notist_analysis::EvaluationSession;
 use notist_eval::Evaluation;
 use notist_html::RenderHtml;
-use notist_ir::{Content, Value};
+use notist_ir::Value;
 fn run(source: &str) -> Evaluation {
     let mut r = EvaluationSession::default();
     r.sources.insert("README.notc".into(), source.into());
@@ -50,7 +50,7 @@ fn typed_defaults_named_trailing_recursion_and_capture() {
     "#);
     assert!(result.warnings.is_empty(), "{:?}", result.warnings);
     let json = result.content.to_json();
-    assert_eq!(json["sequence"][0]["item"], "panel");
+    assert_eq!(json["args"]["children"][0]["item"], "panel");
     assert!(json.to_string().contains("120"));
     assert!(json.to_string().contains('5'));
 }
@@ -84,7 +84,7 @@ fn optional_parameters_supply_none_only_when_omitted() {
         dependent(); dependent(7);
     "#);
     assert!(result.warnings.is_empty(), "{:?}", result.warnings);
-    assert_eq!(result.content.html(), "nonenone32none5none7");
+    assert_eq!(result.content.html(), "<p>nonenone32none5none7</p>");
 
     let result = run(r#"
         let named = (optional: Int?, required: String) => required;
@@ -93,7 +93,10 @@ fn optional_parameters_supply_none_only_when_omitted() {
         body(); body()[content]; body(value: none);
     "#);
     assert!(result.warnings.is_empty(), "{:?}", result.warnings);
-    assert_eq!(result.content.html(), "namedpositionalemptycontentempty");
+    assert_eq!(
+        result.content.html(),
+        "<p>namedpositionalemptycontentempty</p>"
+    );
 }
 
 #[test]
@@ -139,7 +142,7 @@ fn collections_none_and_item_values() {
     assert!(r.content.html().contains("hellox"));
     let r = run("let f = (x: String? = none) => if x == none { [empty] } else { text(x) }; f();");
     assert!(r.warnings.is_empty());
-    assert_eq!(r.content.html(), "empty");
+    assert_eq!(r.content.html(), "<p>empty</p>");
 }
 
 #[test]
@@ -164,7 +167,7 @@ fn not_markup_and_item_targets_share_the_code_pipeline() {
     assert!(result.warnings.is_empty(), "{:?}", result.warnings);
     assert_eq!(
         result.content.html(),
-        "<a href=\"root::guide::&quot;intro&quot;\">root::guide::&quot;intro&quot;</a>"
+        "<p><a href=\"root::guide::&quot;intro&quot;\">root::guide::&quot;intro&quot;</a></p>"
     );
 }
 #[test]
@@ -240,7 +243,7 @@ fn paths_aliases_globs_self_super_numbers_and_spaces() {
     );
     let result = r.evaluate("p0/docs/README.notc");
     assert!(result.warnings.is_empty(), "{:?}", result.warnings);
-    assert_eq!(result.content.html(), "guideguidedatehelper");
+    assert_eq!(result.content.html(), "<p>guideguidedatehelper</p>");
 }
 #[test]
 fn conflicts_cycles_and_package_relative_roots() {
@@ -275,7 +278,10 @@ fn conflicts_cycles_and_package_relative_roots() {
         .entry("p0".into())
         .or_default()
         .insert("dep".into(), "p1".into());
-    assert_eq!(r.evaluate("p0/docs/README.notc").content.html(), "own root");
+    assert_eq!(
+        r.evaluate("p0/docs/README.notc").content.html(),
+        "<p>own root</p>"
+    );
 }
 #[test]
 fn item_html_and_error_boundaries() {
@@ -286,7 +292,7 @@ fn item_html_and_error_boundaries() {
     assert!(html.contains("<p>a <strong>b</strong></p>"));
     assert!(html.contains("data-count=\"3\""));
     assert!(html.contains("&lt;script&gt;"));
-    assert!(html.ends_with("tail"));
+    assert!(html.ends_with("tail</p>"));
     assert_eq!(r.warnings.len(), 1);
     assert!(run("item(\"arbitrary.name\", (:));").warnings.is_empty());
 }
@@ -294,6 +300,7 @@ fn item_html_and_error_boundaries() {
 fn registration_named_defaults_and_nested_paths() {
     use notist_model::{Type, abi};
     let registry = serde_json::to_string(&abi::Registration {
+        elements: Default::default(),
         functions: [(
             "echo".into(),
             abi::Function {
@@ -337,7 +344,7 @@ fn registration_named_defaults_and_nested_paths() {
         .insert("p0/wasm/semantic.wasm".into(), wat::parse_str(wat).unwrap());
     let result = r.evaluate("p0/docs/README.notc");
     assert!(result.warnings.is_empty(), "{:?}", result.warnings);
-    assert_eq!(result.content.html(), "hellodefault");
+    assert_eq!(result.content.html(), "<p>hellodefault</p>");
     assert_eq!(r.used_wasm.len(), 1);
 }
 #[test]
@@ -346,5 +353,5 @@ fn bounded_recursion_and_data() {
     assert!(!Value::List(vec![Value::Named("f".into())]).serializable());
     let r = run("let f = () => error(\"bad\"); item(\"x\", (nested: (inner: f())));");
     assert_eq!(r.warnings.len(), 1);
-    assert!(matches!(r.content, Content::Sequence(_)));
+    assert_eq!(r.content.name, "seq");
 }

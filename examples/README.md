@@ -1,6 +1,6 @@
 # Notist Language Examples
 
-A self-contained `.not`/`.notc` evaluator with first-class Content and Item values, local packages, Rust-style module paths, registered WASM functions, and a separate HTML consumer.
+A `.not`/`.notc` evaluator with one Content value type, uniform Item trees, shared document formation, local packages, registered WASM functions, and a separate HTML consumer.
 
 ```sh
 cargo test -j4 -p notist-analysis -- --test-threads=4
@@ -26,11 +26,13 @@ let diagram = (source: String, theme: String = "default") =>
 diagram("graph LR; A --> B");
 ```
 
-Top-level `let` and registered WASM functions are exported; imported bindings are local. A module initializes once per evaluation. Cyclic imports and duplicate bindings are diagnosed. Functions have lexical capture, self-recursion, runtime parameter types, defaults, named arguments, and trailing Content. Default expressions see preceding parameters. There is no overloading or implicit rewrite stage.
+Top-level `let` and registered WASM functions are exported; imported bindings are local. A module initializes once per evaluation. Cyclic imports and duplicate bindings are diagnosed. Functions have lexical capture, self-recursion, runtime parameter types, defaults, named arguments, and trailing Content. Default expressions see preceding parameters. Ordinary calls execute during evaluation; document formation processes their output without invoking user rewrite hooks.
 
 ## Content and Rendering
 
-`[]` constructs Content. `()` / `(a,)` / `(a,b)` construct Lists; `(:)` / `(key: value)` construct Dicts. `none` is distinct from empty Content and Error Content. `item(name, args)` returns Item with structured arguments and source location. `.name` and `.args` inspect an Item. Content accepts Items; Item arguments may contain nested Content. Error nodes survive alongside other output.
+`[]` always constructs a seq Item, including empty and singleton literals. Its value type is Content, shared with text, space, paragraph, link, error and custom Items. `()` / `(a,)` / `(a,b)` construct Lists; `(:)` / `(key: value)` construct Dicts. `none` is distinct from an empty seq. `item(name, args)` returns Content. `.name`, `.args` and `.attributes` inspect its root Item. Structured arguments may contain nested Content; error Items survive alongside other output.
+
+Evaluation produces a raw tree. Shared document formation groups inline runs into paragraphs, resolves annotations and validates content slots. A leading prose annotation targets the whole paragraph; an explicit seq retains its own attribute boundary. Unknown Items are opaque blocks. Packages declare models with `define_element("badge", true, (body: "inline"))` or `define_element("callout", false, (body: "flow"))`. Markup list entries are nested list-item Items; their first formed block is main content and remaining blocks are details.
 
 The HTML consumer maps core paragraph/section/heading/list/list-item/strong/em nodes to native elements. Other names map to `notist-<name>`. Each field is JSON-encoded into `data-<field>`; unsupported tag/attribute names are rendering errors. The browser renderer passes the original structured args to `render(args, { renderContent })`; Content fields are rendered explicitly by the component. The component module's default export is a custom element class. The host owns registration. Synchronous and asynchronous `render` failures are local diagnostics; later event-handler failures remain the component's responsibility.
 
@@ -58,10 +60,10 @@ pub fn add(left: i64, right: i64) -> i64 { left + right }
 
 `init_plugin!` lists the annotated function paths to register. Rust calls still supply every argument. Notist parameter and default rules are defined in `docs/designs/value-and-types.not`; `Option<T>` maps to `T?`. Build plugins as release cdylibs for `wasm32-unknown-unknown`. `just test-plugin-sdk` builds the SDK example and tests it through the evaluator.
 
-Registration and values use the shared structured types in `notist-model::abi`. Registration is cached per binary path per evaluation and bindings are installed atomically after validation. Function calls use fresh instances. The ABI's tagged value encoding is separate from renderer/debug JSON. Functions, modules and standalone targets cannot cross the ABI; returned Items and errors receive host-side call locations. Exported user-defined types are not implemented.
+Registration and values use the shared structured types in `notist-model::abi`. Registration is cached per binary path per evaluation and bindings are installed atomically after validation. Function calls use fresh instances. The ABI's tagged value encoding is separate from renderer/debug JSON. Content is one Item with tagged values in its arguments and attributes. Target values can cross the ABI; functions and modules cannot. Returned Items receive host-side call locations. `init_plugin!(elements = models; foo, bar)` additionally registers the name-to-ElementModel map returned by `models()`. Executable formation hooks and exported user-defined types are not implemented.
 
 ## Scope
 
 The demo tests transitive components and WASM registration. Mermaid/Shader components display source text; they do not bundle those rendering engines. Registry/version resolution, public/private declarations, static type inference, and custom WASM type definitions remain outside this prototype.
 
-`cargo run -j4 -p notist-analysis --example build_fixture` regenerates the WASM fixture and portable package request. `just web-build` and `just web-fixtures` build the browser evaluator; `just web-compare` compares only native/browser `result.content` and `result.diagnostics`.
+`cargo run -j4 -p notist-analysis --example build_fixture` regenerates the WASM fixture and portable package request. `just web-build` and `just web-fixtures` build the browser evaluator; `just web-compare` compares native/browser `evaluation.content`, `result.content` and `result.diagnostics`.

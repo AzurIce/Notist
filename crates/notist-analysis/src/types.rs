@@ -23,7 +23,6 @@ impl InferredType {
             return !matches!(self, Self::Known(Type::None)) && self.incompatible(inner);
         }
         match self {
-            Self::Known(Type::Item) if *expected == Type::Content => false,
             Self::Known(Type::Optional(inner)) => {
                 Self::Known(*inner.clone()).incompatible(expected)
             }
@@ -209,7 +208,7 @@ impl<'a> Analysis<'a> {
                 for (_, e) in fields {
                     infer(e);
                 }
-                Known(Type::Item)
+                Known(Type::Content)
             }
             ExprKind::Content(values) | ExprKind::Styled(_, values) => {
                 let mut local = env.clone();
@@ -220,11 +219,7 @@ impl<'a> Analysis<'a> {
                         self.expr(uri, e, &local, info, depth + 1);
                     }
                 }
-                Known(if matches!(expr.kind, ExprKind::Styled(..)) {
-                    Type::Item
-                } else {
-                    Type::Content
-                })
+                Known(Type::Content)
             }
             ExprKind::Section(_, title, body) => {
                 for values in [title, body] {
@@ -237,7 +232,7 @@ impl<'a> Analysis<'a> {
                         }
                     }
                 }
-                Known(Type::Item)
+                Known(Type::Content)
             }
             ExprKind::Lambda(params, body) => {
                 let mut local = env.clone();
@@ -262,8 +257,8 @@ impl<'a> Analysis<'a> {
             }
             ExprKind::Field(base, field) => match infer(base) {
                 InferredType::Dict(fields) => fields.get(field).cloned().unwrap_or_default(),
-                Known(Type::Item) if field == "name" => Known(Type::String),
-                Known(Type::Item) if matches!(field.as_str(), "args" | "attributes") => {
+                Known(Type::Content) if field == "name" => Known(Type::String),
+                Known(Type::Content) if matches!(field.as_str(), "args" | "attributes") => {
                     Known(Type::Dict)
                 }
                 _ => Unknown,
@@ -284,9 +279,7 @@ impl<'a> Analysis<'a> {
                     }
                     ("+" | "-" | "*" | "/", Known(Type::Int), Known(Type::Int)) => Known(Type::Int),
                     ("+", Known(Type::String), Known(Type::String)) => Known(Type::String),
-                    ("+", Known(Type::Content | Type::Item), Known(Type::Content | Type::Item)) => {
-                        Known(Type::Content)
-                    }
+                    ("+", Known(Type::Content), Known(Type::Content)) => Known(Type::Content),
                     _ => Unknown,
                 }
             }
@@ -307,10 +300,11 @@ fn builtin(name: &str) -> InferredType {
     use Type::*;
     let (params, result) = match name {
         "text" => (vec![String], Content),
-        "math" | "raw" => (vec![String], Item),
-        "item" => (vec![String, Dict], Item),
-        "with_attributes" => (vec![Item, Dict], Item),
-        "link" => (vec![String, Any], Item),
+        "define_element" => (vec![String, Bool, Dict], None),
+        "math" | "raw" => (vec![String], Content),
+        "item" => (vec![String, Dict], Content),
+        "with_attributes" => (vec![Content, Dict], Content),
+        "link" => (vec![String, Any], Content),
         "str" => (vec![Any], String),
         "len" => (vec![Any], Int),
         "concat" => (vec![List], Content),

@@ -1,0 +1,43 @@
+@!(ai: true, desc: "seq 字面量、结构身份、属性边界及段落参与方式")
+
+= seq
+
+seq 是具有有序 children 的 Item，值类型为 Content。Code `[]` 和 Markup `#[]` 是构造 seq 的语法糖；Markup 中单独的方括号保持普通文本含义。
+
+```text
+[]           → seq([])
+[hello]      → seq([text("hello")])
+#foo[hello]  → 调用 foo，传入 seq([text("hello")])
+```
+
+右侧为模型伪代码。每个内容字面量都产生新的 seq，空内容、单元素和多元素的结构规则一致。自动组合不会因 children 数量为一而消除该层。
+
+== 函数参数
+
+`foo(body: Content)` 可以接收 seq，也可以通过普通调用接收其他 Content。尾随内容语法固定传入 seq，无须把签名限定成某个独立的 container 类型。
+
+字面量保证构造时的节点存在；foo 可以有意展开 children、重组或丢弃输入，也可以把输入原样存入自己的 body。函数结果的层级由其实现决定。
+
+== 结构边界与段落边界
+
+seq 提供可被命名、附着属性和查询的结构边界。外部标注可以以 seq 为目标，内部标注在内部解释；单元素时也不与外层标注合并。
+
+seq 的结构存在不自动决定它会不会中断 paragraph。只含行内内容的 seq 可以作为整体参与外部段落，并保留结构包装。含段落边界或块内容时，需要结合当前内容位置解释。
+
+```not
+a #[b] d
+
+a #[b
+
+c] d
+```
+
+两例在求值后都保留 seq。第一例适合在同一段落内保留内嵌 seq。第二例必须为内部两个文档单元规定行为，不能仅按 seq 这个名字断定它可行内。
+
+== 成型规则
+
+内容能整体行内时，seq 作为一个节点参与外层 paragraph，内部按 Inline 处理。否则结束外层行内聚合，在 seq 内完成 Flow 成型，随后外层开始新的聚合。第二个例子的外层结构为 paragraph(a)、seq(paragraph(b), paragraph(c))、paragraph(d)。
+
+明确要求 Inline 的位置遇到不能行内的 seq 时，产生内容约束错误，该出现位置用 error Item 恢复。seq 的判断递归查看 children，忽略待附着的 annotation；parbreak 或独立块使它不能整体行内。
+
+空 seq 保留，单独的空 seq 不制造 paragraph，也可以接收外部标注。seq 本身有属性不使其成为 block。children 字段必须为 Content 组成的 List，非法值产生内容约束错误。

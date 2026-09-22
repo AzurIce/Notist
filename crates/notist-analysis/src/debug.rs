@@ -165,13 +165,13 @@ pub fn analyze(input: &str) -> Json {
             let mut d = d.clone(); input.enrich(&mut d);
             let source = d.location.as_ref().map_or(entry, |l| l.source.as_str());
             let range = d.span.as_ref().map_or([0,0], |s| [s.start,s.end]);
-            json!({"severity":"error","stage":"evaluate","code":d.code.as_str(),"source_id":source_id(source),"range":range,"message":d.message})
+            json!({"severity":"error","stage":if d.code == notist_model::DiagnosticCode::ContentConstraint { "form" } else { "evaluate" },"code":d.code.as_str(),"source_id":source_id(source),"range":range,"message":d.message})
         })).collect::<Vec<_>>();
     let events=runtime.events.iter().enumerate().map(|(i,e)|json!({"i":i,"phase":"evaluate","kind":e["kind"],"node":null,"source_id":source_id(e["source"].as_str().unwrap_or(entry)),"range":e["range"],"name":null,"detail":"function evaluation","in":null,"out":e["out"].to_string()})).collect::<Vec<_>>();
     json!({"protocol":"notist-debug-snapshot","request_id":request["request_id"].as_str().unwrap_or("native"),
         "platform":{"target":if cfg!(target_arch="wasm32"){"wasm32-unknown-unknown"}else{"native"},"elapsed_ms":started.elapsed().as_secs_f64()*1000.0},
         "source":{"files":files,"entry_source_id":source_id(entry)},"syntax":{"tokens":tokens,"statements":statements,"errors":errors},
-        "evaluation":{"events":events},"result":{"content":evaluation.content.to_json(),"bindings":env.iter().map(|(k,v)|json!({"name":k,"value":v.to_json().to_string(),"source_id":source_id(entry)})).collect::<Vec<_>>(),
+        "evaluation":{"events":events,"content":evaluation.raw_content.to_json()},"result":{"content":evaluation.content.to_json(),"bindings":env.iter().map(|(k,v)|json!({"name":k,"value":v.to_json().to_string(),"source_id":source_id(entry)})).collect::<Vec<_>>(),
         "attributes":evaluation.attributes.iter().map(|(k,v)|(k,v.to_json())).collect::<std::collections::BTreeMap<_,_>>(),
         "modules":runtime.module_attributes.iter().map(|(source,attrs)|(source,attrs.iter().map(|(k,v)|(k,v.to_json())).collect::<std::collections::BTreeMap<_,_>>())).collect::<std::collections::BTreeMap<_,_>>(),
         "diagnostics":diagnostics,"stats":{"events":events.len(),"tokens":tokens.len()}},"truncated":[]})

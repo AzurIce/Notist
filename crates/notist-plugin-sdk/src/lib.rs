@@ -27,7 +27,7 @@
 extern crate self as notist_plugin_sdk;
 
 pub use abi::{Content, Item, Value};
-pub use notist_model::{Target, Type, abi};
+pub use notist_model::{ContentMode, ElementModel, Target, Type, abi};
 /// Annotate a synchronous, non-generic Rust function with a Notist export.
 /// `#[func(defaults(parameter = expression))]` supplies explicit registration defaults.
 ///
@@ -46,6 +46,8 @@ pub use notist_model::{Target, Type, abi};
 pub use notist_plugin_macros::func;
 /// Initialize a plugin once, listing its annotated functions (including module paths).
 /// Also generates native `notist_registration` and `notist_dispatch` test entry points.
+/// `init_plugin!(elements = models; foo, bar)` includes the element definitions returned
+/// by `models() -> BTreeMap<String, ElementModel>` in the same registration payload.
 pub use notist_plugin_macros::init_plugin;
 use std::collections::BTreeMap;
 
@@ -77,7 +79,7 @@ macro_rules! scalar {
 scalar!(String, String);
 scalar!(i64, Int);
 scalar!(bool, Bool);
-scalar!(Item, Item);
+scalar!(Target, Target);
 
 impl PluginValue for Content {
     fn ty() -> Type {
@@ -89,7 +91,6 @@ impl PluginValue for Content {
     fn from_value(value: Value) -> Result<Self, String> {
         match value {
             Value::Content(v) => Ok(v),
-            Value::Item(v) => Ok(Self::Item(v)),
             _ => Err("expected Content".into()),
         }
     }
@@ -215,7 +216,10 @@ pub mod __private {
                 export.name
             );
         }
-        abi::Registration { functions }
+        abi::Registration {
+            functions,
+            elements: BTreeMap::new(),
+        }
     }
 
     pub fn invoke_export(exports: &[Export], name: &str, input: &[u8]) -> Vec<u8> {
@@ -236,7 +240,7 @@ pub mod __private {
         let result = serde_json::from_slice(input)
             .map_err(|e| format!("invalid arguments: {e}"))
             .and_then(call)
-            .unwrap_or_else(|message| Value::Content(Content::Error(message)));
+            .unwrap_or_else(|message| Value::Content(Content::error(message)));
         serde_json::to_vec(&result).expect("result contains only serializable data")
     }
 

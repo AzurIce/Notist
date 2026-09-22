@@ -96,7 +96,7 @@ fn normalized_modules_support_nested_imports_and_report_collisions() {
     let mut loaded = package::load(&f.0).unwrap();
     let result = loaded.runtime.evaluate(&loaded.entry);
     assert!(result.warnings.is_empty(), "{:?}", result.warnings);
-    assert_eq!(result.content.html(), "abc");
+    assert_eq!(result.content.html(), "<p>abc</p>");
     assert!(
         loaded
             .runtime

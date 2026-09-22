@@ -1,5 +1,5 @@
 //! Conversion at the plugin boundary; renderer/debug JSON is a separate format.
-use crate::{Content, DiagnosticCode, Item, Location, Value};
+use crate::{Content, Item, Location, Value};
 use notist_model::abi;
 use std::collections::BTreeMap;
 
@@ -32,7 +32,7 @@ impl Value {
             }
             Self::Dict(v) => abi::Value::Dict(encode_fields(v)?),
             Self::Content(v) => abi::Value::Content(v.to_abi()?),
-            Self::Item(v) => abi::Value::Item(v.to_abi()?),
+            Self::Target(v) => abi::Value::Target(v.clone()),
             _ => return Err(format!("{:?} cannot cross the WASM boundary", self.ty())),
         })
     }
@@ -48,7 +48,7 @@ impl Value {
             }
             abi::Value::Dict(v) => Self::Dict(decode_fields(v, location)),
             abi::Value::Content(v) => Self::Content(Content::from_abi(v, location)),
-            abi::Value::Item(v) => Self::Item(Item::from_abi(v, location)),
+            abi::Value::Target(v) => Self::Target(v),
         }
     }
 }
@@ -68,43 +68,11 @@ impl Item {
             args: decode_fields(item.args, location),
             attributes: decode_fields(item.attributes, location),
             location: location.clone(),
+            span: None,
             origin: Some(crate::CreationOrigin {
                 node_id: None,
                 kind: crate::OriginKind::Plugin,
             }),
-        }
-    }
-}
-
-impl Content {
-    fn to_abi(&self) -> Result<abi::Content, String> {
-        Ok(match self {
-            Self::Text(v) => abi::Content::Text(v.clone()),
-            Self::Sequence(v) => {
-                abi::Content::Sequence(v.iter().map(Self::to_abi).collect::<Result<_, _>>()?)
-            }
-            Self::Item(v) => abi::Content::Item(v.to_abi()?),
-            Self::Link { target, .. } => abi::Content::Link(target.clone()),
-            Self::Error { message, .. } => abi::Content::Error(message.clone()),
-        })
-    }
-
-    fn from_abi(content: abi::Content, location: &Location) -> Self {
-        match content {
-            abi::Content::Text(v) => Self::Text(v),
-            abi::Content::Sequence(v) => {
-                Self::Sequence(v.into_iter().map(|v| Self::from_abi(v, location)).collect())
-            }
-            abi::Content::Item(v) => Self::Item(Item::from_abi(v, location)),
-            abi::Content::Link(target) => Self::Link {
-                target,
-                location: location.clone(),
-            },
-            abi::Content::Error(message) => Self::Error {
-                code: DiagnosticCode::Evaluation,
-                message,
-                location: location.clone(),
-            },
         }
     }
 }

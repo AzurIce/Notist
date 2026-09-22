@@ -48,7 +48,16 @@ fn snapshots_share_unchanged_parses_and_freeze_sources_and_dependencies() {
     for (snapshot, expected) in [(&before, "1"), (&after, "3")] {
         let result = snapshot.evaluate("p0/docs/README.notc");
         assert!(result.warnings.is_empty(), "{:?}", result.warnings);
-        assert_eq!(result.content.to_json()["sequence"][0]["text"], expected);
+        assert_eq!(
+            result
+                .raw_content
+                .children()
+                .next()
+                .unwrap()
+                .string("text")
+                .unwrap(),
+            expected
+        );
     }
 }
 
@@ -70,7 +79,16 @@ fn namespace_only_modules_resolve_without_source_files() {
     assert!(snapshot.source("group/README.notc").is_none());
     let result = snapshot.evaluate("README.notc");
     assert!(result.warnings.is_empty(), "{:?}", result.warnings);
-    assert_eq!(result.content.to_json()["sequence"][0]["text"], "42");
+    assert_eq!(
+        result
+            .raw_content
+            .children()
+            .next()
+            .unwrap()
+            .string("text")
+            .unwrap(),
+        "42"
+    );
 }
 
 #[test]
@@ -98,7 +116,16 @@ fn workspace_snapshot_reuses_overlay_parse_and_retains_origin() {
     workspace.open(uri, "let answer = 100;".into(), Some(2));
     let result = snapshot.evaluate("p0/docs/README.notc");
     assert!(result.warnings.is_empty(), "{:?}", result.warnings);
-    assert_eq!(result.content.to_json()["sequence"][0]["text"], "99");
+    assert_eq!(
+        result
+            .raw_content
+            .children()
+            .next()
+            .unwrap()
+            .string("text")
+            .unwrap(),
+        "99"
+    );
 }
 
 #[test]

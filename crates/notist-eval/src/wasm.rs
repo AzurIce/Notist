@@ -44,7 +44,17 @@ pub fn invoke(
     }
 }
 
-pub fn registration(bytes: &[u8], path: &str, location: &Location) -> Result<Env, String> {
+pub fn registration(
+    bytes: &[u8],
+    path: &str,
+    location: &Location,
+) -> Result<
+    (
+        Env,
+        std::collections::BTreeMap<String, notist_model::ElementModel>,
+    ),
+    String,
+> {
     let output = run(bytes, "notist_register", b"[]").map_err(|e| e.to_string())?;
     let registry: abi::Registration = serde_json::from_slice(&output)
         .map_err(|e| format!("invalid registration encoding: {e}"))?;
@@ -90,14 +100,12 @@ pub fn registration(bytes: &[u8], path: &str, location: &Location) -> Result<Env
             })),
         );
     }
-    Ok(env)
+    Ok((env, registry.elements))
 }
 
 fn validate_type(ty: &Type) -> Result<(), String> {
     match ty {
-        Type::Module | Type::Target | Type::Function => {
-            Err(format!("{ty:?} cannot cross the WASM boundary"))
-        }
+        Type::Module | Type::Function => Err(format!("{ty:?} cannot cross the WASM boundary")),
         Type::Optional(inner) => validate_type(inner),
         _ => Ok(()),
     }

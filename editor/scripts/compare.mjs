@@ -15,5 +15,6 @@ native.platform = null;
 wasm.platform = null;
 // Source ids and timing are host details; the language result and diagnostics are the contract.
 assert.deepEqual(wasm.result.content, native.result.content);
+assert.deepEqual(wasm.evaluation.content, native.evaluation.content);
 assert.deepEqual(wasm.result.diagnostics, native.result.diagnostics);
 console.log('Native/WASM package results match.');

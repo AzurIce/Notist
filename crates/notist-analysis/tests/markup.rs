@@ -107,7 +107,7 @@ fn brackets_are_text_while_code_keeps_content_boundaries() {
         .insert("README.notc".into(), "[literal [brackets]];".into());
     assert_eq!(
         runtime.evaluate("README.notc").content.html(),
-        "literal [brackets]"
+        "<p>literal [brackets]</p>"
     );
 }
 
@@ -132,8 +132,9 @@ fn lists_nest_and_preserve_numbering_and_terms() {
     let content = checked(
         "- First\n  continuation\n  + Nested\n  + Again\n- Second\n\n5. Five\n+ Six\n\n/ Term: definition\n  continuation\n/ Next: description\n\nOutside",
     );
-    let lists = items(&content, "list");
-    assert_eq!(lists.len(), 3, "{content}");
+    assert!(items(&content, "list").is_empty());
+    let lists = items(&content, "list-item");
+    assert_eq!(lists.len(), 6, "{content}");
     assert_eq!(lists[0]["args"]["ordered"], false);
     assert_eq!(lists[1]["args"]["ordered"], true);
     assert!(
@@ -142,7 +143,7 @@ fn lists_nest_and_preserve_numbering_and_terms() {
             .any(|v| v["args"]["number"] == 5)
     );
     assert_eq!(items(&content, "term-item").len(), 2);
-    assert_eq!(items(&content, "terms").len(), 1);
+    assert!(items(&content, "terms").is_empty());
 }
 
 #[test]
@@ -171,7 +172,7 @@ fn annotations_and_interpolation_keep_node_boundaries() {
     );
     assert!(result.warnings.is_empty(), "{:?}", result.warnings);
     let content = result.content.to_json();
-    assert_eq!(items(&content, "paragraph").len(), 2);
+    assert_eq!(items(&content, "paragraph").len(), 3);
     assert_eq!(
         items(&content, "paragraph")[0]["attributes"]["label"],
         "custom"

@@ -13,19 +13,11 @@ fn expression(source: &str) -> Expr {
 fn wikilink(source: &str) -> Expr {
     let parsed = parse_source("test.not", source);
     assert!(parsed.errors.is_empty(), "{:?}", parsed.errors);
-    let [Statement::Expression(paragraph)] = parsed.statements.as_slice() else {
-        panic!("expected one paragraph: {:?}", parsed.statements);
+    let [Statement::Expression(target)] = parsed.statements.as_slice() else {
+        panic!("expected one raw target: {:?}", parsed.statements);
     };
-    let ExprKind::Element(name, fields) = &paragraph.kind else {
-        panic!("expected paragraph element");
-    };
-    assert_eq!(name, "paragraph");
-    let ExprKind::Content(parts) = &fields[0].1.kind else {
-        panic!("expected paragraph content");
-    };
-    assert_eq!(parts.len(), 1);
-    assert_eq!(parts[0].offset, 0);
-    assert_eq!(parts[0].end, source.len());
+    assert_eq!(target.offset, 0);
+    assert_eq!(target.end, source.len());
     let tokens: Vec<_> = parsed
         .tokens
         .iter()
@@ -33,7 +25,7 @@ fn wikilink(source: &str) -> Expr {
         .collect();
     assert_eq!(tokens.len(), 1);
     assert_eq!((tokens[0].start, tokens[0].end), (0, source.len()));
-    parts[0].clone()
+    target.clone()
 }
 
 #[test]
