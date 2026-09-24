@@ -310,7 +310,28 @@ fn builtin(name: &str) -> InferredType {
         "concat" => (vec![List], Content),
         "map" => (vec![Function, List], List),
         "is_error" => (vec![Any], Bool),
-        _ => return InferredType::Unknown,
+        _ => {
+            return notist_eval::core_definitions()
+                .statements
+                .iter()
+                .find_map(|statement| match statement {
+                    Statement::Let(
+                        binding,
+                        Expr {
+                            kind: ExprKind::Lambda(params, _),
+                            ..
+                        },
+                    ) if binding == name => Some(InferredType::Function(
+                        params
+                            .iter()
+                            .map(|param| InferredType::Known(param.ty.clone()))
+                            .collect(),
+                        Box::new(InferredType::Known(Content)),
+                    )),
+                    _ => None,
+                })
+                .unwrap_or_default();
+        }
     };
     InferredType::Function(
         params.into_iter().map(InferredType::Known).collect(),

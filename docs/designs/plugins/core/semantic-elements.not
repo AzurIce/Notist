@@ -2,7 +2,7 @@
 
 = 常用语义元素
 
-Core 的普通函数构造以下 Item。`body: Content` 是尾随 `[...]` 所绑定的最右侧 Content 参数；可选的 Content 字段值为 `()` 时，构造结果省略该字段。内容槽中的 Inline 与 Flow 遵循文档成型规则。
+Core 的普通函数构造以下 Item，在 `.not` 和 `.notc` 中可以直接调用。`body: Content` 是尾随 `[...]` 所绑定的最右侧 Content 参数；可选的 Content 字段值为 `()` 时，构造结果省略该字段。内容槽中的 Inline 与 Flow 遵循文档成型规则。
 
 | 函数 | Item | 内容槽 | 文档角色 |
 | - | - | - | - |

@@ -22,12 +22,8 @@ fn named<'a>(content: &'a Content, label: &str) -> &'a Content {
 #[test]
 fn core_structural_elements_form_and_render_nested_content() {
     let mut session = EvaluationSession::default();
-    session.sources.insert(
-        "core.notc".into(),
-        include_str!("../../../examples/packages/core/docs/README.notc").into(),
-    );
     session.sources.insert("README.notc".into(), r#"
-        use vault::core::{callout, details, quote, figure, image, table_cell, table, strike, underline};
+        rule();
         callout(kind: "tip", title: [Hint])[A #underline[word] and #strike[old]];
         details(summary: [More], open: true)[Expanded];
         quote(attribution: [Author])[Quoted];
@@ -43,6 +39,7 @@ fn core_structural_elements_form_and_render_nested_content() {
     let html = result.content.html();
     for expected in [
         "<aside",
+        "<hr>",
         "<details",
         "<blockquote",
         "<figure",
@@ -84,15 +81,53 @@ fn table_rejects_non_cells_and_incomplete_rows() {
 fn table_spans_fill_successive_rows() {
     let mut session = EvaluationSession::default();
     session.sources.insert(
-        "core.notc".into(),
-        include_str!("../../../examples/packages/core/docs/README.notc").into(),
+        "README.notc".into(),
+        "table(2)[#table_cell(rowspan: 2)[A]#table_cell[B]#table_cell[C]];".into(),
     );
-    session.sources.insert("README.notc".into(), "use vault::core::{table, table_cell}; table(2)[#table_cell(rowspan: 2)[A]#table_cell[B]#table_cell[C]];".into());
     let result = session.evaluate("README.notc");
     assert!(result.diagnostics.is_empty(), "{:?}", result.diagnostics);
     let html = result.content.html();
     assert_eq!(html.matches("<tr>").count(), 2, "{html}");
     assert!(html.contains("rowspan=\"2\""), "{html}");
+}
+
+#[test]
+fn core_constructors_work_in_plain_markup_and_can_be_shadowed() {
+    let result = run(
+        "#rule()\n#callout(kind: \"tip\", title: [Hint])[Body]\n#image(\"pic.png\", alt: \"Picture\", block: true)\n#table(1)[#table_cell[#quote[Cell]]]",
+    );
+    assert!(result.diagnostics.is_empty(), "{:?}", result.diagnostics);
+    for name in ["rule", "callout", "image", "table", "table-cell", "quote"] {
+        let found = items(&result.content, name);
+        assert_eq!(found.len(), 1, "{name}: {:?}", result.content.to_json());
+        assert_eq!(found[0].location.source, "README.not");
+    }
+    let html = result.content.html();
+    for expected in ["<hr>", "<aside", "<img", "<table", "<blockquote"] {
+        assert!(html.contains(expected), "missing {expected}: {html}");
+    }
+
+    let result = run("#let rule = () => text(\"custom\");\n#rule()");
+    assert!(result.diagnostics.is_empty(), "{:?}", result.diagnostics);
+    assert!(result.content.html().contains("custom"));
+    assert!(!result.content.html().contains("<hr>"));
+}
+
+#[test]
+fn core_package_can_reexport_default_constructors() {
+    let mut session = EvaluationSession::default();
+    session.sources.insert(
+        "core.notc".into(),
+        include_str!("../../../examples/packages/core/docs/README.notc").into(),
+    );
+    session.sources.insert(
+        "README.notc".into(),
+        "use vault::core::{rule, image}; rule(); image(\"pic.png\");".into(),
+    );
+    let result = session.evaluate("README.notc");
+    assert!(result.diagnostics.is_empty(), "{:?}", result.diagnostics);
+    assert_eq!(items(&result.content, "rule").len(), 1);
+    assert_eq!(items(&result.content, "image").len(), 1);
 }
 
 #[test]

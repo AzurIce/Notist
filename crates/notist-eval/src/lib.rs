@@ -8,12 +8,23 @@ pub use notist_ir::{Content, Env, Item, Value};
 use notist_model::{
     CreationOrigin, Diagnostic, DiagnosticCode, Location, OriginKind, Target, Type,
 };
-use notist_syntax::{Expr, ExprKind, Param, ParseResult, Statement};
+use notist_syntax::{Expr, ExprKind, Param, ParseResult, Statement, parse_traced};
 use serde_json::{Value as Json, json};
 use std::{
     collections::{BTreeMap, BTreeSet},
     rc::Rc,
+    sync::LazyLock,
 };
+
+static CORE_DEFINITIONS: LazyLock<ParseResult> = LazyLock::new(|| {
+    let parsed = parse_traced(include_str!("core.notc"));
+    assert!(parsed.errors.is_empty(), "invalid embedded Core source");
+    parsed
+});
+
+pub fn core_definitions() -> &'static ParseResult {
+    &CORE_DEFINITIONS
+}
 
 #[derive(Clone)]
 struct Argument {
@@ -71,7 +82,10 @@ pub struct Runtime<'a> {
     loading: BTreeSet<String>,
     registry: BTreeMap<String, Env>,
     steps: usize,
+    core: Env,
 }
+
+const CORE_SOURCE: &str = "<core>";
 
 impl<'a> Runtime<'a> {
     pub fn new(world: &'a dyn ModuleProvider) -> Self {
@@ -88,6 +102,7 @@ impl<'a> Runtime<'a> {
             loading: BTreeSet::new(),
             registry: BTreeMap::new(),
             steps: 20_000,
+            core: Env::new(),
         }
     }
     pub fn evaluate(&mut self, source: &str) -> Evaluation {
@@ -108,6 +123,23 @@ impl<'a> Runtime<'a> {
         self.registry.clear();
         self.used_wasm.clear();
         self.events.clear();
+        self.steps = 20_000;
+        let core = core_definitions();
+        let (core, content) = self.statements(
+            core.statements
+                .iter()
+                .cloned()
+                .zip(core.stmt_ranges.iter().map(|range| range.0))
+                .collect(),
+            Env::new(),
+            CORE_SOURCE,
+            0,
+        );
+        assert!(
+            content.diagnostics().is_empty(),
+            "invalid embedded Core definitions"
+        );
+        self.core = core;
         self.steps = 20_000;
         let errors = self.world.errors();
         let location = Location {
@@ -241,7 +273,7 @@ impl<'a> Runtime<'a> {
             .cloned()
             .zip(parsed.stmt_ranges.iter().map(|r| r.0))
             .collect();
-        let result = self.statements(statements, Env::new(), source, depth);
+        let result = self.statements(statements, self.core.clone(), source, depth);
         self.loading.remove(source);
         self.modules.insert(source.into(), result.0.clone());
         self.contents.insert(source.into(), result.1.clone());
@@ -255,6 +287,7 @@ impl<'a> Runtime<'a> {
         depth: usize,
     ) -> (Env, Content) {
         let mut exports = Env::new();
+        let mut bound = BTreeSet::new();
         let mut output = Vec::new();
         for (statement, statement_offset) in statements {
             let location = Location {
@@ -263,7 +296,7 @@ impl<'a> Runtime<'a> {
             };
             match statement {
                 Statement::Let(name, expr) => {
-                    if env.contains_key(&name) {
+                    if !bound.insert(name.clone()) {
                         output.push(Self::content(
                             Self::failure(format!("duplicate binding `{name}`"), &location),
                             &location,
@@ -368,19 +401,16 @@ impl<'a> Runtime<'a> {
                                     )])
                                 };
                                 for (name, value) in bindings {
-                                    match env.entry(name) {
-                                        std::collections::btree_map::Entry::Occupied(entry) => {
-                                            output.push(Self::content(
-                                                Self::failure(
-                                                    format!("duplicate binding `{}`", entry.key()),
-                                                    &location,
-                                                ),
+                                    if !bound.insert(name.clone()) {
+                                        output.push(Self::content(
+                                            Self::failure(
+                                                format!("duplicate binding `{name}`"),
                                                 &location,
-                                            ))
-                                        }
-                                        std::collections::btree_map::Entry::Vacant(entry) => {
-                                            entry.insert(value);
-                                        }
+                                            ),
+                                            &location,
+                                        ));
+                                    } else {
+                                        env.insert(name, value);
                                     }
                                 }
                             }
@@ -397,7 +427,7 @@ impl<'a> Runtime<'a> {
                         .and_then(|path| self.register(&path, &location));
                     match result {
                         Ok(bindings) => {
-                            if let Some(name) = bindings.keys().find(|k| env.contains_key(*k)) {
+                            if let Some(name) = bindings.keys().find(|k| bound.contains(*k)) {
                                 output.push(Self::content(
                                     Self::failure(
                                         format!("duplicate WASM binding `{name}`"),
@@ -406,6 +436,7 @@ impl<'a> Runtime<'a> {
                                     &location,
                                 ));
                             } else {
+                                bound.extend(bindings.keys().cloned());
                                 env.extend(bindings.clone());
                                 exports.extend(bindings);
                             }
@@ -869,7 +900,15 @@ impl<'a> Runtime<'a> {
                     env.insert(name.clone(), Value::Closure(c.clone()));
                 }
                 match self.bind(&c.params, args, env, &Env::new(), &c.source, loc, depth) {
-                    Ok((env, _)) => self.eval(&c.body, &env, &c.source, depth + 1),
+                    Ok((env, _)) => {
+                        let mut value = self.eval(&c.body, &env, &c.source, depth + 1);
+                        if c.source == CORE_SOURCE
+                            && let Value::Content(item) = &mut value
+                        {
+                            item.location = loc.clone();
+                        }
+                        value
+                    }
                     Err(e) => Self::failure(e, loc),
                 }
             }

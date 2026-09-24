@@ -6,7 +6,7 @@ Core 提供常用内容构造器和标准文档模型。语言负责值、函数
 
 == 基础操作
 
-以下基础操作由求值器 prelude 提供，其余构造器可由普通 package 封装。
+以下基础操作由求值器提供。Core 的常用构造器以普通 `.notc` 函数定义，并作为每个模块的默认绑定；模块内的显式绑定可以遮蔽同名构造器。
 
 | 名称 | 形式 | 结果 |
 | - | - | - |
@@ -37,7 +37,7 @@ Core 提供常用内容构造器和标准文档模型。语言负责值、函数
 
 == package 与引擎
 
-Core 可以作为标准 package 暴露构造函数和元素定义。`paragraph(body) = item("paragraph", { body })` 是普通函数包装的示意；外部 package 也可构造自己的节点。
+Core 的构造函数按普通函数规则接受位置参数、命名参数和尾随内容。`paragraph(body) = item("paragraph", (body: body))` 是普通函数包装的示意；package 可以导出这些构造器，也可构造自己的节点。
 
 成型器由 `notist-ir::document` 提供遍历、段落聚合、属性附着和诊断。`DocumentRules::default` 安装 Core 元素声明，源码 package 和 WASM package 使用相同的声明接口添加外部元素。标准声明随每次构建初始化，导入的 package 声明在本次构建中生效。
 

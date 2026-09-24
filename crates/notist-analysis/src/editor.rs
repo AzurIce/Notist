@@ -528,6 +528,11 @@ impl Workspace {
         ] {
             names.insert(name.to_owned(), 3);
         }
+        for statement in &notist_eval::core_definitions().statements {
+            if let Statement::Let(name, _) = statement {
+                names.insert(name.clone(), 3);
+            }
+        }
         if let Some(doc) = self.documents.get(uri) {
             for (name, _, _) in doc.bindings() {
                 names.insert(name.into(), 6);
@@ -953,5 +958,15 @@ mod tests {
         let symbols = workspace.documents[uri].symbols(false);
         assert_eq!(symbols[2]["name"], "A strong title", "{symbols}");
         assert_eq!(symbols[2]["children"][0]["name"], "Nested", "{symbols}");
+    }
+
+    #[test]
+    fn core_constructors_complete_in_markup() {
+        let uri = "file:///tmp/core.not";
+        let mut workspace = Workspace::default();
+        workspace.open(uri.into(), "#ima".into(), Some(1));
+        let completion = workspace.completions_at(uri, &json!({"line":0,"character":4}), false);
+        assert_eq!(completion.as_array().unwrap().len(), 1, "{completion}");
+        assert_eq!(completion[0]["label"], "image");
     }
 }
