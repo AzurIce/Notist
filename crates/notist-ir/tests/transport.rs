@@ -15,7 +15,7 @@ fn nested_data_roundtrip_preserves_variants_and_attributes() {
         Value::Int(i64::MIN),
         Value::Int(i64::MAX),
         Value::Bool(true),
-        Value::None,
+        Value::Unit,
         Value::Dict(Env::from([("kind".into(), Value::String("item".into()))])),
         Value::Content(Item {
             span: None,
@@ -82,7 +82,7 @@ fn malformed_values_are_not_coerced() {
         r#"{"kind":"int","value":1.5}"#,
         r#"{"kind":"int","value":18446744073709551615}"#,
         r#"{"kind":"function","value":"f"}"#,
-        r#"{"kind":"none","source":"forged"}"#,
+        r#"{"kind":"unit","source":"forged"}"#,
         r#"{"kind":"content","value":{"name":"x","args":{},"attributes":{},"offset":5}}"#,
     ] {
         assert!(serde_json::from_str::<abi::Value>(json).is_err(), "{json}");

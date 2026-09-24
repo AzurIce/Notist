@@ -5,7 +5,7 @@
 == 值域
 
 ```text
-Value = String | Int | Bool | None
+Value = String | Int | Bool | Unit
       | List(Value*) | Dict(String -> Value)
       | Content | Module | Target | Function
 
@@ -19,7 +19,7 @@ List 和 Dict 可以包含 Content。字段使用普通 Value；其中的 Conten
 
 Module 是可继续解析的模块引用。Target 保存模块路径和 LabelPath；作为内容输出时构造 link Item。闭包和 WASM 导出都属于 Function。Target 和 Content 可以跨插件传输；Function 与 Module 依赖宿主状态，不能跨 WASM 边界。
 
-None 表示无值，与包含空 children 的 seq 有区别。输出表达式将字符串和整数转换为 text，Target 转换为 link，List 逐项转换并组合为 seq；不可转换值产生 error Item。None 表达式不输出节点；显式空 seq 保留。
+Unit 只有 `()` 一个值，与包含空 children 的 seq 有区别。输出表达式将字符串和整数转换为 text，Target 转换为 link，List 逐项转换并组合为 seq；不可转换值产生 error Item。Unit 表达式不输出节点；显式空 seq 保留。
 
 == 类型检查与构建时验证
 
@@ -43,15 +43,17 @@ Content 的普通类型信息不必包含整棵内容树的形态。一个函数
 
 == 参数与缺省值
 
-基础标注使用 String、Int、Bool、Content、Module、Target、List、Dict、Function、None、Any，以及 `T?` 可选类型。Item 节点通过 Content 类型传递。
+基础标注使用 String、Int、Bool、Content、Module、Target、List、Dict、Function、Unit、Any，以及 `T?` 可选类型。Item 节点通过 Content 类型传递。
 
-`T?` 接受 T 或 none。省略参数时，先使用声明的默认值；没有默认值的 `T?` 参数补入 none，其他参数报缺参错误。显式传入的值优先，传 none 不触发默认值；Any 和 None 参数也需要显式默认值才能省略。源码函数和 WASM 函数使用一致的绑定规则。
+`T?` 接受 T 或 Unit。省略参数时，先使用声明的默认值；没有默认值的 `T?` 参数补入 `()`，其他参数报缺参错误。显式传入的值优先，传 `()` 不触发默认值；Any 和 Unit 参数也需要显式默认值才能省略。源码函数和 WASM 函数使用一致的绑定规则。
 
-例如，`x: Int?` 省略时为 none；`x: Int? = 2` 省略时为 2，显式传 none 时仍为 none。局部绑定和返回类型的 `?` 只表示可空，不产生初始化值。
+例如，`x: Int?` 省略时为 `()`；`x: Int? = 2` 省略时为 2，显式传 `()` 时仍为 `()`。局部绑定和返回类型的 `?` 只表示可空，不产生初始化值。
 
 == 集合与内容字面量
 
-- `()` 是空 List。
+- `()` 是 Unit。
+- `(,)` 是空 List。
+- `(value)` 是分组表达式。
 - `(value,)` 是单元素 List。
 - `(a, b)` 是 List。
 - `(:)` 是空 Dict。

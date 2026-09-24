@@ -75,7 +75,7 @@ fn rust_signatures_produce_typed_registration() {
     );
     assert_eq!(
         collections::notist_registration().functions["nothing"].result,
-        Type::None
+        Type::Unit
     );
 }
 
@@ -85,7 +85,7 @@ fn wrappers_convert_values_and_errors() {
         invoke("add", vec![Value::Int(2), Value::Int(3)]),
         Value::Int(5)
     );
-    assert_eq!(invoke("optional", vec![Value::None]), Value::None);
+    assert_eq!(invoke("optional", vec![Value::Unit]), Value::Unit);
     assert_eq!(invoke("optional", vec![Value::Int(4)]), Value::Int(4));
     assert_eq!(
         invoke("checked", vec![Value::Int(-1)]),
@@ -103,7 +103,7 @@ fn wrappers_convert_values_and_errors() {
     for (export, args) in [
         ("add", vec![]),
         ("echo", vec![Value::Int(1)]),
-        ("echo", vec![Value::None, Value::None]),
+        ("echo", vec![Value::Unit, Value::Unit]),
         ("missing", vec![]),
     ] {
         assert!(matches!(
@@ -125,7 +125,7 @@ fn collection_conversions_check_members() {
     ))
     .unwrap();
     assert_eq!(result, Value::Int(5));
-    assert!(Vec::<i64>::from_value(Value::List(vec![Value::None])).is_err());
+    assert!(Vec::<i64>::from_value(Value::List(vec![Value::Unit])).is_err());
     let dict = BTreeMap::from([("x".into(), Value::List(vec![Value::Bool(true)]))]);
     assert_eq!(
         BTreeMap::<String, Value>::from_value(dict.clone().into_value()).unwrap(),

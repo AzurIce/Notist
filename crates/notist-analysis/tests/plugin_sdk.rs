@@ -27,9 +27,9 @@ fn rust_plugin_shares_language_calling_semantics() {
     let result = evaluate(
         r#"
         echo(source: "hello"); echo(); str(add(right: 4, left: 3));
-        str(optional(9)); if optional() == none { "empty" } else { "wrong" };
+        str(optional(9)); if optional() == () { "empty" } else { "wrong" };
         paragraph()[body]; paragraph(item("strong", (body: [nested])));
-        let data = identity((key: (1, true, none), body: [content]));
+        let data = identity((key: (1, true, ()), body: [content]));
         data.body;
     "#,
     );
@@ -47,10 +47,10 @@ fn rust_plugin_errors_remain_at_the_call_site() {
         ("add(left: true);", "expects Int"),
         ("add();", "missing argument"),
         ("add(1, left: 2);", "duplicate argument"),
-        ("add(1, none);", "expects Int"),
+        ("add(1, ());", "expects Int"),
         ("identity();", "missing argument"),
         ("optional(true);", "expects Optional"),
-        ("optional(none, value: 1);", "duplicate argument"),
+        ("optional((), value: 1);", "duplicate argument"),
         ("identity((callback: () => 1));", "cannot cross"),
         ("checked(-1);", "expected nonnegative value"),
     ] {
@@ -70,9 +70,9 @@ fn rust_plugin_errors_remain_at_the_call_site() {
 fn rust_plugin_and_source_share_optional_default_precedence() {
     let result = evaluate(
         r#"
-        let show = (x: Int?) => if x == none { "none" } else { str(x) };
-        show(optional()); show(optional(none)); show(optional(value: 3));
-        show(preferred()); show(preferred(none)); show(preferred(value: 5));
+        let show = (x: Int?) => if x == () { "none" } else { str(x) };
+        show(optional()); show(optional(())); show(optional(value: 3));
+        show(preferred()); show(preferred(())); show(preferred(value: 5));
     "#,
     );
     assert!(result.warnings.is_empty(), "{:?}", result.warnings);

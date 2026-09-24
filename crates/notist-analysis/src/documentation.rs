@@ -122,7 +122,7 @@ fn type_name(ty: &Type) -> String {
         Type::Dict => "Dict".into(),
         Type::Function => "Function".into(),
         Type::Any => "Any".into(),
-        Type::None => "None".into(),
+        Type::Unit => "Unit".into(),
     }
 }
 

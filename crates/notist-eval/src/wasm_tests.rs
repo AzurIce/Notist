@@ -18,7 +18,7 @@ fn descriptor() -> abi::Registration {
                 params: vec![abi::Parameter {
                     name: "value".into(),
                     ty: Type::Optional(Box::new(Type::Int)),
-                    default: Some(abi::Value::None),
+                    default: Some(abi::Value::Unit),
                 }],
                 result: Type::Any,
             },
@@ -55,7 +55,7 @@ fn typed_registration_preserves_explicit_none_default() {
         panic!()
     };
     assert_eq!(f.params[0].ty, Type::Optional(Box::new(Type::Int)));
-    assert!(matches!(f.defaults["value"], Value::None));
+    assert!(matches!(f.defaults["value"], Value::Unit));
     assert_eq!(f.path, "plugin.wasm");
     let result = invoke(&bytes, "echo", &[Value::Int(7)], &Type::Int, &location()).unwrap();
     assert!(matches!(result, Value::Int(7)));

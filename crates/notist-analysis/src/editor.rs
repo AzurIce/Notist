@@ -626,7 +626,7 @@ impl Workspace {
                         "with_attributes" =>
                             "with_attributes(item: Content, attributes: Dict) -> Content".into(),
                         "define_element" =>
-                            "define_element(name: String, inline: Bool, slots: Dict, block_field?: String) -> None".into(),
+                            "define_element(name: String, inline: Bool, slots: Dict, block_field?: String) -> Unit".into(),
                         _ =>
                             if item["kind"] == 9 {
                                 "module or import".into()

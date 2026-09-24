@@ -96,6 +96,6 @@ pub enum Type {
     Dict,
     Function,
     Any,
-    None,
+    Unit,
     Optional(Box<Type>),
 }

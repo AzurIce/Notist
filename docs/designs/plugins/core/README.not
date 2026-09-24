@@ -21,7 +21,7 @@ Core 提供常用内容构造器和标准文档模型。语言负责值、函数
 | `concat` | `concat(List)` | 组合后的 Content |
 | `map` | `map(Function, List)` | List |
 | `with_attributes` | `with_attributes(Content, Dict)` | 携带合并属性的 Content |
-| `define_element` | `define_element(String, Bool, Dict, String?)` | 注册内容模型，返回 None |
+| `define_element` | `define_element(String, Bool, Dict, String?)` | 注册内容模型，返回 Unit |
 
 表中的联合记法概括接受值域，正式函数类型语法另行定义。seq 与其他节点构造器可以建立在通用 item 操作之上。
 
@@ -33,6 +33,7 @@ Core 提供常用内容构造器和标准文档模型。语言负责值、函数
 - [[vault::designs::plugins::core::parbreak]]：段落边界标记。
 - [[vault::designs::plugins::core::section]]：标题与嵌套章节。
 - [[vault::designs::plugins::core::list]]：嵌套条目、主内容和详细内容。
+- [[vault::designs::plugins::core::semantic_elements]]：引用性、说明性和表格内容。
 
 == package 与引擎
 

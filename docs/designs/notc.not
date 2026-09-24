@@ -7,8 +7,8 @@
 == 词法与名称
 
 - 标识符由字母或 `_` 开头，后续只能使用字母、数字和 `_`。
-- 关键字：`let`、`use`、`wasm`、`as`、`if`、`else`、`none`、`true`、`false`。
-- 字面量：字符串、整数、布尔值和 `none`。
+- 关键字：`let`、`use`、`wasm`、`as`、`if`、`else`、`true`、`false`。
+- 字面量：字符串、整数、布尔值和 Unit 的 `()`。
 - 注释使用 `//` 到行尾。
 - 文件名中的空格和其他非标识符字符逐个映射为 `_`；数字开头和保留字在逻辑模块名上加 `_` 前缀。大小写、Unicode 字母数字和下划线保留。
 - 映射后的模块名冲突是错误，诊断包含冲突的两个源文件；显式 Code 名称只校验，不做映射。
@@ -33,7 +33,7 @@ let heading = (title: String, level: Int = 2) => item("heading", (level: level, 
 
 == 表达式
 
-支持名称、字符串、整数、布尔值、`none`、List、Dict、Content、函数调用、字段访问、模块导出引用、Item 目标、`if` 和有限的整数/字符串/布尔运算。函数调用支持位置参数、具名参数、默认值和尾随 Content：
+支持名称、字符串、整数、布尔值、Unit、List、Dict、Content、函数调用、字段访问、模块导出引用、Item 目标、`if` 和有限的整数/字符串/布尔运算。函数调用支持位置参数、具名参数、默认值和尾随 Content：
 
 ```notc
 let paragraph = (body: Content) => item("paragraph", (body: body));

@@ -18,7 +18,7 @@
 //! ```
 //! `#[func]` preserves an ordinary Rust function and generates its typed wrapper.
 //! `init_plugin!(...)` lists the function paths included in the plugin's registry.
-//! `Option<T>` maps to `T?`; omitted arguments become `none` in the Notist host.
+//! `Option<T>` maps to `T?`; omitted arguments become `()` in the Notist host.
 //! Explicit defaults are registration data, evaluated without call arguments.
 //! Rust calls still supply every parameter. Raw ABI calls supply already-bound arguments.
 //!
@@ -98,15 +98,15 @@ impl PluginValue for Content {
 
 impl PluginValue for () {
     fn ty() -> Type {
-        Type::None
+        Type::Unit
     }
     fn into_value(self) -> Value {
-        Value::None
+        Value::Unit
     }
     fn from_value(value: Value) -> Result<Self, String> {
         match value {
-            Value::None => Ok(()),
-            _ => Err("expected None".into()),
+            Value::Unit => Ok(()),
+            _ => Err("expected Unit".into()),
         }
     }
 }
@@ -128,11 +128,11 @@ impl<T: PluginValue> PluginValue for Option<T> {
         Type::Optional(Box::new(T::ty()))
     }
     fn into_value(self) -> Value {
-        self.map_or(Value::None, T::into_value)
+        self.map_or(Value::Unit, T::into_value)
     }
     fn from_value(value: Value) -> Result<Self, String> {
         match value {
-            Value::None => Ok(None),
+            Value::Unit => Ok(None),
             value => T::from_value(value).map(Some),
         }
     }

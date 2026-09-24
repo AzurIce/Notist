@@ -22,7 +22,7 @@ pub enum Value {
     String(String),
     Int(i64),
     Bool(bool),
-    None,
+    Unit,
     List(Vec<Value>),
     Dict(Env),
     Content(Content),
@@ -66,7 +66,7 @@ impl Value {
             Self::String(_) => Type::String,
             Self::Int(_) => Type::Int,
             Self::Bool(_) => Type::Bool,
-            Self::None => Type::None,
+            Self::Unit => Type::Unit,
             Self::List(_) => Type::List,
             Self::Dict(_) => Type::Dict,
             Self::Content(_) => Type::Content,
@@ -83,7 +83,7 @@ impl Value {
             Self::String(v) => json!(v),
             Self::Int(v) => json!(v),
             Self::Bool(v) => json!(v),
-            Self::None => Json::Null,
+            Self::Unit => Json::Null,
             Self::List(v) => json!(v.iter().map(Self::to_json).collect::<Vec<_>>()),
             Self::Dict(v) => {
                 json!({"dict": v.iter().map(|(k,v)| (k,v.to_json())).collect::<BTreeMap<_,_>>()})

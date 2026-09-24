@@ -40,7 +40,7 @@ pub enum Value {
     String(String),
     Int(i64),
     Bool(bool),
-    None,
+    Unit,
     List(Vec<Value>),
     Dict(BTreeMap<String, Value>),
     Content(Content),

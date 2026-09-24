@@ -24,7 +24,7 @@ fn expr(e: &Expr) -> Json {
         ExprKind::Typed(ty, value) => {
             json!({"kind":"typed","type":format!("{ty:?}"),"value":expr(value)})
         }
-        ExprKind::None => json!({"kind":"none"}),
+        ExprKind::Unit => json!({"kind":"unit"}),
         ExprKind::String(v) => json!({"kind":"string","value":v}),
         ExprKind::Int(v) => json!({"kind":"int","value":v}),
         ExprKind::Bool(v) => json!({"kind":"bool","value":v}),

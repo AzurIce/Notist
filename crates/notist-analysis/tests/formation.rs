@@ -1,4 +1,5 @@
 use notist_analysis::EvaluationSession;
+use notist_html::RenderHtml;
 use notist_ir::{Content, ItemIndex, Value};
 use notist_model::DiagnosticCode;
 
@@ -16,6 +17,93 @@ fn items<'a>(content: &'a Content, name: &str) -> Vec<&'a Content> {
 }
 fn named<'a>(content: &'a Content, label: &str) -> &'a Content {
     content.label_matches(&[label.into()])[0].item
+}
+
+#[test]
+fn core_structural_elements_form_and_render_nested_content() {
+    let mut session = EvaluationSession::default();
+    session.sources.insert(
+        "core.notc".into(),
+        include_str!("../../../examples/packages/core/docs/README.notc").into(),
+    );
+    session.sources.insert("README.notc".into(), r#"
+        use vault::core::{callout, details, quote, figure, image, table_cell, table, strike, underline};
+        callout(kind: "tip", title: [Hint])[A #underline[word] and #strike[old]];
+        details(summary: [More], open: true)[Expanded];
+        quote(attribution: [Author])[Quoted];
+        figure(caption: [Caption])[#image("pic.png", alt: "Picture")];
+        table(2, header: true, align: "left,right")[#table_cell[Head A] #table_cell[Head B] #table_cell[Cell
+
+        - nested] #table_cell[Last]];
+    "#.into());
+    let result = session.evaluate("README.notc");
+    assert!(result.diagnostics.is_empty(), "{:?}", result.diagnostics);
+    assert_eq!(items(&result.content, "table-cell").len(), 4);
+    assert!(!items(&result.content, "list-item").is_empty());
+    let html = result.content.html();
+    for expected in [
+        "<aside",
+        "<details",
+        "<blockquote",
+        "<figure",
+        "<img",
+        "<table",
+        "<th",
+        "<td",
+        "<u>",
+        "<s>",
+        "text-align:left",
+        "text-align:right",
+    ] {
+        assert!(html.contains(expected), "missing {expected}: {html}");
+    }
+}
+
+#[test]
+fn table_rejects_non_cells_and_incomplete_rows() {
+    for body in [
+        "[#text(\"plain\")]",
+        "[#item(\"table-cell\", (body: [only one]))]",
+    ] {
+        let source = format!("item(\"table\", (columns: 2, body: {body}));");
+        let mut session = EvaluationSession::default();
+        session.sources.insert("README.notc".into(), source);
+        let result = session.evaluate("README.notc");
+        assert!(
+            result
+                .diagnostics
+                .iter()
+                .any(|d| d.code == DiagnosticCode::ContentConstraint),
+            "{:?}",
+            result.diagnostics
+        );
+    }
+}
+
+#[test]
+fn table_spans_fill_successive_rows() {
+    let mut session = EvaluationSession::default();
+    session.sources.insert(
+        "core.notc".into(),
+        include_str!("../../../examples/packages/core/docs/README.notc").into(),
+    );
+    session.sources.insert("README.notc".into(), "use vault::core::{table, table_cell}; table(2)[#table_cell(rowspan: 2)[A]#table_cell[B]#table_cell[C]];".into());
+    let result = session.evaluate("README.notc");
+    assert!(result.diagnostics.is_empty(), "{:?}", result.diagnostics);
+    let html = result.content.html();
+    assert_eq!(html.matches("<tr>").count(), 2, "{html}");
+    assert!(html.contains("rowspan=\"2\""), "{html}");
+}
+
+#[test]
+fn image_rejects_non_web_sources() {
+    let mut session = EvaluationSession::default();
+    session.sources.insert(
+        "README.notc".into(),
+        "item(\"image\", (source: \"javascript:alert(1)\", alt: \"x\"));".into(),
+    );
+    let html = session.evaluate("README.notc").content.html();
+    assert!(html.contains("unsupported image source"), "{html}");
 }
 
 #[test]

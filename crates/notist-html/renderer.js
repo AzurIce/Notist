@@ -1,4 +1,4 @@
-const native = { paragraph: 'p', section: 'section', strong: 'strong', em: 'em', 'list-item': 'li', terms: 'dl' };
+const native = { paragraph: 'p', section: 'section', strong: 'strong', em: 'em', underline: 'u', strike: 's', 'list-item': 'li', terms: 'dl' };
 
 export async function mount(parent, content, components, base = document.baseURI, attributes = {}) {
   parent.dataset.notistAttributes = JSON.stringify(attributes);
@@ -15,12 +15,12 @@ export async function mount(parent, content, components, base = document.baseURI
     if (typeof node !== 'object') throw new Error('Expected Content');
     try {
       const { item: name, args = {} } = node;
-      const annotate = el => {
-        if (node.attributes && Object.keys(node.attributes).length) {
-          el.dataset.notistAttributes = JSON.stringify(node.attributes);
+      const annotate = (el, source = node) => {
+        if (source.attributes && Object.keys(source.attributes).length) {
+          el.dataset.notistAttributes = JSON.stringify(source.attributes);
 
         }
-        if (typeof node.label === 'string') el.dataset.notistLabel = node.label;
+        if (typeof source.label === 'string') el.dataset.notistLabel = source.label;
         return el;
       };
       if (name === 'seq') {
@@ -77,6 +77,73 @@ export async function mount(parent, content, components, base = document.baseURI
         el.href = args.dest;
         el.append(await render(args.body));
         return annotate(el);
+      }
+      if (name === 'rule') return annotate(document.createElement('hr'));
+      if (name === 'image') {
+        if (typeof args.source !== 'string' || !args.source || typeof args.alt !== 'string') throw Error('Image requires source and alt');
+        const url = new URL(args.source, base);
+        if (!['http:', 'https:'].includes(url.protocol)) throw Error('Unsupported image source');
+        const el = document.createElement('img');
+        el.src = args.source; el.alt = args.alt;
+        if (args.block === true) el.style.display = 'block';
+        return annotate(el);
+      }
+      if (['callout', 'details', 'quote', 'figure'].includes(name)) {
+        if (!args.body || typeof args.body !== 'object') throw Error(`Missing body for ${name}`);
+        const tag = { callout: 'aside', details: 'details', quote: 'blockquote', figure: 'figure' }[name];
+        const el = annotate(document.createElement(tag));
+        if (name === 'callout') {
+          el.className = 'notist-callout'; el.dataset.kind = args.kind ?? 'note';
+          if (args.title) { const title = document.createElement('header'); title.append(await render(args.title)); el.append(title); }
+        }
+        if (name === 'details') {
+          el.open = args.open === true;
+          if (args.summary) { const summary = document.createElement('summary'); summary.append(await render(args.summary)); el.append(summary); }
+        }
+        if (name === 'figure') el.dataset.kind = args.kind ?? 'figure';
+        el.append(await render(args.body));
+        if (name === 'quote' && args.attribution) { const footer = document.createElement('footer'); footer.append(await render(args.attribution)); el.append(footer); }
+        if (name === 'figure' && args.caption) { const caption = document.createElement('figcaption'); caption.append(await render(args.caption)); el.append(caption); }
+        return el;
+      }
+      if (name === 'table-cell') {
+        const el = annotate(document.createElement('td'));
+        if (!args.body) throw Error('Missing table-cell body');
+        if (args.colspan !== undefined) el.colSpan = args.colspan;
+        if (args.rowspan !== undefined) el.rowSpan = args.rowspan;
+        el.append(await render(args.body));
+        return el;
+      }
+      if (name === 'table') {
+        const columns = args.columns;
+        if (!Number.isInteger(columns) || columns < 1 || columns > 256) throw Error('Invalid table columns');
+        if (args.body?.item !== 'seq' || !Array.isArray(args.body.args?.children)) throw Error('Table body requires a sequence of table cells');
+        if (args.body.args.children.length === 0) throw Error('Table requires at least one table-cell');
+        const alignments = args.align == null ? Array(columns).fill('default') :
+          typeof args.align === 'string' ? args.align.split(',').map(value => value.trim()) : [];
+        if (alignments.length !== columns || !alignments.every(value => ['', 'default', 'left', 'center', 'right'].includes(value))) throw Error('Invalid table alignment');
+        const table = annotate(document.createElement('table'));
+        const occupied = Array(columns).fill(0);
+        let cursor = 0, row = document.createElement('tr'), rowIndex = 0;
+        const flush = () => { table.append(row); row = document.createElement('tr'); rowIndex++; occupied.forEach((n, i) => { occupied[i] = n - 1; }); cursor = 0; };
+        for (const cell of args.body.args.children) {
+          if (cell?.item !== 'table-cell') throw Error('Table body requires table-cell Items');
+          const colspan = cell.args?.colspan ?? 1, rowspan = cell.args?.rowspan ?? 1;
+          if (![colspan, rowspan].every(n => Number.isInteger(n) && n >= 1 && n <= 256)) throw Error('Invalid table-cell span');
+          while (occupied.every(n => n > 0)) flush();
+          const start = occupied.findIndex((n, i) => i >= cursor && n === 0);
+          if (start < 0 || start + colspan > columns || occupied.slice(start, start + colspan).some(n => n > 0)) throw Error('Table cells overlap or exceed columns');
+          occupied.fill(rowspan, start, start + colspan); cursor = start + colspan;
+          const el = annotate(document.createElement(args.header === true && rowIndex === 0 ? 'th' : 'td'), cell);
+          if (el.tagName === 'TH') el.scope = 'col';
+          if (['left', 'center', 'right'].includes(alignments[start])) el.style.textAlign = alignments[start];
+          el.colSpan = colspan; el.rowSpan = rowspan;
+          if (!cell.args?.body) throw Error('Missing table-cell body');
+          el.append(await render(cell.args.body)); row.append(el);
+        }
+        while (occupied.every(n => n > 0)) flush();
+        if (occupied.some(n => n > 0)) throw Error('Table ends with an incomplete row');
+        return table;
       }
       if (name === 'term-item') {
         const el = document.createElement('div'), term = document.createElement('dt'), description = document.createElement('dd');

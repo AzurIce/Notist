@@ -22,7 +22,7 @@
 - `platform` 保存 target 和耗时。native 与 WASM 比较时忽略该字段。
 - `truncated` 当前固定为空数组，表示尚未实现预算截断。
 
-Content JSON 统一使用 `{"item": name, "args": {...}, "attributes": {...}, "label": ..., "source": ..., "offset": ...}`。已知源码范围时额外包含 `span: {source, start, end}`，偏移量为 UTF-8 字节。Item 的 label 是计算后的有效 label，无 label 时为 null。Dict 使用 `{"dict": {...}}` 包装；List 使用 JSON 数组，none 使用 JSON null。
+Content JSON 统一使用 `{"item": name, "args": {...}, "attributes": {...}, "label": ..., "source": ..., "offset": ...}`。已知源码范围时额外包含 `span: {source, start, end}`，偏移量为 UTF-8 字节。Item 的 label 是计算后的有效 label，无 label 时为 null。Dict 使用 `{"dict": {...}}` 包装；List 使用 JSON 数组，Unit 使用 JSON null。
 
 text 的 args.text 为 String；seq 的 args.children 为 Content 数组；paragraph 的 args.body 为 Content；error 的 args 保存 message 和 code。目标链接为 link Item，其 args.target 保存结构化 Target 值；来源位置指向引用表达式。
 

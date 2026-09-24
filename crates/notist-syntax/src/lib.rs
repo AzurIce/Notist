@@ -14,7 +14,6 @@ pub fn valid_binding(name: &str) -> bool {
                 | "as"
                 | "if"
                 | "else"
-                | "none"
                 | "true"
                 | "false"
                 | "self"
@@ -37,7 +36,7 @@ pub enum ExprKind {
     Typed(Type, Box<Expr>),
     Element(String, Vec<(String, Expr)>),
     Annotation(bool, Box<Expr>),
-    None,
+    Unit,
     String(String),
     Int(i64),
     Bool(bool),
@@ -276,7 +275,7 @@ fn token_kind(token: &Token) -> &'static str {
         "int"
     } else if first.is_alphabetic() || first == '_' {
         match token.text {
-            "use" | "wasm" | "as" | "let" | "if" | "else" | "none" | "true" | "false" => "keyword",
+            "use" | "wasm" | "as" | "let" | "if" | "else" | "true" | "false" => "keyword",
             _ => "name",
         }
     } else {
@@ -343,7 +342,7 @@ fn assign_ids(
                 walk(a, next);
                 walk(b, next);
             }
-            ExprKind::None
+            ExprKind::Unit
             | ExprKind::String(_)
             | ExprKind::Int(_)
             | ExprKind::Bool(_)
@@ -538,7 +537,7 @@ impl<'a> Parser<'a> {
             "Dict" => Ok(Type::Dict),
             "Function" => Ok(Type::Function),
             "Any" => Ok(Type::Any),
-            "None" => Ok(Type::None),
+            "Unit" => Ok(Type::Unit),
             other => Err(format!("unknown type `{other}`")),
         }
     }
@@ -724,8 +723,6 @@ impl<'a> Parser<'a> {
                 }),
                 Box::new(self.expr(4)?),
             )
-        } else if self.eat("none") {
-            ExprKind::None
         } else if self.at("true") || self.at("false") {
             let b = self.eat("true");
             if !b {
@@ -897,6 +894,10 @@ impl<'a> Parser<'a> {
     }
     fn parenthesized(&mut self) -> Result<ExprKind, String> {
         if self.eat(")") {
+            return Ok(ExprKind::Unit);
+        }
+        if self.eat(",") {
+            self.expect(")")?;
             return Ok(ExprKind::List(vec![]));
         }
         if self.eat(":") {

@@ -43,7 +43,7 @@ seq 的空内容、单元素和多元素都遵守同一分组边界。内部尚�
 - Flow 中的标注结束此前正在聚合的段落。后续为普通行内内容时，标注以新形成的完整 paragraph 为目标；strong 和自定义行内节点遵守同一规则。
 - 下一内容为显式 seq 或独立块时，标注附着到该节点本身；函数名称不参与判断。
 - Inline 内容槽内，标注附着到下一个非 space 节点；连续标注仍合并，显式 seq 仍保留边界。
-- 普通空白、None 和 parbreak 不成为延迟标注的目标；Flow 标注可以跨空行寻找后续内容。空 seq 是有效目标。
+- 普通空白、Unit 和 parbreak 不成为延迟标注的目标；Flow 标注可以跨空行寻找后续内容。空 seq 是有效目标。
 - 到 seq 末尾仍未找到目标时产生 `content_constraint` 错误，附加 error Item，标注不越出所属 seq。
 - 显式携带属性的 space 保留。被消费的 parbreak 或 annotation 自身若携带属性，产生错误，避免无声丢失元数据。annotation 要应用的 Dict 存在 args.attributes 中，与其自身属性分开。
 

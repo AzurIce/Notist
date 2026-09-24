@@ -30,7 +30,7 @@ Top-level `let` and registered WASM functions are exported; imported bindings ar
 
 ## Content and Rendering
 
-`[]` always constructs a seq Item, including empty and singleton literals. Its value type is Content, shared with text, space, paragraph, link, error and custom Items. `()` / `(a,)` / `(a,b)` construct Lists; `(:)` / `(key: value)` construct Dicts. `none` is distinct from an empty seq. `item(name, args)` returns Content. `.name`, `.args` and `.attributes` inspect its root Item. Structured arguments may contain nested Content; error Items survive alongside other output.
+`[]` always constructs a seq Item, including empty and singleton literals. Its value type is Content, shared with text, space, paragraph, link, error and custom Items. `()` constructs Unit; `(,)`, `(a,)` and `(a,b)` construct Lists; `(a)` groups an expression; `(:)` and `(key: value)` construct Dicts. Unit is distinct from an empty seq. `item(name, args)` returns Content. `.name`, `.args` and `.attributes` inspect its root Item. Structured arguments may contain nested Content; error Items survive alongside other output.
 
 Evaluation produces a raw tree. Shared document formation groups inline runs into paragraphs, resolves annotations and validates content slots. A leading prose annotation targets the whole paragraph; an explicit seq retains its own attribute boundary. Unknown Items are opaque blocks. Packages declare models with `define_element("badge", true, (body: "inline"))` or `define_element("callout", false, (body: "flow"))`. Markup list entries are nested list-item Items; their first formed block is main content and remaining blocks are details.
 

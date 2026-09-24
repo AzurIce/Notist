@@ -20,7 +20,7 @@ impl InferredType {
             return false;
         }
         if let Type::Optional(inner) = expected {
-            return !matches!(self, Self::Known(Type::None)) && self.incompatible(inner);
+            return !matches!(self, Self::Known(Type::Unit)) && self.incompatible(inner);
         }
         match self {
             Self::Known(Type::Optional(inner)) => {
@@ -189,7 +189,7 @@ impl<'a> Analysis<'a> {
             ExprKind::String(_) => Known(Type::String),
             ExprKind::Int(_) => Known(Type::Int),
             ExprKind::Bool(_) => Known(Type::Bool),
-            ExprKind::None => Known(Type::None),
+            ExprKind::Unit => Known(Type::Unit),
             ExprKind::Target(..) => Known(Type::Target),
             ExprKind::Name(name) => env
                 .get(name)
@@ -285,11 +285,11 @@ impl<'a> Analysis<'a> {
             }
             ExprKind::Annotation(_, e) => {
                 infer(e);
-                Known(Type::None)
+                Known(Type::Unit)
             }
             ExprKind::Declaration(s) => {
                 self.statement(uri, s, expr.offset, &mut env.clone(), info, depth + 1);
-                Known(Type::None)
+                Known(Type::Unit)
             }
         };
         info.expressions.insert((expr.offset, expr.end), ty.clone());
@@ -300,7 +300,7 @@ fn builtin(name: &str) -> InferredType {
     use Type::*;
     let (params, result) = match name {
         "text" => (vec![String], Content),
-        "define_element" => (vec![String, Bool, Dict], None),
+        "define_element" => (vec![String, Bool, Dict], Unit),
         "math" | "raw" => (vec![String], Content),
         "item" => (vec![String, Dict], Content),
         "with_attributes" => (vec![Content, Dict], Content),

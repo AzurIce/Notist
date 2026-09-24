@@ -15,19 +15,19 @@ impl Default for DocumentRules {
         let mut rules = Self {
             elements: BTreeMap::new(),
         };
-        for name in ["text", "space", "linebreak", "smartquote", "error"] {
+        for name in ["text", "space", "linebreak", "smartquote", "error", "image"] {
             rules
                 .define(
                     name.into(),
                     ElementModel {
                         inline: true,
-                        block_field: None,
+                        block_field: (name == "image").then(|| "block".into()),
                         slots: BTreeMap::new(),
                     },
                 )
                 .unwrap();
         }
-        for name in ["strong", "em", "link"] {
+        for name in ["strong", "em", "underline", "strike", "link"] {
             rules
                 .define(
                     name.into(),
@@ -91,6 +91,59 @@ impl Default for DocumentRules {
                 )
                 .unwrap();
         }
+        for (name, slots) in [
+            (
+                "callout",
+                vec![("title", ContentMode::Inline), ("body", ContentMode::Flow)],
+            ),
+            (
+                "details",
+                vec![
+                    ("summary", ContentMode::Inline),
+                    ("body", ContentMode::Flow),
+                ],
+            ),
+            (
+                "quote",
+                vec![
+                    ("attribution", ContentMode::Inline),
+                    ("body", ContentMode::Flow),
+                ],
+            ),
+            (
+                "figure",
+                vec![
+                    ("caption", ContentMode::Inline),
+                    ("body", ContentMode::Flow),
+                ],
+            ),
+            ("table", vec![("body", ContentMode::Flow)]),
+            ("table-cell", vec![("body", ContentMode::Flow)]),
+        ] {
+            rules
+                .define(
+                    name.into(),
+                    ElementModel {
+                        inline: false,
+                        block_field: None,
+                        slots: slots
+                            .into_iter()
+                            .map(|(field, mode)| (field.into(), mode))
+                            .collect(),
+                    },
+                )
+                .unwrap();
+        }
+        rules
+            .define(
+                "rule".into(),
+                ElementModel {
+                    inline: false,
+                    block_field: None,
+                    slots: BTreeMap::new(),
+                },
+            )
+            .unwrap();
         rules
     }
 }
@@ -210,6 +263,16 @@ impl Former<'_> {
                         ));
                     }
                 }
+            }
+        }
+        if item.name == "table" {
+            if let Some(Value::Content(body)) = item.args.get_mut("body") {
+                if let Some(Value::List(children)) = body.args.get_mut("children") {
+                    children.retain(|child| !matches!(child, Value::Content(item) if item.name == "space" && item.attributes.is_empty()));
+                }
+            }
+            if let Err(message) = validate_table(&item) {
+                return self.reject(&item, message);
             }
         }
         item
@@ -378,6 +441,80 @@ impl Former<'_> {
         attach(&mut paragraph, attributes, annotation_location);
         output.push(paragraph);
     }
+}
+
+fn validate_table(table: &Item) -> Result<(), String> {
+    let Some(Value::Int(columns)) = table.args.get("columns") else {
+        return Err("table.columns requires a positive Int".into());
+    };
+    let Ok(columns) = usize::try_from(*columns) else {
+        return Err("table.columns requires a positive Int".into());
+    };
+    if columns == 0 || columns > 256 {
+        return Err("table.columns must be between 1 and 256".into());
+    }
+    if !matches!(table.args.get("header"), None | Some(Value::Bool(_))) {
+        return Err("table.header requires Bool".into());
+    }
+    match table.args.get("align") {
+        None | Some(Value::Unit) => {}
+        Some(Value::String(align)) => {
+            let values = align.split(',').map(str::trim).collect::<Vec<_>>();
+            if values.len() != columns
+                || !values
+                    .iter()
+                    .all(|value| matches!(*value, "" | "default" | "left" | "center" | "right"))
+            {
+                return Err("table.align requires one alignment per column".into());
+            }
+        }
+        _ => return Err("table.align requires String or Unit".into()),
+    }
+    let Some(Value::Content(body)) = table.args.get("body") else {
+        return Err("table.body requires Content".into());
+    };
+    let Some(Value::List(children)) = body.args.get("children") else {
+        return Err("table.body requires a sequence of table cells".into());
+    };
+    if children.is_empty() {
+        return Err("table requires at least one table-cell".into());
+    }
+    let mut occupied = vec![0usize; columns];
+    let mut cursor = 0;
+    for child in children {
+        let Value::Content(cell) = child else {
+            return Err("table.body requires table-cell Items".into());
+        };
+        if cell.name != "table-cell" {
+            return Err("table.body requires table-cell Items".into());
+        }
+        let span = |field: &str| match cell.args.get(field) {
+            None => Ok(1),
+            Some(Value::Int(n)) if (1..=256).contains(n) => Ok(*n as usize),
+            _ => Err(format!("table-cell.{field} must be between 1 and 256")),
+        };
+        let colspan = span("colspan")?;
+        let rowspan = span("rowspan")?;
+        while occupied.iter().all(|n| *n > 0) {
+            occupied.iter_mut().for_each(|n| *n -= 1);
+            cursor = 0;
+        }
+        let Some(start) = (cursor..columns).find(|i| occupied[*i] == 0) else {
+            return Err("table cells exceed the declared columns".into());
+        };
+        if start + colspan > columns || occupied[start..start + colspan].iter().any(|n| *n > 0) {
+            return Err("table-cell overlaps another cell or exceeds the declared columns".into());
+        }
+        occupied[start..start + colspan].fill(rowspan);
+        cursor = start + colspan;
+    }
+    while occupied.iter().all(|n| *n > 0) {
+        occupied.iter_mut().for_each(|n| *n -= 1);
+    }
+    if occupied.iter().any(|n| *n > 0) {
+        return Err("table ends with an incomplete row".into());
+    }
+    Ok(())
 }
 
 fn attach(item: &mut Item, attributes: &mut Env, location: &mut Option<Location>) {

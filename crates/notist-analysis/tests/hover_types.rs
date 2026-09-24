@@ -30,7 +30,7 @@ fn types_replace_initializer_source() {
         ("\"Notist packages\"", "String"),
         ("42", "Int"),
         ("true", "Bool"),
-        ("none", "None"),
+        ("()", "Unit"),
         ("[Hello]", "Content"),
         ("(1, 2)", "List"),
         ("(name: \"hi\")", "Dict"),

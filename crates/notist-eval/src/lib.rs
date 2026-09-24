@@ -42,7 +42,7 @@ pub trait ModuleProvider {
 pub(crate) fn matches_type(ty: &Type, v: &Value) -> bool {
     match ty {
         Type::Any => true,
-        Type::Optional(t) => matches!(v, Value::None) || matches_type(t, v),
+        Type::Optional(t) => matches!(v, Value::Unit) || matches_type(t, v),
         _ => *ty == v.ty(),
     }
 }
@@ -182,7 +182,7 @@ impl<'a> Runtime<'a> {
     }
     pub fn content(value: Value, location: &Location) -> Content {
         match value {
-            Value::None => Content::seq(vec![]).at(location),
+            Value::Unit => Content::seq(vec![]).at(location),
             Value::Content(c) => c,
             Value::Target(target) => Content::link(target, location.clone()),
             Value::String(s) => Content::text(s).at(location),
@@ -315,7 +315,7 @@ impl<'a> Runtime<'a> {
                         continue;
                     }
                     let value = self.eval(&expr, &env, source, depth + 1);
-                    if matches!(value, Value::None) {
+                    if matches!(value, Value::Unit) {
                         continue;
                     }
                     let mut content = Self::content(
@@ -567,7 +567,7 @@ impl<'a> Runtime<'a> {
                     )
                 }
             }
-            ExprKind::None => Value::None,
+            ExprKind::Unit => Value::Unit,
             ExprKind::String(v) => Value::String(v.clone()),
             ExprKind::Int(v) => Value::Int(*v),
             ExprKind::Bool(v) => Value::Bool(*v),
@@ -726,10 +726,10 @@ impl<'a> Runtime<'a> {
                     return b;
                 }
                 if matches!(op.as_str(), "==" | "!=")
-                    && (matches!(a, Value::None) || matches!(b, Value::None))
+                    && (matches!(a, Value::Unit) || matches!(b, Value::Unit))
                 {
                     return Value::Bool(
-                        matches!((&a, &b), (Value::None, Value::None)) == (op == "=="),
+                        matches!((&a, &b), (Value::Unit, Value::Unit)) == (op == "=="),
                     );
                 }
                 match (a, b) {
@@ -831,7 +831,7 @@ impl<'a> Runtime<'a> {
                     } else if let Some(value) = defaults.get(&param.name) {
                         value.clone()
                     } else if matches!(param.ty, Type::Optional(_)) {
-                        Value::None
+                        Value::Unit
                     } else {
                         return Err(format!("missing argument `{}`", param.name));
                     }
@@ -945,7 +945,7 @@ impl<'a> Runtime<'a> {
                             )
                         });
                         match result {
-                            Ok(()) => Value::None,
+                            Ok(()) => Value::Unit,
                             Err(e) => Self::failure(e, loc),
                         }
                     }

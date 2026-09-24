@@ -1,0 +1,27 @@
+@!(ai: true, desc: "常用语义元素的构造、内容槽与表格网格")
+
+= 常用语义元素
+
+Core 的普通函数构造以下 Item。`body: Content` 是尾随 `[...]` 所绑定的最右侧 Content 参数；可选的 Content 字段值为 `()` 时，构造结果省略该字段。内容槽中的 Inline 与 Flow 遵循文档成型规则。
+
+| 函数 | Item | 内容槽 | 文档角色 |
+| - | - | - | - |
+| `rule()` | `rule` | 无 | 块级分隔线 |
+| `underline(body: Content)` | `underline` | body: Inline | 行内下划线 |
+| `strike(body: Content)` | `strike` | body: Inline | 行内删除线 |
+| `callout(kind: String = "note", title: Content? = (), body: Content)` | `callout` | title: Inline，body: Flow | 块级提示 |
+| `details(summary: Content? = (), open: Bool = false, body: Content)` | `details` | summary: Inline，body: Flow | 可展开块 |
+| `quote(attribution: Content? = (), body: Content)` | `quote` | attribution: Inline，body: Flow | 引述块 |
+| `figure(kind: String = "figure", caption: Content? = (), body: Content)` | `figure` | caption: Inline，body: Flow | 带说明的内容块 |
+| `image(source: String, alt: String = "", block: Bool = false)` | `image` | 无 | 图片；默认行内，block 为 true 时参与块级 Flow |
+| `table_cell(colspan: Int = 1, rowspan: Int = 1, body: Content)` | `table-cell` | body: Flow | 表格单元 |
+| `table(columns: Int, header: Bool = false, align: String? = (), body: Content)` | `table` | body: Flow | 表格 |
+
+图片 source 接受相对地址或 HTTP(S) 地址；HTML 投影使用 `alt` 作为替代文字，相对地址以承载页面的基址解析。
+
+表格 body 是顺序排列的 `table-cell` Item，单元之间的源码空白被忽略。columns 为 1 到 256 的整数；colspan 与 rowspan 为 1 到 256 的整数。单元按行填入网格，跨度不得重叠或超过列数，最后一行必须完整。`header: true` 使首行单元投影为列标题。`align` 是按列排列的逗号分隔值，每项为 `default`、`left`、`center` 或 `right`。每个 cell 的 body 可包含任意合法的 Flow Item 树，包括段落、列表和嵌套表格；表格仅约束其直接子项及网格结构。
+
+```not
+#callout(kind: "tip", title: [提示])[正文]
+#table(2, header: true)[#table_cell[名称] #table_cell[说明] #table_cell[甲] #table_cell[乙]]
+```

@@ -97,31 +97,13 @@ fn render_value(value: &Value) -> String {
     match value {
         Value::Content(c) => render(c),
         Value::List(v) => v.iter().map(render_value).collect(),
-        Value::None => String::new(),
+        Value::Unit => String::new(),
         _ => error("expected child Content"),
     }
 }
 
 fn render_item(item: &Item) -> String {
-    let label = item
-        .label()
-        .ok()
-        .flatten()
-        .map(|label| format!(" data-notist-label=\"{}\"", escape(&label)))
-        .unwrap_or_default();
-    let attributes = if item.attributes.is_empty() {
-        label.clone()
-    } else {
-        let json = item
-            .attributes
-            .iter()
-            .map(|(k, v)| (k, v.to_json()))
-            .collect::<std::collections::BTreeMap<_, _>>();
-        format!(
-            "{label} data-notist-attributes=\"{}\"",
-            escape(&serde_json::to_string(&json).unwrap())
-        )
-    };
+    let attributes = item_attributes(item);
     if item.name == "seq" {
         let body = render_sequence(&item.children().collect::<Vec<_>>());
         return if attributes.is_empty() {
@@ -192,6 +174,32 @@ fn render_item(item: &Item) -> String {
             )
         };
     }
+    render_structural_item(item, &attributes)
+}
+
+fn item_attributes(item: &Item) -> String {
+    let label = item
+        .label()
+        .ok()
+        .flatten()
+        .map(|label| format!(" data-notist-label=\"{}\"", escape(&label)))
+        .unwrap_or_default();
+    if item.attributes.is_empty() {
+        label.clone()
+    } else {
+        let json = item
+            .attributes
+            .iter()
+            .map(|(k, v)| (k, v.to_json()))
+            .collect::<std::collections::BTreeMap<_, _>>();
+        format!(
+            "{label} data-notist-attributes=\"{}\"",
+            escape(&serde_json::to_string(&json).unwrap())
+        )
+    }
+}
+
+fn render_structural_item(item: &Item, attributes: &str) -> String {
     if item.name == "link" {
         if let Some(Value::Target(target)) = item.args.get("target") {
             let text = escape(&target.to_string());
@@ -213,6 +221,91 @@ fn render_item(item: &Item) -> String {
             render_value(body)
         );
     }
+    if item.name == "rule" {
+        return format!("<hr{attributes}>");
+    }
+    if item.name == "image" {
+        let (Some(Value::String(source)), Some(Value::String(alt))) =
+            (item.args.get("source"), item.args.get("alt"))
+        else {
+            return error("image requires String source and alt");
+        };
+        if !safe_image(source) {
+            return error("unsupported image source");
+        }
+        let block = if matches!(item.args.get("block"), Some(Value::Bool(true))) {
+            " style=\"display:block\""
+        } else {
+            ""
+        };
+        return format!(
+            "<img{attributes} src=\"{}\" alt=\"{}\"{block}>",
+            escape(source),
+            escape(alt)
+        );
+    }
+    if matches!(
+        item.name.as_str(),
+        "callout" | "details" | "quote" | "figure"
+    ) {
+        let Some(Value::Content(body)) = item.args.get("body") else {
+            return error("missing body Content");
+        };
+        let body = render(body);
+        return match item.name.as_str() {
+            "callout" => {
+                let kind = item.string("kind").unwrap_or("note");
+                let title = item
+                    .args
+                    .get("title")
+                    .map(|v| format!("<header>{}</header>", render_value(v)))
+                    .unwrap_or_default();
+                format!(
+                    "<aside{attributes} class=\"notist-callout\" data-kind=\"{}\">{title}{body}</aside>",
+                    escape(kind)
+                )
+            }
+            "details" => {
+                let open = if matches!(item.args.get("open"), Some(Value::Bool(true))) {
+                    " open"
+                } else {
+                    ""
+                };
+                let summary = item
+                    .args
+                    .get("summary")
+                    .map(|v| format!("<summary>{}</summary>", render_value(v)))
+                    .unwrap_or_default();
+                format!("<details{attributes}{open}>{summary}{body}</details>")
+            }
+            "quote" => {
+                let attribution = item
+                    .args
+                    .get("attribution")
+                    .map(|v| format!("<footer>{}</footer>", render_value(v)))
+                    .unwrap_or_default();
+                format!("<blockquote{attributes}>{body}{attribution}</blockquote>")
+            }
+            _ => {
+                let kind = item.string("kind").unwrap_or("figure");
+                let caption = item
+                    .args
+                    .get("caption")
+                    .map(|v| format!("<figcaption>{}</figcaption>", render_value(v)))
+                    .unwrap_or_default();
+                format!(
+                    "<figure{attributes} data-kind=\"{}\">{body}{caption}</figure>",
+                    escape(kind)
+                )
+            }
+        };
+    }
+    if item.name == "table" {
+        return render_table(item, &attributes);
+    }
+    if item.name == "table-cell" {
+        return render_table_cell(item, false, "default");
+    }
     if item.name == "term-item" {
         let (Some(term), Some(body)) = (item.args.get("term"), item.args.get("body")) else {
             return error("missing term or body");
@@ -229,6 +322,8 @@ fn render_item(item: &Item) -> String {
         "section" => Some("section"),
         "strong" => Some("strong"),
         "em" => Some("em"),
+        "underline" => Some("u"),
+        "strike" => Some("s"),
         "list" => Some(
             if matches!(item.args.get("ordered"), Some(Value::Bool(true))) {
                 "ol"
@@ -314,4 +409,114 @@ fn safe_link(dest: &str) -> bool {
             ) || scheme.contains('/')
                 || scheme.starts_with('#')
         })
+}
+
+fn safe_image(source: &str) -> bool {
+    !source.is_empty()
+        && !source.chars().any(char::is_control)
+        && source.split_once(':').is_none_or(|(scheme, _)| {
+            matches!(scheme.to_ascii_lowercase().as_str(), "http" | "https")
+        })
+}
+
+fn render_table_cell(cell: &Item, header: bool, align: &str) -> String {
+    let Some(Value::Content(body)) = cell.args.get("body") else {
+        return error("table-cell.body requires Content");
+    };
+    let tag = if header { "th" } else { "td" };
+    let scope = if header { " scope=\"col\"" } else { "" };
+    let span = |field: &str| match cell.args.get(field) {
+        None | Some(Value::Int(1)) => String::new(),
+        Some(Value::Int(n)) if *n > 1 => format!(" {field}=\"{n}\""),
+        _ => String::new(),
+    };
+    let attributes = item_attributes(cell);
+    let alignment = match align {
+        "left" | "center" | "right" => format!(" style=\"text-align:{align}\""),
+        _ => String::new(),
+    };
+    format!(
+        "<{tag}{attributes}{scope}{alignment}{}{}>{}</{tag}>",
+        span("colspan"),
+        span("rowspan"),
+        render(body)
+    )
+}
+
+fn render_table(table: &Item, attributes: &str) -> String {
+    let Some(Value::Int(columns @ 1..=256)) = table.args.get("columns") else {
+        return error("table.columns must be between 1 and 256");
+    };
+    let Some(Value::Content(body)) = table.args.get("body") else {
+        return error("table.body requires Content");
+    };
+    if body.name != "seq" {
+        return error("table.body requires a sequence of table cells");
+    }
+    let columns = *columns as usize;
+    let alignments = match table.args.get("align") {
+        None | Some(Value::Unit) => vec!["default"; columns],
+        Some(Value::String(value)) => {
+            let entries = value.split(',').map(str::trim).collect::<Vec<_>>();
+            if entries.len() != columns
+                || !entries
+                    .iter()
+                    .all(|entry| matches!(*entry, "" | "default" | "left" | "center" | "right"))
+            {
+                return error("invalid table alignment");
+            }
+            entries
+        }
+        _ => return error("invalid table alignment"),
+    };
+    let mut occupied = vec![0usize; columns];
+    let mut cursor = 0;
+    let mut row = String::new();
+    let mut rows = Vec::new();
+    let header = matches!(table.args.get("header"), Some(Value::Bool(true)));
+    for cell in body.children() {
+        if cell.name != "table-cell" {
+            return error("table.body requires table-cell Items");
+        }
+        let colspan = match cell.args.get("colspan") {
+            None => 1,
+            Some(Value::Int(n @ 1..=256)) => *n as usize,
+            _ => return error("invalid table-cell.colspan"),
+        };
+        let rowspan = match cell.args.get("rowspan") {
+            None => 1,
+            Some(Value::Int(n @ 1..=256)) => *n as usize,
+            _ => return error("invalid table-cell.rowspan"),
+        };
+        while occupied.iter().all(|n| *n > 0) {
+            rows.push(std::mem::take(&mut row));
+            occupied.iter_mut().for_each(|n| *n -= 1);
+            cursor = 0;
+        }
+        let Some(start) = (cursor..columns).find(|i| occupied[*i] == 0) else {
+            return error("table cells exceed columns");
+        };
+        if start + colspan > columns || occupied[start..start + colspan].iter().any(|n| *n > 0) {
+            return error("table-cell overlaps another cell or exceeds columns");
+        }
+        occupied[start..start + colspan].fill(rowspan);
+        cursor = start + colspan;
+        row.push_str(&render_table_cell(
+            cell,
+            header && rows.is_empty(),
+            alignments[start],
+        ));
+    }
+    while occupied.iter().all(|n| *n > 0) {
+        rows.push(std::mem::take(&mut row));
+        occupied.iter_mut().for_each(|n| *n -= 1);
+    }
+    if occupied.iter().any(|n| *n > 0) {
+        return error("table ends with an incomplete row");
+    }
+    let rows = rows
+        .into_iter()
+        .map(|row| format!("<tr>{row}</tr>"))
+        .collect::<String>();
+    format!("<table{attributes}>{rows}</table>")
 }

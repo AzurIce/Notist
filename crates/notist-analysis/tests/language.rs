@@ -11,7 +11,7 @@ fn run(source: &str) -> Evaluation {
 fn binding_and_return_type_annotations_are_checked() {
     for source in [
         "let x: Int = 1; x;",
-        "let x: String? = none; x;",
+        "let x: String? = (); x;",
         "let f: Function = (x: Int) -> String => str(x); f(2);",
         "let f = (x: Int) -> Int => if x == 0 { 1 } else { x * f(x - 1) }; f(3);",
         "let f = () -> Content => item(\"x\", (:)); f();",
@@ -43,7 +43,7 @@ fn binding_and_return_type_annotations_are_checked() {
 fn typed_defaults_named_trailing_recursion_and_capture() {
     let result = run(r#"
       let prefix = "p";
-      let panel = (title: String = prefix, body: Content? = none) => item("panel", (title: title, body: body));
+      let panel = (title: String = prefix, body: Content? = ()) => item("panel", (title: title, body: body));
       let fact = (n: Int) => if n == 0 { 1 } else { n * fact(n - 1) };
       let add = (a: Int, b: Int = a + 1) => a + b;
       panel(title: "x")[#fact(5) #add(2)];
@@ -74,12 +74,12 @@ fn function_argument_contracts() {
 }
 
 #[test]
-fn optional_parameters_supply_none_only_when_omitted() {
+fn optional_parameters_supply_unit_only_when_omitted() {
     let result = run(r#"
-        let show = (x: Int?) => if x == none { "none" } else { str(x) };
+        let show = (x: Int?) => if x == () { "none" } else { str(x) };
         let preferred = (x: Int? = 2) => show(x);
-        show(); show(none); show(x: 3);
-        preferred(); preferred(none); preferred(x: 5);
+        show(); show(()); show(x: 3);
+        preferred(); preferred(()); preferred(x: 5);
         let dependent = (x: Int?, y: Int? = x) => show(y);
         dependent(); dependent(7);
     "#);
@@ -88,9 +88,9 @@ fn optional_parameters_supply_none_only_when_omitted() {
 
     let result = run(r#"
         let named = (optional: Int?, required: String) => required;
-        named(required: "named"); named(none, "positional");
-        let body = (value: Content?) => if value == none { "empty" } else { value };
-        body(); body()[content]; body(value: none);
+        named(required: "named"); named((), "positional");
+        let body = (value: Content?) => if value == () { "empty" } else { value };
+        body(); body()[content]; body(value: ());
     "#);
     assert!(result.warnings.is_empty(), "{:?}", result.warnings);
     assert_eq!(
@@ -104,19 +104,16 @@ fn nullable_parameters_do_not_relax_other_call_contracts() {
     for (source, expected) in [
         ("let f = (x: Int) => x; f();", "missing argument"),
         ("let f = (x: Any) => x; f();", "missing argument"),
-        ("let f = (x: None) => x; f();", "missing argument"),
+        ("let f = (x: Unit) => x; f();", "missing argument"),
         ("let f = (x) => x; f();", "missing argument"),
         ("let f = (x: Int?) => x; f(true);", "expects Optional"),
-        ("let f = (x: Int = 2) => x; f(none);", "expects Int"),
+        ("let f = (x: Int = 2) => x; f(());", "expects Int"),
         ("let f = (x: Int? = true) => x; f();", "expects Optional"),
         (
             "let f = (x: Int?, y: String) => y; f(\"y\");",
             "expects Optional",
         ),
-        (
-            "let f = (x: Int?) => x; f(none, x: 1);",
-            "duplicate argument",
-        ),
+        ("let f = (x: Int?) => x; f((), x: 1);", "duplicate argument"),
         (
             "let f = (x: Int?) => x; f(other: 1);",
             "unknown or excess argument",
@@ -134,15 +131,30 @@ fn nullable_parameters_do_not_relax_other_call_contracts() {
     }
 }
 #[test]
-fn collections_none_and_item_values() {
+fn collections_unit_and_item_values() {
     let r = run(
-        r#"let value = item("x", (body: [hello], data: (1, 2), empty: none)); value.args.body; value.name; none; [];"#,
+        r#"let value = item("x", (body: [hello], data: (1, 2), empty: ())); value.args.body; value.name; (); [];"#,
     );
     assert!(r.warnings.is_empty());
     assert!(r.content.html().contains("hellox"));
-    let r = run("let f = (x: String? = none) => if x == none { [empty] } else { text(x) }; f();");
+    let r = run("let f = (x: String? = ()) => if x == () { [empty] } else { text(x) }; f();");
     assert!(r.warnings.is_empty());
     assert_eq!(r.content.html(), "<p>empty</p>");
+}
+
+#[test]
+fn unit_and_list_literals_remain_distinct() {
+    let result = run(r#"
+        let empty: Unit = ();
+        let empty_list: List = (,);
+        let singleton: List = (7,);
+        let grouped: Int = (7);
+        let none = "ordinary name";
+        if empty == () { none } else { "wrong" };
+        str(len(empty_list)); str(len(singleton)); str(grouped);
+    "#);
+    assert!(result.warnings.is_empty(), "{:?}", result.warnings);
+    assert_eq!(result.content.html(), "<p>ordinary name017</p>");
 }
 
 #[test]

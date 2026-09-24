@@ -26,7 +26,7 @@ impl Value {
             Self::String(v) => abi::Value::String(v.clone()),
             Self::Int(v) => abi::Value::Int(*v),
             Self::Bool(v) => abi::Value::Bool(*v),
-            Self::None => abi::Value::None,
+            Self::Unit => abi::Value::Unit,
             Self::List(v) => {
                 abi::Value::List(v.iter().map(Self::to_abi).collect::<Result<_, _>>()?)
             }
@@ -42,7 +42,7 @@ impl Value {
             abi::Value::String(v) => Self::String(v),
             abi::Value::Int(v) => Self::Int(v),
             abi::Value::Bool(v) => Self::Bool(v),
-            abi::Value::None => Self::None,
+            abi::Value::Unit => Self::Unit,
             abi::Value::List(v) => {
                 Self::List(v.into_iter().map(|v| Self::from_abi(v, location)).collect())
             }
