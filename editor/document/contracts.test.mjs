@@ -4,12 +4,12 @@ import { createRequire } from "node:module";
 import { spawnSync } from "node:child_process";
 import { fileURLToPath } from "node:url";
 import { mkdir, writeFile } from "node:fs/promises";
-import { EditorCore, CoreError } from "./index.mjs";
+import { EditorDocument, CoreError } from "./index.mjs";
 
 const require = createRequire(import.meta.url);
-const { EditorDocument } = require("../scripts/pkg-core-node/notist_editor_core_wasm.js");
+const { DocumentBinding } = require("../scripts/pkg-editor-node/notist_editor_node_wasm.js");
 const identity = { document_id: "test", history_id: "shared-history" };
-const create = (writer, text = "", options = {}) => EditorCore.create(EditorDocument, { writer: String(writer), text, identity, ...options });
+const create = (writer, text = "", options = {}) => EditorDocument.create(DocumentBinding, { writer: String(writer), text, identity, ...options });
 const edit = (core, edits, undoMetadata = null) => core.transact({ expectedVersion: core.snapshot().version, edits, undoMetadata, origin: "test" });
 const native = request => {
   const result = spawnSync(fileURLToPath(new URL("../target/debug/examples/replay", import.meta.url)), { input: JSON.stringify(request), encoding: "utf8", maxBuffer: 32 * 1024 * 1024 });
@@ -38,7 +38,7 @@ test("writer identities remain exact through JavaScript and constructors report 
   const core = create(peer, "中🧠");
   assert.equal(core.writerId, peer);
   assert.deepEqual(Object.keys(core.snapshot().version.clocks), [peer]);
-  assert.throws(() => EditorCore.restore(EditorDocument, core.exportSnapshot(), { writer: peer }), error => error instanceof CoreError && error.code === "writer_already_used");
+  assert.throws(() => EditorDocument.restore(DocumentBinding, core.exportSnapshot(), { writer: peer }), error => error instanceof CoreError && error.code === "writer_already_used");
   assert.throws(() => create("1", "", { identity: { document_id: "", history_id: "x" } }), error => error instanceof CoreError && error.code === "invalid_identity");
   core.dispose();
 });
@@ -73,7 +73,7 @@ test("Wasm merge, anchors, grouped undo, and opaque selection metadata", () => {
   const a = create(1), selection = { ranges: [[0, 0], [0, 0]], main: 1 };
   edit(a, [{ from: 0, to: 0, insert: "abc" }], selection);
   const before = a.anchorAt(1, "before"), after = a.anchorAt(1, "after");
-  const b = EditorCore.restore(EditorDocument, a.exportSnapshot(), { writer: "2" });
+  const b = EditorDocument.restore(DocumentBinding, a.exportSnapshot(), { writer: "2" });
   edit(b, [{ from: 1, to: 1, insert: "中😀" }]);
   a.import(b.exportUpdatesSince(a.snapshot().version));
   assert.equal(a.resolveAnchor(before).offset, 1);
@@ -91,7 +91,7 @@ test("Wasm merge, anchors, grouped undo, and opaque selection metadata", () => {
 test("undo position lists survive replaced text, remote Unicode insertion and redo", () => {
   const a = create(1, "Hello world.");
   a.transact({ expectedVersion: a.snapshot().version, origin: "rich", edits: [{ from: 6, to: 11, insert: "*world*" }], undoMetadata: { main: 1 }, undoPositions: [6, 11, 0, 5] });
-  const b = EditorCore.restore(EditorDocument, a.exportSnapshot(), { writer: "2" });
+  const b = EditorDocument.restore(DocumentBinding, a.exportSnapshot(), { writer: "2" });
   edit(b, [{ from: 0, to: 0, insert: "远🧠" }]); a.import(b.exportUpdatesSince(a.snapshot().version));
   const undo = a.undo({ view: "source" }, [9, 16, 3, 8]);
   assert.deepEqual(undo.restored_positions, [9, 14, 0, 8]);
@@ -103,8 +103,8 @@ test("undo position lists survive replaced text, remote Unicode insertion and re
 
 test("native and Wasm replay identical edits, shuffled delivery, undo, anchors, and recovery", async () => {
   const initial = "= 文档\nA😀B\né\n";
-  const base = EditorCore.create(EditorDocument, { identity: { document_id: "replay", history_id: "shared-history" }, writer: "99", text: initial });
-  const docs = [1, 2, 3].map(peer => EditorCore.restore(EditorDocument, base.exportSnapshot(), { writer: String(peer) }));
+  const base = EditorDocument.create(DocumentBinding, { identity: { document_id: "replay", history_id: "shared-history" }, writer: "99", text: initial });
+  const docs = [1, 2, 3].map(peer => EditorDocument.restore(DocumentBinding, base.exportSnapshot(), { writer: String(peer) }));
   const packets = [], steps = [], trace = [], anchors = new Map();
   function step(action) {
     steps.push(action);
@@ -153,12 +153,12 @@ test("native and Wasm replay identical edits, shuffled delivery, undo, anchors, 
   step({ op: "end", peer: 0 }); step({ op: "undo", peer: 0 }); step({ op: "redo", peer: 0 });
   const result = native({ initial, steps });
   assert.deepEqual(result.trace, trace);
-  const imported = EditorCore.restore(EditorDocument, result.packet, { writer: "900" });
+  const imported = EditorDocument.restore(DocumentBinding, result.packet, { writer: "900" });
   assert.equal(imported.snapshot().text, docs[0].snapshot().text);
   edit(imported, [{ from: 0, to: 0, insert: "来自 Wasm 🧠\n" }]);
   const restored = native({ restore: imported.exportSnapshot() });
   assert.equal(restored.imported.text, imported.snapshot().text);
-  const returned = EditorCore.restore(EditorDocument, restored.packet, { writer: "902" });
+  const returned = EditorDocument.restore(DocumentBinding, restored.packet, { writer: "902" });
   assert.equal(returned.snapshot().text, imported.snapshot().text + "\n来自 Rust 🦀");
   await mkdir(new URL("./results/", import.meta.url), { recursive: true });
   await writeFile(new URL("./results/interop.json", import.meta.url), JSON.stringify({ steps: steps.length, nativeWasmEqual: true, snapshotRoundTrip: true }, null, 2));

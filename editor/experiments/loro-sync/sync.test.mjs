@@ -6,14 +6,14 @@ import { setTimeout as delay } from "node:timers/promises";
 import { WebSocket } from "ws";
 import { SimpleServer } from "loro-websocket/server";
 import { decode, MessageType } from "loro-protocol";
-import { EditorCore } from "../../core/index.mjs";
+import { EditorDocument } from "../../document/index.mjs";
 import { connectCore } from "./connection.mjs";
 import { KernelAdaptor } from "./adaptor.mjs";
-import { freePort } from "./server.mjs";
+import { freePort, stopReferenceServer } from "./server.mjs";
 
 globalThis.WebSocket = WebSocket;
 const require = createRequire(import.meta.url);
-const { EditorDocument } = require("../../scripts/pkg-core-node/notist_editor_core_wasm.js");
+const { DocumentBinding } = require("../../scripts/pkg-editor-node/notist_editor_node_wasm.js");
 export async function waitFor(predicate, message = "condition", timeout = 8000) {
   const deadline = Date.now() + timeout;
   while (Date.now() < deadline) { if (await predicate()) return; await delay(15); }
@@ -27,7 +27,7 @@ const equal = cores => cores.every(core => JSON.stringify(core.snapshot().versio
 
 async function fixture(t, options = {}) {
   const identity = { document_id: "network-test", history_id: randomUUID() };
-  const base = EditorCore.create(EditorDocument, { identity, text: "Hello 世界 🧠\n" });
+  const base = EditorDocument.create(DocumentBinding, { identity, text: "Hello 世界 🧠\n" });
   const seed = base.exportSnapshot(); base.dispose();
   const port = await freePort(), roomId = `test-${identity.history_id}`;
   const errors = [], cores = [], connections = [], acks = [];
@@ -43,11 +43,11 @@ async function fixture(t, options = {}) {
   let server = new SimpleServer(config); await server.start();
   t.after(async () => {
     for (const connection of connections) connection.destroy();
-    await server.stop();
+    await stopReferenceServer(server);
     for (const core of cores) core.dispose();
   });
   async function join(packet = seed) {
-    const core = EditorCore.restore(EditorDocument, packet); cores.push(core);
+    const core = EditorDocument.restore(DocumentBinding, packet); cores.push(core);
     const connection = connectCore(core, { url: `ws://127.0.0.1:${port}`, roomId, onError: error => errors.push(String(error)) });
     connections.push(connection);
     connection.client.socket.addEventListener("message", ({ data }) => {
@@ -63,10 +63,10 @@ async function fixture(t, options = {}) {
     get saves() { return saves; },
     get persisted() { return persisted; },
     readSaved() {
-      const doc = EditorCore.restore(EditorDocument, { ...seed, data: Array.from(persisted) });
+      const doc = EditorDocument.restore(DocumentBinding, { ...seed, data: Array.from(persisted) });
       const snapshot = doc.snapshot(); doc.dispose(); return snapshot;
     },
-    async restart() { await server.stop(); server = new SimpleServer(config); await server.start(); },
+    async restart() { await stopReferenceServer(server); server = new SimpleServer(config); await server.start(); },
   };
 }
 
@@ -128,7 +128,7 @@ test("raw binary adapter preserves core rejection and wrong-history joins are re
   assert.throws(() => a.core.importBinary({ ...f.identity, history_id: "wrong" }, Uint8Array.from(f.seed.data)));
   assert.throws(() => a.connection.adaptor.applyUpdate([Uint8Array.from([1, 2, 3])]));
   assert.deepEqual(a.core.snapshot(), before);
-  const wrong = EditorCore.create(EditorDocument, { identity: { ...f.identity, history_id: "wrong" }, text: "Unrelated" });
+  const wrong = EditorDocument.create(DocumentBinding, { identity: { ...f.identity, history_id: "wrong" }, text: "Unrelated" });
   const connection = connectCore(wrong, { url: a.connection.client.socket.url, roomId: `test-${f.identity.history_id}` });
   try { await assert.rejects(connection.ready, /auth|join|rejected/i); }
   finally { connection.destroy(); wrong.dispose(); }
@@ -164,15 +164,15 @@ test("reproduces reference server losing dirty flag when edits arrive during asy
 
 test("adapter does not import a second CRDT document and keeps pending updates replayable", () => {
   const identity = { document_id: "pending", history_id: randomUUID() };
-  const a = EditorCore.create(EditorDocument, { identity, text: "" });
-  const b = EditorCore.restore(EditorDocument, a.exportSnapshot());
+  const a = EditorDocument.create(DocumentBinding, { identity, text: "" });
+  const b = EditorDocument.restore(DocumentBinding, a.exportSnapshot());
   const start = a.snapshot().version; append(a, "A");
   const first = a.exportUpdatesSince(start), middle = a.snapshot().version; append(a, "B");
   const second = a.exportUpdatesSince(middle), pending = [];
   const adaptor = new KernelAdaptor(b, { onImport: (bytes, result) => { if (result.pending) pending.push(Array.from(bytes)); } });
   adaptor.applyUpdate([Uint8Array.from(second.data)]); assert.equal(pending.length, 1);
   assert.equal(b.snapshot().text, "");
-  const restored = EditorCore.restore(EditorDocument, b.exportSnapshot());
+  const restored = EditorDocument.restore(DocumentBinding, b.exportSnapshot());
   for (const bytes of pending) restored.importBinary(identity, Uint8Array.from(bytes));
   restored.import(first); assert.equal(restored.snapshot().text, "AB");
   adaptor.destroy(); a.dispose(); b.dispose(); restored.dispose();

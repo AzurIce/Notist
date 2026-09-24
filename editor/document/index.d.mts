@@ -25,10 +25,10 @@ export interface WasmBinding {
 }
 export interface HostOptions { writer?: string; onListenerError?: (error: unknown) => void }
 export class CoreError extends Error { readonly code: string; readonly offset?: number }
-export class EditorCore {
+export class EditorDocument {
   private constructor();
-  static create(Binding: WasmBinding, options: HostOptions & { identity: DocumentIdentity; text?: string }): EditorCore;
-  static restore(Binding: WasmBinding, packet: SyncPacket, options?: HostOptions): EditorCore;
+  static create(Binding: WasmBinding, options: HostOptions & { identity: DocumentIdentity; text?: string }): EditorDocument;
+  static restore(Binding: WasmBinding, packet: SyncPacket, options?: HostOptions): EditorDocument;
   snapshot(): TextSnapshot;
   encodedVersion(): Uint8Array;
   decodeVersion(bytes: Uint8Array): Version;
@@ -47,5 +47,6 @@ export class EditorCore {
   anchorAt(offset: number, affinity?: "before" | "after"): Anchor;
   resolveAnchor(anchor: Anchor): ResolvedAnchor;
   subscribe(callback: (event: ChangeEvent) => void): () => void;
+  flushEvents(): void;
   dispose(): void;
 }

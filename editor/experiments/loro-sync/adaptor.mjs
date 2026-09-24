@@ -11,7 +11,7 @@ export function compareVersions(a, b) {
 }
 
 // Implements the official CrdtDocAdaptor interface. The only client document is
-// our Rust/Wasm EditorCore; this module never constructs an npm LoroDoc.
+// our Rust/Wasm EditorDocument; this module never constructs an npm LoroDoc.
 export class KernelAdaptor {
   crdtType = CrdtType.Loro;
   constructor(core, { onImport = () => {}, onError = () => {}, onJoin = () => {} } = {}) {

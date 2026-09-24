@@ -3,10 +3,10 @@
   "private": true,
   "type": "module",
   "scripts": {
-    "build": "node build.mjs",
-    "dev": "node build.mjs && node server.mjs",
-    "test": "node --test projection.test.mjs",
-    "test:browser": "node browser.test.mjs"
+    "build": "bun build.mjs",
+    "dev": "bun build.mjs && bun server.mjs",
+    "test": "bun test ./projection.test.mjs",
+    "test:browser": "bun browser.test.mjs"
   },
   "dependencies": {
     "@codemirror/commands": "6.11.1",
@@ -19,5 +19,6 @@
   "devDependencies": {
     "esbuild": "0.25.10",
     "playwright-core": "1.55.1"
-  }
+  },
+  "packageManager": "bun@1.3.13"
 }

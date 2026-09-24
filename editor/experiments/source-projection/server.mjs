@@ -5,7 +5,7 @@ import { fileURLToPath } from "node:url";
 
 const root = dirname(fileURLToPath(import.meta.url));
 const language = resolve(root, "../../pkg");
-const kernel = resolve(root, "../../pkg-core");
+const kernel = resolve(root, "../../pkg-editor");
 const types = { ".html": "text/html", ".css": "text/css", ".js": "text/javascript", ".mjs": "text/javascript", ".wasm": "application/wasm" };
 export async function serveProjection(req, res) {
     try {

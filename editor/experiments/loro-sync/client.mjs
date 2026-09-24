@@ -1,7 +1,7 @@
 import { connectCore } from "./connection.mjs";
 import { openStore } from "./store.mjs";
 
-export async function openSyncDocument({ EditorCore, EditorDocument, room, replica }) {
+export async function openSyncDocument({ EditorDocument, DocumentBinding, room, replica }) {
   const store = await openStore(`${room}/${replica}`);
   let record = await store.read();
   if (!record) {
@@ -21,7 +21,7 @@ export async function openSyncDocument({ EditorCore, EditorDocument, room, repli
       }
     } catch (error) { if (error.message.includes("历史")) throw error; }
   }
-  const core = EditorCore.restore(EditorDocument, record.packet);
+  const core = EditorDocument.restore(DocumentBinding, record.packet);
   const pending = [...(record.pending || [])];
   for (const bytes of pending) core.importBinary(record.identity, Uint8Array.from(bytes), "local-recovery");
   let saveChain = Promise.resolve(), savedRevision = -1, generation = 0, saving = false, stopped = false;

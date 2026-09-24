@@ -4,10 +4,10 @@
 
 ## 环境
 
-- Rust `loro = 1.16.2`；Node/Wasm `loro-crdt = 1.16.2`。
-- 另以 Node/Wasm `loro-crdt = 1.16.3` 复核浏览器问题与旧锚点 panic。
+- Rust `loro = 1.16.2`；JS/Wasm `loro-crdt = 1.16.2`。
+- 另以 JS/Wasm `loro-crdt = 1.16.3` 复核浏览器问题与旧锚点 panic。
 - 官方 `loro-codemirror = 0.3.3`，CM6 state 6.7.5、view 6.43.12、commands 6.11.1。
-- 实测 macOS arm64、Chrome 153.0.8010.53、Node 24.19.0；依赖由各自 lockfile 固定。
+- 实测 macOS arm64、Chrome 153.0.8010.53、Bun 1.3.13；依赖由各自 lockfile 固定。
 
 ## 结果
 
@@ -44,12 +44,12 @@
 在本目录执行：
 
 ```sh
-pnpm install --frozen-lockfile
+bun install --frozen-lockfile
 cargo build --locked
-pnpm test
-pnpm test:interop
-pnpm build
-pnpm test:browser
+bun run test
+bun run test:interop
+bun run build
+bun run test:browser
 ```
 
 本机 Nix 工具链的 native 构建使用：
@@ -63,15 +63,15 @@ CARGO_TARGET_AARCH64_APPLE_DARWIN_LINKER=/usr/bin/clang MACOSX_DEPLOYMENT_TARGET
 复核 Wasm 补丁版：
 
 ```sh
-PROBE_LATEST=1 node build.mjs
-PROBE_LATEST=1 node browser.test.mjs
-PROBE_LATEST=1 node shallow-cursor.mjs
+PROBE_LATEST=1 bun build.mjs
+PROBE_LATEST=1 bun browser.test.mjs
+PROBE_LATEST=1 bun shallow-cursor.mjs
 ```
 
 两个最小 panic 复现都预期非零退出：
 
 ```sh
-node shallow-cursor.mjs
+bun shallow-cursor.mjs
 ./target/debug/notist-loro-validation stale-cursor
 ```
 
@@ -79,4 +79,4 @@ node shallow-cursor.mjs
 
 ## 覆盖边界
 
-没有验证真实 macOS 输入法候选窗口、Safari/Firefox、长文档性能、持久化崩溃恢复、网络协议或 Yrs 对照。IME 用例由 Chromium CDP 产生组合事件；最终 compositionend 可能由 CM6 合成，不能等同于真实操作系统输入法回归。浏览器使用 npm 包提供的 Wasm，尚未建立正式 Rust editor-core 与 CM6 的绑定。
+没有验证真实 macOS 输入法候选窗口、Safari/Firefox、长文档性能、持久化崩溃恢复、网络协议或 Yrs 对照。IME 用例由 Chromium CDP 产生组合事件；最终 compositionend 可能由 CM6 合成，不能等同于真实操作系统输入法回归。浏览器使用 npm 包提供的 Wasm，尚未建立正式 Rust editor-document 与 CM6 的绑定。

@@ -1,5 +1,5 @@
 //! Native side of the native/Wasm contract replay. No language or UI dependency.
-use notist_editor_core::*;
+use notist_editor_document::*;
 use serde_json::{Value, json};
 use std::{
     collections::HashMap,

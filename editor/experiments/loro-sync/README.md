@@ -1,20 +1,20 @@
 # Loro 官方同步实现接入实验
 
-使用发布的 `loro-websocket` 客户端和 `SimpleServer`，让两个现有 Tiptap/CM6 编辑器通过真实 WebSocket 协作。客户端唯一文档状态仍是 Rust/Wasm `EditorCore`。本实验用于验证接入与暴露参考实现的边界，不代表同步服务已经适合生产部署。
+使用发布的 `loro-websocket` 客户端和 `SimpleServer`，让两个现有 Tiptap/CM6 编辑器通过真实 WebSocket 协作。客户端唯一文档状态仍是 Rust/Wasm `EditorDocument`。本实验用于验证接入与暴露参考实现的边界，不代表同步服务已经适合生产部署。
 
 ## 运行
 
 先在仓库开发环境构建内核与现有原型：
 
 ```sh
-just editor-core-build
+just editor-document-build
 # 语言核尚未构建时还需 just web-build
 cd editor/experiments/source-projection
-pnpm install --frozen-lockfile
-pnpm build
+bun install --frozen-lockfile
+bun run build
 cd ../loro-sync
-pnpm install --frozen-lockfile
-pnpm dev
+bun install --frozen-lockfile
+bun run dev
 ```
 
 访问 <http://127.0.0.1:4175>，页面并排展示两个独立副本。每个副本都包含 Tiptap 和 CM6，并有「模拟断网 / 恢复连接」按钮。「单独打开」会创建额外副本，避免多个页面覆盖同一个离线存储槽。也可以用 `/?room=another-room` 开一个新的实验文档。
@@ -28,7 +28,7 @@ HTTP 默认 4175、WebSocket 默认 8787，都只监听 `127.0.0.1`。可通过 
 ```text
 Tiptap / CodeMirror
         ↓
-Rust/Wasm EditorCore ← KernelAdaptor ← 官方 LoroWebsocketClient
+Rust/Wasm EditorDocument ← KernelAdaptor ← 官方 LoroWebsocketClient
         ↓                                    ↕ WebSocket
 IndexedDB（宿主订阅）                    官方 SimpleServer
                                               ↓
@@ -63,11 +63,11 @@ IndexedDB（宿主订阅）                    官方 SimpleServer
 ## 验证
 
 ```sh
-pnpm test
-pnpm build
-pnpm test:browser
+bun run test
+bun run build
+bun run test:browser
 ```
 
 8 项网络/适配器测试包括上述 ACK 语义和保存竞争复现；6 项浏览器测试覆盖真实双视图协作、跨副本撤销、离线刷新、重连补齐、服务端保存后重启和演示页。测试使用临时服务、临时文件目录及独立浏览器上下文，不修改预览草稿。Chrome 路径可通过 `CHROME_PATH` 指定。浏览器报告和截图在被忽略的 `results/`。
 
-原型回归仍由 `../source-projection` 的 `pnpm test` 和 `pnpm test:browser` 运行；内核检查使用仓库根的 `just editor-core-test`。
+原型回归仍由 `../source-projection` 的 `bun run test` 和 `bun run test:browser` 运行；内核检查使用仓库根的 `just editor-document-test`。

@@ -24,7 +24,7 @@ function normalizeError(error) {
   return new CoreError(value);
 }
 
-export class EditorCore {
+export class EditorDocument {
   #native;
   #listeners = new Set();
   #pending = [];
@@ -34,12 +34,12 @@ export class EditorCore {
   #onListenerError;
 
   static create(Binding, { identity, writer, text = "", onListenerError } = {}) {
-    try { return new EditorCore(new Binding(JSON.stringify(identity), writer, text), onListenerError); }
+    try { return new EditorDocument(new Binding(JSON.stringify(identity), writer, text), onListenerError); }
     catch (error) { throw normalizeError(error); }
   }
 
   static restore(Binding, packet, { writer, onListenerError } = {}) {
-    try { return new EditorCore(Binding.from_snapshot(JSON.stringify(packet), writer), onListenerError); }
+    try { return new EditorDocument(Binding.from_snapshot(JSON.stringify(packet), writer), onListenerError); }
     catch (error) { throw normalizeError(error); }
   }
 
@@ -49,7 +49,7 @@ export class EditorCore {
   }
 
   #call(method, ...args) {
-    if (this.#disposed) throw new Error("EditorCore has been disposed");
+    if (this.#disposed) throw new Error("EditorDocument has been disposed");
     try { return this.#native[method](...args); }
     catch (error) { throw normalizeError(error); }
   }
@@ -57,6 +57,12 @@ export class EditorCore {
   #mutate(method, ...args) {
     if (this.#notifying) throw new Error("Schedule observer-initiated edits after notification delivery");
     const value = this.#call(method, ...args);
+    this.flushEvents();
+    return typeof value === "string" ? immutable(JSON.parse(value)) : value;
+  }
+
+  // The node may import through a shared Rust handle rather than this wrapper.
+  flushEvents() {
     this.#pending.push(...JSON.parse(this.#call("take_events")).map(immutable));
     if (!this.#scheduled && this.#pending.length) {
       this.#scheduled = true;
@@ -80,7 +86,6 @@ export class EditorCore {
         } finally { this.#notifying = false; }
       });
     }
-    return typeof value === "string" ? immutable(JSON.parse(value)) : value;
   }
 
   snapshot() { return immutable(JSON.parse(this.#call("snapshot"))); }

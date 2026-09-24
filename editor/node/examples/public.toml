@@ -1,0 +1,24 @@
+# Fill in the real address, credentials, and certificate paths before starting.
+state_dir = "../data/public"
+access_token = "REPLACE-WITH-A-RANDOM-ACCESS-TOKEN"
+
+[http]
+listen = "0.0.0.0:8788"
+public_url = "https://node.example:8788"
+[http.tls]
+certificate = "./fullchain.pem"
+private_key = "./privkey.pem"
+
+[network_service]
+enabled = true
+[network_service.turn]
+listen_udp = "0.0.0.0:3478"
+listen_tcp = "0.0.0.0:3478"
+listen_tls = "0.0.0.0:5349"
+public_ip = "203.0.113.10"
+public_host = "node.example"
+relay_ports = [49160, 49260]
+
+# This deployment offers signaling + TURN without storing any document.
+[peer]
+enabled = false

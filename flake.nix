@@ -106,6 +106,7 @@
               # cargo-udeps 依赖 nightly，stable 工具链下不可用
               # cargo-udeps
               miniserve
+              bun
               # 与 editor/crates/editor-wasm 的 wasm-bindgen crate 版本严格一致，
               # 否则生成的胶水与运行时 ABI 不匹配。
               wasm-bindgen-cli

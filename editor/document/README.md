@@ -4,8 +4,8 @@
 
 ## 组成
 
-- `../crates/editor-core`：Rust `Document`，native/Wasm 共用同一实现。
-- `../crates/editor-core-wasm`：独立 Wasm 绑定，不依赖 Notist 语言 crate。
+- `../crates/editor-document`：Rust `Document`，native/Wasm 共用同一实现。
+- `../crates/editor-node-wasm`：Document 和 Node 共用的 Wasm 绑定，不依赖 Notist 语言 crate。
 - `index.mjs`：JS 宿主接口，负责对象转换与安全的异步变更通知。
 - `../experiments/source-projection`：接入内核的 Tiptap/CM6 双视图实验。
 
@@ -14,26 +14,26 @@
 在仓库开发环境中，从仓库根执行：
 
 ```sh
-just editor-core-build
-just editor-core-test
+just editor-document-build
+just editor-document-test
 ```
 
-需要 Rust 的 `wasm32-unknown-unknown` target、Wasm linker、wasm-bindgen-cli 0.2.121 和 Node。构建输出在 `editor/pkg-core/` 和 `editor/scripts/pkg-core-node/`。Rust 依赖固定 Loro 1.16.2；Cargo.lock 固定传递依赖。
+需要 Rust 的 `wasm32-unknown-unknown` target、Wasm linker、wasm-bindgen-cli 0.2.121 和 Bun。构建输出在 `editor/pkg-editor/` 和 `editor/scripts/pkg-editor-node/`。Rust 依赖固定 Loro 1.16.2；Cargo.lock 固定传递依赖。
 
 单独验证 native：
 
 ```sh
-cargo test --manifest-path editor/Cargo.toml -p notist-editor-core
+cargo test --manifest-path editor/Cargo.toml -p notist-editor-document
 ```
 
 双视图实验还需要现有语言核的 `just web-build` 产物：
 
 ```sh
 cd editor/experiments/source-projection
-pnpm install --frozen-lockfile
-pnpm build
-pnpm test:browser
-pnpm dev
+bun install --frozen-lockfile
+bun run build
+bun run test:browser
+bun run dev
 ```
 
 ## 使用
@@ -41,11 +41,11 @@ pnpm dev
 浏览器宿主自行提供生成的 Wasm 文件 URL：
 
 ```js
-import init, { EditorDocument } from "../pkg-core/notist_editor_core_wasm.js";
-import { EditorCore } from "./index.mjs";
+import init, { DocumentBinding } from "../pkg-editor/notist_editor_node_wasm.js";
+import { EditorDocument } from "./index.mjs";
 
 await init();
-const core = EditorCore.create(EditorDocument, {
+const core = EditorDocument.create(DocumentBinding, {
   identity: { document_id: "draft", history_id: crypto.randomUUID() },
   text: "Hello 🧠",
 });
@@ -110,4 +110,4 @@ Rust 通过独立队列向每个订阅者发送提交完成的事件。JS 在微
 
 `anchorAt(offset, "before" | "after")` 明确描述同一空隙插入文字时锚点位于插入内容的哪侧，分别绑定前/后字符；文本两端使用边界锚点。目标被删除时，锚点收敛到保留历史所定位的删除空隙。`resolveAnchor` 返回 UTF-16 下标和可重新保存的锚点。锚点包含文档/历史身份，可在同历史副本之间传递。普通锚点采用删除后折叠的语义，不能替代 undoPositions 来恢复替换前的选区。
 
-当前保留完整历史，拒绝 shallow snapshot，也不暴露裁剪或 checkout。大文档增量投影、事件快照复制成本、可靠持久化、网络同步及跨文档事务不在当前实现中。
+当前保留完整历史，拒绝 shallow snapshot，也不暴露裁剪或 checkout。持久化和网络同步由 `../node` 的 `EditorNode` 提供。大文档增量投影、事件快照复制成本及跨文档事务不在 Document 的职责内。

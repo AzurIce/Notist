@@ -4,8 +4,9 @@ import { Plugin } from "@tiptap/pm/state";
 import { EditorState, Annotation, StateEffect, StateField } from "@codemirror/state";
 import { EditorView, keymap, lineNumbers, drawSelection, highlightActiveLine, Decoration, ViewPlugin } from "@codemirror/view";
 import { defaultKeymap } from "@codemirror/commands";
-import initCore, { EditorDocument } from "/kernel/notist_editor_core_wasm.js";
-import { EditorCore } from "../../core/index.mjs";
+import initCore, { DocumentBinding, NodeBinding } from "/kernel/notist_editor_node_wasm.js";
+import { EditorDocument } from "../../document/index.mjs";
+import { openNodeDocument } from "../../node/client.mjs";
 import { project, serialize, withPositions, sourcePatch, richToSource, sourceToRich, byteToUTF16 } from "./projection.mjs";
 
 const $ = selector => document.querySelector(selector);
@@ -30,15 +31,18 @@ const errors = [];
 let stored;
 try { stored = localStorage.getItem(STORAGE); } catch {}
 await initCore();
-const createCore = text => EditorCore.create(EditorDocument, {
+const createCore = text => EditorDocument.create(DocumentBinding, {
   identity: { document_id: "source-projection-draft", history_id: crypto.randomUUID() }, text,
   onListenerError(error) { errors.push(String(error)); console.error(error); },
 });
 let syncSession = null;
-if (params.has("room")) {
+if (params.has("room") || params.has("node")) {
   try {
-    syncSession = await (await import("/sync/client.js")).openSyncDocument({
-      EditorCore, EditorDocument, room: params.get("room"), replica: params.get("replica") || crypto.randomUUID(),
+    syncSession = params.has("node") ? await openNodeDocument({
+      NodeBinding, DocumentBinding, endpoint: params.get("node"), documentId: params.get("document") || "note",
+      profile: params.get("replica") || "default", transport: params.get("transport") || "webrtc",
+    }) : await (await import("/sync/client.js")).openSyncDocument({
+      EditorDocument, DocumentBinding, room: params.get("room"), replica: params.get("replica") || crypto.randomUUID(),
     });
   } catch (error) {
     const message = document.createElement("p"); message.textContent = error.message;
@@ -357,10 +361,10 @@ function renderDiagnostics() {
   if (!diagnostics.length) panel.hidden = true;
 }
 
-// Explicit test surface. Network mode is opt-in on the separate sync server.
+// Explicit test surface. Network mode is opt-in via a node or sync experiment.
 window.probe = {
   rich, cm, syncSession, get core() { return core; },
-  makeReplica: () => EditorCore.restore(EditorDocument, core.exportSnapshot()),
+  makeReplica: () => EditorDocument.restore(DocumentBinding, core.exportSnapshot()),
   inspect: () => ({ source: source(), cm: cm.state.doc.toString(), doc: rich.getJSON(), projection: projection.source, lastPatch, revision, diagnostics, languageReady, errors: [...errors], canUndo: core.undoState.can_undo, canRedo: core.undoState.can_redo }),
   reset(text = SAMPLE) {
     if (syncSession) throw new Error("Use a fresh room to reset a collaborative document");

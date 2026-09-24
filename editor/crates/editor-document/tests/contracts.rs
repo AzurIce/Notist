@@ -1,4 +1,4 @@
-use notist_editor_core::*;
+use notist_editor_document::*;
 use serde_json::json;
 
 fn identity() -> DocumentIdentity {

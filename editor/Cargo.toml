@@ -1,6 +1,6 @@
 [workspace]
 resolver = "2"
-members = ["crates/editor-core", "crates/editor-core-wasm", "crates/editor-wasm"]
+members = ["crates/editor-document", "crates/editor-node-wasm", "crates/editor-wasm", "crates/editor-node"]
 
 [profile.release]
 opt-level = "z"

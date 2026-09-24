@@ -1,0 +1,42 @@
+# Loopback development only. Replace both credentials for your deployment.
+state_dir = "../data/local"
+access_token = "DEV-ACCESS-TOKEN-CHANGE-BEFORE-DEPLOY"
+
+[http]
+listen = "127.0.0.1:8788"
+public_url = "http://127.0.0.1:8788"
+
+# One switch enables signaling and STUN/TURN together.
+[network_service]
+enabled = true
+
+[network_service.turn]
+listen_udp = "127.0.0.1:3478"
+listen_tcp = "127.0.0.1:3478"
+public_ip = "127.0.0.1"
+public_host = "127.0.0.1"
+relay_ports = [49160, 49260]
+
+# Disable this section (and remove documents) for a relay-only process.
+[peer]
+enabled = true
+
+[[peer.documents]]
+credential = "DEV-DOCUMENT-TOKEN-CHANGE-BEFORE-DEPLOY"
+# One-way output for viewing in another editor; relative to this config file.
+text_file = "../data/local/note.not"
+# Initial text is inserted only when no journal exists. Only the creator seeds
+# text; followers use an empty document with the same identity and credential.
+initial_text = "= 节点之间的文字\n\n在这里写下 *想法*，右边始终是完整源码。\n"
+
+[peer.documents.identity]
+document_id = "note"
+history_id = "local-development-note"
+
+# Optional native outgoing transports; credentials belong to the remote service.
+# [[peer.connect]]
+# url = "wss://another-node.example/peer"
+# access_token = "REPLACE-WITH-REMOTE-ACCESS-TOKEN"
+# [[peer.signaling]]
+# url = "wss://relay.example/signal"
+# access_token = "REPLACE-WITH-REMOTE-ACCESS-TOKEN"

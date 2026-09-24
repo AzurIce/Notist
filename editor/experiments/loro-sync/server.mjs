@@ -7,12 +7,12 @@ import { createRequire } from "node:module";
 import { randomUUID } from "node:crypto";
 import { SimpleServer } from "loro-websocket/server";
 import { CrdtType } from "loro-protocol";
-import { EditorCore } from "../../core/index.mjs";
+import { EditorDocument } from "../../document/index.mjs";
 import { serveProjection } from "../source-projection/server.mjs";
 
 const root = dirname(fileURLToPath(import.meta.url));
 const require = createRequire(import.meta.url);
-const { EditorDocument } = require("../../scripts/pkg-core-node/notist_editor_core_wasm.js");
+const { DocumentBinding } = require("../../scripts/pkg-editor-node/notist_editor_node_wasm.js");
 export const SAMPLE = "= 一起写下去\n\nHello world.\n\n你可以在任意一侧编辑；另一侧会收到相同的修改。\n\n== 试试离线\n\n断开一个副本，在两边分别输入，再恢复连接。\n\n// 源码、空行和注释仍然是文档的一部分。\n";
 
 export async function freePort() {
@@ -21,6 +21,24 @@ export async function freePort() {
   const port = socket.address().port;
   await new Promise(resolve => socket.close(resolve));
   return port;
+}
+
+// Bun's HTTP compatibility layer can release an upgraded listener without
+// invoking close(callback). Drain peers first, then stop its HTTP transport
+// before the reference server awaits that callback. The sync/save code stays
+// in the pinned, unmodified SimpleServer implementation.
+export async function stopReferenceServer(server) {
+  const wss = server.wss;
+  if (typeof Bun !== "undefined" && wss) {
+    await Promise.all([...wss.clients].map(async socket => {
+      if (socket.readyState === 3) return;
+      const closed = new Promise(resolve => socket.once("close", resolve));
+      await server.gracefulCloseWebSocket(socket);
+      await closed;
+    }));
+    wss._server?.closeAllConnections();
+  }
+  await server.stop();
 }
 
 // This is the unmodified official SimpleServer with its documented load/save
@@ -48,7 +66,7 @@ export async function startExperiment({ port = 4175, wsPort = 0, directory = res
       catch (error) {
         if (error.code !== "ENOENT") throw error;
         const identity = { document_id: `sync-lab/${name}`, history_id: randomUUID() };
-        const doc = EditorCore.create(EditorDocument, { identity, text: SAMPLE });
+        const doc = EditorDocument.create(DocumentBinding, { identity, text: SAMPLE });
         record = { identity, roomId: `${name}~${identity.history_id}`, packet: doc.exportSnapshot() };
         doc.dispose(); await writeRecord(name, record);
       }
@@ -100,7 +118,7 @@ export async function startExperiment({ port = 4175, wsPort = 0, directory = res
   await new Promise(resolve => http.listen(port, "127.0.0.1", resolve));
   return { http, server, stats, load, url: `http://127.0.0.1:${http.address().port}`, wsUrl: `ws://127.0.0.1:${websocketPort}`,
     async stop() {
-      await server.stop();
+      await stopReferenceServer(server);
       // The reference server's stop() does not await asynchronous save hooks.
       // Wait for callbacks already enqueued by this experiment's file store.
       await new Promise(resolve => setImmediate(resolve));
