@@ -1,5 +1,6 @@
 let section = (body: Content) => item("section", (body: body));
 let paragraph = (body: Content) => item("paragraph", (body: body));
 let heading = (body: Content, level: Int = 1) => item("heading", (level: level, body: body));
+let rule = () => item("rule", (:));
 let seq = (children: List) => item("seq", (children: children));
 let list_item = (body: Content, ordered: Bool = false, number: Int? = none) => item("list-item", (body: body, ordered: ordered, number: number));
