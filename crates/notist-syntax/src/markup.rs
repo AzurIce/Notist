@@ -1,4 +1,40 @@
-use super::{Expr, ExprKind, Parser};
+use std::ops::{Deref, DerefMut};
+
+use crate::code::CodeParser;
+use crate::state::ParseState;
+use crate::{Expr, ExprKind};
+
+pub(super) struct MarkupParser<'s, 'a> {
+    state: &'s mut ParseState<'a>,
+}
+
+impl<'s, 'a> MarkupParser<'s, 'a> {
+    pub(super) fn new(state: &'s mut ParseState<'a>) -> Self {
+        Self { state }
+    }
+
+    pub(super) fn parse_root(&mut self) -> Result<Vec<Expr>, String> {
+        self.markup_flow(None, 0, None)
+    }
+
+    pub(super) fn parse_literal(&mut self, end: char) -> Result<Vec<Expr>, String> {
+        self.markup_flow(Some(end), 0, None)
+    }
+}
+
+impl<'s, 'a> Deref for MarkupParser<'s, 'a> {
+    type Target = ParseState<'a>;
+
+    fn deref(&self) -> &Self::Target {
+        self.state
+    }
+}
+
+impl DerefMut for MarkupParser<'_, '_> {
+    fn deref_mut(&mut self) -> &mut Self::Target {
+        self.state
+    }
+}
 
 fn expr(kind: ExprKind, start: usize, end: usize) -> Expr {
     Expr {
@@ -23,7 +59,7 @@ fn word(c: char) -> bool {
         && !(('\u{2e80}'..='\u{9fff}').contains(&c) || ('\u{ac00}'..='\u{d7af}').contains(&c))
 }
 
-impl Parser<'_> {
+impl MarkupParser<'_, '_> {
     fn line_position(&self) -> Option<usize> {
         let line = self.source[..self.pos].rsplit('\n').next().unwrap_or("");
         line.chars()
@@ -106,6 +142,13 @@ impl Parser<'_> {
                     self.consume_char();
                 }
                 break;
+            }
+            if self.line_position().is_some()
+                && let Some((align, separator_start, separator_end)) = self.table_separator()
+            {
+                flush(&mut out, &mut inline);
+                out.push(self.markup_table(align, separator_start, separator_end)?);
+                continue;
             }
             let level = self.rest().bytes().take_while(|c| *c == b'=').count();
             if self.line_position().is_some()
@@ -281,12 +324,15 @@ impl Parser<'_> {
     fn markup_code(&mut self) -> Result<Expr, String> {
         let start = self.pos;
         self.pos += 1;
-        self.record(start, self.pos, "markup-interp", "#");
-        let value = if self.at("let") || self.at("use") || self.at("wasm") {
-            let statement = self.statement()?;
-            expr(ExprKind::Declaration(Box::new(statement)), start, self.pos)
-        } else {
-            self.expr(5)?
+        self.state.record_span(start, self.pos, "markup-interp");
+        let value = {
+            let mut code = CodeParser::new(self.state);
+            if code.at("let") || code.at("use") || code.at("wasm") {
+                let statement = code.statement()?;
+                expr(ExprKind::Declaration(Box::new(statement)), start, code.pos)
+            } else {
+                code.expr(5)?
+            }
         };
         if self.rest().starts_with(';') {
             self.pos += 1;
@@ -300,8 +346,8 @@ impl Parser<'_> {
         if module {
             self.pos += 1;
         }
-        self.record(start, self.pos, "annotation", &self.source[start..self.pos]);
-        let value = self.expr(5)?;
+        self.state.record_span(start, self.pos, "annotation");
+        let value = CodeParser::new(self.state).expr(5)?;
         Ok(expr(
             ExprKind::Annotation(module, Box::new(value)),
             start,
@@ -359,7 +405,7 @@ impl Parser<'_> {
                 }
             }
         }
-        self.record(start, self.pos, "comment", &self.source[start..self.pos]);
+        self.state.record_span(start, self.pos, "comment");
         Ok(())
     }
     fn markup_atom(&mut self) -> Result<Expr, String> {
@@ -390,7 +436,7 @@ impl Parser<'_> {
                         start,
                         self.pos,
                     );
-                    self.record(start, self.pos, "math", &self.source[start..self.pos]);
+                    self.state.record_span(start, self.pos, "math");
                     return Ok(value);
                 }
                 escaped = c == '\\' && !escaped;
@@ -400,15 +446,18 @@ impl Parser<'_> {
         if self.rest().starts_with("[[") {
             self.pos += 2;
             let tokens = self.tokens.len();
-            let first = self.segment()?;
-            let (module, labels) = self.reference_path(first)?;
-            let close = self.token().offset;
+            let (module, labels, close) = {
+                let mut code = CodeParser::new(self.state);
+                let first = code.segment()?;
+                let (module, labels) = code.reference_path(first)?;
+                (module, labels, code.token().offset)
+            };
             if !self.source[close..].starts_with("]]") {
                 return Err("expected `]]` after wikilink target".into());
             }
             self.pos = close + 2;
             self.tokens.truncate(tokens);
-            self.record(start, self.pos, "wikilink", &self.source[start..self.pos]);
+            self.state.record_span(start, self.pos, "wikilink");
             return Ok(expr(ExprKind::Target(module, labels), start, self.pos));
         }
         if self.rest().starts_with("https://") || self.rest().starts_with("http://") {
@@ -514,19 +563,14 @@ impl Parser<'_> {
         // Group ordinary characters to keep the AST proportional to words, not bytes.
         while let Some(next) = self.rest().chars().next() {
             if next.is_whitespace()
-                || "#@[]*_\\`$\"'~-/.:".contains(next)
+                || "#@[]*_\\`$\"'~-/.:|".contains(next)
                 || self.rest().starts_with("http")
             {
                 break;
             }
             self.consume_char();
         }
-        self.record(
-            start,
-            self.pos,
-            "markup-text",
-            &self.source[start..self.pos],
-        );
+        self.state.record_span(start, self.pos, "markup-text");
         Ok(string(&self.source[start..self.pos], start, self.pos))
     }
     fn markup_raw(&mut self) -> Result<Expr, String> {
@@ -603,7 +647,7 @@ impl Parser<'_> {
                 }
             }
         }
-        self.record(start, self.pos, "raw", &self.source[start..self.pos]);
+        self.state.record_span(start, self.pos, "raw");
         Ok(element(
             "raw",
             vec![
@@ -661,5 +705,139 @@ impl Parser<'_> {
             items.push(element(item_name, fields, begin, self.pos));
         }
         Ok(items)
+    }
+
+    /// Recognize a Markdown-style delimiter line without consuming the header.
+    /// Requiring a delimiter keeps ordinary lines containing pipes as prose.
+    fn table_separator(&self) -> Option<(Vec<&'static str>, usize, usize)> {
+        if !self.rest().starts_with('|') {
+            return None;
+        }
+        let header_end = self.pos + self.rest().find('\n')?;
+        let separator_start = header_end
+            + 1
+            + self.source[header_end + 1..]
+                .bytes()
+                .take_while(|byte| *byte == b' ' || *byte == b'\t')
+                .count();
+        let rest = &self.source[separator_start..];
+        let separator_end = separator_start + rest.find(['\r', '\n']).unwrap_or(rest.len());
+        let line = self.source[separator_start..separator_end].trim_end_matches([' ', '\t']);
+        let cells = line.strip_prefix('|')?.strip_suffix('|')?;
+        let mut align = Vec::new();
+        for cell in cells.split('|') {
+            let marker = cell.trim();
+            let left = marker.starts_with(':');
+            let right = marker.ends_with(':');
+            let dashes = marker.strip_prefix(':').unwrap_or(marker);
+            let dashes = dashes.strip_suffix(':').unwrap_or(dashes);
+            if dashes.is_empty() || !dashes.bytes().all(|byte| byte == b'-') {
+                return None;
+            }
+            align.push(match (left, right) {
+                (true, true) => "center",
+                (true, false) => "left",
+                (false, true) => "right",
+                (false, false) => "default",
+            });
+        }
+        (!align.is_empty()).then_some((align, separator_start, separator_end))
+    }
+
+    fn table_row(&mut self) -> Result<Vec<Expr>, String> {
+        let row_end = self.pos + self.rest().find(['\r', '\n']).unwrap_or(self.rest().len());
+        if !self.rest().starts_with('|') {
+            return Err("table row must begin with `|`".into());
+        }
+        let mut cells = Vec::new();
+        self.state.record_span(self.pos, self.pos + 1, "table-pipe");
+        self.pos += 1;
+        loop {
+            let start = self.pos;
+            let mut parts = self.markup_inline('|', false)?;
+            if self.pos > row_end {
+                return Err("table row must end on the same line".into());
+            }
+            self.state.record_span(self.pos - 1, self.pos, "table-pipe");
+            while parts.last().is_some_and(
+                |part| matches!(&part.kind, ExprKind::Element(name, _) if name == "space"),
+            ) {
+                parts.pop();
+            }
+            cells.push(element(
+                "table-cell",
+                vec![(
+                    "body".into(),
+                    expr(ExprKind::Content(parts), start, self.pos),
+                )],
+                start,
+                self.pos,
+            ));
+            if self.source[self.pos..row_end].trim().is_empty() {
+                self.pos = row_end;
+                break;
+            }
+            if self.rest().starts_with(']') {
+                break;
+            }
+        }
+        Ok(cells)
+    }
+
+    fn markup_table(
+        &mut self,
+        align: Vec<&'static str>,
+        separator_start: usize,
+        separator_end: usize,
+    ) -> Result<Expr, String> {
+        let start = self.pos;
+        if align.len() > 256 {
+            return Err("table supports at most 256 columns".into());
+        }
+        let mut cells = self.table_row()?;
+        if cells.len() != align.len() {
+            return Err("table header width differs from separator".into());
+        }
+        self.state
+            .record_span(separator_start, separator_end, "table-separator");
+        self.pos = separator_end;
+        loop {
+            let newline_len = if self.rest().starts_with("\r\n") {
+                2
+            } else if self.rest().starts_with(['\r', '\n']) {
+                1
+            } else {
+                break;
+            };
+            let next = self.pos + newline_len;
+            let indent = self.source[next..]
+                .bytes()
+                .take_while(|byte| *byte == b' ' || *byte == b'\t')
+                .count();
+            if !self.source[next + indent..].starts_with('|') {
+                break;
+            }
+            self.pos = next + indent;
+            let row = self.table_row()?;
+            if row.len() != align.len() {
+                return Err("table row width differs from separator".into());
+            }
+            cells.extend(row);
+        }
+        let mut fields = vec![
+            (
+                "columns".into(),
+                expr(ExprKind::Int(align.len() as i64), start, self.pos),
+            ),
+            ("header".into(), expr(ExprKind::Bool(true), start, self.pos)),
+        ];
+        if align.iter().any(|value| *value != "default") {
+            fields.push(("align".into(), string(align.join(","), start, self.pos)));
+        }
+        fields.push((
+            "body".into(),
+            expr(ExprKind::Content(cells), start, self.pos),
+        ));
+        Ok(element("table", fields, start, self.pos))
     }
 }

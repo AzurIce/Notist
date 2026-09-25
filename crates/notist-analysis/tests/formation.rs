@@ -92,6 +92,26 @@ fn table_spans_fill_successive_rows() {
 }
 
 #[test]
+fn pipe_table_forms_and_renders_with_alignment_and_inline_markup() {
+    let result = run("| Name | Value |\n| :--- | ---: |\n| A\\|B | *two* |\n");
+    assert!(result.diagnostics.is_empty(), "{:?}", result.diagnostics);
+    assert_eq!(items(&result.content, "table").len(), 1);
+    assert_eq!(items(&result.content, "table-cell").len(), 4);
+    let html = result.content.html();
+    for expected in [
+        "<table",
+        "<th",
+        "<td",
+        "A|B",
+        "<strong>",
+        "text-align:left",
+        "text-align:right",
+    ] {
+        assert!(html.contains(expected), "missing {expected}: {html}");
+    }
+}
+
+#[test]
 fn core_constructors_work_in_plain_markup_and_can_be_shadowed() {
     let result = run(
         "#rule()\n#callout(kind: \"tip\", title: [Hint])[Body]\n#image(\"pic.png\", alt: \"Picture\", block: true)\n#table(1)[#table_cell[#quote[Cell]]]",
